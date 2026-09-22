@@ -1,0 +1,1131 @@
+#!/usr/bin/env python3
+"""Mutation proofing: break one guarantee at a time and require the suite to
+notice it.
+
+A test that passes against a deliberately broken program is worse than no test,
+because it is evidence of safety that is not there.  Every entry below is a
+real failure this program could have on a show night; if the suite stays green
+against one, the suite is lying and gets strengthened until it does not.
+
+    python3 mutate.py            run them all
+    python3 mutate.py park       run the ones whose name contains "park"
+"""
+import subprocess
+import sys
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# (name, file, exact text to find, replacement)
+MUTATIONS = [
+ ("the input hunts sample rates on every retry again", "ltcplay/audio.py",
+  "        if self._good:\n            want(self._good[0], self._good[1])",
+  "        if False:\n            want(self._good[0], self._good[1])"),
+
+ ("a working setting is never remembered", "ltcplay/audio.py",
+  "            self._good = (rate, ch)",
+  "            pass"),
+
+ ("a changed channel count is not followed", "ltcplay/audio.py",
+  "            self._open_channels = ch",
+  "            pass"),
+
+ ("a failed open says nothing about the device", "ltcplay/audio.py",
+  'f". The device reports {have} input(s) at "',
+  'f". "'),
+
+ ("a fault that stopped is drawn red forever again", "ltcplay/display.py",
+  "def _recent(obj):\n    \"\"\"Did this thing fail within the window that still counts as now?\"\"\"\n    age = getattr(obj, \"seconds_since_error\", None)\n    return age is not None and age <= RECENT_S",
+  "def _recent(obj):\n    return True"),
+
+ ("history is dropped instead of shown quietly", "ltcplay/display.py",
+  "def history_for(p):",
+  "def history_for(p):\n    return []\ndef _unused_history(p):"),
+
+ ("the page never shows the history list", "ltcplay/web/index.html",
+  '  (s.history||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });\n',
+  ''),
+
+ ("a recovered input keeps reporting its old failure", "ltcplay/session.py",
+  """            "input_error": ("" if (a is not None and a.attached)
+                            else (getattr(a, "last_error", "")
+                                  or self.input_error)),""",
+  """            "input_error": (self.input_error
+                            or getattr(a, "last_error", "")),"""),
+
+ ("a missing input is filed as a permanent note again",
+  "ltcplay/session.py",
+  """                if self.log:
+                    self.log.event("input", str(e).split("\\n")[0])""",
+  """                self.notes.append("not attached: " + str(e))"""),
+
+ ("a lost feed no longer runs the set out", "ltcplay/player.py",
+  '            if self.on_lost == "freerun" and self.last_ltc_seconds is not None \\',
+  '            if False and self.last_ltc_seconds is not None \\'),
+
+ ("the free run starts from now instead of where the feed died",
+  "ltcplay/player.py",
+  "                self.freerun_epoch = last - self.last_ltc_seconds",
+  "                self.freerun_epoch = now"),
+
+ ("rebuilding the input only reopens the stream", "ltcplay/session.py",
+  """        try:
+            sd._terminate()
+            sd._initialize()
+            rebuilt = True""",
+  """        try:
+            rebuilt = True"""),
+
+ ("rebuilding the input reuses the old decoder", "ltcplay/session.py",
+  "        self.dec = LTCDecoder(self.rate)\n        opened = src.start()",
+  "        opened = src.start()"),
+
+ ("the page calls a queue acceptance a good send again",
+  "ltcplay/web/index.html",
+  "` · accepted by this Mac ${s.since_ok.toFixed(1)}s ago` : \"\") +",
+  "` · last good send ${s.since_ok.toFixed(1)}s ago` : \"\") +"),
+
+ ("a dead controller is hammered every frame forever", "ltcplay/output.py",
+  """            if p["quiet_until"] > now:
+                quiet += 1
+                continue""",
+  """            if False:
+                quiet += 1
+                continue"""),
+
+ ("a rested controller is never retried", "ltcplay/output.py",
+  '                    p["quiet_until"] = now + p["quiet_for"]',
+  '                    p["quiet_until"] = now + 1e9'),
+
+ ("one refused packet rests a whole controller", "ltcplay/output.py",
+  "    DEST_FAILS_BEFORE_QUIET = 20",
+  "    DEST_FAILS_BEFORE_QUIET = 1"),
+
+ ("broadcast is enabled on every socket again", "ltcplay/output.py",
+  """            if self.broadcast_dests:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)""",
+  """            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)"""),
+
+ ("nothing warns about a broadcast destination", "ltcplay/display.py",
+  "    if bcast:",
+  "    if False:"),
+
+ ("a poisoned PortAudio is never rebuilt, only the stream retried",
+  "ltcplay/audio.py",
+  """            if self._fails_since_reset >= self.FAILURES_BEFORE_RESET:
+                self._fails_since_reset = 0
+                self._reset_portaudio()
+            return False
+        self._stream = s""",
+  """            return False
+        self._stream = s"""),
+
+ ("the audio system is rebuilt on every single failed open",
+  "ltcplay/audio.py",
+  "    FAILURES_BEFORE_RESET = 3",
+  "    FAILURES_BEFORE_RESET = 0"),
+
+ ("a good open does not clear the failure count", "ltcplay/audio.py",
+  """        self.attached = True
+        self._fails_since_reset = 0""",
+  """        self.attached = True"""),
+
+ ("a rebuild that failed is reported as having happened",
+  "ltcplay/audio.py",
+  """            self._event("audio", self.last_error, throttle=10.0)
+            return False
+        self.pa_resets += 1""",
+  """            self._event("audio", self.last_error, throttle=10.0)
+        self.pa_resets += 1"""),
+
+ ("an input stuck forever keeps reporting itself as recovering",
+  "ltcplay/display.py",
+  '        if getattr(a, "stuck", False):',
+  "        if False:"),
+
+ ("the installer trusts that python3 exists instead of running it",
+  "Install ltcplay.command",
+  'if ! PYV=$("$PY" -V 2>&1); then',
+  'PYV="assumed"; if false; then'),
+
+ ("the environment error is thrown away again",
+  "Install ltcplay.command",
+  'if ! VENVLOG=$("$PY" -m venv .venv 2>&1); then',
+  'VENVLOG=""; if ! "$PY" -m venv .venv; then'),
+
+ ("the input caption goes back to claiming a missing input fails the run",
+  "ltcplay/web/index.html",
+  '`A run will start on the preshow look and pick it up when it ` +\n        `appears, or save a different one.`',
+  '`The run will fail until it is plugged in, or you save a different one.`'),
+
+ ("the GO button claims it starts from the top again",
+  "ltcplay/web/index.html",
+  '<button id="btn-go">GO</button>',
+  '<button id="btn-go">GO from the top</button>'),
+
+ ("the terminal calls the button by a name it does not have",
+  "ltcplay/display.py",
+  '"the next one. Press Back to timecode on the web page to "',
+  '"the next one. Release it from the web page to "'),
+
+ ("a button named in the copy is renamed out from under it",
+  "ltcplay/web/index.html",
+  '<button id="btn-release" hidden>Back to timecode</button>',
+  '<button id="btn-release" hidden>Follow the feed</button>'),
+
+ ("Run asks a second time again", "ltcplay/web/index.html",
+  '$("btn-run").addEventListener("click", () => startShow(false));',
+  '$("btn-run").addEventListener("click", () => { if(!confirm("go?")) return; startShow(false); });'),
+
+ ("Stop asks a second time again", "ltcplay/web/index.html",
+  '$("btn-stop").addEventListener("click", async () => {\n  try{ await post("/api/stop")',
+  '$("btn-stop").addEventListener("click", async () => {\n  if(!confirm("stop?")) return;\n  try{ await post("/api/stop")'),
+
+ ("preflight findings vanish with the modal", "ltcplay/web/index.html",
+  '  (s.problems||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });\n',
+  ''),
+
+ ("a missing input refuses the start again", "ltcplay/session.py",
+  """            except audio_mod.DeviceError as e:
+                # A missing interface used to refuse the whole start,""",
+  """            except audio_mod.DeviceError as e:
+                raise SessionError(str(e))
+                # A missing interface used to refuse the whole start,"""),
+
+ ("the input is never retried once it is absent", "ltcplay/audio.py",
+  '        if self._opens or self.device.get("index") is None:',
+  '        if self._opens and self.device.get("index") is None:'),
+
+ ("a first open that fails is fatal again", "ltcplay/audio.py",
+  """        self._running = True
+        opened = self._open()""",
+  """        self._running = True
+        opened = self._open()
+        if not opened:
+            raise DeviceError(self.last_error)"""),
+
+ ("the decoder ignores the clock the input actually runs at",
+  "ltcplay/audio.py",
+  """            self.rate = rate
+            if self.on_rate_change:""",
+  """            if False:"""),
+
+ ("a show with no input reports it as fine", "ltcplay/session.py",
+  '            "input_attached": (True if self.wav\n                               else bool(a and a.attached)),',
+  '            "input_attached": True,'),
+
+ ("the input cannot be changed while the show runs", "ltcplay/web.py",
+  "        if s is not None and s.running:",
+  "        if False:"),
+
+ ("switching the input leaves the old one feeding the show",
+  "ltcplay/session.py",
+  """        old, self.audio = self.audio, None
+        self.player.audio = None
+        try:
+            old.stop()""",
+  """        old, self.audio = self.audio, None
+        self.player.audio = None
+        try:
+            pass"""),
+
+ ("a refused switch is reported as done", "ltcplay/web.py",
+  """            except SessionError as e:
+                out = dict(out, live=False, why=str(e))""",
+  """            except SessionError as e:
+                out = dict(out, live=True, opened=True)"""),
+
+ ("nothing says the input is missing", "ltcplay/display.py",
+  "        if not attached:",
+  "        if False:"),
+
+ ("the header hangs its text on the logo's baseline",
+  "ltcplay/web/index.html",
+  "header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;",
+  "header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;"),
+
+ ("the title and the status pills lose their groups",
+  "ltcplay/web/index.html",
+  '  <div class="titles">\n    <h1>ltcplay</h1>',
+  '  <div class="nope">\n    <h1>ltcplay</h1>'),
+
+ ("the folder picker accepts a folder with no sequences in it",
+  "ltcplay/cli.py",
+  """    if not counts["fseq"]:
+        return False,""",
+  """    if False:
+        return False,"""),
+
+ ("the folder picker accepts a folder with no controller map",
+  "ltcplay/cli.py",
+  """    if not counts["networks"]:
+        return False,""",
+  """    if False:
+        return False,"""),
+
+ ("changing the folder rewrites the whole show file",
+  "ltcplay/web.py",
+  '        doc["show_dir"] = os.path.abspath(os.path.expanduser(folder))',
+  '        doc = {"show_dir": os.path.abspath(os.path.expanduser(folder))}'),
+
+ ("the folder can be changed under a running show", "ltcplay/web.py",
+  """        if self._starting or (self.session is not None
+                              and self.session.running):""",
+  "        if False:"),
+
+ ("the folder can be changed while a start is in flight", "ltcplay/web.py",
+  "        if self._starting or (self.session is not None",
+  "        if False and self._starting or (self.session is not None"),
+
+ ("a refused folder is written anyway", "ltcplay/web.py",
+  """        if not ok:
+            raise SessionError(why)""",
+  """        if not ok:
+            pass"""),
+
+ ("a show file can be named by path, not just by name", "ltcplay/web.py",
+  'path = os.path.join(self.folder, os.path.basename(timeline or ""))',
+  'path = os.path.join(self.folder, timeline or "")'),
+
+ ("a half-written show file is left where the real one was",
+  "ltcplay/cli.py",
+  """        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)""",
+  """        os.replace(tmp, path)
+    except BaseException:
+        try:
+            pass"""),
+
+ ("the folder picker is drawn before a show file is chosen",
+  "ltcplay/web/index.html",
+  "  if(andFolder !== false) loadShowDir();",
+  "  if(false) loadShowDir();"),
+
+ ("output loop exception guard removed", "ltcplay/player.py",
+  '''try:
+                frame = self._tick()''',
+  '''if True:
+                frame = self._tick()'''),
+
+ ("supervisor never restarts a dead thread", "ltcplay/player.py",
+  "if self._running and (t is None or not t.is_alive()):", "if False:"),
+
+ ("no timecode goes black instead of the preshow loop", "ltcplay/player.py",
+  """            self.current_frame = -1
+            out = self._idle_frame()""",
+  """            self.current_frame = -1
+            out = b\"\""""),
+
+ ("LOST falls back to black instead of the preshow loop", "ltcplay/player.py",
+  """            out = self._idle_frame()
+            self._note_change(prev_state, prev_cue, prev_source)
+            return out
+
+        # While parked""",
+  """            out = b""
+            self._note_change(prev_state, prev_cue, prev_source)
+            return out
+
+        # While parked"""),
+
+ ("LTC readout tracks the free-rolling clock instead of freezing",
+  "ltcplay/player.py",
+  """        self.tc_seconds = tc
+        cue = self.timeline.cue_at(tc)""",
+  """        self.tc_seconds = tc
+        self.last_ltc_text = self.timeline.format(tc)
+        cue = self.timeline.cue_at(tc)"""),
+
+ ("up next is off by one at a cue boundary", "ltcplay/timeline.py",
+  "if self.cues[mid].tc_seconds <= tc_seconds:",
+  "if self.cues[mid].tc_seconds < tc_seconds:"),
+
+ ("up next returns the cue that is playing", "ltcplay/timeline.py",
+  "i = self._index_at(tc_seconds) + 1", "i = self._index_at(tc_seconds)"),
+
+ ("a parked source is not detected at all", "ltcplay/player.py",
+  """            if same:
+                if self._park_since is None:""",
+  """            if False:
+                if self._park_since is None:"""),
+
+ ("a parked source drags the clock forward", "ltcplay/player.py",
+  """            if self._park_since is not None:
+                # Leave the epoch alone.""",
+  """            if False:
+                # Leave the epoch alone."""),
+
+ ("parked playback uses the free-rolling clock", "ltcplay/player.py",
+  """        tc = self.last_ltc_seconds if self.state == PARKED and \\
+            self.last_ltc_seconds is not None else now - epoch""",
+  """        tc = now - epoch"""),
+
+ ("park threshold so long a real pause never registers", "ltcplay/player.py",
+  "self.park_s = park_ms / 1000.0", "self.park_s = 9999.0"),
+
+ ("on-lost hold is ignored", "ltcplay/player.py",
+  'if self.on_lost == "hold" and prev_cue is not None:', "if False:"),
+
+ ("on-lost blackout is ignored", "ltcplay/player.py",
+  'if self.on_lost == "blackout":', "if False:"),
+
+ ("a sequence that keeps failing holds forever instead of going dark",
+  "ltcplay/player.py",
+  "if now - self._render_bad_since < 1.0:", "if True:"),
+
+ ("socket never actually reopens", "ltcplay/output.py",
+  """        self._last_reopen_at = now
+        if self._open():""",
+  """        self._last_reopen_at = now
+        if False:"""),
+
+ ("failed sends never tear the socket down", "ltcplay/output.py",
+  "FAILURES_BEFORE_REOPEN = 3", "FAILURES_BEFORE_REOPEN = 1000000"),
+
+ ("a successful send stops resetting the failure counter", "ltcplay/output.py",
+  """        if any_ok:
+            self._consecutive_failures = 0""",
+  """        if any_ok:
+            pass"""),
+
+ ("measured rate reports the integer count, hiding 29.97", "ltcplay/ltc.py",
+  "self._measured = d_frames / span", "self._measured = float(n)"),
+
+ ("drop frame correction dropped", "ltcplay/tc.py",
+  "total -= 2 * (mins - mins // 10)", "total -= 0"),
+
+ ("a stalled frame number no longer restarts the rate window", "ltcplay/ltc.py",
+  "stalled = self._prev_idx is not None and idx <= self._prev_idx",
+  "stalled = False"),
+
+ ("the rate window compares against the anchor, not the last frame",
+  "ltcplay/ltc.py",
+  "stalled = self._prev_idx is not None and idx <= self._prev_idx",
+  "stalled = idx <= self._anchor[0] if self._anchor else False"),
+
+ ("a nonsense measurement is snapped to the nearest rate anyway",
+  "ltcplay/ltc.py",
+  """        if len(near) == 1:
+            return (near[0], self.last_drop, True)
+        return (float(n), self.last_drop, False)""",
+  """        cands = [r for r in COMMON_RATES if abs(round(r) - n) < 0.5]
+        best = min(cands, key=lambda r: abs(r - mea)) if cands else float(n)
+        return (best, self.last_drop, len(near) == 1)"""),
+
+ ("the rate tolerance is loose enough to admit both candidates",
+  "ltcplay/ltc.py", "RATE_TOLERANCE = 0.0004", "RATE_TOLERANCE = 0.002"),
+
+ ("a stale measurement is reported as a live one", "ltcplay/ltc.py",
+  """        if self._measured_span < self.MIN_RATE_WINDOW_S:
+            return None
+        return self._measured""",
+  """        return self._measured"""),
+
+ ("the generator counts seconds times the rate", "ltcplay/ltc.py",
+  "total_frames = ((h * 60 + m) * 60 + s) * count + f",
+  "total_frames = int(round(((h * 60 + m) * 60 + s) * fps)) + f"),
+
+ ("the input stream only ever opens one channel", "ltcplay/audio.py",
+  "self._open_channels = max(1, int(channel))", "self._open_channels = 1"),
+
+ ("the callback always reads input 1", "ltcplay/audio.py",
+  "col = min(self._open_channels, indata.shape[1]) - 1", "col = 0"),
+
+ ("a silent input is never rebuilt", "ltcplay/audio.py",
+  """            quiet = (self.last_block_at is None or
+                     now - self.last_block_at > self.SILENCE_BEFORE_REOPEN_S)""",
+  """            quiet = False"""),
+
+ ("a healthy input is rebuilt anyway", "ltcplay/audio.py",
+  "if not quiet and self._stream is not None:", "if False:"),
+
+ ("an ambiguous device name is guessed at", "ltcplay/audio.py",
+  """    if len(hits) == 1:
+        return hits[0]""",
+  """    if hits:
+        return hits[0]"""),
+
+ ("the sample rate is never checked with the device", "ltcplay/audio.py",
+  """        try:
+            sd.check_input_settings(device=device["index"], channels=channels,
+                                    samplerate=r, dtype="float32")
+            return r
+        except Exception:
+            continue""",
+  """        return r"""),
+
+ ("clipping is not reported", "ltcplay/audio.py",
+  """        if self.clipped:
+            return "clipping\"""",
+  """        if False:
+            return "clipping\""""),
+
+ ("a very low level reads as fine", "ltcplay/audio.py",
+  """        if self.hold < 0.05:
+            return "very low\"""",
+  """        if False:
+            return "very low\""""),
+
+ ("find only ever listens to input 1", "ltcplay/audio.py",
+  'chans = min(d["channels"], 8)     # past 8 this stops being useful',
+  "chans = 1"),
+
+ ("the show file stops validating its input block", "ltcplay/timeline.py",
+  """        for k in inp:
+            if k not in ("device", "channel", "rate"):""",
+  """        for k in ():
+            if k not in ("device", "channel", "rate"):"""),
+
+ ("the display stops warning about a dead interface", "ltcplay/display.py",
+  "if quiet is not None and quiet > 1.0:", "if False:"),
+
+ ("the display stops warning about a silent input", "ltcplay/display.py",
+  "elif a.blocks > 40 and a.level.hold < 0.02:", "elif False:"),
+
+ ("the installer launcher collides with the package directory",
+  "Install ltcplay.command", "LAUNCHER=ltc", "LAUNCHER=ltcplay"),
+
+ ("an unrecognised interface is treated as software and demoted",
+  "ltcplay/audio.py",
+  """    return "hardware\"""",
+  """    return "virtual\""""),
+
+ ("software devices are no longer told apart from real ones",
+  "ltcplay/audio.py",
+  "    for pat in _VIRTUAL:", "    for pat in ():"),
+
+ ("the real interface is no longer scanned first", "ltcplay/audio.py",
+  'order = {"hardware": 0, "jack": 1, "built in": 2, "phone": 3, "virtual": 4}',
+  'order = {"hardware": 9, "jack": 1, "built in": 2, "phone": 3, "virtual": 4}'),
+
+ ("the scan is no longer narrowed to plausible inputs", "ltcplay/audio.py",
+  'return [d for d in hardware_first(inputs) if d["kind"] in CANDIDATE_KINDS]',
+  "return hardware_first(inputs)"),
+
+ ("the headphone jack is not recognised", "ltcplay/audio.py",
+  """    for pat in _JACK:
+        if pat in n:
+            return "jack\"""",
+  """    for pat in ():
+        if pat in n:
+            return "jack\""""),
+
+ ("the built-in mic is dropped from the scan", "ltcplay/audio.py",
+  'CANDIDATE_KINDS = ("hardware", "jack", "built in")',
+  'CANDIDATE_KINDS = ("hardware", "jack")'),
+
+ ("the show file beats the saved input", "ltcplay/settings.py",
+  """    sources = (("the command line", cli),
+               ("your saved input", saved or {}),
+               ("the show file", timeline_input or {}))""",
+  """    sources = (("the command line", cli),
+               ("the show file", timeline_input or {}),
+               ("your saved input", saved or {}))"""),
+
+ ("a channel is inherited across a change of device", "ltcplay/settings.py",
+  """        if d.get("device"):
+            for k in FIELDS:""",
+  """        if True:
+            for k in FIELDS:"""),
+
+ ("a disagreement about the input is not reported", "ltcplay/settings.py",
+  """    if tl_dev and sv_dev and tl_dev.lower() != sv_dev.lower() \\
+            and not cli.get("device"):""",
+  """    if False:"""),
+
+ ("a damaged settings file is trusted", "ltcplay/settings.py",
+  """    if not isinstance(doc, dict):
+        return {}""",
+  """    if not isinstance(doc, dict):
+        return doc"""),
+
+ ("a stale show folder path is not healed", "ltcplay/timeline.py",
+  "            if os.path.isdir(cand):", "            if False:"),
+
+ ("a substituted show folder is substituted silently", "ltcplay/timeline.py",
+  "                note = _substitution_note(stored, cand)",
+  "                note = None"),
+
+ ("the display reads the clock and the cues at different moments",
+  "ltcplay/session.py",
+  "        nxt = tl.next_cue(tc) if (tc is not None and tc >= 0) else p.next_cue",
+  "        nxt = p.next_cue"),
+
+ ("two shows can run at once on the same universes", "ltcplay/web.py",
+  "            if self.session is not None and self.session.running:",
+  "            if False:"),
+
+ ("validating sends to the lighting network", "ltcplay/web.py",
+  "        kw.update(no_output=True, no_log=True, sd=self._sd)",
+  "        kw.update(no_output=False, no_log=True, sd=self._sd)"),
+
+ ("the network token is never checked", "ltcplay/web.py",
+  "        return secrets.compare_digest(str(given or \"\"), token)",
+  "        return True"),
+
+ ("serving on the network mints no token", "ltcplay/web.py",
+  "    if on_network and token is None:", "    if False:"),
+
+ ("a wrong device name reads as a program fault", "ltcplay/web.py",
+  "USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,\n"
+  "               FileNotFoundError)",
+  "USER_ERRORS = (SessionError,)"),
+
+ ("the timecode lookup stops naming the file it read", "ltcplay/cli.py",
+  '    print(f"    path    {path}")', "    pass"),
+
+ ("the timecode lookup answers with the next cue", "ltcplay/cli.py",
+  """    cue = tl.cue_at(t)
+    nxt = tl.next_cue(t)""",
+  """    cue = tl.next_cue(t)
+    nxt = tl.next_cue(t)"""),
+
+ ("the media file inside a sequence is never read", "ltcplay/fseq.py",
+  '        return self.variables.get("mf") or None', "        return None"),
+
+ ("a sequence rendered from the wrong audio passes verify", "ltcplay/cli.py",
+  "            if a != b and a not in b and b not in a:",
+  "            if False:"),
+
+ ("verify stops noticing a file that changed", "ltcplay/cli.py",
+  '            if was.get("hash") != digest or was.get("size") != size:',
+  "            if False:"),
+
+ ("verify stops recording fingerprints at all", "ltcplay/cli.py",
+  '    if not args.no_manifest:\n        json.dump({"timeline"',
+  '    if False:\n        json.dump({"timeline"'),
+
+ ("a missing sequence is passed over in silence", "ltcplay/cli.py",
+  """        if not os.path.exists(path):
+            row["verdict"].append("FILE MISSING")""",
+  """        if False:
+            row["verdict"].append("FILE MISSING")"""),
+
+ ("an old render against a different model layout passes verify",
+  "ltcplay/cli.py",
+  "        if majority and mine and mine != maj_starts:", "        if False:"),
+
+ ("the layout report stops saying which props go dark", "ltcplay/cli.py",
+  '                detail.append(f"    does not contain ch {s0+1}..{s0+maj_starts[s0]}"',
+  '                pass  # noqa'),
+
+ ("a track number makes every numbered render look mislabelled",
+  "ltcplay/cli.py",
+  "            a, b = _norm_stem(mstem), _norm_stem(stem)",
+  "            a, b = _norm(mstem), _norm(stem)"),
+
+ ("the set number stops counting as part of the identity", "ltcplay/cli.py",
+  '    parts = [p for p in _re.split(r"[_\\-]", s or "") if not p.strip().isdigit()]',
+  '    parts = [_re.sub(r"\\d+", "", p) for p in _re.split(r"[_\\-]", s or "")]'),
+
+ ("the shared-file note lists the cue's own timecode back at it",
+  "ltcplay/cli.py",
+  '                  + ", ".join(t for t in shared if t != r["tc"])',
+  '                  + ", ".join(t for t in shared)'),
+
+ ("verify stops saying a file is used twice", "ltcplay/cli.py",
+  "        if len(shared) > 1:", "        if False:"),
+
+ ("the one-frame bridge between cues is removed", "ltcplay/player.py",
+  "            if nxt is not None and self.bridge_s > 0 and \\",
+  "            if False and nxt is not None and self.bridge_s > 0 and \\"),
+
+ ("the bridge holds the first frame instead of the last", "ltcplay/player.py",
+  "                self.current_frame = cue.fseq.frame_count - 1\n"
+  "                out = self._render(cue, self.current_frame)\n"
+  "                if out is not None:",
+  "                self.current_frame = 0\n"
+  "                out = self._render(cue, self.current_frame)\n"
+  "                if out is not None:"),
+
+ ("the bridge swallows a real gap as well as a rounding one",
+  "ltcplay/player.py",
+  "                    0 < nxt.tc_seconds - tc <= self.bridge_s:",
+  "                    0 < nxt.tc_seconds - tc:"),
+
+ ("bridge_ms is ignored and always takes the default", "ltcplay/player.py",
+  "        if bridge_ms is None:\n"
+  "            bridge_ms = getattr(timeline, \"bridge_ms\", None)",
+  "        bridge_ms = None"),
+
+ ("a misspelled setting loads silently again", "ltcplay/timeline.py",
+  "        unknown = [k for k in doc if k not in cls.KEYS]",
+  "        unknown = []"),
+
+ ("idle_fseq stops being accepted as a spelling of idle",
+  "ltcplay/timeline.py",
+  '        idle = doc.get("idle") or doc.get("preshow") or doc.get("idle_fseq")',
+  '        idle = doc.get("idle") or doc.get("preshow")'),
+
+ ("bridge_ms accepts a nonsense value", "ltcplay/timeline.py",
+  "            if not isinstance(bridge_ms, (int, float)) or bridge_ms < 0:",
+  "            if False:"),
+
+ ("a cue that will not open is only a warning again", "ltcplay/session.py",
+  "        if dead and not self.allow_missing:", "        if False:"),
+
+ ("--allow-missing stops being honoured", "ltcplay/session.py",
+  "        if dead and not self.allow_missing:", "        if dead:"),
+
+ ("the preshow override is ignored", "ltcplay/player.py",
+  '        if override in ("preshow", "blackout"):',
+  '        if False and override in ("preshow", "blackout"):'),
+
+ ("a held preshow stops reading the feed", "ltcplay/player.py",
+  "            self._state_from_feed(now, last, epoch)",
+  "            pass  # noqa"),
+
+ ("the sequence position is shown as timecode seconds",
+  "ltcplay/session.py",
+  '                           "seq": format_seq(el),',
+  '                           "seq": format_seq(tc),'),
+
+ ("the sequence position loses its milliseconds", "ltcplay/tc.py",
+  '    out = f"{m}:{s:06.3f}" if ms else f"{m}:{int(s):02d}"',
+  '    out = f"{m}:{int(s):02d}"'),
+
+ ("the sequence position rolls over at an hour", "ltcplay/tc.py",
+  "    m = int(seconds // 60)", "    m = int(seconds // 60) % 60"),
+
+ ("a failed reload half-swaps the show anyway", "ltcplay/player.py",
+  "        if errors:", "        if False:"),
+
+ ("reload keeps the old reader instead of the new one", "ltcplay/player.py",
+  "        self.timeline.cues = fresh", "        pass  # noqa"),
+
+ ("a re-rendered file stops reading as stale", "ltcplay/player.py",
+  "            if was is not None and now is not None and now != was:",
+  "            if False:"),
+
+ ("auto reload swaps a file in while it is still being written",
+  "ltcplay/player.py",
+  "            if now - seen_at >= self.RELOAD_SETTLE_S:",
+  "            if True:"),
+
+ ("the settle time drops below the check interval", "ltcplay/player.py",
+  "    RELOAD_SETTLE_S = 3.0", "    RELOAD_SETTLE_S = 0.5"),
+
+ ("auto reload stops rate limiting itself", "ltcplay/player.py",
+  "        if now - self._last_reload_check < self.RELOAD_CHECK_S:\n"
+  "            return None", "        if False:\n            return None"),
+
+ ("the page and the server drift apart unnoticed", "ltcplay/web.py",
+  "API = 3", "API = 4"),
+
+ ("the state stops carrying the API number", "ltcplay/web.py",
+  '        snap["api"] = API', '        snap["api"] = None'),
+
+ ("opening a render stops proving it can be read", "ltcplay/player.py",
+  "            f.verify()", "            pass  # noqa"),
+
+ ("verify stops checking the block table against the file size",
+  "ltcplay/fseq.py",
+  "            if off + length > size:", "            if False:"),
+
+ ("verify only looks at the first frame", "ltcplay/fseq.py",
+  "        for n in {0, self.frame_count // 2, self.frame_count - 1}:",
+  "        for n in {0}:"),
+
+ ("the reload mode only takes effect at the next start", "ltcplay/web.py",
+  "            s.player.auto_reload = on", "            pass  # noqa"),
+
+ ("the reload mode is not remembered between runs", "ltcplay/web.py",
+  '        settings_mod.save_pref("auto_reload", on)', "        pass  # noqa"),
+
+ ("the page is not told which reload mode it is in", "ltcplay/session.py",
+  '            "auto_reload": p.auto_reload,',
+  '            "auto_reload": False,'),
+
+ ("the stale-server banner goes back inside the hiding panel",
+  "ltcplay/web/index.html",
+  '<div class="warn" id="apiwarn" hidden style="margin:0 0 14px"></div>',
+  ''),
+
+ ("the web launcher kills a live show to take the port",
+  "Web ltcplay.command",
+  '    read -r -p "Press return to close. " _\n    exit 1',
+  '    echo "(carrying on)"'),
+
+ ("the web launcher stops looking for a stale server",
+  "Web ltcplay.command",
+  'OLD=$(pgrep -f "ltcplay.cli serve" 2>/dev/null || true)',
+  'OLD=""'),
+
+ ("a cue stops owning the channels it does not carry", "ltcplay/player.py",
+  "        for a, b in gaps:", "        for a, b in []:"),
+
+ ("the gap map forgets the tail of the rig", "ltcplay/player.py",
+  "        if at < cap:\n            gaps.append((at, cap))",
+  "        if False:\n            gaps.append((at, cap))"),
+
+ ("a single bad timecode frame is believed again", "ltcplay/player.py",
+  "                want = self._pending_jump\n"
+  "                if (want is not None\n"
+  "                        and abs(new_epoch - want) <= self.jump_confirm_s):",
+  "                want = self._pending_jump\n"
+  "                if True:"),
+
+ ("the bridge resurrects a cue that ended long ago", "ltcplay/player.py",
+  "                    tc - ended_at <= self.bridge_s:",
+  "                    True:"),
+
+ ("a read hiccup sticks on HOLD for the rest of the set",
+  "ltcplay/player.py",
+  "        if self.source == HOLD:\n            self.source = SHOW",
+  "        pass  # noqa"),
+
+ ("the overrun warning never clears again", "ltcplay/player.py",
+  "        self.out_of_range_channels = dropped",
+  "        self.out_of_range_channels = self.out_of_range_channels or dropped"),
+
+ ("a failed audio start leaves the engine driving the rig",
+  "ltcplay/session.py",
+  "                try:\n                    self.stop()\n"
+  "                except Exception:\n                    pass\n"
+  "                raise",
+  "                raise"),
+
+ ("the output lock can be garbage collected away", "ltcplay/onlyone.py",
+  "        _HELD.add(self)", "        pass  # noqa"),
+
+ ("a second process is allowed onto the rig", "ltcplay/session.py",
+  "            except onlyone.AlreadyRunning as e:",
+  "            except ZeroDivisionError as e:"),
+
+ ("stop stops claiming the blackout went out", "ltcplay/session.py",
+  "                self.blackout_sent = (\n"
+  "                    getattr(self.sender, \"packets_sent\", 0) > before)",
+  "                self.blackout_sent = True"),
+
+ ("a feed coming back yanks a free run sideways", "ltcplay/player.py",
+  "        if self.freerun_epoch is not None:", "        if False:"),
+
+ ("release does not hand the show back", "ltcplay/player.py",
+  "        self.freerun_epoch = None\n"
+  "        self._event(\"freerun\", \"released;",
+  "        self._event(\"freerun\", \"released;"),
+
+ ("the bundle points back at the machine that made it", "ltcplay/cli.py",
+  '    doc["show_dir"] = "show"', '    pass  # noqa'),
+
+ ("the bundle ships without checking anything is missing", "ltcplay/cli.py",
+  "        if not args.force:\n"
+  "            return _err(f\"{len(missing)} file(s) the show names are not there, \"",
+  "        if False:\n"
+  "            return _err(f\"{len(missing)} file(s) the show names are not there, \""),
+
+ ("a relative show folder resolves against the working directory",
+  "ltcplay/timeline.py",
+  "    if not os.path.isabs(stored):", "    if False:"),
+
+ ("the credit loses the phone number", "ltcplay/brand.py",
+  '    if b.get("phone"):\n        bits.append(b["phone"])',
+  '    if False:\n        bits.append(b["phone"])'),
+
+ ("free run swallows the panic button again", "ltcplay/player.py",
+  '        if self.freerun_epoch is not None and override not in ("preshow",\n'
+  '                                                               "blackout"):',
+  "        if self.freerun_epoch is not None:"),
+
+ ("a cold lock is second-guessed again", "ltcplay/player.py",
+  "                if cold or (want is not None",
+  "                if False or (want is not None"),
+
+ ("the first frame of an honest relocate is called a bad feed",
+  "ltcplay/player.py",
+  "                    if want is not None:\n"
+  "                        self.jump_rejects += 1",
+  "                    if True:\n                        self.jump_rejects += 1"),
+
+ ("a wedged start is invisible to the page again", "ltcplay/web.py",
+  "            with self.lock:\n                self.session = s\n            try:\n                s.start()",
+  "            try:\n                s.start()"),
+
+ ("bundle keeps the absolute paths of the machine that made it",
+  "ltcplay/cli.py",
+  '            c["fseq"] = os.path.basename(c["fseq"])',
+  '            pass  # noqa'),
+
+ # NOT MUTATED: disabling the "bundling into your own install" guard makes
+ # the suite delete this source tree, twice over, since the runner operates on
+ # the live files. The guard is asserted statically in the bundle test instead.
+
+ ("verify pins every render in memory again", "ltcplay/fseq.py",
+  "        self._cache_idx = -1\n        self._cache = b\"\"\n        return True",
+  "        return True"),
+
+ ("up next resets to the top of the show when the feed stops",
+  "ltcplay/player.py",
+  "        seen = self.last_ltc_seconds\n        if seen is None:\n"
+  "            return cues[0]\n        return self.timeline.next_cue(seen)",
+  "        return cues[0]"),
+
+ ("the free run logs a state change every frame", "ltcplay/player.py",
+  "        was = self._last_noted_state or prev_state",
+  "        was = prev_state"),
+
+ ("the readout reports the show's state, not the feed's",
+  "ltcplay/player.py",
+  "            self.feed_state = self.state\n            self.state = FREERUN",
+  "            self.state = FREERUN"),
+
+ ("verify stops checking the bundle hashes", "ltcplay/cli.py",
+  "    problems.extend(bundle_bad)", "    pass  # noqa"),
+
+ ("bundle deletes whatever it finds called ltcplay", "ltcplay/cli.py",
+  '        if not os.path.exists(os.path.join(pkg, "player.py")):',
+  "        if False:"),
+
+ ("a wedged start keeps refusing every later start", "ltcplay/web.py",
+  "            self._starting = False\n            self._start_gen += 1\n"
+  "        if s is not None:\n            s.stop()",
+  "        if s is not None:\n            s.stop()"),
+
+ ("a read-only folder throws a stack trace again", "ltcplay/cli.py",
+  "    except OSError as e:\n"
+  "        # A stack trace at a console at 8pm helps nobody.",
+  "    except ZeroDivisionError as e:\n"
+  "        # A stack trace at a console at 8pm helps nobody."),
+
+ ("verify dies instead of reporting when it cannot write", "ltcplay/cli.py",
+  "        try:\n            with open(mpath, \"w\") as fh:",
+  "        if True:\n            with open(mpath, \"w\") as fh:"),
+
+ ("skipping a free run does nothing", "ltcplay/player.py",
+  "        self.freerun_epoch = time.monotonic() - at",
+  "        pass  # noqa"),
+
+ ("skipping back runs off the front of the show", "ltcplay/player.py",
+  "        at = max(0.0, (time.monotonic() - self.freerun_epoch) + float(seconds))",
+  "        at = (time.monotonic() - self.freerun_epoch) + float(seconds)"),
+
+ ("skipping is allowed while following timecode", "ltcplay/player.py",
+  "        if self.freerun_epoch is None:\n"
+  "            raise ValueError(\"The show is following timecode, so this Mac \"\n"
+  "                             \"cannot move it. Skipping only applies to a free \"\n"
+  "                             \"run: press GO first.\")\n"
+  "        at = max(0.0,",
+  "        at = max(0.0,"),
+
+ ("restart always restarts the cue you just entered", "ltcplay/player.py",
+  "            elif at - cues[here].tc_seconds < 1.5 and here > 0:",
+  "            elif False:"),
+
+ ("the rate mismatch warning is silenced", "ltcplay/display.py",
+  "elif rate is not None and abs(rate - tl.fps) > 0.01:", "elif False:"),
+
+ ("the drop frame mismatch warning is silenced", "ltcplay/display.py",
+  "if rate is not None and drop != tl.drop:", "if False:"),
+ # -- Advatek SHOWTime scene triggers, the ALTERNATE playback mode --------
+ # Every one of these leaves a program that starts, runs and looks right.
+ ("armed mode still sends live pixels to the Advateks", "ltcplay/output.py",
+  '            if p["addr"][0] in muted_ips:\n                muted += 1\n                continue',
+  '            if False:\n                muted += 1\n                continue'),
+
+ ("a cue fires its scene on every frame instead of once", "ltcplay/player.py",
+  "            if key == self._fired_key:\n                return",
+  "            if False:\n                return"),
+
+ ("the preshow scene is never handed to the boxes", "ltcplay/player.py",
+  "        if self.source == IDLE:\n            return self.IDLE_KEY",
+  "        if False:\n            return self.IDLE_KEY"),
+
+ ("a trigger failure takes the whole show down", "ltcplay/player.py",
+  "        except Exception as e:\n            self.last_error = f\"trigger: {e}\"",
+  "        except ZeroDivisionError as e:\n            self.last_error = f\"trigger: {e}\""),
+
+ ("the fire packet lights the wrong scene", "ltcplay/trigger.py",
+  "            buf[payload_at + channel - 1] = 255",
+  "            buf[payload_at + channel] = 255"),
+
+ ("firing blocks the playback thread again", "ltcplay/trigger.py",
+  "            self._q.put_nowait((channel, label))\n            return True",
+  "            self.fire(channel, label)\n            return True"),
+
+ # Was: "two scenes may share a trigger channel". Removed 2026-09-15 when
+ # sharing became a deliberate, supported thing: an opener that plays at the
+ # top of both sets is one recorded scene. What replaced that refusal is
+ # "two different songs may share one recorded scene", which checks the
+ # RENDERS rather than the numbers.
+
+ ("a config that mutes nothing is accepted", "ltcplay/trigger.py",
+  "        if not mute:\n            raise TriggerError(",
+  "        if False:\n            raise TriggerError("),
+
+ ("an unmapped cue is not reported at load", "ltcplay/trigger.py",
+  "            if self.channel_for(key) is None:\n                bad.append(",
+  "            if False:\n                bad.append("),
+
+ ("the panel stops saying which mode is running", "ltcplay/display.py",
+  "    if getattr(p, \"trigger_armed\", False) and trig is not None:",
+  "    if False and getattr(p, \"trigger_armed\", False) and trig is not None:"),
+
+ ("stop leaves the Advateks muted through the blackout", "ltcplay/session.py",
+  "                if self.sender is not None and hasattr(self.sender, \"set_muted\"):\n                    self.sender.set_muted(())",
+  "                if False:\n                    self.sender.set_muted(())"),
+
+ # -- LTC Player.app ------------------------------------------------------
+ ("the app is written to after it is signed", "Build LTC Player app.command",
+  'step "signed"',
+  'printf x > "$B/Contents/Resources/late"\nstep "signed"'),
+
+ ("the builder never actually launches the app", "Build LTC Player app.command",
+  'open -a "$HERE/$APP" --args --selfcheck',
+  'true -a "$HERE/$APP" --args --selfcheck'),
+
+ ("a bundle macOS refuses is left in the folder", "Build LTC Player app.command",
+  '  rm -rf "$HERE/$APP"\n  bye "The app was built and signed, but macOS would not run it:',
+  '  : rm -rf "$HERE/$APP"\n  bye "The app was built and signed, but macOS would not run it:'),
+
+ ("the app stops asking for the microphone", "Build LTC Player app.command",
+  "  <key>NSMicrophoneUsageDescription</key>",
+  "  <key>NSMicrophoneUsageDescriptionX</key>"),
+
+ ("LaunchServices arguments crash the app", "Build LTC Player app.command",
+  '        if (strncmp(argv[i], "-psn_", 5) != 0) out[n++] = argv[i];',
+  '        out[n++] = argv[i];'),
+
+ ("the app runs from the wrong folder", "Build LTC Player app.command",
+  '    if (chdir(folder) != 0)',
+  '    if (chdir("/") != 0)'),
+
+ ("the app serves the rig to the whole venue network",
+  "Build LTC Player app.command",
+  '    args = ["serve", "--port", PORT, "--bind", "127.0.0.1", "--no-browser"]',
+  '    args = ["serve", "--port", PORT, "--bind", "0.0.0.0", "--no-browser"]'),
+
+ ("the self-check writes inside the signed bundle",
+  "Build LTC Player app.command",
+  '    with open(os.path.join(folder, ".ltcplay_appcheck"), "w") as fh:',
+  '    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ltcplay_appcheck"), "w") as fh:'),
+
+ ("two different songs may share one recorded scene", "ltcplay/trigger.py",
+  "            for other in cues[1:]:\n                why = _same_render(first.path, other.path)",
+  "            for other in cues[1:]:\n                why = \"\"  # _same_render(first.path, other.path)"),
+
+ ("a length difference between shared renders is ignored",
+  "ltcplay/trigger.py",
+  "        if a.duration_ms != b.duration_ms:",
+  "        if False and a.duration_ms != b.duration_ms:"),
+
+ ("the ends of a shared render are never compared", "ltcplay/trigger.py",
+  "        idx = sorted({0, n - 1} |\n                     {int(i * (n - 1) / max(1, samples - 1))\n                      for i in range(samples)})",
+  "        idx = sorted({int(i * (n - 1) / max(1, samples - 1))\n                      for i in range(1, samples - 1)})"),
+
+ # -- sACN triggers, 2026-09-15 --------------------------------------------
+ ("the trigger ignores the protocol and always sends Art-Net",
+  "ltcplay/trigger.py",
+  '        if self.cfg.protocol == "sacn":\n            head = _e131_header(self.cfg.universe, CHANNELS_PER_UNIVERSE)\n            seq_at, payload_at = 111, E131_HEADER_LEN',
+  '        if False:\n            head = _e131_header(self.cfg.universe, CHANNELS_PER_UNIVERSE)\n            seq_at, payload_at = 111, E131_HEADER_LEN'),
+
+ ("sACN triggers go to the Art-Net port", "ltcplay/trigger.py",
+  '        return E131_PORT if self.protocol == "sacn" else ARTNET_PORT',
+  '        return ARTNET_PORT'),
+
+ ("only the first controller gets the trigger", "ltcplay/trigger.py",
+  "                for ip in self.cfg.dest:\n                    sock.sendto(pkt, (ip, port))",
+  "                for ip in self.cfg.dest[:1]:\n                    sock.sendto(pkt, (ip, port))"),
+
+ ("the sACN sequence number never moves", "ltcplay/trigger.py",
+  "        self._seq = (self._seq + 1) & 0xFF",
+  "        self._seq = 1"),
+
+ ("a protocol nobody implements is accepted", "ltcplay/trigger.py",
+  "        if not isinstance(proto, str) or \\\n                str(proto).lower() not in PROTOCOLS:",
+  "        if False:"),
+
+ ("multicast triggers die at the first switch", "ltcplay/trigger.py",
+  "            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 8)",
+  "            pass"),
+
+ ("the multicast group is computed from the wrong byte", "ltcplay/trigger.py",
+  '    return f"239.255.{(universe >> 8) & 0xFF}.{universe & 0xFF}"',
+  '    return f"239.255.{universe & 0xFF}.{(universe >> 8) & 0xFF}"'),
+
+ ("broadcast is left switched on for every trigger", "ltcplay/trigger.py",
+  '        if any(ip.endswith(".255") or ip == "255.255.255.255"\n               for ip in self.cfg.dest):\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)',
+  '        if True:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)'),
+
+]
+
+
+def run_suite():
+    r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+                       capture_output=True, text=True, timeout=300)
+    return r.returncode == 0
+
+
+LOCK = os.path.join(HERE, ".mutating")
+
+
+def main():
+    # While this runs, the working tree is deliberately broken. Anything else
+    # that reads it — a capture, a soak, a live run — is measuring a mutant and
+    # will produce a confident, entirely false result. The lock exists because
+    # that has already happened once.
+    if os.path.exists(LOCK):
+        print(f"{LOCK} exists: another mutation run is in progress, or one "
+              f"died and left the tree broken. Check `git diff` or the "
+              f"selftest before deleting it.")
+        return 3
+    open(LOCK, "w").write(str(os.getpid()))
+    try:
+        return _run()
+    finally:
+        os.remove(LOCK)
+
+
+def _run():
+    wants = [a.lower() for a in sys.argv[1:]] or None
+    # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
+    # killed (a foreground timeout, a closed terminal) skips its restore and
+    # leaves a mutation behind; the next sweep then measures that mutant and
+    # blames whichever mutation it happens to be applying. Both of those have
+    # already happened here.
+    if not run_suite():
+        print("The suite FAILS with nothing mutated. A previous run was "
+              "killed before it restored the tree, or something else is "
+              "broken. Fix that first: nothing measured from here would "
+              "mean anything.")
+        return 2
+    caught = missed = 0
+    for name, rel, old, new in MUTATIONS:
+        if wants and not any(w in name.lower() for w in wants):
+            continue
+        path = os.path.join(HERE, rel)
+        src = open(path).read()
+        if src.count(old) != 1:
+            print(f"  SETUP FAIL  {name} "
+                  f"(pattern appears {src.count(old)} times in {rel})")
+            missed += 1
+            continue
+        backup = src
+        open(path, "w").write(src.replace(old, new, 1))
+        try:
+            green = run_suite()
+        finally:
+            with open(path, "w") as fh:
+                fh.write(backup)
+        if green:
+            print(f"  NOT CAUGHT  {name}")
+            missed += 1
+        else:
+            print(f"  caught      {name}")
+            caught += 1
+    print(f"\ncaught {caught}, missed {missed}")
+    # A mutation runner that leaves a mutation behind is the worst tool in the
+    # box: the tree looks fine, the suite is green, and one guarantee is gone.
+    # Prove the tree is back the way it started before reporting anything.
+    if not run_suite():
+        print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
+              "so a restore did not land. Fix that before trusting any line "
+              "above.")
+        return 2
+    print("tree restored and green")
+    return 1 if missed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

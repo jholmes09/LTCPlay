@@ -1,0 +1,116 @@
+xLights, Jeff Holmes Presents Customized build
+Great Pumpkin Luminites 2026, Dollywood
+
+Jeff Holmes Presents        jeff.holmes@hey.com        404-948-5333
+
+
+WHAT IS IN HERE
+
+  xLights - Jeff Holmes Presents Customized.app
+      A build of xLights 2026.17.1 with Jeff Holmes Presents fixes applied.
+      Apple Silicon only. Needs macOS 12 or later.
+
+  GPL26 Show/
+      The show folder. Sequences, renders, the controller map, the 3D tree
+      model, the music, and the video loops used by the sequences, all in
+      one place.
+
+  LTC Player/
+      The show player. It reads SMPTE timecode off an audio input and plays
+      the renders in this same show folder out to the controllers. It does
+      not keep its own copy of them, so the two can never drift apart.
+      Start with 'Install ltcplay.command', then 'Web ltcplay.command'.
+      Read OPERATOR.md in there before a show.
+
+
+WHERE TO PUT THIS FOLDER
+
+  Anywhere except Desktop, Documents or Downloads, and not in Dropbox,
+  iCloud or OneDrive. Your home folder is the right place.
+
+  macOS protects those three folders per application. Anything you start
+  yourself from Terminal can read them, so installing appears to work. The
+  app you double-click afterwards cannot, and it reports the show folder as
+  missing when it is sitting right there. This cost us an evening.
+
+  If it is already somewhere protected, double-click
+  'Move this package off the Desktop.command' and it moves the whole thing
+  for you, sequences and all.
+
+
+BEFORE YOU OPEN ANYTHING
+
+  Right-click 'FIRST - let macOS open these.command' and choose Open.
+
+  This build is compiled from source rather than downloaded from Apple, so
+  macOS marks it as untrusted after a transfer and will say it is damaged.
+  It is not. That script removes the mark.
+
+  Copying this folder from a USB drive avoids the problem entirely.
+
+
+OPENING THE SHOW
+
+  1. Open the app.
+  2. When it asks for a show folder, choose the 'GPL26 Show' folder in here.
+  3. Open any sequence. The music sits beside the sequences and is found
+     automatically.
+
+
+RUNNING THE SHOW
+
+  1. Open the 'LTC Player' folder.
+  2. Right-click 'Install ltcplay.command' and choose Open. Once, per Mac.
+     It sets the player up and builds 'LTC Player.app' at the end.
+  3. Double-click 'LTC Player.app'. No window opens. The show page opens in
+     your browser at http://127.0.0.1:7878 and that page is the show.
+
+  It starts idle. Nothing reaches the rig until you press Run.
+
+  If the app is not there, 'Web ltcplay.command' does the same job in a
+  Terminal window and always works.
+
+  The app is built on your Mac rather than shipped ready-made, on purpose.
+  An application that arrives from somewhere else is refused by macOS as
+  damaged until its quarantine mark is cleared. One built where it runs
+  never picks that mark up.
+
+  Keep these two folders together. The player reads the sequences out of
+  'GPL26 Show' through a link beside it, so moving one without the other
+  leaves the player with nothing to play.
+
+
+WHAT WAS LEFT OUT
+
+  xLights' own Backup folder and the per-sequence .xbkp files. Together
+  they were about 3 gigabytes of history that does not affect the show.
+
+  The video loops the sequences actually use are included, in
+  'GPL26 Show/Video Exports'.
+
+  A practice sequence, 'Festoon_practice', and a superseded Thriller render
+  from before the sequences were renamed into play order. Neither is part of
+  the show. The Thriller that plays is 'GPL 2026_Set 2_10_Thriller'.
+
+
+ONE FILE TO IGNORE
+
+  'Build the window app (BETA).command' is unfinished work of Jeff's. It is
+  not part of the show and nothing uses it. Leave it alone.
+
+
+THREE THINGS WORTH KNOWING
+
+  The renders in here were made by this build. Re-render before a show if
+  you change anything.
+
+  'Set 2_01_Opener' and 'Set 2_11_Ending' were built from the Set 1 versions
+  and still reference the Set 1 audio. Check them against the audio you
+  intend to play.
+
+  The player has a backup mode that hands the six Advatek controllers over to
+  scenes recorded on their own SD cards. It is off, and it should stay off
+  unless normal playback has failed. It is described in OPERATOR.md. The one
+  thing to know now: recorded scenes are only as current as the last time
+  somebody recorded them, so re-rendering a sequence makes that backup stale
+  without any warning anywhere.

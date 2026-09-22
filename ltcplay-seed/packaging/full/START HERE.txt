@@ -1,0 +1,54 @@
+LTC Player
+Jeff Holmes Presents        jeff.holmes@hey.com        404-948-5333
+
+
+ON A NEW MAC, THERE ARE EXACTLY TWO STEPS
+
+  1. Right-click 'Install ltcplay.command' and choose Open.
+     Once, per Mac. It builds everything it needs, proves itself, and
+     builds 'LTC Player.app' at the end. It takes a few minutes.
+
+  2. Double-click 'LTC Player.app'.
+     The show page opens in your browser. That page is the show.
+     It starts idle. Nothing reaches the rig until you press Run.
+
+  That is all. Nothing else in this folder is part of normal use.
+
+
+IF SOMETHING IS WRONG
+
+  Restart ltcplay.command
+      Stops the engine and starts it again. The first thing to try.
+      It works whether the app or a Terminal window started it.
+
+  Web ltcplay.command
+      The same show page, run from a Terminal window instead of the app.
+      Always works. Use it if the app will not open.
+
+  What is installed here.command
+      Prints what this Mac actually has: which release, which renders,
+      what the show file is set to, and whether the running engine
+      matches the files in this folder. Read this out before asking
+      anyone for help.
+
+
+IN THE TOOLS FOLDER, AND ONLY IF SOMETHING SENT YOU THERE
+
+  Build LTC Player app.command       rebuild the app by hand
+  Run ltcplay.command                the same engine from a text menu
+  Find every copy.command            finds other installs on this Mac
+  Move somewhere macOS allows.command  if the folder is somewhere macOS
+                                     will not let an app read
+  Autostart ltcplay.command          starts the engine at login. NOT set
+                                     up by default and not needed to run
+                                     a show.
+  Build the window app (BETA).command  unfinished work of Jeff's. Not
+                                     part of the show. Leave it alone.
+  Cut a release.command              Jeff only.
+
+
+THE SEQUENCES
+
+  This folder does not hold its own copy of the show. 'show' is a link
+  to the 'GPL26 Show' folder beside it, which xLights uses too, so the
+  two can never drift apart. Keep the folders together.

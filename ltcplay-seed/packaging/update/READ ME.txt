@@ -1,0 +1,23 @@
+LTC Player update
+
+There is one thing to do in here:
+
+    Right-click 'Apply this update.command' and choose Open.
+
+It finds the installed copy on this Mac by itself, keeps the old one, copies
+the new program in, proves it with the self test, and puts everything back
+exactly as it was if anything fails.
+
+It does NOT touch your show file, your sequences, your saved audio input or
+your Python environment.
+
+Everything else this update contains is in '_payload'. Nothing in there is
+meant to be run from this folder; it is copied into the install.
+
+AFTER IT FINISHES
+
+  Open the install, and in the Tools folder run
+  'Set the Advatek triggers.command'.
+
+  That is the part the update is not allowed to do for you, because the show
+  file is yours.

@@ -1,0 +1,1063 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>ltcplay</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#14181d; --panel2:#1b2027; --line:#262d36;
+  --ink:#e8edf4; --dim:#8b97a6; --faint:#5b6674;
+  --ok:#3ddc84; --warn:#ffb02e; --bad:#ff5c5c; --cool:#4db8ff;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+/* The logo is far taller than any text in here, so the row centres on the
+   logo and each text group keeps its own baseline inside. Aligning the whole
+   header on one baseline dropped the title and the pills to the logo's
+   bottom edge. */
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding-block:10px 14px;border-bottom:1px solid var(--line);margin-bottom:18px}
+header .titles{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+  min-width:0;row-gap:2px}
+header .status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  justify-content:flex-end}
+h1{font-size:15px;margin:0;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+#show{font-size:19px;font-weight:600}
+.spacer{flex:1}
+.pill{font:12px/1 var(--mono);padding:5px 9px;border-radius:99px;
+  border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.live{color:var(--ok);border-color:#1f4f34;background:#0e1f16}
+.pill.bad{color:var(--bad);border-color:#4f1f1f;background:#1f0e0e}
+b.bad{color:var(--bad)}
+header img#brandlogo{height:144px;width:auto;margin-right:8px;
+  border-radius:14px;flex:0 0 auto}
+footer#credit{display:flex;align-items:center;gap:14px;margin:26px 0 8px;
+  padding-top:16px;border-top:1px solid var(--line);color:var(--faint);
+  font-size:12px;line-height:1.5;flex-wrap:wrap}
+footer#credit img{height:152px;width:auto;border-radius:14px;flex:0 0 auto}
+.skiprow{display:flex;gap:6px;margin-top:8px}
+.skiprow button{flex:1 1 0;padding:9px 0;font-size:13px;min-width:0}
+.skiprow button#sk-top{font-size:16px;line-height:1}
+footer#credit #creditname{color:var(--dim);font-weight:600;font-size:13px;
+  letter-spacing:.2px}
+footer#credit a{color:var(--dim)}
+@media (max-width:520px){header img#brandlogo{height:96px;margin-right:0}
+  header{align-items:flex-start;gap:10px}
+  header .status{justify-content:flex-start}
+  footer#credit img{height:110px}}
+
+.grid{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px}
+.card h2{font:12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 12px}
+
+/* the two numbers that answer the question */
+.clocks{display:grid;gap:4px}
+.clockrow{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.lbl{font:11px/1 var(--mono);letter-spacing:.14em;color:var(--faint);
+  width:74px;flex:none;text-transform:uppercase}
+.tc{font:600 clamp(30px,7.2vw,54px)/1.05 var(--mono);letter-spacing:.01em;
+  font-variant-numeric:tabular-nums}
+.tc.small{font-size:clamp(24px,5.4vw,38px);color:var(--dim)}
+.badge{font:12px/1 var(--mono);padding:4px 8px;border-radius:6px;
+  background:var(--panel2);color:var(--dim)}
+.s-LOCKED{color:var(--ok)} .s-PARKED{color:var(--cool)}
+.s-FREEWHEEL{color:var(--warn)} .s-LOST{color:var(--bad)}
+.note{font:12px/1.4 var(--mono);color:var(--faint)}
+
+.kv{display:grid;grid-template-columns:74px 1fr;gap:6px 14px;
+  font:13px/1.5 var(--mono);margin-top:16px}
+.kv dt{color:var(--faint);text-transform:uppercase;font-size:11px;
+  letter-spacing:.12em;padding-top:2px}
+.kv dd{margin:0;color:var(--dim)}
+.kv dd b{color:var(--ink);font-weight:600}
+
+.meter{display:inline-block;width:90px;height:9px;border-radius:99px;
+  background:var(--panel2);overflow:hidden;vertical-align:middle;
+  margin-right:8px;border:1px solid var(--line)}
+.meter i{display:block;height:100%;background:var(--ok);width:0}
+.meter i.hot{background:var(--warn)} .meter i.clip{background:var(--bad)}
+
+.cue{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.cuename{font-size:22px;font-weight:600;margin:2px 0 6px}
+.cuemeta{font:12px/1.5 var(--mono);color:var(--dim);
+  display:flex;gap:18px;flex-wrap:wrap}
+/* Where xLights is, as opposed to where the show is. Big, because this is
+   the number you write down when something looks wrong on the rig. */
+.seqpos{font:600 26px/1.1 var(--mono);color:var(--cool);margin:6px 0 2px;
+  letter-spacing:.5px}
+.seqpos small{font:400 12px/1 var(--mono);color:var(--dim);
+  letter-spacing:0;margin-left:10px}
+.seqpos.off{color:var(--faint);font-size:14px;font-weight:400}
+.bar{height:6px;border-radius:99px;background:var(--panel2);margin-top:10px;
+  overflow:hidden}
+.bar i{display:block;height:100%;background:var(--cool);width:0;
+  transition:width .2s linear}
+.upnext .cuename{font-size:18px;color:var(--dim)}
+
+.warn{margin-top:16px;display:grid;gap:8px}
+.warn p{margin:0;padding:10px 12px;border-radius:8px;font-size:13px;
+  background:#1f0e0e;border:1px solid #4f1f1f;color:#ffc9c9}
+.warn p.info{background:#141b22;border-color:#26384a;color:#bcd7ef}
+
+button{font:inherit;font-weight:600;padding:11px 14px;border-radius:9px;
+  border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+  cursor:pointer;width:100%}
+button:hover{border-color:#3a4553}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.go{background:#123a24;border-color:#1f5f39;color:#9df5c2}
+button.stop{background:#3a1414;border-color:#6b2626;color:#ffc0c0}
+select{font:inherit;width:100%;padding:10px;border-radius:9px;
+  background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+label{display:block;font:11px/1 var(--mono);letter-spacing:.12em;
+  text-transform:uppercase;color:var(--faint);margin:14px 0 6px}
+label:first-child{margin-top:0}
+.row{display:grid;gap:8px;margin-top:10px}
+.row.two{grid-template-columns:1fr 1fr}
+.seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:transparent;font-weight:500;
+  color:var(--dim)}
+.seg button[aria-pressed="true"]{background:var(--panel2);color:var(--ink)}
+.tiny{font:11px/1.5 var(--mono);color:var(--faint);margin-top:8px}
+pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
+  border-radius:9px;padding:12px;max-height:260px;overflow:auto;color:var(--dim);
+  white-space:pre-wrap;margin:0}
+.hint{padding:10px 12px;border-radius:8px;background:var(--panel2);
+  font-size:13px;color:var(--dim);margin-top:12px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <img id="brandlogo" alt="" hidden>
+  <div class="titles">
+    <h1>ltcplay</h1>
+    <div id="show">—</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="status">
+    <div class="pill" id="conn">connecting</div>
+    <div class="pill" id="uptime" hidden></div>
+  </div>
+</header>
+
+<!-- Outside both panels on purpose. This banner's whole job is to fire when
+     the server is stale, and the moment that matters most is BEFORE a show is
+     running. Inside the live panel it was hidden exactly then, which is how
+     Jeff hit "no such thing here" twice with the guard already shipped. -->
+<div class="warn" id="apiwarn" hidden style="margin:0 0 14px"></div>
+
+<div class="grid">
+
+  <!-- ================= the show ================= -->
+  <main class="card">
+    <div id="idle">
+      <h2>nothing running</h2>
+      <p style="color:var(--dim);margin:0">
+        Pick a show, press Validate, then start it. Closing this page
+        does not stop a running show.
+      </p>
+      <div class="hint" id="idleerr" hidden></div>
+    </div>
+
+    <div id="live" hidden>
+      <div class="clocks">
+        <div class="clockrow">
+          <span class="lbl">LTC in</span>
+          <span class="tc" id="ltcin">--:--:--:--</span>
+          <span class="badge" id="state">—</span>
+          <span class="note" id="ltcnote"></span>
+        </div>
+        <div class="clockrow">
+          <span class="lbl">Playing</span>
+          <span class="tc small" id="playing">--:--:--:--</span>
+          <span class="badge" id="outsrc">—</span>
+          <span class="note" id="playnote"></span>
+        </div>
+      </div>
+
+      <dl class="kv">
+        <dt>Rate in</dt><dd id="ratein">—</dd>
+        <dt>Show file</dt><dd id="ratefile">—</dd>
+        <dt>Input</dt><dd id="inputrow">—</dd>
+        <dt>Output</dt><dd id="outrow">—</dd>
+      </dl>
+
+      <div class="cue" id="nowbox">
+        <div class="lbl">Now</div>
+        <div class="cuename" id="nowname">—</div>
+        <div class="seqpos" id="nowseq"></div>
+        <div class="cuemeta" id="nowmeta"></div>
+        <div class="bar"><i id="nowbar"></i></div>
+      </div>
+
+      <div class="cue upnext" id="nextbox">
+        <div class="lbl">Up next</div>
+        <div class="cuename" id="nextname">—</div>
+        <div class="cuemeta" id="nextmeta"></div>
+      </div>
+
+      <div class="tiny" id="buildline"></div>
+      <div class="warn" id="warnings"></div>
+    </div>
+  </main>
+
+  <!-- ================= controls ================= -->
+  <aside>
+    <div class="card">
+      <h2>controls</h2>
+
+      <label for="tl">Show</label>
+      <select id="tl"></select>
+
+      <label for="sd">Plays its sequences from</label>
+      <select id="sd"></select>
+      <div class="tiny" id="sdnote"></div>
+
+      <label>When the timecode stops</label>
+      <div class="seg" role="group">
+        <button id="m-show" aria-pressed="true">Show night</button>
+        <button id="m-reh" aria-pressed="false">Rehearsal</button>
+      </div>
+      <div class="tiny" id="modenote"></div>
+
+      <div class="row two">
+        <button id="btn-check">Validate</button>
+        <button id="btn-dry">Rehearse</button>
+      </div>
+      <div class="row">
+        <button id="btn-run" class="go">Run, and send to the rig</button>
+        <button id="btn-stop" class="stop" hidden>Stop and black out</button>
+      </div>
+
+      <label id="rl-label" hidden>When you re-render in xLights</label>
+      <div class="seg" role="group" id="reloadmode" hidden>
+        <button id="rl-auto" aria-pressed="false">Load it automatically</button>
+        <button id="rl-manual" aria-pressed="true">Wait for me to press Reload</button>
+      </div>
+      <div class="row" id="reloadrow" hidden>
+        <button id="btn-reload">Reload now</button>
+      </div>
+      <div class="tiny" id="reloadnote" hidden></div>
+
+      <div id="gobox" hidden>
+        <label>Run on this Mac's clock</label>
+        <div class="row two">
+          <button id="btn-go">GO</button>
+          <button id="btn-release" hidden>Back to timecode</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btn-reinput">Restart timecode input</button>
+        </div>
+        <div class="tiny" id="reinote">
+          Tears the audio input down and builds it again, including the
+          audio system itself. Output is not interrupted.
+        </div>
+
+        <div id="trigbox" hidden style="margin-top:12px">
+          <label>Backup: let the Advateks play their own scenes</label>
+          <div class="row">
+            <button id="btn-trigger"></button>
+          </div>
+          <div class="tiny" id="trignote"></div>
+        </div>
+        <div id="skipbox" hidden>
+          <div class="row skiprow">
+            <button id="sk-prev" title="the cue before this one">&#9198;</button>
+            <button id="sk-b30">&minus;30s</button>
+            <button id="sk-b10">&minus;10s</button>
+            <button id="sk-top" title="restart this cue">&#8635;</button>
+            <button id="sk-f10">+10s</button>
+            <button id="sk-f30">+30s</button>
+            <button id="sk-next" title="the next cue">&#9197;</button>
+          </div>
+        </div>
+        <div class="tiny" id="gonote">
+          The timecode feed is read and shown, but does not drive the rig.
+        </div>
+      </div>
+
+      <div id="ovbox" hidden>
+        <label>Output right now</label>
+        <div class="seg" role="group">
+          <button id="ov-auto" aria-pressed="true">Follow timecode</button>
+          <button id="ov-pre" aria-pressed="false">Preshow</button>
+          <button id="ov-blk" aria-pressed="false">Black</button>
+        </div>
+        <div class="tiny" id="ovnote">
+          Preshow puts the preshow sequence on the rig. Black sends zeros.
+          Both override the timecode.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>input</h2>
+      <label for="dev">Device</label>
+      <select id="dev"></select>
+      <label for="ch">Input</label>
+      <select id="ch"></select>
+      <div class="row two">
+        <button id="btn-save">Save</button>
+        <button id="btn-find">Find timecode</button>
+      </div>
+      <div class="tiny" id="inputlive" hidden></div>
+      <div class="tiny" id="inputsaved">—</div>
+      <div class="hint" id="devmiss" style="color:#ffc9c9;background:#1f0e0e" hidden></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>log</h2>
+      <pre id="log">—</pre>
+    </div>
+  </aside>
+</div>
+
+<footer id="credit">
+  <img id="creditlogo" alt="" hidden>
+  <div>
+    <div id="creditname"></div>
+    <div id="creditcontact"></div>
+  </div>
+</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+// A device name comes from the OS, not from us. Anything going into innerHTML
+// gets escaped: an interface called <b> should read as its own name.
+const esc = (t) => String(t == null ? "" : t)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const api = (p) => p + (TOKEN ? (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN) : "");
+
+async function get(p){ const r = await fetch(api(p), {cache:"no-store"});
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
+  return r.json(); }
+// Must match API in web.py. The page comes off disk on every load and the
+// server module does not, so these two can drift by exactly one restart.
+const NEEDS_API = 7;
+
+function checkApi(s){
+  const el = $("apiwarn");
+  const got = (s && s.api !== undefined) ? s.api : 0;
+  if(got === NEEDS_API){ el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = got < NEEDS_API
+    ? `<b class="bad">This page is newer than the server it is talking to.</b> `
+      + `Quit the Web ltcplay window and start it again. Until you do, new `
+      + `buttons here fail with "no such thing here".`
+    : `<b class="bad">The server is newer than this page.</b> `
+      + `Reload the page.`;
+}
+
+async function post(p, body){
+  const r = await fetch(api(p), {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body||{})});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error || r.statusText);
+  return j; }
+
+let MODE = "show";
+let DEVICES = [];
+let running = false;
+
+/* ---------- formatting ---------- */
+function clock(s){ if(s===null||s===undefined) return "--:--";
+  const neg = s<0; s=Math.abs(s);
+  const h=Math.floor(s/3600), m=Math.floor(s/60)%60, x=Math.floor(s)%60;
+  const body = h ? `${h}:${String(m).padStart(2,"0")}:${String(x).padStart(2,"0")}`
+                 : `${String(m).padStart(2,"0")}:${String(x).padStart(2,"0")}`;
+  return (neg?"-":"")+body; }
+function rateText(s){
+  if(s.rate_in===null) return "not known yet";
+  let t = (s.rate_in % 1 ? s.rate_in.toFixed(2) : String(s.rate_in));
+  t += s.rate_drop ? " drop" : " non-drop";
+  if(s.rate_measured) t += `  (measured ${s.rate_measured.toFixed(3)})`;
+  return t; }
+
+/* ---------- drawing ---------- */
+function draw(s){
+  running = !!s.running;
+  $("live").hidden = !running;
+  $("idle").hidden = running;
+  // A show that is still starting may already be driving the rig, so Stop
+  // has to be reachable even though `running` is not true yet.
+  $("btn-stop").hidden = !(running || s.starting);
+  if(s.starting){
+    $("conn").className = "pill";
+    $("conn").textContent = "starting";
+    $("idle").hidden = true;
+    $("live").hidden = false;
+    const w = $("apiwarn");
+    w.hidden = false;
+    w.innerHTML = `<b>Starting.</b> If this does not finish within a few `
+      + `seconds the audio device is not answering. The engine may already `
+      + `be sending to the rig, so use Stop rather than closing the window.`;
+  }
+  // The engine can come back without the show: a crash under the login agent
+  // restarts the engine idle, and the rig is left holding its last frame.
+  // Saying "nothing running" is true and useless. Round 3, 2026-09-13.
+  if(!running && !s.starting && SEEN_RUNNING){
+    const w = $("apiwarn");
+    w.hidden = false;
+    w.innerHTML = `<b class="bad">The engine restarted and no show is `
+      + `running.</b> Whatever the rig was doing, it is not being driven `
+      + `now: it is holding its last frame. Press Run to take it back.`;
+  }
+  if(running) SEEN_RUNNING = true;
+  // What is actually running beats what the picker says. The caption used to
+  // follow the buttons even mid-show, so clicking Rehearsal during a set
+  // described behaviour the engine was not using.
+  if(running && s.on_lost){
+    const m = s.on_lost === "hold" ? "rehearsal" : "show";
+    // on_lost has four values now; the toggle only has two. Say which one is
+    // actually live rather than rounding it to the nearest button.
+    $("m-show").setAttribute("aria-pressed", m === "show");
+    $("m-reh").setAttribute("aria-pressed", m === "rehearsal");
+    $("modenote").innerHTML = modeText(m, s)
+      + ` <b>This is the running show's setting.</b>`;
+  }
+  $("ovbox").hidden = !running;
+  $("gobox").hidden = !running;
+  const free = !!s.freerun;
+  $("btn-release").hidden = !free;
+  $("skipbox").hidden = !free;
+  $("btn-go").textContent = free ? "Jump to\u2026" : "GO";
+  $("gonote").innerHTML = free
+    ? `<b class="bad">FREE RUNNING.</b> The show is on this Mac's clock and `
+      + `the timecode feed is being ignored. The clock keeps counting past `
+      + `the end of this set and into the next one.`
+    : "The timecode feed is read and shown, but does not drive the rig.";
+  // The mode is always shown and always settable, running or not: it is a
+  // property of the machine, not of one run. The Reload button only makes
+  // sense while something is playing.
+  $("rl-label").hidden = false;
+  $("reloadmode").hidden = false;
+  $("reloadrow").hidden = !running;
+  $("reloadnote").hidden = false;
+  const auto = !!s.auto_reload;
+  const stale = s.stale || [];
+  $("rl-auto").setAttribute("aria-pressed", auto);
+  $("rl-manual").setAttribute("aria-pressed", !auto);
+  $("reloadnote").innerHTML = auto
+    ? (stale.length
+        ? `<b>Loading now:</b> ` + stale.join(", ")
+          + `. Each one goes in as soon as xLights finishes writing it.`
+        : `Re-renders load by themselves, without stopping the chase. `
+          + `Saved between runs.`)
+    : (stale.length
+        ? `<b class="bad">The rig is playing the old version of:</b> `
+          + stale.join(", ") + `. Press Reload now.`
+        : `Nothing loads until you press Reload now. Saved between runs.`);
+  const ov = s.override || "auto";
+  $("ov-auto").setAttribute("aria-pressed", ov==="auto");
+  $("ov-pre").setAttribute("aria-pressed", ov==="preshow");
+  $("ov-blk").setAttribute("aria-pressed", ov==="blackout");
+  $("ov-pre").disabled = !s.has_preshow;
+  $("ovnote").textContent = !s.has_preshow
+    ? "This show file has no preshow sequence, so there is no look to hold."
+    : ov==="auto"
+      ? "Preshow puts the preshow sequence on the rig. Black sends zeros. Both override the timecode."
+      : ov==="preshow"
+        ? "Held on the preshow sequence. The timecode is still being read; it is not driving the rig."
+        : "Held black. The timecode is still being read; it is not driving the rig.";
+  $("btn-run").disabled = running;
+  $("btn-dry").disabled = running;
+  $("tl").disabled = running;
+  if(s.saved_input && s.saved_input.device){
+    $("inputsaved").textContent =
+      `Saved: ${s.saved_input.device}, in ${s.saved_input.channel||1}. Used by every run until changed.`;
+  } else {
+    $("inputsaved").textContent = "Not set, so macOS picks. Saved choices survive quitting and restarts.";
+  }
+  // What the RUNNING show is listening to, which is not always what is saved:
+  // Save switches a running show over without stopping it.
+  const il = $("inputlive");
+  if(!running){
+    il.hidden = true;
+  } else {
+    il.hidden = false;
+    il.innerHTML = s.input_attached
+      ? `<b style="color:var(--ok)">Open</b> — ${esc(s.input || "")}`
+      : `<b class="bad">Not open</b> — ${esc(s.input || "")}<br>`
+        + `Retried every second. Save below to switch this show to another `
+        + `input without stopping it.`;
+  }
+  if(!running){
+    $("show").textContent = "—";
+    $("uptime").hidden = true;
+    if(s.last_error){ $("idleerr").hidden=false; $("idleerr").textContent = s.last_error; }
+    return;
+  }
+  $("show").textContent = s.show;
+  $("uptime").hidden = false;
+  $("uptime").textContent = "up " + clock(s.uptime);
+
+  $("ltcin").textContent = s.ltc_in;
+  $("ltcin").className = "tc s-" + s.state;
+  $("state").textContent = s.state;
+  $("state").className = "badge s-" + s.state;
+  // During a free run the SHOW's state is FREERUN and the FEED's is separate.
+  // Reporting the show's state against the LTC readout put "frozen" beside a
+  // number that was visibly counting. Round 3 of the audit, 2026-09-13.
+  const feed = s.state === "FREERUN" ? (s.feed_state || null) : s.state;
+  $("ltcnote").textContent =
+      s.state === "FREERUN"
+        ? (feed === "LOCKED" ? "the feed is healthy; the show is not following it"
+         : feed === "PARKED" ? "the feed is parked; the show is not following it"
+         : s.ltc_age === null ? "no timecode has arrived"
+         : `nothing in for ${s.ltc_age.toFixed(1)}s`)
+    : s.state === "LOCKED" ? ""
+    : s.state === "PARKED" ? "the source is sending this frame over and over"
+    : s.ltc_age === null ? "waiting for timecode"
+    : `frozen, nothing in for ${s.ltc_age.toFixed(1)}s`;
+
+  $("playing").textContent = s.playing;
+  $("outsrc").textContent =
+    ({show:"show", preshow:"preshow loop", hold:"holding last frame",
+      black:"blacked out"})[s.source] || s.source;
+  $("playnote").textContent =
+      s.blackout_in !== null && s.blackout_in !== undefined
+        ? `free-rolling, ${s.on_lost} in ${s.blackout_in.toFixed(1)}s`
+    : s.state === "PARKED" ? "paused, holding"
+    : s.state === "LOCKED" ? (() => { const v = Math.round(s.sync_ms) || 0;
+        return `sync ${v>0?"+":""}${v} ms`; })()
+    : "";
+
+  const agrees = s.rate_in !== null &&
+                 Math.abs(s.rate_in - s.timeline_fps) < 0.01 &&
+                 !!s.rate_drop === !!s.timeline_drop;
+  const col = s.rate_in === null ? "var(--dim)" : agrees ? "var(--ok)" : "var(--warn)";
+  $("ratein").innerHTML = `<b style="color:${col}">${rateText(s)}</b>` +
+    (s.rate_in !== null && !s.rate_confident ? ` <span style="color:var(--faint)">still settling</span>` : "");
+  $("ratefile").innerHTML = `<b>${s.timeline_rate}</b>  ·  ${s.ltc_frames} frames in, ${s.sync_errors} sync errors`;
+
+  if(s.level === null || s.level === undefined){
+    $("inputrow").textContent = s.input;
+  } else {
+    const pct = Math.min(100, Math.round(s.level*100));
+    const cls = s.level_verdict==="clipping" ? "clip" : s.level>0.9 ? "hot" : "";
+    $("inputrow").innerHTML =
+      `<span class="meter"><i class="${cls}" style="width:${pct}%"></i></span>` +
+      `${s.level.toFixed(2)} ${s.level_verdict} · ${s.input}`;
+  }
+  $("outrow").innerHTML = s.no_output
+    ? `<b class="bad">DISPLAY ONLY &mdash; the rig is receiving nothing.</b>` +
+      ` Stop and start again without display-only to light anything.`
+    : `<b>${s.universes} universes</b> · ${s.frames_out} frames · ${s.send_errors} send errors` +
+      (s.since_ok!==null&&s.since_ok!==undefined
+        ? ` · accepted by this Mac ${s.since_ok.toFixed(1)}s ago` : "") +
+      (s.quiet_dests ? ` · <b class="bad">${s.quiet_dests} address(es) resting</b>` : "") +
+      (s.rig_total
+        ? (s.rig_missing && s.rig_missing.length
+            ? ` · <b class="bad">${s.rig_missing.length} of ${s.rig_total} controllers not answering</b>`
+            : ` · <b style="color:var(--ok)">${s.rig_total} controllers answering</b>`)
+        : (s.rig_watchable === false
+            ? ` · <span style="color:var(--faint)">controllers do not answer pings, so delivery is not being checked</span>`
+            : ""));
+
+  if(s.now){
+    $("nowname").innerHTML = s.now.name +
+      (s.now.file ? ` <span style="font-size:13px;font-weight:400;color:var(--faint);font-family:var(--mono)">${s.now.file}</span>` : "");
+    // The position INSIDE the sequence, which is the number to write down
+    // when something looks wrong: it is what xLights shows, and timecode is
+    // not. Frame number too, because that is what you scrub to.
+    $("nowseq").className = "seqpos";
+    $("nowseq").innerHTML =
+      `${s.now.seq} <small>of ${s.now.seq_total} in xLights` +
+      (s.now.frame>=0 ? ` &middot; frame ${s.now.frame}` +
+        (s.now.seq_frames ? ` of ${s.now.seq_frames}` : "") : "") + `</small>`;
+    $("nowmeta").textContent =
+      `${s.now.tc} to ${s.now.ends}      ${clock(s.now.elapsed)} in, ${clock(s.now.left)} left`;
+    $("nowbar").style.width = Math.max(0,Math.min(100,(s.now.elapsed/s.now.duration)*100)) + "%";
+  } else {
+    $("nowname").textContent = s.source==="preshow" ? "preshow loop" : "nothing";
+    $("nowseq").className = "seqpos off";
+    $("nowseq").textContent = s.override==="preshow"
+      ? "held by you, not by timecode"
+      : (s.source==="preshow" ? "no sequence is playing" : "");
+    $("nowmeta").textContent = s.source==="preshow"
+      ? (s.override==="preshow" ? "press Auto to hand it back to the timecode"
+                                : "running until timecode starts")
+      : "between cues";
+    $("nowbar").style.width = "0";
+  }
+  if(s.next){
+    $("nextname").textContent = s.next.name;
+    $("nextmeta").textContent = `starts ${s.next.tc}` +
+      (s.next.in!==null&&s.next.in!==undefined ? `      in ${clock(s.next.in)}` : "");
+  } else {
+    $("nextname").textContent = "nothing, this is the last cue";
+    $("nextmeta").textContent = "";
+  }
+
+  drawTrigger(s);
+  // Which program, and which renders. Content derived, so it cannot be
+  // stale the way a number somebody has to remember to bump can be.
+  const bl = $("buildline");
+  bl.textContent = (s.build || "") + (s.show_build ? "      " + s.show_build : "");
+  // A copy somebody has edited, or renders that are not the ones this
+  // release was cut with, are the two things worth colouring.
+  bl.className = /MODIFIED|DIFFERENT RENDERS/.test(bl.textContent)
+    ? "tiny bad" : "tiny";
+
+  const w = $("warnings"); w.innerHTML = "";
+  (s.warnings||[]).forEach(t => { const p=document.createElement("p"); p.textContent=t; w.appendChild(p); });
+  // What preflight found. These used to appear once, in a modal at start, and
+  // were gone the moment it was dismissed. Jeff, 2026-09-14.
+  // Faults that have STOPPED, in the quiet style. A counter drawn in red
+  // forever is how a warning panel stops meaning anything.
+  (s.history||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });
+  (s.problems||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });
+  (s.notes||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });
+}
+
+/* ---------- polling ---------- */
+let misses = 0;
+/* ---------- which folder this show plays from ---------- */
+let SD_BUSY = false;
+async function loadShowDir(){
+  const tl = $("tl").value;
+  if(!tl) return;
+  try{
+    const j = await post("/api/showdir", {timeline: tl});
+    drawShowDir(j);
+  }catch(e){
+    $("sd").innerHTML = "";
+    $("sdnote").textContent = e.message;
+  }
+}
+function drawShowDir(j){
+  const sel = $("sd");
+  const opts = (j.options || []).slice();
+  if(j.folder && !opts.some(o => o.folder === j.folder))
+    opts.unshift({folder: j.folder, sequences: j.sequences || 0});
+  sel.innerHTML = opts.map(o =>
+    `<option value="${o.folder.replace(/"/g,"&quot;")}"${o.folder===j.folder?" selected":""}>`
+    + `${o.folder.split("/").slice(-2).join("/")} — ${o.sequences} sequences`
+    + `</option>`).join("")
+    + `<option value="__other__">Somewhere else…</option>`;
+  $("sdnote").innerHTML = j.ok
+    ? `${j.sequences} sequences and a controller map in<br>`
+      + `<span style="font-family:var(--mono);font-size:11px">${j.folder}</span>`
+    : `<b class="bad">${j.why || "This show file does not name a folder."}</b>`;
+}
+async function setShowDir(folder){
+  if(SD_BUSY) return;
+  SD_BUSY = true;
+  try{
+    const j = await post("/api/showdir",
+                         {timeline: $("tl").value, folder: folder});
+    drawShowDir(j);
+    loadTimelines(false);
+  }catch(e){ alert(e.message); await loadShowDir(); }
+  SD_BUSY = false;
+}
+$("sd").addEventListener("change", async () => {
+  const v = $("sd").value;
+  if(v === "__other__"){
+    const p = prompt(
+      "Full path of the folder holding the .fseq files and " +
+      "xlights_networks.xml:", "");
+    await loadShowDir();
+    if(p && p.trim()) setShowDir(p.trim());
+    return;
+  }
+  setShowDir(v);
+});
+$("tl").addEventListener("change", loadShowDir);
+
+async function loadBrand(){
+  try{
+    const b = await get("/api/brand");
+    if(b.logo){
+      for(const id of ["brandlogo", "creditlogo"]){
+        const el = $(id);
+        el.src = "/" + b.logo.replace(/^\/+/, "");
+        el.alt = b.name || "";
+        el.onload = () => { el.hidden = false; };
+      }
+    }
+    document.title = (b.product || "ltcplay") + " — " + (b.name || "");
+    $("creditname").textContent =
+      (b.product || "ltcplay") + (b.tagline ? ", a " + b.tagline : "") +
+      " by " + (b.name || "");
+    const bits = [];
+    if(b.email) bits.push(`<a href="mailto:${b.email}">${b.email}</a>`);
+    if(b.phone) bits.push(`<a href="tel:${b.phone.replace(/[^0-9+]/g,"")}">${b.phone}</a>`);
+    if(b.url) bits.push(`<a href="${b.url}" target="_blank" rel="noopener">${b.url}</a>`);
+    $("creditcontact").innerHTML = bits.join(" &nbsp;·&nbsp; ");
+  }catch(e){ /* the credit is not worth failing the page over */ }
+}
+loadBrand();
+
+let LAST = null;
+let SEEN_RUNNING = false;
+async function poll(){
+  try{
+    const s = await get("/api/state");
+    LAST = s;
+    misses = 0;
+    $("conn").className = "pill" + (s.running ? " live" : "");
+    $("conn").textContent = s.running ? "running" : "idle";
+    // Before draw, and outside it: a stale server is worth saying whether or
+    // not there is a show to draw.
+    checkApi(s);
+    draw(s);
+  }catch(e){
+    misses++;
+    $("conn").className = "pill bad";
+    $("conn").textContent = misses < 3 ? "reconnecting" : "cannot reach the engine";
+    if(misses === 3 && running){
+      const w = $("warnings");
+      w.innerHTML = "<p>This page has lost contact with the engine. " +
+        "That does not stop a running show: the engine is a separate program " +
+        "and a running show keeps being driven. If the engine itself " +
+        "stopped, the rig is holding its last frame instead. Check the window it was " +
+        "started from.</p>";
+    }
+  }
+}
+setInterval(poll, 250);
+poll();
+
+async function refreshLog(){
+  try{ const j = await get("/api/log?n=40");
+       $("log").textContent = (j.lines||[]).slice(-40).join("\n") || "nothing yet"; }
+  catch(e){}
+}
+setInterval(refreshLog, 4000); refreshLog();
+
+/* ---------- shows ---------- */
+async function loadTimelines(andFolder){
+  try{
+    const j = await get("/api/timelines");
+    const sel = $("tl");
+    const keep = sel.value;
+    sel.innerHTML = ""; sel.disabled = false;
+    (j.timelines||[]).forEach(t => {
+      const o = document.createElement("option");
+      o.value = t.file;
+      o.textContent = t.error ? `${t.file}  (will not load)`
+                              : `${t.name}  ·  ${t.cues} cues  ·  ${t.rate}`;
+      sel.appendChild(o);
+    });
+    if(!sel.options.length){
+      const o=document.createElement("option"); o.textContent="no show files in this folder";
+      sel.appendChild(o); sel.disabled = true;
+    }
+    if(keep) for(const o of sel.options) if(o.value === keep) sel.value = keep;
+  }catch(e){}
+  if(andFolder !== false) loadShowDir();
+}
+loadTimelines();
+
+/* ---------- input ---------- */
+function fillChannels(dev){
+  const sel = $("ch"); sel.innerHTML = "";
+  const n = dev ? dev.channels : 1;
+  for(let i=1;i<=n;i++){
+    const o=document.createElement("option"); o.value=i; o.textContent="input "+i;
+    sel.appendChild(o);
+  }
+  sel.disabled = n <= 1;
+}
+async function loadDevices(){
+  try{
+    const j = await get("/api/devices");
+    if(j.error){ $("dev").innerHTML = `<option>${j.error.split("\n")[0]}</option>`; return; }
+    DEVICES = j.inputs.filter(d => j.candidates.includes(d.index));
+    const sel = $("dev"); sel.innerHTML = "";
+    DEVICES.forEach(d => {
+      const o = document.createElement("option");
+      o.value = d.name;
+      o.textContent = `${d.name}  ·  ${d.channels} in @ ${d.rate}Hz` +
+        (d.kind !== "hardware" ? `  (${d.kind})` : "");
+      sel.appendChild(o);
+    });
+    $("devmiss").hidden = true;
+    if(j.saved && j.saved.device){
+      const hit = DEVICES.findIndex(d => d.name.toLowerCase().includes(j.saved.device.toLowerCase()));
+      if(hit >= 0){ sel.selectedIndex = hit; fillChannels(DEVICES[hit]); $("ch").value = j.saved.channel||1; return; }
+      // The saved device is not attached. Leaving another one selected while
+      // the caption still names the saved one is how somebody runs a show on
+      // the built-in microphone without noticing.
+      $("devmiss").hidden = false;
+      $("devmiss").textContent =
+        `Your saved input, ${j.saved.device}, is not attached right now. ` +
+        `A run will start on the preshow look and pick it up when it ` +
+        `appears, or save a different one.`;
+    }
+    fillChannels(DEVICES[0]);
+  }catch(e){}
+}
+loadDevices();
+$("dev").addEventListener("change", () => {
+  fillChannels(DEVICES.find(d => d.name === $("dev").value));
+});
+
+$("btn-save").addEventListener("click", async () => {
+  const b = $("btn-save"); b.disabled = true; b.textContent = "saving";
+  try{
+    const j = await post("/api/input",
+                         {device: $("dev").value,
+                          channel: parseInt($("ch").value||"1",10)});
+    const sv = (j && j.saved) || {};
+    if(sv.live === false && sv.why){
+      b.textContent = "saved";
+      alert("Saved for the next run, but the running show could not switch "
+            + "to it:\n\n" + sv.why);
+    } else if(sv.live){
+      b.textContent = sv.opened ? "switched" : "saved";
+    } else {
+      b.textContent = "saved";
+    }
+  }catch(e){ alert(e.message); b.textContent = "Save"; }
+  setTimeout(()=>{ b.disabled=false; b.textContent="Save"; }, 1600);
+});
+
+$("btn-find").addEventListener("click", async () => {
+  const b = $("btn-find"); b.disabled = true; b.textContent = "listening";
+  try{
+    const j = await post("/api/find", {seconds: 3});
+    let msg = "", best = null;
+    (j.devices||[]).forEach(d => {
+      msg += `${d.name}\n`;
+      if(d.error){ msg += `   could not open it: ${d.error}\n`; return; }
+      (d.channels||[]).forEach(c => {
+        const hit = c.frames > 3;
+        if(hit && !best) best = {device:d.name, channel:c.channel};
+        msg += `   in ${c.channel}   level ${c.level.toFixed(2)}   ` +
+               (hit ? `TIMECODE ${c.last}` : (c.verdict==="silent" ? "silent" : "audio, no timecode")) + "\n";
+      });
+    });
+    if(best){
+      msg += `\nTimecode is on ${best.device}, input ${best.channel}. Save it?`;
+      if(confirm(msg)){
+        await post("/api/input", best);
+        await loadDevices();
+      }
+    } else {
+      alert(msg + "\nNo timecode on any input. Is it running?");
+    }
+  }catch(e){ alert(e.message); }
+  b.disabled = false; b.textContent = "Find timecode";
+});
+
+/* ---------- mode ---------- */
+// The only thing this switch changes is what the rig does when the feed
+// stops. It used to be labelled "Mode", which invited the reading that one of
+// them was somehow safer, and its captions did not say what either one waits
+// for. Jeff, 2026-09-13.
+function modeText(m, s){
+  const hold = (s && s.hold_ms ? s.hold_ms : 20000) / 1000;
+  const secs = hold >= 1 ? `${hold.toFixed(hold < 10 ? 1 : 0)}s` : `${hold}s`;
+  // Lead with what is DIFFERENT. Both captions used to open with the same
+  // sentence, so at a glance they read as the same setting. Jeff, 2026-09-13.
+  return m === "show"
+    ? `<b>Runs the set out on this Mac's clock</b> after ${secs} with no `
+      + `timecode. It keeps running even if timecode comes back: press `
+      + `Back to timecode to hand the show over.<br>`
+      + `Dropouts shorter than ${secs} free-roll either way.`
+    : `<b>Holds the frame it reached</b> after ${secs} with no timecode, `
+      + `until timecode returns.<br>`
+      + `Dropouts shorter than ${secs} free-roll on this Mac's clock.`;
+}
+function setMode(m){
+  MODE = m;
+  $("m-show").setAttribute("aria-pressed", m==="show");
+  $("m-reh").setAttribute("aria-pressed", m==="rehearsal");
+  $("modenote").innerHTML = modeText(m, LAST);
+}
+setMode("show");
+$("m-show").addEventListener("click", ()=>setMode("show"));
+$("m-reh").addEventListener("click", ()=>setMode("rehearsal"));
+
+/* ---------- run ---------- */
+async function startShow(noOutput){
+  const body = {timeline: $("tl").value, no_output: noOutput};
+  body.on_lost = (MODE === "rehearsal") ? "hold" : "freerun";
+  try{
+    await post("/api/start", body);
+    poll();
+  }catch(e){ alert(e.message); }
+}
+$("btn-dry").addEventListener("click", () => startShow(true));
+$("btn-run").addEventListener("click", () => startShow(false));
+$("btn-stop").addEventListener("click", async () => {
+  try{ await post("/api/stop"); poll(); }catch(e){ alert(e.message); }
+});
+async function setReloadMode(on){
+  try{ await post("/api/autoreload", {on: on}); poll(); }
+  catch(e){ alert(e.message); }
+}
+$("rl-auto").addEventListener("click", () => setReloadMode(true));
+$("rl-manual").addEventListener("click", () => setReloadMode(false));
+
+$("btn-reload").addEventListener("click", async () => {
+  const b = $("btn-reload"); b.disabled = true; b.textContent = "reloading";
+  try{
+    const j = await post("/api/reload");
+    alert(j.reloaded.length
+      ? `Loaded ${j.reloaded.length} of ${j.total}:\n\n` + j.reloaded.join("\n")
+      : "Nothing had changed on disk.");
+  }catch(e){ alert(e.message); }
+  b.disabled = false; b.textContent = "Reload now"; poll();
+});
+
+$("btn-go").addEventListener("click", async () => {
+  // The default IS the answer. It used to say "leave it as it is to carry
+  // on" while pre-filling 01:00:00:00, so pressing Enter during Set 2 ran
+  // Set 1 on the rig. Round 2 of the audit, 2026-09-13.
+  // Prefer where the show actually is; failing that, where the feed last
+  // was. "the next cue" is wrong with a stopped feed, because next resets
+  // as the feed dies and would offer the top of Set 1 during the interval.
+  const now = (LAST && LAST.playing && LAST.playing !== "--:--:--:--")
+    ? LAST.playing
+    : (LAST && LAST.ltc_in && LAST.ltc_in !== "--:--:--:--" ? LAST.ltc_in : "");
+  const at = prompt(
+    "Start from a timecode like 01:14:30:00, or a cue name.\n\n" +
+    "The show runs on this Mac's clock. Timecode does not drive the rig "
+    + "until you press Back to timecode.",
+    now || (LAST && LAST.next ? LAST.next.tc : ""));
+  if(at === null || at.trim() === "") return;
+  // No modal on the way out: the panel below says FREE RUNNING for as long
+  // as it lasts, which outlives anything dismissed once. Jeff, 2026-09-14.
+  try{ await post("/api/go", {at: at}); }catch(e){ alert(e.message); }
+  poll();
+});
+async function skip(body){
+  try{
+    const j = await post("/api/skip", body);
+    $("gonote").innerHTML = `<b class="bad">FREE RUNNING</b> from ${j.at} `
+      + `&mdash; ${j.where}. The timecode feed is not driving the rig.`;
+  }catch(e){ alert(e.message); }
+  poll();
+}
+/* ---------- Advatek scene triggers: the alternate way to play ---------- */
+let LAST_ARMED = false;
+function drawTrigger(s){
+  LAST_ARMED = !!s.trigger_armed;
+  const box = $("trigbox");
+  box.hidden = !s.trigger_available;
+  if(!s.trigger_available) return;
+  const on = !!s.trigger_armed;
+  const b = $("btn-trigger");
+  if(!TRIG_BUSY){
+    b.textContent = on ? "Take them back, play sequences directly"
+                       : "Hand the Advateks their own recorded scenes";
+    b.disabled = false;
+  }
+  b.className = on ? "stop" : "";
+  const n = $("trignote");
+  const muted = (s.trigger_muted||[]).length;
+  if(on){
+    let t = `<b class="bad">SCENES</b> ${muted} Advatek controller`
+          + `${muted===1?"":"s"} are muted and playing what is recorded on `
+          + `their own cards. Everything else is still being streamed from `
+          + `the sequence. Fired ${s.trigger_fired||0}`;
+    if(s.trigger_last) t += `, last was ${esc(s.trigger_last)}`;
+    t += ". A jump restarts a scene from its own beginning, which will not "
+       + "line up with the audio.";
+    if(s.trigger_errors) t += ` <b class="bad">${s.trigger_errors} trigger(s) `
+       + `did not go out.</b>`;
+    n.innerHTML = t;
+  } else {
+    n.innerHTML = "Sequences are playing directly to every controller, which "
+      + "is the normal way to run this show. This is the backup for the night "
+      + "that stops working: " + esc(s.trigger_summary || "") + ". The "
+      + "recorded scenes are only as current as the last time they were "
+      + "recorded from these renders.";
+  }
+}
+let TRIG_BUSY = false;
+$("btn-trigger").addEventListener("click", async () => {
+  const b = $("btn-trigger");
+  TRIG_BUSY = true; b.disabled = true; b.textContent = "switching";
+  try{
+    const j = await post("/api/trigger", {on: !LAST_ARMED});
+    if(j.message) $("trignote").textContent = j.message;
+  }catch(e){ $("trignote").innerHTML = `<b class="bad">${esc(e.message)}</b>`; }
+  TRIG_BUSY = false;
+  poll();
+});
+$("btn-reinput").addEventListener("click", async () => {
+  const b = $("btn-reinput"); b.disabled = true; b.textContent = "rebuilding";
+  try{
+    const j = await post("/api/reinput", {});
+    $("reinote").innerHTML = j.opened
+      ? `<b style="color:var(--ok)">Input rebuilt.</b> ${esc(j.input)}`
+      : `<b class="bad">Still not open.</b> ${esc(j.why || j.input)}`;
+  }catch(e){ alert(e.message); }
+  b.disabled = false; b.textContent = "Restart timecode input";
+  poll();
+});
+$("sk-prev").addEventListener("click", () => skip({cue: -1}));
+$("sk-next").addEventListener("click", () => skip({cue: 1}));
+$("sk-top").addEventListener("click",  () => skip({cue: 0}));
+$("sk-b30").addEventListener("click",  () => skip({seconds: -30}));
+$("sk-b10").addEventListener("click",  () => skip({seconds: -10}));
+$("sk-f10").addEventListener("click",  () => skip({seconds: 10}));
+$("sk-f30").addEventListener("click",  () => skip({seconds: 30}));
+
+$("btn-release").addEventListener("click", async () => {
+  // Handing back to a feed that is not there drops the set to the preshow
+  // look instantly, and the way back is GO again. Round 3, 2026-09-13.
+  const feed = LAST && LAST.feed_state;
+  if(feed !== "LOCKED"){
+    const what = LAST && LAST.on_lost === "hold"
+      ? "hold its last frame" : "go to the preshow look";
+    if(!confirm(
+      "No timecode is arriving right now.\n\n" +
+      "Handing the show back will stop it where it is and the rig will " +
+      what + " until timecode returns.\n\nHand it back anyway?")) return;
+  }
+  try{ await post("/api/release"); poll(); }catch(e){ alert(e.message); }
+});
+
+async function setOverride(look){
+  try{ await post("/api/override", {look: look}); poll(); }
+  catch(e){ alert(e.message); }
+}
+$("ov-auto").addEventListener("click", () => setOverride("auto"));
+$("ov-pre").addEventListener("click", () => setOverride("preshow"));
+$("ov-blk").addEventListener("click", () => {
+  if(!confirm("Hold the rig black until you press Follow timecode?")) return;
+  setOverride("blackout");
+});
+
+$("btn-check").addEventListener("click", async () => {
+  const b = $("btn-check"); b.disabled = true; b.textContent = "checking";
+  try{
+    const j = await post("/api/check", {timeline: $("tl").value});
+    let msg = j.error ? j.error : "";
+    if(!j.error){
+      msg = `${j.summary}\n\n`;
+      j.cues.forEach(c => {
+        msg += c.missing ? `${c.tc}  ${c.name}   MISSING\n`
+          : `${c.tc}  ${c.name}   ${c.duration.toFixed(1)}s  ends ${c.ends}` +
+            (c.overlap ? "   OVERLAPS THE ONE BEFORE" : "") + "\n";
+      });
+      if(j.notes.length) msg += "\n" + j.notes.join("\n\n");
+      msg += j.problems.length ? "\n\nProblems:\n- " + j.problems.join("\n- ")
+                               : "\n\nAll cues load.";
+    }
+    alert(msg);
+  }catch(e){ alert(e.message); }
+  b.disabled = false; b.textContent = "Validate";
+});
+</script>
+</body>
+</html>

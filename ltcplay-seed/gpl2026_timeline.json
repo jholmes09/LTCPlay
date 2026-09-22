@@ -1,0 +1,172 @@
+{
+  "name": "GPL 2026 (3D, both sets)",
+  "fps": 30,
+  "drop": false,
+  "show_dir": "show",
+  "idle": "PreShow.fseq",
+  "gaps": "idle",
+  "on_lost": "freerun",
+  "bridge_ms": 250,
+  "cues": [
+    {
+      "tc": "01:00:00:00",
+      "fseq": "GPL 2026_Set 1_01_Opener.fseq",
+      "name": "GPL Opener"
+    },
+    {
+      "tc": "01:01:52:02",
+      "fseq": "GPL 2026_Set 1_02_MonsterMash.fseq",
+      "name": "Monster Mash"
+    },
+    {
+      "tc": "01:06:47:14",
+      "fseq": "GPL 2026_Set 1_03_Beetlejuice.fseq",
+      "name": "Beetlejuice"
+    },
+    {
+      "tc": "01:07:28:22",
+      "fseq": "GPL 2026_Set 1_04_JumpInTheLine.fseq",
+      "name": "Jump in the Line"
+    },
+    {
+      "tc": "01:11:48:03",
+      "fseq": "GPL 2026_Set 1_05_DayO.fseq",
+      "name": "Day-O"
+    },
+    {
+      "tc": "01:12:24:00",
+      "fseq": "GPL 2026_Set 1_06_LetsDance.fseq",
+      "name": "Just Dance"
+    },
+    {
+      "tc": "01:17:46:05",
+      "fseq": "GPL 2026_Set 1_07_Munsters.fseq",
+      "name": "The Munsters"
+    },
+    {
+      "tc": "01:18:29:19",
+      "fseq": "GPL 2026_Set 1_08_ImInLoveWithAMonster.fseq",
+      "name": "I'm in Love with a Monster"
+    },
+    {
+      "tc": "01:23:45:05",
+      "fseq": "GPL 2026_Set 1_09_Goosebumps.fseq",
+      "name": "Goosebumps Theme"
+    },
+    {
+      "tc": "01:24:15:22",
+      "fseq": "GPL 2026_Set 1_10_SomebodysWatchingMe.fseq",
+      "name": "Somebody's Watching Me"
+    },
+    {
+      "tc": "01:29:20:27",
+      "fseq": "GPL 2026_Set 1_11_Ending.fseq",
+      "name": "GPL Ending"
+    },
+    {
+      "tc": "02:00:00:00",
+      "fseq": "GPL 2026_Set 2_01_Opener.fseq",
+      "name": "GPL Opener"
+    },
+    {
+      "tc": "02:01:52:13",
+      "fseq": "GPL 2026_Set 2_02_Ghostbusters.fseq",
+      "name": "Ghostbusters"
+    },
+    {
+      "tc": "02:06:40:05",
+      "fseq": "GPL 2026_Set 2_03_Werewolves.fseq",
+      "name": "Werewolves of London"
+    },
+    {
+      "tc": "02:07:19:06",
+      "fseq": "GPL 2026_Set 2_04_timewarp.fseq",
+      "name": "Timewarp"
+    },
+    {
+      "tc": "02:11:42:27",
+      "fseq": "GPL 2026_Set 2_05_AdamsFamily.fseq",
+      "name": "Adam's Family"
+    },
+    {
+      "tc": "02:12:32:23",
+      "fseq": "GPL 2026_Set 2_06_GooGooMuck.fseq",
+      "name": "Goo Goo Muck"
+    },
+    {
+      "tc": "02:17:25:27",
+      "fseq": "GPL 2026_Set 2_07_DontFearTheReaper.fseq",
+      "name": "Don't Fear the Reaper"
+    },
+    {
+      "tc": "02:18:09:12",
+      "fseq": "GPL 2026_Set 2_08_Bones.fseq",
+      "name": "Bones"
+    },
+    {
+      "tc": "02:22:44:03",
+      "fseq": "GPL 2026_Set 2_09_StrangerThings.fseq",
+      "name": "Strangers Things Theme"
+    },
+    {
+      "tc": "02:23:34:21",
+      "fseq": "GPL 2026_Set 2_10_Thriller.fseq",
+      "name": "Thriller"
+    },
+    {
+      "tc": "02:29:20:21",
+      "fseq": "GPL 2026_Set 2_11_Ending.fseq",
+      "name": "GPL Ending"
+    }
+  ],
+  "hold_ms": 20000,
+  "trigger": {
+    "enabled": false,
+    "universe": 6999,
+    "dest": [
+      "10.0.0.100",
+      "10.0.0.110",
+      "10.0.0.120",
+      "10.0.0.121",
+      "10.0.0.130",
+      "10.0.0.131"
+    ],
+    "mute": [
+      "10.0.0.100",
+      "10.0.0.110",
+      "10.0.0.120",
+      "10.0.0.121",
+      "10.0.0.130",
+      "10.0.0.131"
+    ],
+    "channels": {
+      "GPL 2026_Set 1_01_Opener.fseq": 101,
+      "GPL 2026_Set 1_02_MonsterMash.fseq": 102,
+      "GPL 2026_Set 1_03_Beetlejuice.fseq": 103,
+      "GPL 2026_Set 1_04_JumpInTheLine.fseq": 104,
+      "GPL 2026_Set 1_05_DayO.fseq": 105,
+      "GPL 2026_Set 1_06_LetsDance.fseq": 106,
+      "GPL 2026_Set 1_07_Munsters.fseq": 107,
+      "GPL 2026_Set 1_08_ImInLoveWithAMonster.fseq": 108,
+      "GPL 2026_Set 1_09_Goosebumps.fseq": 109,
+      "GPL 2026_Set 1_10_SomebodysWatchingMe.fseq": 110,
+      "GPL 2026_Set 1_11_Ending.fseq": 111,
+      "GPL 2026_Set 2_01_Opener.fseq": 112,
+      "GPL 2026_Set 2_02_Ghostbusters.fseq": 113,
+      "GPL 2026_Set 2_03_Werewolves.fseq": 114,
+      "GPL 2026_Set 2_04_timewarp.fseq": 115,
+      "GPL 2026_Set 2_05_AdamsFamily.fseq": 116,
+      "GPL 2026_Set 2_06_GooGooMuck.fseq": 117,
+      "GPL 2026_Set 2_07_DontFearTheReaper.fseq": 118,
+      "GPL 2026_Set 2_08_Bones.fseq": 119,
+      "GPL 2026_Set 2_09_StrangerThings.fseq": 120,
+      "GPL 2026_Set 2_10_Thriller.fseq": 121,
+      "GPL 2026_Set 2_11_Ending.fseq": 122
+    },
+    "idle_channel": 123,
+    "pulse_frames": 3,
+    "pulse_gap_ms": 50,
+    "release": true,
+    "protocol": "sacn"
+  }
+}
