@@ -7486,6 +7486,11 @@ def _entry_effects_hold(S, before, o, label):
     if not o.accepted or st == before.state or st not in _ARRIVE:
         return
     kinds = [e.kind for e in o.effects]
+    if st in ("STANDBY", "HOLD") and "STOP_CONDUCTOR" in kinds \
+            and not S.INTERMISSION_AFTER_A_STOPPED_SHOW:
+        check("INTERMISSION" not in kinds,
+              f"{label}: the rig stays dark after a stopped show")
+        return
     check(_ARRIVE[st] in kinds,
           f"{label}: entered {st} from {before.state} without "
           f"{_ARRIVE[st]}; effects were {kinds}")
@@ -8698,7 +8703,8 @@ def test_the_scheduler_engine_is_pure():
     root = os.path.dirname(os.path.abspath(__file__))
     src = open(os.path.join(root, "ltcplay", "schedule.py")).read()
     tree = ast.parse(src)
-    allowed = {"json", "re", "dataclasses", "datetime", "zoneinfo"}
+    allowed = {"hashlib", "json", "re", "dataclasses", "datetime",
+               "zoneinfo"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -8802,7 +8808,8 @@ def test_schedule_restart_keeps_tonight():
     # STANDBY with 18:00 MISSED before any tick.
     saved_m = a.machine
     doc = S.machine_to_doc(saved_m)
-    back = S.machine_from_doc(json.loads(json.dumps(doc)))
+    back = S.machine_from_doc(json.loads(json.dumps(doc)), a.rule,
+                              saved_m.date, _den(S, 18, 25))
     check(back.state == S.BOOT and back.resumed_from == saved_m.state
           and S.machine_to_doc(back) == dict(doc, state=S.BOOT),
           "a saved night reads back exactly, in BOOT, knowing where it was")
@@ -8890,7 +8897,7 @@ def test_schedule_restart_keeps_tonight():
         path = SV.tonight_path(_den(S, 0, 0).date(), work)
         open(path, "w").write(garbage)
         b = _svc(S, work, now).start(thread=False)
-        rows = [r["text"] for r in b.journal if "could not be read" in r["text"]]
+        rows = [r["text"] for r in b.journal if "could not be used" in r["text"]]
         check(len(rows) == 1 and "starts again from the schedule file" in
               rows[0] and "set aside" in rows[0],
               f"a saved list that cannot be read is a sentence and a fresh "
@@ -9134,6 +9141,335 @@ def test_schedule_rule_file_with_a_bom():
     print("  ok")
 
 
+def test_schedule_tonight_file_is_checked():
+    section("scheduler: tonight's saved file cannot change the rules")
+    S = _sched()
+    if S is None:
+        return
+    import copy
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+
+    # The auditor's case: late_grace_s 600 written into tonight's file, a
+    # restart at 18:05. The 18:00 show must not start.
+    for extra in ({"late_grace_s": 600}, {"guard_s": -99999},
+                  {"show_len_s": 0}, {"timezone": "Asia/Tokyo"}):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 30)]
+        _svc(S, work, now).start(thread=False)
+        path = SV.tonight_path(_den(S, 0, 0).date(), work)
+        doc = json.load(open(path))
+        doc.update(extra)
+        json.dump(doc, open(path, "w"))
+        now[0] = _den(S, 18, 5)
+        b = _svc(S, work, now).start(thread=False)
+        b.tick()
+        key = next(iter(extra))
+        check(not _starts(b) and b.machine.slot(1).status == S.MISSED,
+              f"{key}={extra[key]!r} in tonight's file must not make a "
+              f"passed show start: started {_starts(b)}")
+        check((b.machine.show_len_s, b.machine.guard_s,
+               b.machine.late_grace_s, b.machine.tz.key)
+              == (440, 120, 0, "America/Denver"),
+              f"{key}: the show length, guard, grace and zone come from the "
+              f"rule file")
+        check(any("could not be used" in r["text"] and key in r["text"]
+                  for r in b.journal)
+              and os.path.exists(path[:-5] + ".unreadable.json"),
+              f"{key}: the file is set aside with a sentence naming it")
+
+    # Every other thing the file could lie about, checked in the engine.
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 7, 20))
+    n.op(S.EDIT_MOVE, _den(S, 18, 8), show=3, at="18:45")
+    good = S.machine_to_doc(n.m)
+    d, at = n.m.date, _den(S, 18, 10)
+    m = S.machine_from_doc(copy.deepcopy(good), rule, d, at)
+    check(m.slot(1).status == S.DONE and n.m.hm(m.slot(3).start) == "18:45",
+          "a good file reads back")
+
+    def bad(what, change):
+        doc = copy.deepcopy(good)
+        change(doc)
+        try:
+            S.machine_from_doc(doc, rule, d, at)
+            check(False, f"tonight's file with {what} was accepted")
+        except ValueError as e:
+            check(str(e).endswith("."), f"{what}: not a sentence: {e}")
+            _no_dashes(str(e), what)
+
+    def slot(i, **kw):
+        return lambda doc: doc["slots"][i].update(kw)
+
+    bad("a show on another date", slot(4, start="2026-11-15T01:00:00-07:00"))
+    bad("a show the day before", slot(4, start="2026-11-14T06:00:00+00:00"))
+    bad("a planned time on another date",
+        slot(2, planned="2026-11-13T18:40:00-07:00"))
+    bad("a status that is not one", slot(4, status="FIRED"))
+    bad("a show to come that already started",
+        slot(4, fired_at="2026-11-14T18:05:00-07:00"))
+    bad("a show to come that already ended",
+        slot(4, ended_at="2026-11-14T18:05:00-07:00"))
+    bad("a time in the future", slot(0, ended_at="2026-11-14T19:00:00-07:00"))
+    bad("a running show with no start", lambda doc: (
+        doc["slots"][4].update(status="RUNNING"),
+        doc.update(running=5, state="SHOW")))
+    bad("a running show the list does not have",
+        lambda doc: doc.update(running=4, state="SHOW"))
+    bad("SHOW with nothing running", lambda doc: doc.update(state="SHOW"))
+    bad("a running show that is not the one named", lambda doc: (
+        doc["slots"][4].update(status="RUNNING",
+                               fired_at="2026-11-14T18:08:00-07:00"),
+        doc.update(running=1, state="SHOW")))
+    bad("two running shows", lambda doc: (
+        doc["slots"][3].update(status="RUNNING",
+                               fired_at="2026-11-14T18:08:00-07:00"),
+        doc["slots"][4].update(status="RUNNING",
+                               fired_at="2026-11-14T18:08:00-07:00"),
+        doc.update(running=5, state="SHOW")))
+    bad("a duplicate show number", slot(4, n=1))
+    bad("an unknown slot key", slot(4, late_grace_s=600))
+    bad("an unknown origin", slot(4, origin="madmapper"))
+    bad("a missing key", lambda doc: doc.pop("last_end"))
+    bad("hold as a string", lambda doc: doc.update(hold_pending="yes"))
+    bad("a state of BOOT", lambda doc: doc.update(state="BOOT"))
+    bad("held_from SHOW", lambda doc: doc.update(held_from="SHOW"))
+    bad("a last end in the future",
+        lambda doc: doc.update(last_end="2026-11-14T18:30:00-07:00"))
+    bad("another date", lambda doc: doc.update(date="2026-11-15"))
+    bad("the old format", lambda doc: doc.update(format=1))
+    bad("an added show past midnight", lambda doc: doc["slots"].append(
+        dict(doc["slots"][-1], n=99, origin="edit",
+             start="2026-11-15T06:55:00+00:00")))
+    print("  ok")
+
+
+def test_schedule_rule_change_rebuilds_tonight():
+    section("scheduler: a corrected rule wins over tonight's saved list")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+
+    def rule(first="18:00", guard=120):
+        return _sched_doc(weekly={"sat": {"first_start": first,
+                                          "interval_min": 20,
+                                          "last_end": "22:00"}},
+                          exceptions={}, guard_s=guard)
+
+    # No edits: the file is written at the first boot, the rule is corrected
+    # at 16:30, and a restart must run the new times.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 16, 0)]
+    _svc(S, work, now).start(thread=False)
+    rpath = os.path.join(work, SV.RULE_FILE)
+    SV.save_rule(rpath, rule("18:10"))
+    now[0] = _den(S, 16, 31)
+    b = _svc(S, work, now).start(thread=False)
+    check(b.machine.hm(b.machine.slot(1).start) == "18:10",
+          f"after a restart the corrected rule's 18:10 is the first show, "
+          f"got {b.machine.hm(b.machine.slot(1).start)}")
+    texts = [r["text"] for r in b.journal if r["outcome"] == "rebuilt"]
+    check(any("rebuilt from the new schedule" in t for t in texts)
+          and any("18:10 is new in the schedule" in t for t in texts)
+          and any("18:00 show is no longer in the schedule" in t
+                  for t in texts),
+          f"the journal names each change: {texts[:4]}")
+
+    # A hand edit with no version bump counts as well.
+    doc = json.load(open(rpath))
+    doc["weekly"]["sat"]["first_start"] = "18:20"
+    json.dump(doc, open(rpath, "w"))
+    now[0] = _den(S, 16, 40)
+    c = _svc(S, work, now).start(thread=False)
+    check(c.machine.hm(c.machine.slot(1).start) == "18:20",
+          "a hand edit without a version bump is picked up")
+    # A save that changes nothing but the version keeps tonight as it is.
+    c.edit_tonight({"op": "move", "show": 2, "to": "18:45", "who": "Andy",
+                    "screen": "rack screen"})
+    SV.save_rule(rpath, json.load(open(rpath)))
+    now[0] = _den(S, 16, 50)
+    e = _svc(S, work, now).start(thread=False)
+    check(e.machine.hm(e.machine.slot(2).start) == "18:45"
+          and not any(r["outcome"] == "rebuilt" for r in e.journal),
+          "a version bump with the same content keeps tonight's edits")
+
+    # With history: show 1 ran, show 2 was skipped, show 3 moved. The rule
+    # changes (the guard) and the program restarts at 18:15.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 50)]
+    a = _svc(S, work, now).start(thread=False)
+    a.edit_tonight({"op": "move", "show": 3, "to": "18:45", "who": "Andy",
+                    "screen": "rack screen"})
+    for t in ((18, 0), (18, 7, 20), (18, 8)):
+        now[0] = _den(S, *t)
+        a.tick()
+    a._apply(_op(S, S.SKIP_NEXT))
+    check([s.status for s in a.machine.slots[:3]] ==
+          [S.DONE, S.SKIPPED, S.PENDING], "show 1 ran, 2 skipped, 3 to come")
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(guard=90))
+    now[0] = _den(S, 18, 15)
+    b = _svc(S, work, now).start(thread=False)
+    m = b.machine
+    check(m.guard_s == 90, "the new guard applies")
+    check(m.slot(1).status == S.DONE and m.slot(2).status == S.SKIPPED,
+          "what already happened keeps its status")
+    check(m.slot(3).status == S.PENDING and m.hm(m.slot(3).start) == "18:40"
+          and m.slot(3).planned is None,
+          f"tonight's move of show 3 is dropped: {m.hm(m.slot(3).start)}")
+    check(m.last_end is not None, "when the last show ended is kept")
+    texts = [r["text"] for r in b.journal if r["outcome"] == "rebuilt"]
+    check(any("move of the 18:40 show to 18:45 is dropped" in t
+              for t in texts)
+          and any("Show 1 at 18:00 keeps its status, DONE" in t
+                  for t in texts),
+          f"each change is a sentence: {texts}")
+
+    # The times themselves change: history stays, nothing passed fires.
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(first="18:05"))
+    now[0] = _den(S, 18, 16)
+    c = _svc(S, work, now).start(thread=False)
+    m = c.machine
+    kept = sorted((m.hm(s.start), s.status) for s in m.slots
+                  if s.status in (S.DONE, S.SKIPPED))
+    check(kept == [("18:00", S.DONE), ("18:20", S.SKIPPED)],
+          f"shows that happened on the old times stay on the list: {kept}")
+    for t in ((18, 16, 1), (18, 20), (18, 24, 59)):
+        now[0] = _den(S, *t)
+        c.tick()
+    check(not _starts(c), f"no show that has passed may start after the "
+                          f"rebuild: started {_starts(c)}")
+    now[0] = _den(S, 18, 25)
+    c.tick()
+    check(len(_starts(c)) == 1 and m.hm(
+        c.machine.slot(_starts(c)[0]).start) == "18:25",
+          "the new 18:25 show starts on time")
+    for r in b.journal + c.journal:
+        _no_dashes(r["text"], "rebuild")
+    print("  ok")
+
+
+def test_schedule_late_failed_start_is_a_fault():
+    section("scheduler: a failed start reported too late leaves the show "
+            "running")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    rule = _one_night_rule(S)
+    start = _den(S, 18, 0)
+    for after, stops in ((3, True), (S.CONFIRM_WINDOW_S, True),
+                         (S.CONFIRM_WINDOW_S + 0.9, True),
+                         (S.CONFIRM_WINDOW_S + 1, False), (360, False)):
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(start)
+        o = n.do(S.SHOW_FAILED, "madmapper", start + timedelta(seconds=after),
+                 detail="no timecode after start")
+        if stops:
+            check(n.m.state == S.STANDBY and n.m.slot(1).status == S.FAULT
+                  and S.STOP_CONDUCTOR in [e.kind for e in o.effects],
+                  f"a failed start {after} s after the start stops the show")
+        else:
+            check(o.accepted and n.m.state == S.SHOW and n.m.running == 1
+                  and n.m.slot(1).status == S.RUNNING and n.m.fault
+                  and not o.effects,
+                  f"a failed start {after} s after the start is a fault and "
+                  f"the show keeps running: {n.m.state} {o.effects}")
+            check(f"{S.CONFIRM_WINDOW_S} s window" in o.log[0].text
+                  and "keeps running" in o.log[0].text,
+                  f"and says why: {o.log[0].text!r}")
+        n.audit(f"late failed start {after}")
+    check(S.CONFIRM_WINDOW_S == 10, "the confirm window is 10 s")
+    print("  ok")
+
+
+def test_schedule_after_a_stopped_show_is_one_choice():
+    section("scheduler: what follows Abort is one named choice, both ways")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    root = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(root, "ltcplay", "schedule.py")).read()
+    check(src.count("INTERMISSION_AFTER_A_STOPPED_SHOW") == 2,
+          "the choice is defined once and read in one place")
+    check(S.INTERMISSION_AFTER_A_STOPPED_SHOW is True,
+          "today's default: the intermission comes back after the fade")
+    rule = _one_night_rule(S)
+    Z, ST, F, I = (S.ZERO_FLAME_CUES, S.STOP_CONDUCTOR, S.FADE_PIXELS,
+                   S.INTERMISSION)
+
+    def scenarios():
+        out = {}
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        out["abort"] = n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        n.op(S.HOLD_ON, _den(S, 18, 1))
+        out["abort on hold"] = n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        out["failed start"] = n.do(S.SHOW_FAILED, "madmapper",
+                                   _den(S, 18, 0, 5), detail="no timecode")
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        doc = json.loads(json.dumps(S.machine_to_doc(n.m)))
+        back = S.machine_from_doc(doc, rule, n.m.date, _den(S, 18, 3))
+        out["restart mid show"] = S.step(back, S.Event(S.BOOT_DONE, "system"),
+                                         _den(S, 18, 3))
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        out["show ended"] = n.do(S.SHOW_ENDED, "madmapper",
+                                 _den(S, 18, 7, 20))
+        return out
+
+    try:
+        for choice in (True, False):
+            S.INTERMISSION_AFTER_A_STOPPED_SHOW = choice
+            for name, o in scenarios().items():
+                kinds = [e.kind for e in o.effects]
+                if name == "show ended":
+                    check(kinds == [I], f"a show that ends normally always "
+                                        f"brings the intermission: {kinds}")
+                    continue
+                check(o.machine.state in (S.STANDBY, S.HOLD),
+                      f"{name}: lands in STANDBY or HOLD")
+                want = [Z, ST, F] + ([I] if choice else [])
+                check(kinds == want, f"{name} with the choice {choice}: "
+                                     f"expected {want}, got {kinds}")
+    finally:
+        S.INTERMISSION_AFTER_A_STOPPED_SHOW = True
+    print("  ok")
+
+
+def test_schedule_contract_for_the_transport():
+    section("scheduler: the contract for the transport is written down")
+    S = _sched()
+    if S is None:
+        return
+    doc = S.__doc__
+    for must in ("Contract for PR 3", "BEFORE performing", "SHOW_CONFIRMED",
+                 "CONFIRM_WINDOW_S", "FAULT_RAISED", "SHOW_ENDED",
+                 "CLOSING_DONE", "twice\n   a second", "confirmed=True",
+                 "refused Outcome"):
+        check(must in doc, f"the contract must say {must!r}")
+    _no_dashes(doc, "the contract")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     test_ltc_roundtrip()
@@ -9245,6 +9581,11 @@ if __name__ == "__main__":
     test_schedule_faults_during_and_before_a_show()
     test_schedule_edits_past_last_end_and_midnight()
     test_schedule_rule_file_with_a_bom()
+    test_schedule_tonight_file_is_checked()
+    test_schedule_rule_change_rebuilds_tonight()
+    test_schedule_late_failed_start_is_a_fault()
+    test_schedule_after_a_stopped_show_is_one_choice()
+    test_schedule_contract_for_the_transport()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

@@ -15,7 +15,42 @@ Windows needs the `tzdata` package.
 
 It never looks at flame arm state. Flames are gated by the safety process,
 not by the calendar, so there is no arm field, arm event or arm effect here.
+
+Contract for PR 3, the code that performs the effects
+------------------------------------------------------
+Whatever drives this engine and carries out its effects must:
+
+1. Save tonight BEFORE performing anything. After every step whose machine
+   changed, write machine_to_doc() to tonight's file (the service does this
+   in _apply) and only then perform the Outcome's effects. A crash between
+   performing START_SHOW and saving would otherwise restore the slot as
+   still to come and, inside the grace window, start the same show twice.
+   If the save fails, say so in the journal and still perform the effects:
+   a show that runs beats a show that silently does not.
+2. Perform the effects in the order given. ZERO_FLAME_CUES is immediate.
+   FADE_PIXELS carries its length; an INTERMISSION listed after a fade
+   starts when the fade has finished, never over it.
+3. Never perform anything for a refused Outcome (Outcome.refused is set).
+4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
+   START_SHOW. Until then the show counts as not yet started.
+5. Send SHOW_FAILED only for a show that did not start: never confirmed,
+   and within CONFIRM_WINDOW_S of the start. A later SHOW_FAILED is not a
+   show failure and is recorded as a fault with the show left running.
+6. Never send SHOW_FAILED for a fault during a show. Send FAULT_RAISED,
+   which sets the FAULT flag and leaves the show running: a show that loses
+   MadMapper midway free runs to its end.
+7. Send SHOW_ENDED, with the show number, when a show finishes.
+8. Send CLOSING_DONE when the closing effects have finished.
+9. Send BOOT_DONE once, after restoring tonight, then TICK at least twice
+   a second from the OS wall clock with a zone attached. The late rule
+   counts whole seconds, so a tick has to land inside every second.
+10. Send operator events only with `who` and `screen` filled in, and send
+    Abort and End night with confirmed=True only after the operator has
+    answered the confirm question from ACTIONS.
+11. Never read flame arm state for the scheduler's sake, and never set the
+    OS clock.
 """
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
@@ -59,6 +94,19 @@ EFFECTS = (PRESHOW_LOOK, INTERMISSION, START_SHOW, STOP_CONDUCTOR,
 # performer is free to run the three at once. Aborting never disarms.
 ABORT_FADE_S = 1.0
 CLOSING_FADE_S = 1.0
+
+# OPEN QUESTION FOR JEFF, and the one place it is decided. After a show is
+# stopped early (Abort, a start that failed, a restart during a show) the
+# machine lands in STANDBY, which section 5 defines as "intermission
+# running", while Abort itself says stop the conductor and fade to black.
+# True: after the fade the intermission starts again. False: the rig stays
+# dark until the next show ends or the operator resumes.
+INTERMISSION_AFTER_A_STOPPED_SHOW = True
+
+# How long after START_SHOW a show may still be reported as not having
+# started. Past this, a SHOW_FAILED is recorded as a fault and the show
+# keeps running: six minutes into a show is not a failed start.
+CONFIRM_WINDOW_S = 10
 
 # Events, and who may send each one. A blank or unknown actor is a
 # programming error and raises; an event sent in the wrong state is refused
@@ -608,6 +656,7 @@ class Machine:
     shows_started: int = 0
     night_end: object = None     # tonight's last_end, UTC; None when dark
     resumed_from: str = ""       # the state saved before a restart
+    rule_id: str = ""            # which rule tonight was built from
 
     @property
     def fault(self):
@@ -654,7 +703,17 @@ def new_night(rule, d):
            if plan.night is not None else None)
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
-                   slots=slots, night_end=end)
+                   slots=slots, night_end=end, rule_id=rule_fingerprint(rule))
+
+
+def rule_fingerprint(rule):
+    """What the rule says, as a short hash. The version number is left out,
+    so a hand edit that forgot to bump it still counts as a change, and a
+    save that changed nothing does not."""
+    doc = rule_to_doc(rule)
+    doc.pop("version", None)
+    text = json.dumps(doc, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def midnight(m):
@@ -809,10 +868,12 @@ def _abort_effects(n):
 # IDLE is the preshow look; STANDBY is the intermission timeline running; HOLD
 # keeps the intermission running; SHOW starts the show; CLOSING fades out,
 # stops MadMapper, blacks out and zeroes the flame cues; OFF asks for nothing.
-def entry_effects(state, show=0):
+def entry_effects(state, show=0, after_stop=False):
     if state == IDLE:
         return [Effect(PRESHOW_LOOK)]
     if state in (STANDBY, HOLD):
+        if after_stop and not INTERMISSION_AFTER_A_STOPPED_SHOW:
+            return []
         return [Effect(INTERMISSION)]
     if state == SHOW:
         return [Effect(START_SHOW, show=show)]
@@ -821,22 +882,23 @@ def entry_effects(state, show=0):
     return []
 
 
-def _enter(tx, state, show=0):
+def _enter(tx, state, show=0, after_stop=False):
     """Change state and add the effects that belong to arriving there."""
     tx._set_state(state)
-    tx.effects.extend(entry_effects(state, show))
+    tx.effects.extend(entry_effects(state, show, after_stop))
 
 
-def _after_show(tx, abort=False):
-    """Where a show that has just stopped leaves the night."""
+def _after_show(tx, abort=False, stopped=False):
+    """Where a show that has just finished, or been stopped, leaves the
+    night. `stopped` is a show cut short (Abort, a failed start)."""
     m = tx.m
     if m.hold_pending:
         tx.m = replace(tx.m, hold_pending=False, held_from=STANDBY)
-        _enter(tx, HOLD)
+        _enter(tx, HOLD, after_stop=stopped)
     elif abort or m.next_slot() is not None:
         # Abort stays in STANDBY even when no show is left; the next tick
         # closes the night if so.
-        _enter(tx, STANDBY)
+        _enter(tx, STANDBY, after_stop=stopped)
     else:
         _enter(tx, CLOSING)
 
@@ -912,7 +974,8 @@ def _boot_done(m, ev, now):
                 f"{m.date}, so it is off for the night.")
         return tx.done()
     was = m.resumed_from
-    if was and m.running:
+    cut = bool(was and m.running)
+    if cut:
         # The program stopped during a show. Nothing is playing now (ltcplay
         # is the clock), so that show is over: FAULT, the rig made safe, and
         # the guard counted from now so the next show cannot crowd it.
@@ -938,10 +1001,10 @@ def _boot_done(m, ev, now):
         why = "every show tonight has already passed"
     elif was == HOLD or tx.m.hold_pending:
         tx.m = replace(tx.m, hold_pending=False, held_from=STANDBY)
-        _enter(tx, HOLD)
+        _enter(tx, HOLD, after_stop=cut)
         why = "it was on hold before the restart"
     elif any(s.status != PENDING for s in tx.m.slots):
-        _enter(tx, STANDBY)
+        _enter(tx, STANDBY, after_stop=cut)
         why = "shows have already passed tonight"
     else:
         _enter(tx, IDLE)
@@ -987,7 +1050,7 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
     if status == FAULT:
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
-    _after_show(tx, abort=abort)
+    _after_show(tx, abort=abort, stopped=bool(effects))
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -1035,6 +1098,21 @@ def _show_failed(m, ev, now):
                        f"show is reported as a fault and the show keeps "
                        f"running.")
     what = ev.detail or "no reason given"
+    after = lateness_s(s.fired_at, now)
+    if after > CONFIRM_WINDOW_S:
+        # Too late to be a failed start. Refused as a show failure and
+        # recorded as a fault instead: the flag goes up, nothing is stopped.
+        tx = _Tx(m, ev, now)
+        sentence = (f"A failed start for show {s.n} was reported "
+                    f"{fmt_span(after)} after the start, past the "
+                    f"{CONFIRM_WINDOW_S} s window, so it is not treated as a "
+                    f"failed start. It is recorded as a fault and show "
+                    f"{s.n} keeps running.")
+        tx.m = replace(tx.m, faults=tx.m.faults + (what,))
+        tx.note(SHOW_FAILED, "recorded as a fault",
+                f"too late for a failed start: {what}",
+                f"{sentence} {ev.actor} said: {what}.", show=s.n)
+        return tx.done()
     return _show_stopped(
         m, ev, now, FAULT, f"FAULT ({what})",
         f"Show {m.running} did not start: {what}. Reported by {ev.actor}. "
@@ -1447,7 +1525,14 @@ def step(m, ev, now):
 
 # ------------------------------------------------ tonight, as data --
 
-TONIGHT_FORMAT = 1
+TONIGHT_FORMAT = 2
+TONIGHT_KEYS = frozenset((
+    "format", "date", "rule_id", "state", "running", "last_end",
+    "hold_pending", "held_from", "faults", "shows_started", "slots"))
+SLOT_KEYS = frozenset((
+    "n", "start", "status", "reason", "origin", "planned", "fired_at",
+    "confirmed_at", "ended_at"))
+ORIGINS = ("rule", "edit", "operator")
 
 
 def _iso(dt):
@@ -1455,15 +1540,16 @@ def _iso(dt):
 
 
 def machine_to_doc(m):
-    """Tonight's machine as JSON, so a restart can pick it up. Pure."""
+    """Tonight as JSON, so a restart can pick it up. Only what happened
+    tonight is kept: the slots, their statuses and edits, when the last show
+    ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
+    always come from the rule file, never from here. Pure."""
     return {
         "format": TONIGHT_FORMAT, "date": m.date.isoformat(),
-        "timezone": getattr(m.tz, "key", str(m.tz)), "state": m.state,
-        "show_len_s": m.show_len_s, "guard_s": m.guard_s,
-        "late_grace_s": m.late_grace_s, "running": m.running,
+        "rule_id": m.rule_id, "state": m.state, "running": m.running,
         "last_end": _iso(m.last_end), "hold_pending": m.hold_pending,
         "held_from": m.held_from, "faults": list(m.faults),
-        "shows_started": m.shows_started, "night_end": _iso(m.night_end),
+        "shows_started": m.shows_started,
         "slots": [{"n": s.n, "start": _iso(s.start), "status": s.status,
                    "reason": s.reason, "origin": s.origin,
                    "planned": _iso(s.planned), "fired_at": _iso(s.fired_at),
@@ -1472,59 +1558,189 @@ def machine_to_doc(m):
     }
 
 
-def machine_from_doc(doc):
-    """The saved machine, back in BOOT with `resumed_from` set, so BOOT_DONE
-    runs the late rule over it exactly as it does over a fresh night. Raises
-    ValueError with a sentence when the document is not one of ours."""
-    def when(v, what):
+def machine_from_doc(doc, rule, d, now):
+    """Tonight's saved list, checked, on a machine built from the CURRENT
+    rule. It comes back in BOOT with `resumed_from` set, so BOOT_DONE runs
+    the late rule over it exactly as it does over a fresh night.
+
+    Everything in the file is checked, because a file is only a file: slot
+    times on tonight's date in the rule's zone and not past midnight,
+    statuses from the known set, no show still to come that carries a start
+    or an end, at most one running show and it is the one named, and no
+    time in the future. Raises ValueError with a sentence."""
+    now = _utc(_aware(now))
+    base = new_night(rule, d)
+    tz = base.tz
+    start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
+    end_of_day = midnight(base)
+
+    def when(v, what, optional=True):
         if v is None:
-            return None
+            if optional:
+                return None
+            raise ValueError(f"{what} is missing.")
         try:
             dt = datetime.fromisoformat(v)
         except (TypeError, ValueError):
             raise ValueError(f"{what} is not a time: {v!r}.")
         if dt.tzinfo is None:
             raise ValueError(f"{what} has no time zone.")
-        return _utc(dt)
+        dt = _utc(dt)
+        if dt > now + ONE_SECOND:
+            raise ValueError(f"{what}, {dt.astimezone(tz):%H:%M:%S}, is in "
+                             f"the future.")
+        return dt
+
+    def tonight(v, what):
+        try:
+            dt = _utc(datetime.fromisoformat(v))
+        except (TypeError, ValueError):
+            raise ValueError(f"{what} is not a time: {v!r}.")
+        if not (start_of_day <= dt < end_of_day):
+            raise ValueError(f"{what} is not on {d} in {rule.timezone}.")
+        return dt
+
+    def flag(v, what):
+        if not isinstance(v, bool):
+            raise ValueError(f"{what} has to be true or false.")
+        return v
 
     if not isinstance(doc, dict) or doc.get("format") != TONIGHT_FORMAT:
         raise ValueError("It is not a saved night this version can read.")
-    try:
-        slots = []
-        for x in doc["slots"]:
-            if x["status"] not in (PENDING, RUNNING) + tuple(FINAL):
-                raise ValueError(f"show {x['n']} has status "
-                                 f"{x['status']!r}.")
-            slots.append(Slot(
-                n=int(x["n"]), start=when(x["start"], "a start"),
-                status=x["status"], reason=str(x["reason"]),
-                origin=str(x["origin"]),
-                planned=when(x["planned"], "a planned time"),
-                fired_at=when(x["fired_at"], "a start time"),
-                confirmed_at=when(x["confirmed_at"], "a confirm time"),
-                ended_at=when(x["ended_at"], "an end time")))
-        state = doc["state"]
-        if state not in STATES:
-            raise ValueError(f"{state!r} is not a state.")
-        m = Machine(
-            date=date.fromisoformat(doc["date"]), tz=zone(doc["timezone"]),
-            show_len_s=int(doc["show_len_s"]), guard_s=int(doc["guard_s"]),
-            late_grace_s=int(doc["late_grace_s"]), state=BOOT,
-            slots=tuple(slots), running=int(doc["running"]),
-            last_end=when(doc["last_end"], "the last show's end"),
-            hold_pending=bool(doc["hold_pending"]),
-            held_from=str(doc["held_from"]),
-            faults=tuple(str(f) for f in doc["faults"]),
-            shows_started=int(doc["shows_started"]),
-            night_end=when(doc["night_end"], "last_end"),
-            resumed_from=state)
-    except (KeyError, TypeError) as e:
-        raise ValueError(f"It is missing {e}.")
-    if m.running and (m.slot(m.running) is None
-                      or m.slot(m.running).status != RUNNING):
-        raise ValueError(f"It says show {m.running} is running, but that "
-                         f"show is not on its list as running.")
-    return m
+    unknown = sorted(k for k in doc if k not in TONIGHT_KEYS)
+    missing = sorted(k for k in TONIGHT_KEYS if k not in doc)
+    if unknown or missing:
+        raise ValueError("It has " + "; ".join(
+            x for x in (unknown and f"settings it should not: "
+                                    f"{', '.join(unknown)}",
+                        missing and f"settings missing: "
+                                    f"{', '.join(missing)}") if x) + ".")
+    if doc["date"] != d.isoformat():
+        raise ValueError(f"It is for {doc['date']}, not {d}.")
+    state = doc["state"]
+    if state not in STATES or state == BOOT:
+        raise ValueError(f"{state!r} is not a state it can resume in.")
+    if doc["held_from"] not in ("", IDLE, STANDBY):
+        raise ValueError(f"held_from {doc['held_from']!r} is not a state "
+                         f"Resume can return to.")
+    if not isinstance(doc["faults"], list) or \
+            not all(isinstance(f, str) for f in doc["faults"]):
+        raise ValueError("faults has to be a list of sentences.")
+    for k in ("running", "shows_started"):
+        if isinstance(doc[k], bool) or not isinstance(doc[k], int) \
+                or doc[k] < 0:
+            raise ValueError(f"{k} has to be a whole number.")
+    if not isinstance(doc["slots"], list):
+        raise ValueError("slots has to be a list.")
+    slots, seen = [], set()
+    for x in doc["slots"]:
+        if not isinstance(x, dict) or set(x) != SLOT_KEYS:
+            raise ValueError(f"A show on the list is not in the right shape: "
+                             f"{x!r}.")
+        n = x["n"]
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1 \
+                or n in seen:
+            raise ValueError(f"Show number {n!r} is not a new whole number.")
+        seen.add(n)
+        status = x["status"]
+        if status not in (PENDING, RUNNING) + tuple(sorted(FINAL)):
+            raise ValueError(f"Show {n} has status {status!r}.")
+        if x["origin"] not in ORIGINS or not isinstance(x["reason"], str):
+            raise ValueError(f"Show {n} has origin {x['origin']!r}.")
+        start = tonight(x["start"], f"Show {n}'s start")
+        if start + timedelta(seconds=rule.show_len_s) > end_of_day \
+                and x["origin"] != "operator":
+            raise ValueError(f"Show {n} would finish after midnight.")
+        sl = Slot(n=n, start=start, status=status, reason=x["reason"],
+                  origin=x["origin"],
+                  planned=(tonight(x["planned"], f"Show {n}'s planned start")
+                           if x["planned"] is not None else None),
+                  fired_at=when(x["fired_at"], f"Show {n}'s start time"),
+                  confirmed_at=when(x["confirmed_at"],
+                                    f"Show {n}'s confirm time"),
+                  ended_at=when(x["ended_at"], f"Show {n}'s end time"))
+        if status == PENDING and (sl.fired_at or sl.confirmed_at
+                                  or sl.ended_at):
+            raise ValueError(f"Show {n} is still to come but has already "
+                             f"started or ended.")
+        if status == RUNNING and (sl.fired_at is None or sl.ended_at):
+            raise ValueError(f"Show {n} is running but has no start, or "
+                             f"has already ended.")
+        slots.append(sl)
+    running = [sl.n for sl in slots if sl.status == RUNNING]
+    if running != ([doc["running"]] if doc["running"] else []):
+        raise ValueError(f"It says show {doc['running'] or 'none'} is "
+                         f"running, but the list says "
+                         f"{', '.join(map(str, running)) or 'none'}.")
+    if (state == SHOW) != bool(running):
+        raise ValueError(f"It is in {state} with "
+                         f"{'a' if running else 'no'} show running.")
+    last_end = when(doc["last_end"], "The last show's end")
+    if last_end is not None and last_end < start_of_day:
+        raise ValueError("The last show's end is before tonight.")
+    return replace(
+        base, slots=tuple(slots), running=doc["running"],
+        last_end=last_end, hold_pending=flag(doc["hold_pending"],
+                                             "hold_pending"),
+        held_from=doc["held_from"], faults=tuple(doc["faults"]),
+        shows_started=doc["shows_started"], resumed_from=state,
+        rule_id=str(doc["rule_id"]))
+
+
+def rebuild_night(rule, saved):
+    """The rule changed since tonight was saved. Tonight is built again from
+    the new rule, keeping only what already happened: every show with a
+    final status (and one that was running) is carried over onto the new
+    list, matched by the time it was planned for. Operator edits to shows
+    still to come are dropped. Returns (machine, sentences), one sentence per
+    change, for the journal. Pure."""
+    fresh = new_night(rule, saved.date)
+    hm = fresh.hm
+    by_time = {sl.start: sl for sl in fresh.slots}
+    slots = {sl.n: sl for sl in fresh.slots}
+    extra_n = max((sl.n for sl in fresh.slots), default=0)
+    notes = []
+    running = 0
+    kept_times = set()
+    for sl in sorted(saved.slots, key=lambda x: (x.start, x.n)):
+        planned = sl.planned or sl.start
+        if sl.status == PENDING:
+            if sl.origin != "rule":
+                notes.append(f"The show added tonight at {hm(sl.start)} is "
+                             f"dropped because the schedule changed.")
+            elif sl.planned is not None:
+                notes.append(f"Tonight's move of the {hm(planned)} show to "
+                             f"{hm(sl.start)} is dropped because the "
+                             f"schedule changed.")
+            elif planned not in by_time:
+                notes.append(f"The {hm(planned)} show is no longer in the "
+                             f"schedule.")
+            continue
+        match = by_time.get(planned) if sl.origin == "rule" else None
+        if match is not None and match.start not in kept_times:
+            n = match.n
+            kept_times.add(match.start)
+        else:
+            extra_n += 1
+            n = extra_n
+        slots[n] = replace(sl, n=n)
+        if sl.status == RUNNING:
+            running = n
+        notes.append(f"Show {n} at {hm(sl.start)} keeps its status, "
+                     f"{sl.status}"
+                     + (f", from show {sl.n} on the old list."
+                        if n != sl.n else "."))
+    saved_times = {(x.planned or x.start) for x in saved.slots}
+    for sl in fresh.slots:
+        if sl.start not in saved_times:
+            notes.append(f"Show {sl.n} at {hm(sl.start)} is new in the "
+                         f"schedule.")
+    m = replace(fresh, slots=tuple(sorted(slots.values(), key=lambda x: x.n)),
+                running=running, last_end=saved.last_end,
+                hold_pending=saved.hold_pending, held_from=saved.held_from,
+                faults=saved.faults, shows_started=saved.shows_started,
+                resumed_from=saved.resumed_from)
+    return m, notes
 
 
 # --------------------------------------------------- operator actions --

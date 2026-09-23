@@ -379,10 +379,14 @@ class Service:
         self.persist_error = ""
         return True
 
-    def _load_tonight(self, d):
+    def _load_tonight(self, d, now):
         """Tonight's saved machine, or a fresh one from the rule with a
-        sentence saying why. A file that cannot be read is set aside, never
-        overwritten, so the morning read can still see it."""
+        sentence saying why. The show length, guard, grace and zone always
+        come from the rule file; the saved list only says what happened
+        tonight, and it is checked before it is believed. A file that fails
+        the checks is set aside, never overwritten, so the morning read can
+        still see it. If the rule changed since the list was saved, tonight
+        is rebuilt from the new rule and only what already happened is kept."""
         path = tonight_path(d, self.state_dir)
         if not os.path.exists(path):
             self._journal_line(
@@ -391,25 +395,37 @@ class Service:
             return sch.new_night(self.rule, d)
         try:
             with open(path, encoding="utf-8-sig") as fh:
-                m = sch.machine_from_doc(json.load(fh))
-            if m.date != d:
-                raise ValueError(f"it is for {m.date}, not {d}")
-            return m
+                m = sch.machine_from_doc(json.load(fh), self.rule, d, now)
         except (OSError, ValueError, sch.RuleError) as e:
-            aside = path[:-5] + ".unreadable.json"
-            try:
-                os.replace(path, aside)
-                where = f"It was set aside as {aside}."
-            except OSError:
-                where = "It could not be moved aside."
+            return self._set_aside(path, e, d)
+        rid = sch.rule_fingerprint(self.rule)
+        if m.rule_id != rid:
+            m, notes = sch.rebuild_night(self.rule, m)
             self._journal_line(
-                "system", f"The saved list for tonight, {path}, could not "
-                f"be read: {str(e).rstrip('.')}. {where} Tonight starts "
-                f"again from the schedule file, so edits made earlier "
-                f"tonight are lost and shows already past are marked "
-                f"MISSED. Check tonight's list.",
-                action="load tonight", outcome="failed")
-            return sch.new_night(self.rule, d)
+                "system", "The schedule file changed after tonight's list "
+                "was saved, so tonight is rebuilt from the new schedule. "
+                "Shows that already happened keep their status; tonight's "
+                "changes to shows still to come are dropped.",
+                action="load tonight", outcome="rebuilt")
+            for text in notes:
+                self._journal_line("system", text, action="load tonight",
+                                   outcome="rebuilt")
+        return m
+
+    def _set_aside(self, path, e, d):
+        aside = path[:-5] + ".unreadable.json"
+        try:
+            os.replace(path, aside)
+            where = f"It was set aside as {aside}."
+        except OSError:
+            where = "It could not be moved aside."
+        self._journal_line(
+            "system", f"The saved list for tonight, {path}, could not be "
+            f"used: {str(e).rstrip('.')}. {where} Tonight starts again from "
+            f"the schedule file, so edits made earlier tonight are lost and "
+            f"shows already past are marked MISSED. Check tonight's list.",
+            action="load tonight", outcome="failed")
+        return sch.new_night(self.rule, d)
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
@@ -431,7 +447,7 @@ class Service:
                 return True
             self.machine = None
         if self.machine is None:
-            self.machine = self._load_tonight(d)
+            self.machine = self._load_tonight(d, now)
             self._dry_end = None
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
