@@ -11,10 +11,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same PR makes the older run pointless. Runs on main and
-# on tags are never cancelled.
+# A newer push to the same PR makes the older run pointless, so it is
+# cancelled. Every push to main and every tag gets a group of its own: they
+# are never cancelled, and never queue behind an hour of mutate.py either.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
