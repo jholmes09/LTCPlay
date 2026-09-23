@@ -5687,6 +5687,12 @@ def test_opening_a_render_proves_it_reads():
     copy_render(src, whole)
     with FSEQ(whole) as f:
         check(f.verify() is True, "a complete render must verify")
+        # And it lets go of what it read to prove that. Verifying every cue
+        # at startup once pinned a whole set in memory: 428MB of renders,
+        # 420MB resident before a frame was played.
+        check(f._cache_idx == -1 and not f._cache,
+              f"verify kept a {len(f._cache)} byte block in memory; every "
+              f"verified render would stay resident")
         n_blocks = len(f._blocks)
     check(n_blocks > 2, "this test needs a multi-block render")
 
