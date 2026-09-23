@@ -1060,9 +1060,16 @@ MUTATIONS = [
 ]
 
 
+# What the last suite run failed on, so a surprising result can be read.
+_LAST_FAILS = []
+
+
 def run_suite():
     r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
                        capture_output=True, text=True, timeout=300)
+    out = (r.stdout or "") + (r.stderr or "")
+    _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
+                      if l.startswith("  FAIL") or "Error" in l][:6]
     return r.returncode == 0
 
 
@@ -1171,6 +1178,17 @@ def _run():
         _write(path, src.replace(old, new, 1))
         try:
             green = run_suite()
+            # A mutation on the expected-miss list that comes out caught has
+            # to be caught twice. Once is a timing test failing on a slow
+            # runner, and "now caught" would then fail the job for nothing.
+            if not green and name in expected:
+                why = list(_LAST_FAILS)
+                if run_suite():
+                    green = True
+                    print(f"  caught once, then not: a flaky test, not this "
+                          f"mutation: {name}")
+                    for w in why:
+                        print(f"      {w}")
         finally:
             _write(path, backup)
         if green:
@@ -1181,6 +1199,9 @@ def _run():
             print(f"  caught      {name}")
             caught += 1
             caught_names.append(name)
+            if name in expected:
+                for w in _LAST_FAILS:
+                    print(f"      {w}")
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.

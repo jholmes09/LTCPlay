@@ -72,45 +72,6 @@ jobs:
           echo "failed runs: $bad of 5"
           [ "$bad" = 0 ]
 
-  # TEMP (porting aid, removed before the PR): why two mutations that only
-  # the show folder should catch were caught on Windows.
-  windows-why:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata
-      - shell: python
-        run: |
-          import os, subprocess, sys
-          sys.path.insert(0, os.getcwd())
-          ns = {"__file__": os.path.abspath("mutate.py")}
-          exec(open("mutate.py", encoding="utf-8").read().split("def run_suite")[0], ns)
-          want = ["reload keeps the old reader instead of the new one",
-                  "the page is not told which reload mode it is in"]
-          def suite(tag):
-              r = subprocess.run([sys.executable, "selftest.py"], capture_output=True, text=True, timeout=600)
-              out = r.stdout + r.stderr
-              lines = [l for l in out.splitlines() if l.startswith("  FAIL") or "Traceback" in l or "Error" in l]
-              print(f"--- {tag}: rc={r.returncode} {out.strip().splitlines()[-1] if out.strip() else ''}")
-              for l in lines[:40]:
-                  print("   ", l)
-          for i in range(3):
-              suite(f"unmutated #{i+1}")
-          for name, rel, old, new in ns["MUTATIONS"]:
-              if name not in want:
-                  continue
-              src = open(rel, encoding="utf-8", newline="").read()
-              open(rel, "w", encoding="utf-8", newline="").write(src.replace(old, new, 1))
-              try:
-                  for i in range(2):
-                      suite(f"{name} #{i+1}")
-              finally:
-                  open(rel, "w", encoding="utf-8", newline="").write(src)
-
   # mutate.py is about 2.5 hours of runner time per OS, so it runs where it
   # pays for itself:
   #   ubuntu   on a release tag, and on any PR or push to main that changes

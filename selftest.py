@@ -682,6 +682,9 @@ def test_player_states():
         check(p.state == FREEWHEEL, f"expected FREEWHEEL, got {p.state}")
         check(p.last_ltc_text == frozen,
               "the LTC readout moved after the feed stopped")
+        # The output thread moves the clock on its own ticks, and on a CI Mac
+        # those come late. Give it until the hold runs out to show it rolled.
+        wait_for(lambda: p.tc_seconds > rolling + 0.2, timeout=0.3)
         check(p.tc_seconds > rolling + 0.2,
               "playback should free-roll through a short dropout")
         check(p.source == SHOW, "a short dropout should not interrupt the show")
@@ -726,6 +729,9 @@ def test_loop_never_dies():
     p.start(step_ms=10)
     try:
         _drive(p, 0.6, tcmod.parse_tc("01:00:05:00", 30))
+        # Ticks are 10ms apart here and 50ms or more on a CI Mac, so wait for
+        # the count rather than assuming how many ticks 0.6s held.
+        wait_for(lambda: p.loop_errors > 5, timeout=3.0)
         check(p.thread_alive(), "the output thread died on a sender exception")
         check(p.loop_errors > 5,
               f"exceptions should be counted, saw {p.loop_errors}")
