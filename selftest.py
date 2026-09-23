@@ -774,6 +774,53 @@ def test_player_states():
     print("  ok")
 
 
+def test_the_stepped_player_is_the_output_thread():
+    section("the hand-stepped player does what the output thread does")
+    # _Stepped copies two things out of Player by hand: the body of the
+    # output loop, and what start() sets up before the thread. If either
+    # moves on and the copy does not, every stepped test keeps passing while
+    # proving a player that no longer exists. So read both out of the source
+    # and compare.
+    import ast, inspect, re as _re, textwrap
+    from ltcplay.player import Player
+
+    def body_of(fn):
+        return ast.parse(textwrap.dedent(inspect.getsource(fn))).body[0]
+
+    loop = next(n for n in ast.walk(body_of(Player._loop))
+                if isinstance(n, ast.While))
+    tried = next(n for n in loop.body if isinstance(n, ast.Try))
+    real = [ast.unparse(st) for st in tried.body]
+    tick = body_of(_Stepped.tick).body
+    ours = [_re.sub(r"\bp\.", "self.", ast.unparse(st)) for st in tick
+            if ast.unparse(st) != "p = self.p"]
+    check(real == ours,
+          f"selftest._Stepped copies Player._loop; update it. The loop does "
+          f"{real}, the harness does {ours}")
+
+    start = body_of(Player.start).body
+    before, sets = [], set()
+    for st in start:
+        if "_spawn" in ast.unparse(st):
+            break
+        before.append(st)
+    for st in before:
+        for node in ast.walk(st):
+            if isinstance(node, ast.Attribute) and \
+                    isinstance(node.ctx, ast.Store) and \
+                    isinstance(node.value, ast.Name) and node.value.id == "self":
+                sets.add(node.attr)
+    init = ast.unparse(body_of(_Stepped.__init__))
+    copied = {a for a in sets if f"p.{a} = " in init}
+    # _running only keeps the thread's while loop going; nothing is stepped
+    # without it, and the stepped player never starts one.
+    check(sets - copied == {"_running"},
+          f"selftest._Stepped copies Player.start; update it. start() sets "
+          f"{sorted(sets)} before the thread, the harness sets "
+          f"{sorted(copied)}")
+    print("  ok")
+
+
 def test_loop_never_dies():
     section("the output thread survives anything thrown at it")
     fs = FakeFSEQ(frames=4000)
@@ -7803,6 +7850,7 @@ if __name__ == "__main__":
     test_next_cue()
     test_player_states()
     test_loop_never_dies()
+    test_the_stepped_player_is_the_output_thread()
     test_socket_healing()
     test_display_survives()
     test_park_and_pause()

@@ -40,7 +40,7 @@ jobs:
   # pays for itself:
   #   ubuntu   on a release tag, and on any PR or push to main that changes
   #            trigger.py, output.py, player.py or session.py (CLAUDE.md), or
-  #            mutate.py, selftest.py or the expected-miss list
+  #            mutate.py, selftest.py, the expected-miss list or this file
   #   windows  on a release tag only
   #   macOS    never here (billed at 10x); it is run on the show Mac, with
   #            the real renders, where every mutation has to be caught
@@ -64,7 +64,7 @@ jobs:
         run: |
           set -u
           say() { echo "$1"; echo "oses=$2" >> "$GITHUB_OUTPUT"; exit 0; }
-          watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py|mutate_expected_misses\.txt)$'
+          watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py|mutate_expected_misses\.txt|\.github/workflows/selftest\.yml)$'
           if [[ "$REF" == refs/tags/* ]]; then
             say "release tag: ubuntu and windows" '["ubuntu-latest","windows-latest"]'
           fi

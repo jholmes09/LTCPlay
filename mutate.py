@@ -367,6 +367,12 @@ MUTATIONS = [
   """            if False:
                 # Leave the epoch alone."""),
 
+ ("the output thread does something the stepped tests do not",
+  "ltcplay/player.py",
+  "                self.frames_sent += 1\n",
+  "                self.frames_sent += 1\n"
+  "                self.frames_sent += 0\n"),
+
  ("a freewheel runs at half speed", "ltcplay/player.py",
   """        tc = self.last_ltc_seconds if self.state == PARKED and \\
             self.last_ltc_seconds is not None else now - epoch""",
