@@ -3170,6 +3170,20 @@ def test_verify_catches_a_mislabelled_sequence():
     check("RENDERED FROM GPL 2026_Set 1_Munsters.mp3" in out,
           f"the mismatch must be marked against the cue itself:\n{out}")
 
+    # A track number in the render's name is not a different song. The live
+    # folder numbers its renders (Set 1_01_Opener.fseq) and not its audio
+    # (Set 1_Opener.mp3). _norm_stem is proven on its own elsewhere; this
+    # proves verify actually uses it, whatever the show folder in use here
+    # happens to be called.
+    copy_render(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"),
+                os.path.join(work, "GPL 2026_Set 1_01_Opener.fseq"))
+    code, out = verify([{"tc": "01:00:00:00",
+                         "fseq": "GPL 2026_Set 1_01_Opener.fseq",
+                         "name": "GPL Opener"}], ["--no-manifest"])
+    check("RENDERED FROM" not in out and "rendered against" not in out,
+          f"a numbered render of the right song was called mislabelled:\n"
+          f"{out}")
+
     # The fingerprint: run once, change a file, run again.
     code, out = verify(good)
     check("fingerprints written" in out, "the first run should record them")
