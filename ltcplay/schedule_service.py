@@ -1,5 +1,6 @@
-"""The scheduler's contact with the world: the rule file on disk, the NTP
-check, a clock ticking the engine, and the web routes onto it.
+"""The scheduler's contact with the world: the rule file on disk, tonight's
+list on disk so a restart picks it up, the NTP check, a clock ticking the
+engine, and the web routes onto it.
 
 Imported ONLY when a schedule file is configured (`ltc serve --schedule`).
 The GPL show never passes that, so on the Mac none of this is loaded, and the
@@ -25,7 +26,11 @@ from . import settings as settings_mod
 
 RULE_FILE = "ltcplay_schedule.json"
 PREVIOUS_SUFFIX = ".previous.json"
+TONIGHT_PREFIX = "ltcplay_tonight_"
 NTP_SERVER = "pool.ntp.org"
+# The whole clock check, name lookup included, gets this long. It runs on its
+# own thread, so even this never holds up a show.
+CLOCK_CHECK_LIMIT_S = 5.0
 
 # This build decides and does not act. A constant, not a setting: there is
 # nothing to act WITH until the transport lands, and a switch that does
@@ -54,13 +59,22 @@ def previous_path(path):
     return base + PREVIOUS_SUFFIX
 
 
+def tonight_path(d, folder=None):
+    """Tonight's list as it stands, one file per date, so a restart picks up
+    the edits, the statuses and when the last show ended."""
+    return os.path.join(folder or data_dir(),
+                        f"{TONIGHT_PREFIX}{d.isoformat()}.json")
+
+
 # ------------------------------------------------------------ the file --
 
 def load_rule(path):
     """Read and validate the rule file. Every failure is one sentence (or a
     list of them) naming the file."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        # utf-8-sig: Notepad on Windows puts a byte order mark at the front of
+        # a UTF-8 file, and plain utf-8 reads that as garbage before the {.
+        with open(path, encoding="utf-8-sig") as fh:
             text = fh.read()
     except FileNotFoundError:
         raise sch.RuleError([f"There is no schedule file at {path}."])
@@ -82,6 +96,25 @@ def _replace(src, dst, replace_fn, sleep_fn, tries):
             if i == tries - 1:
                 raise
             sleep_fn(0.1 * (i + 1))
+
+
+def write_json_atomic(path, doc, replace_fn=None, sleep_fn=None, tries=5):
+    """Write JSON in one step or not at all: a temp file beside it, flushed
+    to disk, then os.replace, retried while Windows says another program has
+    the file open. Raises OSError with a sentence if it never got through."""
+    replace_fn = replace_fn or os.replace
+    sleep_fn = sleep_fn or _time.sleep
+    tmp = _write_temp(path, doc)
+    try:
+        _replace(tmp, path, replace_fn, sleep_fn, tries)
+    except PermissionError:
+        raise OSError(f"{path} is held open by another program, so it could "
+                      f"not be replaced after {tries} tries.")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _write_temp(path, doc):
@@ -110,7 +143,7 @@ def save_rule(path, doc, replace_fn=None, sleep_fn=None, tries=5):
     old_version = 0
     old_text = None
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             old_text = fh.read()
         try:
             old_version = int(json.loads(old_text).get("version") or 0)
@@ -197,16 +230,32 @@ def sntp_query(server=NTP_SERVER, timeout=2.0, sock_factory=None,
     return parse_sntp(data, t1, t4)
 
 
-def check_clock(query=None, server=NTP_SERVER):
-    """(level, sentence, offset). Never sets the clock."""
+def check_clock(query=None, server=NTP_SERVER, limit_s=CLOCK_CHECK_LIMIT_S):
+    """(level, sentence, offset). Never sets the clock.
+
+    The query runs on a thread of its own and gets `limit_s` in total. The
+    socket timeout does not cover the name lookup, which can hang for far
+    longer on a rack network with no way out, so the limit is enforced from
+    outside; a query that overruns is left to finish on its own."""
     query = query or (lambda: sntp_query(server))
-    try:
-        offset = float(query())
-    except (OSError, ValueError) as e:
+    box = {}
+
+    def run():
+        try:
+            box["offset"] = float(query())
+        except Exception as e:           # anything it raises is a sentence
+            box["error"] = e
+
+    t = threading.Thread(target=run, daemon=True, name="ltcplay-ntp")
+    t.start()
+    t.join(limit_s)
+    if t.is_alive() or "offset" not in box:
         level, text = sch.judge_clock_offset(None, server)
-        return level, f"{text} The time server did not answer: {e}.", None
-    level, text = sch.judge_clock_offset(offset, server)
-    return level, text, offset
+        why = (f"it did not answer within {limit_s:g} s"
+               if t.is_alive() else f"{box.get('error')}")
+        return level, f"{text} The time server check failed: {why}.", None
+    level, text = sch.judge_clock_offset(box["offset"], server)
+    return level, text, box["offset"]
 
 
 # ------------------------------------------------------------ the runner --
@@ -225,10 +274,14 @@ class Service:
     TICK_S = 0.25
     JOURNAL = 400
 
-    def __init__(self, path, clock=None, ntp_query=None):
+    def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
+                 clock_limit_s=CLOCK_CHECK_LIMIT_S):
         self.path = path
         self.clock = clock or _utc_now
         self.ntp_query = ntp_query
+        self.state_dir = state_dir or data_dir()
+        self.clock_limit_s = clock_limit_s
+        self.persist_error = ""
         self.lock = threading.RLock()
         self.rule = None
         self.error = ""
@@ -238,6 +291,7 @@ class Service:
         self._dry_end = None
         self._stop = threading.Event()
         self._thread = None
+        self._clock_thread = None
         self._started = False
         self.reload()
 
@@ -289,6 +343,7 @@ class Service:
 
     def _apply(self, ev, now=None):
         now = now or self.clock()
+        before = self.machine
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
         self._record(out, now)
@@ -298,7 +353,63 @@ class Service:
                             sch.Event(sch.CLOSING_DONE, "system"), now)
             self.machine = out2.machine
             self._record(out2, now)
+        if self.machine is not before:
+            self._save_tonight()
         return out
+
+    # -- tonight on disk --------------------------------------------------
+    def _save_tonight(self):
+        m = self.machine
+        path = tonight_path(m.date, self.state_dir)
+        try:
+            write_json_atomic(path, sch.machine_to_doc(m))
+        except OSError as e:
+            msg = (f"Tonight's list could not be saved to {path}: "
+                   f"{e.strerror or e}. The schedule carries on, but a "
+                   f"restart now would go back to the schedule file and "
+                   f"lose tonight's changes.")
+            if msg != self.persist_error:
+                self._journal_line("system", msg, action="save tonight",
+                                   outcome="failed")
+            self.persist_error = msg
+            return False
+        if self.persist_error:
+            self._journal_line("system", f"Tonight's list is being saved "
+                               f"to {path} again.", action="save tonight")
+        self.persist_error = ""
+        return True
+
+    def _load_tonight(self, d):
+        """Tonight's saved machine, or a fresh one from the rule with a
+        sentence saying why. A file that cannot be read is set aside, never
+        overwritten, so the morning read can still see it."""
+        path = tonight_path(d, self.state_dir)
+        if not os.path.exists(path):
+            self._journal_line(
+                "system", f"There is no saved list for {d}, so tonight "
+                f"starts from the schedule file.", action="load tonight")
+            return sch.new_night(self.rule, d)
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                m = sch.machine_from_doc(json.load(fh))
+            if m.date != d:
+                raise ValueError(f"it is for {m.date}, not {d}")
+            return m
+        except (OSError, ValueError, sch.RuleError) as e:
+            aside = path[:-5] + ".unreadable.json"
+            try:
+                os.replace(path, aside)
+                where = f"It was set aside as {aside}."
+            except OSError:
+                where = "It could not be moved aside."
+            self._journal_line(
+                "system", f"The saved list for tonight, {path}, could not "
+                f"be read: {str(e).rstrip('.')}. {where} Tonight starts "
+                f"again from the schedule file, so edits made earlier "
+                f"tonight are lost and shows already past are marked "
+                f"MISSED. Check tonight's list.",
+                action="load tonight", outcome="failed")
+            return sch.new_night(self.rule, d)
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
@@ -309,8 +420,18 @@ class Service:
             return False
         d = self._tonight(now)
         m = self.machine
-        if m is None or (m.date != d and m.state != sch.SHOW):
-            self.machine = sch.new_night(self.rule, d)
+        if m is not None and m.date != d:
+            # A new day. Settle yesterday first: a show still on its list
+            # (the machine was asleep across it) is marked MISSED in the
+            # journal rather than dropped without a word.
+            self._apply(sch.Event(sch.TICK, "scheduler"), now)
+            if self.machine.state == sch.SHOW:
+                # Never replace a running night: a show started by hand at
+                # 23:58 finishes on yesterday's list.
+                return True
+            self.machine = None
+        if self.machine is None:
+            self.machine = self._load_tonight(d)
             self._dry_end = None
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
@@ -331,7 +452,8 @@ class Service:
             return self.machine
 
     def check_clock(self):
-        level, text, offset = check_clock(self.ntp_query)
+        level, text, offset = check_clock(self.ntp_query,
+                                          limit_s=self.clock_limit_s)
         with self.lock:
             self.clock_check = {"level": level, "text": text,
                                 "offset_s": offset}
@@ -341,32 +463,46 @@ class Service:
 
     # -- running --------------------------------------------------------
     def start(self, thread=True):
-        """Check the clock once and start ticking. Safe to call twice."""
+        """Tick first, then check the clock on a thread of its own. A slow
+        time server must never hold up the first look at the schedule: a
+        3 s lookup at 17:59:59 would otherwise miss the 18:00 show. Safe to
+        call twice."""
         if self._started:
             return self
         self._started = True
+        self._safe_tick()
         if not thread:
             self.check_clock()
-            self.tick()
             return self
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="ltcplay-scheduler")
         self._thread.start()
+        self._clock_thread = threading.Thread(
+            target=self._check_clock_safely, daemon=True,
+            name="ltcplay-clock-check")
+        self._clock_thread.start()
         return self
 
-    def _run(self):
+    def _check_clock_safely(self):
         try:
             self.check_clock()
+        except Exception as e:
+            with self.lock:
+                self._journal_line("system", f"The clock check failed: {e}.",
+                                   outcome="error")
+
+    def _safe_tick(self):
+        try:
+            self.tick()
         except Exception as e:                     # never kill the ticker
-            self._journal_line("system", f"The clock check failed: {e}.")
+            with self.lock:
+                self._journal_line(
+                    "system", f"The scheduler hit a problem and carried "
+                    f"on: {type(e).__name__}: {e}.", outcome="error")
+
+    def _run(self):
         while not self._stop.is_set():
-            try:
-                self.tick()
-            except Exception as e:
-                with self.lock:
-                    self._journal_line(
-                        "system", f"The scheduler hit a problem and carried "
-                        f"on: {type(e).__name__}: {e}.", outcome="error")
+            self._safe_tick()
             self._stop.wait(self.TICK_S)
 
     def stop(self):
@@ -394,6 +530,8 @@ class Service:
             return {"ok": True, "date": self.machine.date.isoformat(),
                     "why": plan.why, "state": self.machine.state,
                     "slots": sch.slot_view(self.machine, now),
+                    "runs_late": bool(sch.late_warnings(self.machine)),
+                    "warnings": sch.late_warnings(self.machine),
                     "note": "Edits here are for tonight only and are never "
                             "written to the schedule file."}
 
@@ -408,6 +546,10 @@ class Service:
                        self.rule.tz if self.rule else timezone.utc)
                    .isoformat(timespec="seconds"),
                    "clock_check": self.clock_check,
+                   "saved_to": (tonight_path(self.machine.date,
+                                             self.state_dir)
+                                if self.machine else None),
+                   "save_error": self.persist_error or None,
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
