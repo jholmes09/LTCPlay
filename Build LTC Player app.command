@@ -133,6 +133,12 @@ static void fail(const char *msg) {
              "with title \"LTC Player\" buttons {\"OK\"} "
              "with icon stop default button 1", msg);
     fprintf(stderr, "LTC Player: %s\n", msg);
+    /* selftest runs this launcher with no Python on purpose. It sets
+     * LTCPLAY_NO_DIALOG=1 so no dialog lands on the screen of whoever is
+     * testing. Only the dialog is skipped: the message above has already
+     * been printed and logged. Nothing else ever sets it. */
+    const char *nodialog = getenv("LTCPLAY_NO_DIALOG");
+    if (nodialog && strcmp(nodialog, "1") == 0) _exit(70);
     execl("/usr/bin/osascript", "osascript", "-e", script, (char *)NULL);
     _exit(70);
 }

@@ -6816,6 +6816,26 @@ def test_the_app_launcher_finds_its_way_home():
     check('strncmp(argv[i], "-psn_", 5)' in c,
           "LaunchServices passes -psn_0_nnnn on some versions of macOS and "
           "python refuses to start with an unknown option")
+    # The runs below set LTCPLAY_NO_DIALOG so the missing-Python case does
+    # not put a dialog on the tester's screen. That switch must never be
+    # able to cost the real app its dialog, its message or its log.
+    fbody = _between(c, "static void fail(const char *msg) {", "\n}\n")
+    check('execl("/usr/bin/osascript"' in fbody
+          and "display dialog" in fbody,
+          "the launcher no longer puts a failure on the screen, so a "
+          "double-clicked app with no Python would just vanish")
+    gate = fbody.find('getenv("LTCPLAY_NO_DIALOG")')
+    check(gate >= 0 and 'strcmp(nodialog, "1") == 0' in fbody,
+          "only LTCPLAY_NO_DIALOG=1 exactly may skip the dialog")
+    check(0 <= fbody.find("logline(msg)") < gate
+          and 0 <= fbody.find("fprintf(stderr") < gate,
+          "LTCPLAY_NO_DIALOG must skip only the dialog; the message and the "
+          "log have to happen before it is checked")
+    check(gate < fbody.find('execl("/usr/bin/osascript"'),
+          "the dialog must come after the LTCPLAY_NO_DIALOG check, or the "
+          "check does nothing")
+    check(c.count('getenv("LTCPLAY_NO_DIALOG")') == 1,
+          "LTCPLAY_NO_DIALOG may only gate the dialog in fail()")
     root = tempfile.mkdtemp()
     try:
         # Off a Mac there is no _NSGetExecutablePath; swap in the same idea
@@ -6848,24 +6868,39 @@ def test_the_app_launcher_finds_its_way_home():
         open(os.path.join(res, "boot.py"), "w").write(
             "import os, sys\nprint(os.getcwd())\nprint(sys.argv[1:])\n")
         run = os.path.join(macos, "LTC Player")
+        # A home of its own, so the start log it writes can be read back
+        # and the tester's real log is left alone.
+        home = os.path.join(root, "home")
+        os.makedirs(os.path.join(home, "Library", "Logs"))
+        env = dict(os.environ, HOME=home, LTCPLAY_NO_DIALOG="1")
 
-        r = subprocess.run([run], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([run], capture_output=True, text=True, timeout=30,
+                           env=env)
         lines = r.stdout.strip().splitlines()
         check(lines and os.path.realpath(lines[0]) == os.path.realpath(inst),
               f"the app must run from the folder it sits in, got {lines[:1]}")
 
         r = subprocess.run([run, "-psn_0_4242", "devices"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30,
+                           env=env)
         lines = r.stdout.strip().splitlines()
         check(len(lines) > 1 and lines[1] == "['devices']",
               f"-psn must be dropped and real arguments kept, got {lines[1:]}")
 
         os.rename(py, py + ".gone")
-        r = subprocess.run([run], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([run], capture_output=True, text=True, timeout=30,
+                           env=env)
         check("Install ltcplay.command" in (r.stdout + r.stderr),
               "with no virtual environment the app must say what to do, not "
               "die silently: a double-clicked app that does nothing at all is "
               "the worst failure there is")
+        check(r.returncode == 70,
+              f"a launcher that cannot start must exit 70, got {r.returncode}")
+        log = os.path.join(home, "Library", "Logs", "LTCPlayer-start.log")
+        logged = open(log).read() if os.path.exists(log) else ""
+        check("Install ltcplay.command" in logged,
+              "with LTCPLAY_NO_DIALOG=1 the launcher must still write "
+              "~/Library/Logs/LTCPlayer-start.log; only the dialog is skipped")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
