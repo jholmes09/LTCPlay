@@ -436,13 +436,18 @@ class ZoneReader:
       3.12 on Windows, of a 15.6 ms clock; taking each one raw makes the
       forwarded frames step 0, 1 or 2 instead of 1.
 
-      Timecode loss during the show zone free runs to the end of the show,
-      and only then does the show length apply: a live feed past it is
-      forwarded, not cut. Any other zone stops after `hold_s` with no
-      frames, and the receivers hold and then time out on their own."""
+      Timecode loss during the show zone free runs to the end of the show.
+      Past the show length nothing is ever invented: a frame there goes out
+      only while the feed is fresh (its last frame under FRESH_FRAMES old)
+      AND that last frame was itself past the end, so MadMapper really is
+      still sending. A feed that stops on the last frame, or hands over to
+      the intermission, gets no made-up 07:20:00. Any other zone stops
+      after `hold_s` with no frames, and the receivers hold and then time
+      out on their own."""
 
     JUMP_FRAMES = 5         # about the chase engine's 0.15 s jump threshold
     CONFIRM_FRAMES = 2
+    FRESH_FRAMES = 2
     SLEW = 0.1
 
     def __init__(self, zones, count=30, drop=False, fps=30.0,
@@ -457,7 +462,8 @@ class ZoneReader:
                                                    - 1e-9)))
         self.hold_s = hold_s
         self._lock = threading.Lock()
-        # (role, epoch or None, time of the last agreeing frame)
+        # (role, epoch or None, time of the last agreeing frame, its
+        # position as received)
         self._last = None
         self._pending = None        # (role, epoch or None, at)
         self.frames_in = 0
@@ -492,7 +498,7 @@ class ZoneReader:
                 self._pending = None
                 if epoch is not None:
                     epoch = last[1] + (epoch - last[1]) * self.SLEW
-                self._last = (role, epoch, at)
+                self._last = (role, epoch, at, pos)
                 self.show_over = False
                 return role
             p = self._pending
@@ -501,7 +507,7 @@ class ZoneReader:
                 if last is None or last[0] != role:
                     self.zone_changes += 1
                 self._pending = None
-                self._last = (role, epoch, at)
+                self._last = (role, epoch, at, pos)
                 self.show_over = False
                 return role
             if p is not None:
@@ -516,7 +522,7 @@ class ZoneReader:
         if last is None:
             self.freerunning = False
             return None
-        role, epoch, t = last
+        role, epoch, t, got = last
         if role not in self.forward or epoch is None:
             self.freerunning = False
             return None
@@ -524,11 +530,14 @@ class ZoneReader:
         cur = (now - epoch) * self.fps
         if role == "show":
             self.freerunning = age > self.hold_s
-            if self.freerunning and self.show_len_frames is not None and \
-                    cur >= self.show_len_frames - 1e-9:
-                self.show_over = True
-                self.freerunning = False
-                return None
+            end = self.show_len_frames
+            if end is not None and cur >= end - 1e-9:
+                live = (age * self.fps <= self.FRESH_FRAMES
+                        and got is not None and got >= end)
+                if not live:
+                    self.show_over = True
+                    self.freerunning = False
+                    return None
         elif age > self.hold_s:
             return None
         return role, cur

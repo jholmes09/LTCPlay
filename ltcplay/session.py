@@ -772,7 +772,13 @@ class Session:
         # clock, and the rig would ignore the cue just started.
         if self.player.freerun_epoch is not None:
             self.player.release()
-        self.clock.play(pick.tc_seconds, pick.duration, pick.name)
+        try:
+            self.clock.play(pick.tc_seconds, pick.duration, pick.name)
+        except ValueError as e:
+            # A Stop that lands while this is on its way in stops the clock
+            # first. The caller gets the same kind of sentence as every other
+            # refusal here, not the clock's own exception.
+            raise SessionError(str(e))
         return pick
 
     def clock_halt(self):
@@ -809,9 +815,8 @@ class Session:
             "uptime": (now - self.started_at) if self.started_at else 0.0,
             # Between cues on a master clock the chase engine reads LOST,
             # which the page draws red. Nothing is lost: no cue is playing.
-            "state": ("STANDBY" if not input_used and p.state == "LOST"
-                      and not getattr(self.clock, "playing", False)
-                      else p.state),
+            # The terminal reads the same function, so the two agree.
+            "state": display_mod.shown_state(p),
             "source": p.source,
             "ltc_in": p.last_ltc_text or "--:--:--:--",
             "ltc_age": (now - p.last_ltc_at) if p.last_ltc_at else None,

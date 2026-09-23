@@ -7794,6 +7794,61 @@ def test_timecode_zones_for_fallback_3():
     check(after == ("intermission", (0, 0, 0, 1)),
           f"two agreeing frames of the new zone did not move it: {after}")
     check(r.zone_changes == 2, f"zone changes counted {r.zone_changes}")
+    # Never an invented 07:20:00. A 7:20 show whose last frame is 07:19:29
+    # and MadMapper stops there: for two seconds after, at every quarter
+    # frame, nothing later than 07:19:29 goes out.
+    def past_end(results):
+        return [a for a in results if a is not None and a[0] == "show"
+                and a[1] > (0, 7, 19, 29)]
+
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=440)
+    t = feed(r, [(1, 7, 19, f) for f in range(25, 30)], 10.0)
+    after = [r.at(t - F + k * F / 4) for k in range(1, 240)]
+    check(not past_end(after),
+          f"the feed stopped on 07:19:29 and timecode was invented after "
+          f"it: {past_end(after)[:3]}")
+    # The hand-off: the next frame is the intermission's first. Before it
+    # is confirmed, nothing past the show's last frame goes out; after, the
+    # intermission does.
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=440)
+    t = feed(r, [(1, 7, 19, f) for f in range(25, 30)], 10.0)
+    r.frame(2, 0, 0, 0, t)
+    mid = [r.at(t + k * F / 4) for k in range(0, 4)]
+    r.frame(2, 0, 0, 1, t + F)
+    after = r.at(t + F + F / 2)
+    check(not past_end(mid),
+          f"an invented 07:20:00 went out at the hand-off: {past_end(mid)}")
+    check(after == ("intermission", (0, 0, 0, 1)),
+          f"the intermission did not take over after the hand-off: {after}")
+    # The same hand-off through the Art-Net output, flywheel and all.
+    cfg = C.ClockConfig.parse({"source": "ltc_audio_slave",
+                               "artnet": {"nodes": {"BEYOND": "127.0.0.1"}},
+                               "zones": {"forward": ["show",
+                                                     "intermission"],
+                                         "show_len_s": 440}})
+    now_ = [0.0]
+    tco = _TcOut()
+    sl = C.LtcAudioSlave(cfg, out=tco, clock=lambda: now_[0],
+                         mono=lambda: now_[0])
+    sl.ticker.t0 = 0.0
+    frames = [(1, 7, 19, f) for f in range(0, 30)] + \
+             [(2, 0, 0, f) for f in range(0, 30)]
+    ev = [(k * F + 0.004, "ltc", fr) for k, fr in enumerate(frames)] + \
+         [(n * F + 0.02, "tick", n) for n in range(1, 60)]
+    for at, kind, x in sorted(ev):
+        now_[0] = at
+        if kind == "ltc":
+            sl.ltc_frame(*x, at)
+        else:
+            sl._tick(x, at)
+    sent = [(p[17], p[16], p[15], p[14]) for _, p in tco.sent]
+    check(not [x for x in sent if x[:3] == (0, 7, 20)],
+          f"BEYOND was sent an invented 07:20 at the hand-off: "
+          f"{[x for x in sent if x[:3] == (0, 7, 20)]}")
+    check((0, 7, 19, 29) in sent and (0, 0, 0, 20) in sent,
+          "the hand-off test did not forward both sides, so it proves "
+          "nothing")
+
     # The show length only ends a FREE RUN. MadMapper still sending live
     # timecode past the end of the last pixel cue is forwarded, not cut:
     # BEYOND may well have content there.
@@ -8106,6 +8161,8 @@ def _clock_show(work, clock_doc, cues, **extra):
            "on_lost": "freerun", "hold_ms": 300, "clock": clock_doc,
            "cues": [{"tc": tc, "fseq": f, "name": n} for tc, f, n in cues]}
     doc.update(extra)
+    if clock_doc is None:
+        del doc["clock"]              # the GPL shape: no clock block at all
     json.dump(doc, open(tlp, "w"))
     if doc.get("idle"):
         open(os.path.join(work, doc["idle"]), "wb").write(b"x")
@@ -8532,7 +8589,22 @@ def test_a_stopped_cue_hands_the_rig_back():
               "the rig did not pick the clock up again after the stall")
         sess.stop()
 
-        # 4. A cue whose render did not open has no length. Its timecode
+        # 4. Stop reaches the clock while clock_play is on its way in. The
+        # caller gets a SessionError like every other refusal, never the
+        # clock's own exception.
+        sess, out = _master_session(work, "race", lengths)
+        sessions.append(sess)
+        sess.clock.stop()
+        try:
+            sess.clock_play("Show")
+            check(False, "a stopped clock played a cue")
+        except SessionError as e:
+            check("Run" in str(e), f"the refusal should say to press Run: {e}")
+        except Exception as e:
+            check(False, f"clock_play let {type(e).__name__} escape: {e}")
+        sess.stop()
+
+        # 5. A cue whose render did not open has no length. Its timecode
         # would never stop, so it is refused, by name.
         sess, out = _master_session(work, "broken", lengths)
         sessions.append(sess)
@@ -8951,6 +9023,105 @@ def test_timecode_health_is_shown():
     print("  ok")
 
 
+
+def test_a_lost_feed_still_reads_lost_without_a_master_clock():
+    section("GPL and the slave: a lost feed still reads LOST, with warnings")
+    # The master clock quiets the feed warnings and reads STANDBY between
+    # cues. Those three switches must stay master-only: at Dollywood a lost
+    # feed has to read LOST, say that no timecode has been decoded, and
+    # show the input as the thing to check. Proven with no clock block (the
+    # GPL shape), with the LTC slave, and against the master for contrast,
+    # on the page snapshot and on the terminal Run window alike.
+    import tempfile
+    from ltcplay.session import Session
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=400)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    kinds = (("GPL, no clock block", None),
+             ("the LTC slave", {"source": "ltc_audio_slave",
+                                "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}}),
+             ("ltcplay as master", {"source": "artnet_master",
+                                    "artnet": {"nodes": {"MadMapper":
+                                                         "127.0.0.1"}}}))
+    sessions = []
+    try:
+        for label, clock_doc in kinds:
+            here = os.path.join(work, str(len(sessions)))
+            os.makedirs(here)
+            tlp, net = _clock_show(here, clock_doc,
+                                   [("01:00:00:00", "Show.fseq", "Show")])
+            # The laptop microphone: an input that opens and carries no
+            # timecode at all, which is a dead feed.
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD(), device="MacBook Air Microphone",
+                           channel=1)
+            sess.open()
+            sessions.append(sess)
+            if sess.clock is not None:
+                sess.clock.out = _TcOut()
+            sess.start()
+            master = clock_doc is not None and \
+                clock_doc["source"] == "artnet_master"
+            if not master:
+                wait_for(lambda: sess.audio is not None
+                         and sess.audio.attached, timeout=3.0)
+            wait_for(lambda: sess.player.frames_sent > 3, timeout=3.0)
+            snap = sess.snapshot()
+            sc = disp.Screen(colour=False, cols=110)
+            screen = "\n".join(disp.render(sess.player, sess.dec, sess.tl,
+                                            sc, time.monotonic() - 5))
+            line = disp.one_line(sess.player, sess.dec, sess.tl)
+            nodec = [w for w in snap["warnings"]
+                     if "No timecode has been decoded yet" in w]
+            if master:
+                check(snap["state"] == "STANDBY" and "STANDBY" in screen
+                      and "STANDBY" in line and "LOST" not in screen,
+                      f"{label}: between cues the page reads "
+                      f"{snap['state']!r} and the terminal does not agree:\n"
+                      f"{screen}")
+                check(not nodec and snap["input_used"] is False,
+                      f"{label}: warns about a feed it does not have")
+                continue
+            check(sess.player.state == LOST and snap["state"] == "LOST",
+                  f"{label}: a dead feed reads {snap['state']!r} on the "
+                  f"page, not LOST")
+            check("LOST" in screen and "STANDBY" not in screen
+                  and " LOST " in f" {line} ",
+                  f"{label}: the terminal does not say LOST:\n{screen}")
+            check(nodec, f"{label}: nothing says no timecode has been "
+                         f"decoded: {snap['warnings']}")
+            check(snap["input_used"] is True
+                  and snap["input_attached"] is True,
+                  f"{label}: the input reads used={snap['input_used']!r} "
+                  f"attached={snap['input_attached']!r}")
+            silent = wait_for(lambda: any(
+                "is silent" in w for w in sess.snapshot()["warnings"]),
+                timeout=3.0)
+            check(silent, f"{label}: a silent input is not called out")
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     test_ltc_roundtrip()
@@ -9058,6 +9229,7 @@ if __name__ == "__main__":
     test_the_clock_survives_its_own_faults()
     test_forwarded_timecode_steps_by_one()
     test_timecode_health_is_shown()
+    test_a_lost_feed_still_reads_lost_without_a_master_clock()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

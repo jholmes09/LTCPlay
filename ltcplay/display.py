@@ -30,8 +30,9 @@ AMBER = "\033[33m"
 RED = "\033[31m"
 CYAN = "\033[36m"
 
+STANDBY = "STANDBY"
 STATE_COLOUR = {LOCKED: GREEN, FREEWHEEL: AMBER, LOST: RED, PARKED: CYAN,
-                "FREERUN": AMBER}
+                "FREERUN": AMBER, STANDBY: DIM}
 SOURCE_TEXT = {SHOW: "show", IDLE: "preshow loop", HOLD: "holding last frame",
                BLACK: "blacked out"}
 SOURCE_COLOUR = {SHOW: GREEN, IDLE: CYAN, HOLD: AMBER, BLACK: DIM}
@@ -128,6 +129,20 @@ def history_for(p):
 
 
 CLOCK_QUIET_S = 2.0
+
+
+def shown_state(p):
+    """The state as the operator should read it, on the page and here.
+
+    With this machine as the show clock there is no feed to lose: between
+    cues the chase engine reads LOST by design, and drawing that red would
+    send the operator looking for a cable. That case, and only that case,
+    reads STANDBY. With no clock block (GPL) or a slave clock, LOST is LOST."""
+    clk = getattr(p, "clock", None)
+    if clk is not None and clk.master and p.state == LOST \
+            and not getattr(clk, "playing", False):
+        return STANDBY
+    return p.state
 
 
 def clock_warnings(clk):
@@ -407,9 +422,12 @@ def render(p, dec, tl, sc, started_at):
     add("")
 
     # -- the two numbers ---------------------------------------------------
-    col = STATE_COLOUR.get(p.state, "")
+    shown = shown_state(p)
+    col = STATE_COLOUR.get(shown, "")
     ltc_text = p.last_ltc_text or "--:--:--:--"
-    if p.last_ltc_at is None:
+    if shown == STANDBY:
+        age_note = "no cue playing; this machine is the show clock"
+    elif p.last_ltc_at is None:
         age_note = "waiting for timecode"
     elif p.state == LOCKED:
         age_note = ""
@@ -432,7 +450,7 @@ def render(p, dec, tl, sc, started_at):
     else:
         age_note = f"frozen, nothing in for {now - p.last_ltc_at:.1f}s"
     add("  LTC IN     " + pad(sc.c(B + col, ltc_text), 16)
-        + pad(sc.c(col, p.state), 16) + sc.c(DIM, age_note))
+        + pad(sc.c(col, shown), 16) + sc.c(DIM, age_note))
 
     play = tl.format(p.tc_seconds) if p.tc_seconds is not None and p.tc_seconds >= 0 \
         else "--:--:--:--"
@@ -586,7 +604,7 @@ def one_line(p, dec, tl):
     rate, drop, _ = dec.detected_rate
     cue = p.current_cue.name if p.current_cue else SOURCE_TEXT.get(p.source, "-")
     nxt = p.next_cue.name if p.next_cue else "-"
-    return (f"{time.strftime('%H:%M:%S')} {p.state:10s} "
+    return (f"{time.strftime('%H:%M:%S')} {shown_state(p):10s} "
             f"in={p.last_ltc_text or '--:--:--:--'} "
             f"play={tl.format(p.tc_seconds) if p.tc_seconds >= 0 else '--:--:--:--'} "
             f"rate={rate if rate else '?'}{'df' if drop else ''} "
