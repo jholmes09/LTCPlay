@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
-      - run: python -m pip install numpy zstandard
+      - run: python -m pip install numpy zstandard tzdata
       - run: python selftest.py
 
   # Informational until the Windows port lands.
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
-      - run: python -m pip install numpy zstandard
+      - run: python -m pip install numpy zstandard tzdata
       - run: python selftest.py
 
   # macOS runners are slow and costly; run only for release tags.
@@ -39,5 +39,5 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
-      - run: python -m pip install numpy zstandard
+      - run: python -m pip install numpy zstandard tzdata
       - run: python selftest.py

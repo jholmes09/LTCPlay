@@ -7357,6 +7357,1290 @@ def test_the_real_show_file_matches_the_trigger_reference():
           f"controllers it mutes; it mutes {sorted(cfg.mute)} and sends to "
           f"{sorted(cfg.dest)}")
 
+
+# ------------------------------------------------------------ scheduler ----
+# The scheduler for Fire & Ice. It decides and does not act, it is loaded only
+# when a schedule file is configured, and the GPL show never loads it. Every
+# test below is pure (time handed in, no sleeps, no network) except the web
+# routes, which use a fixed clock.
+
+SCHED_EXAMPLE = {
+    "timezone": "America/Denver",
+    "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+    "weekly": {
+        "thu": {"first_start": "17:30", "interval_min": 20, "last_end": "21:30"},
+        "fri": {"first_start": "17:30", "interval_min": 20, "last_end": "22:00"},
+        "sat": {"first_start": "17:00", "interval_min": 20, "last_end": "22:00"},
+    },
+    "exceptions": {"2026-11-26": None,
+                   "2026-12-24": {"first_start": "17:00", "interval_min": 20,
+                                  "last_end": "20:00"}},
+    "show_len_s": 440,
+    "guard_s": 120,
+    "late_grace_s": 0,
+}
+
+_DASHES = ("\u2014", "\u2013")
+
+
+def _no_dashes(text, where):
+    return check(not any(d in str(text) for d in _DASHES),
+                 f"{where}: operator-facing text has an em or en dash: "
+                 f"{text!r}")
+
+
+def _sched():
+    """The scheduler module, or None after a failure saying why it cannot be
+    tested on this machine (on Windows: the tzdata package is missing)."""
+    from ltcplay import schedule as S
+    try:
+        S.zone("America/Denver")
+    except S.RuleError as e:
+        check(False, f"the scheduler cannot be tested here: {e}")
+        return None
+    return S
+
+
+def _sched_doc(**over):
+    import copy
+    doc = copy.deepcopy(SCHED_EXAMPLE)
+    doc.update(over)
+    return doc
+
+
+def _one_night_rule(S, first="18:00", last="22:00", grace=0, interval=20,
+                    show=440, guard=120):
+    """Saturday 2026-11-14 only, with its own hours."""
+    return S.parse_rule(_sched_doc(
+        weekly={"sat": {"first_start": first, "interval_min": interval,
+                        "last_end": last}},
+        exceptions={}, late_grace_s=grace, show_len_s=show, guard_s=guard))
+
+
+def _den(S, h, mi, s=0, us=0, d=(2026, 11, 14)):
+    from datetime import datetime
+    return datetime(*d, h, mi, s, us, tzinfo=S.zone("America/Denver"))
+
+
+class _Night:
+    """Drives one machine and keeps every log line it wrote, so each scenario
+    can also be checked for actors, reasons and dashes."""
+
+    def __init__(self, S, rule, d=None):
+        from datetime import date
+        self.S = S
+        self.m = S.new_night(rule, d or date(2026, 11, 14))
+        self.log = []
+        self.last = None
+
+    def do(self, kind, actor, now, **kw):
+        S = self.S
+        o = S.step(self.m, S.Event(kind, actor, **kw), now)
+        self.m = o.machine
+        self.log.extend(o.log)
+        self.last = o
+        return o
+
+    def boot(self, now):
+        return self.do(self.S.BOOT_DONE, "system", now)
+
+    def tick(self, now):
+        return self.do(self.S.TICK, "scheduler", now)
+
+    def op(self, kind, now, **kw):
+        return self.do(kind, "operator", now, **kw)
+
+    def audit(self, where):
+        S = self.S
+        for le in self.log:
+            check(le.actor in S.ACTORS, f"{where}: a log event has actor "
+                                        f"{le.actor!r}")
+            check(bool(le.reason), f"{where}: a log event has no reason: {le}")
+            check(bool(le.text), f"{where}: a log event has no sentence: {le}")
+            check(le.at.utcoffset() is not None,
+                  f"{where}: a log time has no offset")
+            _no_dashes(le.text, where)
+            _no_dashes(le.reason, where)
+
+
+def _fired(o, S):
+    return [e.show for e in o.effects if e.kind == S.START_SHOW]
+
+
+def test_schedule_rule_is_validated():
+    section("scheduler: the rule file is checked, and a wrong key fails loudly")
+    S = _sched()
+    if S is None:
+        return
+    import copy
+    r = S.parse_rule(_sched_doc())
+    check((r.show_len_s, r.guard_s, r.late_grace_s) == (440, 120, 0),
+          f"the example rule read back wrong: {r}")
+    d = _sched_doc()
+    del d["late_grace_s"]
+    check(S.parse_rule(d).late_grace_s == 0,
+          "late_grace_s must default to 0 when the file leaves it out")
+    check(S.parse_rule(S.rule_to_doc(r)) == r,
+          "a rule written back out must read back as the same rule")
+    check(S.parse_rule(_sched_doc(late_grace_s=15)).late_grace_s == 15,
+          "late_grace_s 15 is the cap and must be allowed")
+
+    def night(**kw):
+        n = {"first_start": "17:30", "interval_min": 20, "last_end": "21:30"}
+        n.update(kw)
+        return n
+
+    bad = [
+        ("a misspelled top-level key", _sched_doc(late_grace=5),
+         ("'late_grace'", "late_grace_s")),
+        ("a weekday that is not one", _sched_doc(
+            weekly={"thursday": night()}), ("not a weekday",)),
+        ("a misspelled night key", _sched_doc(
+            weekly={"thu": dict(night(), last_start="21:00")}),
+         ("'last_start'",)),
+        ("a misspelled season key", _sched_doc(
+            season={"first_date": "2026-11-14", "last_date": "2027-01-02",
+                    "opening": "x"}), ("'opening'",)),
+        ("a grace over the cap", _sched_doc(late_grace_s=16),
+         ("16", "15", "Start now")),
+        ("a grace far over the cap", _sched_doc(late_grace_s=300),
+         ("300", "15")),
+        ("a negative grace", _sched_doc(late_grace_s=-1), ("less than 0",)),
+        ("a grace of true", _sched_doc(late_grace_s=True), ("whole number",)),
+        ("a grace of 2.5", _sched_doc(late_grace_s=2.5), ("whole number",)),
+        ("a time that is not one", _sched_doc(
+            weekly={"thu": night(first_start="25:00")}),
+         ("not a time of day",)),
+        ("a night that ends before it starts", _sched_doc(
+            weekly={"thu": night(first_start="21:00", last_end="17:00")}),
+         ("not after",)),
+        ("an interval shorter than a show and its guard", _sched_doc(
+            weekly={"thu": night(interval_min=5)}), ("at least 10 minutes",)),
+        ("a night with no room for a show", _sched_doc(
+            weekly={"thu": night(first_start="17:00", last_end="17:05")}),
+         ("not room for one show",)),
+        ("a season that ends before it starts", _sched_doc(
+            season={"first_date": "2027-01-02", "last_date": "2026-11-14"}),
+         ("before it starts",)),
+        ("an exception outside the season", _sched_doc(
+            exceptions={"2026-10-31": None}), ("outside the season",)),
+        ("an exception that is not a date", _sched_doc(
+            exceptions={"2026-13-01": None}), ("date like",)),
+        ("a time zone that does not exist", _sched_doc(
+            timezone="America/Denverr"), ("not known on this machine",
+                                          "tzdata")),
+        ("no show length", {k: v for k, v in _sched_doc().items()
+                            if k != "show_len_s"}, ("missing show_len_s",)),
+    ]
+    for what, doc, must in bad:
+        try:
+            S.parse_rule(doc)
+            check(False, f"{what} was accepted")
+        except S.RuleError as e:
+            for m in must:
+                check(m in str(e), f"{what}: the error must say {m!r}: {e}")
+            _no_dashes(str(e), what)
+    # Every problem at once, not one per save.
+    try:
+        S.parse_rule(_sched_doc(late_grace_s=99, guard_s=-5, bogus=1))
+        check(False, "three problems at once were accepted")
+    except S.RuleError as e:
+        check(len(e.problems) >= 3, f"all three problems must be named: {e}")
+    try:
+        S.parse_rule("{not json", where="x.json")
+        check(False, "unreadable JSON was accepted")
+    except S.RuleError as e:
+        check("not readable JSON" in str(e) and "x.json" in str(e),
+              f"unreadable JSON must say so and name the file: {e}")
+    print("  ok")
+
+
+def test_schedule_expands_the_season():
+    section("scheduler: slots across a season, both clock changes, last_end "
+            "to the second")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import date, datetime, timedelta, timezone
+    r = S.parse_rule(_sched_doc())
+    plans = S.expand_season(r)
+    check(len(plans) == 50, f"the season is 50 dates, got {len(plans)}")
+    want = {3: (12, "17:30", "21:10"), 4: (14, "17:30", "21:50"),
+            5: (15, "17:00", "21:40")}
+    total = 0
+    for p in plans:
+        total += len(p.starts)
+        wall = [S.clock(s) for s in p.starts]
+        if p.date == date(2026, 11, 26):
+            check(p.source == "closed" and not p.starts,
+                  f"2026-11-26 is closed by a null exception, got {p}")
+            continue
+        if p.date == date(2026, 12, 24):
+            check(p.source == "exception" and len(wall) == 9
+                  and wall[0] == "17:00" and wall[-1] == "19:40",
+                  f"2026-12-24 runs its exception hours, got {wall}")
+        elif p.date.weekday() in want:
+            n, first, last = want[p.date.weekday()]
+            check(p.source == "weekly" and len(wall) == n and wall[0] == first
+                  and wall[-1] == last,
+                  f"{p.date}: expected {n} shows {first} to {last}, got {wall}")
+        else:
+            check(p.source == "dark" and not p.starts and "dark" in p.why,
+                  f"{p.date} is a dark weekday, got {p}")
+            continue
+        utc = [x.astimezone(timezone.utc) for x in p.starts]
+        for a, b in zip(utc, utc[1:]):
+            check(b - a == timedelta(minutes=20),
+                  f"{p.date}: shows at {a:%H:%M}Z and {b:%H:%M}Z are not 20 "
+                  f"minutes apart")
+        end = p.starts[0].replace(hour=p.night.last_end.hour,
+                                  minute=p.night.last_end.minute)
+        check(all(s + timedelta(seconds=560) <= end for s in utc),
+              f"{p.date}: a show would not be finished with its guard by "
+              f"last_end")
+        check(all(s.utcoffset() == timedelta(hours=-7) for s in p.starts),
+              f"{p.date}: the whole season is on Mountain Standard Time")
+    # 8 Saturdays x 15, 7 Fridays x 14, 5 ordinary Thursdays x 12, plus the
+    # Christmas Eve exception's 9 and the Thanksgiving closure's none.
+    check(total == 8 * 15 + 7 * 14 + 5 * 12 + 9,
+          f"the season should hold 287 shows, got {total}")
+    off = S.expand(r, date(2026, 11, 13))
+    check(off.source == "off-season" and not off.starts,
+          f"the day before the season has no shows, got {off}")
+
+    # Both Denver offset changes, in 2026 and 2027, tested directly even
+    # though the season falls between them. An overnight window across 2 AM
+    # shows the arithmetic is in real time: the spring night is an hour
+    # shorter and the autumn night an hour longer.
+    spring = ["00:30", "00:50", "01:10", "01:30", "01:50", "03:10", "03:30",
+              "03:50"]
+    autumn = ["00:30", "00:50", "01:10", "01:30", "01:50", "01:10", "01:30",
+              "01:50", "02:10", "02:30", "02:50", "03:10", "03:30", "03:50"]
+    changes = {"2026-03-08": (spring, [-7] * 5 + [-6] * 3),
+               "2026-11-01": (autumn, [-6] * 5 + [-7] * 9),
+               "2027-03-14": (spring, [-7] * 5 + [-6] * 3),
+               "2027-11-07": (autumn, [-6] * 5 + [-7] * 9)}
+    overnight = {"first_start": "00:30", "interval_min": 20,
+                 "last_end": "04:00"}
+    year = S.parse_rule(_sched_doc(
+        season={"first_date": "2026-01-01", "last_date": "2027-12-31"},
+        weekly={w: {"first_start": "17:30", "interval_min": 20,
+                    "last_end": "21:30"} for w in S.WEEKDAYS},
+        exceptions=dict({k: overnight for k in changes},
+                        **{"2026-06-01": overnight})))
+    plain = S.expand(year, date(2026, 6, 1))
+    check(len(plain.starts) == 11, f"an ordinary 00:30 to 04:00 night holds "
+                                   f"11 shows, got {len(plain.starts)}")
+    for ds, (walls, offs) in changes.items():
+        p = S.expand(year, date.fromisoformat(ds))
+        got = [S.clock(s) for s in p.starts]
+        check(got == walls, f"{ds}: expected {walls}, got {got}")
+        got_off = [int(s.utcoffset() / timedelta(hours=1)) for s in p.starts]
+        check(got_off == offs, f"{ds}: offsets should be {offs}, got {got_off}")
+        utc = [x.astimezone(timezone.utc) for x in p.starts]
+        check(all(b - a == timedelta(minutes=20)
+                  for a, b in zip(utc, utc[1:])),
+              f"{ds}: shows must be 20 real minutes apart across the change")
+    # And the machine runs those nights on the local clock: every show starts
+    # once, at its own instant, with shows ending 440 s later. Ticks are fed
+    # in Denver time, so the autumn repeat of 01:00 to 02:00 really happens.
+    tz = S.zone("America/Denver")
+    for ds, (walls, _offs) in changes.items():
+        d = date.fromisoformat(ds)
+        n = _Night(S, year, d)
+        plan = S.expand(year, d)
+        t = plan.starts[0].astimezone(timezone.utc) - timedelta(minutes=10)
+        stop = plan.starts[-1].astimezone(timezone.utc) + timedelta(minutes=20)
+        n.boot(t.astimezone(tz))
+        fired, ends = [], None
+        while t <= stop:
+            local = t.astimezone(tz)
+            if ends is not None and t >= ends:
+                n.do(S.SHOW_ENDED, "madmapper", local)
+                ends = None
+            for k in _fired(n.tick(local), S):
+                fired.append((k, t))
+                ends = t + timedelta(seconds=440)
+            t += timedelta(seconds=10)
+        want = [(i + 1, s.astimezone(timezone.utc))
+                for i, s in enumerate(plan.starts)]
+        check(fired == want, f"{ds}: every show must start once at its own "
+                             f"instant; started {len(fired)} of {len(want)}")
+        check(all(s.status == S.DONE for s in n.m.slots),
+              f"{ds}: every show must be DONE, got "
+              f"{[s.status for s in n.m.slots]}")
+        n.audit(ds)
+    # The late rule measures real seconds, not the wall clock: 01:10 MST
+    # comes 20 minutes AFTER 01:50 MDT on the autumn change night.
+    mdt = datetime(2026, 11, 1, 1, 50, tzinfo=tz)
+    mst = datetime(2026, 11, 1, 1, 10, fold=1, tzinfo=tz)
+    check(S.lateness_s(mdt, mst) == 1200,
+          f"01:50 MDT to 01:10 MST is 1200 s late, got "
+          f"{S.lateness_s(mdt, mst)}")
+    check(not S.may_fire(mdt, mst, 15), "a show 20 real minutes late must "
+                                        "not start on the repeated hour")
+    for before, after, o1, o2 in (("2026-03-07", "2026-03-09", -7, -6),
+                                  ("2026-10-31", "2026-11-02", -6, -7),
+                                  ("2027-03-13", "2027-03-15", -7, -6),
+                                  ("2027-11-06", "2027-11-08", -6, -7)):
+        a = S.expand(year, date.fromisoformat(before)).starts[0]
+        b = S.expand(year, date.fromisoformat(after)).starts[0]
+        check(S.clock(a) == S.clock(b) == "17:30"
+              and a.utcoffset() == timedelta(hours=o1)
+              and b.utcoffset() == timedelta(hours=o2),
+              f"17:30 on {before} and {after} must be {o1} and {o2} hours "
+              f"from UTC, got {a.isoformat()} and {b.isoformat()}")
+
+    # An interval that does not divide the window evenly.
+    odd = _one_night_rule(S, first="17:00", last="22:00", interval=25)
+    got = [S.clock(s) for s in S.expand(odd, date(2026, 11, 14)).starts]
+    check(got == ["17:00", "17:25", "17:50", "18:15", "18:40", "19:05",
+                  "19:30", "19:55", "20:20", "20:45", "21:10", "21:35"],
+          f"a 25 minute interval from 17:00 to 22:00, got {got}")
+
+    # last_end is exact: a show that finishes with its guard ON last_end is
+    # kept, one second over is not.
+    for last, n in (("17:30", 2), ("17:29:59", 1), ("17:30:01", 2)):
+        rr = _one_night_rule(S, first="17:00", last=last, show=480, guard=120)
+        got = [S.clock(s) for s in S.expand(rr, date(2026, 11, 14)).starts]
+        check(len(got) == n, f"last_end {last} with a 10 minute show and "
+                             f"guard keeps {n} show(s), got {got}")
+    print("  ok")
+
+
+def test_schedule_late_rule():
+    section("scheduler: the late rule, every second from -60 to +600")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    for grace in (0, 15):
+        rule = _one_night_rule(S, grace=grace)
+        start = _den(S, 18, 0)
+        waiting = _Night(S, rule)
+        waiting.boot(start - timedelta(seconds=120))
+        check(waiting.m.state == S.IDLE, "two minutes before the first show "
+                                         "the scheduler waits in IDLE")
+        idle = waiting.m
+        fired, fired_boot = [], []
+        for off in range(-60, 601):
+            now = start + timedelta(seconds=off)
+            o = S.step(idle, S.Event(S.TICK, "scheduler"), now)
+            if _fired(o, S):
+                fired.append(off)
+                check(o.machine.state == S.SHOW,
+                      f"grace {grace}, +{off} s: fired but not in SHOW")
+            s1 = o.machine.slot(1)
+            if off > grace:
+                check(s1.status == S.MISSED and
+                      s1.reason == f"MISSED (late by {S.fmt_span(off)})",
+                      f"grace {grace}, +{off} s: must be MISSED (late by "
+                      f"{S.fmt_span(off)}), got {s1.status} {s1.reason!r}")
+            elif off < 0:
+                check(s1.status == S.PENDING,
+                      f"grace {grace}, {off} s: nothing may happen early")
+            # And the restart: the machine boots at exactly that moment.
+            n = _Night(S, rule)
+            n.boot(now)
+            ob = n.tick(now)
+            if _fired(ob, S):
+                fired_boot.append(off)
+            check(S.may_fire(start, now, grace) == (0 <= off <= grace),
+                  f"may_fire disagrees at grace {grace}, {off} s")
+        want = list(range(0, grace + 1))
+        check(fired == want, f"grace {grace}: a waiting scheduler must fire "
+                             f"at {want[0]}..{want[-1]} s only, fired at "
+                             f"{fired[:5]}..{fired[-3:]}")
+        check(fired_boot == want, f"grace {grace}: a scheduler that has just "
+                                  f"booted must fire at {want[0]}.."
+                                  f"{want[-1]} s only, fired at "
+                                  f"{fired_boot[:5]}..{fired_boot[-3:]}")
+        # A clock that ticks every second fires exactly once, on time.
+        n = _Night(S, rule)
+        n.boot(start - timedelta(seconds=61))
+        starts = []
+        for off in range(-60, 601):
+            starts += [(off, x) for x in _fired(
+                n.tick(start + timedelta(seconds=off)), S)]
+        check(starts == [(0, 1)], f"grace {grace}: ticking every second must "
+                                  f"start show 1 once at 0 s, got {starts}")
+    # A slot is on time for the whole second it names, and not a moment
+    # before it.
+    start = _den(S, 18, 0)
+    for us_off, ok in ((-1, False), (0, True), (999_999, True),
+                       (1_000_000, False)):
+        now = start + timedelta(microseconds=us_off)
+        check(S.may_fire(start, now, 0) is ok,
+              f"grace 0 at {us_off} microseconds should be {ok}")
+    check(S.fmt_span(252) == "4m 12s" and S.fmt_span(7) == "7s"
+          and S.fmt_span(3605) == "1h 0m 5s", "fmt_span formats wrong")
+    print("  ok")
+
+
+def _matrix_fixtures(S):
+    """One machine in each state, and the moment to hit it with an event."""
+    from datetime import timedelta
+    rule = _one_night_rule(S, first="17:00")
+    one = timedelta(seconds=1)
+    fx = {}
+    n = _Night(S, rule)
+    fx[S.BOOT] = (n.m, _den(S, 16, 0) + one)
+    n = _Night(S, rule)
+    n.boot(_den(S, 16, 0))
+    fx[S.IDLE] = (n.m, _den(S, 16, 0) + one)
+    n.op(S.HOLD_ON, _den(S, 16, 0))
+    fx[S.HOLD] = (n.m, _den(S, 16, 0) + one)
+    n = _Night(S, rule)
+    n.boot(_den(S, 16, 59, 50))
+    n.tick(_den(S, 17, 0))
+    fx[S.SHOW] = (n.m, _den(S, 17, 0) + one)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 4))
+    fx[S.STANDBY] = (n.m, _den(S, 17, 4) + one)
+    n.op(S.END_NIGHT, _den(S, 17, 4), confirmed=True)
+    fx[S.CLOSING] = (n.m, _den(S, 17, 4) + one)
+    n.do(S.CLOSING_DONE, "system", _den(S, 17, 4))
+    fx[S.OFF] = (n.m, _den(S, 17, 4) + one)
+    for st, (m, _) in fx.items():
+        check(m.state == st, f"the {st} fixture is in {m.state}")
+    return fx
+
+
+def test_schedule_state_machine_every_state_every_event():
+    section("scheduler: every state times every event")
+    S = _sched()
+    if S is None:
+        return
+    fx = _matrix_fixtures(S)
+    B, I, SB, SH, C, O, H = (S.BOOT, S.IDLE, S.STANDBY, S.SHOW, S.CLOSING,
+                             S.OFF, S.HOLD)
+    live = {I: I, SB: SB, SH: SH, H: H}
+    E = S.Event
+    # (event, the states that take it and where each one goes). Anything not
+    # listed must be refused with a sentence and leave the machine alone.
+    table = [
+        (E(S.BOOT_DONE, "system"), {B: I}),
+        (E(S.TICK, "scheduler"), {I: I, SB: SB, SH: SH, H: H, C: C, O: O}),
+        (E(S.SHOW_ENDED, "madmapper"), {SH: SB}),
+        (E(S.SHOW_FAILED, "madmapper", detail="no timecode after start"),
+         {SH: SB}),
+        (E(S.FAULT_RAISED, "safety", detail="the safety process stopped "
+                                            "replying"),
+         {s: s for s in S.STATES}),
+        (E(S.CLEAR_FAULT, "operator"), {}),           # there is no fault
+        (E(S.CLOSING_DONE, "system"), {C: O}),
+        (E(S.START_NOW, "operator"), {I: SH, SB: SH, H: SH, C: SH, O: SH}),
+        (E(S.HOLD_ON, "operator"), {I: H, SB: H, SH: SH}),
+        (E(S.RESUME, "operator"), {H: I}),
+        (E(S.SKIP_NEXT, "operator"), live),
+        (E(S.DELAY_NEXT, "operator", minutes=5), live),
+        (E(S.DELAY_NEXT, "operator", minutes=10), live),
+        (E(S.DELAY_REST, "operator", minutes=5), live),
+        (E(S.DELAY_REST, "operator", minutes=10), live),
+        (E(S.ABORT, "operator"), {}),                  # not confirmed
+        (E(S.ABORT, "operator", confirmed=True), {SH: SB}),
+        (E(S.END_NIGHT, "operator"), {}),              # not confirmed
+        (E(S.END_NIGHT, "operator", confirmed=True), {I: C, SB: C, H: C}),
+        (E(S.EDIT_MOVE, "operator", show=15, at="21:45"), live),
+        (E(S.EDIT_ADD, "operator", at="21:55"), live),
+        (E(S.EDIT_REMOVE, "operator", show=15), live),
+    ]
+    check({e.kind for e, _ in table} == set(S.EVENTS),
+          "the matrix must cover every event the machine knows")
+    cells = 0
+    for ev, goes in table:
+        for st in S.STATES:
+            m, now = fx[st]
+            o = S.step(m, ev, now)
+            cells += 1
+            label = (f"{ev.kind}{' confirmed' if ev.confirmed else ''}"
+                     f"{' +' + str(ev.minutes) if ev.minutes else ''} in {st}")
+            if st in goes:
+                check(o.accepted, f"{label} must be taken, was refused: "
+                                  f"{o.refused}")
+                check(o.machine.state == goes[st],
+                      f"{label} must go to {goes[st]}, went to "
+                      f"{o.machine.state}")
+            else:
+                check(not o.accepted and o.refused.endswith("."),
+                      f"{label} must be refused with a sentence, got "
+                      f"{o.refused!r} and state {o.machine.state}")
+                check(o.machine is m and not o.effects,
+                      f"{label}: a refusal must change nothing")
+                check(len(o.log) == 1 and o.log[0].outcome == "refused"
+                      and o.log[0].reason == o.refused,
+                      f"{label}: a refusal is logged once, with its reason")
+                _no_dashes(o.refused, label)
+            for le in o.log:
+                check(le.actor in S.ACTORS and le.reason and le.text,
+                      f"{label}: log event without actor, reason or "
+                      f"sentence: {le}")
+                _no_dashes(le.text, label)
+    check(cells == len(table) * 7, "the matrix did not run every cell")
+
+    # With a fault on the flag, clearing it is taken in every state and the
+    # state does not move: FAULT is a flag, not a state.
+    for st in S.STATES:
+        m, now = fx[st]
+        f = S.step(m, E(S.FAULT_RAISED, "reader", detail="x"), now).machine
+        check(f.fault and f.state == st, f"a fault in {st} must set the flag "
+                                         f"and leave the state")
+        c = S.step(f, E(S.CLEAR_FAULT, "operator"), now)
+        check(c.accepted and not c.machine.fault and c.machine.state == st,
+              f"clearing a fault in {st}: {c.refused}")
+
+    # Who may send what. A blank actor is never allowed through.
+    m, now = fx[S.IDLE]
+    for ev, why in ((E(S.TICK, ""), "a blank actor"),
+                    (E(S.TICK, "nobody"), "an unknown actor"),
+                    (E(S.START_NOW, "scheduler"), "the scheduler pressing "
+                                                  "Start now"),
+                    (E(S.ABORT, "madmapper", confirmed=True),
+                     "MadMapper pressing Abort"),
+                    (E("LAUNCH", "operator"), "an unknown event")):
+        try:
+            S.step(m, ev, now)
+            check(False, f"{why} was accepted")
+        except ValueError as e:
+            _no_dashes(str(e), why)
+    try:
+        S.step(m, E(S.TICK, "scheduler"), now.replace(tzinfo=None))
+        check(False, "a time with no zone was accepted")
+    except ValueError:
+        pass
+    # The scheduler has no way to see or change flame arming.
+    check(not any("ARM" in k for k in S.EVENTS + S.EFFECTS),
+          "an arm event or effect exists; the scheduler must never touch "
+          "arming")
+    check(not any("arm" in f for f in S.Machine.__dataclass_fields__),
+          "the machine holds arm state; it must never look at it")
+    print(f"  ok ({cells} cells)")
+
+
+def test_schedule_restart_guard_and_hold():
+    section("scheduler: restart at 18:04, guard_s, and HOLD")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    rule = _one_night_rule(S)
+    sec = timedelta(seconds=1)
+
+    # The restart rule, as Jeff specified it: a reboot at 18:04 does not
+    # start the 18:00 show; it lands in STANDBY and waits for 18:20.
+    n = _Night(S, rule)
+    o = n.boot(_den(S, 18, 4, 12))
+    check(n.m.state == S.STANDBY, f"a reboot at 18:04 lands in STANDBY, "
+                                  f"got {n.m.state}")
+    check(n.m.slot(1).status == S.MISSED
+          and n.m.slot(1).reason == "MISSED (late by 4m 12s)",
+          f"the 18:00 show is MISSED (late by 4m 12s), got "
+          f"{n.m.slot(1).reason!r}")
+    check(not _fired(o, S), "booting must never start a show")
+    t, started = _den(S, 18, 4, 12), []
+    while t < _den(S, 18, 20):
+        started += _fired(n.tick(t), S)
+        t += sec
+    check(not started, f"nothing may start between 18:04 and 18:20, got "
+                       f"{started}")
+    check(_fired(n.tick(_den(S, 18, 20)), S) == [2]
+          and n.m.slot(2).reason == "FIRED",
+          "the 18:20 show starts at 18:20:00 with reason FIRED")
+    # A reboot four seconds into a show never resumes that show.
+    n2 = _Night(S, rule)
+    n2.boot(_den(S, 18, 0, 4))
+    check(not _fired(n2.tick(_den(S, 18, 0, 4)), S)
+          and n2.m.slot(1).status == S.MISSED,
+          "a reboot 4 seconds into a show must not start it")
+    n.audit("restart")
+
+    # guard_s: never within guard_s of the previous show's end.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 40))
+    n.op(S.START_NOW, _den(S, 17, 52))
+    check(n.m.state == S.SHOW and n.m.slot(n.m.running).origin == "operator"
+          and n.m.slot(n.m.running).reason == "FIRED (operator)",
+          "Start now runs an extra show, marked FIRED (operator)")
+    x = n.m.running
+    o = n.do(S.SHOW_ENDED, "madmapper", _den(S, 17, 59, 20), show=x)
+    check(n.m.slot(x).status == S.DONE, "the show that ended is DONE")
+    check(not _fired(n.tick(_den(S, 18, 0)), S),
+          "18:00 is 40 s after a show ended, inside the 120 s guard, and "
+          "must not start")
+    n.tick(_den(S, 18, 0, 1))
+    check(n.m.slot(1).status == S.MISSED and "guard" in n.m.slot(1).reason,
+          f"a show held off by the guard is MISSED and says so, got "
+          f"{n.m.slot(1).reason!r}")
+    o = n.op(S.START_NOW, _den(S, 18, 0, 30))
+    check(not o.accepted and "50s" in o.refused and "guard" in o.refused,
+          f"Start now inside the guard is refused and says how long is "
+          f"left: {o.refused!r}")
+    o = n.op(S.START_NOW, _den(S, 18, 1, 20))
+    check(o.accepted and n.m.state == S.SHOW,
+          f"Start now exactly when the guard runs out is taken: {o.refused}")
+    # Never start a show while one is running: 18:20 comes due during a
+    # show started by hand at 18:15.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 15))
+    check(not _fired(n.tick(_den(S, 18, 20)), S), "a show must never start "
+                                                  "over a running one")
+    n.tick(_den(S, 18, 20, 1))
+    check(n.m.slot(2).status == S.MISSED and "running" in n.m.slot(2).reason,
+          f"the show that came due mid show is MISSED and says why: "
+          f"{n.m.slot(2).reason!r}")
+    # The guard boundary for a scheduled show: ending at 17:58:00 frees
+    # 18:00:00 exactly.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 40))
+    n.op(S.START_NOW, _den(S, 17, 50, 40))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 17, 58))
+    check(_fired(n.tick(_den(S, 18, 0)), S) == [1],
+          "a show exactly guard_s after the last one ended must start")
+    n.audit("guard")
+
+    # HOLD: the schedule suspended, nothing fires, Start now still works.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 4))
+    n.op(S.HOLD_ON, _den(S, 18, 10), who="Andy", screen="rack screen")
+    check(n.m.state == S.HOLD, "Hold in STANDBY goes to HOLD")
+    check(n.log[-1].who == "Andy" and n.log[-1].screen == "rack screen"
+          and "Andy" in n.log[-1].text,
+          "an operator event carries who pressed it and on which screen")
+    check(not _fired(n.tick(_den(S, 18, 20)), S), "nothing fires on hold")
+    n.tick(_den(S, 18, 20, 1))
+    check(n.m.slot(2).reason == "MISSED (on hold)",
+          f"a show that passes on hold is MISSED (on hold), got "
+          f"{n.m.slot(2).reason!r}")
+    n.op(S.RESUME, _den(S, 18, 25))
+    check(n.m.state == S.STANDBY, f"Resume after the night has begun goes "
+                                  f"to STANDBY, got {n.m.state}")
+    check(_fired(n.tick(_den(S, 18, 40)), S) == [3], "after Resume the next "
+                                                     "show starts on time")
+    n.op(S.HOLD_ON, _den(S, 18, 42))
+    check(n.m.state == S.SHOW and n.m.hold_pending,
+          "Hold during a show lets the show finish")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 47, 20))
+    check(n.m.state == S.HOLD, "and lands in HOLD when it ends")
+    check(not _fired(n.tick(_den(S, 19, 0)), S), "no show starts after it")
+    n.op(S.START_NOW, _den(S, 19, 5))
+    check(n.m.state == S.SHOW, "Start now works on hold")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 19, 12, 20))
+    check(n.m.state == S.HOLD, "a show started on hold returns to HOLD")
+    n.op(S.RESUME, _den(S, 19, 13))
+    n.tick(_den(S, 19, 20))
+    n.op(S.HOLD_ON, _den(S, 19, 21))
+    n.op(S.RESUME, _den(S, 19, 22))
+    check(n.m.state == S.SHOW and not n.m.hold_pending,
+          "Resume during a show cancels the pending hold")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 19, 27, 20))
+    check(n.m.state == S.STANDBY, "and the night carries on in STANDBY")
+    n.audit("hold")
+    print("  ok")
+
+
+def test_schedule_abort_end_night_and_operator_actions():
+    section("scheduler: Abort, End night, Skip, Delay and tonight's edits")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import timedelta
+    rule = _one_night_rule(S)
+    before = S.rule_to_doc(rule)
+
+    # Abort, precisely.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 30))
+    n.tick(_den(S, 18, 40))
+    check(n.m.state == S.SHOW and n.m.running == 3, "18:40 is show 3")
+    panel = {a["id"]: a for a in S.actions_for(n.m)}
+    check(panel["abort"]["allowed"] and "show 3" in panel["abort"]["confirm"]
+          and "does not disarm" in panel["abort"]["confirm"],
+          f"the Abort confirm names the show and says it does not disarm: "
+          f"{panel['abort']}")
+    check(panel["end_night"]["confirm"] and not panel["end_night"]["allowed"],
+          "End night confirms, and is not offered during a show")
+    check(all(panel[k]["confirm"] is None for k in panel
+              if k not in ("abort", "end_night")),
+          "only Abort and End night confirm")
+    check([a["id"] for a in S.ACTIONS] == [
+        "start_now", "hold", "resume", "skip_next", "delay_next_5",
+        "delay_next_10", "delay_rest_5", "delay_rest_10", "abort",
+        "end_night"], "the transport panel holds the section 5 actions")
+    o = n.op(S.ABORT, _den(S, 18, 42))
+    check(not o.accepted and "confirmed" in o.refused and n.m.state == S.SHOW,
+          f"an unconfirmed Abort changes nothing: {o.refused!r}")
+    ev = S.action_event("abort", confirmed=True, screen="rack screen",
+                        who="Andy")
+    o = S.step(n.m, ev, _den(S, 18, 42))
+    n.m = o.machine
+    n.log.extend(o.log)
+    check([(e.kind, e.show, e.seconds) for e in o.effects] == [
+        (S.ZERO_FLAME_CUES, 3, 0.0), (S.STOP_CONDUCTOR, 3, 0.0),
+        (S.FADE_PIXELS, 3, 1.0)],
+        f"Abort zeroes the flame cues, stops MadMapper and fades the pixels "
+        f"over 1 s, and nothing else: {o.effects}")
+    check(n.m.state == S.STANDBY and n.m.slot(3).status == S.ABORTED
+          and n.m.slot(3).reason == "ABORTED (operator)",
+          "Abort marks the show ABORTED and stays in STANDBY")
+    check(not n.m.fault, "an operator Abort is not a fault")
+    check(not n.op(S.START_NOW, _den(S, 18, 43)).accepted,
+          "an aborted show's end starts the guard too")
+    check(_fired(n.tick(_den(S, 19, 0)), S) == [4],
+          "the next show after an abort still starts on time")
+
+    # A show that fails.
+    n.do(S.SHOW_FAILED, "madmapper", _den(S, 19, 0, 5),
+         detail="no timecode after start")
+    check(n.m.slot(4).status == S.FAULT
+          and n.m.slot(4).reason == "FAULT (no timecode after start)"
+          and n.m.fault and n.m.state == S.STANDBY,
+          f"a failed show is FAULT with its reason and raises the flag: "
+          f"{n.m.slot(4).reason!r}")
+    check(_fired(n.tick(_den(S, 19, 20)), S) == [5],
+          "the next show is still attempted after a fault")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 19, 27, 20))
+
+    # Skip next.
+    n.op(S.SKIP_NEXT, _den(S, 19, 30))
+    check(n.m.slot(6).status == S.SKIPPED
+          and n.m.slot(6).reason == "SKIPPED (operator)",
+          f"Skip next marks the next show SKIPPED (operator), got "
+          f"{n.m.slot(6).reason!r}")
+    # Delay next: 20:00 to 20:10, then again to 20:20 which is where show 8
+    # is, so the second is refused with a sentence pointing at the other
+    # delay.
+    o = n.op(S.DELAY_NEXT, _den(S, 19, 31), minutes=10)
+    check(o.accepted and n.m.hm(n.m.slot(7).start) == "20:10"
+          and n.m.hm(n.m.slot(7).planned) == "20:00",
+          "Delay next +10 moves 20:00 to 20:10 and remembers the plan")
+    o = n.op(S.DELAY_NEXT, _den(S, 19, 32), minutes=10)
+    check(not o.accepted and "Delay the rest of the night" in o.refused
+          and n.m.hm(n.m.slot(7).start) == "20:10",
+          f"a delay onto the next show is refused: {o.refused!r}")
+    o = n.op(S.DELAY_NEXT, _den(S, 19, 32), minutes=7)
+    check(not o.accepted and "+5 or +10" in o.refused,
+          "a delay other than 5 or 10 is refused")
+    rest = [(s.n, s.start) for s in n.m.pending()]
+    o = n.op(S.DELAY_REST, _den(S, 19, 33), minutes=5)
+    check(o.accepted and all(n.m.slot(k).start - t == timedelta(minutes=5)
+                             for k, t in rest),
+          "Delay the rest of the night +5 moves every show still to come")
+    check(all(le.reason == "DELAYED (operator, +5 min)" for le in o.log),
+          "a delay says what it did")
+    check(not _fired(n.tick(_den(S, 20, 10)), S)
+          and n.m.slot(7).status == S.PENDING,
+          "nothing happens at a delayed show's old time")
+    check(_fired(n.tick(_den(S, 20, 15)), S) == [7],
+          "show 7 starts at its delayed time, 20:15")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 20, 22, 20))
+
+    # Tonight's edits: move, add, remove. For tonight only.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 4))
+    o = n.op(S.EDIT_MOVE, _den(S, 18, 5), show=2, at="18:03")
+    check(not o.accepted and "already passed" in o.refused,
+          f"a show cannot be moved into the past: {o.refused!r}")
+    o = n.op(S.EDIT_MOVE, _den(S, 18, 5), show=2, at="18:35")
+    check(not o.accepted and "before show 2" in o.refused,
+          f"a show cannot be moved on top of the next one: {o.refused!r}")
+    o = n.op(S.EDIT_MOVE, _den(S, 18, 5), show=2, at="18:25")
+    check(o.accepted and n.m.hm(n.m.slot(2).start) == "18:25"
+          and n.m.slot(2).planned is not None,
+          f"a move that fits is taken: {o.refused}")
+    o = n.op(S.EDIT_ADD, _den(S, 18, 5), at="22:00")
+    k = max(s.n for s in n.m.slots)
+    check(o.accepted and n.m.slot(k).origin == "edit"
+          and n.m.hm(n.m.slot(k).start) == "22:00",
+          f"a show can be added for tonight: {o.refused}")
+    o = n.op(S.EDIT_ADD, _den(S, 18, 5), at="21:45")
+    check(not o.accepted, "an added show must not crowd its neighbours")
+    o = n.op(S.EDIT_MOVE, _den(S, 18, 5), show=1, at="19:00")
+    check(not o.accepted and "MISSED" in o.refused,
+          "a show that already went by cannot be moved")
+    o = n.op(S.EDIT_REMOVE, _den(S, 18, 5), show=3)
+    check(o.accepted and n.m.slot(3).status == S.SKIPPED,
+          "a removed show stays on the list as SKIPPED, for the morning read")
+    o = n.op(S.EDIT_REMOVE, _den(S, 18, 5), show=99)
+    check(not o.accepted and "no show 99" in o.refused,
+          "removing a show that does not exist says so")
+    check(S.rule_to_doc(rule) == before,
+          "tonight's edits must never touch the rule")
+    view = S.slot_view(n.m, _den(S, 18, 5))
+    check([r["status"] for r in view][:3] == [S.MISSED, S.NEXT, S.SKIPPED],
+          f"the list shows MISSED, NEXT, SKIPPED, got "
+          f"{[r['status'] for r in view][:3]}")
+    check(view[1]["planned"] == "18:20" and view[1]["start"] == "18:25",
+          "a moved show shows where it was planned")
+
+    # End night.
+    n.op(S.END_NIGHT, _den(S, 19, 0))
+    check(n.m.state == S.STANDBY, "an unconfirmed End night changes nothing")
+    o = n.op(S.END_NIGHT, _den(S, 19, 0), confirmed=True)
+    check(n.m.state == S.CLOSING and
+          [e.kind for e in o.effects] == [S.ZERO_FLAME_CUES, S.STOP_CONDUCTOR,
+                                          S.FADE_PIXELS, S.BLACKOUT],
+          f"End night closes: flame cues to zero, MadMapper stopped, fade, "
+          f"blackout. Got {[e.kind for e in o.effects]}")
+    check(all(s.status != S.PENDING for s in n.m.slots) and
+          all(s.reason == "SKIPPED (operator, End night)"
+              for s in n.m.slots if s.status == S.SKIPPED and s.n > 3),
+          "End night skips every show still to come, and says why")
+    n.do(S.CLOSING_DONE, "system", _den(S, 19, 0, 2))
+    check(n.m.state == S.OFF, "closing finishes in OFF")
+    check(not n.op(S.SKIP_NEXT, _den(S, 19, 1)).accepted,
+          "nothing is left to skip after End night")
+    # And a night that simply runs out closes by itself.
+    n = _Night(S, rule)
+    n.boot(_den(S, 21, 30))
+    n.tick(_den(S, 21, 40))
+    check(n.m.state == S.SHOW, "the last show of the night starts at 21:40")
+    o = n.do(S.SHOW_ENDED, "madmapper", _den(S, 21, 47, 20))
+    check(n.m.state == S.CLOSING and S.BLACKOUT in [e.kind for e in o.effects],
+          "after the last show the night closes by itself")
+    n.audit("abort and end night")
+    print("  ok")
+
+
+def test_schedule_file_is_versioned_and_atomic():
+    section("scheduler: the rule file keeps its previous version, and a "
+            "locked file is a sentence")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+    from ltcplay import settings as st
+    check(SV.data_dir() == st.folder(),
+          "the scheduler keeps its files where the preferences are, until "
+          "the Windows port moves them")
+    check(os.path.dirname(SV.default_rule_path()) == SV.data_dir(),
+          "the rule file lives in data_dir()")
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, SV.RULE_FILE)
+    prev = SV.previous_path(path)
+    try:
+        SV.load_rule(path)
+        check(False, "a missing rule file loaded")
+    except ValueError as e:
+        check("There is no schedule file" in str(e), f"missing file: {e}")
+    r1 = SV.save_rule(path, _sched_doc())
+    check(r1.version == 1 and not os.path.exists(prev),
+          "the first save is version 1 with nothing before it")
+    r2 = SV.save_rule(path, _sched_doc(guard_s=90))
+    check(r2.version == 2 and SV.load_rule(path).guard_s == 90,
+          "the second save is version 2")
+    old = json.load(open(prev))
+    check(old["version"] == 1 and old["guard_s"] == 120,
+          f"the previous version is kept beside it: {old}")
+    snap = (open(path, "rb").read(), open(prev, "rb").read())
+
+    def leftovers():
+        return [f for f in os.listdir(work) if f.endswith(".new")]
+
+    try:
+        SV.save_rule(path, _sched_doc(late_grace_s=99))
+        check(False, "an invalid rule was saved")
+    except ValueError as e:
+        check("15" in str(e), f"an invalid save says why: {e}")
+    check((open(path, "rb").read(), open(prev, "rb").read()) == snap
+          and not leftovers(), "an invalid save touches nothing")
+
+    # Windows: replacing a file another program has open fails for a
+    # moment. Two failures then success is a save; failing every time is a
+    # sentence and an untouched file.
+    calls, sleeps = [], []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) <= 2:
+            raise PermissionError(13, "The process cannot access the file")
+        os.replace(src, dst)
+
+    r3 = SV.save_rule(path, _sched_doc(guard_s=60), replace_fn=flaky,
+                      sleep_fn=sleeps.append)
+    check(r3.version == 3 and len(sleeps) == 2 and not leftovers(),
+          f"a briefly locked file is retried and saved: v{r3.version}, "
+          f"{len(sleeps)} waits")
+    snap = (open(path, "rb").read(), open(prev, "rb").read())
+
+    def locked(src, dst):
+        raise PermissionError(13, "The process cannot access the file")
+
+    try:
+        SV.save_rule(path, _sched_doc(guard_s=30), replace_fn=locked,
+                     sleep_fn=lambda s: None)
+        check(False, "a save into a locked file claimed success")
+    except OSError as e:
+        check("held open by another program" in str(e)
+              and "unchanged" in str(e), f"a locked file is a sentence: {e}")
+        _no_dashes(str(e), "locked file")
+    check((open(path, "rb").read(), open(prev, "rb").read()) == snap
+          and not leftovers(), "a failed save leaves both files as they were")
+    open(path, "w").write("{broken")
+    try:
+        SV.load_rule(path)
+        check(False, "a broken rule file loaded")
+    except ValueError as e:
+        check(path in str(e) and "not readable JSON" in str(e),
+              f"a broken file names itself: {e}")
+    print("  ok")
+
+
+def test_schedule_clock_check():
+    section("scheduler: the NTP check logs the offset and never sets the "
+            "clock")
+    S = _sched()
+    if S is None:
+        return
+    import struct
+    from ltcplay import schedule_service as SV
+    for off, level in ((0.4, "ok"), (-1.9, "ok"), (2.0, "ok"),
+                       (2.01, "warn"), (-3.5, "warn"), (None, "unknown")):
+        got, text = S.judge_clock_offset(off, "test.server")
+        check(got == level, f"an offset of {off} is {level}, got {got}")
+        _no_dashes(text, "clock check")
+        if level == "warn":
+            check(("behind" if off > 0 else "ahead of") in text
+                  and "not changed" in text,
+                  f"a warning says which way and that nothing was set: "
+                  f"{text}")
+
+    def ntp(t):
+        secs = int(t) + SV.NTP_EPOCH
+        return struct.pack("!II", secs, int((t % 1) * 2 ** 32))
+
+    reply = bytes([0x24]) + bytes(31) + ntp(1005.1) + ntp(1005.1)
+    off = SV.parse_sntp(reply, 1000.0, 1000.2)
+    check(abs(off - 5.0) < 1e-6, f"the SNTP offset should be 5.0 s, got {off}")
+    for bad in (reply[:20], bytes([0x23]) + reply[1:]):
+        try:
+            SV.parse_sntp(bad, 0, 0)
+            check(False, "a bad SNTP reply was accepted")
+        except ValueError:
+            pass
+
+    sent = []
+
+    class FakeSock:
+        def settimeout(self, t):
+            pass
+
+        def sendto(self, data, addr):
+            sent.append((data, addr))
+
+        def recvfrom(self, n):
+            return reply, ("1.2.3.4", 123)
+
+        def close(self):
+            pass
+
+    wall = iter((1000.0, 1000.2))
+    off = SV.sntp_query("time.test", sock_factory=FakeSock,
+                        wall=lambda: next(wall))
+    check(abs(off - 5.0) < 1e-6 and len(sent) == 1 and len(sent[0][0]) == 48
+          and sent[0][0][0] == 0x1b and sent[0][1] == ("time.test", 123),
+          f"the request is one 48 byte SNTP client packet to port 123: {sent}")
+
+    def unreachable():
+        raise OSError("Network is unreachable")
+
+    level, text, off = SV.check_clock(unreachable)
+    check(level == "unknown" and off is None and "Network is unreachable"
+          in text, f"no time server is a sentence, not a crash: {text}")
+    level, text, off = SV.check_clock(lambda: 3.2)
+    check(level == "warn" and off == 3.2, "a 3.2 s offset warns")
+    check(not any(n for n in dir(SV) + dir(S)
+                  if n.lower().lstrip("_").startswith("set")
+                  and ("clock" in n.lower() or "time" in n.lower())),
+          "nothing in the scheduler can set the clock")
+    print("  ok")
+
+
+def test_schedule_routes():
+    section("scheduler: read-only routes and tonight's edits, only when "
+            "configured")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    import threading
+    import urllib.error
+    import urllib.request
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, SV.RULE_FILE)
+    SV.save_rule(path, _sched_doc())
+    rule_bytes = open(path, "rb").read()
+    now = [_den(S, 18, 4, 12)]
+    svc = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.25)
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port, schedule=svc)
+    t = threading.Thread(target=httpd.serve_forever,
+                         kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+
+    def call(route, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(base + route, data=data, method=(
+            "POST" if body is not None else "GET"),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    try:
+        check(wait_for(lambda: svc.clock_check is not None),
+              "the clock check runs when the scheduler starts")
+        code, rv = call("/api/schedule")
+        check(code == 200 and rv["ok"] and rv["rule"]["show_len_s"] == 440
+              and rv["rule"]["version"] == 1 and rv["path"] == path,
+              f"GET /api/schedule shows the rule: {code} {rv}")
+        code, tv = call("/api/schedule/tonight")
+        st = [r["status"] for r in tv.get("slots", [])]
+        check(code == 200 and tv["date"] == "2026-11-14" and len(st) == 15
+              and st[:5] == [S.MISSED] * 4 + [S.NEXT],
+              f"tonight's list at 18:04: {st[:6]}")
+        code, sv = call("/api/schedule/state")
+        check(code == 200 and sv["state"] == S.STANDBY and sv["dry_run"]
+              and sv["next"]["start"] == "18:20"
+              and sv["clock_check"]["level"] == "ok",
+              f"GET /api/schedule/state: {code} {sv.get('state')} "
+              f"{sv.get('next')}")
+        check(any(a["id"] == "abort" and a["confirm"] for a in sv["actions"]),
+              "the state carries the transport panel with its confirms")
+        check(all(r["actor"] in S.ACTORS and r["reason"]
+                  for r in sv["journal"]),
+              "every journal row has an actor and a reason")
+        code, ev = call("/api/schedule/tonight",
+                        {"op": "move", "show": 5, "to": "18:25",
+                         "who": "Andy", "screen": "rack screen"})
+        check(code == 200 and [r for r in ev["slots"] if r["show"] == 5][0]
+              ["start"] == "18:25", f"moving show 5 to 18:25: {code} {ev}")
+        code, bad = call("/api/schedule/tonight", {"op": "move", "show": 5,
+                                                   "to": "18:35"})
+        check(code == 400 and "before show" in bad.get("error", ""),
+              f"a move that crowds a show is a 400 with a sentence: {bad}")
+        check(not httpd.control.last_error,
+              f"a refused schedule edit must not become the show's last "
+              f"error: {httpd.control.last_error!r}")
+        code, bad = call("/api/schedule/tonight", {"op": "launch"})
+        check(code == 400 and "move, add or remove" in bad.get("error", ""),
+              f"an unknown edit is a 400 with a sentence: {bad}")
+        check(open(path, "rb").read() == rule_bytes,
+              "editing tonight must never write the rule file")
+        # Nothing that starts, stops or arms anything can be posted.
+        check(SV.Service.POST_ROUTES == ("/api/schedule/tonight",),
+              f"the only schedule route that takes a POST is the tonight "
+              f"edit, got {SV.Service.POST_ROUTES}")
+        for r in ("/api/schedule/start", "/api/schedule/state",
+                  "/api/schedule", "/api/schedule/abort",
+                  "/api/schedule/hold"):
+            code, _ = call(r, {"op": "move"})
+            check(code == 404, f"POST {r} must not exist, got {code}")
+
+        # Dry run: at 18:25 the engine decides to start show 5 (moved there
+        # above) and nothing performs it; the clock ends it after show_len_s.
+        now[0] = _den(S, 18, 25)
+        svc.tick()
+        check(svc.machine.state == S.SHOW and svc.machine.running == 5,
+              "at 18:25 the engine decides to start show 5")
+        check(any(r["outcome"] == "not performed" and "START_SHOW" in
+                  r["text"] for r in svc.journal),
+              "the start is journalled as not performed")
+        now[0] = _den(S, 18, 32, 20)
+        svc.tick()
+        s2 = svc.machine.slot(5)
+        check(svc.machine.state == S.STANDBY and s2.status == S.DONE
+              and "dry run" in s2.reason,
+              f"a dry run show ends after show_len_s and says it was a dry "
+              f"run: {s2.status} {s2.reason!r}")
+        for row in svc.journal:
+            _no_dashes(row["text"], "journal")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        svc.stop()
+
+    # A bad rule file does not take the server down; the page says why.
+    open(path, "w").write(json.dumps(_sched_doc(late_grace_s=60)))
+    bad = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0)
+    code, rv = bad.get("/api/schedule")
+    check(code == 200 and not rv["ok"] and "15" in rv["error"],
+          f"a bad rule file is reported, not fatal: {rv}")
+    code, sv = bad.get("/api/schedule/state")
+    check(code == 200 and not sv["ok"] and sv["error"],
+          "the state of a scheduler with a bad rule says why")
+
+    # Not configured: every schedule route is a plain 404.
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port)
+    t = threading.Thread(target=httpd.serve_forever,
+                         kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(httpd.schedule is None, "no schedule, no scheduler")
+        for r in ("/api/schedule", "/api/schedule/tonight",
+                  "/api/schedule/state"):
+            code, _ = call(r)
+            check(code == 404, f"GET {r} without a schedule is 404, got "
+                               f"{code}")
+        code, _ = call("/api/schedule/tonight", {"op": "add", "at": "20:00"})
+        check(code == 404, f"POST without a schedule is 404, got {code}")
+        code, _ = call("/api/state")
+        check(code == 200, "the rest of the page is untouched")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_the_scheduler():
+    section("scheduler: the GPL path does not import it")
+    import ast
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    pkg = os.path.join(root, "ltcplay")
+    # 1. Run the GPL path in a clean interpreter: every module the show
+    # uses, the web server as the launchers start it, and a request at every
+    # schedule route. The scheduler must not be in sys.modules afterwards.
+    port = _free_port()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('schedule')]\n"
+        "failed = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        importlib.import_module('ltcplay.' + m)\n"
+        "    except Exception as e:\n"
+        "        failed.append(m)\n"
+        "from ltcplay import web, cli\n"
+        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/schedule', '/api/schedule/state', "
+        "'/api/schedule/tonight'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
+        "    'none': h.schedule is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json
+    try:
+        out = json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check("web" in out["mods"] and "cli" in out["mods"]
+          and "session" in out["mods"], f"the GPL modules were all imported: "
+                                        f"{out['mods']}")
+    check(out["loaded"] == [], f"the GPL path loaded the scheduler: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404, 404] and out["none"],
+          f"with no schedule configured every schedule route is 404, got "
+          f"{out['codes']}")
+
+    # 2. Nothing imports the scheduler at module level; only the code behind
+    # --schedule does, inside a function.
+    def top_level(node):
+        """Everything that runs at import time: not function bodies."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            yield child
+            yield from top_level(child)
+
+    for name in sorted(os.listdir(pkg)):
+        if not name.endswith(".py") or name.startswith("schedule"):
+            continue
+        tree = ast.parse(open(os.path.join(pkg, name)).read())
+        for sub in top_level(tree):
+            names = []
+            if isinstance(sub, ast.Import):
+                names = [a.name for a in sub.names]
+            elif isinstance(sub, ast.ImportFrom):
+                names = [sub.module or ""] + [a.name for a in sub.names]
+            check(not any("schedule" in n for n in names),
+                  f"ltcplay/{name} imports the scheduler at module level")
+
+    # 3. No launcher turns it on.
+    files = [os.path.join(root, n) for n in os.listdir(root)
+             if n.endswith(".command") or n == "ltc"]
+    tools = os.path.join(root, "Tools")
+    if os.path.isdir(tools):
+        files += [os.path.join(tools, n) for n in os.listdir(tools)]
+    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
+        files += [os.path.join(dirpath, n) for n in names]
+    for f in files:
+        try:
+            text = open(f, errors="replace").read()
+        except OSError:
+            continue
+        check("--schedule" not in text,
+              f"{os.path.relpath(f, root)} turns the scheduler on")
+    print("  ok")
+
+
+def test_the_scheduler_engine_is_pure():
+    section("scheduler: the engine does no I/O and runs on Python 3.12")
+    import ast
+    root = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(root, "ltcplay", "schedule.py")).read()
+    tree = ast.parse(src)
+    allowed = {"json", "re", "dataclasses", "datetime", "zoneinfo"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                check(a.name.split(".")[0] in allowed,
+                      f"schedule.py imports {a.name}; the engine is pure")
+        elif isinstance(node, ast.ImportFrom):
+            check((node.module or "").split(".")[0] in allowed
+                  and node.level == 0,
+                  f"schedule.py imports from {node.module}; the engine is "
+                  f"pure")
+        elif isinstance(node, ast.Name):
+            check(node.id not in ("open", "print", "input"),
+                  f"schedule.py uses {node.id}(); the engine does no I/O")
+        elif isinstance(node, ast.Attribute):
+            check(node.attr not in ("now", "today", "utcnow", "sleep",
+                                    "monotonic"),
+                  f"schedule.py reads the clock through .{node.attr}; time "
+                  f"is handed in")
+    # Written for Python 3.12 on Windows: nothing newer, nothing POSIX only.
+    for name in ("schedule.py", "schedule_service.py"):
+        text = open(os.path.join(root, "ltcplay", name)).read()
+        try:
+            ast.parse(text, feature_version=(3, 12))
+        except SyntaxError as e:
+            check(False, f"{name} does not parse as Python 3.12: {e}")
+        for posix in ("fcntl", "os.fork", "signal.SIGHUP", "os.getuid",
+                      "termios", "resource"):
+            check(posix not in text, f"{name} uses {posix}, which Windows "
+                                     f"does not have")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     test_ltc_roundtrip()
@@ -7452,6 +8736,17 @@ if __name__ == "__main__":
     test_the_app_starts_the_page_by_itself()
     test_you_can_tell_which_version_is_installed()
     test_the_beta_window_app_stays_a_window()
+    test_schedule_rule_is_validated()
+    test_schedule_expands_the_season()
+    test_schedule_late_rule()
+    test_schedule_state_machine_every_state_every_event()
+    test_schedule_restart_guard_and_hold()
+    test_schedule_abort_end_night_and_operator_actions()
+    test_schedule_file_is_versioned_and_atomic()
+    test_schedule_clock_check()
+    test_schedule_routes()
+    test_the_gpl_path_never_loads_the_scheduler()
+    test_the_scheduler_engine_is_pure()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

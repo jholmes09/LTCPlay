@@ -626,6 +626,13 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return {}
 
+    def _schedule(self):
+        """The scheduler's routes, when a schedule file is configured. When
+        it is not, every schedule route is a plain 404, exactly as if this
+        build had no scheduler at all."""
+        sched = getattr(self.server, "schedule", None)
+        return sched if sched is not None else _NoSchedule()
+
     # -- routes -----------------------------------------------------------
     def do_GET(self):
         route = urllib.parse.urlparse(self.path).path
@@ -666,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/log":
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 return self._send(200, {"lines": c.log_tail(q.get("n", [120])[0])})
+            if route == "/api/schedule" or route.startswith("/api/schedule/"):
+                return self._send(*self._schedule().get(route))
         except USER_ERRORS as e:
             return self._send(400, {"error": str(e)})
         except Exception as e:
@@ -678,6 +687,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "token required"})
         c = self.server.control
         body = self._body()
+        if route == "/api/schedule" or route.startswith("/api/schedule/"):
+            # Kept apart from the show's routes: a refused edit to tonight's
+            # list is not the show's last error and must not appear as one.
+            try:
+                return self._send(*self._schedule().post(route, body))
+            except USER_ERRORS as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:
+                return self._send(500, {"error": f"{type(e).__name__}: {e}"})
         try:
             if route == "/api/find":
                 return self._send(200, c.find(float(body.get("seconds", 3.0))))
@@ -728,8 +746,21 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such thing here"})
 
 
+class _NoSchedule:
+    """Stands in for the scheduler when none is configured."""
+
+    def get(self, route):
+        return 404, {"error": "no such thing here"}
+
+    def post(self, route, body):
+        return 404, {"error": "no such thing here"}
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
-          token=None, on_ready=None):
+          token=None, on_ready=None, schedule=None):
+    """`schedule` is the path of a schedule rule file, or a ready-made
+    scheduler service. Without it the scheduler is not even imported: the
+    GPL show runs exactly the program it ran before the scheduler existed."""
     control = Control(folder, defaults=defaults, sd=sd)
     on_network = bind not in LOOPBACK
     if on_network and token is None:
@@ -741,6 +772,12 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     httpd.control = control
     httpd.token = token if on_network else None
     httpd.daemon_threads = True
+    httpd.schedule = None
+    if schedule is not None:
+        if isinstance(schedule, str):
+            from . import schedule_service
+            schedule = schedule_service.Service(schedule)
+        httpd.schedule = schedule.start()
     if on_ready:
         on_ready(httpd, control, token)
     return httpd
