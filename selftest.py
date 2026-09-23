@@ -1390,7 +1390,10 @@ def test_timecode_on_a_channel_other_than_one():
 def test_find_names_the_channel():
     section("find says which device and which input")
     sd = FakeSD(ltc_channel=3)
-    res = audio_mod.scan(sd, LTCDecoder, seconds=0.8)
+    # Listened to in real time. 0.8s was about 24 frames on an idle machine
+    # and none at all on a loaded CI Mac, which failed this for the runner,
+    # not for find. The program itself listens for 3.0s.
+    res = audio_mod.scan(sd, LTCDecoder, seconds=2.0)
     by_name = {r["device"]["name"]: r for r in res}
     motu = by_name["MOTU M4"]
     check(motu["error"] is None, f"scanning the interface failed: {motu['error']}")
