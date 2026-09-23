@@ -622,22 +622,74 @@ def test_next_cue():
 
 def _drive(p, seconds, tc_start, feed_until=None, rate=30.0, step=0.05):
     """Feed timecode at wall clock speed for `seconds`, stopping the feed at
-    `feed_until` so a dropout can be observed.
-
-    With no dropout asked for, the last frame goes in as it returns, so a
-    check made straight after sees a feed that is running NOW. Without it the
-    last frame was one sleep old, and a CI Mac where sleep(0.05) takes 0.14s
-    read a healthy feed as freewheeling."""
+    `feed_until` so a dropout can be observed."""
     t0 = time.monotonic()
     while True:
         el = time.monotonic() - t0
         if el >= seconds:
-            if feed_until is None:
-                p.feed_timecode(tc_start + el, time.monotonic(), text="fed")
             return
         if feed_until is None or el < feed_until:
             p.feed_timecode(tc_start + el, time.monotonic(), text="fed")
         time.sleep(step)
+
+
+class _Stepped:
+    """A Player run by hand, on a clock that moves only when told to.
+
+    The state tests below are about windows of 100 to 600ms. Run on the wall
+    clock they measured the runner as much as the player: a CI Mac wakes a
+    20ms sleep at 50 to 100ms, read a healthy feed as freewheeling and a
+    freewheel as lost. Here every output tick is the same work the output
+    thread does (tick, send, count, trigger), at exact times, so a check
+    fails only when the player is wrong. The thread itself is proven by
+    test_loop_never_dies, which still runs it for real."""
+
+    def __init__(self, p, step_ms):
+        import ltcplay.player as plmod
+        self.p, self.step = p, step_ms / 1000.0
+        self.t = 1000.0
+        self._plmod, self._real = plmod, plmod.time
+        clock = self
+
+        class _Time:
+            def monotonic(self):
+                return clock.t
+
+            def sleep(self, s):
+                clock.t += s
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        plmod.time = _Time()
+        p.step_ms = step_ms
+        p._idle_epoch = self.t
+
+    def close(self):
+        self._plmod.time = self._real
+
+    def feed(self, tc_seconds, text="fed"):
+        self.p.feed_timecode(tc_seconds, self.t, text=text)
+
+    def tick(self):
+        p = self.p
+        frame = p._tick()
+        p.sender.send_frame(frame if frame is not None else b"")
+        p.frames_sent += 1
+        p._service_trigger()
+
+    def run(self, seconds, tc_from=None, hold_at=None):
+        """Let `seconds` pass, one output tick per step. With `tc_from`, a
+        feed running from that timecode at real speed; with `hold_at`, a feed
+        repeating that one timecode (a paused deck); with neither, silence."""
+        t0 = self.t
+        for _ in range(int(round(seconds / self.step))):
+            self.t += self.step
+            if tc_from is not None:
+                self.feed(tc_from + (self.t - t0))
+            elif hold_at is not None:
+                self.feed(hold_at)
+            self.tick()
 
 
 def test_player_states():
@@ -648,17 +700,15 @@ def test_player_states():
     tl = _timeline([("01:00:00:00", "A", fs), ("01:00:50:00", "B", fs)],
                    idle="/tmp/idle.fseq")
     snd = CountingSender()
-    # The hold is well clear of the 0.3s the freewheel is looked at after:
-    # at 500 a CI Mac's late wake-ups carried that look past it into LOST.
-    p = Player(tl, FakeNetmap(), snd, freewheel_ms=150, hold_ms=800)
+    p = Player(tl, FakeNetmap(), snd, freewheel_ms=150, hold_ms=500)
     p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
     p.idle_cue.fseq = idle
     p.idle_cue.duration = 1.0
     p.idle_cue._spans = [(0, 0, 64)]
-    p.start(step_ms=25)
+    clk = _Stepped(p, step_ms=25)
     try:
         # 1. no timecode at all -> the preshow loop plays, not blackness
-        time.sleep(0.3)
+        clk.run(0.3)
         check(p.state == LOST and p.source == IDLE,
               f"with no timecode the preshow loop should run, got "
               f"{p.state}/{p.source}")
@@ -667,7 +717,7 @@ def test_player_states():
 
         # 2. timecode arrives -> show
         base = tcmod.parse_tc("01:00:10:00", 30)
-        _drive(p, 0.6, base)
+        clk.run(0.6, tc_from=base)
         check(p.state == LOCKED and p.source == SHOW,
               f"with timecode running the show should play, got "
               f"{p.state}/{p.source}")
@@ -678,23 +728,28 @@ def test_player_states():
         rolling = p.tc_seconds
 
         # 3. feed stops -> LTC readout freezes, playback free-rolls
-        time.sleep(0.3)
+        stopped = clk.t
+        clk.run(0.3)
         check(p.state == FREEWHEEL, f"expected FREEWHEEL, got {p.state}")
         check(p.last_ltc_text == frozen,
               "the LTC readout moved after the feed stopped")
-        # The output thread moves the clock on its own ticks, and on a CI Mac
-        # those come late. Give it until the hold runs out to show it rolled.
-        wait_for(lambda: p.tc_seconds > rolling + 0.2, timeout=0.3)
-        check(p.tc_seconds > rolling + 0.2,
-              "playback should free-roll through a short dropout")
+        # At full speed, on the clock: 0.3s of dropout is 0.3s of show.
+        check(abs(p.tc_seconds - (rolling + 0.3)) < 0.03,
+              f"playback should free-roll through a short dropout at full "
+              f"speed: moved {p.tc_seconds - rolling:.3f}s in 0.300s")
         check(p.source == SHOW, "a short dropout should not interrupt the show")
 
         # 4. feed stays gone -> back to the preshow loop, readout still frozen
-        # Waited for, not slept for: the checks below still have to hold,
-        # and a player that never gets there fails them after the deadline.
-        wait_for(lambda: p.state == LOST and p.source == IDLE
-                 and p.tc_seconds is not None and p.tc_seconds < 0,
-                 timeout=3.0)
+        # And it goes when the HOLD says, not at some other number: the tick
+        # it first reads LOST is the first one past 0.5s without timecode.
+        lost_at = None
+        for _ in range(int(round(0.6 / clk.step))):
+            clk.run(clk.step)
+            if lost_at is None and p.state == LOST:
+                lost_at = clk.t - stopped
+        check(lost_at is not None and 0.5 < lost_at <= 0.5 + clk.step + 1e-9,
+              f"the feed was lost {lost_at}s after it stopped; the hold is "
+              f"0.500s")
         check(p.state == LOST, f"expected LOST, got {p.state}")
         check(p.source == IDLE,
               f"after a long dropout the preshow loop should return, got "
@@ -705,17 +760,16 @@ def test_player_states():
 
         # 5. a deliberate jump is snapped, not slewed
         before = p.jumps
-        p.feed_timecode(tcmod.parse_tc("01:00:55:00", 30), time.monotonic(),
-                        text="jump")
-        time.sleep(0.15)
-        p.feed_timecode(tcmod.parse_tc("01:00:55:05", 30), time.monotonic(),
-                        text="jump")
-        time.sleep(0.1)
+        clk.feed(tcmod.parse_tc("01:00:55:00", 30), text="jump")
+        clk.run(0.15)
+        clk.feed(tcmod.parse_tc("01:00:55:05", 30), text="jump")
+        clk.run(0.1)
         check(p.current_cue and p.current_cue.name == "B",
               f"after jumping to 01:00:55:00 cue B should play, got "
               f"{p.current_cue and p.current_cue.name}")
         check(p.jumps > before, "the jump was not counted as a jump")
     finally:
+        clk.close()
         p.stop()
     print("  ok")
 
@@ -1026,28 +1080,21 @@ def test_park_and_pause():
     fs = FakeFSEQ(frames=8000)          # 200s
     idle = FakeFSEQ(frames=40)
     tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
-    # hold_ms is well clear of the 0.4s the parked frame is watched for
-    # below. At 600 a loaded CI Mac overslept that sleep past the hold, the
-    # feed went LOST, the preshow came up and the "frame moved" check failed
-    # on the test's own clock, not on the player.
     p = Player(tl, FakeNetmap(), CountingSender(), freewheel_ms=150,
-               hold_ms=1500, park_ms=150)
+               hold_ms=600, park_ms=150)
     p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
     p.idle_cue.fseq = idle
     p.idle_cue._spans = [(0, 0, 64)]
-    p.start(step_ms=20)
+    clk = _Stepped(p, step_ms=20)
     try:
         base = tcmod.parse_tc("01:00:30:00", 30)
-        _drive(p, 0.5, base)
+        clk.run(0.5, tc_from=base)
         check(p.state == LOCKED, f"expected LOCKED, got {p.state}")
         jumps_before = p.jumps
 
         # The deck is paused: it keeps sending, but the number stops moving.
         held = p.tc_seconds
-        t0 = time.monotonic()
-        while time.monotonic() - t0 < 1.2:
-            p.feed_timecode(base + 0.5, time.monotonic(), text="01:00:30:15")
-            time.sleep(0.03)
+        clk.run(1.2, hold_at=base + 0.5)
         check(p.state == PARKED,
               f"a repeating frame number should read as PARKED, got {p.state}")
         check(p.source == SHOW,
@@ -1061,25 +1108,25 @@ def test_park_and_pause():
               f"a pause logged {p.jumps - jumps_before} jumps; freezing the "
               f"clock should make it at most one")
         frame_while_parked = p.current_frame
-        time.sleep(0.4)
+        clk.run(0.4)
         check(p.current_frame == frame_while_parked,
-              f"the frame moved while the source was parked "
-              f"(state {p.state})")
+              "the frame moved while the source was parked")
 
         # Play again, from where it stopped.
-        _drive(p, 0.6, base + 0.5)
+        clk.run(0.6, tc_from=base + 0.5)
         check(p.state == LOCKED, f"expected LOCKED after resume, got {p.state}")
         check(p.current_frame > frame_while_parked,
               "playback did not resume after the pause")
 
         # Now the other case: the source stops sending entirely.
-        wait_for(lambda: p.state == LOST and p.source == IDLE, timeout=4.0)
+        clk.run(1.0)
         check(p.state == LOST,
               f"a source that stops sending should end in LOST, got {p.state}")
         check(p.source == IDLE,
               f"with the default policy a lost feed goes to the preshow look, "
               f"got {p.source}")
     finally:
+        clk.close()
         p.stop()
     print("  ok")
 
@@ -1096,16 +1143,15 @@ def test_on_lost_policies():
         p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow")
         p.idle_cue.fseq = idle
         p.idle_cue._spans = [(0, 0, 64)]
-        p.start(step_ms=20)
-        return p
+        return p, _Stepped(p, step_ms=20)
 
     want = {"hold": HOLD, "blackout": BLACK, "preshow": IDLE}
     for policy, source in want.items():
-        p = build(policy)
+        p, clk = build(policy)
         try:
-            _drive(p, 0.4, tcmod.parse_tc("01:00:30:00", 30))
+            clk.run(0.4, tc_from=tcmod.parse_tc("01:00:30:00", 30))
             check(p.source == SHOW, f"{policy}: show did not start")
-            time.sleep(0.8)
+            clk.run(0.8)
             check(p.state == LOST, f"{policy}: expected LOST, got {p.state}")
             check(p.source == source,
                   f"--on-lost {policy} should leave the rig on {source}, "
@@ -1116,7 +1162,7 @@ def test_on_lost_policies():
                 # is that it then stops moving and keeps its cue.
                 marked = bytes(p._buf)
                 frame = p.current_frame
-                time.sleep(0.5)
+                clk.run(0.5)
                 check(bytes(p._buf) == marked,
                       "hold kept changing the frame it was supposed to hold")
                 check(p.current_frame == frame,
@@ -1124,9 +1170,9 @@ def test_on_lost_policies():
                 check(p.current_cue is not None,
                       "hold dropped the cue it was holding")
         finally:
+            clk.close()
             p.stop()
     print("  ok")
-
 
 
 def test_pause_does_not_poison_the_rate():
@@ -1208,6 +1254,7 @@ class FakeStream:
         self._run = False
         self._t = None
         self.closed = False
+        self.delivered = 0          # samples handed to the callback so far
 
     def start(self):
         self._run = True
@@ -1228,7 +1275,9 @@ class FakeStream:
                 self.callback(block, self.blocksize, None, None)
             except Exception:
                 pass
-            time.sleep(self.blocksize / float(self.rate))
+            self.delivered += self.blocksize
+            if self.sd.realtime:
+                time.sleep(self.blocksize / float(self.rate))
 
     def stop(self):
         self._run = False
@@ -1256,8 +1305,11 @@ class FakeSD:
     deliberately NOT on input 1, which is the case the headphone jack never
     exercised and a USB box always will."""
 
-    def __init__(self, ltc_channel=2, rates=(48000,)):
+    def __init__(self, ltc_channel=2, rates=(48000,), realtime=True):
         import numpy as np
+        # realtime=False: streams hand over blocks as fast as they are made,
+        # for a test that counts samples instead of watching the clock.
+        self.realtime = realtime
         self.devices = [
             {"name": "MacBook Air Microphone", "max_input_channels": 1,
              "max_output_channels": 0, "default_samplerate": 48000, "hostapi": 0},
@@ -1408,11 +1460,34 @@ def test_timecode_on_a_channel_other_than_one():
 
 def test_find_names_the_channel():
     section("find says which device and which input")
-    sd = FakeSD(ltc_channel=3)
-    # Listened to in real time. 0.8s was about 24 frames on an idle machine
-    # and none at all on a loaded CI Mac, which failed this for the runner,
-    # not for find. The program itself listens for 3.0s.
-    res = audio_mod.scan(sd, LTCDecoder, seconds=2.0)
+    # find listens for `seconds` of wall clock. On a loaded CI Mac 0.8s of
+    # wall clock delivered no audio at all, and the test failed for the
+    # runner rather than for find. So here the listening is measured in
+    # SAMPLES: the scan's sleep waits until 0.8s worth have been delivered to
+    # the stream it just opened (30s cap), and the stream delivers them as
+    # fast as it can make them. Same audio, same 0.8s of it, on any machine.
+    sd = FakeSD(ltc_channel=3, realtime=False)
+    main_thread = threading.current_thread()
+
+    class _SampleTime:
+        def sleep(self, seconds):
+            if threading.current_thread() is not main_thread:
+                return time.sleep(seconds)
+            s = sd.streams[-1]
+            want = int(seconds * s.rate)
+            end = time.monotonic() + 30.0
+            while s.delivered < want and time.monotonic() < end:
+                time.sleep(0.001)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    real_time = audio_mod.time
+    audio_mod.time = _SampleTime()
+    try:
+        res = audio_mod.scan(sd, LTCDecoder, seconds=0.8)
+    finally:
+        audio_mod.time = real_time
     by_name = {r["device"]["name"]: r for r in res}
     motu = by_name["MOTU M4"]
     check(motu["error"] is None, f"scanning the interface failed: {motu['error']}")
@@ -4437,15 +4512,14 @@ def test_free_run_to_the_end_when_timecode_dies():
         p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow")
         p.idle_cue.fseq = idle
         p.idle_cue._spans = [(0, 0, 64)]
-        p.start(step_ms=20)
-        return p
+        return p, _Stepped(p, step_ms=20)
 
-    p = build("freerun")
+    p, clk = build("freerun")
     try:
-        _drive(p, 0.4, tcmod.parse_tc("01:00:10:00", 30))
+        clk.run(0.4, tc_from=tcmod.parse_tc("01:00:10:00", 30))
         check(p.source == SHOW, "the show did not start")
         was = p.tc_seconds
-        time.sleep(1.0)                      # the feed dies
+        clk.run(1.0)                         # the feed dies
         check(p.source == SHOW,
               f"the rig dropped off the show when the feed died: {p.source}")
         check(p.freerun_epoch is not None,
@@ -4465,9 +4539,8 @@ def test_free_run_to_the_end_when_timecode_dies():
         # And it must KEEP running when timecode comes back, rather than
         # snapping the rig sideways mid-cue. The caption said it followed the
         # feed again; the code never did. Fixed the caption, 2026-09-14.
-        p.feed_timecode(tcmod.parse_tc("01:00:20:00", 30), time.monotonic(),
-                        text="01:00:20:00")
-        time.sleep(0.2)
+        clk.feed(tcmod.parse_tc("01:00:20:00", 30), text="01:00:20:00")
+        clk.run(0.2)
         check(p.freerun_epoch is not None and p.state == "FREERUN",
               "a returning feed yanked the show out of its free run; the "
               "operator has to hand it back deliberately")
@@ -4478,16 +4551,18 @@ def test_free_run_to_the_end_when_timecode_dies():
         check(p.freerun_epoch is None,
               "Back to timecode did not hand the show back")
     finally:
+        clk.close()
         p.stop()
 
     # preshow stays the default for anything that did not ask for this.
-    p2 = build("preshow")
+    p2, clk2 = build("preshow")
     try:
-        _drive(p2, 0.4, tcmod.parse_tc("01:00:10:00", 30))
-        time.sleep(1.0)
+        clk2.run(0.4, tc_from=tcmod.parse_tc("01:00:10:00", 30))
+        clk2.run(1.0)
         check(p2.source == IDLE and p2.freerun_epoch is None,
               f"on_lost preshow started free-running anyway: {p2.source}")
     finally:
+        clk2.close()
         p2.stop()
     print("  ok")
 
@@ -5297,6 +5372,24 @@ def test_only_one_player_sends_at_a_time():
     second = onlyone.OutputLock(where, "the Web window").acquire()
     check(second is not None, "the lock must free when the holder stops")
     second.release()
+
+    # The note carries the show file's name. One the Windows code page cannot
+    # spell used to raise AFTER the lock was taken, and the start died with a
+    # traceback. It has to be held, and named in the refusal, like any other.
+    snow = "\u2744 Fire and Ice_timeline.json (web)"
+    try:
+        held = onlyone.OutputLock(where, snow).acquire()
+    except Exception as e:
+        held = None
+        check(False, f"a show name with a snowflake broke the lock: {e!r}")
+    if held is not None:
+        try:
+            onlyone.OutputLock(where, "me").acquire()
+            check(False, "a lock with a snowflake in its note did not hold")
+        except onlyone.AlreadyRunning as e:
+            check("\u2744" in e.holder,
+                  f"the refusal lost the show name: {e.holder!r}")
+        held.release()
 
     # A holder that dies without releasing must not wedge the rig.
     import subprocess

@@ -114,7 +114,10 @@ class OutputLock:
         """The same contract as the flock path, through msvcrt.locking."""
         import msvcrt
         try:
-            fh = open(self.path, "a+")
+            # UTF-8, not the Windows code page: the note carries the show
+            # file's name, and a name cp1252 cannot spell would otherwise
+            # raise after the lock was already taken.
+            fh = open(self.path, "a+", encoding="utf-8", errors="replace")
         except OSError as e:
             if e.errno in (errno.EACCES, errno.EROFS, errno.ENOENT):
                 # Fail open on a folder that cannot hold the file, as above.

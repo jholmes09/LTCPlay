@@ -15,7 +15,9 @@ For CI, two options that change nothing about a plain run:
     --shard I/N        run only every Nth mutation, starting at the Ith
                        (0-based), so N machines can share one sweep
     --expected FILE    a list of mutations this machine is known to miss,
-                       each with its reason; see mutate_expected_misses.txt
+                       each with its reason; see mutate_expected_misses.txt.
+                       In this mode a mutation counts as caught only when
+                       the suite fails under it twice running.
 """
 import subprocess
 import sys
@@ -364,6 +366,14 @@ MUTATIONS = [
                 # Leave the epoch alone.""",
   """            if False:
                 # Leave the epoch alone."""),
+
+ ("a freewheel runs at half speed", "ltcplay/player.py",
+  """        tc = self.last_ltc_seconds if self.state == PARKED and \\
+            self.last_ltc_seconds is not None else now - epoch""",
+  """        tc = self.last_ltc_seconds if self.state == PARKED and \\
+            self.last_ltc_seconds is not None else (
+                now - epoch if self.state != FREEWHEEL
+                else (last - epoch) + (now - last) / 2)"""),
 
  ("parked playback uses the free-rolling clock", "ltcplay/player.py",
   """        tc = self.last_ltc_seconds if self.state == PARKED and \\
@@ -1178,15 +1188,18 @@ def _run():
         _write(path, src.replace(old, new, 1))
         try:
             green = run_suite()
-            # A mutation on the expected-miss list that comes out caught has
-            # to be caught twice. Once is a timing test failing on a slow
-            # runner, and "now caught" would then fail the job for nothing.
-            if not green and name in expected:
+            # In CI a mutation counts as caught only if the suite fails under
+            # it twice running. A test that fails for the runner's reasons
+            # would otherwise pass itself off as coverage: an unlisted
+            # mutation nothing really catches would read "caught", and a
+            # listed one would read "now caught". Caught once and then not is
+            # NOT CAUGHT, with what failed the first time printed.
+            if not green and expected_file:
                 why = list(_LAST_FAILS)
                 if run_suite():
                     green = True
-                    print(f"  caught once, then not: a flaky test, not this "
-                          f"mutation: {name}")
+                    print(f"  caught once, then not: counted as NOT CAUGHT, "
+                          f"and the first failure was a flaky test: {name}")
                     for w in why:
                         print(f"      {w}")
         finally:
@@ -1199,9 +1212,11 @@ def _run():
             print(f"  caught      {name}")
             caught += 1
             caught_names.append(name)
-            if name in expected:
-                for w in _LAST_FAILS:
-                    print(f"      {w}")
+            # What caught it. A check that has nothing to do with this
+            # mutation is a flaky test passing itself off as coverage, and
+            # this is where that shows.
+            for w in _LAST_FAILS[:3]:
+                print(f"      {w}")
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.

@@ -80,7 +80,8 @@ jobs:
   #   windows  on a release tag only
   #   macOS    never here (billed at 10x); it is run on the show Mac, with
   #            the real renders, where every mutation has to be caught
-  # Each run is split five ways so the wall time stays under 45 minutes.
+  # A mutation counts as caught in CI only if the suite fails under it twice,
+  # so each run is split eight ways to keep the wall time under 45 minutes.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -130,7 +131,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
-        shard: [0, 1, 2, 3, 4]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -142,4 +143,4 @@ jobs:
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job.
-      - run: python -u mutate.py --shard ${{ matrix.shard }}/5 --expected mutate_expected_misses.txt
+      - run: python -u mutate.py --shard ${{ matrix.shard }}/8 --expected mutate_expected_misses.txt

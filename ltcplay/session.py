@@ -382,10 +382,13 @@ class Session:
                 ).acquire()
             except onlyone.AlreadyRunning as e:
                 who = f"  It says: {e.holder}" if e.holder else ""
+                # "this Mac" on a Mac, exactly as before; Windows says what it
+                # is.
+                here = "computer" if appdata.WINDOWS else "Mac"
                 raise SessionError(
-                    "Another ltcplay on this Mac is already sending to the "
-                    "rig." + who + "\nTwo players on the same universes fight "
-                    "frame by frame and the rig looks broken. Stop that one "
+                    f"Another ltcplay on this {here} is already sending to "
+                    "the rig." + who + "\nTwo players on the same universes "
+                    "fight frame by frame and the rig looks broken. Stop that one "
                     "first -- it is either the Run window or the Web window.")
         if not self.wav:
             # With no device resolved, hand it a placeholder carrying the NAME
