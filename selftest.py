@@ -622,11 +622,18 @@ def test_next_cue():
 
 def _drive(p, seconds, tc_start, feed_until=None, rate=30.0, step=0.05):
     """Feed timecode at wall clock speed for `seconds`, stopping the feed at
-    `feed_until` so a dropout can be observed."""
+    `feed_until` so a dropout can be observed.
+
+    With no dropout asked for, the last frame goes in as it returns, so a
+    check made straight after sees a feed that is running NOW. Without it the
+    last frame was one sleep old, and a CI Mac where sleep(0.05) takes 0.14s
+    read a healthy feed as freewheeling."""
     t0 = time.monotonic()
     while True:
         el = time.monotonic() - t0
         if el >= seconds:
+            if feed_until is None:
+                p.feed_timecode(tc_start + el, time.monotonic(), text="fed")
             return
         if feed_until is None or el < feed_until:
             p.feed_timecode(tc_start + el, time.monotonic(), text="fed")
@@ -641,7 +648,9 @@ def test_player_states():
     tl = _timeline([("01:00:00:00", "A", fs), ("01:00:50:00", "B", fs)],
                    idle="/tmp/idle.fseq")
     snd = CountingSender()
-    p = Player(tl, FakeNetmap(), snd, freewheel_ms=150, hold_ms=500)
+    # The hold is well clear of the 0.3s the freewheel is looked at after:
+    # at 500 a CI Mac's late wake-ups carried that look past it into LOST.
+    p = Player(tl, FakeNetmap(), snd, freewheel_ms=150, hold_ms=800)
     p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
     p.idle_cue.fseq = idle
     p.idle_cue.duration = 1.0
@@ -678,7 +687,11 @@ def test_player_states():
         check(p.source == SHOW, "a short dropout should not interrupt the show")
 
         # 4. feed stays gone -> back to the preshow loop, readout still frozen
-        time.sleep(0.6)
+        # Waited for, not slept for: the checks below still have to hold,
+        # and a player that never gets there fails them after the deadline.
+        wait_for(lambda: p.state == LOST and p.source == IDLE
+                 and p.tc_seconds is not None and p.tc_seconds < 0,
+                 timeout=3.0)
         check(p.state == LOST, f"expected LOST, got {p.state}")
         check(p.source == IDLE,
               f"after a long dropout the preshow loop should return, got "
@@ -1054,7 +1067,7 @@ def test_park_and_pause():
               "playback did not resume after the pause")
 
         # Now the other case: the source stops sending entirely.
-        time.sleep(2.0)
+        wait_for(lambda: p.state == LOST and p.source == IDLE, timeout=4.0)
         check(p.state == LOST,
               f"a source that stops sending should end in LOST, got {p.state}")
         check(p.source == IDLE,

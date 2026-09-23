@@ -50,6 +50,28 @@ jobs:
           if command -v taskpolicy >/dev/null; then taskpolicy -l 0 -t 0 python "$RUNNER_TEMP/t.py"; fi
       - run: python -u selftest.py
 
+  # TEMP (porting aid, removed before the PR): the suite five times over on
+  # the slowest runner, to flush out timing flakes.
+  macos-stress:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install numpy zstandard tzdata
+      - shell: bash
+        run: |
+          bad=0
+          for i in 1 2 3 4 5; do
+            python -u selftest.py > "run$i.txt" 2>&1 || bad=$((bad+1))
+            echo "run $i: $(tail -1 "run$i.txt")"
+            grep -E "^  FAIL|Traceback" "run$i.txt" || true
+          done
+          echo "failed runs: $bad of 5"
+          [ "$bad" = 0 ]
+
   # mutate.py is about 2.5 hours of runner time per OS, so it runs where it
   # pays for itself:
   #   ubuntu   on a release tag, and on any PR or push to main that changes
