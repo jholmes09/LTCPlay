@@ -1,0 +1,53 @@
+# Never commit (see CLAUDE.md)
+
+# Show renders and media
+*.fseq
+*.xsq
+*.wav
+*.mp3
+*.aif
+*.aiff
+*.m4a
+*.flac
+*.ogg
+*.mp4
+*.mov
+*.m4v
+*.avi
+*.mkv
+
+# Local environment and built app
+.venv/
+LTC Player.app/
+
+# Logs
+*.log
+logs/
+
+# Machine state written at runtime
+ltcplay_prefs.json
+ltcplay_input.json
+ltcplay_output.lock
+
+# Written by Cut a release.command at packaging time
+VERSION
+
+# Backups written by Set the Advatek triggers.command
+*.before_triggers
+
+# Tokens, passwords, keys
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.token
+*secret*
+*password*
+
+# Claude-Brain
+Claude-Brain/
+
+# Python and macOS
+__pycache__/
+.DS_Store
