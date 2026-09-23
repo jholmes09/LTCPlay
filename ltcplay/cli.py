@@ -1279,6 +1279,9 @@ def _hold_the_mac_awake():
     program in `caffeinate` would have made caffeinate the job's main process
     and left the engine orphaned, holding the port and the rig, when launchctl
     stopped it. Round 2 of the audit, 2026-09-13.
+
+    Off a Mac this does nothing on purpose. Keeping a Windows machine awake
+    (SetThreadExecutionState) arrives with the Windows launchers.
     """
     if sys.platform != "darwin":
         return None

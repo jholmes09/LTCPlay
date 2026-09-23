@@ -942,8 +942,12 @@ def test_park_and_pause():
     fs = FakeFSEQ(frames=8000)          # 200s
     idle = FakeFSEQ(frames=40)
     tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    # hold_ms is well clear of the 0.4s the parked frame is watched for
+    # below. At 600 a loaded CI Mac overslept that sleep past the hold, the
+    # feed went LOST, the preshow came up and the "frame moved" check failed
+    # on the test's own clock, not on the player.
     p = Player(tl, FakeNetmap(), CountingSender(), freewheel_ms=150,
-               hold_ms=600, park_ms=150)
+               hold_ms=1500, park_ms=150)
     p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
     p.idle_cue.fseq = idle
     p.idle_cue._spans = [(0, 0, 64)]
@@ -975,7 +979,8 @@ def test_park_and_pause():
         frame_while_parked = p.current_frame
         time.sleep(0.4)
         check(p.current_frame == frame_while_parked,
-              "the frame moved while the source was parked")
+              f"the frame moved while the source was parked "
+              f"(state {p.state})")
 
         # Play again, from where it stopped.
         _drive(p, 0.6, base + 0.5)
@@ -984,7 +989,7 @@ def test_park_and_pause():
               "playback did not resume after the pause")
 
         # Now the other case: the source stops sending entirely.
-        time.sleep(1.0)
+        time.sleep(2.0)
         check(p.state == LOST,
               f"a source that stops sending should end in LOST, got {p.state}")
         check(p.source == IDLE,
