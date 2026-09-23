@@ -66,7 +66,9 @@ def build():
     newest = 0.0
     files = _files()
     for p in files:
-        rel = os.path.relpath(p, folder())
+        # Forward slashes whatever the OS, so the same files give the same
+        # build id on a Mac and on Windows. On a Mac this changes nothing.
+        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
         h.update(rel.encode("utf-8", "replace"))
         h.update(b"\0")
         try:

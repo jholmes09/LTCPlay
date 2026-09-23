@@ -1060,6 +1060,16 @@ def run_suite():
 LOCK = os.path.join(HERE, ".mutating")
 
 
+def _read(path):
+    with open(path, encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+
 def main():
     # While this runs, the working tree is deliberately broken. Anything else
     # that reads it — a capture, a soak, a live run — is measuring a mutant and
@@ -1095,19 +1105,21 @@ def _run():
         if wants and not any(w in name.lower() for w in wants):
             continue
         path = os.path.join(HERE, rel)
-        src = open(path).read()
+        # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
+        # no newline translation, so a restore on Windows cannot turn an LF
+        # file into a CRLF one and a pattern cannot miss on a line ending.
+        src = _read(path)
         if src.count(old) != 1:
             print(f"  SETUP FAIL  {name} "
                   f"(pattern appears {src.count(old)} times in {rel})")
             missed += 1
             continue
         backup = src
-        open(path, "w").write(src.replace(old, new, 1))
+        _write(path, src.replace(old, new, 1))
         try:
             green = run_suite()
         finally:
-            with open(path, "w") as fh:
-                fh.write(backup)
+            _write(path, backup)
         if green:
             print(f"  NOT CAUGHT  {name}")
             missed += 1

@@ -10,9 +10,26 @@ Implemented as an exclusive flock on a file beside the launcher. A flock is
 released by the kernel when the holder dies, so a crash or a force-quit does
 not leave a stale lock the operator has to know about -- which a PID file
 would.
+
+Windows has no flock. There it is a byte-range lock through msvcrt.locking
+on the same file, which Windows also drops when the holder's handle closes,
+including when the process is killed. Same guarantee, same stale-lock
+immunity, same holder note in the file.
 """
 import errno
 import os
+import sys
+
+from . import appdata
+
+WINDOWS = sys.platform == "win32"
+
+# Windows byte-range locks are mandatory: nobody else can READ locked bytes.
+# The holder note at the start of the file has to stay readable, because the
+# refusal names who is holding the rig. So the lock sits on one byte far past
+# anything ever written. Locking past the end of a file is allowed and does
+# not grow it.
+_WIN_LOCK_AT = 1 << 30
 
 FILENAME = "ltcplay_output.lock"
 
@@ -25,6 +42,8 @@ def path():
     copy on the show machine. Both would have taken their own lock and both
     would have driven the rig. Round 2 of the audit, 2026-09-13.
     """
+    if WINDOWS:
+        return os.path.join(appdata.folder(), FILENAME)
     home = os.path.expanduser("~")
     for base in (os.path.join(home, "Library", "Application Support"),
                  home, "/tmp"):
@@ -60,6 +79,8 @@ class OutputLock:
         self._fh = None
 
     def acquire(self):
+        if WINDOWS:
+            return self._acquire_windows()
         import fcntl
         try:
             fh = open(self.path, "a+")
@@ -87,6 +108,40 @@ class OutputLock:
                 holder = ""
             fh.close()
             raise AlreadyRunning(holder)
+        return self._hold(fh)
+
+    def _acquire_windows(self):
+        """The same contract as the flock path, through msvcrt.locking."""
+        import msvcrt
+        try:
+            fh = open(self.path, "a+")
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EROFS, errno.ENOENT):
+                # Fail open on a folder that cannot hold the file, as above.
+                return self
+            raise
+        try:
+            os.lseek(fh.fileno(), _WIN_LOCK_AT, os.SEEK_SET)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as e:
+            # LK_NBLCK reports a lock someone else holds as EACCES; some
+            # runtimes say EDEADLOCK. Anything else means this filesystem
+            # cannot lock, and that fails open like the flock path does.
+            held = (errno.EACCES, getattr(errno, "EDEADLOCK", errno.EACCES),
+                    getattr(errno, "EDEADLK", errno.EACCES))
+            if e.errno not in held:
+                fh.close()
+                return self
+            try:
+                fh.seek(0)
+                holder = fh.read(400).strip()
+            except OSError:
+                holder = ""
+            fh.close()
+            raise AlreadyRunning(holder)
+        return self._hold(fh)
+
+    def _hold(self, fh):
         fh.seek(0)
         fh.truncate()
         fh.write(f"pid {os.getpid()}: {self.note}\n")
@@ -101,8 +156,13 @@ class OutputLock:
         if fh is None:
             return
         try:
-            import fcntl
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            if WINDOWS:
+                import msvcrt
+                os.lseek(fh.fileno(), _WIN_LOCK_AT, os.SEEK_SET)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         except Exception:
             pass
         try:

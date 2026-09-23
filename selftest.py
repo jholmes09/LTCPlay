@@ -53,6 +53,51 @@ SOURCE_TREE = os.path.exists(
 RAN = set()
 
 
+def _find_bash():
+    """The bash that can syntax-check a Mac launcher, or None.
+
+    On a Mac and on Linux that is plain `bash`, exactly as it always was. On
+    Windows, `bash` on the PATH is usually WSL's launcher in System32, which
+    with no Linux installed prints its complaint and fails every script. Git
+    for Windows carries a real bash, so use that one when it is there."""
+    if sys.platform != "win32":
+        return "bash"
+    import shutil
+    cands = []
+    git = shutil.which("git")
+    if git:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(git)))
+        cands += [os.path.join(root, "bin", "bash.exe"),
+                  os.path.join(root, "usr", "bin", "bash.exe")]
+    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        if os.environ.get(env):
+            cands.append(os.path.join(os.environ[env], "Git", "bin",
+                                      "bash.exe"))
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+BASH = _find_bash()
+
+
+def bash_n(path):
+    """`bash -n` on one launcher: does it even parse?
+
+    The launchers are Mac .command files. A Windows machine with no Git for
+    Windows has no bash to parse them with; that is said once per script and
+    counted as nothing proven, not as a failure. CI has Git for Windows, so
+    there this always runs."""
+    import subprocess
+    if BASH is None:
+        print(f"  (no bash on this machine to parse "
+              f"{os.path.basename(path)!r}; the Mac launchers are parsed on "
+              f"the Mac and in CI, skipped)")
+        return subprocess.CompletedProcess([path], 0, "", "")
+    return subprocess.run([BASH, "-n", path], capture_output=True, text=True)
+
+
 def launcher(name, root=None):
     """Where a launcher actually is: the install folder, or Tools/ in it.
 
@@ -1431,7 +1476,7 @@ def test_installer_and_launcher_names():
           "the installer no longer repairs the execute bit on the launchers")
 
     import subprocess
-    rc = subprocess.run(["bash", "-n", inst], capture_output=True, text=True)
+    rc = bash_n(inst)
     check(rc.returncode == 0,
           f"the installer is not valid bash: {rc.stderr.strip()}")
 
@@ -1450,7 +1495,7 @@ def test_installer_and_launcher_names():
               "an install or an update actually landed")
         check("prove this copy works" in m,
               "the self-test item is not offered in the menu's own list")
-        rc = subprocess.run(["bash", "-n", menu], capture_output=True, text=True)
+        rc = bash_n(menu)
         check(rc.returncode == 0,
               f"the menu is not valid bash: {rc.stderr.strip()}")
 
@@ -1463,8 +1508,7 @@ def test_installer_and_launcher_names():
           "to do it without typing mv into a terminal")
     if os.path.exists(mover):
         mv = open(mover).read()
-        rc = subprocess.run(["bash", "-n", mover], capture_output=True,
-                            text=True)
+        rc = bash_n(mover)
         check(rc.returncode == 0,
               f"the mover is not valid bash: {rc.stderr.strip()}")
         check("rm -rf \"$DEST/.venv\"" in mv,
@@ -1493,8 +1537,7 @@ def test_installer_and_launcher_names():
           "can tell which one is about to run the show")
     if os.path.exists(finder):
         fd = open(finder).read()
-        rc = subprocess.run(["bash", "-n", finder], capture_output=True,
-                            text=True)
+        rc = bash_n(finder)
         check(rc.returncode == 0,
               f"the copy finder is not valid bash: {rc.stderr.strip()}")
         check("never deletes" in fd,
@@ -1515,7 +1558,7 @@ def test_installer_and_launcher_names():
           "never be granted a microphone")
     if os.path.exists(app):
         ab = open(app, encoding="utf-8").read()
-        rc = subprocess.run(["bash", "-n", app], capture_output=True, text=True)
+        rc = bash_n(app)
         check(rc.returncode == 0,
               f"the app builder is not valid bash: {rc.stderr.strip()}")
         check("NSMicrophoneUsageDescription" in ab,
@@ -1620,8 +1663,7 @@ def test_installer_and_launcher_names():
               "existing install")
     if os.path.exists(apply_):
         ap = open(apply_).read()
-        rc = subprocess.run(["bash", "-n", apply_], capture_output=True,
-                            text=True)
+        rc = bash_n(apply_)
         check(rc.returncode == 0,
               f"the updater is not valid bash: {rc.stderr.strip()}")
         check("ltcplay.previous" in ap,
@@ -1647,8 +1689,7 @@ def test_installer_and_launcher_names():
           "the engine; some faults only clear when the process dies")
     if os.path.exists(restart):
         rs = open(restart).read()
-        rc = subprocess.run(["bash", "-n", restart], capture_output=True,
-                            text=True)
+        rc = bash_n(restart)
         check(rc.returncode == 0,
               f"the restart script is not valid bash: {rc.stderr.strip()}")
         check("kickstart" in rs,
@@ -1678,7 +1719,7 @@ def test_installer_and_launcher_names():
     auto = launcher("Autostart ltcplay.command")
     if os.path.exists(auto):
         a = open(auto).read()
-        rc = subprocess.run(["bash", "-n", auto], capture_output=True, text=True)
+        rc = bash_n(auto)
         check(rc.returncode == 0,
               f"the autostart script is not valid bash: {rc.stderr.strip()}")
         check("NEVER ANSWERED" in a,
@@ -1744,7 +1785,7 @@ def test_installer_and_launcher_names():
               "an install or an update actually landed")
         check("prove this copy works" in m,
               "the self-test item is not offered in the menu's own list")
-        rc = subprocess.run(["bash", "-n", menu], capture_output=True, text=True)
+        rc = bash_n(menu)
         check(rc.returncode == 0,
               f"the menu is not valid bash: {rc.stderr.strip()}")
 
@@ -1757,8 +1798,7 @@ def test_installer_and_launcher_names():
           "to do it without typing mv into a terminal")
     if os.path.exists(mover):
         mv = open(mover).read()
-        rc = subprocess.run(["bash", "-n", mover], capture_output=True,
-                            text=True)
+        rc = bash_n(mover)
         check(rc.returncode == 0,
               f"the mover is not valid bash: {rc.stderr.strip()}")
         check("rm -rf \"$DEST/.venv\"" in mv,
@@ -1787,8 +1827,7 @@ def test_installer_and_launcher_names():
           "can tell which one is about to run the show")
     if os.path.exists(finder):
         fd = open(finder).read()
-        rc = subprocess.run(["bash", "-n", finder], capture_output=True,
-                            text=True)
+        rc = bash_n(finder)
         check(rc.returncode == 0,
               f"the copy finder is not valid bash: {rc.stderr.strip()}")
         check("never deletes" in fd,
@@ -1809,7 +1848,7 @@ def test_installer_and_launcher_names():
           "never be granted a microphone")
     if os.path.exists(app):
         ab = open(app, encoding="utf-8").read()
-        rc = subprocess.run(["bash", "-n", app], capture_output=True, text=True)
+        rc = bash_n(app)
         check(rc.returncode == 0,
               f"the app builder is not valid bash: {rc.stderr.strip()}")
         check("NSMicrophoneUsageDescription" in ab,
@@ -1914,8 +1953,7 @@ def test_installer_and_launcher_names():
               "existing install")
     if os.path.exists(apply_):
         ap = open(apply_).read()
-        rc = subprocess.run(["bash", "-n", apply_], capture_output=True,
-                            text=True)
+        rc = bash_n(apply_)
         check(rc.returncode == 0,
               f"the updater is not valid bash: {rc.stderr.strip()}")
         check("ltcplay.previous" in ap,
@@ -1941,8 +1979,7 @@ def test_installer_and_launcher_names():
           "the engine; some faults only clear when the process dies")
     if os.path.exists(restart):
         rs = open(restart).read()
-        rc = subprocess.run(["bash", "-n", restart], capture_output=True,
-                            text=True)
+        rc = bash_n(restart)
         check(rc.returncode == 0,
               f"the restart script is not valid bash: {rc.stderr.strip()}")
         check("kickstart" in rs,
@@ -1973,7 +2010,7 @@ def test_installer_and_launcher_names():
     if os.path.exists(auto):
         t = open(auto).read()
         import subprocess as _sp2
-        r = _sp2.run(["bash", "-n", auto], capture_output=True, text=True)
+        r = bash_n(auto)
         check(r.returncode == 0,
               f"the autostart launcher is not valid shell: {r.stderr.strip()}")
         check("KeepAlive" in t and "RunAtLoad" in t,
@@ -2017,7 +2054,7 @@ def test_installer_and_launcher_names():
               "the web launcher must refuse and stop when a show is live, not "
               "carry on and kill it")
         import subprocess as _sp
-        r = _sp.run(["bash", "-n", web], capture_output=True, text=True)
+        r = bash_n(web)
         check(r.returncode == 0,
               f"the web launcher is not valid shell: {r.stderr.strip()}")
 
@@ -4975,6 +5012,110 @@ def test_a_failed_start_leaves_nothing_running():
     print("  ok")
 
 
+def test_machine_data_goes_where_the_os_keeps_it():
+    section("the lock, the saved input, the preferences and the log land "
+            "where this OS keeps program data")
+    # On a Mac every one of these stays exactly where it always was. On
+    # Windows they go under %LOCALAPPDATA%\\ltcplay: never beside the program
+    # and never in the show folder, either of which can be a synced folder
+    # that two machines would then share.
+    import json, tempfile
+    from ltcplay import settings as st_mod, onlyone as oo, appdata
+    import ltcplay.player as plmod
+    from ltcplay.session import Session
+    here = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    fake_local = os.path.join(work, "LocalAppData")
+    real_env = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = fake_local
+    try:
+        lock, saved, prefs = oo.path(), st_mod.path(), st_mod.prefs_path()
+        if sys.platform == "win32":
+            want = os.path.join(fake_local, "ltcplay")
+            for label, p in (("the output lock", lock),
+                             ("the saved input", saved),
+                             ("the preferences", prefs),
+                             ("the default log", appdata.log_path())):
+                check(os.path.dirname(p) == want
+                      or os.path.dirname(os.path.dirname(p)) == want,
+                      f"{label} is at {p}, not under %LOCALAPPDATA%\\ltcplay")
+                check(not p.startswith(here + os.sep),
+                      f"{label} is beside the program: {p}")
+            check(os.path.isdir(want),
+                  "%LOCALAPPDATA%\\ltcplay was not created")
+        else:
+            check(saved == os.path.join(here, st_mod.FILENAME),
+                  f"the saved input moved on this Mac: {saved}")
+            check(prefs == os.path.join(here, st_mod.PREFS_FILE),
+                  f"the preferences moved on this Mac: {prefs}")
+            mac_lock = os.path.join(os.path.expanduser("~"), "Library",
+                                    "Application Support", "ltcplay",
+                                    oo.FILENAME)
+            if os.path.isdir(os.path.dirname(os.path.dirname(mac_lock))):
+                check(lock == mac_lock,
+                      f"the output lock moved on this Mac: {lock}")
+            check(not os.path.exists(fake_local),
+                  "a Mac wrote into a Windows program data folder")
+
+        # And the engine has to USE it: the log a real Session opens.
+        rows = "\n".join(
+            f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+            f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(4))
+        net = os.path.join(work, "net.xml")
+        open(net, "w").write(f'<Networks>\n  <Controller Name="L" '
+                             f'IP="127.0.0.1" ActiveState="Active">\n{rows}'
+                             f'\n  </Controller>\n</Networks>\n')
+        show = os.path.join(work, "show")
+        os.makedirs(show)
+        tlp = os.path.join(show, "d_timeline.json")
+        json.dump({"name": "d", "fps": 30, "show_dir": show,
+                   "gaps": "blackout",
+                   "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq",
+                             "name": "A"}]}, open(tlp, "w"))
+        open(os.path.join(show, "A.fseq"), "wb").write(b"x")
+        real_prefs, real_path = st_mod.prefs_path, st_mod.path
+        st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+        st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+        real_prepare = plmod.Player._prepare
+
+        def fake_prepare(self, cue):
+            cue.fseq = FakeFSEQ(frames=4000)
+            cue.duration = cue.fseq.duration_ms / 1000.0
+            cue._spans = [(0, 0, cue.fseq.channel_count)]
+            cue._gaps = None
+            return 0
+
+        plmod.Player._prepare = fake_prepare
+        try:
+            sess = Session(tlp, networks=net, sd=FakeSD(), device="MOTU M4",
+                           channel=1, wav=None)
+            sess.open()
+            got = sess.log.path if sess.log else None
+            if sys.platform == "win32":
+                check(got == os.path.join(fake_local, "ltcplay", "logs",
+                                          "ltcplay.log"),
+                      f"the show log went to {got}, not "
+                      f"%LOCALAPPDATA%\\ltcplay\\logs")
+                check(not os.path.exists(os.path.join(show, "ltcplay.log")),
+                      "the show log was written into the show folder")
+            else:
+                check(got == os.path.join(show, "ltcplay.log"),
+                      f"the show log moved on this Mac: {got}")
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        finally:
+            plmod.Player._prepare = real_prepare
+            st_mod.prefs_path, st_mod.path = real_prefs, real_path
+    finally:
+        if real_env is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = real_env
+    print("  ok")
+
+
 def test_only_one_player_sends_at_a_time():
     section("two ltcplays on one Mac must not both drive the rig")
     import tempfile
@@ -6659,6 +6800,14 @@ def test_a_shared_show_folder_cannot_be_moved_away_from_it():
     if not os.path.exists(src):
         print("  (no move helper beside the test, skipped)")
         return
+    if sys.platform == "win32":
+        # The helper is a macOS .command that moves an install out of the
+        # folders macOS protects, and what it guards is a POSIX symlink. There
+        # is no such move and no such link on Windows. Its text is still
+        # parsed above; running it is proven on macOS and Linux.
+        print("  (a macOS-only launcher run against a POSIX symlink; not run "
+              "on Windows, skipped)")
+        return
     root = tempfile.mkdtemp()
     try:
         shows = os.path.join(root, "GPL26 Show")
@@ -6806,9 +6955,6 @@ def test_the_app_launcher_finds_its_way_home():
     if t is None:
         print("  (no app builder beside the test, skipped)")
         return
-    if not shutil.which("cc"):
-        print("  (no compiler here, skipped)")
-        return
     c = _between(t, "<<'CSTUB'\n", "\nCSTUB\n")
     check("execv(" in c, "the launcher must replace itself rather than start "
                          "a second process, or macOS attaches the microphone "
@@ -6836,6 +6982,19 @@ def test_the_app_launcher_finds_its_way_home():
           "check does nothing")
     check(c.count('getenv("LTCPLAY_NO_DIALOG")') == 1,
           "LTCPLAY_NO_DIALOG may only gate the dialog in fail()")
+    if sys.platform == "win32":
+        # Everything above reads the C source and runs everywhere. Below it
+        # is compiled and run, and it is a POSIX program (execv, readlink,
+        # a #!/bin/bash python shim) inside a macOS app bundle. Windows has
+        # none of those to run it with.
+        print("  (the app launcher is a POSIX C program for the macOS app "
+              "bundle; compiling and running it is not possible on Windows, "
+              "skipped)")
+        return
+    # The source checks above need no compiler, so they run first.
+    if not shutil.which("cc"):
+        print("  (no compiler here, skipped)")
+        return
     root = tempfile.mkdtemp()
     try:
         # Off a Mac there is no _NSGetExecutablePath; swap in the same idea
@@ -7027,7 +7186,7 @@ def test_you_can_tell_which_version_is_installed():
     check(os.path.exists(rep),
           "there is no way to ask a machine what it has installed")
     if os.path.exists(rep):
-        r = subprocess.run(["bash", "-n", rep], capture_output=True, text=True)
+        r = bash_n(rep)
         check(r.returncode == 0,
               f"the report script is not valid bash: {r.stderr.strip()}")
         t = open(rep, encoding="utf-8").read()
@@ -7053,7 +7212,7 @@ def test_you_can_tell_which_version_is_installed():
     cut = launcher("Cut a release.command")
     check(os.path.exists(cut), "there is no way to cut a numbered release")
     if os.path.exists(cut):
-        r = subprocess.run(["bash", "-n", cut], capture_output=True, text=True)
+        r = bash_n(cut)
         check(r.returncode == 0,
               f"the release script is not valid bash: {r.stderr.strip()}")
         ct = open(cut, encoding="utf-8").read()
@@ -7102,7 +7261,7 @@ def test_the_beta_window_app_stays_a_window():
         print("  (no window-app builder beside the test, skipped)")
         return
     t = open(p, encoding="utf-8").read()
-    r = subprocess.run(["bash", "-n", p], capture_output=True, text=True)
+    r = bash_n(p)
     check(r.returncode == 0,
           f"the window-app builder is not valid bash: {r.stderr.strip()}")
 
@@ -7416,6 +7575,7 @@ if __name__ == "__main__":
     test_the_input_can_be_changed_mid_show()
     test_a_failed_start_leaves_nothing_running()
     test_only_one_player_sends_at_a_time()
+    test_machine_data_goes_where_the_os_keeps_it()
     test_reload_while_the_show_runs()
     test_auto_reload_waits_for_the_writer()
     test_opening_a_render_proves_it_reads()

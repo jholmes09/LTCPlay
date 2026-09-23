@@ -1,43 +1,125 @@
 name: selftest
 
+# A PR runs once, as a pull_request. Pushes run only for main and for release
+# tags, so a PR branch is no longer tested twice.
 on:
   push:
+    branches: [main, windows-compat-ci]  # TEMP: branch entry removed before the PR
+    tags: ["**"]
   pull_request:
 
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run pointless. Runs on main and
+# on tags are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  ubuntu:
+  # The Mac build and the GPL show keep working, and Windows has to as well.
+  # Every PR and every push proves all three.
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install numpy zstandard tzdata
+      - run: python selftest.py
+      # TEMP: while porting, run every test on its own so one traceback does
+      # not hide the rest. Removed before the PR.
+      - name: every test in isolation (porting aid)
+        if: failure()
+        shell: python
+        run: |
+          import re, sys, traceback
+          sys.argv = ["selftest.py"]
+          main = open("selftest.py", encoding="utf-8").read().split('if __name__ == "__main__":')[1]
+          names = re.findall(r"^    (test_\w+)\(\)$", main, re.M)
+          import selftest as st
+          for n in names:
+              try:
+                  getattr(st, n)()
+              except BaseException:
+                  print(f"!!! {n} RAISED")
+                  traceback.print_exc()
+          print(f"\n{len(st.FAILS)} FAILS")
+          for f in st.FAILS:
+              print(" -", f)
+
+  # mutate.py takes over an hour a run and macOS minutes cost ten times
+  # Linux ones, so it runs on release tags and when something it proves has
+  # changed: trigger.py, output.py, player.py, session.py (CLAUDE.md), or
+  # the suite and the runner themselves.
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      mutate: ${{ steps.decide.outputs.mutate }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
-      - run: python -m pip install numpy zstandard
-      - run: python selftest.py
+          fetch-depth: 0
+      - id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -u
+          watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py)$'
+          if [[ "$REF" == refs/tags/* ]]; then
+            echo "release tag: mutate runs"
+            echo "mutate=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # TEMP: on the porting branch, only a commit that asks for it.
+          if [[ "$REF" == refs/heads/windows-compat-ci ]]; then
+            if [[ "$HEAD_MSG" == *"[mutate]"* ]]; then m=true; else m=false; fi
+            echo "porting branch: mutate=$m"
+            echo "mutate=$m" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [[ "$EVENT" == pull_request ]]; then
+            base="$PR_BASE"
+          else
+            base="$BEFORE"
+          fi
+          # No usable base (a first push, a rewritten one): run it rather
+          # than guess.
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
+             ! files=$(git diff --name-only "$base" "$GITHUB_SHA"); then
+            echo "no base to compare against: mutate runs"
+            echo "mutate=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "changed:"; echo "$files" | sed 's/^/  /'
+          if echo "$files" | grep -Eq "$watched"; then
+            echo "mutate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mutate=false" >> "$GITHUB_OUTPUT"
+          fi
 
-  # Informational until the Windows port lands.
-  windows:
-    runs-on: windows-latest
-    continue-on-error: true
+  mutate:
+    needs: changes
+    if: needs.changes.outputs.mutate == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
-      - run: python -m pip install numpy zstandard
-      - run: python selftest.py
-
-  # macOS runners are slow and costly; run only for release tags.
-  macos:
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.x"
-      - run: python -m pip install numpy zstandard
-      - run: python selftest.py
+          python-version: "3.12"
+      - run: python -m pip install numpy zstandard tzdata
+      - run: python -u mutate.py

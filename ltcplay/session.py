@@ -12,6 +12,7 @@ drawing.
 import os
 import time
 
+from . import appdata
 from . import audio as audio_mod
 from . import netmap as netmap_mod
 from . import rigwatch as rigwatch_mod
@@ -183,9 +184,12 @@ class Session:
                                f"universes to send to.")
 
         if not self.no_log:
-            p = self.log_path or os.path.join(
-                os.path.dirname(os.path.abspath(self.timeline_path)),
-                "ltcplay.log")
+            # Beside the show file on a Mac. On Windows program data never
+            # goes beside the show, which may be a synced folder.
+            p = self.log_path or (appdata.log_path() if appdata.WINDOWS else
+                                  os.path.join(os.path.dirname(
+                                      os.path.abspath(self.timeline_path)),
+                                      "ltcplay.log"))
             try:
                 self.log = ShowLog(p, echo=self.echo_log)
             except OSError as e:

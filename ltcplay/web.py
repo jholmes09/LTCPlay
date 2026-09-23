@@ -18,6 +18,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import appdata
 from . import audio as audio_mod
 from . import brand as brand_mod
 from . import settings as settings_mod
@@ -568,6 +569,7 @@ class Control:
     def log_tail(self, n=120):
         s = self.session
         p = (s.log.path if s and s.log else
+             appdata.log_path() if appdata.WINDOWS else
              os.path.join(self.folder, "ltcplay.log"))
         if not os.path.exists(p):
             return []

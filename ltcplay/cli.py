@@ -1339,7 +1339,15 @@ def _install_signals():
     def handler(signum, frame):
         flag["stop"] = True
 
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    # SIGHUP does not exist on Windows, and naming it there raised before a
+    # single handler was installed. Ctrl-Break in a Windows console is
+    # SIGBREAK and gets the same clean stop as ctrl-c. A Mac has no SIGBREAK
+    # and gets exactly the three it always had. What a closed console window
+    # does on Windows belongs to the Windows launchers, not to this.
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
         try:
             signal.signal(sig, handler)
         except (ValueError, OSError, AttributeError):
@@ -1649,7 +1657,9 @@ def main(argv=None):
     r.add_argument("--drop", action="store_true", default=None,
                    help="override the timeline to drop frame for this run")
     r.add_argument("--log", help="show log file (default: ltcplay.log beside "
-                                 "the timeline)")
+                                 "the timeline)" if sys.platform != "win32"
+                   else "show log file (default: ltcplay.log in "
+                        "%%LOCALAPPDATA%%\\ltcplay\\logs)")
     r.add_argument("--no-log", action="store_true")
     r.add_argument("--allow-missing", action="store_true",
                    help="run even though a cue will not open, leaving its "
