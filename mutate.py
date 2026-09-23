@@ -206,9 +206,9 @@ MUTATIONS = [
 
  ("the decoder ignores the clock the input actually runs at",
   "ltcplay/audio.py",
-  """            self.rate = rate
-            if self.on_rate_change:""",
-  """            if False:"""),
+  """                self.rate = rate
+                if self.on_rate_change:""",
+  """                if False:"""),
 
  ("a show with no input reports it as fine", "ltcplay/session.py",
   '            "input_attached": (True if self.wav\n                               else bool(a and a.attached)),',
@@ -236,8 +236,8 @@ MUTATIONS = [
                 out = dict(out, live=True, opened=True)"""),
 
  ("nothing says the input is missing", "ltcplay/display.py",
-  "        if not attached:",
-  "        if False:"),
+  "        elif not attached:",
+  "        elif False:"),
 
  ("the header hangs its text on the logo's baseline",
   "ltcplay/web/index.html",
@@ -265,8 +265,8 @@ MUTATIONS = [
 
  ("changing the folder rewrites the whole show file",
   "ltcplay/web.py",
-  '        doc["show_dir"] = os.path.abspath(os.path.expanduser(folder))',
-  '        doc = {"show_dir": os.path.abspath(os.path.expanduser(folder))}'),
+  '        doc["show_dir"] = (os.path.relpath(chosen,',
+  '        doc = {}\n        doc["show_dir"] = (os.path.relpath(chosen,'),
 
  ("the folder can be changed under a running show", "ltcplay/web.py",
   """        if self._starting or (self.session is not None
@@ -333,10 +333,10 @@ MUTATIONS = [
  ("LTC readout tracks the free-rolling clock instead of freezing",
   "ltcplay/player.py",
   """        self.tc_seconds = tc
-        cue = self.timeline.cue_at(tc)""",
+        return self._play_at(tc, prev_state, prev_cue, prev_source)""",
   """        self.tc_seconds = tc
         self.last_ltc_text = self.timeline.format(tc)
-        cue = self.timeline.cue_at(tc)"""),
+        return self._play_at(tc, prev_state, prev_cue, prev_source)"""),
 
  ("up next is off by one at a cue boundary", "ltcplay/timeline.py",
   "if self.cues[mid].tc_seconds <= tc_seconds:",
@@ -479,7 +479,7 @@ MUTATIONS = [
             if k not in ("device", "channel", "rate"):"""),
 
  ("the display stops warning about a dead interface", "ltcplay/display.py",
-  "if quiet is not None and quiet > 1.0:", "if False:"),
+  "if attached and quiet is not None and quiet > 1.0:", "if False:"),
 
  ("the display stops warning about a silent input", "ltcplay/display.py",
   "elif a.blocks > 40 and a.level.hold < 0.02:", "elif False:"),
@@ -594,8 +594,8 @@ MUTATIONS = [
   "            if False:"),
 
  ("verify stops recording fingerprints at all", "ltcplay/cli.py",
-  '    if not args.no_manifest:\n        json.dump({"timeline"',
-  '    if False:\n        json.dump({"timeline"'),
+  '    if not args.no_manifest:\n        # A read-only show folder',
+  '    if False:\n        # A read-only show folder'),
 
  ("a missing sequence is passed over in silence", "ltcplay/cli.py",
   """        if not os.path.exists(path):
@@ -642,8 +642,8 @@ MUTATIONS = [
 
  ("the bridge swallows a real gap as well as a rounding one",
   "ltcplay/player.py",
-  "                    0 < nxt.tc_seconds - tc <= self.bridge_s:",
-  "                    0 < nxt.tc_seconds - tc:"),
+  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and \\",
+  "                    0 < nxt.tc_seconds - tc and \\"),
 
  ("bridge_ms is ignored and always takes the default", "ltcplay/player.py",
   "        if bridge_ms is None:\n"
@@ -674,7 +674,9 @@ MUTATIONS = [
   '        if False and override in ("preshow", "blackout"):'),
 
  ("a held preshow stops reading the feed", "ltcplay/player.py",
+  "        if override in (\"preshow\", \"blackout\"):\n"
   "            self._state_from_feed(now, last, epoch)",
+  "        if override in (\"preshow\", \"blackout\"):\n"
   "            pass  # noqa"),
 
  ("the sequence position is shown as timecode seconds",
@@ -712,7 +714,7 @@ MUTATIONS = [
   "            return None", "        if False:\n            return None"),
 
  ("the page and the server drift apart unnoticed", "ltcplay/web.py",
-  "API = 3", "API = 4"),
+  "API = 7", "API = 8"),
 
  ("the state stops carrying the API number", "ltcplay/web.py",
   '        snap["api"] = API', '        snap["api"] = None'),
@@ -750,7 +752,7 @@ MUTATIONS = [
 
  ("the web launcher stops looking for a stale server",
   "Web ltcplay.command",
-  'OLD=$(pgrep -f "ltcplay.cli serve" 2>/dev/null || true)',
+  'OLD=$(pgrep -f "ltcplay.cli serve|LTC Player.app/Contents/Resources/boot.py" 2>/dev/null || true)',
   'OLD=""'),
 
  ("a cue stops owning the channels it does not carry", "ltcplay/player.py",
@@ -761,10 +763,8 @@ MUTATIONS = [
   "        if False:\n            gaps.append((at, cap))"),
 
  ("a single bad timecode frame is believed again", "ltcplay/player.py",
-  "                want = self._pending_jump\n"
-  "                if (want is not None\n"
-  "                        and abs(new_epoch - want) <= self.jump_confirm_s):",
-  "                want = self._pending_jump\n"
+  "                if cold or (want is not None\n"
+  "                            and abs(new_epoch - want) <= self.jump_confirm_s):",
   "                if True:"),
 
  ("the bridge resurrects a cue that ended long ago", "ltcplay/player.py",
@@ -800,12 +800,13 @@ MUTATIONS = [
   "                self.blackout_sent = True"),
 
  ("a feed coming back yanks a free run sideways", "ltcplay/player.py",
-  "        if self.freerun_epoch is not None:", "        if False:"),
+  "        if self.freerun_epoch is not None and override not in",
+  "        if False and override not in"),
 
  ("release does not hand the show back", "ltcplay/player.py",
   "        self.freerun_epoch = None\n"
-  "        self._event(\"freerun\", \"released;",
-  "        self._event(\"freerun\", \"released;"),
+  "        live = self.feed_state == LOCKED",
+  "        live = self.feed_state == LOCKED"),
 
  ("the bundle points back at the machine that made it", "ltcplay/cli.py",
   '    doc["show_dir"] = "show"', '    pass  # noqa'),
@@ -840,8 +841,8 @@ MUTATIONS = [
   "                    if True:\n                        self.jump_rejects += 1"),
 
  ("a wedged start is invisible to the page again", "ltcplay/web.py",
-  "            with self.lock:\n                self.session = s\n            try:\n                s.start()",
-  "            try:\n                s.start()"),
+  "        with self.lock:\n            self.session = s\n        try:\n            s.start()",
+  "        try:\n            s.start()"),
 
  ("bundle keeps the absolute paths of the machine that made it",
   "ltcplay/cli.py",
