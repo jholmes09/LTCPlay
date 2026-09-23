@@ -393,11 +393,16 @@ class Service:
                 "system", f"There is no saved list for {d}, so tonight "
                 f"starts from the schedule file.", action="load tonight")
             return sch.new_night(self.rule, d)
+        notes = []
         try:
             with open(path, encoding="utf-8-sig") as fh:
-                m = sch.machine_from_doc(json.load(fh), self.rule, d, now)
+                m = sch.machine_from_doc(json.load(fh), self.rule, d, now,
+                                         notes)
         except (OSError, ValueError, sch.RuleError) as e:
-            return self._set_aside(path, e, d)
+            return self._set_aside(path, e, d, now)
+        for text in notes:
+            self._journal_line("system", text, action="load tonight",
+                               outcome="clock stepped back")
         rid = sch.rule_fingerprint(self.rule)
         if m.rule_id != rid:
             m, notes = sch.rebuild_night(self.rule, m)
@@ -412,7 +417,7 @@ class Service:
                                    outcome="rebuilt")
         return m
 
-    def _set_aside(self, path, e, d):
+    def _set_aside(self, path, e, d, now):
         aside = path[:-5] + ".unreadable.json"
         try:
             os.replace(path, aside)
@@ -422,10 +427,15 @@ class Service:
         self._journal_line(
             "system", f"The saved list for tonight, {path}, could not be "
             f"used: {str(e).rstrip('.')}. {where} Tonight starts again from "
-            f"the schedule file, so edits made earlier tonight are lost and "
-            f"shows already past are marked MISSED. Check tonight's list.",
+            f"the schedule file, so edits made earlier tonight are lost. "
+            f"Check tonight's list.",
             action="load tonight", outcome="failed")
-        return sch.new_night(self.rule, d)
+        # Zero on anything uncertain: a show may have fired moments ago.
+        m, notes = sch.assume_the_worst(sch.new_night(self.rule, d), now)
+        for text in notes:
+            self._journal_line("system", text, action="load tonight",
+                               outcome="assumed the worst")
+        return m
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):

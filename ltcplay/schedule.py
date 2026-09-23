@@ -1558,7 +1558,7 @@ def machine_to_doc(m):
     }
 
 
-def machine_from_doc(doc, rule, d, now):
+def machine_from_doc(doc, rule, d, now, notes=None):
     """Tonight's saved list, checked, on a machine built from the CURRENT
     rule. It comes back in BOOT with `resumed_from` set, so BOOT_DONE runs
     the late rule over it exactly as it does over a fresh night.
@@ -1566,9 +1566,16 @@ def machine_from_doc(doc, rule, d, now):
     Everything in the file is checked, because a file is only a file: slot
     times on tonight's date in the rule's zone and not past midnight,
     statuses from the known set, no show still to come that carries a start
-    or an end, at most one running show and it is the one named, and no
-    time in the future. Raises ValueError with a sentence."""
+    or an end, and at most one running show and it is the one named. Raises
+    ValueError with a sentence.
+
+    A recorded time AFTER now is not corruption: it is the OS clock having
+    been stepped back (the Windows time service does this) since it was
+    written. Such times are taken as now, so the show they describe still
+    counts as having happened, and a sentence with the size of the step is
+    appended to `notes`."""
     now = _utc(_aware(now))
+    ahead = []
     base = new_night(rule, d)
     tz = base.tz
     start_of_day = _utc(datetime.combine(d, time(0), tzinfo=tz))
@@ -1586,9 +1593,9 @@ def machine_from_doc(doc, rule, d, now):
         if dt.tzinfo is None:
             raise ValueError(f"{what} has no time zone.")
         dt = _utc(dt)
-        if dt > now + ONE_SECOND:
-            raise ValueError(f"{what}, {dt.astimezone(tz):%H:%M:%S}, is in "
-                             f"the future.")
+        if dt > now:
+            ahead.append(dt)
+            dt = now
         return dt
 
     def tonight(v, what):
@@ -1678,6 +1685,14 @@ def machine_from_doc(doc, rule, d, now):
     last_end = when(doc["last_end"], "The last show's end")
     if last_end is not None and last_end < start_of_day:
         raise ValueError("The last show's end is before tonight.")
+    if ahead and notes is not None:
+        step = (max(ahead) - now) / ONE_SECOND
+        notes.append(
+            f"The clock seems to have been set back by about {step:.0f} s: "
+            f"tonight's record has times up to "
+            f"{max(ahead).astimezone(tz):%H:%M:%S}, and it is now "
+            f"{now.astimezone(tz):%H:%M:%S}. Those times are taken as now, "
+            f"so nothing already started is started again.")
     return replace(
         base, slots=tuple(slots), running=doc["running"],
         last_end=last_end, hold_pending=flag(doc["hold_pending"],
@@ -1685,6 +1700,30 @@ def machine_from_doc(doc, rule, d, now):
         held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
         rule_id=str(doc["rule_id"]))
+
+
+UNREADABLE = "MISSED (tonight's record was unreadable)"
+
+
+def assume_the_worst(m, now):
+    """A fresh night for when tonight's record existed but could not be
+    used. What already ran is unknown, so assume the worst: the last show
+    ended just now, so guard_s holds off anything immediate, and every show
+    at or before now counts as passed, whatever the grace. Returns
+    (machine, sentences). Pure."""
+    now = _utc(_aware(now))
+    notes, slots = [], []
+    for sl in m.slots:
+        if sl.status == PENDING and sl.start <= now:
+            sl = replace(sl, status=MISSED, reason=UNREADABLE)
+            notes.append(f"Show {sl.n} at {m.hm(sl.start)} is marked "
+                         f"{UNREADABLE}: it may already have run.")
+        slots.append(sl)
+    notes.insert(0, f"Tonight's record could not be used, so the scheduler "
+                    f"assumes a show may have just ended: nothing starts "
+                    f"before {m.hm(now + timedelta(seconds=m.guard_s))}, "
+                    f"and no show at or before {m.hm(now)} starts at all.")
+    return replace(m, slots=tuple(slots), last_end=now), notes
 
 
 def rebuild_night(rule, saved):

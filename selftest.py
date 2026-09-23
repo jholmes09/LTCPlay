@@ -8897,13 +8897,17 @@ def test_schedule_restart_keeps_tonight():
         path = SV.tonight_path(_den(S, 0, 0).date(), work)
         open(path, "w").write(garbage)
         b = _svc(S, work, now).start(thread=False)
-        rows = [r["text"] for r in b.journal if "could not be used" in r["text"]]
+        rows = [r["text"] for r in b.journal
+                if r["text"].startswith("The saved list for tonight")]
         check(len(rows) == 1 and "starts again from the schedule file" in
               rows[0] and "set aside" in rows[0],
               f"a saved list that cannot be read is a sentence and a fresh "
               f"start from the rule: {rows}")
         check(os.path.exists(path[:-5] + ".unreadable.json"),
               "the unreadable file is kept for the morning, not overwritten")
+        check(any("assumes a show may have just ended" in r["text"]
+                  for r in b.journal),
+              "and the fresh night assumes the worst, and says so")
         check(b.machine.state == S.STANDBY and b.machine.slot(1).status
               == S.MISSED, "the fallback night obeys the late rule")
         for r in b.journal:
@@ -9214,7 +9218,6 @@ def test_schedule_tonight_file_is_checked():
         slot(4, fired_at="2026-11-14T18:05:00-07:00"))
     bad("a show to come that already ended",
         slot(4, ended_at="2026-11-14T18:05:00-07:00"))
-    bad("a time in the future", slot(0, ended_at="2026-11-14T19:00:00-07:00"))
     bad("a running show with no start", lambda doc: (
         doc["slots"][4].update(status="RUNNING"),
         doc.update(running=5, state="SHOW")))
@@ -9238,10 +9241,20 @@ def test_schedule_tonight_file_is_checked():
     bad("hold as a string", lambda doc: doc.update(hold_pending="yes"))
     bad("a state of BOOT", lambda doc: doc.update(state="BOOT"))
     bad("held_from SHOW", lambda doc: doc.update(held_from="SHOW"))
-    bad("a last end in the future",
-        lambda doc: doc.update(last_end="2026-11-14T18:30:00-07:00"))
     bad("another date", lambda doc: doc.update(date="2026-11-15"))
     bad("the old format", lambda doc: doc.update(format=1))
+    # A time after now is the clock having been stepped back, not a broken
+    # file: it is taken as now, and the step is said out loud.
+    doc = copy.deepcopy(good)
+    doc["slots"][0]["ended_at"] = "2026-11-14T18:10:06-07:00"
+    doc["last_end"] = "2026-11-14T18:10:04-07:00"
+    notes = []
+    m = S.machine_from_doc(doc, rule, d, at, notes)
+    check(m.slot(1).ended_at == at and m.last_end == at
+          and len(notes) == 1 and "about 6 s" in notes[0],
+          f"times after now are taken as now and the 6 s step is named: "
+          f"{notes}")
+    _no_dashes(notes[0], "clock step")
     bad("an added show past midnight", lambda doc: doc["slots"].append(
         dict(doc["slots"][-1], n=99, origin="edit",
              start="2026-11-15T06:55:00+00:00")))
@@ -9470,6 +9483,102 @@ def test_schedule_contract_for_the_transport():
     print("  ok")
 
 
+def test_schedule_uncertain_record_never_fires_twice():
+    section("scheduler: a clock stepped back or an unreadable record never "
+            "fires a show twice")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import schedule_service as SV
+
+    def ticks(svc, now, *times):
+        for t in times:
+            now[0] = _den(S, *t)
+            svc.tick()
+
+    # The auditor's case, grace 0: show 1 fires at 18:00:00 and is confirmed
+    # at 18:00:03; the clock is stepped back about 6 s; ltcplay restarts at
+    # 17:59:57.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59, 50)]
+    a = _svc(S, work, now).start(thread=False)
+    ticks(a, now, (18, 0, 0))
+    now[0] = _den(S, 18, 0, 3)
+    a._apply(S.Event(S.SHOW_CONFIRMED, "madmapper"))
+    check(_starts(a) == [1], "show 1 started at 18:00:00")
+    path = SV.tonight_path(_den(S, 0, 0).date(), work)
+    now[0] = _den(S, 17, 59, 57)
+    b = _svc(S, work, now).start(thread=False)
+    s1 = b.machine.slot(1)
+    check(s1.status == S.FAULT and "restarted" in s1.reason,
+          f"the show cut off by the restart is recorded as FAULT: "
+          f"{s1.status} {s1.reason!r}")
+    check(os.path.exists(path)
+          and not os.path.exists(path[:-5] + ".unreadable.json"),
+          "a clock step is not corruption: the record is kept")
+    check(any("set back by about 6 s" in r["text"] for r in b.journal),
+          "the journal names the step")
+    ticks(b, now, (17, 59, 59), (18, 0, 0), (18, 0, 1), (18, 0, 3),
+          (18, 1), (18, 19, 59))
+    check(not _starts(b), f"show 1 must not start again: started "
+                          f"{_starts(b)}")
+    ticks(b, now, (18, 20))
+    check(_starts(b) == [2], "and the 18:20 show still starts on time")
+
+    # Grace 15, a record that became unreadable 3 s after a show fired.
+    rule15 = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                        "interval_min": 20,
+                                        "last_end": "22:00"}},
+                        exceptions={}, late_grace_s=15)
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59, 50)]
+    a = _svc(S, work, now, rule=rule15).start(thread=False)
+    ticks(a, now, (18, 0, 0))
+    check(_starts(a) == [1], "show 1 started at 18:00:00")
+    open(SV.tonight_path(_den(S, 0, 0).date(), work), "w").write("{torn")
+    now[0] = _den(S, 18, 0, 3)
+    b = _svc(S, work, now).start(thread=False)
+    check(b.machine.late_grace_s == 15, "the rule's grace is 15")
+    ticks(b, now, (18, 0, 4), (18, 0, 10), (18, 0, 15), (18, 1))
+    s1 = b.machine.slot(1)
+    check(not _starts(b) and s1.status == S.MISSED
+          and s1.reason == S.UNREADABLE,
+          f"inside a 15 s grace, an unreadable record must not start show 1 "
+          f"again: started {_starts(b)}, {s1.reason!r}")
+    check(b.machine.last_end == _den(S, 18, 0, 3),
+          "the last show is assumed to have ended at the restart")
+    check(any(r["outcome"] == "assumed the worst" and "18:02:03" in r["text"]
+              for r in b.journal),
+          "the journal says nothing starts before the guard runs out")
+    ticks(b, now, (18, 20))
+    check(_starts(b) == [2], "the next show starts on time")
+
+    # Clean boots keep the grace: no file at all, and a good file saved
+    # before the show, both start show 1 five seconds late with grace 15.
+    for with_file in (False, True):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        if with_file:
+            _svc(S, work, now, rule=rule15).start(thread=False)
+        else:
+            _svc(S, work, now, rule=rule15)        # the rule file only
+            check(not os.path.exists(SV.tonight_path(
+                _den(S, 0, 0).date(), work)), "no tonight file yet")
+        now[0] = _den(S, 18, 0, 5)
+        c = _svc(S, work, now).start(thread=False)
+        check(_starts(c) == [1] and c.machine.slot(1).reason == "FIRED",
+              f"a clean boot {'with a good file ' if with_file else ''}"
+              f"5 s into a 15 s grace still starts show 1: "
+              f"{_starts(c)} {c.machine.slot(1).reason!r}")
+        check(not any(r["outcome"] == "assumed the worst"
+                      for r in c.journal),
+              "and assumes nothing")
+    for r in b.journal:
+        _no_dashes(r["text"], "uncertain record")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     test_ltc_roundtrip()
@@ -9586,6 +9695,7 @@ if __name__ == "__main__":
     test_schedule_late_failed_start_is_a_fault()
     test_schedule_after_a_stopped_show_is_one_choice()
     test_schedule_contract_for_the_transport()
+    test_schedule_uncertain_record_never_fires_twice()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
