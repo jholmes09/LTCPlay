@@ -2287,8 +2287,10 @@ def test_show_dir_survives_the_wrong_machine():
     import tempfile
     from ltcplay.timeline import resolve_show_dir
     home = tempfile.mkdtemp()
-    real = os.path.join(home, "Library/CloudStorage/Dropbox/PROJECTS/"
-                              "Dollywood/GPL26_xLights")
+    # Built with the OS's own separator: Windows normalises "/" to "\\", and
+    # "used unchanged" below compares strings.
+    real = os.path.join(home, "Library", "CloudStorage", "Dropbox",
+                        "PROJECTS", "Dollywood", "GPL26_xLights")
     os.makedirs(real)
     d = tempfile.mkdtemp()
     tlp = os.path.join(d, "set1_timeline.json")

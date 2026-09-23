@@ -40,7 +40,8 @@ jobs:
         if: failure()
         shell: python
         run: |
-          import re, sys, traceback
+          import os, re, sys, traceback
+          sys.path.insert(0, os.getcwd())
           sys.argv = ["selftest.py"]
           main = open("selftest.py", encoding="utf-8").read().split('if __name__ == "__main__":')[1]
           names = re.findall(r"^    (test_\w+)\(\)$", main, re.M)
@@ -63,6 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mutate: ${{ steps.decide.outputs.mutate }}
+      oses: ${{ steps.decide.outputs.oses }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -77,6 +79,7 @@ jobs:
           HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -u
+          echo 'oses=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
           watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py)$'
           if [[ "$REF" == refs/tags/* ]]; then
             echo "release tag: mutate runs"
@@ -84,7 +87,12 @@ jobs:
           fi
           # TEMP: on the porting branch, only a commit that asks for it.
           if [[ "$REF" == refs/heads/windows-compat-ci ]]; then
-            if [[ "$HEAD_MSG" == *"[mutate]"* ]]; then m=true; else m=false; fi
+            m=false
+            if [[ "$HEAD_MSG" == *"[mutate]"* ]]; then
+              m=true
+              echo 'oses=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "$HEAD_MSG" == *"[mutate-all]"* ]]; then m=true; fi
             echo "porting branch: mutate=$m"
             echo "mutate=$m" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -113,7 +121,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.oses) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     steps:
