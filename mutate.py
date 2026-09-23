@@ -1048,6 +1048,89 @@ MUTATIONS = [
   '        if any(ip.endswith(".255") or ip == "255.255.255.255"\n               for ip in self.cfg.dest):\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)',
   '        if True:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)'),
 
+ # -- the show clock, Fire & Ice 2026 --------------------------------------
+ ("the LTC slave never hears the decoded timecode", "ltcplay/session.py",
+  "                clk = self.clock\n                if clk is not None:\n                    clk.ltc_frame(fr.h, fr.m, fr.s, fr.f, captured_at - back)\n",
+  ""),
+
+ ("the GPL path imports the clock at startup", "ltcplay/session.py",
+  "from .showlog import ShowLog\n",
+  "from .showlog import ShowLog\nfrom . import clock as _clock_mod\n"),
+
+ ("a master clock still opens a timecode input", "ltcplay/session.py",
+  "        if not self.wav and not (self.clock is not None\n                                 and self.clock.master):",
+  "        if not self.wav:"),
+
+ ("Stop leaves the timecode running", "ltcplay/session.py",
+  "        if clk is not None:\n            try:\n                clk.stop()\n            except Exception:\n                pass",
+  "        pass"),
+
+ ("a free run left over from the last cue swallows the next",
+  "ltcplay/session.py",
+  "        if self.player.freerun_epoch is not None:\n            self.player.release()\n        self.clock.play(",
+  "        self.clock.play("),
+
+ ("a late tick sends the frame that was due, not the current one",
+  "ltcplay/clock.py",
+  "            n = frame_at(now - t0, fps)",
+  "            n = n_next"),
+
+ ("a late tick sends the same frame twice", "ltcplay/clock.py",
+  "            n_next = n + 1",
+  "            n_next = n_next + 1"),
+
+ ("the timecode opcode goes out high byte first", "ltcplay/clock.py",
+  "    b[8] = OP_TIMECODE & 0xFF          # low byte first\n    b[9] = (OP_TIMECODE >> 8) & 0xFF",
+  "    b[9] = OP_TIMECODE & 0xFF          # low byte first\n    b[8] = (OP_TIMECODE >> 8) & 0xFF"),
+
+ ("the master sends drop frame", "ltcplay/clock.py",
+  "MASTER_TYPE = TYPE_SMPTE",
+  "MASTER_TYPE = TYPE_DF"),
+
+ ("broadcast is switched on for every timecode socket", "ltcplay/clock.py",
+  "        if self.broadcast:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)",
+  "        if True:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)"),
+
+ ("a second cue carries on from where the first left off", "ltcplay/clock.py",
+  "        return self.ticker.start()\n",
+  "        return self.ticker.start(self.ticker.t0)\n"),
+
+ ("the pixels are told a frame began when it was sent", "ltcplay/clock.py",
+  "                      self._mono() - (now - due), False,",
+  "                      self._mono(), False,"),
+
+ ("an unknown hour is taken as the show", "ltcplay/clock.py",
+  "    role = zones.get(h)\n",
+  "    role = zones.get(h, \"show\")\n"),
+
+ ("the hour goes to BEYOND unrebased", "ltcplay/clock.py",
+  "    return role, (0, m, s, f)",
+  "    return role, (h, m, s, f)"),
+
+ ("one corrupt LTC frame moves the zone", "ltcplay/clock.py",
+  "                self._pending = (role, pos, at)\n                return last[0]",
+  "                self._take(role, pos, at, last)\n                return role"),
+
+ ("timecode lost mid-show stops instead of free running", "ltcplay/clock.py",
+  "        if role == \"show\":\n            self.freerunning = age > self.hold_s",
+  "        if False:\n            self.freerunning = age > self.hold_s"),
+
+ ("the free run goes past the end of the show", "ltcplay/clock.py",
+  "            if self.show_len_frames is not None and \\\n                    cur >= self.show_len_frames:",
+  "            if False:"),
+
+ ("fallback 1 loads although it is not built", "ltcplay/clock.py",
+  "        if src == \"ltc_audio_master\":\n            raise ClockConfigError(LtcAudioMaster.REFUSAL.format(where=where))",
+  "        pass"),
+
+ ("a misspelled clock setting is ignored", "ltcplay/clock.py",
+  "    unknown = sorted(k for k in doc if k not in keys)",
+  "    unknown = []"),
+
+ ("broadcast and named nodes both get every frame", "ltcplay/clock.py",
+  "            if clean:\n                raise ClockConfigError(",
+  "            if False:\n                raise ClockConfigError("),
+
 ]
 
 

@@ -109,6 +109,10 @@ class Timeline:
         # means this show file does not describe one and the mode cannot be
         # armed. Direct FSEQ playback is and stays the primary path.
         self.trigger = None
+        # The show clock (clock.py). None means the path every show has
+        # always had: LTC in on an audio input, decoded, chased. Only a show
+        # file with a "clock" block ever imports the clock code.
+        self.clock = None
 
     @property
     def rate_label(self):
@@ -120,6 +124,7 @@ class Timeline:
         "name", "fps", "drop", "show_dir", "cues",
         "idle", "preshow", "idle_fseq", "gaps", "on_lost",
         "bridge_ms", "hold_ms", "offset_ms", "input", "notes", "trigger",
+        "clock",
     ))
 
     @classmethod
@@ -231,6 +236,11 @@ class Timeline:
         # is otherwise known good.
         from .trigger import TriggerConfig
         tl.trigger = TriggerConfig.parse(doc.get("trigger"), path)
+        # Imported only when asked for, so a show file without a clock block
+        # never loads a line of it.
+        if doc.get("clock") is not None:
+            from .clock import ClockConfig
+            tl.clock = ClockConfig.parse(doc["clock"], path)
         return tl
 
     def _index_at(self, tc_seconds):

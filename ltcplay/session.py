@@ -148,6 +148,9 @@ class Session:
         # describes them; direct FSEQ playback needs none of this.
         self.trigger = None
         self.trigger_problems = []
+        # The show clock, from the show file's "clock" block. None, the GPL
+        # case, means LTC in on an audio input exactly as it has always been.
+        self.clock = None
         self.notes = []          # things worth saying once, at startup
         self.problems = []       # preflight warnings about the cues
         self.decode_errors = 0
@@ -296,6 +299,36 @@ class Session:
                    f" {os.path.basename(idle)} is named in the show file but "
                    f"would not open."))
 
+        # The clock, and only when the show file names one. Built after the
+        # cues open, because free running to the end of a show needs to know
+        # how long the show is.
+        if self.tl.clock is not None:
+            from . import clock as clock_mod
+            try:
+                self.clock = clock_mod.build(self.tl.clock, self.tl,
+                                             self.player.feed_timecode,
+                                             log=self.log,
+                                             no_output=self.no_output)
+            except clock_mod.ClockConfigError as e:
+                raise SessionError(str(e))
+            self.notes.append(f"Show clock: {self.tl.clock.summary()}.")
+            if self.clock.master:
+                # This machine makes the timecode, so there is nothing to
+                # listen to and no input is opened at all.
+                if self.wav:
+                    raise SessionError(
+                        "This show file makes this machine the show clock, "
+                        "so a WAV of timecode has nothing to drive. Run it "
+                        "without the WAV.")
+                self.input_source = {}
+                self.dev = None
+                self.channel = 1
+                self.rate = 48000
+                self.input_summary = ("none, this machine is the show clock "
+                                      "(Art-Net timecode)")
+                self.dec = LTCDecoder(self.rate)
+                return self
+
         inp, source, conflict = settings_mod.resolve(
             settings_mod.load(), self.tl.input, self.cli_in)
         self.input_source = source
@@ -355,6 +388,9 @@ class Session:
                 self.player.feed_timecode(ltc_seconds(fr, self.tl),
                                           captured_at - back,
                                           drop=fr.drop, text=str(fr))
+                clk = self.clock
+                if clk is not None:
+                    clk.ltc_frame(fr.h, fr.m, fr.s, fr.f, captured_at - back)
         except Exception as e:
             # This runs on the CoreAudio callback thread. Letting it out stops
             # the stream with no error anywhere a person can see it.
@@ -383,7 +419,8 @@ class Session:
                     "rig." + who + "\nTwo players on the same universes fight "
                     "frame by frame and the rig looks broken. Stop that one "
                     "first -- it is either the Run window or the Web window.")
-        if not self.wav:
+        if not self.wav and not (self.clock is not None
+                                 and self.clock.master):
             # With no device resolved, hand it a placeholder carrying the NAME
             # the operator chose. That name is what the supervisor follows when
             # the interface appears; an index would be meaningless.
@@ -401,6 +438,9 @@ class Session:
         step = self.player.start()
         self.started_at = time.monotonic()
         self._running = True
+        if self.clock is not None:
+            # Run pressed. A master still sends nothing until a cue plays.
+            self.clock.start()
         # The show file may ask for this mode to be armed from the start. Off
         # unless it says so: a backup that arms itself is not a backup.
         if self.tl.trigger is not None and self.tl.trigger.enabled:
@@ -485,6 +525,9 @@ class Session:
                                "input.")
         if not self._running:
             raise SessionError("Nothing is running.")
+        if self.clock is not None and self.clock.master:
+            raise SessionError("This machine is the show clock, so there is "
+                               "no timecode input to rebuild.")
         sd = self._sd or _import_sounddevice()
         self._sd = sd
         old, self.audio = self.audio, None
@@ -664,6 +707,47 @@ class Session:
             self.log.event("trigger", msg)
         return on, msg
 
+    # -- the show clock ---------------------------------------------------
+    def clock_play(self, cue=None):
+        """Start the show clock at 00:00:00:00 for one cue.
+
+        Only when this machine is the clock. `cue` is a cue's name, its file
+        name or its timecode in the show file; None means the first cue.
+        Returns the cue."""
+        if not self._running:
+            raise SessionError("Nothing is running. Press Run first.")
+        if self.clock is None or not self.clock.master:
+            raise SessionError("This show follows incoming timecode, so this "
+                               "machine cannot start the clock.")
+        cues = self.tl.cues
+        if not cues:
+            raise SessionError("This show has no cues to play.")
+        if cue is None:
+            pick = cues[0]
+        else:
+            want = str(cue).strip().lower()
+            hits = [c for c in cues
+                    if want in (c.name.lower(),
+                                os.path.basename(c.path).lower(),
+                                c.tc_text.lower())]
+            if len(hits) != 1:
+                raise SessionError(
+                    f"{cue!r} " + ("matches more than one cue" if hits else
+                                   "is not a cue in this show") +
+                    f". The cues are: {', '.join(c.name for c in cues)}.")
+            pick = hits[0]
+        # A free run left over from the last cue ending would outrank the
+        # clock, and the rig would ignore the cue just started.
+        if self.player.freerun_epoch is not None:
+            self.player.release()
+        self.clock.play(pick.tc_seconds, pick.duration, pick.name)
+        return pick
+
+    def clock_halt(self):
+        """Stop the show clock now. Nothing is sent until the next cue."""
+        if self.clock is not None:
+            self.clock.halt()
+
     def snapshot(self):
         """Everything a display needs, as plain data.
 
@@ -781,6 +865,8 @@ class Session:
                       "seconds": c.tc_seconds,
                       "duration": c.duration} for c in tl.cues],
         }
+        if self.clock is not None:
+            snap["clock"] = self.clock.snapshot()
         if cue is not None and cue.fseq is not None and tc is not None:
             el = tc - cue.tc_seconds
             # Two clocks, deliberately. "tc" is where the show is; "seq" is
@@ -811,6 +897,14 @@ class Session:
         # it got through, because "stopped, outputs blacked out" used to be
         # printed even when the socket was down and nothing was sent.
         self.blackout_sent = False
+        # The timecode stops first, so no receiver is still chasing a clock
+        # while the pixels go dark underneath it.
+        clk = getattr(self, "clock", None)
+        if clk is not None:
+            try:
+                clk.stop()
+            except Exception:
+                pass
         # Unmute before the blackout. Left armed, the six Advatek addresses
         # would be skipped by the very frame whose job is to make sure nothing
         # is left lit.
