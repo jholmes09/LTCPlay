@@ -13,7 +13,7 @@ permissions:
 
 # A newer push to the same PR makes the older run pointless, so it is
 # cancelled. Every push to main and every tag gets a group of its own: they
-# are never cancelled, and never queue behind an hour of mutate.py either.
+# are never cancelled, and never queue behind mutate.py either.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -35,36 +35,19 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install numpy zstandard tzdata
       - run: python selftest.py
-      # TEMP: while porting, run every test on its own so one traceback does
-      # not hide the rest. Removed before the PR.
-      - name: every test in isolation (porting aid)
-        if: failure()
-        shell: python
-        run: |
-          import os, re, sys, traceback
-          sys.path.insert(0, os.getcwd())
-          sys.argv = ["selftest.py"]
-          main = open("selftest.py", encoding="utf-8").read().split('if __name__ == "__main__":')[1]
-          names = re.findall(r"^    (test_\w+)\(\)$", main, re.M)
-          import selftest as st
-          for n in names:
-              try:
-                  getattr(st, n)()
-              except BaseException:
-                  print(f"!!! {n} RAISED")
-                  traceback.print_exc()
-          print(f"\n{len(st.FAILS)} FAILS")
-          for f in st.FAILS:
-              print(" -", f)
 
-  # mutate.py takes over an hour a run and macOS minutes cost ten times
-  # Linux ones, so it runs on release tags and when something it proves has
-  # changed: trigger.py, output.py, player.py, session.py (CLAUDE.md), or
-  # the suite and the runner themselves.
+  # mutate.py is about 2.5 hours of runner time per OS, so it runs where it
+  # pays for itself:
+  #   ubuntu   on a release tag, and on any PR or push to main that changes
+  #            trigger.py, output.py, player.py or session.py (CLAUDE.md), or
+  #            mutate.py, selftest.py or the expected-miss list
+  #   windows  on a release tag only
+  #   macOS    never here (billed at 10x); it is run on the show Mac, with
+  #            the real renders, where every mutation has to be caught
+  # Each run is split five ways so the wall time stays under 45 minutes.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      mutate: ${{ steps.decide.outputs.mutate }}
       oses: ${{ steps.decide.outputs.oses }}
     steps:
       - uses: actions/checkout@v5
@@ -80,55 +63,47 @@ jobs:
           HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -u
-          echo 'oses=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
-          watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py)$'
+          say() { echo "$1"; echo "oses=$2" >> "$GITHUB_OUTPUT"; exit 0; }
+          watched='^(ltcplay/(trigger|output|player|session)\.py|mutate\.py|selftest\.py|mutate_expected_misses\.txt)$'
           if [[ "$REF" == refs/tags/* ]]; then
-            echo "release tag: mutate runs"
-            echo "mutate=true" >> "$GITHUB_OUTPUT"; exit 0
+            say "release tag: ubuntu and windows" '["ubuntu-latest","windows-latest"]'
           fi
           # TEMP: on the porting branch, only a commit that asks for it.
           if [[ "$REF" == refs/heads/windows-compat-ci ]]; then
-            m=false
-            if [[ "$HEAD_MSG" == *"[mutate]"* ]]; then
-              m=true
-              echo 'oses=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
-            fi
-            if [[ "$HEAD_MSG" == *"[mutate-all]"* ]]; then m=true; fi
-            echo "porting branch: mutate=$m"
-            echo "mutate=$m" >> "$GITHUB_OUTPUT"; exit 0
+            [[ "$HEAD_MSG" == *"[mutate]"* ]] && \
+              say "porting branch: asked for" '["ubuntu-latest","windows-latest"]'
+            say "porting branch: not asked for" '[]'
           fi
-          if [[ "$EVENT" == pull_request ]]; then
-            base="$PR_BASE"
-          else
-            base="$BEFORE"
-          fi
+          if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; else base="$BEFORE"; fi
           # No usable base (a first push, a rewritten one): run it rather
           # than guess.
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
              ! files=$(git diff --name-only "$base" "$GITHUB_SHA"); then
-            echo "no base to compare against: mutate runs"
-            echo "mutate=true" >> "$GITHUB_OUTPUT"; exit 0
+            say "no base to compare against: ubuntu" '["ubuntu-latest"]'
           fi
           echo "changed:"; echo "$files" | sed 's/^/  /'
           if echo "$files" | grep -Eq "$watched"; then
-            echo "mutate=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "mutate=false" >> "$GITHUB_OUTPUT"
+            say "a watched file changed: ubuntu" '["ubuntu-latest"]'
           fi
+          say "nothing mutate.py proves has changed" '[]'
 
   mutate:
     needs: changes
-    if: needs.changes.outputs.mutate == 'true'
+    if: needs.changes.outputs.oses != '[]'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
+        shard: [0, 1, 2, 3, 4]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: python -m pip install numpy zstandard tzdata
-      - run: python -u mutate.py
+      # The expected-miss list is the mutations only the real show folder
+      # can catch. Any other miss, any listed one that is now caught, and any
+      # SETUP FAIL fails the job.
+      - run: python -u mutate.py --shard ${{ matrix.shard }}/5 --expected mutate_expected_misses.txt

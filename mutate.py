@@ -9,6 +9,13 @@ against one, the suite is lying and gets strengthened until it does not.
 
     python3 mutate.py            run them all
     python3 mutate.py park       run the ones whose name contains "park"
+
+For CI, two options that change nothing about a plain run:
+
+    --shard I/N        run only every Nth mutation, starting at the Ith
+                       (0-based), so N machines can share one sweep
+    --expected FILE    a list of mutations this machine is known to miss,
+                       each with its reason; see mutate_expected_misses.txt
 """
 import subprocess
 import sys
@@ -19,7 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # (name, file, exact text to find, replacement)
 MUTATIONS = [
  ("the input hunts sample rates on every retry again", "ltcplay/audio.py",
-  "        if self._good:\n            want(self._good[0], self._good[1])",
+  "        if self._good:\n            want(self._good[0], self._good[1])\n"
+  "        want(self.rate, chans)",
   "        if False:\n            want(self._good[0], self._good[1])"),
 
  ("a working setting is never remembered", "ltcplay/audio.py",
@@ -1088,8 +1096,48 @@ def main():
         os.remove(LOCK)
 
 
+def _args(argv):
+    """Name filters, plus the two CI options. Anything else is a filter, as
+    it always was."""
+    wants, shard, expected = [], None, None
+    it = iter(argv)
+    for a in it:
+        if a == "--shard":
+            i, n = next(it).split("/")
+            shard = (int(i), int(n))
+        elif a == "--expected":
+            expected = next(it)
+        else:
+            wants.append(a.lower())
+    return wants or None, shard, expected
+
+
+def _load_expected(path):
+    """{name: reason} of the misses expected ON THIS OS.
+
+    One entry per line: `where | exact mutation name | reason`, where `where`
+    is `all` or `windows`. Blank lines and # comments are ignored."""
+    here_os = "windows" if sys.platform == "win32" else "posix"
+    out, unknown = {}, []
+    names = {m[0] for m in MUTATIONS}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            where, name, reason = (x.strip() for x in line.split("|", 2))
+            if name not in names:
+                unknown.append(name)
+            if where == "all" or where == here_os:
+                out[name] = reason
+    return out, unknown
+
+
 def _run():
-    wants = [a.lower() for a in sys.argv[1:]] or None
+    wants, shard, expected_file = _args(sys.argv[1:])
+    expected, unknown = ({}, [])
+    if expected_file:
+        expected, unknown = _load_expected(expected_file)
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
@@ -1102,8 +1150,11 @@ def _run():
               "mean anything.")
         return 2
     caught = missed = 0
-    for name, rel, old, new in MUTATIONS:
+    missed_names, caught_names, setup_fails = [], [], []
+    for index, (name, rel, old, new) in enumerate(MUTATIONS):
         if wants and not any(w in name.lower() for w in wants):
+            continue
+        if shard and index % shard[1] != shard[0]:
             continue
         path = os.path.join(HERE, rel)
         # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
@@ -1114,6 +1165,7 @@ def _run():
             print(f"  SETUP FAIL  {name} "
                   f"(pattern appears {src.count(old)} times in {rel})")
             missed += 1
+            setup_fails.append(name)
             continue
         backup = src
         _write(path, src.replace(old, new, 1))
@@ -1124,9 +1176,11 @@ def _run():
         if green:
             print(f"  NOT CAUGHT  {name}")
             missed += 1
+            missed_names.append(name)
         else:
             print(f"  caught      {name}")
             caught += 1
+            caught_names.append(name)
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
@@ -1137,7 +1191,38 @@ def _run():
               "above.")
         return 2
     print("tree restored and green")
-    return 1 if missed else 0
+    if not expected_file:
+        return 1 if missed else 0
+    return _against_expected(expected, unknown, missed_names, caught_names,
+                             setup_fails)
+
+
+def _against_expected(expected, unknown, missed_names, caught_names,
+                      setup_fails):
+    """Pass only if every miss is a listed one, and no listed one is caught.
+
+    The list can only shrink: a listed mutation that is now caught fails the
+    run until its line is deleted, so the list never hides a guarantee that
+    has started being tested."""
+    bad = False
+    for n in unknown:
+        print(f"  LIST IS STALE  {n!r} is not a mutation in this file")
+        bad = True
+    for n in setup_fails:
+        print(f"  SETUP FAIL is never expected: {n}")
+        bad = True
+    for n in missed_names:
+        if n in expected:
+            print(f"  expected miss  {n}  ({expected[n]})")
+        else:
+            print(f"  UNEXPECTED MISS  {n}")
+            bad = True
+    for n in caught_names:
+        if n in expected:
+            print(f"  NOW CAUGHT, delete it from the list  {n}")
+            bad = True
+    print("\nagainst the expected-miss list: " + ("FAIL" if bad else "ok"))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

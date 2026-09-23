@@ -53,6 +53,71 @@ SOURCE_TREE = os.path.exists(
 RAN = set()
 
 
+# The real renders, for the tests that need a whole show. They are never in
+# the repo (600MB, and CLAUDE.md says never commit them). Say where they are
+# with LTCPLAY_TEST_SHOW_DIR; the default is where they sat in the machine
+# these tests were first written on. Absent, those tests say so and skip.
+_SHOW_DIR_DEFAULT = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+
+
+def real_show_dir():
+    return os.environ.get("LTCPLAY_TEST_SHOW_DIR") or _SHOW_DIR_DEFAULT
+
+
+# That folder can be the LIVE show. The tests only read it, or copy out of it
+# into a temp folder, and this proves it: every name, size, mtime and mode is
+# recorded before the first test and compared after the last. ctime and the
+# file flags are not: a synced folder downloading an online-only file on
+# first read changes those without anyone writing. Finder's and Dropbox's own
+# bookkeeping files are the only names left out.
+_NOT_OURS = (".DS_Store", ".dropbox", ".dropbox.attr", "Icon\r")
+
+
+def copy_render(src, dst):
+    """Copy a render for a test to work on: the bytes, not the permissions.
+
+    The show folder the tests read may be read-only (a locked card, a
+    protected copy of the live show). shutil.copy carries that across, and a
+    test that then corrupts its OWN copy on purpose was refused. The copy is
+    the test's; the original is only ever read."""
+    import shutil
+    if os.path.isdir(dst):
+        dst = os.path.join(dst, os.path.basename(src))
+    shutil.copyfile(src, dst)
+    return dst
+
+
+def _show_snapshot(root):
+    snap = {}
+    for dirpath, dirs, names in os.walk(root):
+        dirs.sort()
+        for n in sorted(dirs + names):
+            if n in _NOT_OURS:
+                continue
+            p = os.path.join(dirpath, n)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            snap[os.path.relpath(p, root)] = (st.st_size, st.st_mtime_ns,
+                                              st.st_mode)
+    return snap
+
+
+def _show_changes(root, before):
+    after = _show_snapshot(root)
+    out = []
+    for k in sorted(set(before) | set(after)):
+        if k not in after:
+            out.append(f"removed: {k}")
+        elif k not in before:
+            out.append(f"added: {k}")
+        elif before[k] != after[k]:
+            out.append(f"changed: {k} (size, mtime_ns, mode "
+                       f"{before[k]} -> {after[k]})")
+    return out
+
+
 def _find_bash():
     """The bash that can syntax-check a Mac launcher, or None.
 
@@ -2353,7 +2418,7 @@ def _web_fixture():
     import json
     import shutil
     import tempfile
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         return None
     folder = tempfile.mkdtemp()
@@ -2801,7 +2866,7 @@ def test_at_command_on_the_real_show():
     import json
     import subprocess
     import tempfile
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         print("  no show folder available, skipped")
         return
@@ -2887,7 +2952,7 @@ def test_track_numbers_are_not_identity():
 
 def test_sequences_declare_what_they_are():
     section("proving a sequence is the one it claims to be")
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         print("  no show folder available, skipped")
         return
@@ -2914,7 +2979,7 @@ def test_verify_catches_a_mislabelled_sequence():
     import shutil
     import subprocess
     import tempfile
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         print("  no show folder available, skipped")
         return
@@ -2922,9 +2987,9 @@ def test_verify_catches_a_mislabelled_sequence():
     work = tempfile.mkdtemp()
     # A copy of the Munsters render, wearing Thriller's name. This is exactly
     # the failure a filename cannot detect and the header can.
-    shutil.copy(os.path.join(sd, "GPL 2026_Set 1_Munsters.fseq"),
+    copy_render(os.path.join(sd, "GPL 2026_Set 1_Munsters.fseq"),
                 os.path.join(work, "GPL 2026_Set 2_Thriller.fseq"))
-    shutil.copy(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"),
+    copy_render(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"),
                 os.path.join(work, "GPL 2026_Set 1_Opener.fseq"))
     rows = "\n".join(
         f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
@@ -2980,7 +3045,7 @@ def test_verify_catches_a_mislabelled_sequence():
               "xlights_rgbeffects.xml"):
         src = os.path.join(sd, f)
         if os.path.exists(src):
-            shutil.copy(src, os.path.join(work, f))
+            copy_render(src, os.path.join(work, f))
     mixed = [
         {"tc": "01:00:00:00", "fseq": "GPL 2026_Set 1_Munsters.fseq", "name": "A"},
         {"tc": "01:10:00:00", "fseq": "GPL 2026_Set 1_Ending.fseq", "name": "B"},
@@ -3476,14 +3541,14 @@ def test_a_read_only_folder_is_a_sentence():
     section("a read-only show folder must not print Python guts")
     import json, subprocess, tempfile
     here = os.path.dirname(os.path.abspath(__file__))
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         print("  no show folder available, skipped")
         return
     import shutil
     work = tempfile.mkdtemp()
-    shutil.copy(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"), work)
-    shutil.copy(os.path.join(sd, "xlights_networks.xml"), work)
+    copy_render(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"), work)
+    copy_render(os.path.join(sd, "xlights_networks.xml"), work)
     tlp = os.path.join(work, "ro_timeline.json")
     json.dump({"name": "RO", "fps": 30, "show_dir": work, "gaps": "blackout",
                "cues": [{"tc": "01:00:00:00",
@@ -3866,14 +3931,14 @@ def test_go_runs_without_the_feed():
 def test_the_bundle_stands_on_its_own():
     section("a show folder that can be carried to another Mac")
     import json, shutil, subprocess, tempfile
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     if not os.path.isdir(sd):
         print("  no show folder available, skipped")
         return
     here = os.path.dirname(os.path.abspath(__file__))
     src = tempfile.mkdtemp()
     for f in ("GPL 2026_Set 1_Opener.fseq", "xlights_networks.xml"):
-        shutil.copy(os.path.join(sd, f), src)
+        copy_render(os.path.join(sd, f), src)
     tlp = os.path.join(src, "b_timeline.json")
     json.dump({"name": "Bundle", "fps": 30, "show_dir": src,
                "gaps": "blackout",
@@ -4548,6 +4613,12 @@ def test_the_input_stops_hunting_sample_rates():
                            f"{sd.attempts}")
         check(src._good == (48000, 2),
               f"the working setting was not remembered: {src._good}")
+        # It was asked for 96000 and opened at 48000. The decoder has to be
+        # told, once, or it decodes a 48k stream as if it were 96k: steady
+        # nonsense rather than silence.
+        check(src.rate == 48000 and rates_seen == [48000],
+              f"the input opened at 48000 but did not follow it: rate "
+              f"{src.rate}, decoder told {rates_seen}")
         first_round = len(sd.attempts)
 
         # Now close and reopen, the way the supervisor does. It must go
@@ -4953,6 +5024,22 @@ def test_the_input_can_be_changed_mid_show():
         check(sess.snapshot()["input_attached"] is True,
               "the page says the input is missing after a good switch")
 
+        # A switch the RUNNING show refuses has to come back as refused, with
+        # the reason, while the setting is still saved for the next start.
+        # Reporting it as done leaves the operator believing the show is on
+        # an input it never reached.
+        def busy(*a, **k):
+            raise SessionError("the interface is busy")
+        sess.retarget_input = busy
+        try:
+            out = c.set_input("MOTU M4", 2)
+        finally:
+            del sess.retarget_input
+        check(out.get("live") is False and "busy" in (out.get("why") or ""),
+              f"a switch the show refused was reported as done: {out}")
+        check(int(out.get("channel") or 0) == 2,
+              f"a switch the show refused lost the saved setting: {out}")
+
         # A switch that cannot work is refused, and must not disturb either
         # the running show or the saved setting.
         try:
@@ -5322,7 +5409,7 @@ def test_reload_while_the_show_runs():
     import tempfile
     from ltcplay.player import ReloadError
     from ltcplay.fseq import FSEQ
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     src_a = os.path.join(sd, "GPL 2026_Set 1_Opener.fseq")
     src_b = os.path.join(sd, "GPL 2026_Set 1_Munsters.fseq")
     if not (os.path.exists(src_a) and os.path.exists(src_b)):
@@ -5330,7 +5417,7 @@ def test_reload_while_the_show_runs():
         return
     work = tempfile.mkdtemp()
     live = os.path.join(work, "Live.fseq")
-    shutil.copy(src_a, live)
+    copy_render(src_a, live)
     with FSEQ(live) as f:
         frames_a, chans = f.frame_count, f.channel_count
         first_a = f.frame(0)
@@ -5356,7 +5443,7 @@ def test_reload_while_the_show_runs():
 
     # Now re-render it: same path, different content. This is exactly what
     # xLights does.
-    shutil.copy(src_b, live)
+    copy_render(src_b, live)
     stale = p.stale_cues()
     check([c.name for c in stale] == ["Live"],
           f"a changed render must be noticed: {stale}")
@@ -5414,14 +5501,14 @@ def test_opening_a_render_proves_it_reads():
     import shutil
     import tempfile
     from ltcplay.fseq import FSEQ, FSEQError
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     src = os.path.join(sd, "GPL 2026_Set 1_Munsters.fseq")
     if not os.path.exists(src):
         print("  no show folder available, skipped")
         return
     work = tempfile.mkdtemp()
     whole = os.path.join(work, "Whole.fseq")
-    shutil.copy(src, whole)
+    copy_render(src, whole)
     with FSEQ(whole) as f:
         check(f.verify() is True, "a complete render must verify")
         n_blocks = len(f._blocks)
@@ -5466,14 +5553,14 @@ def test_opening_a_render_proves_it_reads():
     # first frame would pass this; the rig would then fail somewhere in the
     # middle of the song, which is exactly what 810 read errors looked like.
     rewritten = os.path.join(work, "Rewritten.fseq")
-    shutil.copy(whole, rewritten)
+    copy_render(whole, rewritten)
     with FSEQ(rewritten) as f:
         last_off, last_len = f._blocks[-1][1], f._blocks[-1][2]
         mid_off, mid_len = f._blocks[len(f._blocks) // 2][1], \
             f._blocks[len(f._blocks) // 2][2]
     for off, ln, where in ((last_off, last_len, "last"),
                            (mid_off, mid_len, "middle")):
-        shutil.copy(whole, rewritten)
+        copy_render(whole, rewritten)
         with open(rewritten, "r+b") as fh:
             fh.seek(off)
             fh.write(b"\x00" * ln)
@@ -5511,7 +5598,7 @@ def test_opening_a_render_proves_it_reads():
     from ltcplay.player import ReloadError
     tl2 = timeline.Timeline(30.0, [], "t2", work)
     live = os.path.join(work, "Live.fseq")
-    shutil.copy(whole, live)
+    copy_render(whole, live)
     c2 = timeline.Cue("01:00:00:00", live, "Live")
     c2.tc_seconds = tcmod.parse_tc("01:00:00:00", 30)
     tl2.cues = [c2]
@@ -5854,6 +5941,14 @@ def test_one_frame_between_cues_is_not_a_gap():
     check(p.source == IDLE and p.current_cue is None,
           f"a two-second hole is a gap and should show the preshow look, "
           f"got {p.source}/{p.current_cue and p.current_cue.name}")
+    # And from its very first frame. 0.1s after B runs out is inside the
+    # bridge's own length, but C is two seconds away, so this is a hole, not
+    # rounding. Holding B's last frame here is the bridge swallowing a real
+    # gap, only a short one.
+    _tick_at(p, nxt + 2.5 + 0.1)
+    check(p.source == IDLE and p.current_cue is None,
+          f"a real gap must start the frame the song ends, not a bridge "
+          f"later: got {p.source}/{p.current_cue and p.current_cue.name}")
 
     # And with the bridge switched off, the one-frame hole is a hole again:
     # this proves the assertions above are measuring the bridge and not some
@@ -5926,7 +6021,7 @@ def test_one_sequence_at_two_timecodes():
     # Jeff, 2026-09-13: the ending is the same programming in Set 1 and Set 2.
     # Two cues point at one file rather than two copies of it, so re-rendering
     # the ending updates both and there is nothing to drift.
-    sd = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
+    sd = real_show_dir()
     ending = os.path.join(sd, "GPL 2026_Set 1_Ending.fseq")
     if not os.path.exists(ending):
         print("  no show folder available, skipped")
@@ -7574,6 +7669,12 @@ def test_the_real_show_file_matches_the_trigger_reference():
 
 if __name__ == "__main__":
     t0 = time.time()
+    _show_root = real_show_dir()
+    _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
+                    else None)
+    if _show_before is not None:
+        print(f"real show folder: {_show_root} "
+              f"({len(_show_before)} entries, read only)")
     test_ltc_roundtrip()
     test_ltc_rollovers()
     test_ltc_degraded()
@@ -7682,6 +7783,15 @@ if __name__ == "__main__":
         print(f"\n{len(never)} test(s) defined but never run:")
         for n in never:
             print(f"  - {n}")
+
+    if _show_before is not None:
+        touched = _show_changes(_show_root, _show_before)
+        if touched:
+            FAILS.append(f"THE REAL SHOW FOLDER WAS CHANGED BY THIS RUN "
+                         f"({_show_root}): " + "; ".join(touched[:20]))
+            print(f"\n  FAIL  THE REAL SHOW FOLDER WAS CHANGED BY THIS RUN:")
+            for t in touched:
+                print(f"    {t}")
 
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
