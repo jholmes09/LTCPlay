@@ -34,7 +34,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install numpy zstandard tzdata
-      - run: python selftest.py
+      # TEMP: how late does a 20ms sleep wake on this runner?
+      - name: timer check (porting aid)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/t.py" <<'PY'
+          import time
+          ts = []
+          for _ in range(200):
+              t0 = time.monotonic(); time.sleep(0.02); ts.append(time.monotonic() - t0)
+          ts.sort()
+          print("sleep(0.02): p50 %.4f p90 %.4f p99 %.4f max %.4f" % (ts[100], ts[180], ts[198], ts[-1]))
+          PY
+          python "$RUNNER_TEMP/t.py"
+          if command -v taskpolicy >/dev/null; then taskpolicy -l 0 -t 0 python "$RUNNER_TEMP/t.py"; fi
+      - run: python -u selftest.py
 
   # mutate.py is about 2.5 hours of runner time per OS, so it runs where it
   # pays for itself:
