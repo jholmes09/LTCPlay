@@ -4194,6 +4194,55 @@ def test_a_dead_controller_stops_being_hammered():
     print("  ok")
 
 
+def test_a_controller_ping_means_what_it_says():
+    section("a controller that answers a ping is up, on this OS's ping")
+    # `check` and the running rig watch both ask ping whether a controller is
+    # there. Windows ping reads the Mac's flags as something else entirely,
+    # so on Windows every controller used to read as missing.
+    import subprocess
+    from ltcplay import rigwatch
+    seen = []
+    real_run = rigwatch.subprocess.run
+
+    def fake(answer, rc):
+        def run(argv, **kw):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, rc, answer, b"")
+        return run
+
+    try:
+        rigwatch.subprocess.run = fake(b"Reply from 10.0.0.9: bytes=32 "
+                                       b"time<1ms TTL=64\r\n", 0)
+        check(rigwatch.ping("10.0.0.9") is True,
+              "a controller that answered was reported missing")
+        if sys.platform == "win32":
+            check(seen[-1] == ["ping", "-n", "1", "-w", "1000", "10.0.0.9"],
+                  f"Windows ping was asked with the wrong flags: {seen[-1]}")
+            # A router answering for a controller that is not there exits 0
+            # on Windows. That is not the controller.
+            rigwatch.subprocess.run = fake(
+                b"Reply from 10.0.0.1: Destination host unreachable.\r\n", 0)
+            check(rigwatch.ping("10.0.0.9") is False,
+                  "a router's 'destination host unreachable' counted as the "
+                  "controller answering")
+        else:
+            check(seen[-1] == ["ping", "-c", "1", "-W", "1000", "-t", "1",
+                               "10.0.0.9"],
+                  f"the Mac ping changed: {seen[-1]}")
+        rigwatch.subprocess.run = fake(b"", 2)
+        check(rigwatch.ping("10.0.0.9") is False,
+              "a ping that failed was reported as an answer")
+    finally:
+        rigwatch.subprocess.run = real_run
+    # And the real thing, against the one address that always answers.
+    try:
+        up = rigwatch.RigWatch(["127.0.0.1"])._ping_once("127.0.0.1")
+    except Exception as e:
+        up = e
+    check(up is True, f"this machine's own loopback did not answer ping: {up}")
+    print("  ok")
+
+
 def test_broadcast_destinations_are_called_out():
     section("a broadcast address in the controller map")
     from ltcplay import output as out_mod
@@ -7569,6 +7618,7 @@ if __name__ == "__main__":
     test_the_credit_travels_with_it()
     test_a_dead_controller_stops_being_hammered()
     test_broadcast_destinations_are_called_out()
+    test_a_controller_ping_means_what_it_says()
     test_free_run_to_the_end_when_timecode_dies()
     test_the_input_can_be_rebuilt_without_dropping_the_rig()
     test_the_input_stops_hunting_sample_rates()

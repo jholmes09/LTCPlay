@@ -120,7 +120,7 @@ def release():
     if not os.path.exists(p):
         return None
     try:
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return None

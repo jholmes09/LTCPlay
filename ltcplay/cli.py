@@ -199,7 +199,7 @@ def cmd_verify(args):
     bundle_bad = []
     if os.path.exists(bpath):
         try:
-            bman = json.load(open(bpath)).get("files", {})
+            bman = json.load(open(bpath, encoding="utf-8")).get("files", {})
         except (ValueError, OSError):
             bman = {}
         import hashlib as _hl
@@ -228,7 +228,7 @@ def cmd_verify(args):
     old = {}
     if os.path.exists(mpath) and not args.no_manifest:
         try:
-            old = json.load(open(mpath)).get("files", {})
+            old = json.load(open(mpath, encoding="utf-8")).get("files", {})
         except (ValueError, OSError):
             old = {}
 
@@ -705,7 +705,7 @@ def cmd_init(args):
 def cmd_showdir(args):
     """Read or change the folder a show file plays its sequences from."""
     tl_path = os.path.abspath(args.timeline)
-    with open(tl_path) as fh:
+    with open(tl_path, encoding="utf-8") as fh:
         doc = json.load(fh)
     if not args.folder:
         print(doc.get("show_dir") or "(beside the show file)")
@@ -870,17 +870,14 @@ def _check_reachable(nm, timeout=1.0):
     ArtNet and E1.31 are fire and forget, so nothing downstream ever tells you
     a controller is off. One ping before the run does."""
     import concurrent.futures
-    import subprocess
+    from .rigwatch import ping as _ping
     ips = sorted({u.ip for u in nm.universes})
     if not ips:
         return []
 
     def ping(ip):
         try:
-            r = subprocess.run(["ping", "-c", "1", "-W", "1000", "-t", "1", ip],
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=timeout + 1.5)
-            return ip, r.returncode == 0
+            return ip, _ping(ip, timeout)
         except Exception:
             return ip, False
 
@@ -1157,7 +1154,7 @@ def cmd_bundle(args):
                         f"--force to build an incomplete bundle deliberately.")
 
     # 3. the show file, pointing at its own copy
-    doc = json.load(open(src_tl))
+    doc = json.load(open(src_tl, encoding="utf-8"))
     doc["show_dir"] = "show"
     # And every path inside it. An absolute fseq or idle path points at the
     # machine that made the bundle: on the other Mac the bundle reported the
@@ -1497,7 +1494,7 @@ def cmd_markers(args):
 
 def cmd_retime(args):
     """Recompute every cue timecode back to back, in the order written."""
-    with open(args.timeline) as fh:
+    with open(args.timeline, encoding="utf-8") as fh:
         doc = json.load(fh)
     fps = int(doc.get("fps", 30))
     show_dir = doc.get("show_dir") or os.path.dirname(os.path.abspath(args.timeline))

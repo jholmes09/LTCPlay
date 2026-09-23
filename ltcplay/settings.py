@@ -40,7 +40,7 @@ def load():
     if not os.path.exists(p):
         return {}
     try:
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return {}
@@ -140,7 +140,7 @@ def load_prefs():
     """Operator preferences that survive a restart, with defaults filled in."""
     out = dict(PREFS)
     try:
-        with open(prefs_path()) as fh:
+        with open(prefs_path(), encoding="utf-8") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return out

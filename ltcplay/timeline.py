@@ -126,7 +126,7 @@ class Timeline:
     def load(cls, path, fps=None, drop=None):
         """`fps` and `drop` override the file, for the console at 10pm when the
         source turns out to be 29.97 and nobody wants to edit JSON."""
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
         # A setting spelled wrong is worse than a setting missing: the file
         # loads, the run looks healthy, and the thing you asked for silently
