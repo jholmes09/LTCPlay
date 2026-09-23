@@ -45,6 +45,8 @@ table p. 21, UDP port 0x1936 in "Port" p. 10):
 19 bytes. The spec says the source port is also 0x1936. This sends from an
 ephemeral port, the same as the pixel sender always has, because MadMapper
 listens on 6454 on the same machine and two programs cannot both own it.
+BENCH DAY: confirm BEYOND accepts timecode from a port other than 6454.
+--bind applies to this socket exactly as it does to the pixel sender.
 """
 import ipaddress
 import math
@@ -140,13 +142,20 @@ class TimecodeOut:
 
     FAILURES_BEFORE_REOPEN = 3
     REOPEN_BACKOFF_S = 1.0
+    # One line per receiver per this many seconds while it keeps failing, so
+    # one dead node out of several is named in the log without burying it.
+    DEST_LOG_EVERY_S = 5.0
 
     def __init__(self, dests, broadcast=False, port=ARTNET_PORT, log=None,
-                 socket_factory=None, clock=time.monotonic):
+                 socket_factory=None, clock=time.monotonic, bind_ip=None):
         self.dests = list(dests)            # [(label, ip)]
         self.broadcast = bool(broadcast)
         self.port = port
+        self.bind_ip = bind_ip
         self.log = log
+        # Per receiver: [failures since it last took a packet, last error,
+        # when it was last logged]. A receiver is in here only while failing.
+        self.failing = {}
         self._factory = socket_factory or self._default_socket
         self._clock = clock
         self._sock = None
@@ -161,8 +170,16 @@ class TimecodeOut:
 
     def _default_socket(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        if self.broadcast:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            if self.broadcast:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if self.bind_ip:
+                # The same rule as the pixel sender's --bind: pick the
+                # interface, keep an ephemeral port.
+                s.bind((self.bind_ip, 0))
+        except OSError:
+            s.close()
+            raise
         return s
 
     def _ensure(self, now):
@@ -186,6 +203,43 @@ class TimecodeOut:
         self.last_error = msg
         self.last_error_at = now
 
+    def _log(self, msg):
+        if self.log:
+            try:
+                self.log.event("timecode", msg)
+            except Exception:
+                pass
+
+    def _dest_failed(self, now, label, ip, e):
+        msg = f"timecode to {label} ({ip}): {e}"
+        self._fail(now, msg)
+        f = self.failing.get(ip)
+        if f is None:
+            f = self.failing[ip] = [0, "", None]
+        f[0] += 1
+        f[1] = msg
+        if f[2] is None or now - f[2] >= self.DEST_LOG_EVERY_S:
+            f[2] = now
+            self._log(f"{label} ({ip}) is not taking Art-Net timecode, "
+                      f"{f[0]} packet(s) refused so far: {e}")
+
+    def _dest_ok(self, label, ip):
+        f = self.failing.pop(ip, None)
+        if f is not None:
+            self._log(f"{label} ({ip}) is taking Art-Net timecode again "
+                      f"after {f[0]} refused packet(s)")
+
+    @property
+    def failing_labels(self):
+        return [f"{label} ({ip})" for label, ip in self.dests
+                if ip in self.failing]
+
+    @property
+    def seconds_since_error(self):
+        if self.last_error_at is None:
+            return None
+        return self._clock() - self.last_error_at
+
     def send(self, pkt):
         now = self._clock()
         sock = self._ensure(now)
@@ -197,8 +251,10 @@ class TimecodeOut:
                 sock.sendto(pkt, (ip, self.port))
                 self.packets_sent += 1
                 ok = True
+                if self.failing:
+                    self._dest_ok(label, ip)
             except OSError as e:
-                self._fail(now, f"timecode to {label} ({ip}): {e}")
+                self._dest_failed(now, label, ip, e)
         if ok:
             self._fails = 0
             self.last_ok_at = now
@@ -207,12 +263,7 @@ class TimecodeOut:
         if self._fails >= self.FAILURES_BEFORE_REOPEN:
             self._fails = 0
             self.close()
-            if self.log:
-                try:
-                    self.log.event("clock", f"{self.last_error}; rebuilding "
-                                            f"the timecode socket")
-                except Exception:
-                    pass
+            self._log(f"{self.last_error}; rebuilding the timecode socket")
         return False
 
     def close(self):
@@ -301,7 +352,10 @@ class Ticker:
             if now < due:
                 sleep(min(due - now, self.MAX_SLEEP_S))
                 continue
-            n = frame_at(now - t0, fps)
+            # Never below the frame that was due. At a large clock reading,
+            # t0 + n/fps and back again can round to a hair under n, which
+            # would send frame n - 1 a second time.
+            n = max(frame_at(now - t0, fps), n_next)
             if n > n_next:
                 self.skipped += n - n_next
             self.ticks += 1
@@ -315,8 +369,9 @@ class Ticker:
                 self.last_error = f"{type(e).__name__}: {e}"
                 if self.log:
                     try:
-                        self.log.event("clock", f"tick failed: "
-                                                f"{self.last_error}")
+                        self.log.event("clock-error", f"tick failed: "
+                                                      f"{self.last_error}",
+                                       throttle_s=5.0)
                     except Exception:
                         pass
             if more is False:
@@ -365,21 +420,30 @@ def route(h, m, s, f, zones):
 class ZoneReader:
     """Decoded LTC frames in, the current zone and position out.
 
-    Two rules on top of route(), both borrowed from the chase engine:
+    Three rules on top of route(), the first two borrowed from the chase
+    engine:
 
       A change has to be said twice. LTC has no checksum; one flipped bit in
       the hours reads as a valid frame in another zone. A frame that
       disagrees with where the reader is, in zone or by more than a few
       frames in position, moves it only when the next frame agrees with it.
-      With no live feed there is nothing to protect, and the first frame
-      is taken at once.
+      That holds after a gap too, and for the very first frame: a feed that
+      comes back on a corrupt frame must not be believed on that one frame.
 
-      Timecode loss during the show zone free runs to the end of the show.
-      Any other zone stops after `hold_s` with no frames, and the receivers
-      hold and then time out on their own."""
+      The position is kept as an epoch, the moment its zone's frame zero
+      began, and small differences are slewed rather than taken. Frame
+      stamps arrive with the jitter of the audio callback and, under Python
+      3.12 on Windows, of a 15.6 ms clock; taking each one raw makes the
+      forwarded frames step 0, 1 or 2 instead of 1.
+
+      Timecode loss during the show zone free runs to the end of the show,
+      and only then does the show length apply: a live feed past it is
+      forwarded, not cut. Any other zone stops after `hold_s` with no
+      frames, and the receivers hold and then time out on their own."""
 
     JUMP_FRAMES = 5         # about the chase engine's 0.15 s jump threshold
     CONFIRM_FRAMES = 2
+    SLEW = 0.1
 
     def __init__(self, zones, count=30, drop=False, fps=30.0,
                  forward=("show",), show_len_s=None, hold_s=1.0):
@@ -393,8 +457,9 @@ class ZoneReader:
                                                    - 1e-9)))
         self.hold_s = hold_s
         self._lock = threading.Lock()
-        self._last = None           # (role, frames into zone or None, at)
-        self._pending = None
+        # (role, epoch or None, time of the last agreeing frame)
+        self._last = None
+        self._pending = None        # (role, epoch or None, at)
         self.frames_in = 0
         self.rejects = 0
         self.zone_changes = 0
@@ -407,77 +472,78 @@ class ZoneReader:
         _, m, s, f = rel
         return tc_to_frames(0, m, s, f, self.count, self.drop)
 
-    def _ahead(self, state, t):
-        role, pos, at = state
-        if pos is None:
-            return role, None
-        return role, pos + frame_at(t - at, self.fps)
-
-    @staticmethod
-    def _agree(a_role, a_pos, b_role, b_pos, slack):
+    def _agree(self, a_role, a_epoch, b_role, b_epoch, slack):
         if a_role != b_role:
             return False
-        if a_pos is None or b_pos is None:
-            return a_pos is None and b_pos is None
-        return abs(a_pos - b_pos) <= slack
+        if a_epoch is None or b_epoch is None:
+            return a_epoch is None and b_epoch is None
+        return abs(a_epoch - b_epoch) * self.fps <= slack
 
     def frame(self, h, m, s, f, at):
         """One decoded frame, captured at `at` on the reader's clock."""
         role, rel = route(h, m, s, f, self.zones)
         pos = self._pos(rel)
+        epoch = None if pos is None else at - pos / self.fps
         with self._lock:
             self.frames_in += 1
             last = self._last
-            cold = last is None or at - last[2] > self.hold_s
-            if not cold:
-                er, ep = self._ahead(last, at)
-                if self._agree(role, pos, er, ep, self.JUMP_FRAMES):
-                    self._pending = None
-                    self._last = (role, pos, at)
-                    return role
-                p = self._pending
-                if p is not None:
-                    pr, pp = self._ahead(p, at)
-                    if self._agree(role, pos, pr, pp, self.CONFIRM_FRAMES):
-                        self._take(role, pos, at, last)
-                        return role
-                    self.rejects += 1
-                self._pending = (role, pos, at)
-                return last[0]
-            self._take(role, pos, at, last)
-            return role
+            if last is not None and self._agree(role, epoch, last[0], last[1],
+                                                self.JUMP_FRAMES):
+                self._pending = None
+                if epoch is not None:
+                    epoch = last[1] + (epoch - last[1]) * self.SLEW
+                self._last = (role, epoch, at)
+                self.show_over = False
+                return role
+            p = self._pending
+            if p is not None and self._agree(role, epoch, p[0], p[1],
+                                             self.CONFIRM_FRAMES):
+                if last is None or last[0] != role:
+                    self.zone_changes += 1
+                self._pending = None
+                self._last = (role, epoch, at)
+                self.show_over = False
+                return role
+            if p is not None:
+                self.rejects += 1
+            self._pending = (role, epoch, at)
+            return last[0] if last is not None else None
 
-    def _take(self, role, pos, at, last):
-        if last is None or last[0] != role:
-            self.zone_changes += 1
-        self._pending = None
-        self._last = (role, pos, at)
-        self.show_over = False
-
-    def at(self, now):
-        """(role, (h, m, s, f)) to send now, or None to send nothing."""
+    def position(self, now):
+        """(role, frames into the zone as a float) to send now, or None."""
         with self._lock:
             last = self._last
         if last is None:
             self.freerunning = False
             return None
-        role, pos, t = last
-        if role not in self.forward or pos is None:
+        role, epoch, t = last
+        if role not in self.forward or epoch is None:
             self.freerunning = False
             return None
         age = now - t
-        cur = pos + frame_at(age, self.fps)
+        cur = (now - epoch) * self.fps
         if role == "show":
             self.freerunning = age > self.hold_s
-            if self.show_len_frames is not None and \
-                    cur >= self.show_len_frames:
+            if self.freerunning and self.show_len_frames is not None and \
+                    cur >= self.show_len_frames - 1e-9:
                 self.show_over = True
                 self.freerunning = False
                 return None
         elif age > self.hold_s:
             return None
-        h, m, s, f = frames_to_tc(cur, self.count, self.drop)
-        return role, (h % 24, m, s, f)
+        return role, cur
+
+    def tc(self, frames):
+        h, m, s, f = frames_to_tc(frames, self.count, self.drop)
+        return (h % 24, m, s, f)
+
+    def at(self, now):
+        """(role, (h, m, s, f)) to send now, or None to send nothing."""
+        got = self.position(now)
+        if got is None:
+            return None
+        role, cur = got
+        return role, self.tc(int(math.floor(cur + 1e-9)))
 
     @property
     def zone(self):
@@ -674,8 +740,9 @@ class ClockConfig:
 
     @classmethod
     def parse(cls, doc, where="timeline"):
-        if doc is None:
-            return None
+        # A "clock": null is refused like any other malformed block. It was
+        # refused before this block existed, as an unknown key, and a show
+        # file that says "clock" and means nothing is a mistake to name.
         what = "'clock'"
         _obj(doc, where, what)
         _no_typos(doc, cls.KEYS, where, what)
@@ -721,6 +788,9 @@ class Clock:
     """What every clock source looks like to the session.
 
     sink       Player.feed_timecode, the one position stream.
+    on_stop    masters only: called when the clock stops a cue (end, halt,
+               Stop). The session hands the pixels back to the idle look,
+               never through on_lost.
     master     True when this machine makes the position, so no timecode
                input is opened at all.
     start()    called when the operator presses Run. Sends nothing by
@@ -732,6 +802,8 @@ class Clock:
 
     source = ""
     master = False
+    ticker = None
+    out = None
 
     def start(self):
         pass
@@ -753,24 +825,41 @@ class Clock:
         return {"source": self.source, "master": self.master}
 
 
-def _out_snapshot(out):
+def _out_snapshot(out, ticker):
+    d = {"tick_errors": ticker.errors if ticker else 0,
+         "tick_error": ticker.last_error if ticker else ""}
     if out is None:
-        return {"artnet": None}
-    return {"artnet": [f"{k} {v}" for k, v in out.dests],
-            "packets": out.packets_sent, "send_errors": out.send_errors,
-            "since_ok": out.seconds_since_ok, "last_error": out.last_error}
+        d["artnet"] = None
+        return d
+    d.update({"artnet": [f"{k} {v}" for k, v in out.dests],
+              "packets": out.packets_sent, "send_errors": out.send_errors,
+              "since_ok": out.seconds_since_ok,
+              "since_error": getattr(out, "seconds_since_error", None),
+              "failing": list(getattr(out, "failing_labels", [])),
+              "last_error": out.last_error})
+    return d
 
 
 class ArtNetMaster(Clock):
-    """This machine is the clock. Art-Net timecode out, pixels follow it."""
+    """This machine is the clock. Art-Net timecode out, pixels follow it.
+
+    The clock owns the pixel position outright. When a cue ends or is
+    halted, on_stop hands the pixels straight back to the idle look; the
+    chase engine never sees that as lost timecode, so on_lost (a policy for
+    a feed that dies) never runs the rest of the show file on its own.
+
+    play() and halt() are locked: the scheduler and the web server's threads
+    will both call them."""
 
     source = "artnet_master"
     master = True
 
     def __init__(self, cfg, sink=None, out=None, clock=time.perf_counter,
-                 sleep=time.sleep, mono=time.monotonic, log=None):
+                 sleep=time.sleep, mono=time.monotonic, log=None,
+                 on_stop=None):
         self.cfg = cfg
         self.sink = sink
+        self.on_stop = on_stop
         self.out = out
         self._clock = clock
         self._mono = mono
@@ -778,43 +867,68 @@ class ArtNetMaster(Clock):
         self.stream_id = cfg.artnet.stream_id if cfg.artnet else 0
         self.ticker = Ticker(MASTER_FPS, self._tick, clock=clock,
                              sleep=sleep, log=log)
+        self._lock = threading.RLock()
         self._live = False
         self._cue = None             # (position_s, length_frames, label)
+        self._mono_t0 = None
         self.cues_played = 0
         self.last_sent = None
         self.last_ended = ""
 
     def start(self):
-        self._live = True
+        with self._lock:
+            self._live = True
 
     def stop(self):
-        self._live = False
-        self.halt()
-        if self.out is not None:
-            self.out.close()
+        with self._lock:
+            self._live = False
+            self.halt()
+            if self.out is not None:
+                self.out.close()
 
-    def play(self, position_s=0.0, length_s=None, label=""):
+    def play(self, position_s, length_s, label=""):
         """Run a cue: timecode from 00:00:00:00, pixels from `position_s`.
 
         `position_s` is where the cue sits in the show file, so one show
-        file serves this master and the fallback 3 slave alike."""
-        if not self._live:
-            raise ClockConfigError("Nothing is running. Press Run first.")
-        self.ticker.stop()
-        frames = (None if length_s is None
-                  else int(math.ceil(float(length_s) * MASTER_FPS - 1e-9)))
-        self._cue = (float(position_s), frames, label)
-        self.cues_played += 1
-        self._event(f"timecode from 00:00:00:00 for {label or 'a cue'}")
-        return self.ticker.start()
+        file serves this master and the fallback 3 slave alike. A cue with
+        no length is refused: its timecode would never stop."""
+        if length_s is None or not float(length_s) > 0:
+            raise ClockConfigError(
+                f"{label or 'This cue'} has no length, so its timecode "
+                f"would run forever. It only has one when its sequence "
+                f"opened.")
+        with self._lock:
+            if not self._live:
+                raise ClockConfigError("Nothing is running. Press Run first.")
+            self.ticker.stop()
+            frames = int(math.ceil(float(length_s) * MASTER_FPS - 1e-9))
+            self._cue = (float(position_s), frames, label)
+            self.cues_played += 1
+            self._event(f"timecode from 00:00:00:00 for {label or 'a cue'}")
+            # Frame n began at t0 + n/30 on the pacing clock. The chase
+            # engine keeps time on time.monotonic, so read that clock once,
+            # here, and count from it. Reading it every frame would hand the
+            # pixels its 15.6 ms steps under Python 3.12 on Windows.
+            t0 = self._clock()
+            self._mono_t0 = self._mono() - (self._clock() - t0)
+            return self.ticker.start(t0)
 
     def halt(self):
-        was = self._cue
-        self.ticker.stop()
-        self._cue = None
-        if was is not None:
-            self.last_ended = f"{was[2] or 'cue'} stopped"
-            self._event(f"timecode stopped for {was[2] or 'a cue'}")
+        with self._lock:
+            was = self._cue
+            self.ticker.stop()
+            self._cue = None
+            if was is not None:
+                self.last_ended = f"{was[2] or 'cue'} stopped"
+                self._event(f"timecode stopped for {was[2] or 'a cue'}")
+                self._stopped()
+
+    def _stopped(self):
+        if self.on_stop is not None:
+            try:
+                self.on_stop()
+            except Exception as e:
+                self._event(f"handing the pixels back failed: {e}")
 
     def _event(self, msg):
         if self.log:
@@ -828,12 +942,15 @@ class ArtNetMaster(Clock):
         if cue is None:
             return False
         position_s, frames, label = cue
-        if frames is not None and n >= frames:
+        if n >= frames:
             # The cue has run its length. Nothing is playing, so nothing is
-            # sent: receivers hold and then time out on their own.
-            self._cue = None
-            self.last_ended = f"{label or 'cue'} finished"
-            self._event(f"timecode ended with {label or 'the cue'}")
+            # sent: receivers hold and then time out on their own, and the
+            # pixels go back to the idle look now.
+            if self._cue is cue:
+                self._cue = None
+                self.last_ended = f"{label or 'cue'} finished"
+                self._event(f"timecode ended with {label or 'the cue'}")
+                self._stopped()
             return False
         h, m, s, f = frames_to_tc(n, MASTER_FPS)
         if self.out is not None:
@@ -841,12 +958,8 @@ class ArtNetMaster(Clock):
                                       self.stream_id))
         self.last_sent = (h, m, s, f)
         if self.sink is not None:
-            due = self.ticker.t0 + n / MASTER_FPS
-            # The frame began at `due` on the pacing clock. The chase engine
-            # keeps time on time.monotonic, so hand it the same instant in
-            # its own terms.
             self.sink(position_s + n / MASTER_FPS,
-                      self._mono() - (now - due), False,
+                      self._mono_t0 + n / MASTER_FPS, False,
                       f"{h:02d}:{m:02d}:{s:02d}:{f:02d}")
         return True
 
@@ -857,12 +970,13 @@ class ArtNetMaster(Clock):
     def snapshot(self):
         d = super().snapshot()
         lt = self.last_sent
-        d.update({"playing": self._cue[2] if self._cue else None,
+        cue = self._cue
+        d.update({"playing": cue[2] if cue else None,
                   "sending": (f"{lt[0]:02d}:{lt[1]:02d}:{lt[2]:02d}:"
-                              f"{lt[3]:02d}" if lt and self._cue else None),
+                              f"{lt[3]:02d}" if lt and cue else None),
                   "skipped": self.ticker.skipped,
                   "last_ended": self.last_ended})
-        d.update(_out_snapshot(self.out))
+        d.update(_out_snapshot(self.out, self.ticker))
         return d
 
 
@@ -872,10 +986,18 @@ class LtcAudioSlave(Clock):
     The chase engine keeps reading the decoded frames exactly as it always
     has; this only hears them too. It reads the hour as a zone and, when
     the show file names Art-Net receivers, forwards the zones it is asked to
-    as Art-Net timecode, rebased to hour zero, at the timeline's own rate."""
+    as Art-Net timecode, rebased to hour zero, at the timeline's own rate.
+
+    Forwarded frames step by exactly one per tick. Each tick carries on
+    from the last frame sent, and only resyncs to the reader when the frame
+    it would send strays more than FLYWHEEL_FRAMES from the middle of the
+    frame the reader says is current: a real jump, a zone change or a
+    genuine drift, never stamp jitter. The sent frame is then never more
+    than half a frame ahead of the reader, nor one and a half behind."""
 
     source = "ltc_audio_slave"
     master = False
+    FLYWHEEL_FRAMES = 1.0
 
     def __init__(self, cfg, count=30, drop=False, fps=30.0, show_len_s=None,
                  out=None, clock=time.perf_counter, sleep=time.sleep,
@@ -889,12 +1011,14 @@ class LtcAudioSlave(Clock):
         self.reader = ZoneReader(z.table, count=count, drop=drop, fps=fps,
                                  forward=z.forward, show_len_s=show_len_s,
                                  hold_s=z.hold_ms / 1000.0)
+        self.fps = float(fps)
         self.tc_type = type_for(count, drop)
         self.stream_id = cfg.artnet.stream_id if cfg.artnet else 0
         self.ticker = (Ticker(fps, self._tick, clock=clock, sleep=sleep,
                               log=log)
                        if cfg.artnet is not None else None)
         self.last_sent = None
+        self._fly = None             # (role, frame sent, tick number)
         self._last_zone = None
 
     def start(self):
@@ -922,11 +1046,28 @@ class LtcAudioSlave(Clock):
             self._last_zone = zone
 
     def _tick(self, n, now):
-        got = self.reader.at(now)
+        t0 = self.ticker.t0 if self.ticker is not None else None
+        due = now if t0 is None else t0 + n / self.fps
+        got = self.reader.position(due)
         if got is None:
+            self._fly = None
             self.last_sent = None
             return True
-        _role, (h, m, s, f) = got
+        role, cur = got
+        frame = None
+        fly = self._fly
+        if fly is not None and fly[0] == role:
+            cand = fly[1] + (n - fly[2])
+            if abs(cand - (cur - 0.5)) <= self.FLYWHEEL_FRAMES:
+                frame = cand
+        if frame is None:
+            frame = int(math.floor(cur + 1e-9))
+        if frame < 0:
+            self._fly = None
+            self.last_sent = None
+            return True
+        self._fly = (role, frame, n)
+        h, m, s, f = self.reader.tc(frame)
         if self.out is not None:
             self.out.send(arttimecode(h, m, s, f, self.tc_type,
                                       self.stream_id))
@@ -941,7 +1082,7 @@ class LtcAudioSlave(Clock):
                   "show_over": r.show_over, "zone_rejects": r.rejects,
                   "sending": (f"{lt[0]:02d}:{lt[1]:02d}:{lt[2]:02d}:"
                               f"{lt[3]:02d}" if lt else None)})
-        d.update(_out_snapshot(self.out))
+        d.update(_out_snapshot(self.out, self.ticker))
         return d
 
 
@@ -966,13 +1107,15 @@ class LtcAudioMaster(Clock):
         raise ClockConfigError(self.REFUSAL.format(where="clock"))
 
 
-def build(cfg, timeline, sink, log=None, no_output=False, out=None):
+def build(cfg, timeline, sink, log=None, no_output=False, out=None,
+          bind_ip=None, on_stop=None):
     """The clock a show file asks for, wired to the position stream."""
     if out is None and not no_output and cfg.artnet is not None:
         out = TimecodeOut(cfg.artnet.dests,
-                          broadcast=bool(cfg.artnet.broadcast), log=log)
+                          broadcast=bool(cfg.artnet.broadcast), log=log,
+                          bind_ip=bind_ip)
     if cfg.source == "artnet_master":
-        return ArtNetMaster(cfg, sink=sink, out=out, log=log)
+        return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop)
     if cfg.source == "ltc_audio_slave":
         show_len = cfg.zones.show_len_s
         if show_len is None and "show" in cfg.zones.forward \

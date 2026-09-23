@@ -489,7 +489,12 @@ function draw(s){
     il.hidden = true;
   } else {
     il.hidden = false;
-    il.innerHTML = s.input_attached
+    il.innerHTML = s.input_used === false
+      ? `<b>Not used</b>: this machine is the show clock, so no timecode input is open.`
+        + (s.clock && s.clock.playing
+           ? ` Sending ${esc(s.clock.sending || "")} for ${esc(s.clock.playing)}.`
+           : ` No cue is playing, so no timecode is being sent.`)
+      : s.input_attached
       ? `<b style="color:var(--ok)">Open</b> — ${esc(s.input || "")}`
       : `<b class="bad">Not open</b> — ${esc(s.input || "")}<br>`
         + `Retried every second. Save below to switch this show to another `
@@ -519,6 +524,7 @@ function draw(s){
          : feed === "PARKED" ? "the feed is parked; the show is not following it"
          : s.ltc_age === null ? "no timecode has arrived"
          : `nothing in for ${s.ltc_age.toFixed(1)}s`)
+    : s.input_used === false ? (s.state === "STANDBY" ? "no cue playing" : "this machine is the clock")
     : s.state === "LOCKED" ? ""
     : s.state === "PARKED" ? "the source is sending this frame over and over"
     : s.ltc_age === null ? "waiting for timecode"

@@ -211,7 +211,7 @@ MUTATIONS = [
   """            if False:"""),
 
  ("a show with no input reports it as fine", "ltcplay/session.py",
-  '            "input_attached": (True if self.wav\n                               else bool(a and a.attached)),',
+  '            "input_attached": (True if self.wav\n                               else None if not input_used\n                               else bool(a and a.attached)),',
   '            "input_attached": True,'),
 
  ("the input cannot be changed while the show runs", "ltcplay/web.py",
@@ -1050,8 +1050,13 @@ MUTATIONS = [
 
  # -- the show clock, Fire & Ice 2026 --------------------------------------
  ("the LTC slave never hears the decoded timecode", "ltcplay/session.py",
-  "                clk = self.clock\n                if clk is not None:\n                    clk.ltc_frame(fr.h, fr.m, fr.s, fr.f, captured_at - back)\n",
-  ""),
+  "                    try:\n                        clk.ltc_frame(fr.h, fr.m, fr.s, fr.f,\n                                      captured_at - back)\n",
+  "                    try:\n                        pass\n"),
+
+ ("a clock fault starves the chase engine of the rest of the block",
+  "ltcplay/session.py",
+  "                    try:\n                        clk.ltc_frame(fr.h, fr.m, fr.s, fr.f,\n                                      captured_at - back)\n                    except Exception as e:\n                        self.clock_errors += 1\n",
+  "                    if True:\n                        clk.ltc_frame(fr.h, fr.m, fr.s, fr.f,\n                                      captured_at - back)\n                    if False:\n                        self.clock_errors += 1\n"),
 
  ("the GPL path imports the clock at startup", "ltcplay/session.py",
   "from .showlog import ShowLog\n",
@@ -1065,19 +1070,96 @@ MUTATIONS = [
   "        if clk is not None:\n            try:\n                clk.stop()\n            except Exception:\n                pass",
   "        pass"),
 
- ("a free run left over from the last cue swallows the next",
+ ("Stop blacks out the rig before stopping the timecode",
+  "ltcplay/session.py",
+  """        clk = getattr(self, "clock", None)
+        if clk is not None:
+            try:
+                clk.stop()
+            except Exception:
+                pass
+        if self.sender is not None and not self.no_output:
+            try:
+                before = getattr(self.sender, "packets_sent", 0)
+                for _ in range(3):          # UDP: say it more than once
+                    self.sender.blackout()
+                self.blackout_sent = (
+                    getattr(self.sender, "packets_sent", 0) > before)
+            except Exception:
+                self.blackout_sent = False
+""",
+  """        if self.sender is not None and not self.no_output:
+            try:
+                before = getattr(self.sender, "packets_sent", 0)
+                for _ in range(3):          # UDP: say it more than once
+                    self.sender.blackout()
+                self.blackout_sent = (
+                    getattr(self.sender, "packets_sent", 0) > before)
+            except Exception:
+                self.blackout_sent = False
+        clk = getattr(self, "clock", None)
+        if clk is not None:
+            try:
+                clk.stop()
+            except Exception:
+                pass
+"""),
+
+ ("a free run left over from the operator swallows the next cue",
   "ltcplay/session.py",
   "        if self.player.freerun_epoch is not None:\n            self.player.release()\n        self.clock.play(",
   "        self.clock.play("),
 
+ ("a stopped master cue leaves the pixels chasing on their own",
+  "ltcplay/session.py",
+  "                    bind_ip=self.bind, on_stop=self.player.drop_clock)",
+  "                    bind_ip=self.bind, on_stop=None)"),
+
+ ("a master clock lets on_lost run the show file on its own",
+  "ltcplay/session.py",
+  '                    self.player.on_lost = "hold"',
+  '                    pass'),
+
+ ("dropping the clock leaves the old epoch in place", "ltcplay/player.py",
+  "        with self._lock:\n            self._epoch = None\n            self._pending_jump = None",
+  "        with self._lock:\n            self._pending_jump = None"),
+
+ ("a master clock draws its unused input red", "ltcplay/session.py",
+  "        input_used = not (self.clock is not None and self.clock.master)",
+  "        input_used = True"),
+
+ ("--bind does not reach the timecode socket", "ltcplay/session.py",
+  "                    bind_ip=self.bind, on_stop=",
+  "                    bind_ip=None, on_stop="),
+
  ("a late tick sends the frame that was due, not the current one",
   "ltcplay/clock.py",
-  "            n = frame_at(now - t0, fps)",
+  "            n = max(frame_at(now - t0, fps), n_next)",
   "            n = n_next"),
+
+ ("a frame is sent twice when the clock reading is large", "ltcplay/clock.py",
+  "            n = max(frame_at(now - t0, fps), n_next)",
+  "            n = frame_at(now - t0, fps)"),
 
  ("a late tick sends the same frame twice", "ltcplay/clock.py",
   "            n_next = n + 1",
   "            n_next = n_next + 1"),
+
+ ("one exception in a tick ends the clock", "ltcplay/clock.py",
+  "                more = True\n                self.errors += 1",
+  "                more = False\n                self.errors += 1"),
+
+ ("a failing tick logs every frame", "ltcplay/clock.py",
+  "                                       throttle_s=5.0)",
+  "                                       throttle_s=0.0)"),
+
+ ("halt returns before the clock thread has stopped", "ltcplay/clock.py",
+  "            t.join(timeout=1.0)",
+  "            pass"),
+
+ ("the pacer runs on the 15.6 ms Windows clock", "ltcplay/clock.py",
+  "    def __init__(self, fps, tick, clock=time.perf_counter, sleep=time.sleep,",
+  "    def __init__(self, fps, tick, clock=time.monotonic, sleep=time.sleep,"),
 
  ("the timecode opcode goes out high byte first", "ltcplay/clock.py",
   "    b[8] = OP_TIMECODE & 0xFF          # low byte first\n    b[9] = (OP_TIMECODE >> 8) & 0xFF",
@@ -1088,16 +1170,29 @@ MUTATIONS = [
   "MASTER_TYPE = TYPE_DF"),
 
  ("broadcast is switched on for every timecode socket", "ltcplay/clock.py",
-  "        if self.broadcast:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)",
-  "        if True:\n            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)"),
+  "            if self.broadcast:\n                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)",
+  "            if True:\n                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)"),
+
+ ("one dead receiver is logged every frame", "ltcplay/clock.py",
+  "        if f[2] is None or now - f[2] >= self.DEST_LOG_EVERY_S:",
+  "        if True:"),
 
  ("a second cue carries on from where the first left off", "ltcplay/clock.py",
-  "        return self.ticker.start()\n",
-  "        return self.ticker.start(self.ticker.t0)\n"),
+  "            t0 = self._clock()\n            self._mono_t0",
+  "            t0 = self.ticker.t0 or self._clock()\n            self._mono_t0"),
 
- ("the pixels are told a frame began when it was sent", "ltcplay/clock.py",
-  "                      self._mono() - (now - due), False,",
-  "                      self._mono(), False,"),
+ ("the pixels are stamped from the coarse clock every frame",
+  "ltcplay/clock.py",
+  "                      self._mono_t0 + n / MASTER_FPS, False,",
+  "                      self._mono() - (now - (self.ticker.t0 + n / MASTER_FPS)), False,"),
+
+ ("a cue with no length runs its timecode forever", "ltcplay/clock.py",
+  "        if length_s is None or not float(length_s) > 0:",
+  "        if length_s is None:\n            length_s = 1e6\n        if False:"),
+
+ ("play and halt race each other", "ltcplay/clock.py",
+  "        with self._lock:\n            if not self._live:\n                raise ClockConfigError(\"Nothing is running. Press Run first.\")",
+  "        if True:\n            if not self._live:\n                raise ClockConfigError(\"Nothing is running. Press Run first.\")"),
 
  ("an unknown hour is taken as the show", "ltcplay/clock.py",
   "    role = zones.get(h)\n",
@@ -1108,16 +1203,37 @@ MUTATIONS = [
   "    return role, (h, m, s, f)"),
 
  ("one corrupt LTC frame moves the zone", "ltcplay/clock.py",
-  "                self._pending = (role, pos, at)\n                return last[0]",
-  "                self._take(role, pos, at, last)\n                return role"),
+  "            if p is not None and self._agree(role, epoch, p[0], p[1],\n                                             self.CONFIRM_FRAMES):",
+  "            if True:"),
+
+ ("the first frame after a gap is believed on its own", "ltcplay/clock.py",
+  "            last = self._last\n            if last is not None and self._agree(",
+  "            last = self._last\n            if last is None or at - last[2] > self.hold_s:\n                self._pending = None\n                self._last = (role, epoch, at)\n                return role\n            if last is not None and self._agree("),
+
+ ("stamp jitter is taken raw instead of slewed", "ltcplay/clock.py",
+  "    SLEW = 0.1\n",
+  "    SLEW = 1.0\n"),
+
+ ("forwarded frames follow every wobble of the reader", "ltcplay/clock.py",
+  "            if abs(cand - (cur - 0.5)) <= self.FLYWHEEL_FRAMES:",
+  "            if False:"),
+
+ ("the slave mixes up the audio clock and the pacing clock",
+  "ltcplay/clock.py",
+  "        at = self._clock() - (self._mono() - captured_at)",
+  "        at = captured_at"),
 
  ("timecode lost mid-show stops instead of free running", "ltcplay/clock.py",
   "        if role == \"show\":\n            self.freerunning = age > self.hold_s",
   "        if False:\n            self.freerunning = age > self.hold_s"),
 
  ("the free run goes past the end of the show", "ltcplay/clock.py",
-  "            if self.show_len_frames is not None and \\\n                    cur >= self.show_len_frames:",
+  "            if self.freerunning and self.show_len_frames is not None and \\\n                    cur >= self.show_len_frames - 1e-9:",
   "            if False:"),
+
+ ("live timecode is cut at the end of the last pixel cue", "ltcplay/clock.py",
+  "            if self.freerunning and self.show_len_frames is not None and \\",
+  "            if self.show_len_frames is not None and \\"),
 
  ("fallback 1 loads although it is not built", "ltcplay/clock.py",
   "        if src == \"ltc_audio_master\":\n            raise ClockConfigError(LtcAudioMaster.REFUSAL.format(where=where))",
@@ -1130,6 +1246,20 @@ MUTATIONS = [
  ("broadcast and named nodes both get every frame", "ltcplay/clock.py",
   "            if clean:\n                raise ClockConfigError(",
   "            if False:\n                raise ClockConfigError("),
+
+ ("a master clock between cues is drawn as a lost feed",
+  "ltcplay/session.py",
+  '            "state": ("STANDBY" if not input_used and p.state == "LOST"',
+  '            "state": ("STANDBY" if False and p.state == "LOST"'),
+
+ ("a master clock is told to check a cable it does not have",
+  "ltcplay/display.py",
+  "    if clk is not None and clk.master:\n        return out\n",
+  ""),
+
+ ("\"clock\": null loads silently", "ltcplay/timeline.py",
+  "        if \"clock\" in doc:",
+  "        if doc.get(\"clock\") is not None:"),
 
 ]
 

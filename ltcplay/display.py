@@ -127,6 +127,51 @@ def history_for(p):
     return out
 
 
+CLOCK_QUIET_S = 2.0
+
+
+def clock_warnings(clk):
+    """What is wrong with the show clock's Art-Net timecode, as sentences.
+
+    Empty when there is no clock block, which is every GPL run."""
+    if clk is None:
+        return []
+    out = []
+    tc = getattr(clk, "out", None)
+    ticker = getattr(clk, "ticker", None)
+    if tc is not None and _recent(tc):
+        failing = getattr(tc, "failing_labels", [])
+        if failing:
+            out.append(
+                f"Art-Net timecode is not reaching {', '.join(failing)}. "
+                f"A receiver with no timecode holds its last frame and then "
+                f"goes dark on its own. Last error: {tc.last_error}")
+        else:
+            out.append(f"Art-Net timecode had {tc.send_errors} failed "
+                       f"send(s) recently. Last error: {tc.last_error}")
+    sending = (getattr(clk, "playing", False) if clk.master
+               else getattr(clk, "last_sent", None) is not None)
+    age = getattr(tc, "seconds_since_ok", None) if tc is not None else None
+    quiet = (age > CLOCK_QUIET_S if age is not None
+             else bool(getattr(tc, "send_errors", 0)))
+    if tc is not None and sending and quiet:
+        out.append(
+            "No Art-Net timecode has left this machine "
+            + ("since the cue started" if age is None
+               else f"for {age:.0f}s")
+            + " although a cue is playing. MadMapper and BEYOND are not "
+              "being told the time.")
+    reader = getattr(clk, "reader", None)
+    if reader is not None and reader.freerunning:
+        out.append("Timecode from MadMapper was lost during the show. BEYOND "
+                   "is being sent this machine's own count, to the end of "
+                   "the show.")
+    if ticker is not None and ticker.errors:
+        out.append(f"The show clock hit {ticker.errors} error(s) and kept "
+                   f"going. Last: {ticker.last_error}")
+    return out
+
+
 def warnings_for(p, dec, tl, standing=()):
     """Everything wrong RIGHT NOW, as sentences. Order is worst first.
 
@@ -201,6 +246,8 @@ def warnings_for(p, dec, tl, standing=()):
         if getattr(trig, "fired", 0) == 0 and p.current_cue is not None:
             out.append("A cue is running and no scene trigger has gone out "
                        "yet. The Advateks are dark until one does.")
+
+    out.extend(clock_warnings(getattr(p, "clock", None)))
 
     s = p.sender
     bcast = getattr(s, "broadcast_dests", None)
@@ -314,6 +361,12 @@ def warnings_for(p, dec, tl, standing=()):
                    "clock keeps counting past the end of this set and into "
                    "the next one. Press Back to timecode on the web page to "
                    "hand the show back to the feed.")
+    # With this machine as the show clock there is no feed: between cues
+    # the chase engine reads LOST by design, and every sentence below would
+    # send the operator looking for a cable that does not exist.
+    clk = getattr(p, "clock", None)
+    if clk is not None and clk.master:
+        return out
     if p.state == LOST and p.source == HOLD:
         out.append("Timecode has stopped and the rig is holding its last frame "
                    "because --on-lost is 'hold'. If this is a show and the feed "

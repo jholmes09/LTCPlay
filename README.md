@@ -109,19 +109,24 @@ audio input, chased. GPL has none and never loads any of this. A `clock` block
 says who owns the clock:
 
     "clock": {
-      "source": "artnet_master",        // artnet_master or ltc_audio_slave
-      "show_audio": "madmapper",        // madmapper; ltcplay is not built yet
-      "artnet": {                       // where Art-Net timecode goes
-        "nodes": {"MadMapper": "127.0.0.1", "BEYOND": "10.0.0.40"}
-        // or instead of nodes: "broadcast": "10.0.0.255"
-      },
+      "source": "artnet_master",
+      "show_audio": "madmapper",
+      "artnet": {"nodes": {"MadMapper": "127.0.0.1", "BEYOND": "10.0.0.40"}},
       "zones": {"show": 1, "intermission": 2, "forward": ["show"]}
     }
+
+`source` is `artnet_master` or `ltc_audio_slave`. `show_audio` is `madmapper`.
+`artnet` names each receiver under `nodes`, or gives one `"broadcast":
+"10.0.0.255"` instead of `nodes`, never both. Timecode goes out from an
+ephemeral source port on the `--bind` interface; on the bench, confirm BEYOND
+accepts that.
 
 `artnet_master`: this machine is the clock. No input is opened. Each cue sends
 Art-Net timecode (ArtTimeCode, 30 fps non drop) from 00:00:00:00, one packet a
 frame, while the pixels play the same cue from its place in the show file.
-Nothing is sent until a cue is started.
+Nothing is sent until a cue is started. When a cue ends or is stopped, the
+timecode stops and the pixels go straight to the preshow look (or black):
+`on_lost` does not apply while this machine is the clock.
 
 `ltc_audio_slave`: fallback 3, MadMapper is the clock. LTC comes in and is
 chased exactly as today. The hour picks the zone (`show` and `intermission`

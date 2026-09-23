@@ -237,8 +237,8 @@ class Timeline:
         from .trigger import TriggerConfig
         tl.trigger = TriggerConfig.parse(doc.get("trigger"), path)
         # Imported only when asked for, so a show file without a clock block
-        # never loads a line of it.
-        if doc.get("clock") is not None:
+        # never loads a line of it. "clock": null is refused, not ignored.
+        if "clock" in doc:
             from .clock import ClockConfig
             tl.clock = ClockConfig.parse(doc["clock"], path)
         return tl
