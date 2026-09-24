@@ -8268,12 +8268,15 @@ def test_artnet_timecode_never_drifts_from_its_clock():
     check(wait_for(lambda: not m2.playing, timeout=3.0),
           "a half second cue never ended")
     ended = time.perf_counter() - started
-    # Frames 0 to 14, and never 15. The last one may be skipped on a busy
-    # machine (a late wake skips, it never sends late), so the tail is
-    # checked as a ceiling; the exact end is proven on the simulated clock.
+    # Frames 0 to 14, and never 15. On a machine that stalls, the frames
+    # due during the stall are skipped (a late wake skips, it never sends
+    # late), and a stall across the end skips the last ones, so the tail is
+    # only a ceiling here. A stall can only make the end later, never
+    # earlier, so "not early" is the wall-clock half of the end; the exact
+    # end is proven on the simulated clock above.
     short = [_tc_of(p)[:4] for _, p in out2.sent[mark:]]
-    check(short and max(short) <= (0, 0, 0, 14) and max(short) >= (0, 0, 0, 10),
-          f"a half second cue should end by frame 14: {short[-3:]}")
+    check(short and max(short) <= (0, 0, 0, 14),
+          f"a half second cue went past frame 14: {short[-3:]}")
     check(ended >= 0.45, f"a half second cue ended after {ended:.2f}s")
     n_end = len(out2.sent)
     time.sleep(0.2)
@@ -8932,20 +8935,82 @@ def test_a_slave_clock_forwards_the_show_zone():
               f"clock faults were not counted: {sess.clock_errors}")
         del sess.clock.ltc_frame
         sess.dec = sess.dec.__class__(sess.rate)
+        # Those frames were stamped on the wall clock; the chase below runs
+        # on a stepped one. Start it cold, as a fresh feed would.
+        sess.player._epoch = None
+        sess.player.last_ltc_at = None
+
+        # The chase, driven by sample count on a clock that moves only when
+        # told to. LTC arrives the way the audio callback delivers it, 512
+        # samples at a time, through the session's own _handle, so the
+        # decoder, the chase engine and the clock tap are the real ones. The
+        # chase engine ticks every 25 ms and the Art-Net output every frame,
+        # all at exact times. Run on the wall clock this measured the runner:
+        # a CI Mac stalled for more than the 250 ms freewheel window just
+        # before the check and read a healthy feed as freewheeling, twice.
+        clk = sess.clock
+        st = _Stepped(sess.player, 25)
         out = _TcOut()
-        sess.clock.out = out
-        sess.start()
-        check(len(sd.opened) == 1, "the slave did not open the LTC input")
-        check(wait_for(lambda: len(out.sent) >= 10, timeout=5.0),
-              "decoded timecode never reached the Art-Net output")
-        check(sess.player.state == LOCKED and sess.player.current_cue
-              is not None, "the pixels are not chasing the LTC as they do "
-                           "today")
+        clk.out = out
+        clk._clock = clk._mono = lambda: st.t
+        try:
+            t_start = st.t
+            clk.ticker.t0 = t_start
+            audio = synthesize(1, 0, 0, 0, 30.0, sess.rate, frames=90)
+            block = 512
+            events = []
+            for k, at in enumerate(range(block, len(audio) + 1, block)):
+                events.append((t_start + at / sess.rate, 0, at))
+            for j in range(1, int(3.0 / 0.025)):
+                events.append((t_start + j * 0.025, 1, j))
+            for n in range(1, 90):
+                events.append((t_start + n / 30.0, 2, n))
+            chased = []
+            for at, kind, x in sorted(events):
+                st.t = at
+                if kind == 0:
+                    sess._handle(audio[x - block:x], at)
+                elif kind == 1:
+                    st.tick()
+                    chased.append((at, sess.player.state,
+                                   sess.player.current_cue,
+                                   sess.player.tc_seconds))
+                else:
+                    clk._tick(x, at)
+        finally:
+            st.close()
+            clk._clock, clk._mono = time.perf_counter, time.monotonic
+            clk._fly = None
+        # From half a second in, the chase engine is locked on the show and
+        # exactly where the LTC says: frame 01:00:00:00 began at t_start.
+        late = [(at, state, cue, tc) for at, state, cue, tc in chased
+                if at - t_start >= 0.5]
+        off = [(round(at - t_start, 3), state) for at, state, cue, tc in late
+               if state != LOCKED or cue is None or cue.name != "Show"
+               or abs(tc - (3600.0 + at - t_start)) > 0.05]
+        check(late and not off,
+              f"the pixels are not chasing the LTC as they do today: "
+              f"{off[:3]}")
         tcs = [_tc_of(p) for _, p in out.sent]
+        check(len(tcs) >= 75,
+              f"only {len(tcs)} Art-Net frames for 3 s of LTC")
         check(all(h == 0 and m == 0 and typ == 3 for h, m, _s, _f, typ in tcs),
               f"the show zone did not go out rebased to hour zero: {tcs[:3]}")
+        nums = [s_ * 30 + f for _h, _m, s_, f, _t in tcs]
+        check(nums and all(b - a == 1 for a, b in zip(nums, nums[1:])),
+              f"forwarded frames did not step by one: {nums[:8]}")
+        check(nums and abs(nums[-1] - 89) <= 2,
+              f"the last forwarded frame is {nums[-1] if nums else None}, "
+              f"not the LTC's own 89")
         check(sess.clock.reader.zone == "show",
               f"hour 01 read as {sess.clock.reader.zone}")
+
+        # And the real threads start: the input opens, as today.
+        sess.dec = sess.dec.__class__(sess.rate)
+        out = _TcOut()
+        clk.out = out
+        sess.start()
+        check(len(sd.opened) == 1, "the slave did not open the LTC input")
         try:
             sess.clock_play()
             check(False, "a slave clock was told to start a cue")
@@ -9038,7 +9103,14 @@ def test_a_stopped_cue_hands_the_rig_back():
         """Sample the rig for `seconds`: no cue, no show frames, no free
         run, and the idle look (or black) the whole time."""
         p = sess.player
-        wait_for(lambda: p.current_cue is None, timeout=0.3)
+        # Wait for events, not for time: the hand-back itself, then two
+        # whole output ticks after it. A wall-clock grace here read a CI
+        # stall longer than the grace as "the rig kept playing".
+        check(wait_for(lambda: p._epoch is None, timeout=5.0),
+              f"{what}: the pixels were never handed back")
+        mark = p.frames_sent
+        check(wait_for(lambda: p.frames_sent >= mark + 2, timeout=5.0),
+              f"{what}: the output thread never ticked after the stop")
         end = time.time() + seconds
         bad = []
         while time.time() < end:
@@ -9060,15 +9132,21 @@ def test_a_stopped_cue_hands_the_rig_back():
             sess, out = _master_session(work, f"end-{on_lost}", lengths,
                                         on_lost=on_lost)
             sessions.append(sess)
+            began = time.perf_counter()
             sess.clock_play("Show")
             check(wait_for(lambda: sess.player.current_cue is not None,
                            timeout=2.0), "the cue never reached the pixels")
             check(wait_for(lambda: not sess.clock.playing, timeout=3.0),
                   "a one second cue never ended")
+            ran = time.perf_counter() - began
             nothing_plays(sess, 1.6, BLACK, f"cue end, on_lost {on_lost}")
+            # A ceiling and "not early": a stall across the end skips the
+            # last frames, and can only make the end later. The exact end is
+            # proven on the simulated clock.
             tail = [_tc_of(p)[:4] for _, p in out.sent]
-            check(tail and (0, 0, 0, 25) <= max(tail) <= (0, 0, 0, 29),
-                  f"a one second cue should end by 00:00:00:29: {tail[-3:]}")
+            check(tail and max(tail) <= (0, 0, 0, 29),
+                  f"a one second cue went past 00:00:00:29: {tail[-3:]}")
+            check(ran >= 0.95, f"a one second cue ended after {ran:.2f}s")
             sess.stop()
 
         # 2. Halted mid-cue, under every on_lost a show file can carry, and
