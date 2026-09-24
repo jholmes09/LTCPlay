@@ -21,6 +21,7 @@ import time as _time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+from . import appdata
 from . import schedule as sch
 from . import settings as settings_mod
 
@@ -44,10 +45,11 @@ DRY_RUN_NOTE = ("This build decides but does not act. No show is started, "
 # ------------------------------------------------------------ where --
 
 def data_dir():
-    """Where the scheduler keeps its files. Today that is where the other
-    preferences live, beside the launcher. The Windows port moves program
-    data to %LOCALAPPDATA%; this is the one function to change for that."""
-    return settings_mod.folder()
+    """Where the scheduler keeps its files: the rule file by default, and
+    tonight's list. The same place as this machine's other settings: beside
+    the launcher on a Mac, %LOCALAPPDATA%\\ltcplay on Windows, where the
+    program folder may not be writable and must never be a synced one."""
+    return appdata.folder() if appdata.WINDOWS else settings_mod.folder()
 
 
 def default_rule_path():

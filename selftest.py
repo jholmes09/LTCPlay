@@ -8787,11 +8787,35 @@ def test_schedule_file_is_versioned_and_atomic():
     import tempfile
     from ltcplay import schedule_service as SV
     from ltcplay import settings as st
-    check(SV.data_dir() == st.folder(),
-          "the scheduler keeps its files where the preferences are, until "
-          "the Windows port moves them")
+    from ltcplay import appdata
+    check(SV.data_dir() == st._machine_folder(),
+          "the scheduler keeps its files where this machine's settings are")
     check(os.path.dirname(SV.default_rule_path()) == SV.data_dir(),
           "the rule file lives in data_dir()")
+    # On Windows that is %LOCALAPPDATA%\ltcplay; on a Mac, beside the
+    # launcher, as before. Both answers checked on whichever OS runs this.
+    real_win, real_env = appdata.WINDOWS, os.environ.get("LOCALAPPDATA")
+    fake = tempfile.mkdtemp()
+    try:
+        appdata.WINDOWS = True
+        os.environ["LOCALAPPDATA"] = fake
+        want = os.path.join(fake, "ltcplay")
+        check(SV.data_dir() == want and os.path.isdir(want),
+              f"on Windows the scheduler's files go under %LOCALAPPDATA%: "
+              f"{SV.data_dir()}")
+        check(SV.default_rule_path() == os.path.join(want, SV.RULE_FILE)
+              and os.path.dirname(SV.tonight_path(
+                  _den(S, 0, 0).date())) == want,
+              "on Windows the rule file and tonight's list default there")
+        appdata.WINDOWS = False
+        check(SV.data_dir() == st.folder(),
+              "on a Mac the scheduler's files stay beside the launcher")
+    finally:
+        appdata.WINDOWS = real_win
+        if real_env is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = real_env
     work = tempfile.mkdtemp()
     path = os.path.join(work, SV.RULE_FILE)
     prev = SV.previous_path(path)
@@ -8806,7 +8830,7 @@ def test_schedule_file_is_versioned_and_atomic():
     r2 = SV.save_rule(path, _sched_doc(guard_s=90))
     check(r2.version == 2 and SV.load_rule(path).guard_s == 90,
           "the second save is version 2")
-    old = json.load(open(prev))
+    old = json.load(open(prev, encoding="utf-8"))
     check(old["version"] == 1 and old["guard_s"] == 120,
           f"the previous version is kept beside it: {old}")
     snap = (open(path, "rb").read(), open(prev, "rb").read())
@@ -8853,7 +8877,7 @@ def test_schedule_file_is_versioned_and_atomic():
         _no_dashes(str(e), "locked file")
     check((open(path, "rb").read(), open(prev, "rb").read()) == snap
           and not leftovers(), "a failed save leaves both files as they were")
-    open(path, "w").write("{broken")
+    open(path, "w", encoding="utf-8").write("{broken")
     try:
         SV.load_rule(path)
         check(False, "a broken rule file loaded")
@@ -9055,7 +9079,7 @@ def test_schedule_routes():
         svc.stop()
 
     # A bad rule file does not take the server down; the page says why.
-    open(path, "w").write(json.dumps(_sched_doc(late_grace_s=60)))
+    open(path, "w", encoding="utf-8").write(json.dumps(_sched_doc(late_grace_s=60)))
     bad = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0,
                      state_dir=work)
     code, rv = bad.get("/api/schedule")
@@ -9161,7 +9185,7 @@ def test_the_gpl_path_never_loads_the_scheduler():
     for name in sorted(os.listdir(pkg)):
         if not name.endswith(".py") or name.startswith("schedule"):
             continue
-        tree = ast.parse(open(os.path.join(pkg, name)).read())
+        tree = ast.parse(open(os.path.join(pkg, name), encoding="utf-8").read())
         for sub in top_level(tree):
             names = []
             if isinstance(sub, ast.Import):
@@ -9181,7 +9205,7 @@ def test_the_gpl_path_never_loads_the_scheduler():
         files += [os.path.join(dirpath, n) for n in names]
     for f in files:
         try:
-            text = open(f, errors="replace").read()
+            text = open(f, errors="replace", encoding="utf-8").read()
         except OSError:
             continue
         check("--schedule" not in text,
@@ -9193,7 +9217,7 @@ def test_the_scheduler_engine_is_pure():
     section("scheduler: the engine does no I/O and runs on Python 3.12")
     import ast
     root = os.path.dirname(os.path.abspath(__file__))
-    src = open(os.path.join(root, "ltcplay", "schedule.py")).read()
+    src = open(os.path.join(root, "ltcplay", "schedule.py"), encoding="utf-8").read()
     tree = ast.parse(src)
     allowed = {"hashlib", "json", "re", "dataclasses", "datetime",
                "zoneinfo"}
@@ -9217,7 +9241,7 @@ def test_the_scheduler_engine_is_pure():
                   f"is handed in")
     # Written for Python 3.12 on Windows: nothing newer, nothing POSIX only.
     for name in ("schedule.py", "schedule_service.py"):
-        text = open(os.path.join(root, "ltcplay", name)).read()
+        text = open(os.path.join(root, "ltcplay", name), encoding="utf-8").read()
         try:
             ast.parse(text, feature_version=(3, 12))
         except SyntaxError as e:
@@ -9387,7 +9411,7 @@ def test_schedule_restart_keeps_tonight():
         work = tempfile.mkdtemp()
         now = [_den(S, 18, 4)]
         path = SV.tonight_path(_den(S, 0, 0).date(), work)
-        open(path, "w").write(garbage)
+        open(path, "w", encoding="utf-8").write(garbage)
         b = _svc(S, work, now).start(thread=False)
         rows = [r["text"] for r in b.journal
                 if r["text"].startswith("The saved list for tonight")]
@@ -9408,7 +9432,7 @@ def test_schedule_restart_keeps_tonight():
     # A folder it cannot write to: the schedule carries on and says so.
     work = tempfile.mkdtemp()
     blocker = os.path.join(work, "not a folder")
-    open(blocker, "w").write("x")
+    open(blocker, "w", encoding="utf-8").write("x")
     now = [_den(S, 17, 30)]
     c = _svc(S, work, now)
     c.state_dir = blocker
@@ -9436,7 +9460,8 @@ def test_schedule_restart_keeps_tonight():
     a.tick()
     check(str(a.machine.date) == "2026-11-15",
           f"once the show is over the new day starts, got {a.machine.date}")
-    old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work)))
+    old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work),
+                         encoding="utf-8"))
     check([x["status"] for x in old["slots"]][-1] == S.DONE,
           "yesterday's file records the late show as DONE")
 
@@ -9453,7 +9478,8 @@ def test_schedule_restart_keeps_tonight():
     missed = {r["show"] for r in a.journal if r["outcome"] == "missed"}
     check({11, 12} <= missed, f"shows slept through are journalled as "
                               f"MISSED before the new day, got {missed}")
-    old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work)))
+    old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work),
+                         encoding="utf-8"))
     check(all(x["status"] != S.PENDING for x in old["slots"]),
           "and yesterday's saved list has nothing left pending")
     print("  ok")
@@ -9655,9 +9681,9 @@ def test_schedule_tonight_file_is_checked():
         now = [_den(S, 17, 30)]
         _svc(S, work, now).start(thread=False)
         path = SV.tonight_path(_den(S, 0, 0).date(), work)
-        doc = json.load(open(path))
+        doc = json.load(open(path, encoding="utf-8"))
         doc.update(extra)
-        json.dump(doc, open(path, "w"))
+        json.dump(doc, open(path, "w", encoding="utf-8"))
         now[0] = _den(S, 18, 5)
         b = _svc(S, work, now).start(thread=False)
         b.tick()
@@ -9788,9 +9814,9 @@ def test_schedule_rule_change_rebuilds_tonight():
           f"the journal names each change: {texts[:4]}")
 
     # A hand edit with no version bump counts as well.
-    doc = json.load(open(rpath))
+    doc = json.load(open(rpath, encoding="utf-8"))
     doc["weekly"]["sat"]["first_start"] = "18:20"
-    json.dump(doc, open(rpath, "w"))
+    json.dump(doc, open(rpath, "w", encoding="utf-8"))
     now[0] = _den(S, 16, 40)
     c = _svc(S, work, now).start(thread=False)
     check(c.machine.hm(c.machine.slot(1).start) == "18:20",
@@ -9798,7 +9824,7 @@ def test_schedule_rule_change_rebuilds_tonight():
     # A save that changes nothing but the version keeps tonight as it is.
     c.edit_tonight({"op": "move", "show": 2, "to": "18:45", "who": "Andy",
                     "screen": "rack screen"})
-    SV.save_rule(rpath, json.load(open(rpath)))
+    SV.save_rule(rpath, json.load(open(rpath, encoding="utf-8")))
     now[0] = _den(S, 16, 50)
     e = _svc(S, work, now).start(thread=False)
     check(e.machine.hm(e.machine.slot(2).start) == "18:45"
@@ -9902,7 +9928,7 @@ def test_schedule_after_a_stopped_show_is_one_choice():
         return
     import json
     root = os.path.dirname(os.path.abspath(__file__))
-    src = open(os.path.join(root, "ltcplay", "schedule.py")).read()
+    src = open(os.path.join(root, "ltcplay", "schedule.py"), encoding="utf-8").read()
     check(src.count("INTERMISSION_AFTER_A_STOPPED_SHOW") == 2,
           "the choice is defined once and read in one place")
     check(S.INTERMISSION_AFTER_A_STOPPED_SHOW is True,
@@ -10028,7 +10054,8 @@ def test_schedule_uncertain_record_never_fires_twice():
     a = _svc(S, work, now, rule=rule15).start(thread=False)
     ticks(a, now, (18, 0, 0))
     check(_starts(a) == [1], "show 1 started at 18:00:00")
-    open(SV.tonight_path(_den(S, 0, 0).date(), work), "w").write("{torn")
+    open(SV.tonight_path(_den(S, 0, 0).date(), work), "w",
+         encoding="utf-8").write("{torn")
     now[0] = _den(S, 18, 0, 3)
     b = _svc(S, work, now).start(thread=False)
     check(b.machine.late_grace_s == 15, "the rule's grace is 15")

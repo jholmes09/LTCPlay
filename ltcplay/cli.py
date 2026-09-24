@@ -1723,7 +1723,8 @@ def main(argv=None):
                     metavar="FILE",
                     help="run the show scheduler from this rule file "
                          "(default: ltcplay_schedule.json beside the "
-                         "launcher). It decides and does not act yet. "
+                         "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay on "
+                         "Windows). It decides and does not act yet. "
                          "Leave it off and there is no scheduler at all")
     sv.set_defaults(func=cmd_serve)
 
