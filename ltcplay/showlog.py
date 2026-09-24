@@ -21,8 +21,10 @@ class ShowLog:
         self._log = logging.getLogger("ltcplay")
         self._log.setLevel(logging.INFO)
         self._log.handlers[:] = []
+        # UTF-8 whatever the OS default is: a cue name Windows' own code
+        # page cannot spell would otherwise drop the line from the log.
         h = logging.handlers.RotatingFileHandler(
-            path, maxBytes=max_bytes, backupCount=keep)
+            path, maxBytes=max_bytes, backupCount=keep, encoding="utf-8")
         h.setFormatter(logging.Formatter(
             "%(asctime)s.%(msecs)03d  %(message)s", "%Y-%m-%d %H:%M:%S"))
         self._log.addHandler(h)

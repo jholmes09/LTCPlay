@@ -9,6 +9,8 @@ rig's audio interface with it.
 import json
 import os
 
+from . import appdata
+
 FILENAME = "ltcplay_input.json"
 FIELDS = ("device", "channel", "rate")
 # Kept in the same file for the same reason: it describes how this machine is
@@ -22,8 +24,15 @@ def folder():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _machine_folder():
+    """Where this machine's settings live: beside the launcher on a Mac, as
+    they always have; %LOCALAPPDATA%\\ltcplay on Windows, where the program
+    folder may not be writable and must never be a synced one."""
+    return appdata.folder() if appdata.WINDOWS else folder()
+
+
 def path():
-    return os.path.join(folder(), FILENAME)
+    return os.path.join(_machine_folder(), FILENAME)
 
 
 def load():
@@ -31,7 +40,7 @@ def load():
     if not os.path.exists(p):
         return {}
     try:
-        with open(p) as fh:
+        with open(p, encoding="utf-8") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return {}
@@ -124,14 +133,14 @@ def resolve(saved, timeline_input, cli):
 
 
 def prefs_path():
-    return os.path.join(folder(), PREFS_FILE)
+    return os.path.join(_machine_folder(), PREFS_FILE)
 
 
 def load_prefs():
     """Operator preferences that survive a restart, with defaults filled in."""
     out = dict(PREFS)
     try:
-        with open(prefs_path()) as fh:
+        with open(prefs_path(), encoding="utf-8") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return out

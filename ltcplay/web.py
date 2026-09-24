@@ -18,6 +18,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import appdata
 from . import audio as audio_mod
 from . import brand as brand_mod
 from . import settings as settings_mod
@@ -52,7 +53,7 @@ def _looks_like_a_show(path):
     """A JSON file with a 'cues' list is a show; anything else is not ours
     to offer as one."""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
     except Exception:
         return False
@@ -290,7 +291,7 @@ class Control:
         path = os.path.join(self.folder, os.path.basename(timeline or ""))
         if not os.path.exists(path):
             raise SessionError(f"No such show file: {timeline}")
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
         if folder is None:
             # Resolve it the way the LOADER does. A bundle deliberately stores
@@ -568,11 +569,12 @@ class Control:
     def log_tail(self, n=120):
         s = self.session
         p = (s.log.path if s and s.log else
+             appdata.log_path() if appdata.WINDOWS else
              os.path.join(self.folder, "ltcplay.log"))
         if not os.path.exists(p):
             return []
         try:
-            with open(p, errors="replace") as fh:
+            with open(p, encoding="utf-8", errors="replace") as fh:
                 return fh.read().splitlines()[-int(n):]
         except OSError:
             return []
