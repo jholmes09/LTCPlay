@@ -9991,7 +9991,6 @@ def test_schedule_tonight_file_is_checked():
         slot(4, status="DELAYED", fired_at="2026-11-14T18:05:00-07:00"))
     bad("PAUSED with nothing running", lambda doc: doc.update(
         state="PAUSED"))
-    bad("a negative paused time", slot(0, paused_s=-5))
     bad("a paused time of true", slot(0, paused_s=True))
     bad("a state of BOOT", lambda doc: doc.update(state="BOOT"))
     bad("held_from SHOW", lambda doc: doc.update(held_from="SHOW"))
@@ -10498,6 +10497,138 @@ def test_schedule_operator_list():
     print("  ok")
 
 
+def test_schedule_a_paused_show_is_never_overlapped():
+    section("scheduler: nothing fires over a paused show; a pause keeps the "
+            "night past midnight")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import timedelta
+    # Paused at 18:01, ticked every second through 18:20 and past its grace:
+    # nothing fires, the show stays paused, 18:20 is DELAYED.
+    for grace in (0, 15):
+        rule = _one_night_rule(S, grace=grace)
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        n.op(S.HOLD_ON, _den(S, 18, 1))
+        t, fired = _den(S, 18, 1), []
+        while t <= _den(S, 18, 21):
+            fired += _fired(n.tick(t), S)
+            t += timedelta(seconds=1)
+        check(not fired, f"grace {grace}: a paused show must never be "
+                         f"overlapped; started {fired}")
+        running = [s.n for s in n.m.slots if s.status == S.RUNNING]
+        check(n.m.state == S.PAUSED and n.m.running == 1 and running == [1],
+              f"grace {grace}: show 1 stays paused and is the only one "
+              f"running: {n.m.state} {running}")
+        check(n.m.slot(2).status == S.DELAYED,
+              f"grace {grace}: 18:20 is DELAYED: {n.m.slot(2).status}")
+        n.audit(f"paused overlap grace {grace}")
+
+    # Paused across midnight: the night is kept until the show is over.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 23, 57)]
+    a = _svc(S, work, now).start(thread=False)
+    now[0] = _den(S, 23, 58)
+    a._apply(_op(S, S.START_NOW))
+    now[0] = _den(S, 23, 59)
+    a._apply(_op(S, S.HOLD_ON))
+    check(a.machine.state == S.PAUSED, "a show paused at 23:59")
+    for t in ((0, 0, 0), (0, 0, 30), (0, 10)):
+        now[0] = _den(S, *t, d=(2026, 11, 15))
+        a.tick()
+        check(str(a.machine.date) == "2026-11-14"
+              and a.machine.state == S.PAUSED and a.machine.running,
+              f"at {t} the paused night is kept, got {a.machine.date} "
+              f"{a.machine.state}")
+    now[0] = _den(S, 0, 11, d=(2026, 11, 15))
+    a._apply(_op(S, S.RESUME))
+    check(str(a.machine.date) == "2026-11-14" and a.machine.state == S.SHOW,
+          "Resume after midnight carries on in the same night")
+    now[0] = _den(S, 0, 30, d=(2026, 11, 15))
+    a.tick()
+    a.tick()
+    check(str(a.machine.date) == "2026-11-15",
+          f"the new day starts once the show is over: {a.machine.date}")
+    print("  ok")
+
+
+def test_schedule_a_clock_step_during_a_pause():
+    section("scheduler: a clock set back during a pause never makes the "
+            "paused time negative")
+    S = _sched()
+    if S is None:
+        return
+    import copy
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+    rule = _one_night_rule(S)
+    for last, how in ((S.RESUME, {}), (S.ABORT, {"confirmed": True})):
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 50))
+        n.tick(_den(S, 18, 0))
+        n.op(S.HOLD_ON, _den(S, 18, 1))
+        check(n.m.hm(n.m.expected_end(_den(S, 18, 0, 50))) == "18:07:20",
+              "while the clock reads earlier than the pause, the end does "
+              "not move earlier")
+        o = n.op(last, _den(S, 18, 0, 50), **how)
+        check(n.m.slot(1).paused_s == 0.0,
+              f"{last} after a 10 s step back: paused time is 0, not "
+              f"{n.m.slot(1).paused_s}")
+        step = [le for le in o.log if le.outcome == "clock stepped back"]
+        check(len(step) == 1 and "about 10 s" in step[0].text
+              and step[0].actor == "system",
+              f"{last}: the step is journalled: {[le.text for le in o.log]}")
+        if last == S.RESUME:
+            check(n.m.hm(n.m.expected_end()) == "18:07:20",
+                  "and the end stays at 18:07:20")
+        n.audit(f"clock step during a pause, {last}")
+
+    # A saved negative paused time is clamped with a sentence, not refused.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 7, 20))
+    doc = copy.deepcopy(S.machine_to_doc(n.m))
+    doc["slots"][0]["paused_s"] = -10.0
+    notes = []
+    m = S.machine_from_doc(doc, rule, n.m.date, _den(S, 18, 10), notes)
+    check(m.slot(1).paused_s == 0.0 and len(notes) == 1
+          and "taken as 0 s" in notes[0] and "-10 s" in notes[0],
+          f"a negative saved paused time reads as 0 with a sentence: "
+          f"{notes}")
+
+    # The whole story through the service: pause, clock back, Resume,
+    # restart. Tonight's record is kept, not set aside.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59, 50)]
+    a = _svc(S, work, now).start(thread=False)
+    for t, ev in (((18, 0), None), ((18, 1), _op(S, S.HOLD_ON)),
+                  ((18, 0, 50), _op(S, S.RESUME))):
+        now[0] = _den(S, *t)
+        a._apply(ev) if ev else a.tick()
+    saved = json.load(open(SV.tonight_path(a.machine.date, work),
+                           encoding="utf-8"))
+    check(saved["slots"][0]["paused_s"] == 0.0,
+          f"the saved paused time is 0: {saved['slots'][0]['paused_s']}")
+    now[0] = _den(S, 18, 0, 55)
+    b = _svc(S, work, now).start(thread=False)
+    path = SV.tonight_path(b.machine.date, work)
+    check(os.path.exists(path)
+          and not os.path.exists(path[:-5] + ".unreadable.json")
+          and not any(r["outcome"] == "assumed the worst" for r in b.journal),
+          "the record survives the restart; nothing is assumed")
+    check(b.machine.slot(1).status == S.FAULT
+          and "restarted" in b.machine.slot(1).reason,
+          "and the restart is handled as a restart during a show")
+    for r in a.journal + b.journal:
+        _no_dashes(r["text"], "clock step during a pause")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -10629,6 +10760,8 @@ if __name__ == "__main__":
     test_schedule_uncertain_record_never_fires_twice()
     test_schedule_delayed_and_paused_survive_a_restart()
     test_schedule_operator_list()
+    test_schedule_a_paused_show_is_never_overlapped()
+    test_schedule_a_clock_step_during_a_pause()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

@@ -725,7 +725,7 @@ class Machine:
             return None
         paused = s.paused_s
         if self.paused_at is not None and now is not None:
-            paused += (_utc(now) - self.paused_at) / ONE_SECOND
+            paused += max(0.0, (_utc(now) - self.paused_at) / ONE_SECOND)
         return s.fired_at + timedelta(seconds=self.show_len_s + paused)
 
     def hm(self, dt):
@@ -1159,12 +1159,29 @@ def _tick(m, ev, now):
     return tx.done()
 
 
+def _pause_so_far(tx):
+    """Seconds the running show has been paused this time, never below
+    zero. A clock set back during a pause would make it negative, which
+    would pull the show's end earlier; it is taken as 0 and said out loud."""
+    m = tx.m
+    if m.paused_at is None:
+        return 0.0
+    raw = (tx.when - m.paused_at) / ONE_SECOND
+    if raw < 0:
+        tx.note("clock", "clock stepped back", "clock stepped back during a "
+                "pause",
+                f"The clock went back by about {-raw:.0f} s while show "
+                f"{m.running} was paused, so this pause counts as 0 s.",
+                show=m.running, actor="system")
+        return 0.0
+    return raw
+
+
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
-    paused = s.paused_s + ((now - m.paused_at) / ONE_SECOND
-                           if m.paused_at is not None else 0.0)
+    paused = s.paused_s + _pause_so_far(tx)
     tx.set_slot(n, status=status, reason=reason, ended_at=now,
                 paused_s=paused)
     tx.m = replace(tx.m, running=0, last_end=now, paused_at=None)
@@ -1316,7 +1333,7 @@ def _resume(m, ev, now):
     tx = _Tx(m, ev, now)
     if m.state == PAUSED:
         n = m.running
-        paused = (now - m.paused_at) / ONE_SECOND
+        paused = _pause_so_far(tx)
         tx.set_slot(n, paused_s=m.slot(n).paused_s + paused)
         tx.m = replace(tx.m, paused_at=None)
         _enter(tx, SHOW, show=n, resume=True)
@@ -1817,9 +1834,18 @@ def machine_from_doc(doc, rule, d, now, notes=None):
                   ended_at=when(x["ended_at"], f"Show {n}'s end time"),
                   paused_s=x["paused_s"])
         if isinstance(sl.paused_s, bool) or \
-                not isinstance(sl.paused_s, (int, float)) or sl.paused_s < 0:
+                not isinstance(sl.paused_s, (int, float)):
             raise ValueError(f"Show {n}'s paused time is not a number of "
                              f"seconds.")
+        if sl.paused_s < 0:
+            # Only a clock set back during a pause can do this. Zero, not a
+            # broken file: throwing tonight away would be worse.
+            if notes is not None:
+                notes.append(f"Show {n}'s saved paused time was "
+                             f"{sl.paused_s:.0f} s, which only a clock set "
+                             f"back during a pause can cause. It is taken "
+                             f"as 0 s.")
+            sl = replace(sl, paused_s=0.0)
         if status in (PENDING, DELAYED) and (sl.fired_at or sl.confirmed_at
                                              or sl.ended_at or sl.paused_s):
             raise ValueError(f"Show {n} is still to come but has already "
