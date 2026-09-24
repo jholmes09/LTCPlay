@@ -9663,6 +9663,28 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
 # ltcplay.clock at module scope either -- see test_tctest_never_touches_
 # session_or_sacn below, which proves both from a fresh interpreter.
 
+class _SimClock:
+    """A clock and sleep for tctest's Ticker that never touches real time.
+
+    tctest.run() takes `clock`/`sleep` the same way clock.py's own Ticker
+    does, and clock.py's own tests prove pacing correctness on a
+    simulated clock for exactly this reason: real time.sleep() is what
+    made the packet-count tests here flake on a starved CI runner -- a
+    slow machine skips frames by design (see Ticker's docstring), so a
+    strict "every frame arrived" check needs a clock nothing can starve.
+    Packets still go out on a real socket; only the pacing is simulated,
+    so the bytes on the wire are exactly what a real run would send."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, d):
+        self.now += d
+
+
 def test_tctest_packets_on_the_wire():
     section("tctest: packets on the wire, byte for byte, right count")
     import io
@@ -9673,17 +9695,19 @@ def test_tctest_packets_on_the_wire():
 
     rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
     rx.bind(("127.0.0.1", 0))
-    rx.settimeout(0.5)
+    rx.settimeout(2.0)
     port = rx.getsockname()[1]
     lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
     out_s, err_s = io.StringIO(), io.StringIO()
     seconds = 0.2
+    sim = _SimClock()
     # Starts one second and change before midnight, on purpose: the run
     # crosses the hour boundary, which is the one place a naive frame count
     # sends hour 24 instead of wrapping to 0 and arttimecode() refuses it.
     rc = TT.run([("test", "127.0.0.1")], False, start="23:59:59:27",
                seconds=seconds, lock_path=lockpath, port=port,
-               out_stream=out_s, err_stream=err_s)
+               out_stream=out_s, err_stream=err_s,
+               clock=sim.clock, sleep=sim.sleep)
     check(rc == 0, f"a clean tctest run did not return 0: {rc} "
                   f"({err_s.getvalue()!r})")
 
@@ -9713,6 +9737,38 @@ def test_tctest_packets_on_the_wire():
     print("  ok")
 
 
+def test_tctest_seconds_zero_means_until_stopped():
+    section("tctest: --seconds 0 means until stopped, not zero frames")
+    import io
+    import tempfile
+    from ltcplay import tctest as TT
+
+    # A stop_check that only goes true after a handful of frames. If
+    # `seconds=0` were treated as "stop immediately" (falsy, like a bare
+    # `if seconds:` would), this would see 0 or 1 packets. It should see
+    # every frame up to the stop, proving 0 means "run until told".
+    STOP_AFTER = 5
+    calls = {"n": 0}
+
+    def stop_after_a_few():
+        calls["n"] += 1
+        return calls["n"] > STOP_AFTER
+
+    out_s, err_s = io.StringIO(), io.StringIO()
+    rc = TT.run([("test", "127.0.0.1")], False, seconds=0,
+               lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+               out_stream=out_s, err_stream=err_s,
+               stop_check=stop_after_a_few)
+    check(rc == 0, f"a seconds=0 run did not return 0: {err_s.getvalue()!r}")
+    check(calls["n"] > STOP_AFTER,
+          f"tctest with seconds=0 stopped on its own after only "
+          f"{calls['n']} stop_check calls, before the operator asked")
+    check("stopped by the operator" in out_s.getvalue(),
+          f"a seconds=0 run that was stopped by stop_check did not say "
+          f"so: {out_s.getvalue()!r}")
+    print("  ok")
+
+
 def test_tctest_only_named_nodes_receive():
     section("tctest: only the named nodes receive packets")
     # This machine's loopback interface answers only on 127.0.0.1 -- no
@@ -9734,11 +9790,11 @@ def test_tctest_only_named_nodes_receive():
 
     named = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
     named.bind(("127.0.0.1", 0))
-    named.settimeout(0.5)
+    named.settimeout(2.0)
     port = named.getsockname()[1]
     stray_port = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
     stray_port.bind(("127.0.0.1", 0))
-    stray_port.settimeout(0.5)
+    stray_port.settimeout(0.3)
 
     work = tempfile.mkdtemp()
     show = os.path.join(work, "show.json")
@@ -9757,8 +9813,10 @@ def test_tctest_only_named_nodes_receive():
     seconds = 0.1
     lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
     out_s, err_s = io.StringIO(), io.StringIO()
+    sim1 = _SimClock()
     rc = TT.run(dests, is_bc, seconds=seconds, lock_path=lockpath, port=port,
-               out_stream=out_s, err_stream=err_s)
+               out_stream=out_s, err_stream=err_s,
+               clock=sim1.clock, sleep=sim1.sleep)
     check(rc == 0, f"tctest did not run cleanly: {err_s.getvalue()!r}")
 
     got_named = []
@@ -9785,9 +9843,11 @@ def test_tctest_only_named_nodes_receive():
     # is the concrete shape the "defaults to all nodes" bug takes.
     both = dests + [("Other", "127.0.0.1")]
     out_s2, err_s2 = io.StringIO(), io.StringIO()
+    sim2 = _SimClock()
     rc2 = TT.run(both, False, seconds=seconds,
                 lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
-                port=port, out_stream=out_s2, err_stream=err_s2)
+                port=port, out_stream=out_s2, err_stream=err_s2,
+                clock=sim2.clock, sleep=sim2.sleep)
     check(rc2 == 0, f"tctest did not run cleanly: {err_s2.getvalue()!r}")
     got_both = []
     try:
@@ -9850,7 +9910,37 @@ def test_tctest_refusals():
     except TT.TcTestError as e:
         check("one" in str(e).lower(), f"unclear refusal: {e}")
 
-    for bad in ("99:99:99:99", "not a timecode", "25:00:00:00", "1:2:3"):
+    # A show file with no 'clock' block at all: a plain sentence, not a
+    # KeyError or an AttributeError out of ArtNetConfig.parse().
+    no_clock = os.path.join(work, "no_clock.json")
+    json.dump({"fps": 30, "show_dir": work,
+              "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}]},
+             open(no_clock, "w"))
+    try:
+        TT.resolve_destinations(show=no_clock, to=["MadMapper"])
+        check(False, "a show file with no clock block was accepted")
+    except TT.TcTestError as e:
+        check("clock" in str(e).lower() and no_clock in str(e),
+              f"the no-clock-block refusal is unclear: {e}")
+
+    # A --node with a malformed IP: a plain sentence, not a socket error
+    # surfacing later when a packet actually tries to go out.
+    try:
+        TT.resolve_destinations(node=["MadMapper=999.999.999.999"])
+        check(False, "--node with a bad IP was accepted")
+    except TT.TcTestError as e:
+        check("999.999.999.999" in str(e) and "not an IPv4" in str(e),
+              f"the bad --node IP refusal is unclear: {e}")
+
+    try:
+        TT.resolve_destinations(broadcast="not-an-address")
+        check(False, "--broadcast with a bad address was accepted")
+    except TT.TcTestError as e:
+        check("not-an-address" in str(e) and "not an IPv4" in str(e),
+              f"the bad --broadcast refusal is unclear: {e}")
+
+    for bad in ("99:99:99:99", "not a timecode", "25:00:00:00", "1:2:3",
+               "-1:00:00:00", "1:2:3:4:5"):
         try:
             TT.parse_start(bad)
             check(False, f"{bad!r} was accepted as a start timecode")
@@ -9882,33 +9972,136 @@ def test_tctest_refusals():
 
 
 def test_tctest_beyond_warning():
-    section("tctest: the BEYOND warning")
+    section("tctest: every run warns, and laser-named nodes get more")
     import io
     import tempfile
     from ltcplay import tctest as TT
 
-    check(TT.warns_about_beyond([("BEYOND", "10.0.0.1")], False) is True,
-          "a node named BEYOND does not trigger the warning")
-    check(TT.warns_about_beyond([("beyond", "10.0.0.1")], False) is True,
+    # laser_like_names() only ever picks the extra, stronger line -- it is
+    # never the gate that decides whether ANY warning prints, because a
+    # node can be called anything: "Lasers", "Andy", "BEYOND-2", a raw
+    # --node IP. Matching a fixed word against a free-form name cannot be
+    # the safety net.
+    check(TT.laser_like_names([("BEYOND", "10.0.0.1")], False) == ["BEYOND"],
+          "a node named BEYOND is not picked out for the extra line")
+    check(TT.laser_like_names([("beyond", "10.0.0.1")], False) == ["beyond"],
           "the BEYOND match should not be case sensitive")
-    check(TT.warns_about_beyond([("MadMapper", "10.0.0.1")], False) is False,
-          "a node not named BEYOND triggered the warning")
-    check(TT.warns_about_beyond([], True) is True,
-          "an explicit --broadcast did not trigger the warning")
+    check(TT.laser_like_names([("Lasers", "10.0.0.1")], False) == ["Lasers"],
+          "a node named Lasers is not picked out for the extra line")
+    check(TT.laser_like_names([("BEYOND-2", "10.0.0.1")], False)
+         == ["BEYOND-2"],
+          "a node named BEYOND-2 is not picked out for the extra line")
+    check(TT.laser_like_names([("MadMapper", "10.0.0.1")], False) == [],
+          "a node named MadMapper was picked out for the extra line")
+    check(TT.laser_like_names([("Andy", "10.0.0.1")], False) == [],
+          "a node named Andy was picked out for the extra line")
+    check(TT.laser_like_names([], True) == ["broadcast"],
+          "an explicit --broadcast is not picked out for the extra line")
 
-    out_s, err_s = io.StringIO(), io.StringIO()
-    TT.run([("BEYOND", "127.0.0.1")], False, seconds=0.05,
-          lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
-          out_stream=out_s, err_stream=err_s)
-    check(TT.BEYOND_WARNING in err_s.getvalue(),
-          f"tctest sent to BEYOND with no warning: {err_s.getvalue()!r}")
+    # Every one of these sends test timecode to a destination that is not
+    # named BEYOND, Lasers, or broadcast -- exactly the shapes the known
+    # bug missed. Every one of them must still get the general warning,
+    # naming who it went to, before the first packet.
+    for dests, is_bc, label in (
+        ([("MadMapper", "127.0.0.1")], False, "a plain node name"),
+        ([("Andy", "127.0.0.1")], False, "an operator's own name"),
+        ([("BEYOND-2", "127.0.0.1")], False,
+         "a name that only contains the word BEYOND"),
+    ):
+        out_s, err_s = io.StringIO(), io.StringIO()
+        rc = TT.run(dests, is_bc, seconds=0.05,
+                   lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+                   out_stream=out_s, err_stream=err_s)
+        check(rc == 0, f"tctest did not run cleanly for {label}: "
+                      f"{err_s.getvalue()!r}")
+        err = err_s.getvalue()
+        check("Test timecode is about to go to:" in err
+             and dests[0][0] in err and dests[0][1] in err,
+              f"no general warning naming the destination for {label}: "
+              f"{err!r}")
+        check(TT.GENERAL_WARNING in err,
+              f"the general warning text is missing for {label}: {err!r}")
 
+    # A name that looks like laser software gets that same general line,
+    # plus the extra, stronger one.
     out_s2, err_s2 = io.StringIO(), io.StringIO()
-    TT.run([("MadMapper", "127.0.0.1")], False, seconds=0.05,
+    TT.run([("Lasers", "127.0.0.1")], False, seconds=0.05,
           lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
           out_stream=out_s2, err_stream=err_s2)
-    check(TT.BEYOND_WARNING not in err_s2.getvalue(),
-          "tctest warned about BEYOND when nothing was sent to it")
+    err2 = out_s2.getvalue() + err_s2.getvalue()
+    check("Test timecode is about to go to:" in err2,
+          f"a laser-named node did not get the general warning: {err2!r}")
+    check("Lasers" in err2 and TT.LASER_WARNING in err2,
+          f"a node named Lasers did not get the extra laser line: {err2!r}")
+
+    # Two destinations, one plain and one laser-like: the extra line names
+    # only the laser-like one, not both.
+    out_s3, err_s3 = io.StringIO(), io.StringIO()
+    TT.run([("MadMapper", "127.0.0.1"), ("Lasers", "127.0.0.1")], False,
+          seconds=0.05, lock_path=os.path.join(tempfile.mkdtemp(),
+                                              "out.lock"),
+          out_stream=out_s3, err_stream=err_s3)
+    err3 = err_s3.getvalue()
+    extra_line = next((l for l in err3.splitlines()
+                      if l.startswith("Lasers:")), None)
+    check(extra_line is not None,
+          f"the extra laser line does not name Lasers: {err3!r}")
+    check("MadMapper" not in extra_line,
+          f"the extra laser line also names a plain node: {extra_line!r}")
+
+    # Broadcast always gets the extra line too: nothing here can say
+    # whether a laser system is listening on the network.
+    out_s4, err_s4 = io.StringIO(), io.StringIO()
+    TT.run([("broadcast", "10.0.0.255")], True, seconds=0.05,
+          lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+          out_stream=out_s4, err_stream=err_s4)
+    check(TT.LASER_WARNING in err_s4.getvalue(),
+          f"--broadcast did not get the extra laser line: "
+          f"{err_s4.getvalue()!r}")
+    print("  ok")
+
+
+def test_tctest_releases_lock_on_exception():
+    section("tctest: an exception mid-run still releases the lock")
+    import io
+    import tempfile
+    from ltcplay import onlyone
+    from ltcplay import tctest as TT
+
+    calls = {"n": 0}
+
+    def _boom_sleep(_):
+        # The real clock never advances 30 frames in zero wall time, so
+        # the ticker calls sleep() waiting for the next frame -- after the
+        # first frame's packet has already gone out, which is what proves
+        # this is a mid-run failure, not a setup one.
+        calls["n"] += 1
+        raise RuntimeError("boom: a fault mid-run, the same shape as a "
+                          "USB drop or an OS error setting up the socket")
+
+    lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
+    out_s, err_s = io.StringIO(), io.StringIO()
+    try:
+        TT.run([("test", "127.0.0.1")], False, seconds=5.0,
+              lock_path=lockpath, out_stream=out_s, err_stream=err_s,
+              sleep=_boom_sleep)
+        check(False, "tctest.run() swallowed a mid-run exception instead "
+                     "of letting it propagate")
+    except RuntimeError as e:
+        check("boom" in str(e), f"the wrong exception propagated: {e!r}")
+    check(calls["n"] > 0, "the injected fault was never reached")
+
+    # The lock must be free again -- a fresh acquire from here is the same
+    # proof a second real tctest or `ltcplay run` would get: no stale lock
+    # left behind to refuse a show that should be allowed to start.
+    held = onlyone.OutputLock(lockpath, "next run after the fault")
+    try:
+        held.acquire()
+    except onlyone.AlreadyRunning as e:
+        check(False, f"the lock was still held after an exception: "
+                     f"{e.holder!r}")
+    else:
+        held.release()
     print("  ok")
 
 
@@ -10085,9 +10278,11 @@ if __name__ == "__main__":
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
     test_tctest_packets_on_the_wire()
+    test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()
     test_tctest_refusals()
     test_tctest_beyond_warning()
+    test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
     for arg in sys.argv[1:]:
         test_real_show(arg)

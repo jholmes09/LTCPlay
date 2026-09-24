@@ -1705,10 +1705,10 @@ def main(argv=None):
                     help="a destination given directly, no show file "
                          "needed; repeat for more than one")
     tt.add_argument("--broadcast", metavar="ADDR",
-                    help="broadcast address instead of named nodes. Test "
-                         "timecode to BEYOND plays its laser cues, and "
-                         "broadcast reaches BEYOND if it is on the "
-                         "network, so use this only when you mean it")
+                    help="broadcast address instead of named nodes. "
+                         "Anything on the network that follows timecode "
+                         "plays its cues, lasers included, so use this "
+                         "only when you mean it")
     tt.add_argument("--start", default="00:00:00:00",
                     help="timecode to start at, HH:MM:SS:FF, 30 fps non "
                          "drop (default 00:00:00:00)")

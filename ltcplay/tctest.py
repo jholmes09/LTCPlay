@@ -20,9 +20,12 @@ A show run through `ltcplay run` never touches this module at all.
 Destinations are always named. There is no "send to everyone": a show file
 names BEYOND because BEYOND follows this stream and plays its laser cues
 from it, so test timecode with no destination, or a silent broadcast, is
-exactly how a laser cue fires with nobody expecting it. A destination named
-BEYOND, or an explicit --broadcast, prints a warning line before anything is
-sent.
+exactly how a laser cue fires with nobody expecting it. Matching the
+destination name against a list of known laser software is not safe -- a
+node can be called "Lasers", "Andy", or anything else an operator chose.
+So every run prints a warning naming every destination before the first
+packet goes out, no matter what they are called. A destination whose name
+mentions BEYOND or laser gets an extra, stronger line on top of that.
 
 Refuses if ltcplay already holds the output lock (onlyone.py): two timecode
 sources on the rig fight each other frame by frame, the same reason a
@@ -40,14 +43,17 @@ from .output import ARTNET_PORT
 DEFAULT_START = "00:00:00:00"
 DEFAULT_SECONDS = 60.0
 
-BEYOND_WARNING = ("Test timecode to BEYOND plays its laser cues. Make sure "
-                  "the laser operator is ready.")
+GENERAL_WARNING = ("Anything that follows timecode will play its cues, "
+                   "lasers included. Make sure their operators are ready.")
+
+LASER_WARNING = ("This looks like a laser system. Confirm the laser "
+                 "operator is ready before you continue.")
 
 NO_DEST = ("tctest needs to know where to send test timecode. Give it one "
           "of: --show FILE --to NAME (one or more names from that show "
           "file's clock.artnet.nodes), --node NAME=IP given directly, or "
-          "--broadcast ADDR. It never guesses a destination: test timecode "
-          "reaching BEYOND plays its laser cues.")
+          "--broadcast ADDR. It never guesses a destination: anything "
+          "that follows test timecode plays its cues, lasers included.")
 
 
 class TcTestError(ValueError):
@@ -181,15 +187,21 @@ def resolve_destinations(show=None, to=(), node=(), broadcast=None):
     raise TcTestError(NO_DEST)
 
 
-def warns_about_beyond(dests, is_broadcast):
-    """True whenever a named destination is BEYOND, or broadcast is used.
+def laser_like_names(dests, is_broadcast):
+    """Destination names that mention BEYOND or laser, case blind.
 
-    Broadcast warns unconditionally: it is not possible to say from here
-    whether BEYOND is listening on the network, and a silent laser cue is
-    the failure this warning exists to prevent."""
+    Not a safety gate: run() warns about every destination regardless of
+    its name. This only decides which ones get an extra, stronger line,
+    so it is never the thing standing between silence and a laser cue --
+    a node can be called "Lasers", "Andy", or anything else an operator
+    chose, and matching a fixed word against a free-form name would miss
+    it. Broadcast is always in the list: it is not possible to say from
+    here whether a laser system is listening on the network, and a silent
+    laser cue is the failure this exists to prevent."""
     if is_broadcast:
-        return True
-    return any(name.strip().lower() == "beyond" for name, _ in dests)
+        return ["broadcast"]
+    return [name for name, _ in dests
+           if "beyond" in name.lower() or "laser" in name.lower()]
 
 
 def _install_signals():
@@ -227,8 +239,7 @@ def run(dests, is_broadcast, start=DEFAULT_START, seconds=DEFAULT_SECONDS,
     from .clock import MASTER_FPS, MASTER_TYPE, Ticker, TimecodeOut, \
         arttimecode
     h0, m0, s0, f0 = parse_start(start)
-    if warns_about_beyond(dests, is_broadcast):
-        print(BEYOND_WARNING, file=err_stream)
+    dest_label = ", ".join(f"{n} ({ip})" for n, ip in dests)
 
     lock = onlyone.OutputLock(where=lock_path, note=note)
     try:
@@ -242,39 +253,61 @@ def run(dests, is_broadcast, start=DEFAULT_START, seconds=DEFAULT_SECONDS,
               f"for it to finish.", file=err_stream)
         return 2
 
-    if stop_check is None:
-        stop_check = _install_signals()
-
-    dest_label = ", ".join(f"{n} ({ip})" for n, ip in dests)
-    start_frame = tc_mod.tc_to_frames(h0, m0, s0, f0, MASTER_FPS, False)
-    total_frames = (int(round(seconds * MASTER_FPS)) if seconds > 0
-                    else None)
-    stopped = {"reason": None}
-    out_sock = TimecodeOut(dests, broadcast=is_broadcast, port=port,
-                           bind_ip=bind_ip, socket_factory=socket_factory)
-
-    def tick(n, now):
-        if total_frames is not None and n >= total_frames:
-            stopped["reason"] = f"sent {seconds:g} seconds of test timecode"
-            return False
-        if stop_check():
-            stopped["reason"] = "stopped by the operator"
-            return False
-        h, m, s, f = tc_mod.frames_to_tc(start_frame + n, MASTER_FPS, False)
-        h %= 24
-        out_sock.send(arttimecode(h, m, s, f, MASTER_TYPE))
-        if n % MASTER_FPS == 0:
-            print(f"{h:02d}:{m:02d}:{s:02d}:{f:02d}  ->  {dest_label}   "
-                  f"sent {out_sock.packets_sent}  failed "
-                  f"{out_sock.send_errors}", file=out_stream)
-        return True
-
-    ticker = Ticker(MASTER_FPS, tick, clock=clock, sleep=sleep,
-                    name="ltcplay-tctest")
+    # Once the lock is held, everything below must release it on the way
+    # out -- a clean end, ctrl-c, ctrl-break, or any exception, including
+    # one raised while still setting up (a bad socket, a bad bind_ip). A
+    # stale lock here is the exact failure onlyone.py exists to prevent:
+    # it would stop the real show from starting. out_sock starts as None
+    # so the finally below never calls close() on a socket that was never
+    # built.
+    out_sock = None
     try:
+        # Before the first packet, every run says where test timecode is
+        # headed. Matching destination names against a fixed word list is
+        # not a safe gate -- see laser_like_names() -- so this line names
+        # every destination, not only ones that look like laser software.
+        print(f"Test timecode is about to go to: {dest_label}. "
+              f"{GENERAL_WARNING}", file=err_stream)
+        laser_names = laser_like_names(dests, is_broadcast)
+        if laser_names:
+            print(f"{', '.join(laser_names)}: {LASER_WARNING}",
+                  file=err_stream)
+
+        if stop_check is None:
+            stop_check = _install_signals()
+
+        start_frame = tc_mod.tc_to_frames(h0, m0, s0, f0, MASTER_FPS, False)
+        total_frames = (int(round(seconds * MASTER_FPS)) if seconds > 0
+                        else None)
+        stopped = {"reason": None}
+        out_sock = TimecodeOut(dests, broadcast=is_broadcast, port=port,
+                               bind_ip=bind_ip,
+                               socket_factory=socket_factory)
+
+        def tick(n, now):
+            if total_frames is not None and n >= total_frames:
+                stopped["reason"] = \
+                    f"sent {seconds:g} seconds of test timecode"
+                return False
+            if stop_check():
+                stopped["reason"] = "stopped by the operator"
+                return False
+            h, m, s, f = tc_mod.frames_to_tc(start_frame + n, MASTER_FPS,
+                                             False)
+            h %= 24
+            out_sock.send(arttimecode(h, m, s, f, MASTER_TYPE))
+            if n % MASTER_FPS == 0:
+                print(f"{h:02d}:{m:02d}:{s:02d}:{f:02d}  ->  {dest_label}   "
+                      f"sent {out_sock.packets_sent}  failed "
+                      f"{out_sock.send_errors}", file=out_stream)
+            return True
+
+        ticker = Ticker(MASTER_FPS, tick, clock=clock, sleep=sleep,
+                        name="ltcplay-tctest")
         ticker.run(clock())
     finally:
-        out_sock.close()
+        if out_sock is not None:
+            out_sock.close()
         lock.release()
 
     print(stopped["reason"] or "stopped", file=out_stream)

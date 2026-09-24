@@ -1296,9 +1296,18 @@ MUTATIONS = [
   '        out_sock.send(arttimecode(h, m, s, f, MASTER_TYPE))',
   '        out_sock.send(bytes(19))'),
 
- ("tctest skips the BEYOND warning", 'ltcplay/tctest.py',
-  '    if warns_about_beyond(dests, is_broadcast):',
-  '    if False:'),
+ ("tctest skips the every-run destination warning", 'ltcplay/tctest.py',
+  '        print(f"Test timecode is about to go to: {dest_label}. "\n'
+  '              f"{GENERAL_WARNING}", file=err_stream)',
+  '        pass'),
+
+ ("tctest only warns about a laser system named literally BEYOND again",
+  'ltcplay/tctest.py',
+  '    if is_broadcast:\n        return ["broadcast"]\n'
+  '    return [name for name, _ in dests\n'
+  '           if "beyond" in name.lower() or "laser" in name.lower()]',
+  '    return [name for name, _ in dests\n'
+  '           if name.strip().lower() == "beyond"]'),
 
 ]
 
