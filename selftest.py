@@ -7967,6 +7967,11 @@ def _fired(o, S):
 # What arriving in each state must ask for, written out here rather than
 # read from the engine: STANDBY is the intermission running, HOLD keeps it
 # running, IDLE is the preshow look.
+# Abort, a failed start and a restart during a show: the whole show fades
+# to black, then MadMapper stops (Jeff, 2026-09-24).
+_WHOLE_FADE = ["ZERO_FLAME_CUES", "BLANK_LASERS", "FADE_MUSIC_OUT",
+               "FADE_VIDEO_OUT", "FADE_PIXELS", "STOP_CONDUCTOR"]
+
 _ARRIVE = {"IDLE": "PRESHOW_LOOK", "STANDBY": "INTERMISSION",
            "HOLD": "INTERMISSION", "SHOW": "START_SHOW",
            "PAUSED": "FREEZE_SHOW",
@@ -8375,6 +8380,9 @@ def test_schedule_state_machine_every_state_every_event():
              "FADE_MUSIC_OUT"]
     UNPAUSE = ["RESUME_SHOW", "FADE_MUSIC_IN", "UNBLANK_LASERS"]
     CLOSE = [Z, ST, F, BO]
+    # Abort, a failed start: the whole show fades to black, then MadMapper
+    # stops, and nothing follows (Jeff, 2026-09-24).
+    STOPPED = [Z, "BLANK_LASERS", "FADE_MUSIC_OUT", "FADE_VIDEO_OUT", F, ST]
     # (event, {fixture: (where it goes, the effects it asks for, in order)}).
     # Anything not listed must be refused with a sentence, change nothing
     # and ask for nothing.
@@ -8386,7 +8394,7 @@ def test_schedule_state_machine_every_state_every_event():
         (E(S.SHOW_CONFIRMED, "madmapper"), {SH: (SH, []), P: (P, [])}),
         (E(S.SHOW_ENDED, "madmapper"), {SH: (SB, [INT])}),
         (E(S.SHOW_FAILED, "madmapper", detail="no timecode after start"),
-         {SH: (SB, [Z, ST, F, INT])}),
+         {SH: (SB, STOPPED)}),
         (E(S.FAULT_RAISED, "safety", detail="the safety process stopped "
                                             "replying"), none),
         (E(S.CLEAR_FAULT, "operator"), {}),           # there is no fault
@@ -8405,7 +8413,7 @@ def test_schedule_state_machine_every_state_every_event():
         (E(S.DELAY_REST, "operator", minutes=10), same_live),
         (E(S.ABORT, "operator"), {}),                  # not confirmed
         (E(S.ABORT, "operator", confirmed=True),
-         {SH: (SB, [Z, ST, F, INT]), P: (SB, [Z, ST, F, INT])}),
+         {SH: (SB, STOPPED), P: (SB, STOPPED)}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
          {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
@@ -8683,9 +8691,7 @@ def test_schedule_hold_pauses_a_show():
     n.op(S.HOLD_ON, _den(S, 18, 44))
     o = n.op(S.ABORT, _den(S, 18, 45), confirmed=True)
     check(n.m.state == S.STANDBY and n.m.slot(3).status == S.ABORTED
-          and [e.kind for e in o.effects][:3] == [S.ZERO_FLAME_CUES,
-                                                  S.STOP_CONDUCTOR,
-                                                  S.FADE_PIXELS]
+          and [e.kind for e in o.effects] == _WHOLE_FADE
           and n.m.slot(3).paused_s == 150,
           f"Abort while paused: {n.m.state} {[e.kind for e in o.effects]}")
     n.audit("pause")
@@ -8698,6 +8704,24 @@ def test_schedule_hold_between_shows_delays():
     if S is None:
         return
     rule = _one_night_rule(S)
+    # Jeff asked: on Hold, nothing starts by itself however many slots
+    # pass. Ticked every second through four slot times, at grace 0 and 15.
+    from datetime import timedelta
+    for grace in (0, 15):
+        n = _Night(S, _one_night_rule(S, grace=grace))
+        n.boot(_den(S, 18, 5))
+        n.op(S.HOLD_ON, _den(S, 18, 10))
+        t, fired = _den(S, 18, 10), []
+        while t <= _den(S, 19, 21):
+            fired += _fired(n.tick(t), S)
+            t += timedelta(seconds=1)
+        check(not fired and n.m.state == S.HOLD and not n.m.running,
+              f"grace {grace}: four slot times pass on Hold and nothing "
+              f"starts by itself: started {fired}, {n.m.state}")
+        check([s.status for s in n.m.slots[1:5]] ==
+              [S.MISSED, S.MISSED, S.MISSED, S.DELAYED],
+              f"grace {grace}: only the newest of the four waits: "
+              f"{[s.status for s in n.m.slots[1:5]]}")
     # One slot passes during a Hold: DELAYED, never starts by itself.
     n = _Night(S, rule)
     n.boot(_den(S, 18, 5))
@@ -8873,11 +8897,12 @@ def test_schedule_abort_end_night_and_operator_actions():
     n.m = o.machine
     n.log.extend(o.log)
     check([(e.kind, e.show, e.seconds) for e in o.effects] == [
-        (S.ZERO_FLAME_CUES, 3, 0.0), (S.STOP_CONDUCTOR, 3, 0.0),
-        (S.FADE_PIXELS, 3, 1.0), (S.INTERMISSION, 0, 0.0)],
-        f"Abort zeroes the flame cues, stops MadMapper, fades the pixels "
-        f"over 1 s and, back in STANDBY, asks for the intermission; nothing "
-        f"else: {o.effects}")
+        (S.ZERO_FLAME_CUES, 3, 0.0), (S.BLANK_LASERS, 3, 0.0),
+        (S.FADE_MUSIC_OUT, 3, 1.0), (S.FADE_VIDEO_OUT, 3, 1.0),
+        (S.FADE_PIXELS, 3, 1.0), (S.STOP_CONDUCTOR, 3, 0.0)],
+        f"Abort zeroes the flame cues and blanks the lasers at once, fades "
+        f"music, video and pixels to black together over 1 s, then stops "
+        f"MadMapper; no intermission follows: {o.effects}")
     check(n.m.state == S.STANDBY and n.m.slot(3).status == S.ABORTED
           and n.m.slot(3).reason == "ABORTED (operator)",
           "Abort marks the show ABORTED and stays in STANDBY")
@@ -9786,10 +9811,9 @@ def test_schedule_faults_during_and_before_a_show():
     n.tick(_den(S, 18, 0))
     o = n.do(S.SHOW_FAILED, "madmapper", _den(S, 18, 0, 3),
              detail="no timecode after start")
-    check([e.kind for e in o.effects] == [S.ZERO_FLAME_CUES, S.STOP_CONDUCTOR,
-                                          S.FADE_PIXELS, S.INTERMISSION],
-          f"a show that did not start zeroes the flame cues, stops "
-          f"MadMapper, fades, and goes back to the intermission: "
+    check([e.kind for e in o.effects] == _WHOLE_FADE,
+          f"a show that did not start is made safe and faded whole, then "
+          f"MadMapper stops, and the rig stays dark: "
           f"{[e.kind for e in o.effects]}")
     check(n.m.slot(1).reason == "FAULT (no timecode after start)"
           and "did not start" in o.log[0].text,
@@ -10166,11 +10190,11 @@ def test_schedule_after_a_stopped_show_is_one_choice():
     src = open(os.path.join(root, "ltcplay", "schedule.py"), encoding="utf-8").read()
     check(src.count("INTERMISSION_AFTER_A_STOPPED_SHOW") == 2,
           "the choice is defined once and read in one place")
-    check(S.INTERMISSION_AFTER_A_STOPPED_SHOW is True,
-          "today's default: the intermission comes back after the fade")
+    check(S.INTERMISSION_AFTER_A_STOPPED_SHOW is False,
+          "Jeff, 2026-09-24: on an abort the whole show fades to black, and "
+          "the intermission does not come back")
     rule = _one_night_rule(S)
-    Z, ST, F, I = (S.ZERO_FLAME_CUES, S.STOP_CONDUCTOR, S.FADE_PIXELS,
-                   S.INTERMISSION)
+    I = S.INTERMISSION
 
     def scenarios():
         out = {}
@@ -10182,7 +10206,8 @@ def test_schedule_after_a_stopped_show_is_one_choice():
         n.boot(_den(S, 17, 50))
         n.tick(_den(S, 18, 0))
         n.op(S.HOLD_ON, _den(S, 18, 1))
-        out["abort on hold"] = n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+        out["abort while paused"] = n.op(S.ABORT, _den(S, 18, 2),
+                                         confirmed=True)
         n = _Night(S, rule)
         n.boot(_den(S, 17, 50))
         n.tick(_den(S, 18, 0))
@@ -10213,11 +10238,11 @@ def test_schedule_after_a_stopped_show_is_one_choice():
                     continue
                 check(o.machine.state in (S.STANDBY, S.HOLD),
                       f"{name}: lands in STANDBY or HOLD")
-                want = [Z, ST, F] + ([I] if choice else [])
+                want = _WHOLE_FADE + ([I] if choice else [])
                 check(kinds == want, f"{name} with the choice {choice}: "
                                      f"expected {want}, got {kinds}")
     finally:
-        S.INTERMISSION_AFTER_A_STOPPED_SHOW = True
+        S.INTERMISSION_AFTER_A_STOPPED_SHOW = False
     print("  ok")
 
 
@@ -10228,6 +10253,7 @@ def test_schedule_contract_for_the_transport():
         return
     doc = S.__doc__
     for must in ("Contract for PR 3", "BEFORE performing", "SHOW_CONFIRMED",
+                 "FADE_VIDEO_OUT", "STOP_CONDUCTOR once the fade is done",
                  "CONFIRM_WINDOW_S", "FAULT_RAISED", "SHOW_ENDED",
                  "CLOSING_DONE", "twice\n   a second", "confirmed=True",
                  "refused Outcome"):

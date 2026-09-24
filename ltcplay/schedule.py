@@ -28,8 +28,9 @@ Whatever drives this engine and carries out its effects must:
    If the save fails, say so in the journal and still perform the effects:
    a show that runs beats a show that silently does not.
 2. Perform the effects in the order given. ZERO_FLAME_CUES is immediate.
-   FADE_PIXELS carries its length; an INTERMISSION listed after a fade
-   starts when the fade has finished, never over it.
+   Fades carry their length and consecutive fades run together; whatever
+   is listed after them (STOP_CONDUCTOR, INTERMISSION) starts when they
+   have finished, never over them.
    Pause (Hold during a show), in this order: ZERO_FLAME_CUES and
    BLANK_LASERS at once (a real blank command to BEYOND, not only frozen
    timecode: a frozen laser cue is a static beam), then FREEZE_SHOW (pixels,
@@ -37,8 +38,13 @@ Whatever drives this engine and carries out its effects must:
    that frozen frame so receivers hold instead of timing out), then
    FADE_MUSIC_OUT. Resume: RESUME_SHOW carries on from the frozen frame,
    FADE_MUSIC_IN, and UNBLANK_LASERS only once timecode is moving again.
-   Lasers blanked by a pause stay blanked until a RESUME_SHOW or the next
-   START_SHOW. Arming is never touched by any of it.
+   Abort (and a failed start, and a restart during a show): ZERO_FLAME_CUES
+   and BLANK_LASERS at once; then FADE_MUSIC_OUT, FADE_VIDEO_OUT and
+   FADE_PIXELS together over their length, the whole show fading to black;
+   then STOP_CONDUCTOR once the fade is done. Nothing follows: the rig stays
+   dark until an operator acts or the next show starts.
+   Lasers blanked by a pause or an abort stay blanked until a RESUME_SHOW
+   or the next START_SHOW. Arming is never touched by any of it.
 3. Never perform anything for a refused Outcome (Outcome.refused is set).
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
@@ -104,28 +110,30 @@ FREEZE_SHOW = "FREEZE_SHOW"          # pixels, video and timecode hold the
                                      # current frame; timecode keeps sending
                                      # the frozen frame
 FADE_MUSIC_OUT = "FADE_MUSIC_OUT"    # show music fades out
+FADE_VIDEO_OUT = "FADE_VIDEO_OUT"    # MadMapper's video fades to black
 BLANK_LASERS = "BLANK_LASERS"        # a real blank command to BEYOND
 RESUME_SHOW = "RESUME_SHOW"          # carry on from the frozen frame
 FADE_MUSIC_IN = "FADE_MUSIC_IN"      # show music fades back up
 UNBLANK_LASERS = "UNBLANK_LASERS"    # once timecode is moving again
 EFFECTS = (PRESHOW_LOOK, INTERMISSION, START_SHOW, STOP_CONDUCTOR,
-           FREEZE_SHOW, FADE_MUSIC_OUT, BLANK_LASERS, RESUME_SHOW,
+           FREEZE_SHOW, FADE_MUSIC_OUT, FADE_VIDEO_OUT, BLANK_LASERS,
+           RESUME_SHOW,
            FADE_MUSIC_IN, UNBLANK_LASERS,
            FADE_PIXELS, ZERO_FLAME_CUES, BLACKOUT)
 
-# Abort, precisely, per the handoff. Flames first because the handoff says
-# "immediately" for them and they are the one that matters for safety; the
-# performer is free to run the three at once. Aborting never disarms.
+# Abort fades the whole show to black (Jeff, 2026-09-24: "On an abort, the
+# whole show should fade to black"). Flame cues to zero and lasers blanked
+# at once; music, video and pixels fade together over ABORT_FADE_S; then the
+# MadMapper conductor stops. Aborting never disarms.
 ABORT_FADE_S = 1.0
 CLOSING_FADE_S = 1.0
 
-# OPEN QUESTION FOR JEFF, and the one place it is decided. After a show is
-# stopped early (Abort, a start that failed, a restart during a show) the
-# machine lands in STANDBY, which section 5 defines as "intermission
-# running", while Abort itself says stop the conductor and fade to black.
-# True: after the fade the intermission starts again. False: the rig stays
-# dark until the next show ends or the operator resumes.
-INTERMISSION_AFTER_A_STOPPED_SHOW = True
+# The one place it is decided what follows a show stopped early (Abort, a
+# start that failed, a restart during a show). Jeff, 2026-09-24: "On an
+# abort, the whole show should fade to black." So False: after the fade the
+# rig stays dark, in STANDBY, until an operator acts or the next show
+# starts. True would bring the intermission back after the fade.
+INTERMISSION_AFTER_A_STOPPED_SHOW = False
 
 # How long after START_SHOW a show may still be reported as not having
 # started. Past this, a SHOW_FAILED is recorded as a fault and the show
@@ -915,8 +923,14 @@ def _closing_effects():
 
 
 def _abort_effects(n):
-    return [Effect(ZERO_FLAME_CUES, show=n), Effect(STOP_CONDUCTOR, show=n),
-            Effect(FADE_PIXELS, show=n, seconds=ABORT_FADE_S)]
+    """A show stopped early, faded whole: used by Abort (from SHOW or
+    PAUSED), a start that failed, and a restart during a show. From PAUSED
+    the lasers are already blanked; blanking again is harmless."""
+    return [Effect(ZERO_FLAME_CUES, show=n), Effect(BLANK_LASERS, show=n),
+            Effect(FADE_MUSIC_OUT, show=n, seconds=ABORT_FADE_S),
+            Effect(FADE_VIDEO_OUT, show=n, seconds=ABORT_FADE_S),
+            Effect(FADE_PIXELS, show=n, seconds=ABORT_FADE_S),
+            Effect(STOP_CONDUCTOR, show=n)]
 
 
 # What arriving in each state asks for. The ONE place states are entered:
@@ -1096,8 +1110,8 @@ def _boot_done(m, ev, now):
         tx.effects.extend(_abort_effects(n))
         tx.note(BOOT_DONE, "fault", why,
                 f"ltcplay restarted during show {n}. The show is over and "
-                f"marked FAULT; flame cues zeroed, MadMapper stopped, pixels "
-                f"faded.", show=n)
+                f"marked FAULT; flame cues zeroed, lasers blanked, the show "
+                f"faded to black and MadMapper stopped.", show=n)
     tx.m = replace(tx.m, resumed_from="")
     # Anything already past its window is MISSED before choosing a state,
     # which is the restart rule: a reboot at 18:04 marks 18:00 MISSED and
@@ -1254,8 +1268,9 @@ def _show_failed(m, ev, now):
     return _show_stopped(
         m, ev, now, FAULT, f"FAULT ({what})",
         f"Show {m.running} did not start: {what}. Reported by {ev.actor}. "
-        f"Slot marked FAULT; flame cues zeroed, MadMapper stopped, pixels "
-        f"faded. The next show is still attempted.",
+        f"Slot marked FAULT; flame cues zeroed, lasers blanked, the show "
+        f"faded to black and MadMapper stopped. The next show is still "
+        f"attempted.",
         _abort_effects(m.running))
 
 
@@ -1484,8 +1499,9 @@ def _abort(m, ev, now):
     return _show_stopped(
         m, ev, now, ABORTED, "ABORTED (operator)",
         f"{_operator_name(ev)} pressed Abort{_screen(ev)} during show {n}. "
-        f"Flame cues zeroed, MadMapper stopped, pixels fading to black over "
-        f"{ABORT_FADE_S:g} s. Nothing was disarmed.",
+        f"Flame cues zeroed and lasers blanked; music, video and pixels "
+        f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
+        f"Nothing was disarmed.",
         _abort_effects(n), abort=True)
 
 
