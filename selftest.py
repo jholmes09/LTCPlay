@@ -9656,6 +9656,317 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
     print("  ok")
 
 
+# ------------------------------------------------------------ tctest -----
+# The hand-fired test Art-Net timecode command, section 5 of the Fire & Ice
+# handoff: "A timecode test button... yes." None of these import
+# ltcplay.tctest at module scope, and tctest.py itself does not import
+# ltcplay.clock at module scope either -- see test_tctest_never_touches_
+# session_or_sacn below, which proves both from a fresh interpreter.
+
+def test_tctest_packets_on_the_wire():
+    section("tctest: packets on the wire, byte for byte, right count")
+    import io
+    import socket as _socket
+    import tempfile
+    from ltcplay import tctest as TT
+    from ltcplay.tc import frames_to_tc, tc_to_frames
+
+    rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(0.5)
+    port = rx.getsockname()[1]
+    lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
+    out_s, err_s = io.StringIO(), io.StringIO()
+    seconds = 0.2
+    # Starts one second and change before midnight, on purpose: the run
+    # crosses the hour boundary, which is the one place a naive frame count
+    # sends hour 24 instead of wrapping to 0 and arttimecode() refuses it.
+    rc = TT.run([("test", "127.0.0.1")], False, start="23:59:59:27",
+               seconds=seconds, lock_path=lockpath, port=port,
+               out_stream=out_s, err_stream=err_s)
+    check(rc == 0, f"a clean tctest run did not return 0: {rc} "
+                  f"({err_s.getvalue()!r})")
+
+    pkts = []
+    try:
+        while True:
+            pkts.append(rx.recv(64))
+    except _socket.timeout:
+        pass
+    rx.close()
+
+    want_n = int(round(seconds * 30))
+    check(len(pkts) == want_n, f"tctest sent {len(pkts)} packets for a "
+                              f"{seconds}s run at 30fps, wanted {want_n}")
+
+    start_n = tc_to_frames(23, 59, 59, 27, 30, False)
+    want_frames = []
+    for i in range(want_n):
+        h, m, s, f = frames_to_tc(start_n + i, 30, False)
+        want_frames.append((h % 24, m, s, f))
+    got_frames = [_tc_of(p)[:4] for p in pkts]
+    check(got_frames == want_frames,
+          f"tctest frames are not the start frame followed by strictly "
+          f"increasing ones: got {got_frames}, wanted {want_frames}")
+    check(all(_tc_of(p)[4] == 3 for p in pkts),
+          "tctest did not send type 3, SMPTE 30 fps non drop")
+    print("  ok")
+
+
+def test_tctest_only_named_nodes_receive():
+    section("tctest: only the named nodes receive packets")
+    # This machine's loopback interface answers only on 127.0.0.1 -- no
+    # 127.0.0.2 alias to give a second node its own address, the way a real
+    # rig would. So the exclusion is proved on the wire a different way:
+    # two real UDP listeners, one on the port test timecode is told to use
+    # and one on a port it is never told about, plus a packet COUNT. A show
+    # file names two nodes; only one is asked for with --to. If a "MadMapper
+    # only" run ever put both destinations on the wire (the exact "defaults
+    # to all nodes" bug this guards against), the named listener would see
+    # twice as many packets as a run that only ever had one destination to
+    # begin with -- and the second listener proves nothing strays onto a
+    # port nobody named either.
+    import io
+    import json
+    import socket as _socket
+    import tempfile
+    from ltcplay import tctest as TT
+
+    named = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    named.bind(("127.0.0.1", 0))
+    named.settimeout(0.5)
+    port = named.getsockname()[1]
+    stray_port = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    stray_port.bind(("127.0.0.1", 0))
+    stray_port.settimeout(0.5)
+
+    work = tempfile.mkdtemp()
+    show = os.path.join(work, "show.json")
+    json.dump({"fps": 30, "show_dir": work,
+              "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}],
+              "clock": {"source": "artnet_master",
+                        "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                            "Other": "10.0.0.40"}}}},
+             open(show, "w"))
+    dests, is_bc = TT.resolve_destinations(show=show, to=["MadMapper"])
+    check(dests == [("MadMapper", "127.0.0.1")],
+          f"resolve_destinations returned more than the one name asked "
+          f"for: {dests}")
+    check(is_bc is False, "naming one node by hand turned on broadcast")
+
+    seconds = 0.1
+    lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
+    out_s, err_s = io.StringIO(), io.StringIO()
+    rc = TT.run(dests, is_bc, seconds=seconds, lock_path=lockpath, port=port,
+               out_stream=out_s, err_stream=err_s)
+    check(rc == 0, f"tctest did not run cleanly: {err_s.getvalue()!r}")
+
+    got_named = []
+    try:
+        while True:
+            got_named.append(named.recv(64))
+    except _socket.timeout:
+        pass
+    want_n = int(round(seconds * 30))
+    check(len(got_named) == want_n,
+          f"the named node received {len(got_named)} packets, wanted "
+          f"exactly {want_n} -- one destination sends one packet a frame, "
+          f"not two")
+    try:
+        stray = stray_port.recv(64)
+        check(False, f"a packet reached a port nothing was told to use: "
+                     f"{stray!r}")
+    except _socket.timeout:
+        pass
+
+    # And the destination the show file names but --to does not: rebuilding
+    # dests as if the "Other" node had wrongly been included doubles the
+    # traffic the SAME listener sees for the SAME two-node show file, which
+    # is the concrete shape the "defaults to all nodes" bug takes.
+    both = dests + [("Other", "127.0.0.1")]
+    out_s2, err_s2 = io.StringIO(), io.StringIO()
+    rc2 = TT.run(both, False, seconds=seconds,
+                lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+                port=port, out_stream=out_s2, err_stream=err_s2)
+    check(rc2 == 0, f"tctest did not run cleanly: {err_s2.getvalue()!r}")
+    got_both = []
+    try:
+        while True:
+            got_both.append(named.recv(64))
+    except _socket.timeout:
+        pass
+    check(len(got_both) == 2 * want_n,
+          f"two destinations at the same address should double the "
+          f"packets the wire sees ({len(got_both)} for {want_n * 2} "
+          f"wanted); this is the check that catches a silent 'send to "
+          f"everyone' regression")
+
+    named.close()
+    stray_port.close()
+    print("  ok")
+
+
+def test_tctest_refusals():
+    section("tctest: refuses with a plain sentence, never guesses")
+    import io
+    import json
+    import tempfile
+    from ltcplay import onlyone
+    from ltcplay import tctest as TT
+
+    try:
+        TT.resolve_destinations()
+        check(False, "tctest ran with no destination named at all")
+    except TT.TcTestError as e:
+        check("needs to know where" in str(e),
+              f"the no-destination refusal is unclear: {e}")
+
+    work = tempfile.mkdtemp()
+    show = os.path.join(work, "show.json")
+    json.dump({"fps": 30, "show_dir": work,
+              "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}],
+              "clock": {"source": "artnet_master",
+                        "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                            "BEYOND": "127.0.0.2"}}}},
+             open(show, "w"))
+
+    try:
+        TT.resolve_destinations(show=show, to=["Nope"])
+        check(False, "an unknown node name was accepted")
+    except TT.TcTestError as e:
+        check("'Nope'" in str(e) and "MadMapper" in str(e)
+              and "BEYOND" in str(e),
+              f"the unknown-node refusal does not name the real nodes: {e}")
+
+    try:
+        TT.resolve_destinations(show=show)
+        check(False, "--show with no --to did not refuse")
+    except TT.TcTestError as e:
+        check("--to" in str(e), f"unclear refusal: {e}")
+
+    try:
+        TT.resolve_destinations(node=["A=127.0.0.1"], broadcast="10.0.0.255")
+        check(False, "--node together with --broadcast was accepted")
+    except TT.TcTestError as e:
+        check("one" in str(e).lower(), f"unclear refusal: {e}")
+
+    for bad in ("99:99:99:99", "not a timecode", "25:00:00:00", "1:2:3"):
+        try:
+            TT.parse_start(bad)
+            check(False, f"{bad!r} was accepted as a start timecode")
+        except TT.TcTestError:
+            pass
+
+    lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
+    held = onlyone.OutputLock(lockpath, "the Run window").acquire()
+    try:
+        out_s, err_s = io.StringIO(), io.StringIO()
+        rc = TT.run([("test", "127.0.0.1")], False, seconds=0.1,
+                   lock_path=lockpath, out_stream=out_s, err_stream=err_s)
+        check(rc != 0, "tctest ran while ltcplay already held the output "
+                      "lock")
+        check("already sending" in err_s.getvalue(),
+              f"the refusal does not say the rig is already sending: "
+              f"{err_s.getvalue()!r}")
+        check("Run window" in err_s.getvalue(),
+              f"the refusal does not name who is holding it: "
+              f"{err_s.getvalue()!r}")
+    finally:
+        held.release()
+
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "tctest.py"), encoding="utf-8").read()
+    check("—" not in src and "–" not in src,
+          "tctest.py carries an em or en dash")
+    print("  ok")
+
+
+def test_tctest_beyond_warning():
+    section("tctest: the BEYOND warning")
+    import io
+    import tempfile
+    from ltcplay import tctest as TT
+
+    check(TT.warns_about_beyond([("BEYOND", "10.0.0.1")], False) is True,
+          "a node named BEYOND does not trigger the warning")
+    check(TT.warns_about_beyond([("beyond", "10.0.0.1")], False) is True,
+          "the BEYOND match should not be case sensitive")
+    check(TT.warns_about_beyond([("MadMapper", "10.0.0.1")], False) is False,
+          "a node not named BEYOND triggered the warning")
+    check(TT.warns_about_beyond([], True) is True,
+          "an explicit --broadcast did not trigger the warning")
+
+    out_s, err_s = io.StringIO(), io.StringIO()
+    TT.run([("BEYOND", "127.0.0.1")], False, seconds=0.05,
+          lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+          out_stream=out_s, err_stream=err_s)
+    check(TT.BEYOND_WARNING in err_s.getvalue(),
+          f"tctest sent to BEYOND with no warning: {err_s.getvalue()!r}")
+
+    out_s2, err_s2 = io.StringIO(), io.StringIO()
+    TT.run([("MadMapper", "127.0.0.1")], False, seconds=0.05,
+          lock_path=os.path.join(tempfile.mkdtemp(), "out.lock"),
+          out_stream=out_s2, err_stream=err_s2)
+    check(TT.BEYOND_WARNING not in err_s2.getvalue(),
+          "tctest warned about BEYOND when nothing was sent to it")
+    print("  ok")
+
+
+def test_tctest_never_touches_session_or_sacn():
+    section("tctest: no session, no sACN, ever -- proven fresh")
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "tctest.py"),
+              encoding="utf-8").read()
+    check(not re.search(
+        r"^\s*(from \.session |from \. import .*\bsession\b|"
+        r"import ltcplay\.session|from ltcplay import .*\bsession\b)",
+        src, re.M),
+        "tctest.py imports the session module")
+    check(not re.search(
+        r"^(from \.clock |from \. import .*\bclock\b|"
+        r"import ltcplay\.clock|from ltcplay import .*\bclock\b)",
+        src, re.M),
+        "tctest.py imports the clock module at module scope; every clock "
+        "import in this program is inside a function")
+    check("Sender" not in src,
+          "tctest.py names output.Sender, the pixel/sACN sender; it must "
+          "only ever build clock.TimecodeOut")
+    check("5568" not in src, "tctest.py mentions 5568, the sACN port")
+
+    import json
+    import subprocess as _sp
+    script = r'''
+import io, json, os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from ltcplay import tctest as TT
+lockpath = os.path.join(tempfile.mkdtemp(), "out.lock")
+out_s, err_s = io.StringIO(), io.StringIO()
+TT.run([("test", "127.0.0.1")], False, seconds=0.05, lock_path=lockpath,
+      out_stream=out_s, err_stream=err_s)
+print(json.dumps({
+    "session": "ltcplay.session" in sys.modules,
+    "player": "ltcplay.player" in sys.modules,
+    "clock": "ltcplay.clock" in sys.modules,
+    "output": "ltcplay.output" in sys.modules,
+}))
+'''
+    r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
+               text=True, timeout=30)
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        check(False, f"the fresh tctest run did not complete: "
+                     f"{r.stdout[-400:]} {r.stderr[-800:]}")
+        return
+    check(not res["session"], "running tctest imported ltcplay.session")
+    check(not res["player"], "running tctest imported ltcplay.player")
+    # The clock and its Art-Net timecode socket ARE expected here: tctest's
+    # whole job is to drive them. What must never be true is session/player.
+    check(res["clock"], "tctest ran but never loaded the clock it sends "
+                        "timecode through")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -9773,6 +10084,11 @@ if __name__ == "__main__":
     test_forwarded_timecode_steps_by_one()
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
+    test_tctest_packets_on_the_wire()
+    test_tctest_only_named_nodes_receive()
+    test_tctest_refusals()
+    test_tctest_beyond_warning()
+    test_tctest_never_touches_session_or_sacn()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

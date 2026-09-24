@@ -1278,6 +1278,28 @@ MUTATIONS = [
   '        try:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
   '        if True:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
 
+ ("tctest defaults to every node in the show file when --to is left off",
+  'ltcplay/tctest.py',
+  '        names = to\n        if not names:\n            raise TcTestError(\n'
+  '                "--show needs --to as well: name at least one node from "\n'
+  '                "its clock.artnet.nodes. tctest never defaults to sending "\n'
+  '                "to every node in the show file.")',
+  '        names = to or list(available)'),
+
+ ("tctest ignores the output lock another ltcplay is holding",
+  'ltcplay/tctest.py',
+  '    lock = onlyone.OutputLock(where=lock_path, note=note)\n    try:\n        lock.acquire()\n    except onlyone.AlreadyRunning as e:',
+  '    lock = onlyone.OutputLock(where=lock_path, note=note)\n    try:\n        pass\n    except onlyone.AlreadyRunning as e:'),
+
+ ("tctest sends something other than Art-Net timecode, as a pixel or "
+  "sACN sender would", 'ltcplay/tctest.py',
+  '        out_sock.send(arttimecode(h, m, s, f, MASTER_TYPE))',
+  '        out_sock.send(bytes(19))'),
+
+ ("tctest skips the BEYOND warning", 'ltcplay/tctest.py',
+  '    if warns_about_beyond(dests, is_broadcast):',
+  '    if False:'),
+
 ]
 
 
