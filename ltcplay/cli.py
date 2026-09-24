@@ -1058,6 +1058,20 @@ def cmd_run(args):
     return 0
 
 
+def cmd_tctest(args):
+    """Send TEST Art-Net timecode by hand. Nothing else goes out: no
+    session, no pixels, no sACN, no scheduler. See ltcplay/tctest.py."""
+    from . import tctest as tctest_mod
+    try:
+        dests, is_broadcast = tctest_mod.resolve_destinations(
+            show=args.show, to=args.to, node=args.node,
+            broadcast=args.broadcast)
+        return tctest_mod.run(dests, is_broadcast, start=args.start,
+                              seconds=args.seconds, bind_ip=args.bind)
+    except tctest_mod.TcTestError as e:
+        return _err(str(e))
+
+
 def cmd_bundle(args):
     """Make a self-contained show folder that can be carried to another Mac.
 
@@ -1693,6 +1707,31 @@ def main(argv=None):
                         "timecode; press Back to timecode on the web page, "
                         "or restart, to follow it")
     r.set_defaults(func=cmd_run)
+
+    tt = sub.add_parser("tctest", help="send TEST Art-Net timecode by hand, "
+                                       "nothing else")
+    tt.add_argument("--show", help="a show file to read destinations from "
+                                   "(clock.artnet.nodes); use with --to")
+    tt.add_argument("--to", action="append", default=[],
+                    help="a node name from that show file's "
+                         "clock.artnet.nodes; repeat for more than one")
+    tt.add_argument("--node", action="append", default=[], metavar="NAME=IP",
+                    help="a destination given directly, no show file "
+                         "needed; repeat for more than one")
+    tt.add_argument("--broadcast", metavar="ADDR",
+                    help="broadcast address instead of named nodes. "
+                         "Anything on the network that follows timecode "
+                         "plays its cues, lasers included, so use this "
+                         "only when you mean it")
+    tt.add_argument("--start", default="00:00:00:00",
+                    help="timecode to start at, HH:MM:SS:FF, 30 fps non "
+                         "drop (default 00:00:00:00)")
+    tt.add_argument("--seconds", type=float, default=60.0,
+                    help="how long to send for; 0 means until stopped "
+                         "(default 60)")
+    tt.add_argument("--bind", help="local IP to send from, honoured the "
+                                   "same way as `run`")
+    tt.set_defaults(func=cmd_tctest)
 
     mk = sub.add_parser("markers", help="build a timeline from a DAW marker CSV")
     mk.add_argument("csv")
