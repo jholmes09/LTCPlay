@@ -420,6 +420,23 @@ class Player:
                 self._epoch += delta * self.slew
             self.state = LOCKED
 
+    def drop_clock(self):
+        """The show clock stopped on purpose: hand the rig to the idle look.
+
+        Only a master show clock (clock.py) calls this, when its cue ends or
+        is halted. Forgetting the epoch sends the next tick straight to the
+        preshow look, or to black with none. Leaving it would let the feed
+        look LOST, and on_lost would run the rest of the show file on its
+        own with MadMapper and BEYOND already stopped. Nothing on the LTC
+        path calls this, so GPL never reaches it."""
+        with self._lock:
+            self._epoch = None
+            self._pending_jump = None
+            self._park_since = None
+            self._last_tc_value = None
+            self.freerun_epoch = None
+        self._event("clock", "the show clock stopped; back to the idle look")
+
     def _now_tc(self):
         if self._epoch is None:
             return None

@@ -149,6 +149,10 @@ class Session:
         # describes them; direct FSEQ playback needs none of this.
         self.trigger = None
         self.trigger_problems = []
+        # The show clock, from the show file's "clock" block. None, the GPL
+        # case, means LTC in on an audio input exactly as it has always been.
+        self.clock = None
+        self.clock_errors = 0
         self.notes = []          # things worth saying once, at startup
         self.problems = []       # preflight warnings about the cues
         self.decode_errors = 0
@@ -300,6 +304,52 @@ class Session:
                    f" {os.path.basename(idle)} is named in the show file but "
                    f"would not open."))
 
+        # The clock, and only when the show file names one. Built after the
+        # cues open, because free running to the end of a show needs to know
+        # how long the show is.
+        if self.tl.clock is not None:
+            from . import clock as clock_mod
+            try:
+                self.clock = clock_mod.build(
+                    self.tl.clock, self.tl, self.player.feed_timecode,
+                    log=self.log, no_output=self.no_output,
+                    bind_ip=self.bind, on_stop=self.player.drop_clock)
+            except clock_mod.ClockConfigError as e:
+                raise SessionError(str(e))
+            # The display reads the clock's health from the player, the way
+            # it reads the rig watch and the input.
+            self.player.clock = self.clock
+            self.notes.append(f"Show clock: {self.tl.clock.summary()}.")
+            if self.clock.master:
+                # on_lost is a policy for a timecode feed that dies. Here the
+                # clock owns the pixels: a cue that ends or is halted hands
+                # them back to the idle look directly. A clock thread that
+                # stalls mid-cue holds the frame until it catches up; it
+                # must never start a free run that outranks the clock.
+                if self.player.on_lost != "hold":
+                    if self.tl.on_lost:
+                        self.notes.append(
+                            f"'on_lost' is {self.tl.on_lost!r} in the show "
+                            f"file. It does not apply while this machine is "
+                            f"the show clock: a stopped cue goes to the idle "
+                            f"look.")
+                    self.player.on_lost = "hold"
+                # This machine makes the timecode, so there is nothing to
+                # listen to and no input is opened at all.
+                if self.wav:
+                    raise SessionError(
+                        "This show file makes this machine the show clock, "
+                        "so a WAV of timecode has nothing to drive. Run it "
+                        "without the WAV.")
+                self.input_source = {}
+                self.dev = None
+                self.channel = 1
+                self.rate = 48000
+                self.input_summary = ("none, this machine is the show clock "
+                                      "(Art-Net timecode)")
+                self.dec = LTCDecoder(self.rate)
+                return self
+
         inp, source, conflict = settings_mod.resolve(
             settings_mod.load(), self.tl.input, self.cli_in)
         self.input_source = source
@@ -359,6 +409,19 @@ class Session:
                 self.player.feed_timecode(ltc_seconds(fr, self.tl),
                                           captured_at - back,
                                           drop=fr.drop, text=str(fr))
+                clk = self.clock
+                if clk is not None:
+                    # Its own guard: a clock fault must never cost the
+                    # chase engine a frame, nor be counted as a decode error.
+                    try:
+                        clk.ltc_frame(fr.h, fr.m, fr.s, fr.f,
+                                      captured_at - back)
+                    except Exception as e:
+                        self.clock_errors += 1
+                        if self.log:
+                            self.log.event("clock-error",
+                                           f"{type(e).__name__}: {e}",
+                                           throttle_s=5.0)
         except Exception as e:
             # This runs on the CoreAudio callback thread. Letting it out stops
             # the stream with no error anywhere a person can see it.
@@ -390,7 +453,8 @@ class Session:
                     "the rig." + who + "\nTwo players on the same universes "
                     "fight frame by frame and the rig looks broken. Stop that one "
                     "first -- it is either the Run window or the Web window.")
-        if not self.wav:
+        if not self.wav and not (self.clock is not None
+                                 and self.clock.master):
             # With no device resolved, hand it a placeholder carrying the NAME
             # the operator chose. That name is what the supervisor follows when
             # the interface appears; an index would be meaningless.
@@ -408,6 +472,9 @@ class Session:
         step = self.player.start()
         self.started_at = time.monotonic()
         self._running = True
+        if self.clock is not None:
+            # Run pressed. A master still sends nothing until a cue plays.
+            self.clock.start()
         # The show file may ask for this mode to be armed from the start. Off
         # unless it says so: a backup that arms itself is not a backup.
         if self.tl.trigger is not None and self.tl.trigger.enabled:
@@ -492,6 +559,9 @@ class Session:
                                "input.")
         if not self._running:
             raise SessionError("Nothing is running.")
+        if self.clock is not None and self.clock.master:
+            raise SessionError("This machine is the show clock, so there is "
+                               "no timecode input to rebuild.")
         sd = self._sd or _import_sounddevice()
         self._sd = sd
         old, self.audio = self.audio, None
@@ -671,6 +741,58 @@ class Session:
             self.log.event("trigger", msg)
         return on, msg
 
+    # -- the show clock ---------------------------------------------------
+    def clock_play(self, cue=None):
+        """Start the show clock at 00:00:00:00 for one cue.
+
+        Only when this machine is the clock. `cue` is a cue's name, its file
+        name or its timecode in the show file; None means the first cue.
+        Returns the cue."""
+        if not self._running:
+            raise SessionError("Nothing is running. Press Run first.")
+        if self.clock is None or not self.clock.master:
+            raise SessionError("This show follows incoming timecode, so this "
+                               "machine cannot start the clock.")
+        cues = self.tl.cues
+        if not cues:
+            raise SessionError("This show has no cues to play.")
+        if cue is None:
+            pick = cues[0]
+        else:
+            want = str(cue).strip().lower()
+            hits = [c for c in cues
+                    if want in (c.name.lower(),
+                                os.path.basename(c.path).lower(),
+                                c.tc_text.lower())]
+            if len(hits) != 1:
+                raise SessionError(
+                    f"{cue!r} " + ("matches more than one cue" if hits else
+                                   "is not a cue in this show") +
+                    f". The cues are: {', '.join(c.name for c in cues)}.")
+            pick = hits[0]
+        if pick.fseq is None or not pick.duration:
+            raise SessionError(
+                f"{pick.name} did not open ({os.path.basename(pick.path)}), "
+                f"so there is no length to run its timecode for, and it "
+                f"would run forever. Fix the render and restart.")
+        # A free run left over from the last cue ending would outrank the
+        # clock, and the rig would ignore the cue just started.
+        if self.player.freerun_epoch is not None:
+            self.player.release()
+        try:
+            self.clock.play(pick.tc_seconds, pick.duration, pick.name)
+        except ValueError as e:
+            # A Stop that lands while this is on its way in stops the clock
+            # first. The caller gets the same kind of sentence as every other
+            # refusal here, not the clock's own exception.
+            raise SessionError(str(e))
+        return pick
+
+    def clock_halt(self):
+        """Stop the show clock now. Nothing is sent until the next cue."""
+        if self.clock is not None:
+            self.clock.halt()
+
     def snapshot(self):
         """Everything a display needs, as plain data.
 
@@ -692,12 +814,16 @@ class Session:
         rate, drop, confident = dec.detected_rate
         a = self.audio
         s = self.sender
+        input_used = not (self.clock is not None and self.clock.master)
         snap = {
             "running": self._running,
             "show": tl.name or os.path.basename(self.timeline_path),
             "timeline": os.path.basename(self.timeline_path),
             "uptime": (now - self.started_at) if self.started_at else 0.0,
-            "state": p.state,
+            # Between cues on a master clock the chase engine reads LOST,
+            # which the page draws red. Nothing is lost: no cue is playing.
+            # The terminal reads the same function, so the two agree.
+            "state": display_mod.shown_state(p),
             "source": p.source,
             "ltc_in": p.last_ltc_text or "--:--:--:--",
             "ltc_age": (now - p.last_ltc_at) if p.last_ltc_at else None,
@@ -758,7 +884,11 @@ class Session:
                                     if self.trigger else None),
             "input": self.input_summary,
             "input_attached": (True if self.wav
+                               else None if not input_used
                                else bool(a and a.attached)),
+            # False when this machine is the show clock: there is no input
+            # to be open, and drawing it red would be a false alarm.
+            "input_used": input_used,
             # Derived from what is true NOW. Holding the first failure
             # meant the page still showed it long after the input came back.
             "input_error": ("" if (a is not None and a.attached)
@@ -788,6 +918,8 @@ class Session:
                       "seconds": c.tc_seconds,
                       "duration": c.duration} for c in tl.cues],
         }
+        if self.clock is not None:
+            snap["clock"] = self.clock.snapshot()
         if cue is not None and cue.fseq is not None and tc is not None:
             el = tc - cue.tc_seconds
             # Two clocks, deliberately. "tc" is where the show is; "seq" is
@@ -829,6 +961,14 @@ class Session:
                 if self.sender is not None and hasattr(self.sender, "set_muted"):
                     self.sender.set_muted(())
                 trig.stop()
+            except Exception:
+                pass
+        # The timecode stops before the blackout, so no receiver is still
+        # chasing a clock while the pixels go dark underneath it.
+        clk = getattr(self, "clock", None)
+        if clk is not None:
+            try:
+                clk.stop()
             except Exception:
                 pass
         if self.sender is not None and not self.no_output:

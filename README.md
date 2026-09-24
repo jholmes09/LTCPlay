@@ -102,6 +102,45 @@ what happens between cues while timecode is still running: `blackout` is the
 default, `idle` keeps the preshow look up until the next cue, `hold` freezes on
 the last frame.
 
+### The show clock (Fire & Ice only)
+
+A show file with no `clock` block runs exactly as above: timecode in on an
+audio input, chased. GPL has none and never loads any of this. A `clock` block
+says who owns the clock:
+
+    "clock": {
+      "source": "artnet_master",
+      "show_audio": "madmapper",
+      "artnet": {"nodes": {"MadMapper": "127.0.0.1", "BEYOND": "10.0.0.40"}},
+      "zones": {"show": 1, "intermission": 2, "forward": ["show"]}
+    }
+
+`source` is `artnet_master` or `ltc_audio_slave`. `show_audio` is `madmapper`.
+`artnet` names each receiver under `nodes`, or gives one `"broadcast":
+"10.0.0.255"` instead of `nodes`, never both. Timecode goes out from an
+ephemeral source port on the `--bind` interface; on the bench, confirm BEYOND
+accepts that.
+
+`artnet_master`: this machine is the clock. No input is opened. Each cue sends
+Art-Net timecode (ArtTimeCode, 30 fps non drop) from 00:00:00:00, one packet a
+frame, while the pixels play the same cue from its place in the show file.
+Nothing is sent until a cue is started. When a cue ends or is stopped, the
+timecode stops and the pixels go straight to the preshow look (or black):
+`on_lost` does not apply while this machine is the clock.
+
+`ltc_audio_slave`: fallback 3, MadMapper is the clock. LTC comes in and is
+chased exactly as today. The hour picks the zone (`show` and `intermission`
+hours from `zones`, anything else is idle), and the zones listed in `forward`
+go out as Art-Net timecode rebased to hour zero, so BEYOND sees the same
+numbers whichever machine is master. If timecode is lost during the show, the
+Art-Net timecode runs on to the end of the show (the end of the last cue in
+that hour, or `zones.show_len_s`) and then stops.
+
+`ltc_audio_master` (fallback 1, LTC audio out) and `"show_audio": "ltcplay"`
+(fallback 2) are refused when the show file loads: they are not built yet. A
+misspelled key anywhere in the block is refused and named, like every other
+setting.
+
 ## The input
 
 A headphone jack is one device with one input. A USB interface is not, and
