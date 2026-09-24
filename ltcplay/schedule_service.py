@@ -19,7 +19,8 @@ import struct
 import threading
 import time as _time
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from dataclasses import replace
+from datetime import datetime, timezone
 
 from . import appdata
 from . import schedule as sch
@@ -28,6 +29,7 @@ from . import settings as settings_mod
 RULE_FILE = "ltcplay_schedule.json"
 PREVIOUS_SUFFIX = ".previous.json"
 TONIGHT_PREFIX = "ltcplay_tonight_"
+OPERATORS_FILE = "ltcplay_operators.json"
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.
@@ -66,6 +68,57 @@ def tonight_path(d, folder=None):
     the edits, the statuses and when the last show ended."""
     return os.path.join(folder or data_dir(),
                         f"{TONIGHT_PREFIX}{d.isoformat()}.json")
+
+
+def operators_path(folder=None):
+    return os.path.join(folder or data_dir(), OPERATORS_FILE)
+
+
+def parse_operators(doc):
+    """The operator list from its file: {"operators": ["Andy", "Jeff"]}.
+    Raises ValueError with a sentence."""
+    if not isinstance(doc, dict) or set(doc) != {"operators"}:
+        raise ValueError('It has to be {"operators": [names]} and nothing '
+                         'else.')
+    names = doc["operators"]
+    if not isinstance(names, list) or not names:
+        raise ValueError("operators has to be a list of at least one name.")
+    out, seen = [], set()
+    for n in names:
+        if not isinstance(n, str) or not n.strip():
+            raise ValueError(f"{n!r} is not a name.")
+        if n.strip().lower() in seen:
+            raise ValueError(f"{n.strip()!r} is on the list twice.")
+        seen.add(n.strip().lower())
+        out.append(n.strip())
+    return tuple(out)
+
+
+def load_operators(folder=None):
+    """(names, sentence). The list of people who may press things. A missing
+    file is written with the defaults, Andy and Jeff, so there is something
+    to edit; a broken one leaves the defaults in force and says why.
+    Adding and removing names from a page comes later."""
+    path = operators_path(folder)
+    if not os.path.exists(path):
+        try:
+            write_json_atomic(path, {"operators": list(
+                sch.DEFAULT_OPERATORS)})
+            why = (f"The operator list was written to {path} with "
+                   f"{', '.join(sch.DEFAULT_OPERATORS)}.")
+        except OSError as e:
+            why = (f"The operator list could not be written to {path}: "
+                   f"{e}. Using {', '.join(sch.DEFAULT_OPERATORS)}.")
+        return sch.DEFAULT_OPERATORS, why
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            names = parse_operators(json.load(fh))
+    except (OSError, ValueError) as e:
+        return sch.DEFAULT_OPERATORS, (
+            f"The operator list {path} could not be used: "
+            f"{str(e).rstrip('.')}. Using "
+            f"{', '.join(sch.DEFAULT_OPERATORS)} until it is fixed.")
+    return names, ""
 
 
 # ------------------------------------------------------------ the file --
@@ -290,7 +343,9 @@ class Service:
         self.machine = None
         self.journal = deque(maxlen=self.JOURNAL)
         self.clock_check = None
-        self._dry_end = None
+        self.operators, why = load_operators(self.state_dir)
+        if why:
+            self._journal_line("system", why, action="operators")
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -339,9 +394,6 @@ class Service:
                 action=eff.kind, outcome="not performed",
                 reason="dry run, no transport in this build",
                 show=eff.show or None)
-            if eff.kind == sch.START_SHOW:
-                self._dry_end = now.astimezone(timezone.utc) + timedelta(
-                    seconds=self.machine.show_len_s)
 
     def _apply(self, ev, now=None):
         now = now or self.clock()
@@ -453,14 +505,14 @@ class Service:
             # (the machine was asleep across it) is marked MISSED in the
             # journal rather than dropped without a word.
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            if self.machine.state == sch.SHOW:
+            if self.machine.state in (sch.SHOW, sch.PAUSED):
                 # Never replace a running night: a show started by hand at
                 # 23:58 finishes on yesterday's list.
                 return True
             self.machine = None
         if self.machine is None:
-            self.machine = self._load_tonight(d, now)
-            self._dry_end = None
+            self.machine = replace(self._load_tonight(d, now),
+                                   operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
 
@@ -470,9 +522,10 @@ class Service:
             if not self._ensure_night(now):
                 return None
             m = self.machine
-            if DRY_RUN and m.state == sch.SHOW and self._dry_end is not None \
-                    and now >= self._dry_end:
-                self._dry_end = None
+            # Dry run: nothing was started, so the show "ends" when it would
+            # have, which a pause moves later. A paused show never ends.
+            if DRY_RUN and m.state == sch.SHOW and \
+                    now >= m.expected_end(now):
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
                                       show=m.running), now)

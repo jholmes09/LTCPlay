@@ -30,6 +30,15 @@ Whatever drives this engine and carries out its effects must:
 2. Perform the effects in the order given. ZERO_FLAME_CUES is immediate.
    FADE_PIXELS carries its length; an INTERMISSION listed after a fade
    starts when the fade has finished, never over it.
+   Pause (Hold during a show), in this order: ZERO_FLAME_CUES and
+   BLANK_LASERS at once (a real blank command to BEYOND, not only frozen
+   timecode: a frozen laser cue is a static beam), then FREEZE_SHOW (pixels,
+   video and timecode hold the current frame, and timecode keeps SENDING
+   that frozen frame so receivers hold instead of timing out), then
+   FADE_MUSIC_OUT. Resume: RESUME_SHOW carries on from the frozen frame,
+   FADE_MUSIC_IN, and UNBLANK_LASERS only once timecode is moving again.
+   Lasers blanked by a pause stay blanked until a RESUME_SHOW or the next
+   START_SHOW. Arming is never touched by any of it.
 3. Never perform anything for a refused Outcome (Outcome.refused is set).
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
@@ -64,9 +73,9 @@ except ImportError:                       # pragma: no cover, 3.9+ has it
 
 # ------------------------------------------------------------ vocabulary --
 
-BOOT, IDLE, STANDBY, SHOW, CLOSING, OFF, HOLD = (
-    "BOOT", "IDLE", "STANDBY", "SHOW", "CLOSING", "OFF", "HOLD")
-STATES = (BOOT, IDLE, STANDBY, SHOW, CLOSING, OFF, HOLD)
+BOOT, IDLE, STANDBY, SHOW, PAUSED, CLOSING, OFF, HOLD = (
+    "BOOT", "IDLE", "STANDBY", "SHOW", "PAUSED", "CLOSING", "OFF", "HOLD")
+STATES = (BOOT, IDLE, STANDBY, SHOW, PAUSED, CLOSING, OFF, HOLD)
 
 ACTORS = ("scheduler", "operator", "madmapper", "safety", "reader", "system")
 
@@ -75,7 +84,11 @@ ACTORS = ("scheduler", "operator", "madmapper", "safety", "reader", "system")
 PENDING, RUNNING, DONE, MISSED, SKIPPED, ABORTED, FAULT = (
     "PENDING", "RUNNING", "DONE", "MISSED", "SKIPPED", "ABORTED", "FAULT")
 NEXT = "NEXT"
-STATUSES = (DONE, RUNNING, NEXT, PENDING, MISSED, SKIPPED, ABORTED, FAULT)
+# A show whose time passed during a Hold. It waits, never starts by itself,
+# and starts only when the operator presses Start now.
+DELAYED = "DELAYED"
+STATUSES = (DONE, RUNNING, NEXT, PENDING, DELAYED, MISSED, SKIPPED, ABORTED,
+            FAULT)
 FINAL = frozenset((DONE, MISSED, SKIPPED, ABORTED, FAULT))
 
 # Effects. Somebody else performs these; this module only names them.
@@ -86,7 +99,18 @@ STOP_CONDUCTOR = "STOP_CONDUCTOR"    # MadMapper conductor stop
 FADE_PIXELS = "FADE_PIXELS"          # pixels to black over `seconds`
 ZERO_FLAME_CUES = "ZERO_FLAME_CUES"  # zero on every flame cue channel, now
 BLACKOUT = "BLACKOUT"                # everything dark
+# Hold during a show pauses it in place (Jeff, 2026-09-23).
+FREEZE_SHOW = "FREEZE_SHOW"          # pixels, video and timecode hold the
+                                     # current frame; timecode keeps sending
+                                     # the frozen frame
+FADE_MUSIC_OUT = "FADE_MUSIC_OUT"    # show music fades out
+BLANK_LASERS = "BLANK_LASERS"        # a real blank command to BEYOND
+RESUME_SHOW = "RESUME_SHOW"          # carry on from the frozen frame
+FADE_MUSIC_IN = "FADE_MUSIC_IN"      # show music fades back up
+UNBLANK_LASERS = "UNBLANK_LASERS"    # once timecode is moving again
 EFFECTS = (PRESHOW_LOOK, INTERMISSION, START_SHOW, STOP_CONDUCTOR,
+           FREEZE_SHOW, FADE_MUSIC_OUT, BLANK_LASERS, RESUME_SHOW,
+           FADE_MUSIC_IN, UNBLANK_LASERS,
            FADE_PIXELS, ZERO_FLAME_CUES, BLACKOUT)
 
 # Abort, precisely, per the handoff. Flames first because the handoff says
@@ -160,6 +184,9 @@ DELAY_CHOICES = (5, 10)
 # sentence rather than quietly clamped: a silent clamp is a setting that says
 # one thing and does another.
 MAX_LATE_GRACE_S = 15
+
+# Who may press things, until the operators file says otherwise.
+DEFAULT_OPERATORS = ("Andy", "Jeff")
 
 
 # -------------------------------------------------------------- the rule --
@@ -594,6 +621,7 @@ class Slot:
     fired_at: object = None
     confirmed_at: object = None   # timecode seen after the start
     ended_at: object = None
+    paused_s: float = 0.0    # time spent paused, which moves its end later
 
 
 @dataclass(frozen=True)
@@ -650,13 +678,14 @@ class Machine:
     slots: tuple = ()
     running: int = 0             # the show number running, 0 for none
     last_end: object = None      # when the last show ended, for guard_s
-    hold_pending: bool = False   # Hold pressed during a show
+    paused_at: object = None     # when the running show was paused
     held_from: str = ""          # where Resume goes back to
     faults: tuple = ()           # FAULT is a flag: these are its sentences
     shows_started: int = 0
     night_end: object = None     # tonight's last_end, UTC; None when dark
     resumed_from: str = ""       # the state saved before a restart
     rule_id: str = ""            # which rule tonight was built from
+    operators: tuple = DEFAULT_OPERATORS   # who may press things
 
     @property
     def fault(self):
@@ -675,6 +704,29 @@ class Machine:
     def next_slot(self):
         p = self.pending()
         return p[0] if p else None
+
+    def delayed(self):
+        """The show waiting after a Hold, or None. There is never more than
+        one."""
+        for s in self.slots:
+            if s.status == DELAYED:
+                return s
+        return None
+
+    def waiting(self):
+        """Is any show still to come, scheduled or delayed?"""
+        return self.next_slot() is not None or self.delayed() is not None
+
+    def expected_end(self, now=None):
+        """When the running show should finish: its start, its length, and
+        every second it has spent paused (still counting while paused)."""
+        s = self.slot(self.running)
+        if s is None:
+            return None
+        paused = s.paused_s
+        if self.paused_at is not None and now is not None:
+            paused += (_utc(now) - self.paused_at) / ONE_SECOND
+        return s.fired_at + timedelta(seconds=self.show_len_s + paused)
 
     def hm(self, dt):
         """An instant as tonight's wall clock reads it: 18:20."""
@@ -768,6 +820,9 @@ class _Tx:
             outcome=outcome, reason=reason, show=show,
             screen=ev.screen if op else "", who=ev.who if op else "",
             text=text))
+
+    def note_actor(self):
+        return "operator" if self.ev.actor == "operator" else "scheduler"
 
     def _set_state(self, state):
         # Only _enter calls this, so no state is ever entered without the
@@ -868,9 +923,19 @@ def _abort_effects(n):
 # IDLE is the preshow look; STANDBY is the intermission timeline running; HOLD
 # keeps the intermission running; SHOW starts the show; CLOSING fades out,
 # stops MadMapper, blacks out and zeroes the flame cues; OFF asks for nothing.
-def entry_effects(state, show=0, after_stop=False):
+def entry_effects(state, show=0, after_stop=False, resume=False):
     if state == IDLE:
         return [Effect(PRESHOW_LOOK)]
+    if state == PAUSED:
+        # Flames and lasers first, because they are the ones that must not
+        # linger; then the freeze, then the music.
+        return [Effect(ZERO_FLAME_CUES, show=show),
+                Effect(BLANK_LASERS, show=show),
+                Effect(FREEZE_SHOW, show=show),
+                Effect(FADE_MUSIC_OUT, show=show)]
+    if state == SHOW and resume:
+        return [Effect(RESUME_SHOW, show=show), Effect(FADE_MUSIC_IN, show=show),
+                Effect(UNBLANK_LASERS, show=show)]
     if state in (STANDBY, HOLD):
         if after_stop and not INTERMISSION_AFTER_A_STOPPED_SHOW:
             return []
@@ -882,20 +947,17 @@ def entry_effects(state, show=0, after_stop=False):
     return []
 
 
-def _enter(tx, state, show=0, after_stop=False):
+def _enter(tx, state, show=0, after_stop=False, resume=False):
     """Change state and add the effects that belong to arriving there."""
     tx._set_state(state)
-    tx.effects.extend(entry_effects(state, show, after_stop))
+    tx.effects.extend(entry_effects(state, show, after_stop, resume))
 
 
 def _after_show(tx, abort=False, stopped=False):
     """Where a show that has just finished, or been stopped, leaves the
     night. `stopped` is a show cut short (Abort, a failed start)."""
     m = tx.m
-    if m.hold_pending:
-        tx.m = replace(tx.m, hold_pending=False, held_from=STANDBY)
-        _enter(tx, HOLD, after_stop=stopped)
-    elif abort or m.next_slot() is not None:
+    if abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
         # closes the night if so.
         _enter(tx, STANDBY, after_stop=stopped)
@@ -903,16 +965,29 @@ def _after_show(tx, abort=False, stopped=False):
         _enter(tx, CLOSING)
 
 
-def _fire(tx, s, operator=False):
+# Start now's three reasons (Jeff, 2026-09-23).
+DELAYED_START = "DELAYED START (operator hold)"
+STARTED_EARLY = "STARTED EARLY (operator)"
+EXTRA_SHOW = "EXTRA SHOW (operator)"
+
+
+def _fire(tx, s, reason="FIRED"):
+    """Start one show. `reason` is FIRED for the schedule, or one of Start
+    now's three reasons."""
     now = tx.when
-    reason = "FIRED (operator)" if operator else "FIRED"
+    operator = reason != "FIRED"
     tx.set_slot(s.n, status=RUNNING, reason=reason, fired_at=now)
     tx.m = replace(tx.m, running=s.n, shows_started=tx.m.shows_started + 1,
-                   hold_pending=(tx.m.state == HOLD))
+                   held_from="", paused_at=None)
     _enter(tx, SHOW, show=s.n)
     if operator:
+        what = {DELAYED_START: f"the delayed show {s.n}, planned for "
+                               f"{clock(_local(tx.m, s.start))}",
+                STARTED_EARLY: f"show {s.n} early; it was due at "
+                               f"{clock(_local(tx.m, s.start))}",
+                EXTRA_SHOW: f"an extra show, {s.n}"}[reason]
         text = (f"{_operator_name(tx.ev)} pressed Start now"
-                f"{_screen(tx.ev)}. Show {s.n} started at "
+                f"{_screen(tx.ev)}. Started {what}, at "
                 f"{clock(_local(tx.m, now))}.")
     else:
         late = lateness_s(s.start, now)
@@ -921,6 +996,15 @@ def _fire(tx, s, operator=False):
                 + (f", {late} s after its time." if late else "."))
     tx.note(START_NOW if operator else "fire", "fired", reason, text,
             show=s.n, actor="operator" if operator else "scheduler")
+    # A show that was waiting after a Hold has now been overtaken.
+    d = tx.m.delayed()
+    if d is not None and d.n != s.n:
+        why = f"MISSED (show {s.n} started on schedule)" if not operator \
+            else f"MISSED (show {s.n} was started instead)"
+        tx.set_slot(d.n, status=MISSED, reason=why)
+        tx.note("miss", "missed", why,
+                f"The delayed show {d.n} will not run: show {s.n} started "
+                f"instead.", show=d.n, actor=tx.note_actor())
 
 
 def _screen(ev):
@@ -935,19 +1019,43 @@ def _miss(tx, s, why):
             show=s.n, actor="scheduler")
 
 
-def _sweep(tx):
+def _hold_back(tx, s):
+    """A show's time passed during a Hold: it waits instead of being missed.
+    Only the most recent one waits; an earlier one still waiting is MISSED."""
+    old = tx.m.delayed()
+    if old is not None:
+        why = "MISSED (on hold, a later show was delayed)"
+        tx.set_slot(old.n, status=MISSED, reason=why)
+        tx.note("miss", "missed", why,
+                f"Show {old.n} at {clock(_local(tx.m, old.start))} will not "
+                f"run: a later show's time has also passed during the Hold, "
+                f"and only the most recent one waits.", show=old.n,
+                actor="scheduler")
+    why = "DELAYED (on hold)"
+    tx.set_slot(s.n, status=DELAYED, reason=why)
+    tx.note("delay", "delayed", why,
+            f"Show {s.n} at {clock(_local(tx.m, s.start))} is delayed by the "
+            f"Hold. It waits, and starts only when someone presses Start "
+            f"now.", show=s.n, actor="scheduler")
+
+
+def _sweep(tx, held=None):
     """Walk the pending shows against the clock: mark what has passed,
-    fire at most one that is due. Used by BOOT_DONE and TICK."""
+    fire at most one that is due. Used by BOOT_DONE and TICK. `held` says
+    whether the time passed during a Hold (a paused show is a Hold too)."""
     now = tx.when
+    if held is None:
+        held = tx.m.state in (HOLD, PAUSED)
     for s in tx.m.pending():
         late = lateness_s(s.start, now)
         if late < 0:
             break
         state = tx.m.state
         if late > tx.m.late_grace_s:
-            if state == HOLD:
-                why = "MISSED (on hold)"
-            elif state == SHOW:
+            if held:
+                _hold_back(tx, s)
+                continue
+            if state == SHOW:
                 why = f"MISSED (show {tx.m.running} was running)"
             elif state in (BOOT, IDLE, STANDBY) and \
                     _guard_left(tx.m, s.start
@@ -994,13 +1102,15 @@ def _boot_done(m, ev, now):
     # Anything already past its window is MISSED before choosing a state,
     # which is the restart rule: a reboot at 18:04 marks 18:00 MISSED and
     # waits for 18:20. It never starts a show here; the first TICK does, and
-    # only inside the window. A restored night goes through the same rule.
-    _sweep(tx)
-    if tx.m.next_slot() is None:
+    # only inside the window. A restored night goes through the same rule;
+    # one that was on hold treats the time it was down as more Hold.
+    tx.m = replace(tx.m, paused_at=None)
+    _sweep(tx, held=(was == HOLD))
+    if not tx.m.waiting():
         _enter(tx, CLOSING)
         why = "every show tonight has already passed"
-    elif was == HOLD or tx.m.hold_pending:
-        tx.m = replace(tx.m, hold_pending=False, held_from=STANDBY)
+    elif was == HOLD:
+        tx.m = replace(tx.m, held_from=STANDBY)
         _enter(tx, HOLD, after_stop=cut)
         why = "it was on hold before the restart"
     elif any(s.status != PENDING for s in tx.m.slots):
@@ -1024,9 +1134,16 @@ def _tick(m, ev, now):
         return Outcome(m)
     tx = _Tx(m, ev, now)
     before = tx.m.state
+    d = tx.m.delayed()
+    if d is not None and now >= midnight(tx.m):
+        why = "MISSED (still delayed at midnight)"
+        tx.set_slot(d.n, status=MISSED, reason=why)
+        tx.note("miss", "missed", why,
+                f"The delayed show {d.n} was never started, and the night is "
+                f"over.", show=d.n, actor="scheduler")
     _sweep(tx)
     st = tx.m.state
-    if st in (IDLE, STANDBY) and tx.m.next_slot() is None:
+    if st in (IDLE, STANDBY) and not tx.m.waiting():
         _enter(tx, CLOSING)
         tx.note("close", "done", "no more shows tonight",
                 "The last show of the night has gone by. Closing: flame cues "
@@ -1045,8 +1162,12 @@ def _tick(m, ev, now):
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False):
     tx = _Tx(m, ev, now)
     n = m.running
-    tx.set_slot(n, status=status, reason=reason, ended_at=now)
-    tx.m = replace(tx.m, running=0, last_end=now)
+    s = m.slot(n)
+    paused = s.paused_s + ((now - m.paused_at) / ONE_SECOND
+                           if m.paused_at is not None else 0.0)
+    tx.set_slot(n, status=status, reason=reason, ended_at=now,
+                paused_s=paused)
+    tx.m = replace(tx.m, running=0, last_end=now, paused_at=None)
     if status == FAULT:
         tx.m = replace(tx.m, faults=tx.m.faults + (text,))
     tx.effects.extend(effects)
@@ -1150,55 +1271,74 @@ def _closing_done(m, ev, now):
 
 
 def _start_now(m, ev, now):
-    left = _guard_left(m, now)
-    if left > 0:
-        return _refuse(m, ev, now,
-                       f"The last show ended {fmt_span((now - m.last_end) / ONE_SECOND)} "
-                       f"ago and the guard after a show is {m.guard_s} s, so "
-                       f"Start now works again in {fmt_span(-(-left // 1))}.")
+    """Start now has no restriction except that it does nothing while a show
+    is running or paused (refused in step). It ignores guard_s, and it works
+    straight after an Abort. It starts the DELAYED show if there is one,
+    otherwise the next show now (using up that slot), otherwise an extra
+    show. Jeff, 2026-09-23."""
     tx = _Tx(m, ev, now)
-    n = max((s.n for s in m.slots), default=0) + 1
-    tx.m = replace(tx.m, slots=tx.m.slots + (
-        Slot(n=n, start=now, origin="operator"),))
-    _fire(tx, tx.m.slot(n), operator=True)
+    d, nxt = m.delayed(), m.next_slot()
+    if d is not None:
+        _fire(tx, d, DELAYED_START)
+    elif nxt is not None:
+        _fire(tx, nxt, STARTED_EARLY)
+    else:
+        n = max((s.n for s in m.slots), default=0) + 1
+        tx.m = replace(tx.m, slots=tx.m.slots + (
+            Slot(n=n, start=now, origin="operator"),))
+        _fire(tx, tx.m.slot(n), EXTRA_SHOW)
     return tx.done()
 
 
 def _hold(m, ev, now):
     tx = _Tx(m, ev, now)
     if m.state == SHOW:
-        tx.m = replace(tx.m, hold_pending=True)
-        tx.note(HOLD_ON, "done", "hold after this show",
+        # Hold during a show pauses it where it is (Jeff, 2026-09-23).
+        n = m.running
+        tx.m = replace(tx.m, paused_at=now)
+        _enter(tx, PAUSED, show=n)
+        tx.note(HOLD_ON, "paused", "PAUSED (operator hold)",
                 f"{_operator_name(ev)} pressed Hold{_screen(ev)} during show "
-                f"{m.running}. The show carries on; no further show starts "
-                f"until Resume.")
+                f"{n}. The show is paused at its current frame: flame cues "
+                f"zeroed, lasers blanked, music fading out. Resume carries "
+                f"on from there.", show=n)
         return tx.done()
     tx.m = replace(tx.m, held_from=m.state)
     _enter(tx, HOLD)
-    tx.note(HOLD_ON, "done", "schedule suspended",
+    tx.note(HOLD_ON, "done", "schedule on hold",
             f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show starts "
-            f"until Resume.")
+            f"by itself until Resume; a show whose time passes meanwhile is "
+            f"delayed and waits for Start now.")
     return tx.done()
 
 
 def _resume(m, ev, now):
     tx = _Tx(m, ev, now)
-    if m.state == SHOW:
-        tx.m = replace(tx.m, hold_pending=False)
-        tx.note(RESUME, "done", "hold cancelled",
-                f"{_operator_name(ev)} pressed Resume{_screen(ev)} during "
-                f"show {m.running}. The schedule carries on after it.")
+    if m.state == PAUSED:
+        n = m.running
+        paused = (now - m.paused_at) / ONE_SECOND
+        tx.set_slot(n, paused_s=m.slot(n).paused_s + paused)
+        tx.m = replace(tx.m, paused_at=None)
+        _enter(tx, SHOW, show=n, resume=True)
+        tx.note(RESUME, "resumed", f"RESUMED (paused {fmt_span(paused)})",
+                f"{_operator_name(ev)} pressed Resume{_screen(ev)}. Show {n} "
+                f"carries on from where it froze after {fmt_span(paused)} "
+                f"paused; it now ends at "
+                f"{clock(_local(tx.m, tx.m.expected_end()))}.", show=n)
         return tx.done()
     back = m.held_from if m.held_from in (IDLE, STANDBY) else STANDBY
     if back == IDLE and any(s.status != PENDING for s in m.slots):
         back = STANDBY
     tx.m = replace(tx.m, held_from="")
     _enter(tx, back)
-    nxt = tx.m.next_slot()
+    nxt, d = tx.m.next_slot(), tx.m.delayed()
     tx.note(RESUME, "done", "schedule resumed",
             f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
-            + (f" Next is show {nxt.n} at {clock(_local(m, nxt.start))}."
-               if nxt else " There are no more shows tonight."))
+            + (f" The delayed show {d.n} still waits for Start now."
+               if d else "")
+            + (f" Next on the schedule is show {nxt.n} at "
+               f"{clock(_local(m, nxt.start))}."
+               if nxt else " There are no more scheduled shows tonight."))
     return tx.done()
 
 
@@ -1211,9 +1351,13 @@ def _need_next(m, ev, now):
 
 
 def _skip_next(m, ev, now):
-    nxt, bad = _need_next(m, ev, now)
-    if bad:
-        return bad
+    """Skips the delayed show if one is waiting, since that is the one that
+    would run next; otherwise the next scheduled show."""
+    nxt = m.delayed()
+    if nxt is None:
+        nxt, bad = _need_next(m, ev, now)
+        if bad:
+            return bad
     tx = _Tx(m, ev, now)
     tx.set_slot(nxt.n, status=SKIPPED, reason="SKIPPED (operator)")
     tx.note(SKIP_NEXT, "done", "SKIPPED (operator)",
@@ -1246,7 +1390,8 @@ def _spacing_problem(m, slots, moved, now):
     for a, b in zip(seq, seq[1:]):
         if a.n not in moved and b.n not in moved:
             continue
-        a_start = a.fired_at if a.status == RUNNING else a.start
+        a_start = (a.fired_at + timedelta(seconds=a.paused_s)
+                   if a.status == RUNNING else a.start)
         if b.start < a_start + need:
             return (f"Show {b.n} at {clock(_local(m, b.start))} would start "
                     f"before show {a.n} has finished and its "
@@ -1330,10 +1475,10 @@ def _abort(m, ev, now):
 def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
-    for s in m.pending():
+    for s in m.pending() + ([m.delayed()] if m.delayed() else []):
         tx.set_slot(s.n, status=SKIPPED, reason="SKIPPED (operator, End night)")
         skipped.append(s.n)
-    tx.m = replace(tx.m, held_from="", hold_pending=False)
+    tx.m = replace(tx.m, held_from="")
     _enter(tx, CLOSING)
     for n in skipped:
         tx.note(END_NIGHT, "skipped", "SKIPPED (operator, End night)",
@@ -1416,7 +1561,7 @@ def _edit_remove(m, ev, now):
 
 
 _ALL = frozenset(STATES)
-_LIVE = frozenset((IDLE, STANDBY, HOLD, SHOW))
+_LIVE = frozenset((IDLE, STANDBY, HOLD, SHOW, PAUSED))
 
 # Which states accept which event. Anything else is refused with a sentence
 # from _why_not. The selftest checks every state against every event with
@@ -1424,7 +1569,7 @@ _LIVE = frozenset((IDLE, STANDBY, HOLD, SHOW))
 ALLOWED = {
     BOOT_DONE: frozenset((BOOT,)),
     TICK: _ALL - {BOOT},
-    SHOW_CONFIRMED: frozenset((SHOW,)),
+    SHOW_CONFIRMED: frozenset((SHOW, PAUSED)),
     SHOW_ENDED: frozenset((SHOW,)),
     SHOW_FAILED: frozenset((SHOW,)),
     FAULT_RAISED: _ALL,
@@ -1432,11 +1577,11 @@ ALLOWED = {
     CLOSING_DONE: frozenset((CLOSING,)),
     START_NOW: frozenset((IDLE, STANDBY, HOLD, CLOSING, OFF)),
     HOLD_ON: frozenset((IDLE, STANDBY, SHOW)),
-    RESUME: frozenset((HOLD, SHOW)),
+    RESUME: frozenset((HOLD, PAUSED)),
     SKIP_NEXT: _LIVE,
     DELAY_NEXT: _LIVE,
     DELAY_REST: _LIVE,
-    ABORT: frozenset((SHOW,)),
+    ABORT: frozenset((SHOW, PAUSED)),
     END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
     EDIT_MOVE: _LIVE,
     EDIT_ADD: _LIVE,
@@ -1464,22 +1609,29 @@ def _why_not(m, ev):
                 "tonight yet. Try again in a moment.")
     if k == BOOT_DONE:
         return "The scheduler has already started."
+    if st == PAUSED and k in (SHOW_ENDED, SHOW_FAILED):
+        return (f"Show {m.running} is paused, so it has neither ended nor "
+                f"failed to start. Resume or Abort it first.")
     if k in (SHOW_CONFIRMED, SHOW_ENDED, SHOW_FAILED, ABORT):
         return f"No show is running; the scheduler is in {st}."
     if k == CLOSING_DONE:
         return f"The scheduler is not closing; it is in {st}."
     if k == START_NOW:
-        return (f"Show {m.running} is running, and a second show never "
-                f"starts over it.")
+        how = "paused" if st == PAUSED else "running"
+        return (f"Show {m.running} is {how}. Start now does nothing while a "
+                f"show is running or paused.")
     if k == HOLD_ON:
         if st == HOLD:
             return "The schedule is already on hold."
+        if st == PAUSED:
+            return f"Show {m.running} is already paused."
         return "The night is over, so there is nothing to hold."
     if k == RESUME:
-        return "The schedule is not on hold."
+        return "Nothing is on hold or paused."
     if k == END_NIGHT:
-        if st == SHOW:
-            return (f"Show {m.running} is running. Abort it first, then End "
+        if st in (SHOW, PAUSED):
+            how = "paused" if st == PAUSED else "running"
+            return (f"Show {m.running} is {how}. Abort it first, then End "
                     f"night.")
         return "The night has already been ended."
     if k in (SKIP_NEXT, DELAY_NEXT, DELAY_REST, EDIT_MOVE, EDIT_ADD,
@@ -1508,6 +1660,12 @@ def step(m, ev, now):
                        f"action names the operator and the screen, so the "
                        f"night journal can say who did what. Nothing was "
                        f"changed.")
+    if ev.actor == "operator" and ev.who.strip().lower() not in \
+            {n.lower() for n in m.operators}:
+        return _refuse(m, ev, now,
+                       f"{ev.who.strip()!r} is not on the operator list "
+                       f"({', '.join(m.operators) or 'empty'}). Pick a name "
+                       f"from the list. Nothing was changed.")
     if m.state not in ALLOWED[ev.kind]:
         return _refuse(m, ev, now, _why_not(m, ev))
     if ev.kind in (ABORT, END_NIGHT) and not ev.confirmed:
@@ -1515,23 +1673,18 @@ def step(m, ev, now):
                                    f"Nothing was changed.")
     if ev.kind == CLEAR_FAULT and not m.faults:
         return _refuse(m, ev, now, "There is no fault to clear.")
-    if ev.kind == HOLD_ON and m.state == SHOW and m.hold_pending:
-        return _refuse(m, ev, now, "Hold is already set for after this show.")
-    if ev.kind == RESUME and m.state == SHOW and not m.hold_pending:
-        return _refuse(m, ev, now, "Hold was not pressed, so there is "
-                                   "nothing to resume.")
     return _HANDLERS[ev.kind](m, ev, now)
 
 
 # ------------------------------------------------ tonight, as data --
 
-TONIGHT_FORMAT = 2
+TONIGHT_FORMAT = 3
 TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
-    "hold_pending", "held_from", "faults", "shows_started", "slots"))
+    "held_from", "faults", "shows_started", "slots"))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
-    "confirmed_at", "ended_at"))
+    "confirmed_at", "ended_at", "paused_s"))
 ORIGINS = ("rule", "edit", "operator")
 
 
@@ -1547,14 +1700,15 @@ def machine_to_doc(m):
     return {
         "format": TONIGHT_FORMAT, "date": m.date.isoformat(),
         "rule_id": m.rule_id, "state": m.state, "running": m.running,
-        "last_end": _iso(m.last_end), "hold_pending": m.hold_pending,
+        "last_end": _iso(m.last_end),
         "held_from": m.held_from, "faults": list(m.faults),
         "shows_started": m.shows_started,
         "slots": [{"n": s.n, "start": _iso(s.start), "status": s.status,
                    "reason": s.reason, "origin": s.origin,
                    "planned": _iso(s.planned), "fired_at": _iso(s.fired_at),
                    "confirmed_at": _iso(s.confirmed_at),
-                   "ended_at": _iso(s.ended_at)} for s in m.slots],
+                   "ended_at": _iso(s.ended_at),
+                   "paused_s": s.paused_s} for s in m.slots],
     }
 
 
@@ -1607,11 +1761,6 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             raise ValueError(f"{what} is not on {d} in {rule.timezone}.")
         return dt
 
-    def flag(v, what):
-        if not isinstance(v, bool):
-            raise ValueError(f"{what} has to be true or false.")
-        return v
-
     if not isinstance(doc, dict) or doc.get("format") != TONIGHT_FORMAT:
         raise ValueError("It is not a saved night this version can read.")
     unknown = sorted(k for k in doc if k not in TONIGHT_KEYS)
@@ -1650,7 +1799,7 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             raise ValueError(f"Show number {n!r} is not a new whole number.")
         seen.add(n)
         status = x["status"]
-        if status not in (PENDING, RUNNING) + tuple(sorted(FINAL)):
+        if status not in (PENDING, RUNNING, DELAYED) + tuple(sorted(FINAL)):
             raise ValueError(f"Show {n} has status {status!r}.")
         if x["origin"] not in ORIGINS or not isinstance(x["reason"], str):
             raise ValueError(f"Show {n} has origin {x['origin']!r}.")
@@ -1665,21 +1814,29 @@ def machine_from_doc(doc, rule, d, now, notes=None):
                   fired_at=when(x["fired_at"], f"Show {n}'s start time"),
                   confirmed_at=when(x["confirmed_at"],
                                     f"Show {n}'s confirm time"),
-                  ended_at=when(x["ended_at"], f"Show {n}'s end time"))
-        if status == PENDING and (sl.fired_at or sl.confirmed_at
-                                  or sl.ended_at):
+                  ended_at=when(x["ended_at"], f"Show {n}'s end time"),
+                  paused_s=x["paused_s"])
+        if isinstance(sl.paused_s, bool) or \
+                not isinstance(sl.paused_s, (int, float)) or sl.paused_s < 0:
+            raise ValueError(f"Show {n}'s paused time is not a number of "
+                             f"seconds.")
+        if status in (PENDING, DELAYED) and (sl.fired_at or sl.confirmed_at
+                                             or sl.ended_at or sl.paused_s):
             raise ValueError(f"Show {n} is still to come but has already "
                              f"started or ended.")
         if status == RUNNING and (sl.fired_at is None or sl.ended_at):
             raise ValueError(f"Show {n} is running but has no start, or "
                              f"has already ended.")
         slots.append(sl)
+    if sum(1 for sl in slots if sl.status == DELAYED) > 1:
+        raise ValueError("More than one show is delayed; only one ever "
+                         "waits.")
     running = [sl.n for sl in slots if sl.status == RUNNING]
     if running != ([doc["running"]] if doc["running"] else []):
         raise ValueError(f"It says show {doc['running'] or 'none'} is "
                          f"running, but the list says "
                          f"{', '.join(map(str, running)) or 'none'}.")
-    if (state == SHOW) != bool(running):
+    if (state in (SHOW, PAUSED)) != bool(running):
         raise ValueError(f"It is in {state} with "
                          f"{'a' if running else 'no'} show running.")
     last_end = when(doc["last_end"], "The last show's end")
@@ -1695,9 +1852,7 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             f"so nothing already started is started again.")
     return replace(
         base, slots=tuple(slots), running=doc["running"],
-        last_end=last_end, hold_pending=flag(doc["hold_pending"],
-                                             "hold_pending"),
-        held_from=doc["held_from"], faults=tuple(doc["faults"]),
+        last_end=last_end, held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
         rule_id=str(doc["rule_id"]))
 
@@ -1729,8 +1884,9 @@ def assume_the_worst(m, now):
 def rebuild_night(rule, saved):
     """The rule changed since tonight was saved. Tonight is built again from
     the new rule, keeping only what already happened: every show with a
-    final status (and one that was running) is carried over onto the new
-    list, matched by the time it was planned for. Operator edits to shows
+    final status (and one that was running, or delayed and waiting for
+    Start now) is carried over onto the new list, matched by the time it
+    was planned for. Operator edits to shows
     still to come are dropped. Returns (machine, sentences), one sentence per
     change, for the journal. Pure."""
     fresh = new_night(rule, saved.date)
@@ -1776,7 +1932,7 @@ def rebuild_night(rule, saved):
                          f"schedule.")
     m = replace(fresh, slots=tuple(sorted(slots.values(), key=lambda x: x.n)),
                 running=running, last_end=saved.last_end,
-                hold_pending=saved.hold_pending, held_from=saved.held_from,
+                held_from=saved.held_from,
                 faults=saved.faults, shows_started=saved.shows_started,
                 resumed_from=saved.resumed_from)
     return m, notes
@@ -1868,7 +2024,12 @@ def machine_view(m, now=None):
     return {
         "date": m.date.isoformat(), "state": m.state, "fault": m.fault,
         "faults": list(m.faults), "running": m.running or None,
-        "hold_pending": m.hold_pending,
+        "paused": m.state == PAUSED,
+        "expected_end": (clock(_local(m, m.expected_end(now)))
+                         if m.running else None),
+        "delayed": ({"show": m.delayed().n,
+                     "planned": clock(_local(m, m.delayed().start))}
+                    if m.delayed() else None),
         "runs_late": bool(late_warnings(m)),
         "warnings": late_warnings(m),
         "last_end": m.hm(m.night_end) if m.night_end else None,

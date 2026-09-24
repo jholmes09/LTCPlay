@@ -7969,6 +7969,7 @@ def _fired(o, S):
 # running, IDLE is the preshow look.
 _ARRIVE = {"IDLE": "PRESHOW_LOOK", "STANDBY": "INTERMISSION",
            "HOLD": "INTERMISSION", "SHOW": "START_SHOW",
+           "PAUSED": "FREEZE_SHOW",
            "CLOSING": "BLACKOUT"}
 
 
@@ -7978,6 +7979,11 @@ def _entry_effects_hold(S, before, o, label):
     if not o.accepted or st == before.state or st not in _ARRIVE:
         return
     kinds = [e.kind for e in o.effects]
+    if st == "SHOW" and before.state == "PAUSED":
+        check(kinds == ["RESUME_SHOW", "FADE_MUSIC_IN", "UNBLANK_LASERS"],
+              f"{label}: a resumed show carries on, music back up, lasers "
+              f"back last; got {kinds}")
+        return
     if st in ("STANDBY", "HOLD") and "STOP_CONDUCTOR" in kinds \
             and not S.INTERMISSION_AFTER_A_STOPPED_SHOW:
         check("INTERMISSION" not in kinds,
@@ -8303,7 +8309,8 @@ def test_schedule_late_rule():
 
 
 def _matrix_fixtures(S):
-    """One machine in each state, and the moment to hit it with an event."""
+    """One machine in each state, plus HOLD and STANDBY with a DELAYED show
+    waiting, and the moment to hit each with an event. Keyed by label."""
     from datetime import timedelta
     rule = _one_night_rule(S, first="17:00")
     one = timedelta(seconds=1)
@@ -8319,6 +8326,8 @@ def _matrix_fixtures(S):
     n.boot(_den(S, 16, 59, 50))
     n.tick(_den(S, 17, 0))
     fx[S.SHOW] = (n.m, _den(S, 17, 0) + one)
+    n.op(S.HOLD_ON, _den(S, 17, 0))
+    fx[S.PAUSED] = (n.m, _den(S, 17, 0) + one)
     n = _Night(S, rule)
     n.boot(_den(S, 17, 4))
     fx[S.STANDBY] = (n.m, _den(S, 17, 4) + one)
@@ -8326,8 +8335,18 @@ def _matrix_fixtures(S):
     fx[S.CLOSING] = (n.m, _den(S, 17, 4) + one)
     n.do(S.CLOSING_DONE, "system", _den(S, 17, 4))
     fx[S.OFF] = (n.m, _den(S, 17, 4) + one)
-    for st, (m, _) in fx.items():
-        check(m.state == st, f"the {st} fixture is in {m.state}")
+    n = _Night(S, rule)
+    n.boot(_den(S, 16, 59))
+    n.op(S.HOLD_ON, _den(S, 16, 59))
+    n.tick(_den(S, 17, 0, 1))
+    fx["HOLD+DELAYED"] = (n.m, _den(S, 17, 0, 2))
+    n.op(S.RESUME, _den(S, 17, 0, 2))
+    fx["STANDBY+DELAYED"] = (n.m, _den(S, 17, 0, 3))
+    for label, (m, _) in fx.items():
+        check(m.state == label.split("+")[0],
+              f"the {label} fixture is in {m.state}")
+        check(("+DELAYED" in label) == (m.delayed() is not None),
+              f"the {label} fixture has the wrong delayed show")
     return fx
 
 
@@ -8337,9 +8356,11 @@ def test_schedule_state_machine_every_state_every_event():
     if S is None:
         return
     fx = _matrix_fixtures(S)
-    B, I, SB, SH, C, O, H = (S.BOOT, S.IDLE, S.STANDBY, S.SHOW, S.CLOSING,
-                             S.OFF, S.HOLD)
-    live = {I: I, SB: SB, SH: SH, H: H}
+    labels = list(fx)
+    B, I, SB, SH, P, C, O, H = (S.BOOT, S.IDLE, S.STANDBY, S.SHOW, S.PAUSED,
+                                S.CLOSING, S.OFF, S.HOLD)
+    HD, SD = "HOLD+DELAYED", "STANDBY+DELAYED"
+    live = {I: I, SB: SB, SH: SH, P: P, H: H, HD: H, SD: SB}
 
     def E(kind, actor, **kw):
         if actor == "operator":
@@ -8350,15 +8371,19 @@ def test_schedule_state_machine_every_state_every_event():
     Z, ST, F, BO = "ZERO_FLAME_CUES", "STOP_CONDUCTOR", "FADE_PIXELS", \
         "BLACKOUT"
     INT, PRE, GO = "INTERMISSION", "PRESHOW_LOOK", "START_SHOW"
+    PAUSE = ["ZERO_FLAME_CUES", "BLANK_LASERS", "FREEZE_SHOW",
+             "FADE_MUSIC_OUT"]
+    UNPAUSE = ["RESUME_SHOW", "FADE_MUSIC_IN", "UNBLANK_LASERS"]
     CLOSE = [Z, ST, F, BO]
-    # (event, {state: (where it goes, the effects it asks for, in order)}).
+    # (event, {fixture: (where it goes, the effects it asks for, in order)}).
     # Anything not listed must be refused with a sentence, change nothing
     # and ask for nothing.
-    none = {s: (s, []) for s in S.STATES}
+    none = {k: (k.split("+")[0], []) for k in labels}
+    same_live = {k: (v, []) for k, v in live.items()}
     table = [
         (E(S.BOOT_DONE, "system"), {B: (I, [PRE])}),
         (E(S.TICK, "scheduler"), {k: v for k, v in none.items() if k != B}),
-        (E(S.SHOW_CONFIRMED, "madmapper"), {SH: (SH, [])}),
+        (E(S.SHOW_CONFIRMED, "madmapper"), {SH: (SH, []), P: (P, [])}),
         (E(S.SHOW_ENDED, "madmapper"), {SH: (SB, [INT])}),
         (E(S.SHOW_FAILED, "madmapper", detail="no timecode after start"),
          {SH: (SB, [Z, ST, F, INT])}),
@@ -8366,50 +8391,49 @@ def test_schedule_state_machine_every_state_every_event():
                                             "replying"), none),
         (E(S.CLEAR_FAULT, "operator"), {}),           # there is no fault
         (E(S.CLOSING_DONE, "system"), {C: (O, [])}),
+        # Start now: anything but a running or paused show, no guard.
         (E(S.START_NOW, "operator"), {k: (SH, [GO])
-                                      for k in (I, SB, H, C, O)}),
+                                      for k in (I, SB, H, C, O, HD, SD)}),
         (E(S.HOLD_ON, "operator"), {I: (H, [INT]), SB: (H, [INT]),
-                                    SH: (SH, [])}),
-        (E(S.RESUME, "operator"), {H: (I, [PRE])}),
-        (E(S.SKIP_NEXT, "operator"), {k: (v, []) for k, v in live.items()}),
-        (E(S.DELAY_NEXT, "operator", minutes=5),
-         {k: (v, []) for k, v in live.items()}),
-        (E(S.DELAY_NEXT, "operator", minutes=10),
-         {k: (v, []) for k, v in live.items()}),
-        (E(S.DELAY_REST, "operator", minutes=5),
-         {k: (v, []) for k, v in live.items()}),
-        (E(S.DELAY_REST, "operator", minutes=10),
-         {k: (v, []) for k, v in live.items()}),
+                                    SD: (H, [INT]), SH: (P, PAUSE)}),
+        (E(S.RESUME, "operator"), {H: (I, [PRE]), HD: (SB, [INT]),
+                                   P: (SH, UNPAUSE)}),
+        (E(S.SKIP_NEXT, "operator"), same_live),
+        (E(S.DELAY_NEXT, "operator", minutes=5), same_live),
+        (E(S.DELAY_NEXT, "operator", minutes=10), same_live),
+        (E(S.DELAY_REST, "operator", minutes=5), same_live),
+        (E(S.DELAY_REST, "operator", minutes=10), same_live),
         (E(S.ABORT, "operator"), {}),                  # not confirmed
-        (E(S.ABORT, "operator", confirmed=True), {SH: (SB, [Z, ST, F, INT])}),
+        (E(S.ABORT, "operator", confirmed=True),
+         {SH: (SB, [Z, ST, F, INT]), P: (SB, [Z, ST, F, INT])}),
         (E(S.END_NIGHT, "operator"), {}),              # not confirmed
         (E(S.END_NIGHT, "operator", confirmed=True),
-         {k: (C, CLOSE) for k in (I, SB, H)}),
-        (E(S.EDIT_MOVE, "operator", show=15, at="21:45"),
-         {k: (v, []) for k, v in live.items()}),
-        (E(S.EDIT_ADD, "operator", at="21:55"),
-         {k: (v, []) for k, v in live.items()}),
-        (E(S.EDIT_REMOVE, "operator", show=15),
-         {k: (v, []) for k, v in live.items()}),
-        # An operator event that does not say who and where is refused in
-        # every state, even one that would otherwise take it.
+         {k: (C, CLOSE) for k in (I, SB, H, HD, SD)}),
+        (E(S.EDIT_MOVE, "operator", show=15, at="21:45"), same_live),
+        (E(S.EDIT_ADD, "operator", at="21:55"), same_live),
+        (E(S.EDIT_REMOVE, "operator", show=15), same_live),
+        # An operator event that does not say who and where, or names
+        # someone not on the operator list, is refused everywhere.
         (S.Event(S.START_NOW, "operator", screen="rack screen"), {}),
         (S.Event(S.HOLD_ON, "operator", who="Andy"), {}),
+        (S.Event(S.START_NOW, "operator", who="Bob",
+                 screen="rack screen"), {}),
     ]
     check({e.kind for e, _ in table} == set(S.EVENTS),
           "the matrix must cover every event the machine knows")
     cells = 0
     for ev, goes in table:
-        for st in S.STATES:
-            m, now = fx[st]
+        for fxl in labels:
+            m, now = fx[fxl]
             o = S.step(m, ev, now)
             cells += 1
             label = (f"{ev.kind}{' confirmed' if ev.confirmed else ''}"
                      f"{' +' + str(ev.minutes) if ev.minutes else ''}"
                      f"{'' if ev.actor != 'operator' or (ev.who and ev.screen) else ' without who or screen'}"
-                     f" in {st}")
-            if st in goes:
-                to, effects = goes[st]
+                     f"{' by ' + ev.who if ev.who not in ('', 'Andy') else ''}"
+                     f" in {fxl}")
+            if fxl in goes:
+                to, effects = goes[fxl]
                 check(o.accepted, f"{label} must be taken, was refused: "
                                   f"{o.refused}")
                 check(o.machine.state == to,
@@ -8433,35 +8457,49 @@ def test_schedule_state_machine_every_state_every_event():
                       f"{label}: log event without actor, reason or "
                       f"sentence: {le}")
                 _no_dashes(le.text, label)
-    check(cells == len(table) * 7, "the matrix did not run every cell")
+    check(cells == len(table) * len(labels) and len(labels) == 10,
+          "the matrix did not run every cell")
 
-    # Operator events must name the operator and the screen (section 9).
+    # Operator events must name someone on the list, and a screen.
     for kind in [k for k, a in S.EVENT_ACTORS.items() if "operator" in a]:
-        for st in S.STATES:
-            m, now = fx[st]
+        for fxl in labels:
+            m, now = fx[fxl]
             for who, screen, must in (("", "rack screen", "who pressed it"),
                                       ("Andy", "", "which screen"),
                                       ("  ", " ", "who pressed it and "
-                                                  "which screen")):
+                                                  "which screen"),
+                                      ("Bob", "rack screen",
+                                       "not on the operator list")):
                 o = S.step(m, S.Event(kind, "operator", who=who,
                                       screen=screen, confirmed=True,
                                       minutes=5, show=15, at="21:45"), now)
                 check(not o.accepted and must in o.refused
                       and o.machine is m and not o.effects,
-                      f"{kind} in {st} with who={who!r} screen={screen!r} "
-                      f"must be refused naming what is missing: "
+                      f"{kind} in {fxl} with who={who!r} screen={screen!r} "
+                      f"must be refused naming what is wrong: "
                       f"{o.refused!r}")
+    m, now = fx[S.IDLE]
+    for who in ("Jeff", "andy", " Andy "):
+        check(S.step(m, S.Event(S.HOLD_ON, "operator", who=who,
+                                screen="rack screen"), now).accepted,
+              f"{who!r} is on the default list")
+    other = S.replace(m, operators=("Casey",))
+    check(not S.step(other, E(S.HOLD_ON, "operator"), now).accepted
+          and S.step(other, E(S.HOLD_ON, "operator", who="Casey"),
+                     now).accepted,
+          "the list in force is the machine's, not a fixed pair")
 
     # With a fault on the flag, clearing it is taken in every state and the
     # state does not move: FAULT is a flag, not a state.
-    for st in S.STATES:
-        m, now = fx[st]
+    for fxl in labels:
+        m, now = fx[fxl]
+        st = m.state
         f = S.step(m, E(S.FAULT_RAISED, "reader", detail="x"), now).machine
-        check(f.fault and f.state == st, f"a fault in {st} must set the flag "
-                                         f"and leave the state")
+        check(f.fault and f.state == st, f"a fault in {fxl} must set the "
+                                         f"flag and leave the state")
         c = S.step(f, E(S.CLEAR_FAULT, "operator"), now)
         check(c.accepted and not c.machine.fault and c.machine.state == st,
-              f"clearing a fault in {st}: {c.refused}")
+              f"clearing a fault in {fxl}: {c.refused}")
 
     # Who may send what. A blank actor is never allowed through.
     m, now = fx[S.IDLE]
@@ -8528,88 +8566,273 @@ def test_schedule_restart_guard_and_hold():
           "a reboot 4 seconds into a show must not start it")
     n.audit("restart")
 
-    # guard_s: never within guard_s of the previous show's end.
+    # guard_s: the SCHEDULE never starts a show within guard_s of the
+    # previous show's end. Show 1 runs long (a pause), ends at 18:19:00, and
+    # 18:20 is only 60 s later.
     n = _Night(S, rule)
-    n.boot(_den(S, 17, 40))
-    n.op(S.START_NOW, _den(S, 17, 52))
-    check(n.m.state == S.SHOW and n.m.slot(n.m.running).origin == "operator"
-          and n.m.slot(n.m.running).reason == "FIRED (operator)",
-          "Start now runs an extra show, marked FIRED (operator)")
-    x = n.m.running
-    o = n.do(S.SHOW_ENDED, "madmapper", _den(S, 17, 59, 20), show=x)
-    check(n.m.slot(x).status == S.DONE, "the show that ended is DONE")
-    check(not _fired(n.tick(_den(S, 18, 0)), S),
-          "18:00 is 40 s after a show ended, inside the 120 s guard, and "
-          "must not start")
-    n.tick(_den(S, 18, 0, 1))
-    check(n.m.slot(1).status == S.MISSED and "guard" in n.m.slot(1).reason,
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.HOLD_ON, _den(S, 18, 3))
+    n.op(S.RESUME, _den(S, 18, 14, 40))
+    check(n.m.hm(n.m.expected_end()) == "18:19",
+          f"11m 40s paused moves the end from 18:07:20 to 18:19, got "
+          f"{n.m.hm(n.m.expected_end())}")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 19))
+    check(not _fired(n.tick(_den(S, 18, 20)), S),
+          "18:20 is 60 s after a show ended, inside the 120 s guard, and "
+          "must not start by itself")
+    n.tick(_den(S, 18, 20, 1))
+    check(n.m.slot(2).status == S.MISSED and "guard" in n.m.slot(2).reason,
           f"a show held off by the guard is MISSED and says so, got "
-          f"{n.m.slot(1).reason!r}")
-    o = n.op(S.START_NOW, _den(S, 18, 0, 30))
-    check(not o.accepted and "50s" in o.refused and "guard" in o.refused,
-          f"Start now inside the guard is refused and says how long is "
-          f"left: {o.refused!r}")
-    o = n.op(S.START_NOW, _den(S, 18, 1, 20))
-    check(o.accepted and n.m.state == S.SHOW,
-          f"Start now exactly when the guard runs out is taken: {o.refused}")
-    # Never start a show while one is running: 18:20 comes due during a
-    # show started by hand at 18:15.
+          f"{n.m.slot(2).reason!r}")
+    # The guard boundary: ending at 18:18:00 frees 18:20:00 exactly.
     n = _Night(S, rule)
-    n.boot(_den(S, 18, 10))
-    n.op(S.START_NOW, _den(S, 18, 15))
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 18))
+    check(_fired(n.tick(_den(S, 18, 20)), S) == [2],
+          "a show exactly guard_s after the last one ended must start")
+    # The schedule never starts a show over a running one: show 1 runs past
+    # 18:20 with no end reported.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
     check(not _fired(n.tick(_den(S, 18, 20)), S), "a show must never start "
                                                   "over a running one")
     n.tick(_den(S, 18, 20, 1))
     check(n.m.slot(2).status == S.MISSED and "running" in n.m.slot(2).reason,
           f"the show that came due mid show is MISSED and says why: "
           f"{n.m.slot(2).reason!r}")
-    # The guard boundary for a scheduled show: ending at 17:58:00 frees
-    # 18:00:00 exactly.
-    n = _Night(S, rule)
-    n.boot(_den(S, 17, 40))
-    n.op(S.START_NOW, _den(S, 17, 50, 40))
-    n.do(S.SHOW_ENDED, "madmapper", _den(S, 17, 58))
-    check(_fired(n.tick(_den(S, 18, 0)), S) == [1],
-          "a show exactly guard_s after the last one ended must start")
     n.audit("guard")
+    print("  ok")
 
-    # HOLD: the schedule suspended, nothing fires, Start now still works.
+
+def test_schedule_hold_pauses_a_show():
+    section("scheduler: Hold during a show pauses it, Resume carries on")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
     n = _Night(S, rule)
-    n.boot(_den(S, 18, 4))
-    n.op(S.HOLD_ON, _den(S, 18, 10), who="Andy", screen="rack screen")
-    check(n.m.state == S.HOLD, "Hold in STANDBY goes to HOLD")
-    check(n.log[-1].who == "Andy" and n.log[-1].screen == "rack screen"
-          and "Andy" in n.log[-1].text,
-          "an operator event carries who pressed it and on which screen")
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_CONFIRMED, "madmapper", _den(S, 18, 0, 2))
+    check(n.m.hm(n.m.expected_end()) == "18:07:20", "440 s from 18:00")
+    o = n.op(S.HOLD_ON, _den(S, 18, 3))
+    check(n.m.state == S.PAUSED and n.m.running == 1
+          and n.m.slot(1).status == S.RUNNING,
+          "Hold during a show pauses it; it is still show 1, still running")
+    check([e.kind for e in o.effects] == [S.ZERO_FLAME_CUES, S.BLANK_LASERS,
+                                          S.FREEZE_SHOW, S.FADE_MUSIC_OUT]
+          and all(e.show == 1 for e in o.effects),
+          f"pausing zeroes flames and blanks lasers first, then freezes and "
+          f"fades the music: {[e.kind for e in o.effects]}")
+    check("paused at its current frame" in o.log[0].text, o.log[0].text)
+    # While paused: the expected end keeps moving, nothing else starts,
+    # Start now and End night do nothing, a fault only raises the flag.
+    check(n.m.hm(n.m.expected_end(_den(S, 18, 13))) == "18:17:20",
+          "ten minutes paused so far moves the end ten minutes")
+    for kind, kw, must in ((S.START_NOW, {}, "does nothing while a show"),
+                           (S.END_NIGHT, {"confirmed": True}, "Abort it "
+                                                               "first"),
+                           (S.HOLD_ON, {}, "already paused")):
+        o = n.op(kind, _den(S, 18, 5), **kw)
+        check(not o.accepted and must in o.refused and n.m.state == S.PAUSED,
+              f"{kind} while paused: {o.refused!r}")
+    o = n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 7, 20))
+    check(not o.accepted and "paused" in o.refused,
+          "a paused show cannot end")
+    o = n.do(S.FAULT_RAISED, "madmapper", _den(S, 18, 6), detail="x")
+    check(o.accepted and n.m.fault and n.m.state == S.PAUSED
+          and not o.effects, "a fault while paused only raises the flag")
+    # 18:20 passes during the pause: it is delayed, not missed.
+    n.tick(_den(S, 18, 20, 1))
+    check(n.m.slot(2).status == S.DELAYED, f"a slot passing during a pause "
+                                           f"is DELAYED, got "
+                                           f"{n.m.slot(2).status}")
+    o = n.op(S.RESUME, _den(S, 18, 23))
+    check(n.m.state == S.SHOW and [e.kind for e in o.effects] ==
+          [S.RESUME_SHOW, S.FADE_MUSIC_IN, S.UNBLANK_LASERS],
+          f"Resume carries on from the frozen frame, music back up, lasers "
+          f"last: {[e.kind for e in o.effects]}")
+    check(n.m.slot(1).paused_s == 1200
+          and n.m.hm(n.m.expected_end()) == "18:27:20"
+          and "18:27:20" in o.log[0].text,
+          f"20 minutes paused moves the end from 18:07:20 to 18:27:20: "
+          f"{n.m.hm(n.m.expected_end())}")
+    check(not _fired(n.tick(_den(S, 18, 25)), S) and n.m.state == S.SHOW,
+          "the resumed show runs on; nothing else starts")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 27, 20))
+    check(n.m.state == S.STANDBY and n.m.slot(1).status == S.DONE
+          and n.m.slot(2).status == S.DELAYED,
+          "it ends as usual, and the delayed show waits for Start now")
+    # A second pause adds to the first.
+    n.tick(_den(S, 18, 40))
+    check(n.m.running == 3, "18:40 starts on schedule")
+    check(n.m.slot(2).status == S.MISSED
+          and n.m.slot(2).reason == "MISSED (show 3 started on schedule)",
+          f"and the delayed show 2 gives way: {n.m.slot(2).reason!r}")
+    n.op(S.HOLD_ON, _den(S, 18, 41))
+    n.op(S.RESUME, _den(S, 18, 42))
+    n.op(S.HOLD_ON, _den(S, 18, 43))
+    n.op(S.RESUME, _den(S, 18, 43, 30))
+    check(n.m.slot(3).paused_s == 90
+          and n.m.hm(n.m.expected_end()) == "18:48:50",
+          f"two pauses of 60 s and 30 s add up: {n.m.slot(3).paused_s}")
+    # Abort while paused works exactly as in a show.
+    n.op(S.HOLD_ON, _den(S, 18, 44))
+    o = n.op(S.ABORT, _den(S, 18, 45), confirmed=True)
+    check(n.m.state == S.STANDBY and n.m.slot(3).status == S.ABORTED
+          and [e.kind for e in o.effects][:3] == [S.ZERO_FLAME_CUES,
+                                                  S.STOP_CONDUCTOR,
+                                                  S.FADE_PIXELS]
+          and n.m.slot(3).paused_s == 150,
+          f"Abort while paused: {n.m.state} {[e.kind for e in o.effects]}")
+    n.audit("pause")
+    print("  ok")
+
+
+def test_schedule_hold_between_shows_delays():
+    section("scheduler: Hold between shows delays the next show")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
+    # One slot passes during a Hold: DELAYED, never starts by itself.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 5))
+    o = n.op(S.HOLD_ON, _den(S, 18, 10))
+    check(n.m.state == S.HOLD and [e.kind for e in o.effects] ==
+          [S.INTERMISSION], "Hold between shows keeps the intermission")
     check(not _fired(n.tick(_den(S, 18, 20)), S), "nothing fires on hold")
     n.tick(_den(S, 18, 20, 1))
-    check(n.m.slot(2).reason == "MISSED (on hold)",
-          f"a show that passes on hold is MISSED (on hold), got "
-          f"{n.m.slot(2).reason!r}")
+    s2 = n.m.slot(2)
+    check(s2.status == S.DELAYED and s2.reason == "DELAYED (on hold)"
+          and not any("MISSED (on hold)" == s.reason for s in n.m.slots),
+          f"a slot passing during a Hold is DELAYED, not MISSED: "
+          f"{s2.status} {s2.reason!r}")
     n.op(S.RESUME, _den(S, 18, 25))
-    check(n.m.state == S.STANDBY, f"Resume after the night has begun goes "
-                                  f"to STANDBY, got {n.m.state}")
-    check(_fired(n.tick(_den(S, 18, 40)), S) == [3], "after Resume the next "
-                                                     "show starts on time")
-    n.op(S.HOLD_ON, _den(S, 18, 42))
-    check(n.m.state == S.SHOW and n.m.hold_pending,
-          "Hold during a show lets the show finish")
-    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 47, 20))
-    check(n.m.state == S.HOLD, "and lands in HOLD when it ends")
-    check(not _fired(n.tick(_den(S, 19, 0)), S), "no show starts after it")
-    n.op(S.START_NOW, _den(S, 19, 5))
-    check(n.m.state == S.SHOW, "Start now works on hold")
-    n.do(S.SHOW_ENDED, "madmapper", _den(S, 19, 12, 20))
-    check(n.m.state == S.HOLD, "a show started on hold returns to HOLD")
-    n.op(S.RESUME, _den(S, 19, 13))
-    n.tick(_den(S, 19, 20))
-    n.op(S.HOLD_ON, _den(S, 19, 21))
-    n.op(S.RESUME, _den(S, 19, 22))
-    check(n.m.state == S.SHOW and not n.m.hold_pending,
-          "Resume during a show cancels the pending hold")
-    n.do(S.SHOW_ENDED, "madmapper", _den(S, 19, 27, 20))
-    check(n.m.state == S.STANDBY, "and the night carries on in STANDBY")
-    n.audit("hold")
+    check(n.m.state == S.STANDBY and n.m.slot(2).status == S.DELAYED,
+          "Resume goes back to STANDBY and the delayed show still waits")
+    for t in ((18, 26), (18, 30), (18, 39, 59)):
+        check(not _fired(n.tick(_den(S, *t)), S),
+              "a delayed show never starts by itself")
+    o = n.op(S.START_NOW, _den(S, 18, 32))
+    check(_fired(o, S) == [2]
+          and n.m.slot(2).reason == "DELAYED START (operator hold)",
+          f"Start now starts the delayed show: {n.m.slot(2).reason!r}")
+    n.audit("one delayed")
+
+    # Two slots pass during one Hold: only the newest waits.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 5))
+    n.op(S.HOLD_ON, _den(S, 18, 10))
+    n.tick(_den(S, 18, 20, 1))
+    n.tick(_den(S, 18, 40, 1))
+    check(n.m.slot(2).status == S.MISSED
+          and n.m.slot(2).reason == "MISSED (on hold, a later show was "
+                                    "delayed)"
+          and n.m.slot(3).status == S.DELAYED,
+          f"the earlier one is MISSED, the newest DELAYED: "
+          f"{n.m.slot(2).reason!r} {n.m.slot(3).status}")
+    n.tick(_den(S, 19, 0, 1))
+    check([s.status for s in n.m.slots[1:4]] ==
+          [S.MISSED, S.MISSED, S.DELAYED],
+          "and again with a third: still only one waits")
+    check(n.m.state == S.HOLD, "the Hold holds throughout")
+    # A delayed show gives way to the next scheduled one.
+    n.op(S.RESUME, _den(S, 19, 5))
+    check(_fired(n.tick(_den(S, 19, 20)), S) == [5]
+          and n.m.slot(4).status == S.MISSED
+          and n.m.slot(4).reason == "MISSED (show 5 started on schedule)",
+          f"when the next slot comes due, it starts and the delayed one is "
+          f"MISSED: {n.m.slot(4).reason!r}")
+    n.audit("two delayed")
+
+    # A delayed show keeps the night open, until midnight.
+    n = _Night(S, rule)
+    n.boot(_den(S, 21, 30))
+    n.op(S.HOLD_ON, _den(S, 21, 35))
+    n.tick(_den(S, 21, 40, 1))
+    n.op(S.RESUME, _den(S, 21, 45))
+    n.tick(_den(S, 22, 30))
+    check(n.m.state == S.STANDBY and n.m.slot(12).status == S.DELAYED,
+          "the last show delayed keeps the night open for Start now")
+    n.tick(_den(S, 0, 0, 0, d=(2026, 11, 15)))
+    check(n.m.slot(12).status == S.MISSED
+          and "midnight" in n.m.slot(12).reason and n.m.state == S.CLOSING,
+          f"at midnight it is MISSED and the night closes: "
+          f"{n.m.slot(12).reason!r} {n.m.state}")
+    # End night skips a delayed show too; Skip next skips it first.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 5))
+    n.op(S.HOLD_ON, _den(S, 18, 10))
+    n.tick(_den(S, 18, 20, 1))
+    n.op(S.SKIP_NEXT, _den(S, 18, 21))
+    check(n.m.slot(2).status == S.SKIPPED and n.m.slot(3).status ==
+          S.PENDING, "Skip next skips the delayed show first")
+    n.tick(_den(S, 18, 40, 1))
+    n.op(S.END_NIGHT, _den(S, 18, 41), confirmed=True)
+    check(n.m.slot(3).status == S.SKIPPED and n.m.state == S.CLOSING,
+          "End night skips the delayed show")
+    n.audit("delayed night")
+    print("  ok")
+
+
+def test_schedule_start_now_in_every_state():
+    section("scheduler: Start now anywhere but a running or paused show")
+    S = _sched()
+    if S is None:
+        return
+    fx = _matrix_fixtures(S)
+    want = {S.IDLE: ("STARTED EARLY (operator)", 1),
+            S.STANDBY: ("STARTED EARLY (operator)", 2),
+            S.HOLD: ("STARTED EARLY (operator)", 1),
+            S.CLOSING: ("EXTRA SHOW (operator)", 16),
+            S.OFF: ("EXTRA SHOW (operator)", 16),
+            "HOLD+DELAYED": ("DELAYED START (operator hold)", 1),
+            "STANDBY+DELAYED": ("DELAYED START (operator hold)", 1)}
+    for label, (m, now) in fx.items():
+        o = S.step(m, S.Event(S.START_NOW, "operator", who="Jeff",
+                              screen="rack screen"), now)
+        if label in want:
+            reason, show = want[label]
+            check(o.accepted and _fired(o, S) == [show]
+                  and o.machine.slot(show).reason == reason
+                  and o.machine.slot(show).fired_at == now,
+                  f"Start now in {label} starts show {show} now as "
+                  f"{reason}: {o.refused or o.machine.slot(show).reason}")
+            if reason == "STARTED EARLY (operator)":
+                check(o.machine.next_slot() is None or
+                      o.machine.next_slot().n != show,
+                      "starting early uses up that slot")
+            check(not o.machine.held_from and o.machine.state == S.SHOW,
+                  "Start now ends a Hold")
+        else:
+            check(not o.accepted, f"Start now in {label} does nothing")
+    # Right after an Abort, and inside the guard: no wait at all.
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+    o = n.op(S.START_NOW, _den(S, 18, 2))
+    check(o.accepted and _fired(o, S) == [2]
+          and n.m.slot(2).reason == "STARTED EARLY (operator)",
+          f"Start now works the moment after an Abort: {o.refused}")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 9, 20))
+    o = n.op(S.START_NOW, _den(S, 18, 9, 21))
+    check(o.accepted and _fired(o, S) == [3],
+          f"Start now works 1 s after a show ended, inside the guard: "
+          f"{o.refused}")
+    # Every show used up: the next Start now is an extra show.
+    n = _Night(S, rule)
+    n.boot(_den(S, 21, 50))
+    o = n.op(S.START_NOW, _den(S, 21, 55))
+    check(n.m.slot(13) is not None and n.m.slot(13).origin == "operator"
+          and n.m.slot(13).reason == "EXTRA SHOW (operator)",
+          "with no show left, Start now runs an extra one")
+    n.audit("start now")
     print("  ok")
 
 
@@ -8659,8 +8882,8 @@ def test_schedule_abort_end_night_and_operator_actions():
           and n.m.slot(3).reason == "ABORTED (operator)",
           "Abort marks the show ABORTED and stays in STANDBY")
     check(not n.m.fault, "an operator Abort is not a fault")
-    check(not n.op(S.START_NOW, _den(S, 18, 43)).accepted,
-          "an aborted show's end starts the guard too")
+    check(S.step(n.m, _op(S, S.START_NOW), _den(S, 18, 42)).accepted,
+          "Start now works straight after an Abort (not applied here)")
     check(_fired(n.tick(_den(S, 19, 0)), S) == [4],
           "the next show after an abort still starts on time")
 
@@ -9337,27 +9560,30 @@ def test_schedule_restart_keeps_tonight():
           f"the intermission, starting nothing: {o.machine.state} "
           f"{[e.kind for e in o.effects]}")
 
-    # A restart just after a show ends: the guard still holds.
+    # A restart just after a show ends: the guard still holds. Show 1 is
+    # paused long enough to end at 18:19:00, one minute before 18:20.
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 50)]
     a = _svc(S, work, now).start(thread=False)
-    now[0] = _den(S, 17, 52)
-    a._apply(_op(S, S.START_NOW))
-    now[0] = _den(S, 17, 59, 20)
-    a._apply(S.Event(S.SHOW_ENDED, "madmapper"))
-    now[0] = _den(S, 17, 59, 30)
+    for t, ev in (((18, 0), None), ((18, 1), _op(S, S.HOLD_ON)),
+                  ((18, 12, 40), _op(S, S.RESUME)),
+                  ((18, 19), S.Event(S.SHOW_ENDED, "madmapper"))):
+        now[0] = _den(S, *t)
+        a._apply(ev) if ev else a.tick()
+    check(a.machine.slot(1).status == S.DONE, "show 1 ran long and ended")
+    now[0] = _den(S, 18, 19, 30)
     b = _svc(S, work, now).start(thread=False)
-    check(b.machine.last_end is not None, "when the last show ended "
-                                          "survives the restart")
-    now[0] = _den(S, 18, 0)
+    check(b.machine.last_end == _den(S, 18, 19),
+          "when the last show ended survives the restart")
+    now[0] = _den(S, 18, 20)
     b.tick()
     check(not _starts(b) and b.machine.state == S.STANDBY,
-          "18:00 is 40 s after the last show ended; after a restart the "
+          "18:20 is 60 s after the last show ended; after a restart the "
           "guard still holds it off")
-    now[0] = _den(S, 18, 0, 1)
+    now[0] = _den(S, 18, 20, 1)
     b.tick()
-    check("guard" in b.machine.slot(1).reason,
-          f"and says it was the guard: {b.machine.slot(1).reason!r}")
+    check("guard" in b.machine.slot(2).reason,
+          f"and says it was the guard: {b.machine.slot(2).reason!r}")
 
     # A restart during a show: that show is over, the rig is made safe and
     # the guard counts from the restart.
@@ -9756,7 +9982,17 @@ def test_schedule_tonight_file_is_checked():
     bad("an unknown slot key", slot(4, late_grace_s=600))
     bad("an unknown origin", slot(4, origin="madmapper"))
     bad("a missing key", lambda doc: doc.pop("last_end"))
-    bad("hold as a string", lambda doc: doc.update(hold_pending="yes"))
+    bad("the old hold_pending key", lambda doc: doc.update(
+        hold_pending=True))
+    bad("two delayed shows", lambda doc: (
+        doc["slots"][4].update(status="DELAYED"),
+        doc["slots"][5].update(status="DELAYED")))
+    bad("a delayed show that already started",
+        slot(4, status="DELAYED", fired_at="2026-11-14T18:05:00-07:00"))
+    bad("PAUSED with nothing running", lambda doc: doc.update(
+        state="PAUSED"))
+    bad("a negative paused time", slot(0, paused_s=-5))
+    bad("a paused time of true", slot(0, paused_s=True))
     bad("a state of BOOT", lambda doc: doc.update(state="BOOT"))
     bad("held_from SHOW", lambda doc: doc.update(held_from="SHOW"))
     bad("another date", lambda doc: doc.update(date="2026-11-15"))
@@ -10098,6 +10334,170 @@ def test_schedule_uncertain_record_never_fires_twice():
     print("  ok")
 
 
+def test_schedule_delayed_and_paused_survive_a_restart():
+    section("scheduler: a delayed show and a paused show across a restart")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+
+    def at(svc, now, t, ev=None):
+        now[0] = _den(S, *t)
+        svc._apply(ev) if ev else svc.tick()
+
+    # On hold with a delayed show, restart: still on hold, still delayed,
+    # and the Hold rules carry on after it.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 5)]
+    a = _svc(S, work, now).start(thread=False)
+    at(a, now, (18, 10), _op(S, S.HOLD_ON))
+    at(a, now, (18, 20, 1))
+    check(a.machine.slot(2).status == S.DELAYED, "18:20 delayed by the Hold")
+    now[0] = _den(S, 18, 25)
+    b = _svc(S, work, now).start(thread=False)
+    check(b.machine.state == S.HOLD and b.machine.slot(2).status == S.DELAYED
+          and b.machine.slot(2).reason == "DELAYED (on hold)",
+          f"after a restart the Hold and the delayed show are kept: "
+          f"{b.machine.state} {b.machine.slot(2).status}")
+    at(b, now, (18, 40, 1))
+    check(b.machine.slot(2).status == S.MISSED
+          and b.machine.slot(3).status == S.DELAYED,
+          "and the newest delayed show still wins after it")
+    at(b, now, (18, 41), _op(S, S.RESUME))
+    at(b, now, (18, 42), _op(S, S.START_NOW))
+    check(_starts(b) == [3]
+          and b.machine.slot(3).reason == "DELAYED START (operator hold)",
+          "Start now starts the delayed show after the restart")
+
+    # Down across two slot times while on hold: the time it was down counts
+    # as Hold.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 5)]
+    a = _svc(S, work, now).start(thread=False)
+    at(a, now, (18, 10), _op(S, S.HOLD_ON))
+    now[0] = _den(S, 18, 41)
+    b = _svc(S, work, now).start(thread=False)
+    check([s.status for s in b.machine.slots[1:3]] == [S.MISSED, S.DELAYED]
+          and b.machine.state == S.HOLD and not _starts(b),
+          f"a restart on hold after two slot times: {[s.status for s in b.machine.slots[1:3]]}")
+
+    # STANDBY with a delayed show waiting, restart: it still waits and never
+    # starts by itself.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 5)]
+    a = _svc(S, work, now).start(thread=False)
+    at(a, now, (18, 10), _op(S, S.HOLD_ON))
+    at(a, now, (18, 20, 1))
+    at(a, now, (18, 25), _op(S, S.RESUME))
+    now[0] = _den(S, 18, 26)
+    b = _svc(S, work, now).start(thread=False)
+    check(b.machine.state == S.STANDBY
+          and b.machine.slot(2).status == S.DELAYED,
+          "a delayed show waiting in STANDBY survives the restart")
+    for t in ((18, 26, 1), (18, 30), (18, 35)):
+        at(b, now, t)
+    check(not _starts(b), "and still never starts by itself")
+
+    # The dry run respects a pause: a paused show never "ends", and after
+    # Resume it ends at its new, later time, with nothing refused on the way.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59, 50)]
+    c = _svc(S, work, now).start(thread=False)
+    at(c, now, (18, 0))
+    at(c, now, (18, 3), _op(S, S.HOLD_ON))
+    for t in ((18, 7, 20), (18, 10), (18, 12, 59)):
+        at(c, now, t)
+    check(c.machine.state == S.PAUSED
+          and not any(r["outcome"] == "refused" for r in c.journal),
+          "the dry run never tries to end a paused show")
+    at(c, now, (18, 13), _op(S, S.RESUME))
+    at(c, now, (18, 17, 19))
+    check(c.machine.state == S.SHOW, "ten minutes paused: still running at "
+                                     "18:17:19")
+    at(c, now, (18, 17, 20))
+    check(c.machine.slot(1).status == S.DONE
+          and c.machine.slot(1).ended_at == _den(S, 18, 17, 20),
+          f"and it ends at 18:17:20: {c.machine.slot(1).status}")
+
+    # Paused, restart: treated as a restart during a show.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59, 50)]
+    a = _svc(S, work, now).start(thread=False)
+    at(a, now, (18, 0))
+    at(a, now, (18, 3), _op(S, S.HOLD_ON))
+    check(a.machine.state == S.PAUSED, "show 1 paused")
+    now[0] = _den(S, 18, 5)
+    b = _svc(S, work, now).start(thread=False)
+    s1 = b.machine.slot(1)
+    check(s1.status == S.FAULT and "restarted" in s1.reason
+          and b.machine.state == S.STANDBY and b.machine.fault,
+          f"a restart while paused ends the show as FAULT: {s1.status} "
+          f"{s1.reason!r} {b.machine.state}")
+    acts = [r["action"] for r in b.journal if r["outcome"] == "not performed"]
+    check("ZERO_FLAME_CUES" in acts and "RESUME_SHOW" not in acts
+          and "START_SHOW" not in acts,
+          f"the rig is made safe and nothing resumes: {acts}")
+    print("  ok")
+
+
+def test_schedule_operator_list():
+    section("scheduler: operator names come from a list in data_dir()")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    path = SV.operators_path(work)
+    check(os.path.dirname(SV.operators_path()) == SV.data_dir(),
+          "the operators file lives in data_dir()")
+    check(json.load(open(path, encoding="utf-8")) ==
+          {"operators": ["Andy", "Jeff"]}
+          and svc.operators == ("Andy", "Jeff")
+          and svc.machine.operators == ("Andy", "Jeff"),
+          "a missing list is written with Andy and Jeff")
+    for who in ("Bob", "", "  "):
+        try:
+            svc.edit_tonight({"op": "remove", "show": 3, "who": who,
+                              "screen": "rack screen"})
+            check(False, f"an edit by {who!r} was accepted")
+        except ValueError as e:
+            check(("not on the operator list" in str(e)) if who.strip()
+                  else ("who pressed it" in str(e)),
+                  f"an edit by {who!r} is refused with a sentence: {e}")
+    check(svc.machine.slot(3).status == S.PENDING, "nothing was changed")
+    svc.edit_tonight({"op": "remove", "show": 3, "who": "jeff",
+                      "screen": "rack screen"})
+    check(svc.machine.slot(3).status == S.SKIPPED, "Jeff may edit")
+    # Somebody else's list is the list in force.
+    json.dump({"operators": ["Casey", "Andy"]},
+              open(path, "w", encoding="utf-8"))
+    other = _svc(S, work, now).start(thread=False)
+    check(other.machine.operators == ("Casey", "Andy"),
+          "the list on disk is the list in force")
+    try:
+        other.edit_tonight({"op": "remove", "show": 4, "who": "Jeff",
+                            "screen": "rack screen"})
+        check(False, "Jeff was accepted though not on this list")
+    except ValueError as e:
+        check("Casey, Andy" in str(e), f"the sentence names the list: {e}")
+    # A broken list: the defaults stay in force and the journal says why.
+    for bad in ('{"operators": []}', '{"operators": ["Andy", "andy"]}',
+                '{"names": ["Andy"]}', '{"operators": [""]}', "{nope"):
+        open(path, "w", encoding="utf-8").write(bad)
+        b = _svc(S, work, now).start(thread=False)
+        check(b.operators == ("Andy", "Jeff")
+              and any("could not be used" in r["text"] for r in b.journal),
+              f"a broken list {bad!r} falls back to Andy and Jeff, and "
+              f"says so")
+        for r in b.journal:
+            _no_dashes(r["text"], "operators")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -10207,6 +10607,9 @@ if __name__ == "__main__":
     test_schedule_late_rule()
     test_schedule_state_machine_every_state_every_event()
     test_schedule_restart_guard_and_hold()
+    test_schedule_hold_pauses_a_show()
+    test_schedule_hold_between_shows_delays()
+    test_schedule_start_now_in_every_state()
     test_schedule_abort_end_night_and_operator_actions()
     test_schedule_file_is_versioned_and_atomic()
     test_schedule_clock_check()
@@ -10224,6 +10627,8 @@ if __name__ == "__main__":
     test_schedule_after_a_stopped_show_is_one_choice()
     test_schedule_contract_for_the_transport()
     test_schedule_uncertain_record_never_fires_twice()
+    test_schedule_delayed_and_paused_survive_a_restart()
+    test_schedule_operator_list()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
