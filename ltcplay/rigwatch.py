@@ -22,8 +22,28 @@ reported as not watchable, once, and then left alone.
 """
 import concurrent.futures
 import subprocess
+import sys
 import threading
 import time
+
+
+def ping(ip, timeout_s=1.0):
+    """One ping to one address. True only when it answered.
+
+    The Mac flags are the ones this program has always used. Windows ping
+    reads the same letters differently (-c is a routing compartment, -t is
+    ping forever), and it exits 0 when a router answers "destination host
+    unreachable" on the controller's behalf, so there only a reply that
+    carries a TTL counts."""
+    if sys.platform == "win32":
+        r = subprocess.run(["ping", "-n", "1", "-w", "1000", ip],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=timeout_s + 1.5)
+        return r.returncode == 0 and b"TTL=" in r.stdout.upper()
+    r = subprocess.run(["ping", "-c", "1", "-W", "1000", "-t", "1", ip],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=timeout_s + 1.5)
+    return r.returncode == 0
 
 
 class RigWatch:
@@ -54,11 +74,7 @@ class RigWatch:
     # -- the sweep --------------------------------------------------------
     def _ping_once(self, ip):
         try:
-            r = subprocess.run(
-                ["ping", "-c", "1", "-W", "1000", "-t", "1", ip],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=self.PING_TIMEOUT_S + 1.5)
-            return r.returncode == 0
+            return ping(ip, self.PING_TIMEOUT_S)
         except Exception:
             return False
 

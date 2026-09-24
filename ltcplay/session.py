@@ -12,6 +12,7 @@ drawing.
 import os
 import time
 
+from . import appdata
 from . import audio as audio_mod
 from . import netmap as netmap_mod
 from . import rigwatch as rigwatch_mod
@@ -183,9 +184,12 @@ class Session:
                                f"universes to send to.")
 
         if not self.no_log:
-            p = self.log_path or os.path.join(
-                os.path.dirname(os.path.abspath(self.timeline_path)),
-                "ltcplay.log")
+            # Beside the show file on a Mac. On Windows program data never
+            # goes beside the show, which may be a synced folder.
+            p = self.log_path or (appdata.log_path() if appdata.WINDOWS else
+                                  os.path.join(os.path.dirname(
+                                      os.path.abspath(self.timeline_path)),
+                                      "ltcplay.log"))
             try:
                 self.log = ShowLog(p, echo=self.echo_log)
             except OSError as e:
@@ -378,10 +382,13 @@ class Session:
                 ).acquire()
             except onlyone.AlreadyRunning as e:
                 who = f"  It says: {e.holder}" if e.holder else ""
+                # "this Mac" on a Mac, exactly as before; Windows says what it
+                # is.
+                here = "computer" if appdata.WINDOWS else "Mac"
                 raise SessionError(
-                    "Another ltcplay on this Mac is already sending to the "
-                    "rig." + who + "\nTwo players on the same universes fight "
-                    "frame by frame and the rig looks broken. Stop that one "
+                    f"Another ltcplay on this {here} is already sending to "
+                    "the rig." + who + "\nTwo players on the same universes "
+                    "fight frame by frame and the rig looks broken. Stop that one "
                     "first -- it is either the Run window or the Web window.")
         if not self.wav:
             # With no device resolved, hand it a placeholder carrying the NAME

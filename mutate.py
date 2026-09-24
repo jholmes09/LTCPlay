@@ -9,6 +9,15 @@ against one, the suite is lying and gets strengthened until it does not.
 
     python3 mutate.py            run them all
     python3 mutate.py park       run the ones whose name contains "park"
+
+For CI, two options that change nothing about a plain run:
+
+    --shard I/N        run only every Nth mutation, starting at the Ith
+                       (0-based), so N machines can share one sweep
+    --expected FILE    a list of mutations this machine is known to miss,
+                       each with its reason; see mutate_expected_misses.txt.
+                       In this mode a mutation counts as caught only when
+                       the suite fails under it twice running.
 """
 import subprocess
 import sys
@@ -19,7 +28,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # (name, file, exact text to find, replacement)
 MUTATIONS = [
  ("the input hunts sample rates on every retry again", "ltcplay/audio.py",
-  "        if self._good:\n            want(self._good[0], self._good[1])",
+  "        if self._good:\n            want(self._good[0], self._good[1])\n"
+  "        want(self.rate, chans)",
   "        if False:\n            want(self._good[0], self._good[1])"),
 
  ("a working setting is never remembered", "ltcplay/audio.py",
@@ -206,9 +216,9 @@ MUTATIONS = [
 
  ("the decoder ignores the clock the input actually runs at",
   "ltcplay/audio.py",
-  """            self.rate = rate
-            if self.on_rate_change:""",
-  """            if False:"""),
+  """                self.rate = rate
+                if self.on_rate_change:""",
+  """                if False:"""),
 
  ("a show with no input reports it as fine", "ltcplay/session.py",
   '            "input_attached": (True if self.wav\n                               else bool(a and a.attached)),',
@@ -236,8 +246,8 @@ MUTATIONS = [
                 out = dict(out, live=True, opened=True)"""),
 
  ("nothing says the input is missing", "ltcplay/display.py",
-  "        if not attached:",
-  "        if False:"),
+  "        elif not attached:",
+  "        elif False:"),
 
  ("the header hangs its text on the logo's baseline",
   "ltcplay/web/index.html",
@@ -265,8 +275,8 @@ MUTATIONS = [
 
  ("changing the folder rewrites the whole show file",
   "ltcplay/web.py",
-  '        doc["show_dir"] = os.path.abspath(os.path.expanduser(folder))',
-  '        doc = {"show_dir": os.path.abspath(os.path.expanduser(folder))}'),
+  '        doc["show_dir"] = (os.path.relpath(chosen,',
+  '        doc = {}\n        doc["show_dir"] = (os.path.relpath(chosen,'),
 
  ("the folder can be changed under a running show", "ltcplay/web.py",
   """        if self._starting or (self.session is not None
@@ -333,10 +343,10 @@ MUTATIONS = [
  ("LTC readout tracks the free-rolling clock instead of freezing",
   "ltcplay/player.py",
   """        self.tc_seconds = tc
-        cue = self.timeline.cue_at(tc)""",
+        return self._play_at(tc, prev_state, prev_cue, prev_source)""",
   """        self.tc_seconds = tc
         self.last_ltc_text = self.timeline.format(tc)
-        cue = self.timeline.cue_at(tc)"""),
+        return self._play_at(tc, prev_state, prev_cue, prev_source)"""),
 
  ("up next is off by one at a cue boundary", "ltcplay/timeline.py",
   "if self.cues[mid].tc_seconds <= tc_seconds:",
@@ -356,6 +366,20 @@ MUTATIONS = [
                 # Leave the epoch alone.""",
   """            if False:
                 # Leave the epoch alone."""),
+
+ ("the output thread does something the stepped tests do not",
+  "ltcplay/player.py",
+  "                self.frames_sent += 1\n",
+  "                self.frames_sent += 1\n"
+  "                self.frames_sent += 0\n"),
+
+ ("a freewheel runs at half speed", "ltcplay/player.py",
+  """        tc = self.last_ltc_seconds if self.state == PARKED and \\
+            self.last_ltc_seconds is not None else now - epoch""",
+  """        tc = self.last_ltc_seconds if self.state == PARKED and \\
+            self.last_ltc_seconds is not None else (
+                now - epoch if self.state != FREEWHEEL
+                else (last - epoch) + (now - last) / 2)"""),
 
  ("parked playback uses the free-rolling clock", "ltcplay/player.py",
   """        tc = self.last_ltc_seconds if self.state == PARKED and \\
@@ -479,7 +503,7 @@ MUTATIONS = [
             if k not in ("device", "channel", "rate"):"""),
 
  ("the display stops warning about a dead interface", "ltcplay/display.py",
-  "if quiet is not None and quiet > 1.0:", "if False:"),
+  "if attached and quiet is not None and quiet > 1.0:", "if False:"),
 
  ("the display stops warning about a silent input", "ltcplay/display.py",
   "elif a.blocks > 40 and a.level.hold < 0.02:", "elif False:"),
@@ -594,8 +618,8 @@ MUTATIONS = [
   "            if False:"),
 
  ("verify stops recording fingerprints at all", "ltcplay/cli.py",
-  '    if not args.no_manifest:\n        json.dump({"timeline"',
-  '    if False:\n        json.dump({"timeline"'),
+  '    if not args.no_manifest:\n        # A read-only show folder',
+  '    if False:\n        # A read-only show folder'),
 
  ("a missing sequence is passed over in silence", "ltcplay/cli.py",
   """        if not os.path.exists(path):
@@ -642,8 +666,8 @@ MUTATIONS = [
 
  ("the bridge swallows a real gap as well as a rounding one",
   "ltcplay/player.py",
-  "                    0 < nxt.tc_seconds - tc <= self.bridge_s:",
-  "                    0 < nxt.tc_seconds - tc:"),
+  "                    0 < nxt.tc_seconds - tc <= self.bridge_s and \\",
+  "                    0 < nxt.tc_seconds - tc and \\"),
 
  ("bridge_ms is ignored and always takes the default", "ltcplay/player.py",
   "        if bridge_ms is None:\n"
@@ -674,7 +698,9 @@ MUTATIONS = [
   '        if False and override in ("preshow", "blackout"):'),
 
  ("a held preshow stops reading the feed", "ltcplay/player.py",
+  "        if override in (\"preshow\", \"blackout\"):\n"
   "            self._state_from_feed(now, last, epoch)",
+  "        if override in (\"preshow\", \"blackout\"):\n"
   "            pass  # noqa"),
 
  ("the sequence position is shown as timecode seconds",
@@ -712,7 +738,7 @@ MUTATIONS = [
   "            return None", "        if False:\n            return None"),
 
  ("the page and the server drift apart unnoticed", "ltcplay/web.py",
-  "API = 3", "API = 4"),
+  "API = 7", "API = 8"),
 
  ("the state stops carrying the API number", "ltcplay/web.py",
   '        snap["api"] = API', '        snap["api"] = None'),
@@ -750,7 +776,7 @@ MUTATIONS = [
 
  ("the web launcher stops looking for a stale server",
   "Web ltcplay.command",
-  'OLD=$(pgrep -f "ltcplay.cli serve" 2>/dev/null || true)',
+  'OLD=$(pgrep -f "ltcplay.cli serve|LTC Player.app/Contents/Resources/boot.py" 2>/dev/null || true)',
   'OLD=""'),
 
  ("a cue stops owning the channels it does not carry", "ltcplay/player.py",
@@ -761,10 +787,8 @@ MUTATIONS = [
   "        if False:\n            gaps.append((at, cap))"),
 
  ("a single bad timecode frame is believed again", "ltcplay/player.py",
-  "                want = self._pending_jump\n"
-  "                if (want is not None\n"
-  "                        and abs(new_epoch - want) <= self.jump_confirm_s):",
-  "                want = self._pending_jump\n"
+  "                if cold or (want is not None\n"
+  "                            and abs(new_epoch - want) <= self.jump_confirm_s):",
   "                if True:"),
 
  ("the bridge resurrects a cue that ended long ago", "ltcplay/player.py",
@@ -800,12 +824,13 @@ MUTATIONS = [
   "                self.blackout_sent = True"),
 
  ("a feed coming back yanks a free run sideways", "ltcplay/player.py",
-  "        if self.freerun_epoch is not None:", "        if False:"),
+  "        if self.freerun_epoch is not None and override not in",
+  "        if False and override not in"),
 
  ("release does not hand the show back", "ltcplay/player.py",
   "        self.freerun_epoch = None\n"
-  "        self._event(\"freerun\", \"released;",
-  "        self._event(\"freerun\", \"released;"),
+  "        live = self.feed_state == LOCKED",
+  "        live = self.feed_state == LOCKED"),
 
  ("the bundle points back at the machine that made it", "ltcplay/cli.py",
   '    doc["show_dir"] = "show"', '    pass  # noqa'),
@@ -840,8 +865,8 @@ MUTATIONS = [
   "                    if True:\n                        self.jump_rejects += 1"),
 
  ("a wedged start is invisible to the page again", "ltcplay/web.py",
-  "            with self.lock:\n                self.session = s\n            try:\n                s.start()",
-  "            try:\n                s.start()"),
+  "        with self.lock:\n            self.session = s\n        try:\n            s.start()",
+  "        try:\n            s.start()"),
 
  ("bundle keeps the absolute paths of the machine that made it",
   "ltcplay/cli.py",
@@ -1051,13 +1076,30 @@ MUTATIONS = [
 ]
 
 
+# What the last suite run failed on, so a surprising result can be read.
+_LAST_FAILS = []
+
+
 def run_suite():
     r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
                        capture_output=True, text=True, timeout=300)
+    out = (r.stdout or "") + (r.stderr or "")
+    _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
+                      if l.startswith("  FAIL") or "Error" in l][:6]
     return r.returncode == 0
 
 
 LOCK = os.path.join(HERE, ".mutating")
+
+
+def _read(path):
+    with open(path, encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
 
 
 def main():
@@ -1077,8 +1119,48 @@ def main():
         os.remove(LOCK)
 
 
+def _args(argv):
+    """Name filters, plus the two CI options. Anything else is a filter, as
+    it always was."""
+    wants, shard, expected = [], None, None
+    it = iter(argv)
+    for a in it:
+        if a == "--shard":
+            i, n = next(it).split("/")
+            shard = (int(i), int(n))
+        elif a == "--expected":
+            expected = next(it)
+        else:
+            wants.append(a.lower())
+    return wants or None, shard, expected
+
+
+def _load_expected(path):
+    """{name: reason} of the misses expected ON THIS OS.
+
+    One entry per line: `where | exact mutation name | reason`, where `where`
+    is `all` or `windows`. Blank lines and # comments are ignored."""
+    here_os = "windows" if sys.platform == "win32" else "posix"
+    out, unknown = {}, []
+    names = {m[0] for m in MUTATIONS}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            where, name, reason = (x.strip() for x in line.split("|", 2))
+            if name not in names:
+                unknown.append(name)
+            if where == "all" or where == here_os:
+                out[name] = reason
+    return out, unknown
+
+
 def _run():
-    wants = [a.lower() for a in sys.argv[1:]] or None
+    wants, shard, expected_file = _args(sys.argv[1:])
+    expected, unknown = ({}, [])
+    if expected_file:
+        expected, unknown = _load_expected(expected_file)
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
@@ -1091,29 +1173,56 @@ def _run():
               "mean anything.")
         return 2
     caught = missed = 0
-    for name, rel, old, new in MUTATIONS:
+    missed_names, caught_names, setup_fails = [], [], []
+    for index, (name, rel, old, new) in enumerate(MUTATIONS):
         if wants and not any(w in name.lower() for w in wants):
             continue
+        if shard and index % shard[1] != shard[0]:
+            continue
         path = os.path.join(HERE, rel)
-        src = open(path).read()
+        # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
+        # no newline translation, so a restore on Windows cannot turn an LF
+        # file into a CRLF one and a pattern cannot miss on a line ending.
+        src = _read(path)
         if src.count(old) != 1:
             print(f"  SETUP FAIL  {name} "
                   f"(pattern appears {src.count(old)} times in {rel})")
             missed += 1
+            setup_fails.append(name)
             continue
         backup = src
-        open(path, "w").write(src.replace(old, new, 1))
+        _write(path, src.replace(old, new, 1))
         try:
             green = run_suite()
+            # In CI a mutation counts as caught only if the suite fails under
+            # it twice running. A test that fails for the runner's reasons
+            # would otherwise pass itself off as coverage: an unlisted
+            # mutation nothing really catches would read "caught", and a
+            # listed one would read "now caught". Caught once and then not is
+            # NOT CAUGHT, with what failed the first time printed.
+            if not green and expected_file:
+                why = list(_LAST_FAILS)
+                if run_suite():
+                    green = True
+                    print(f"  caught once, then not: counted as NOT CAUGHT, "
+                          f"and the first failure was a flaky test: {name}")
+                    for w in why:
+                        print(f"      {w}")
         finally:
-            with open(path, "w") as fh:
-                fh.write(backup)
+            _write(path, backup)
         if green:
             print(f"  NOT CAUGHT  {name}")
             missed += 1
+            missed_names.append(name)
         else:
             print(f"  caught      {name}")
             caught += 1
+            caught_names.append(name)
+            # What caught it. A check that has nothing to do with this
+            # mutation is a flaky test passing itself off as coverage, and
+            # this is where that shows.
+            for w in _LAST_FAILS[:3]:
+                print(f"      {w}")
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
@@ -1124,7 +1233,38 @@ def _run():
               "above.")
         return 2
     print("tree restored and green")
-    return 1 if missed else 0
+    if not expected_file:
+        return 1 if missed else 0
+    return _against_expected(expected, unknown, missed_names, caught_names,
+                             setup_fails)
+
+
+def _against_expected(expected, unknown, missed_names, caught_names,
+                      setup_fails):
+    """Pass only if every miss is a listed one, and no listed one is caught.
+
+    The list can only shrink: a listed mutation that is now caught fails the
+    run until its line is deleted, so the list never hides a guarantee that
+    has started being tested."""
+    bad = False
+    for n in unknown:
+        print(f"  LIST IS STALE  {n!r} is not a mutation in this file")
+        bad = True
+    for n in setup_fails:
+        print(f"  SETUP FAIL is never expected: {n}")
+        bad = True
+    for n in missed_names:
+        if n in expected:
+            print(f"  expected miss  {n}  ({expected[n]})")
+        else:
+            print(f"  UNEXPECTED MISS  {n}")
+            bad = True
+    for n in caught_names:
+        if n in expected:
+            print(f"  NOW CAUGHT, delete it from the list  {n}")
+            bad = True
+    print("\nagainst the expected-miss list: " + ("FAIL" if bad else "ok"))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
