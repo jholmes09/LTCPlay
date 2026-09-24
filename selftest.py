@@ -10655,6 +10655,1813 @@ def test_schedule_a_clock_step_during_a_pause():
     print("  ok")
 
 
+# ------------------------------------------------------ the show clock ----
+# Fire & Ice 2026, handoff section 4. None of these import ltcplay.clock at
+# module scope: the GPL test below proves the program never loads it unless
+# a show file asks, and this file importing it up top would hide nothing but
+# would make that test harder to trust.
+
+class _TcOut:
+    """Stands in for the Art-Net timecode socket and keeps every packet."""
+
+    def __init__(self, dests=(("test", "127.0.0.1"),)):
+        self.dests = list(dests)
+        self.sent = []
+        self.packets_sent = 0
+        self.send_errors = 0
+        self.last_error = ""
+        self.closed = 0
+
+    last_error_at = None
+    seconds_since_error = None
+    failing_labels = ()
+
+    @property
+    def seconds_since_ok(self):
+        return 0.0
+
+    def send(self, pkt):
+        self.sent.append((time.perf_counter(), bytes(pkt)))
+        self.packets_sent += 1
+        return True
+
+    def close(self):
+        self.closed += 1
+
+
+def _tc_of(pkt):
+    """(h, m, s, f, type) out of an ArtTimeCode packet."""
+    return pkt[17], pkt[16], pkt[15], pkt[14], pkt[18]
+
+
+def test_arttimecode_packet_byte_for_byte():
+    section("Art-Net timecode: the packet, byte for byte")
+    # Art-Net 4 Protocol Release V1.4, document revision 1.4dp 23/10/2025:
+    # ArtTimeCode packet definition pp. 54-55, OpTimeCode 0x9700 p. 21,
+    # port 0x1936 p. 10. Written out by hand here so this test does not
+    # share a single constant with the code it checks.
+    from ltcplay import clock as C
+    want = bytes([0x41, 0x72, 0x74, 0x2D, 0x4E, 0x65, 0x74, 0x00,  # Art-Net\0
+                  0x00, 0x97,        # OpTimeCode 0x9700, low byte first
+                  0x00, 0x0E,        # protocol version 14, high byte first
+                  0x00,              # Filler1
+                  0x00,              # StreamId, 0 is the master
+                  29, 59, 58, 1,     # frames, seconds, minutes, hours
+                  0x03])             # type 3, SMPTE 30 fps non drop
+    got = C.arttimecode(1, 58, 59, 29)
+    check(got == want, f"ArtTimeCode for 01:58:59:29 is {got.hex()}, the "
+                       f"spec says {want.hex()}")
+    check(len(got) == 19, f"ArtTimeCode is {len(got)} bytes, not 19")
+    check(C.arttimecode(0, 0, 0, 0)[14:19] == bytes([0, 0, 0, 0, 3]),
+          "00:00:00:00 is not all zeros with type 3")
+    check(C.arttimecode(2, 3, 4, 5, stream_id=7)[13] == 7,
+          "the stream id is not in byte 13")
+    check(C.MASTER_FPS == 30 and C.MASTER_TYPE == 3,
+          "the master must send 30 fps non drop, type 3")
+    check(C.ARTNET_PORT == 6454, "Art-Net timecode must go to UDP 6454")
+    # Every type, and the frame range each one allows.
+    for (count, drop), typ in (((24, False), 0), ((25, False), 1),
+                               ((30, True), 2), ((30, False), 3)):
+        check(C.type_for(count, drop) == typ,
+              f"{count} fps drop={drop} should be type {typ}")
+        top = count - 1
+        check(C.arttimecode(0, 0, 0, top, typ)[14] == top,
+              f"frame {top} refused at type {typ}")
+        try:
+            C.arttimecode(0, 0, 0, count, typ)
+            check(False, f"frame {count} accepted at type {typ}")
+        except ValueError:
+            pass
+    for bad in ((24, 0, 0, 0), (0, 60, 0, 0), (0, 0, 60, 0), (-1, 0, 0, 0)):
+        try:
+            C.arttimecode(*bad)
+            check(False, f"{bad} is not a timecode and was sent")
+        except ValueError:
+            pass
+
+    # And on a real socket: to every named node, broadcast only when asked.
+    import socket as _socket
+    rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(2.0)
+    port = rx.getsockname()[1]
+    try:
+        out = C.TimecodeOut([("MadMapper", "127.0.0.1"),
+                             ("BEYOND", "127.0.0.1")], port=port)
+        out.send(want)
+        a = rx.recv(64)
+        b = rx.recv(64)
+        check(a == want and b == want,
+              "the packet on the wire is not the packet that was built")
+        s = out._sock
+        check(s is not None and not s.getsockopt(_socket.SOL_SOCKET,
+                                                 _socket.SO_BROADCAST),
+              "broadcast is switched on for a unicast timecode socket")
+        out.close()
+        bc = C.TimecodeOut([("broadcast", "127.255.255.255")],
+                           broadcast=True, port=port)
+        s2 = bc._default_socket()
+        check(bool(s2.getsockopt(_socket.SOL_SOCKET, _socket.SO_BROADCAST)),
+              "a broadcast timecode socket cannot broadcast")
+        s2.close()
+    finally:
+        rx.close()
+
+    # A socket the OS keeps refusing is rebuilt, not retried forever, and
+    # never raises into the clock thread.
+    class Refusing:
+        def __init__(self):
+            self.closed = False
+
+        def sendto(self, pkt, addr):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            self.closed = True
+
+    made = []
+    now = [100.0]
+
+    def factory():
+        made.append(Refusing())
+        return made[-1]
+
+    out = C.TimecodeOut([("BEYOND", "10.0.0.40")], socket_factory=factory,
+                        clock=lambda: now[0])
+    for _ in range(3):
+        check(out.send(want) is False, "a refused send reported success")
+    check(len(made) == 1 and made[0].closed,
+          "three refused sends in a row did not close the socket")
+    check("BEYOND" in out.last_error and "10.0.0.40" in out.last_error,
+          f"the error does not say which receiver: {out.last_error!r}")
+    out.send(want)
+    check(len(made) == 1, "the socket was reopened with no backoff")
+    now[0] += 1.5
+    out.send(want)
+    check(len(made) == 2, "the socket was never reopened after the backoff")
+    print("  ok")
+
+
+def _master(C, **kw):
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"test": "127.0.0.1"}}})
+    return cfg, C.ArtNetMaster(cfg, **kw)
+
+
+def test_artnet_timecode_holds_30fps_under_load():
+    section("Art-Net timecode: 30 a second under CPU load")
+    # Real time, real sockets, a machine made busy on purpose: one process
+    # per spare core burning CPU, and two threads in this process doing what
+    # the render loop does, 8 ms of work every 25 ms, competing with the
+    # clock for the interpreter. Three seconds, so it costs little on CI.
+    #
+    # The bounds are for a slow runner. On a Mac running this as a
+    # background process a plain sleep wakes 5 to 10 ms late with nothing
+    # else running at all; that is the OS, not the pacer. What the pacer
+    # owns is tested hard, always: every packet carries the frame that is
+    # current when it goes out, so a pacer that counts sleeps or bursts to
+    # catch up fails at once, and none may be a frame late.
+    #
+    # The timing bounds (how many frames, how late) are applied only on a
+    # machine that can keep time at all. A second with nothing else running
+    # is measured first; a CI runner that cannot hold 30 a second even then
+    # (a starved macOS VM dropped half of them) says so and is judged on
+    # the pacer's own properties alone. The drift test proves the pacing
+    # arithmetic on a simulated clock whatever the machine.
+    import socket as _socket
+    import subprocess as _sp
+    from ltcplay import clock as C
+    rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(0.2)
+    port = rx.getsockname()[1]
+    stop = threading.Event()
+    got = []
+
+    def listen():
+        while not stop.is_set():
+            try:
+                got.append(rx.recv(64))
+            except OSError:
+                pass
+
+    def burn():
+        while not stop.is_set():
+            end = time.perf_counter() + 0.008
+            while time.perf_counter() < end:
+                sum(i * i for i in range(200))
+            time.sleep(0.017)
+
+    def unloaded(seconds=1.0):
+        tk = []
+        _cfg, mb = _master(C, out=_TcOut())
+        real = mb.ticker.tick
+        mb.ticker.tick = lambda n, now: (tk.append(n), real(n, now))[1]
+        mb.start()
+        mb.play(0.0, 3600.0, "baseline")
+        time.sleep(seconds)
+        mb.stop()
+        gaps_ = [b - a for a, b in zip(tk, tk[1:])]
+        return len(tk), max(gaps_ or [0])
+
+    base_n, base_gap = unloaded()
+    fit = base_n >= 28 and base_gap <= 2
+
+    procs = []
+    spare = max(1, (os.cpu_count() or 2) // 2)
+    for _ in range(min(spare, 4)):
+        # Each one ends itself, so nothing is left burning if this test dies.
+        procs.append(_sp.Popen([sys.executable, "-c",
+                                "import time\nt=time.time()+8\n"
+                                "while time.time()<t: pass"]))
+    threads = [threading.Thread(target=listen, daemon=True)] + \
+        [threading.Thread(target=burn, daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    ticks = []
+    try:
+        out = C.TimecodeOut([("test", "127.0.0.1")], port=port)
+        _cfg, m = _master(C, out=out)
+        real_tick = m.ticker.tick
+
+        def tick(n, now):
+            ticks.append((n, now))
+            return real_tick(n, now)
+
+        m.ticker.tick = tick
+        time.sleep(0.3)              # let the load build first
+        m.start()
+        t0 = m.play(0.0, 3600.0, "load test")
+        time.sleep(3.0)
+        m.stop()
+        time.sleep(0.3)
+    finally:
+        stop.set()
+        for p in procs:
+            try:
+                p.kill()
+                p.wait(timeout=5)
+            except Exception:
+                pass
+        for t in threads:
+            t.join(timeout=2)
+        rx.close()
+
+    frame = 1.0 / 30
+    ns = [n for n, _ in ticks]
+    # The pacer's own properties, on any machine.
+    check(ticks, "the clock sent nothing at all under load")
+    check(all(b > a for a, b in zip(ns, ns[1:])),
+          "a frame was sent twice or went backwards")
+    check(ns and ns[0] == 0, "the cue did not start at 00:00:00:00")
+    late = sorted(now - (t0 + n * frame) for n, now in ticks)
+    check(all(0 <= x < frame for x in late),
+          "a packet carried a frame that was not current when it was sent")
+    check(len(ticks) + m.ticker.skipped == ns[-1] + 1 if ns else False,
+          "sent plus skipped does not add up to the frames that were due")
+    gaps = [b - a for a, b in zip(ns, ns[1:])]
+    med = late[len(late) // 2] if late else 1.0
+    p90 = late[int(len(late) * 0.9)] if late else 1.0
+    # How well it kept time, on a machine that can.
+    if fit:
+        check(ns and abs(ns[-1] - 89) <= 3,
+              f"after 3 s the clock read frame {ns[-1] if ns else None}; it "
+              f"should be about 90, so the pacing is running slow")
+        check(len(ticks) >= 84,
+              f"only {len(ticks)} packets in 3 s under load; 90 were due")
+        check(not gaps or max(gaps) <= 3,
+              f"the stream stalled for {max(gaps or [0])} frames in a row")
+        check(med < 0.015, f"median lateness {med * 1000:.1f} ms under "
+                           f"load; a frame boundary should be met within "
+                           f"15 ms")
+        check(p90 < 0.025, f"one packet in ten is more than 25 ms late "
+                           f"({p90 * 1000:.1f} ms)")
+    else:
+        print(f"  note: this machine sent {base_n} of 30 frames in a second "
+              f"with nothing else running (longest gap {base_gap}), so it "
+              f"cannot keep time and the timing bounds are not applied here; "
+              f"the pacer's own properties still are")
+    heard = [_tc_of(p) for p in got]
+    check(len(heard) == len(ticks),
+          f"{len(ticks)} packets sent, {len(heard)} arrived on loopback")
+    check(all(h == 0 and t == 3 for h, _m, _s, _f, t in heard),
+          "a packet on the wire is not type 3 in hour zero")
+    print(f"  ok ({len(ticks)} packets, median {med * 1000:.1f} ms late, "
+          f"90th percentile {p90 * 1000:.1f} ms, {m.ticker.skipped} skipped; "
+          f"unloaded {base_n}/30)")
+
+
+def test_artnet_timecode_never_drifts_from_its_clock():
+    section("Art-Net timecode: no drift over a whole show")
+    # A whole 7:20 show on a simulated clock, with a sleep that always
+    # oversleeps and now and then stalls for up to three frames. A pacer
+    # that sleeps 1/30 s and counts would finish seconds behind; this one
+    # must end exactly where the clock says, having skipped what it had to
+    # and never sent a frame that was not current.
+    from ltcplay import clock as C
+    rnd = random.Random(7)
+
+    class Sim:
+        now = 5000.0
+
+        def clock(self):
+            return self.now
+
+        def sleep(self, d):
+            extra = rnd.uniform(0.0, 0.004)
+            if rnd.random() < 0.03:
+                extra += rnd.uniform(0.02, 0.10)
+            self.now += d + extra
+
+    sim = Sim()
+    fed, ticks = [], []
+    out = _TcOut()
+    _cfg, m = _master(C, out=out, clock=sim.clock, sleep=sim.sleep,
+                      mono=sim.clock,
+                      sink=lambda pos, at, drop, text: fed.append((pos, at,
+                                                                   text)))
+    real_tick = m.ticker.tick
+
+    def tick(n, now):
+        ticks.append((n, now))
+        return real_tick(n, now)
+
+    m.ticker.tick = tick
+    show_len = 440.0
+    frames = int(show_len * 30)
+    m.start()
+    t0 = m.play(3600.0, show_len, "Show")
+    m.ticker._thread.join(timeout=60)
+    check(not m.ticker.running, "the clock did not stop at the end of the cue")
+    check(not m.playing, "the clock still says a cue is playing after it ended")
+    sent = ticks[:-1]           # the last tick is the one that found the end
+    ns = [n for n, _ in sent]
+    check(ns[0] == 0, "the cue did not start at frame 0")
+    check(_tc_of(out.sent[0][1])[:4] == (0, 0, 0, 0),
+          "the first packet of a cue is not 00:00:00:00")
+    check(all(b > a for a, b in zip(ns, ns[1:])),
+          "a frame was sent twice, or the clock went backwards")
+    wrong = [(n, now) for n, now in sent
+             if n != int((now - t0) * 30 + 1e-9)]
+    check(not wrong, f"{len(wrong)} packets carried a frame that was not the "
+                     f"current one, first {wrong[:1]}")
+    check(len(sent) + m.ticker.skipped == frames,
+          f"{len(sent)} sent plus {m.ticker.skipped} skipped is not the "
+          f"{frames} frames in the show")
+    check(m.ticker.skipped > 0,
+          "the simulated stalls never made the clock skip, so this test did "
+          "not exercise a late tick")
+    check(len(sent) > frames * 0.9, "far too many frames were skipped")
+    n_last, at_last = sent[-1]
+    err = at_last - t0 - n_last / 30.0
+    check(0 <= err < 1 / 30.0,
+          f"after {show_len:.0f} s the timecode is {err * 1000:.1f} ms off "
+          f"the clock that paces it")
+    check(ns[-1] >= frames - 4, f"the show ended on frame {ns[-1]} of {frames}")
+    last = _tc_of(out.sent[-1][1])
+    check(last[:3] == (0, 7, 19) and last[4] == 3,
+          f"the last packet of a 7:20 show is {last}")
+    # The pixels are fed the same position, in the chase engine's terms:
+    # the cue's own place in the show file plus the frame, captured at the
+    # instant that frame began.
+    check(len(fed) == len(sent), "the pixels were not fed every frame sent")
+    bad = [i for i, ((n, _), (pos, at, _t)) in enumerate(zip(sent, fed))
+           if abs(pos - (3600.0 + n / 30.0)) > 1e-9
+           or abs(at - (t0 + n / 30.0)) > 1e-6]
+    check(not bad, f"the pixel clock disagrees with the timecode at "
+                   f"{len(bad)} frames")
+
+    # Every cue starts from zero, halt stops the stream at once, and a cue
+    # with a length stops by itself. Real time from here.
+    m.stop()
+    try:
+        m.play(0.0, 10.0)
+        check(False, "a stopped clock played a cue")
+        m.halt()
+    except ValueError as e:
+        check("Run" in str(e), f"the refusal should say to press Run: {e}")
+    try:
+        m2x = _master(C, out=_TcOut())[1]
+        m2x.start()
+        m2x.play(0.0, None, "Mystery")
+        check(False, "a cue with no length was played; it would never stop")
+        m2x.stop()
+    except ValueError as e:
+        check("Mystery" in str(e) and "forever" in str(e),
+              f"the refusal for a cue with no length is unclear: {e}")
+    out2 = _TcOut()
+    _cfg, m2 = _master(C, out=out2)
+    m2.start()
+    m2.play(0.0, 3600.0, "A")
+    check(wait_for(lambda: len(out2.sent) >= 6, timeout=3.0),
+          "the clock never started sending")
+    m2.play(0.0, 3600.0, "B")
+    mark = len(out2.sent)
+    check(wait_for(lambda: len(out2.sent) >= mark + 3, timeout=3.0),
+          "the second cue never started")
+    restart = [_tc_of(p)[:4] for _, p in out2.sent[mark - 1:mark + 2]]
+    check((0, 0, 0, 0) in restart,
+          f"the second cue did not start at 00:00:00:00: {restart}")
+    m2.halt()
+    time.sleep(0.05)
+    n_halt = len(out2.sent)
+    time.sleep(0.3)
+    check(len(out2.sent) == n_halt,
+          "timecode kept going after the clock was halted")
+    mark = len(out2.sent)
+    started = time.perf_counter()
+    m2.play(0.0, 0.5, "short")
+    check(wait_for(lambda: not m2.playing, timeout=3.0),
+          "a half second cue never ended")
+    ended = time.perf_counter() - started
+    # Frames 0 to 14, and never 15. The last one may be skipped on a busy
+    # machine (a late wake skips, it never sends late), so the tail is
+    # checked as a ceiling; the exact end is proven on the simulated clock.
+    short = [_tc_of(p)[:4] for _, p in out2.sent[mark:]]
+    check(short and max(short) <= (0, 0, 0, 14) and max(short) >= (0, 0, 0, 10),
+          f"a half second cue should end by frame 14: {short[-3:]}")
+    check(ended >= 0.45, f"a half second cue ended after {ended:.2f}s")
+    n_end = len(out2.sent)
+    time.sleep(0.2)
+    check(len(out2.sent) == n_end, "timecode kept going after the cue ended")
+    m2.stop()
+    check(out2.closed, "stopping the clock left its socket open")
+    print("  ok")
+
+
+def test_timecode_zones_for_fallback_3():
+    section("fallback 3: the hour picks the zone")
+    from ltcplay import clock as C
+    z = {1: "show", 2: "intermission"}
+    # The pure function, directly.
+    check(C.route(1, 7, 19, 29, z) == ("show", (0, 7, 19, 29)),
+          "hour 01 is not the show, rebased to hour zero")
+    check(C.route(2, 0, 0, 0, z) == ("intermission", (0, 0, 0, 0)),
+          "hour 02 is not the intermission")
+    for h in [0] + list(range(3, 24)):
+        check(C.route(h, 1, 2, 3, z) == ("idle", None),
+              f"hour {h:02d} is not in the table and must be idle")
+    check(C.route(1, 0, 0, 0, {5: "show", 6: "intermission"}) ==
+          ("idle", None), "the table came from code, not from the show file")
+    check(C.route(5, 0, 0, 1, {5: "show", 6: "intermission"}) ==
+          ("show", (0, 0, 0, 1)), "a zone table from config is not obeyed")
+
+    F = 1 / 30.0
+
+    def feed(r, tcs, t):
+        for tc in tcs:
+            r.frame(*tc, t)
+            t += F
+        return t
+
+    # A zone change that lands between two output ticks, mid-frame. The
+    # tick before the new zone's frame shows the show; nothing ever carries
+    # the new zone's hour with the old zone's minutes, or the reverse.
+    # (A show that runs past 7:20 here, so the confirmation is what is
+    # being tested, not the end of the show.)
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=600)
+    t = feed(r, [(1, 7, 19, f) for f in range(25, 30)], 10.0)
+    last_show = t - F
+    check(r.at(last_show + F / 2) == ("show", (0, 7, 19, 29)),
+          "half a frame after the last show frame, the show must still be "
+          "current")
+    r.frame(2, 0, 0, 0, t)
+    first = r.at(t + F / 2)
+    check(first is not None and first[0] == "show",
+          f"one frame of a new zone moved the reader at once: {first}")
+    r.frame(2, 0, 0, 1, t + F)
+    after = r.at(t + F + F / 2)
+    check(after == ("intermission", (0, 0, 0, 1)),
+          f"two agreeing frames of the new zone did not move it: {after}")
+    check(r.zone_changes == 2, f"zone changes counted {r.zone_changes}")
+    # Never an invented 07:20:00. A 7:20 show whose last frame is 07:19:29
+    # and MadMapper stops there: for two seconds after, at every quarter
+    # frame, nothing later than 07:19:29 goes out.
+    def past_end(results):
+        return [a for a in results if a is not None and a[0] == "show"
+                and a[1] > (0, 7, 19, 29)]
+
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=440)
+    t = feed(r, [(1, 7, 19, f) for f in range(25, 30)], 10.0)
+    after = [r.at(t - F + k * F / 4) for k in range(1, 240)]
+    check(not past_end(after),
+          f"the feed stopped on 07:19:29 and timecode was invented after "
+          f"it: {past_end(after)[:3]}")
+    # The hand-off: the next frame is the intermission's first. Before it
+    # is confirmed, nothing past the show's last frame goes out; after, the
+    # intermission does.
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=440)
+    t = feed(r, [(1, 7, 19, f) for f in range(25, 30)], 10.0)
+    r.frame(2, 0, 0, 0, t)
+    mid = [r.at(t + k * F / 4) for k in range(0, 4)]
+    r.frame(2, 0, 0, 1, t + F)
+    after = r.at(t + F + F / 2)
+    check(not past_end(mid),
+          f"an invented 07:20:00 went out at the hand-off: {past_end(mid)}")
+    check(after == ("intermission", (0, 0, 0, 1)),
+          f"the intermission did not take over after the hand-off: {after}")
+    # The same hand-off through the Art-Net output, flywheel and all.
+    cfg = C.ClockConfig.parse({"source": "ltc_audio_slave",
+                               "artnet": {"nodes": {"BEYOND": "127.0.0.1"}},
+                               "zones": {"forward": ["show",
+                                                     "intermission"],
+                                         "show_len_s": 440}})
+    now_ = [0.0]
+    tco = _TcOut()
+    sl = C.LtcAudioSlave(cfg, out=tco, clock=lambda: now_[0],
+                         mono=lambda: now_[0])
+    sl.ticker.t0 = 0.0
+    frames = [(1, 7, 19, f) for f in range(0, 30)] + \
+             [(2, 0, 0, f) for f in range(0, 30)]
+    ev = [(k * F + 0.004, "ltc", fr) for k, fr in enumerate(frames)] + \
+         [(n * F + 0.02, "tick", n) for n in range(1, 60)]
+    for at, kind, x in sorted(ev):
+        now_[0] = at
+        if kind == "ltc":
+            sl.ltc_frame(*x, at)
+        else:
+            sl._tick(x, at)
+    sent = [(p[17], p[16], p[15], p[14]) for _, p in tco.sent]
+    check(not [x for x in sent if x[:3] == (0, 7, 20)],
+          f"BEYOND was sent an invented 07:20 at the hand-off: "
+          f"{[x for x in sent if x[:3] == (0, 7, 20)]}")
+    check((0, 7, 19, 29) in sent and (0, 0, 0, 20) in sent,
+          "the hand-off test did not forward both sides, so it proves "
+          "nothing")
+
+    # The show length only ends a FREE RUN. MadMapper still sending live
+    # timecode past the end of the last pixel cue is forwarded, not cut:
+    # BEYOND may well have content there.
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 7, 19, f) for f in range(20, 30)]
+             + [(1, 7, s_, f) for s_ in (20, 21) for f in range(30)], 10.0)
+    check(r.at(t - F / 2) == ("show", (0, 7, 21, 29)),
+          f"live timecode past the show length was cut: {r.at(t - F / 2)}")
+    check(not r.show_over and not r.freerunning,
+          "a live feed was treated as a free run")
+    check(r.at(t - F + 3.0) is None and r.show_over,
+          "once the feed died past the show length, the free run should "
+          "have stopped at once")
+
+    # One corrupt frame mid-show: the hour of one zone, the rest of another.
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 3, 0, f) for f in range(0, 10)], 20.0)
+    r.frame(2, 3, 0, 10, t)                  # flipped hour bit
+    t = feed(r, [(1, 3, 0, f) for f in range(11, 20)], t + F)
+    check(r.zone == "show", f"one bad frame moved the show to {r.zone}")
+    check(r.at(t - F) == ("show", (0, 3, 0, 19)),
+          "the show did not carry on through one bad frame")
+
+    # An unknown hour: nothing goes out, cold or mid-run.
+    r = C.ZoneReader(z, show_len_s=440)
+    feed(r, [(5, 0, 0, 0), (5, 0, 0, 1)], 1.0)
+    check(r.zone == "idle" and r.at(1.05) is None,
+          "an unknown hour sent timecode")
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 0, 10, f) for f in range(5)], 1.0)
+    t = feed(r, [(9, 0, 0, f) for f in range(2)], t)
+    check(r.zone == "idle" and r.at(t) is None,
+          "timecode kept going after the hour moved out of every zone")
+
+    # The intermission is sent only when the show file asks for it.
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(2, 0, 0, f) for f in range(5)], 1.0)
+    check(r.zone == "intermission" and r.at(t) is None,
+          "the intermission went out although only the show is forwarded")
+
+    # Timecode lost during the show: free run to the end of the show, then
+    # stop. Lost anywhere else: stop after the hold.
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 7, 0, f) for f in range(3)], 100.0)
+    at5 = r.at(t - F + 5.0)
+    check(at5 == ("show", (0, 7, 5, 2)) and r.freerunning,
+          f"five seconds after the feed died mid-show: {at5}, free running "
+          f"{r.freerunning}")
+    check(r.at(t - F + 19.0) == ("show", (0, 7, 19, 2)),
+          "the free run did not run on toward the end of the show")
+    check(r.at(t - F + 21.0) is None and r.show_over,
+          "the free run went past the end of the show")
+    # The feed comes back after the gap. One frame is not believed, even
+    # a good one; the second that agrees with it is.
+    r.frame(1, 0, 0, 0, t + 30.0)
+    check(r.at(t + 30.0 + F / 2) is None,
+          "the first frame after a gap was believed on its own")
+    r.frame(1, 0, 0, 1, t + 30.0 + F)
+    check(r.at(t + 30.0 + F * 1.5) == ("show", (0, 0, 0, 1)),
+          "two agreeing frames after a gap were not taken")
+
+    # One corrupt frame on resume. Live show, then a gap, then a single
+    # frame from the wrong zone, then the real feed. The bad frame never
+    # moves the reader, and the free run carries on until the real feed
+    # has said where it is twice.
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 2, 0, f) for f in range(3)], 200.0)
+    t_gap = t + 3.0                                  # three seconds of nothing
+    r.frame(2, 5, 17, 3, t_gap)                      # corrupt: wrong hour
+    mid = r.at(t_gap + F / 2)
+    check(mid is not None and mid[0] == "show" and mid[1][1:3] == (2, 3),
+          f"one corrupt frame on resume moved the reader: {mid}")
+    r.frame(1, 2, 3, 4, t_gap + F)                   # the real feed, agreeing
+    check(r.zone == "show" and r.rejects == 0,
+          "a real frame that agrees with the free run was not taken at once")
+    r = C.ZoneReader(z, show_len_s=440)
+    t = feed(r, [(1, 2, 0, f) for f in range(3)], 200.0)
+    t_gap = t + 3.0
+    r.frame(1, 6, 40, 0, t_gap)                      # corrupt: wild position
+    check(r.at(t_gap + F / 2)[1][1:3] == (2, 3),
+          "a wild frame on resume was believed on its own")
+    r.frame(1, 2, 3, 4, t_gap + F)
+    check(r.at(t_gap + F * 1.5)[1][1:3] == (2, 3),
+          "the real feed after the wild frame did not keep the show where "
+          "it is")
+    r = C.ZoneReader(z, forward=("show", "intermission"), show_len_s=440,
+                     hold_s=1.0)
+    t = feed(r, [(2, 1, 0, f) for f in range(3)], 50.0)
+    check(r.at(t + 0.5) is not None, "the intermission stopped inside the hold")
+    check(r.at(t + 1.2) is None,
+          "a lost intermission free ran; only the show does")
+
+    # Drop frame: the free run labels frames the way drop frame does.
+    r = C.ZoneReader(z, count=30, drop=True, fps=29.97, show_len_s=3000)
+    r.frame(1, 0, 59, 28, 7.0 - 1.0 / 29.97)
+    r.frame(1, 0, 59, 29, 7.0)
+    check(r.at(7.0 + 1.0 / 29.97 + 1e-6) == ("show", (0, 1, 0, 2)),
+          "drop frame free run did not skip frames 00 and 01")
+    print("  ok")
+
+
+def test_clock_settings_fail_loudly():
+    section("the clock block of a show file: typos and refusals")
+    import json, tempfile
+    from ltcplay import clock as C
+    good_nodes = {"MadMapper": "127.0.0.1", "BEYOND": "10.0.0.40"}
+
+    def refused(doc, *words):
+        try:
+            C.ClockConfig.parse(doc, "show.json")
+        except C.ClockConfigError as e:
+            msg = str(e)
+            check(all(w in msg for w in words),
+                  f"the refusal for {doc} should say {words}: {msg}")
+            check("—" not in msg and "–" not in msg,
+                  f"operator text carries a dash: {msg}")
+            return msg
+        check(False, f"{doc} should have been refused")
+
+    refused({"sorce": "artnet_master"}, "'sorce'", "source")
+    refused({"source": "artnet_master",
+             "artnet": {"node": good_nodes}}, "'node'", "nodes")
+    refused({"source": "ltc_audio_slave",
+             "zones": {"shw": 1}}, "'shw'", "intermission")
+    refused({"source": "artnet"}, "artnet_master", "ltc_audio_slave")
+    refused({}, "clock.source")
+    refused({"source": "ltc_audio_master"}, "fallback 1", "does not have it")
+    refused({"source": "artnet_master", "show_audio": "ltcplay",
+             "artnet": {"nodes": good_nodes}}, "fallback 2", "madmapper")
+    refused({"source": "artnet_master", "show_audio": "vlc",
+             "artnet": {"nodes": good_nodes}}, "show_audio")
+    refused({"source": "artnet_master"}, "no 'clock.artnet'")
+    refused({"source": "artnet_master", "artnet": {}}, "sends to nobody")
+    refused({"source": "artnet_master",
+             "artnet": {"nodes": {"MM": "10.0.0.300"}}}, "not an IPv4")
+    refused({"source": "artnet_master",
+             "artnet": {"nodes": {"all": "10.0.0.255"}}}, "broadcast")
+    refused({"source": "artnet_master",
+             "artnet": {"nodes": {"a": "10.0.0.5", "b": "10.0.0.5"}}},
+            "twice")
+    refused({"source": "artnet_master",
+             "artnet": {"nodes": good_nodes, "broadcast": "10.0.0.255"}},
+            "Pick one")
+    refused({"source": "artnet_master",
+             "artnet": {"broadcast": "10.0.0.5"}}, "broadcast address")
+    refused({"source": "artnet_master",
+             "artnet": {"nodes": good_nodes, "stream_id": 300}}, "stream_id")
+    refused({"source": "ltc_audio_slave",
+             "zones": {"show": 1, "intermission": 1}}, "tell them apart")
+    refused({"source": "ltc_audio_slave",
+             "zones": {"show": 24}}, "0 to 23")
+    refused({"source": "ltc_audio_slave",
+             "zones": {"forward": ["idle"]}}, "forward")
+
+    c = C.ClockConfig.parse({"source": "artnet_master",
+                             "artnet": {"nodes": good_nodes},
+                             "zones": {"show": 3, "intermission": 4}})
+    check(c.artnet.dests == [("MadMapper", "127.0.0.1"),
+                             ("BEYOND", "10.0.0.40")],
+          f"named nodes did not come through in order: {c.artnet.dests}")
+    check(c.zones.table == {3: "show", 4: "intermission"},
+          "a zone table beside a master clock was not kept for the switch "
+          "back to fallback 3")
+    c = C.ClockConfig.parse({"source": "artnet_master",
+                             "artnet": {"broadcast": "10.0.0.255"}})
+    check(c.artnet.dests == [("broadcast", "10.0.0.255")],
+          "broadcast did not become the one destination")
+    c = C.ClockConfig.parse({"source": "ltc_audio_slave"})
+    check(c.artnet is None and c.zones.table == {1: "show",
+                                                 2: "intermission"},
+          "a bare slave should forward nothing and default to 01 show, 02 "
+          "intermission")
+
+    # Through the show file, the way the program reads it.
+    work = tempfile.mkdtemp()
+    open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+    p = os.path.join(work, "t.json")
+    base = {"fps": 30, "show_dir": work,
+            "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}]}
+    json.dump(dict(base, clock={"source": "ltc_audio_slave"}), open(p, "w"))
+    tl = timeline.Timeline.load(p)
+    check(tl.clock is not None and tl.clock.source == "ltc_audio_slave",
+          "the show file's clock block was not read")
+    json.dump(dict(base, clok={"source": "ltc_audio_slave"}), open(p, "w"))
+    try:
+        timeline.Timeline.load(p)
+        check(False, "a misspelled 'clock' loaded without complaint")
+    except ValueError as e:
+        check("'clok'" in str(e) and "clock" in str(e),
+              f"the error must name the key and list the real ones: {e}")
+    json.dump(dict(base, clock=None), open(p, "w"))
+    try:
+        timeline.Timeline.load(p)
+        check(False, "'clock': null loaded silently")
+    except ValueError as e:
+        check("'clock'" in str(e), f"the clock: null refusal is unclear: {e}")
+    json.dump(dict(base, clock={"source": "ltc_audio_master"}), open(p, "w"))
+    try:
+        timeline.Timeline.load(p)
+        check(False, "fallback 1 loaded although it is not built")
+    except ValueError as e:
+        check("fallback 1" in str(e), f"fallback 1 refusal unclear: {e}")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "clock.py"), encoding="utf-8").read()
+    check("—" not in src and "–" not in src,
+          "clock.py carries an em or en dash")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_the_clock():
+    section("GPL: no clock block, no clock code")
+    # The GPL show at Dollywood runs this program on a Mac with no clock
+    # block in its show file. Nothing new may be reachable from that path.
+    # Proven in a fresh interpreter, because this one has already imported
+    # the clock for the tests above.
+    import json, subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    real = json.load(open(os.path.join(here, "gpl2026_timeline.json")))
+    check("clock" not in real,
+          "the GPL show file has grown a clock block")
+    # Every import of the clock is inside a function, never at the top of a
+    # module, so importing the program cannot load it.
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "clock.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.match(r"(from \.clock |from \. import .*\bclock\b|"
+                        r"import ltcplay\.clock|from ltcplay import .*"
+                        r"\bclock\b)", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the clock is imported at module scope: {top}")
+    script = r'''
+import json, os, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+import selftest as T
+from ltcplay import settings as st_mod
+from ltcplay.session import Session
+import ltcplay.player as plmod
+import ltcplay.web, ltcplay.cli
+work = tempfile.mkdtemp()
+st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+rows = "\n".join(f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+                 f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(2))
+net = os.path.join(work, "net.xml")
+open(net, "w").write(f'<Networks>\n  <Controller Name="L" IP="127.0.0.1" '
+                     f'ActiveState="Active">\n{rows}\n  </Controller>\n'
+                     f'</Networks>\n')
+tlp = os.path.join(work, "gpl.json")
+doc = json.load(open(os.path.join(sys.argv[1], "gpl2026_timeline.json")))
+doc["show_dir"] = work
+doc["cues"] = doc["cues"][:1]
+doc["cues"][0]["fseq"] = "A.fseq"
+doc.pop("idle", None)
+doc["gaps"] = "blackout"
+json.dump(doc, open(tlp, "w"))
+open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+def fake_prepare(self, cue):
+    cue.fseq = T.FakeFSEQ(frames=4000)
+    cue.duration = cue.fseq.duration_ms / 1000.0
+    cue._spans = [(0, 0, cue.fseq.channel_count)]
+    cue._gaps = None
+    return 0
+plmod.Player._prepare = fake_prepare
+s = Session(tlp, no_output=True, networks=net, no_log=True, sd=T.FakeSD(),
+            device="MOTU M4", channel=2)
+s.open(); s.start()
+end = time.time() + 5
+while time.time() < end and s.player.last_ltc_at is None:
+    time.sleep(0.05)
+snap = s.snapshot()
+s.stop()
+print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
+                  "tl_clock": s.tl.clock is None,
+                  "session_clock": s.clock is None,
+                  "snap": "clock" in snap,
+                  "ltc": s.player.last_ltc_at is not None,
+                  "opened": len(s._sd.opened)}))
+'''
+    r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
+                text=True, timeout=120)
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        check(False, f"the GPL path did not run: {r.stdout[-400:]} "
+                     f"{r.stderr[-800:]}")
+        return
+    check(res["ltc"], "the GPL path did not chase its timecode")
+    check(res["opened"] >= 1, "the GPL path did not open its timecode input")
+    check(not res["loaded"], "a GPL run imported ltcplay.clock")
+    check(res["tl_clock"] and res["session_clock"],
+          "a GPL run built a clock")
+    check(not res["snap"], "a GPL run put a clock on the page")
+    print("  ok")
+
+
+def _clock_show(work, clock_doc, cues, **extra):
+    import json
+    rows = "\n".join(
+        f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+        f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(2))
+    net = os.path.join(work, "net.xml")
+    open(net, "w").write(f'<Networks>\n  <Controller Name="L" IP="127.0.0.1" '
+                         f'ActiveState="Active">\n{rows}\n  </Controller>\n'
+                         f'</Networks>\n')
+    tlp = os.path.join(work, "t_timeline.json")
+    doc = {"name": "t", "fps": 30, "show_dir": work, "gaps": "blackout",
+           "on_lost": "freerun", "hold_ms": 300, "clock": clock_doc,
+           "cues": [{"tc": tc, "fseq": f, "name": n} for tc, f, n in cues]}
+    doc.update(extra)
+    if clock_doc is None:
+        del doc["clock"]              # the GPL shape: no clock block at all
+    json.dump(doc, open(tlp, "w"))
+    if doc.get("idle"):
+        open(os.path.join(work, doc["idle"]), "wb").write(b"x")
+    for _tc, f, _n in cues:
+        open(os.path.join(work, f), "wb").write(b"x")
+    return tlp, net
+
+
+def test_a_master_clock_runs_the_show():
+    section("ltcplay as master: no input, nothing before a cue, then zero")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    tlp, net = _clock_show(
+        work, {"source": "artnet_master",
+               "artnet": {"nodes": {"MadMapper": "127.0.0.1"}},
+               "zones": {"show": 1, "intermission": 2}},
+        [("01:00:00:00", "Show.fseq", "Show"),
+         ("02:00:00:00", "Intermission.fseq", "Intermission")])
+    before = {t.name for t in threading.enumerate()}
+    sd = FakeSD()
+    sess = None
+    try:
+        sess = Session(tlp, no_output=True, networks=net, no_log=True, sd=sd,
+                       device="MOTU M4", channel=2)
+        sess.open()
+        check(sess.clock is not None and sess.clock.master,
+              "the show file asked for a master clock and did not get one")
+        try:
+            sess.clock_play()
+            check(False, "the clock started before Run was pressed")
+        except SessionError:
+            pass
+        out = _TcOut()
+        sess.clock.out = out
+        sess.start()
+        check(sd.opened == [] and sess.audio is None,
+              f"a master clock opened a timecode input: {sd.opened}")
+        time.sleep(0.3)
+        check(out.sent == [], "timecode went out before any cue was played")
+        # Between cues nothing is wrong, and the page must not say so.
+        idle = sess.snapshot()
+        check(idle["state"] == "STANDBY",
+              f"a master clock between cues reads {idle['state']!r}, which "
+              f"the page draws as a lost feed")
+        feedish = [w for w in idle["warnings"]
+                   if "timecode" in w.lower() or "input" in w.lower()]
+        check(not feedish, f"a master clock between cues warns about a "
+                           f"feed it does not have: {feedish}")
+        check(sess.player.current_cue is None,
+              "a cue is playing before the clock started")
+        sess.clock_play("Intermission")
+        check(wait_for(lambda: len(out.sent) >= 5
+                       and sess.player.current_cue is not None, timeout=3.0),
+              "the clock started but nothing followed it")
+        check(_tc_of(out.sent[0][1])[:4] == (0, 0, 0, 0),
+              "the cue's timecode did not start at 00:00:00:00")
+        cue = sess.player.current_cue
+        check(cue is not None and cue.name == "Intermission",
+              f"the pixels are on {cue.name if cue else None}, not the cue "
+              f"the clock started")
+        check(7200.0 <= sess.player.tc_seconds < 7202.0,
+              f"the pixels are at {sess.player.tc_seconds:.2f}s, not at the "
+              f"top of the cue")
+        snap = sess.snapshot()
+        check(snap.get("clock", {}).get("playing") == "Intermission",
+              f"the page does not say what the clock is playing: "
+              f"{snap.get('clock')}")
+        # No input is open, and that is not a fault: the page must not draw
+        # it red, and nothing may warn about it.
+        check(snap["input_used"] is False and snap["input_attached"] is None,
+              f"a master clock reports its unused input as "
+              f"attached={snap['input_attached']!r} used={snap['input_used']!r}")
+        check(not [w for w in snap["warnings"] if "input" in w.lower()
+                   or "second boundary" in w],
+              f"a master clock warns about an input it does not use: "
+              f"{snap['warnings']}")
+        check(snap["state"] == "LOCKED",
+              f"a playing master clock reads {snap['state']!r}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "index.html"),
+                    encoding="utf-8").read()
+        check("s.input_used === false" in page,
+              "the page does not know an input can be not used")
+        mark = len(out.sent)
+        sess.clock_play("Show")
+        check(wait_for(lambda: sess.player.current_cue is not None and
+                       sess.player.current_cue.name == "Show", timeout=3.0),
+              "starting a second cue did not move the pixels to it")
+        check((0, 0, 0, 0) in [_tc_of(p)[:4] for _, p in out.sent[mark:]],
+              "the second cue did not restart the timecode at zero")
+        try:
+            sess.reset_input()
+            check(False, "a master clock rebuilt a timecode input")
+        except SessionError:
+            check(sd.opened == [], "a master clock opened a timecode input")
+        # The operator pressed GO at some point. A free run outranks the
+        # timecode, so a cue started by the clock has to take it back or the
+        # rig ignores the cue.
+        sess.player.go(100.0)
+        check(sess.player.freerun_epoch is not None,
+              "GO did not start a free run, so the next check proves nothing")
+        sess.clock_play("Intermission")
+        check(wait_for(lambda: sess.player.current_cue is not None and
+                       sess.player.current_cue.name == "Intermission"
+                       and 7200.0 <= sess.player.tc_seconds < 7202.0,
+                       timeout=3.0),
+              "a free run left over from the last cue swallowed the next one")
+        try:
+            sess.clock_play("Encore")
+            check(False, "a cue that does not exist was played")
+        except SessionError as e:
+            check("Encore" in str(e) and "Show" in str(e),
+                  f"the refusal should name the cue and the real ones: {e}")
+        # Stop: the timecode ends before the rig is blacked out, so nothing
+        # is still chasing a clock while the pixels go dark. Recorded on a
+        # stand-in sender, because the order is the session's job.
+        order = []
+
+        class Recorder:
+            packets_sent = 0
+
+            def blackout(self):
+                order.append(("blackout", sess.clock.playing, len(out.sent)))
+                self.packets_sent += 1
+
+            def close(self):
+                pass
+
+        real_stop = sess.clock.stop
+
+        def clock_stop():
+            order.append(("timecode", None, len(out.sent)))
+            real_stop()
+
+        sess.clock.stop = clock_stop
+        sess.sender = Recorder()
+        sess.no_output = False      # so Stop sends its blackout frames
+        sess.stop()
+        kinds = [k for k, _p, _n in order]
+        check(kinds[:1] == ["timecode"] and "blackout" in kinds,
+              f"Stop blacked out the rig before stopping the timecode: "
+              f"{kinds}")
+        check(all(not playing for k, playing, _n in order
+                  if k == "blackout"),
+              "the clock was still playing when the blackout went out")
+        n = len(out.sent)
+        check(all(sent == n for k, _p, sent in order if k == "blackout"),
+              "timecode went out after the blackout began")
+        check(not sess.clock.ticker.running, "the clock thread outlived Stop")
+    finally:
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    time.sleep(0.3)
+    leaked = [t.name for t in threading.enumerate()
+              if t.name not in before and t.name.startswith("ltcplay")]
+    check(not leaked, f"threads left behind after stop: {leaked}")
+    print("  ok")
+
+
+def test_a_slave_clock_forwards_the_show_zone():
+    section("fallback 3: LTC in as today, the show zone out as Art-Net")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    tlp, net = _clock_show(
+        work, {"source": "ltc_audio_slave",
+               "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}},
+        [("01:00:00:00", "Show.fseq", "Show")])
+    sd = FakeSD()
+    sess = None
+    try:
+        sess = Session(tlp, no_output=True, networks=net, no_log=True, sd=sd,
+                       device="MOTU M4", channel=2)
+        sess.open()
+        check(sess.clock is not None and not sess.clock.master,
+              "the show file asked for the LTC slave and did not get it")
+        check(sess.clock.reader.show_len_frames == 3000,
+              f"the show length was not read from the render: "
+              f"{sess.clock.reader.show_len_frames} frames")
+        # A clock that throws must not cost the chase engine a frame, nor
+        # be filed as a decode error. Ten frames in one block, so a clock
+        # fault that escaped would starve every frame after the first.
+        def boom(*a):
+            raise RuntimeError("clock fault")
+
+        sess.clock.ltc_frame = boom
+        sess._handle(synthesize(1, 0, 0, 0, 30.0, sess.rate, frames=12),
+                     time.monotonic())
+        got = sess.player.ltc_frames_in
+        check(got >= 5 and got == sess.dec.frames_decoded,
+              f"a clock fault starved the chase engine: {got} of "
+              f"{sess.dec.frames_decoded} decoded frames reached it")
+        check(sess.decode_errors == 0,
+              f"a clock fault was counted as {sess.decode_errors} decode "
+              f"error(s)")
+        check(sess.clock_errors == got,
+              f"clock faults were not counted: {sess.clock_errors}")
+        del sess.clock.ltc_frame
+        sess.dec = sess.dec.__class__(sess.rate)
+        out = _TcOut()
+        sess.clock.out = out
+        sess.start()
+        check(len(sd.opened) == 1, "the slave did not open the LTC input")
+        check(wait_for(lambda: len(out.sent) >= 10, timeout=5.0),
+              "decoded timecode never reached the Art-Net output")
+        check(sess.player.state == LOCKED and sess.player.current_cue
+              is not None, "the pixels are not chasing the LTC as they do "
+                           "today")
+        tcs = [_tc_of(p) for _, p in out.sent]
+        check(all(h == 0 and m == 0 and typ == 3 for h, m, _s, _f, typ in tcs),
+              f"the show zone did not go out rebased to hour zero: {tcs[:3]}")
+        check(sess.clock.reader.zone == "show",
+              f"hour 01 read as {sess.clock.reader.zone}")
+        try:
+            sess.clock_play()
+            check(False, "a slave clock was told to start a cue")
+        except SessionError:
+            pass
+        check(sess.snapshot().get("clock", {}).get("zone") == "show",
+              "the page does not show the zone")
+        sess.stop()
+        n = len(out.sent)
+        time.sleep(0.2)
+        check(len(out.sent) == n, "Art-Net timecode kept going after Stop")
+    finally:
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+class _EventLog:
+    """Keeps every log.event call, with its throttle."""
+
+    def __init__(self):
+        self.events = []
+
+    def event(self, kind, msg, throttle_s=0.0):
+        self.events.append((kind, msg, throttle_s))
+
+
+def _master_session(work, name, fake_lengths, **extra):
+    """A running master-clock session over fake renders."""
+    from ltcplay.session import Session
+    import ltcplay.player as plmod
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        base = os.path.basename(cue.path)
+        if fake_lengths.get(base) is None:
+            raise IOError("the render will not open")
+        cue.fseq = FakeFSEQ(frames=fake_lengths[base])
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    here = os.path.join(work, name)
+    os.makedirs(here, exist_ok=True)
+    try:
+        tlp, net = _clock_show(
+            here,
+            {"source": "artnet_master",
+             "artnet": {"nodes": {"MadMapper": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show"),
+             ("01:00:02:00", "Intermission.fseq", "Intermission"),
+             ("01:30:00:00", "Broken.fseq", "Broken")], **extra)
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD(), device="MOTU M4", channel=2,
+                       allow_missing=True)
+        sess.open()
+    finally:
+        plmod.Player._prepare = real_prepare
+    out = _TcOut()
+    sess.clock.out = out
+    sess.start()
+    return sess, out
+
+
+def test_a_stopped_cue_hands_the_rig_back():
+    section("ltcplay as master: a stopped cue plays nothing after it")
+    # Audit of c981b92: with ltcplay as master, a cue that ended or was
+    # halted looked like LOST timecode to the chase engine, which then ran
+    # on_lost. With on_lost freerun the rig played the NEXT cue by itself,
+    # with MadMapper and BEYOND stopped. The clock owns the pixels: when it
+    # stops, the rig goes to the idle look at once, whatever on_lost says.
+    import tempfile
+    from ltcplay.session import SessionError
+    from ltcplay import settings as st_mod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    lengths = {"Show.fseq": 40, "Intermission.fseq": 4000,
+               "PreShow.fseq": 400, "Broken.fseq": None}
+
+    def nothing_plays(sess, seconds, look, what):
+        """Sample the rig for `seconds`: no cue, no show frames, no free
+        run, and the idle look (or black) the whole time."""
+        p = sess.player
+        wait_for(lambda: p.current_cue is None, timeout=0.3)
+        end = time.time() + seconds
+        bad = []
+        while time.time() < end:
+            cue, src = p.current_cue, p.source
+            if cue is not None or src != look or \
+                    p.freerun_epoch is not None:
+                bad.append((cue.name if cue else None, src,
+                            p.freerun_epoch is not None))
+            time.sleep(0.02)
+        check(not bad, f"{what}: the rig kept playing after the clock "
+                       f"stopped: {bad[:3]}")
+
+    sessions = []
+    try:
+        # 1. The cue runs its length. Hold is 300 ms and the next cue starts
+        # two seconds after this one began: a rig left chasing its own clock
+        # would be playing it by the end of the sample.
+        for on_lost in ("freerun", "hold"):
+            sess, out = _master_session(work, f"end-{on_lost}", lengths,
+                                        on_lost=on_lost)
+            sessions.append(sess)
+            sess.clock_play("Show")
+            check(wait_for(lambda: sess.player.current_cue is not None,
+                           timeout=2.0), "the cue never reached the pixels")
+            check(wait_for(lambda: not sess.clock.playing, timeout=3.0),
+                  "a one second cue never ended")
+            nothing_plays(sess, 1.6, BLACK, f"cue end, on_lost {on_lost}")
+            tail = [_tc_of(p)[:4] for _, p in out.sent]
+            check(tail and (0, 0, 0, 25) <= max(tail) <= (0, 0, 0, 29),
+                  f"a one second cue should end by 00:00:00:29: {tail[-3:]}")
+            sess.stop()
+
+        # 2. Halted mid-cue, under every on_lost a show file can carry, and
+        # with a preshow look to go back to.
+        for on_lost, idle in (("preshow", "PreShow.fseq"), ("hold", None),
+                              ("blackout", None), ("freerun", None),
+                              ("freerun", "PreShow.fseq")):
+            extra = {"on_lost": on_lost}
+            if idle:
+                extra.update(idle=idle, gaps="idle")
+            sess, out = _master_session(work, f"halt-{on_lost}-{idle}",
+                                        lengths, **extra)
+            sessions.append(sess)
+            sess.clock_play("Intermission")
+            check(wait_for(lambda: sess.player.current_cue is not None,
+                           timeout=2.0), "the cue never reached the pixels")
+            sess.clock_halt()
+            n = len(out.sent)
+            nothing_plays(sess, 0.7, IDLE if idle else BLACK,
+                          f"halt, on_lost {on_lost}"
+                          + (", with a preshow" if idle else ""))
+            check(len(out.sent) == n, "timecode went out after a halt")
+            if on_lost != "hold":
+                check(any("on_lost" in n_ for n_ in sess.notes),
+                      "nothing says on_lost does not apply to a master clock")
+            sess.stop()
+
+        # 3. The clock thread stalls mid-cue for longer than the hold, as a
+        # machine under a load spike might. The show file says freerun, but
+        # a free run would outrank the clock for the rest of the night. The
+        # rig holds its frame and picks the clock up again when it resumes.
+        sess, out = _master_session(work, "stall", lengths, on_lost="freerun")
+        sessions.append(sess)
+        sess.clock_play("Intermission")
+        check(wait_for(lambda: sess.player.current_cue is not None,
+                       timeout=2.0), "the cue never reached the pixels")
+        real_sink = sess.clock.sink
+        sess.clock.sink = lambda *a: None
+        stalled = []
+        end = time.time() + 0.8                 # hold is 300 ms
+        while time.time() < end:
+            stalled.append((sess.player.freerun_epoch is not None,
+                            sess.player.current_cue is not None))
+            time.sleep(0.02)
+        check(not any(f for f, _c in stalled),
+              "a stalled master clock started a free run that would outrank "
+              "it for the rest of the night")
+        check(all(c for _f, c in stalled),
+              "a stalled master clock dropped the cue instead of holding it")
+        sess.clock.sink = real_sink
+        check(wait_for(lambda: sess.player.state == LOCKED, timeout=2.0),
+              "the rig did not pick the clock up again after the stall")
+        sess.stop()
+
+        # 4. Stop reaches the clock while clock_play is on its way in. The
+        # caller gets a SessionError like every other refusal, never the
+        # clock's own exception.
+        sess, out = _master_session(work, "race", lengths)
+        sessions.append(sess)
+        sess.clock.stop()
+        try:
+            sess.clock_play("Show")
+            check(False, "a stopped clock played a cue")
+        except SessionError as e:
+            check("Run" in str(e), f"the refusal should say to press Run: {e}")
+        except Exception as e:
+            check(False, f"clock_play let {type(e).__name__} escape: {e}")
+        sess.stop()
+
+        # 5. A cue whose render did not open has no length. Its timecode
+        # would never stop, so it is refused, by name.
+        sess, out = _master_session(work, "broken", lengths)
+        sessions.append(sess)
+        try:
+            sess.clock_play("Broken")
+            check(False, "a cue with no render was played")
+        except SessionError as e:
+            check("Broken" in str(e) and "forever" in str(e),
+                  f"the refusal should name the cue and say why: {e}")
+        check(not sess.clock.playing and out.sent == [],
+              "timecode went out for a cue that was refused")
+        sess.stop()
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+def test_the_clock_survives_its_own_faults():
+    section("the show clock: faults, stops and the clock it runs on")
+    from ltcplay import clock as C
+
+    # It paces on perf_counter. Under Python 3.12 on Windows monotonic
+    # ticks every 15.6 ms, half a frame.
+    check(C.Ticker(30, lambda n, t: True)._clock is time.perf_counter,
+          "the pacer does not run on perf_counter")
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    check(C.ArtNetMaster(cfg).ticker._clock is time.perf_counter,
+          "the master clock does not pace on perf_counter")
+    scfg = C.ClockConfig.parse({"source": "ltc_audio_slave",
+                                "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    check(C.LtcAudioSlave(scfg).ticker._clock is time.perf_counter,
+          "the slave's Art-Net output does not pace on perf_counter")
+
+    # A tick that throws once: the clock carries on, counts it, and says so
+    # in the log without a line per frame.
+    calls, log = [], _EventLog()
+
+    def tick(n, now):
+        calls.append(n)
+        if len(calls) in (2, 3):
+            raise RuntimeError("one bad frame")
+        return len(calls) < 8
+
+    tk = C.Ticker(30, tick, log=log)
+    tk.start()
+    check(wait_for(lambda: len(calls) >= 8, timeout=3.0),
+          f"one exception in a tick ended the clock after {len(calls)} ticks")
+    tk.stop()
+    check(tk.errors == 2 and "one bad frame" in tk.last_error,
+          f"tick faults not counted: {tk.errors} {tk.last_error!r}")
+    errs = [e for e in log.events if "one bad frame" in e[1]]
+    check(errs and all(k == "clock-error" and th >= 5.0 for k, _m, th in errs),
+          f"tick faults are not logged throttled: {errs}")
+
+    # Stop joins the thread: once halt() returns, no packet can still be
+    # on its way out. The send here takes a while, so a halt that did not
+    # wait for it would return first and the packet would land after.
+    class SlowOut(_TcOut):
+        def __init__(self):
+            super().__init__()
+            self.in_send = threading.Event()
+            self.halted = False
+            self.late = 0
+
+        def send(self, pkt):
+            self.in_send.set()
+            threading.Event().wait(0.15)
+            if self.halted:
+                self.late += 1
+            return super().send(pkt)
+
+    slow = SlowOut()
+    _cfg, m = _master(C, out=slow)
+    m.start()
+    m.play(0.0, 3600.0, "slow")
+    check(slow.in_send.wait(3.0), "the clock never sent")
+    th = m.ticker._thread
+    m.halt()
+    slow.halted = True
+    alive = th is not None and th.is_alive()
+    if th is not None:
+        th.join(2.0)
+    check(not alive and slow.late == 0,
+          f"halt() returned while the clock thread was still sending "
+          f"({slow.late} packet(s) after it)")
+    m.stop()
+
+    # Frame numbers at a large clock reading. Reading t0 + n/30 back can
+    # round a hair under n; without a floor at the frame that was due, the
+    # clock sends the previous frame twice.
+    class Exact:
+        now = 5.0e6 + 0.123456
+
+        def clock(self):
+            return self.now
+
+        def sleep(self, d):
+            self.now += d
+
+    ex = Exact()
+    got = []
+    tk = C.Ticker(30, lambda n, now: (got.append(n), len(got) < 3000)[1],
+                  clock=ex.clock, sleep=ex.sleep)
+    tk.run(ex.now)
+    dup = [b for a, b in zip(got, got[1:]) if b <= a]
+    check(len(got) == 3000 and not dup,
+          f"{len(dup)} frame(s) sent twice at a clock reading of 5e6 s")
+    check(tk.skipped == 0, f"{tk.skipped} frames skipped with exact wakes")
+
+    # play() and halt() from several threads at once: the scheduler and the
+    # web server both call them. When the dust settles, one halt leaves no
+    # clock thread running and nothing sending.
+    busy = _TcOut()
+    _cfg, m = _master(C, out=busy)
+    m.start()
+    rnd = random.Random(3)
+    plan = [[rnd.random() < 0.6 for _ in range(15)] for _ in range(6)]
+    race_errors = []
+
+    def hammer(steps):
+        for play in steps:
+            try:
+                if play:
+                    m.play(0.0, 3600.0, "race")
+                else:
+                    m.halt()
+            except Exception as e:
+                race_errors.append(e)
+
+    ts = [threading.Thread(target=hammer, args=(p,)) for p in plan]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    m.halt()
+    live = [t.name for t in threading.enumerate()
+            if t.name == "ltcplay-timecode" and t.is_alive()]
+    check(not live, f"{len(live)} clock thread(s) still running after halt; "
+                    f"two plays at once each started one")
+    check(not race_errors,
+          f"play or halt failed under contention: {race_errors[:2]}")
+    n = len(busy.sent)
+    for t in threading.enumerate():
+        if t.name == "ltcplay-timecode":
+            t.join(1.0)
+    check(len(busy.sent) == n, "timecode kept going after the last halt")
+    m.stop()
+
+    # The guarantee the lock gives, tested directly: a halt that arrives
+    # while play() is part way through setting up a cue waits for it,
+    # rather than running in the middle of it.
+    inside, gate = threading.Event(), threading.Event()
+
+    def slow_clock():
+        if threading.current_thread().name == "play-A":
+            inside.set()
+            gate.wait(0.5)
+        return time.perf_counter()
+
+    _cfg, m = _master(C, out=_TcOut(), clock=slow_clock)
+    m.start()
+    ta = threading.Thread(target=lambda: m.play(0.0, 3600.0, "A"),
+                          name="play-A")
+    ta.start()
+    check(inside.wait(2.0), "play() never reached the clock")
+    done = []
+    tb = threading.Thread(target=lambda: (m.halt(), done.append(True)))
+    tb.start()
+    tb.join(0.15)
+    check(not done, "halt() ran while play() was still setting up the cue")
+    gate.set()
+    ta.join(2.0)
+    tb.join(2.0)
+    check(done and not m.playing,
+          "the halt that waited for play() did not stop the cue")
+    m.stop()
+    print("  ok")
+
+
+def test_forwarded_timecode_steps_by_one():
+    section("Art-Net timecode steps by one frame on a coarse clock")
+    import math
+    # Under Python 3.12 on Windows time.monotonic ticks every 15.625 ms. The
+    # audio callback stamps frames with it, and the translation into the
+    # pacing clock reads it again. Simulated here with that clock 1000 s
+    # away from perf_counter, as it is on Windows and not on a Mac, so a
+    # translation that mixed the two up would be 1000 s wrong.
+    from ltcplay import clock as C
+    Q = 0.015625
+
+    def q(x):
+        return math.floor(x / Q) * Q
+
+    rnd = random.Random(11)
+
+    def forward(phase):
+        """A minute of LTC whose frames start `phase` of a frame after our
+        own frame grid. Returns (tick, frame sent, true position)."""
+        T = [50.0]
+        perf = lambda: T[0]
+        mono = lambda: q(T[0] + 1000.0)
+        cfg = C.ClockConfig.parse({"source": "ltc_audio_slave",
+                                   "artnet": {"nodes": {"BEYOND":
+                                                        "127.0.0.1"}}})
+        out = _TcOut()
+        sl = C.LtcAudioSlave(cfg, show_len_s=3000, out=out, clock=perf,
+                             mono=mono)
+        t0 = 50.0
+        sl.ticker.t0 = t0
+        e0 = t0 + phase / 30.0
+        start = (1 * 60 + 10) * 30           # 01:01:10:00
+        events = []
+        for k in range(1800):
+            end = e0 + k / 30.0
+            u = rnd.uniform(0.0, 0.0107)     # where in a 512 sample block
+            d = rnd.uniform(0.0, 0.002)      # decode time in the callback
+            events.append((end + u + d, "ltc", k, end + u, u))
+        for n in range(1, 1800):
+            events.append((t0 + n / 30.0 + rnd.uniform(0.0, 0.004), "tick",
+                           n, None, None))
+        events.sort()
+        ticks, epochs = [], []
+        for at, kind, k, cb, u in events:
+            if kind == "ltc":
+                captured = q(cb + 1000.0) - u    # the callback's own stamp
+                T[0] = at
+                fr = start + k
+                sl.ltc_frame(1, (fr // 1800) % 60, (fr // 30) % 60, fr % 30,
+                             captured)
+                if k >= 60 and sl.reader._last is not None:
+                    epochs.append(sl.reader._last[1])
+            else:
+                T[0] = at
+                before = len(out.sent)
+                sl._tick(k, at)
+                if len(out.sent) > before:
+                    p = out.sent[-1][1]
+                    fnum = (p[16] * 60 + p[15]) * 30 + p[14]
+                    true = start + (t0 + k / 30.0 - e0) * 30.0
+                    ticks.append((k, fnum, true))
+        return ticks, epochs
+
+    # Mid-frame, and a hair before a frame boundary, where every stamp's
+    # jitter decides which side of the boundary the reader lands on.
+    for phase in (0.37, 0.97, 0.02):
+        ticks, epochs = forward(phase)
+        spread = (max(epochs) - min(epochs)) * 1000 if epochs else 99
+        check(spread < 8.0,
+              f"phase {phase}: the reader's idea of where the show is "
+              f"wanders {spread:.1f} ms on a 15.6 ms clock; it should be "
+              f"slewed, not taken frame by frame")
+        check(len(ticks) > 1700,
+              f"phase {phase}: only {len(ticks)} of 1799 ticks sent "
+              f"anything; the 1000 s offset was not translated")
+        steps = {b[1] - a[1] for a, b in zip(ticks, ticks[1:])}
+        check(steps == {1}, f"phase {phase}: forwarded frames stepped by "
+                            f"{sorted(steps)}, not always by exactly 1")
+        worst = max(abs(f - tr) for _k, f, tr in ticks) if ticks else 99
+        check(worst <= 1.0, f"phase {phase}: forwarded timecode is "
+                            f"{worst:.2f} frames off the LTC it came from")
+
+    # The master's pixel stamps on the same coarse clock: one exact frame
+    # apart every time, and never further off than one clock tick.
+    class Sim:
+        now = 7000.0
+
+        def clock(self):
+            return self.now
+
+        def sleep(self, d):
+            self.now += d + rnd.uniform(0.0, 0.003)
+
+    sim = Sim()
+    fed = []
+    _cfg, m = _master(C, out=_TcOut(), clock=sim.clock, sleep=sim.sleep,
+                      mono=lambda: q(sim.now + 1000.0),
+                      sink=lambda pos, at, drop, text: fed.append(at))
+    m.start()
+    t0m = m.play(0.0, 10.0, "coarse")
+    m.ticker._thread.join(10)
+    gaps = {round((b - a) * 30.0, 9) for a, b in zip(fed, fed[1:])}
+    check(len(fed) > 250 and gaps <= {1.0, 2.0, 3.0},
+          f"the pixels were handed stamps that are not whole frames apart "
+          f"on a coarse clock: {sorted(gaps)[:5]}")
+    off = abs(fed[0] - (t0m + 1000.0))
+    check(off <= Q + 1e-9, f"the pixel stamps sit {off * 1000:.1f} ms off")
+    m.stop()
+    print("  ok")
+
+
+def test_timecode_health_is_shown():
+    section("Art-Net timecode health: the log, the warnings, --bind")
+    from ltcplay import clock as C
+    from ltcplay import display as disp_mod
+
+    # One dead receiver out of two: named in the log, once per five
+    # seconds, not once per frame; named again when it comes back.
+    class Sock:
+        dead = {"10.0.0.40"}
+
+        def sendto(self, pkt, addr):
+            if addr[0] in self.dead:
+                raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+
+    sock, log, now = Sock(), _EventLog(), [10.0]
+    tc = C.TimecodeOut([("MadMapper", "127.0.0.1"), ("BEYOND", "10.0.0.40")],
+                       log=log, socket_factory=lambda: sock,
+                       clock=lambda: now[0])
+    for _ in range(300):                 # ten seconds at 30 a second
+        tc.send(b"x")
+        now[0] += 1 / 30.0
+    lines = [m for k, m, _t in log.events if "BEYOND" in m]
+    check(2 <= len(lines) <= 3,
+          f"a dead receiver was logged {len(lines)} times in ten seconds; "
+          f"once every five is the rule")
+    check(tc.failing_labels == ["BEYOND (10.0.0.40)"],
+          f"the failing receiver is not named: {tc.failing_labels}")
+    check(all("\u2014" not in m and "\u2013" not in m for m in lines),
+          "a log line carries a dash")
+
+    # The same, as the operator reads it.
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                                    "BEYOND": "10.0.0.40"}}})
+    m = C.ArtNetMaster(cfg, out=tc, clock=lambda: now[0])
+    m._cue = (0.0, 1000, "Show")
+    tc._clock = time.monotonic               # ages as the page sees them
+    tc.last_error_at = time.monotonic()
+    tc.last_ok_at = time.monotonic()
+    w = disp_mod.clock_warnings(m)
+    check(any("BEYOND (10.0.0.40)" in x and "not reaching" in x for x in w),
+          f"the page does not name the receiver that is failing: {w}")
+    tc.last_ok_at = time.monotonic() - 5.0
+    w = disp_mod.clock_warnings(m)
+    check(any("No Art-Net timecode has left" in x for x in w),
+          f"five seconds of nothing sent during a cue is not a warning: {w}")
+    m._cue = None
+    check(not any("No Art-Net timecode has left" in x
+                  for x in disp_mod.clock_warnings(m)),
+          "silence with no cue playing was reported as a fault")
+    sock.dead = set()
+    tc.send(b"x")
+    check(tc.failing_labels == [] and
+          any("again" in m_ for _k, m_, _t in log.events),
+          "a receiver that came back is still reported as failing")
+    tc.last_error_at = time.monotonic() - 60.0
+    check(disp_mod.clock_warnings(m) == [],
+          f"old faults are still on screen: {disp_mod.clock_warnings(m)}")
+    scfg = C.ClockConfig.parse({"source": "ltc_audio_slave"})
+    sl = C.LtcAudioSlave(scfg)
+    sl.reader.freerunning = True
+    check(any("lost during the show" in x
+              for x in disp_mod.clock_warnings(sl)),
+          "a free run to the end of the show is not on screen")
+    check(disp_mod.clock_warnings(None) == [],
+          "a show with no clock block got clock warnings")
+    for x in disp_mod.clock_warnings(sl) + w:
+        check("\u2014" not in x and "\u2013" not in x,
+              f"a warning carries a dash: {x}")
+
+    # --bind picks the interface for the timecode socket too, and the
+    # source port stays ephemeral.
+    b = C.TimecodeOut([("t", "127.0.0.1")], bind_ip="127.0.0.1")
+    s_ = b._default_socket()
+    ip, port = s_.getsockname()
+    s_.close()
+    check(ip == "127.0.0.1" and port not in (0, 6454),
+          f"the timecode socket is bound to {ip}:{port}")
+    import tempfile
+    from ltcplay.session import Session
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=400)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    sess = None
+    try:
+        tlp, net = _clock_show(
+            work, {"source": "artnet_master",
+                   "artnet": {"nodes": {"MadMapper": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        sess = Session(tlp, networks=net, no_log=True, sd=FakeSD(),
+                       bind="127.0.0.1")
+        sess.open()
+        check(sess.clock.out is not None and
+              sess.clock.out.bind_ip == "127.0.0.1",
+              "--bind did not reach the timecode socket")
+    finally:
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+
+def test_a_lost_feed_still_reads_lost_without_a_master_clock():
+    section("GPL and the slave: a lost feed still reads LOST, with warnings")
+    # The master clock quiets the feed warnings and reads STANDBY between
+    # cues. Those three switches must stay master-only: at Dollywood a lost
+    # feed has to read LOST, say that no timecode has been decoded, and
+    # show the input as the thing to check. Proven with no clock block (the
+    # GPL shape), with the LTC slave, and against the master for contrast,
+    # on the page snapshot and on the terminal Run window alike.
+    import tempfile
+    from ltcplay.session import Session
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=400)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    kinds = (("GPL, no clock block", None),
+             ("the LTC slave", {"source": "ltc_audio_slave",
+                                "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}}),
+             ("ltcplay as master", {"source": "artnet_master",
+                                    "artnet": {"nodes": {"MadMapper":
+                                                         "127.0.0.1"}}}))
+    sessions = []
+    try:
+        for label, clock_doc in kinds:
+            here = os.path.join(work, str(len(sessions)))
+            os.makedirs(here)
+            tlp, net = _clock_show(here, clock_doc,
+                                   [("01:00:00:00", "Show.fseq", "Show")])
+            # The laptop microphone: an input that opens and carries no
+            # timecode at all, which is a dead feed.
+            sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                           sd=FakeSD(), device="MacBook Air Microphone",
+                           channel=1)
+            sess.open()
+            sessions.append(sess)
+            if sess.clock is not None:
+                sess.clock.out = _TcOut()
+            sess.start()
+            master = clock_doc is not None and \
+                clock_doc["source"] == "artnet_master"
+            if not master:
+                wait_for(lambda: sess.audio is not None
+                         and sess.audio.attached, timeout=3.0)
+            wait_for(lambda: sess.player.frames_sent > 3, timeout=3.0)
+            snap = sess.snapshot()
+            sc = disp.Screen(colour=False, cols=110)
+            screen = "\n".join(disp.render(sess.player, sess.dec, sess.tl,
+                                            sc, time.monotonic() - 5))
+            line = disp.one_line(sess.player, sess.dec, sess.tl)
+            nodec = [w for w in snap["warnings"]
+                     if "No timecode has been decoded yet" in w]
+            if master:
+                check(snap["state"] == "STANDBY" and "STANDBY" in screen
+                      and "STANDBY" in line and "LOST" not in screen,
+                      f"{label}: between cues the page reads "
+                      f"{snap['state']!r} and the terminal does not agree:\n"
+                      f"{screen}")
+                check(not nodec and snap["input_used"] is False,
+                      f"{label}: warns about a feed it does not have")
+                continue
+            check(sess.player.state == LOST and snap["state"] == "LOST",
+                  f"{label}: a dead feed reads {snap['state']!r} on the "
+                  f"page, not LOST")
+            check("LOST" in screen and "STANDBY" not in screen
+                  and " LOST " in f" {line} ",
+                  f"{label}: the terminal does not say LOST:\n{screen}")
+            check(nodec, f"{label}: nothing says no timecode has been "
+                         f"decoded: {snap['warnings']}")
+            check(snap["input_used"] is True
+                  and snap["input_attached"] is True,
+                  f"{label}: the input reads used={snap['input_used']!r} "
+                  f"attached={snap['input_attached']!r}")
+            silent = wait_for(lambda: any(
+                "is silent" in w for w in sess.snapshot()["warnings"]),
+                timeout=3.0)
+            check(silent, f"{label}: a silent input is not called out")
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -10788,6 +12595,19 @@ if __name__ == "__main__":
     test_schedule_operator_list()
     test_schedule_a_paused_show_is_never_overlapped()
     test_schedule_a_clock_step_during_a_pause()
+    test_arttimecode_packet_byte_for_byte()
+    test_artnet_timecode_holds_30fps_under_load()
+    test_artnet_timecode_never_drifts_from_its_clock()
+    test_timecode_zones_for_fallback_3()
+    test_clock_settings_fail_loudly()
+    test_the_gpl_path_never_loads_the_clock()
+    test_a_master_clock_runs_the_show()
+    test_a_slave_clock_forwards_the_show_zone()
+    test_a_stopped_cue_hands_the_rig_back()
+    test_the_clock_survives_its_own_faults()
+    test_forwarded_timecode_steps_by_one()
+    test_timecode_health_is_shown()
+    test_a_lost_feed_still_reads_lost_without_a_master_clock()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
