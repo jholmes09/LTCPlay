@@ -40,7 +40,8 @@ jobs:
       - run: python -m pip install numpy zstandard tzdata
       - run: python -u selftest.py
 
-  # mutate.py is about 3 hours of runner time per OS, so it runs where it
+  # mutate.py is about 10 hours of runner time per OS since the synthetic show
+  # fixtures (PR #9) switched the show-folder tests on, so it runs where it
   # pays for itself:
   #   ubuntu   on a release tag, and on any PR or push to main that changes
   #            trigger.py, output.py, player.py or session.py (CLAUDE.md), or
@@ -49,9 +50,10 @@ jobs:
   #   macOS    never here (billed at 10x); it is run on the show Mac, with
   #            the real renders, where every mutation has to be caught
   # A mutation counts as caught in CI only if the suite fails under it twice,
-  # so each run is split eight ways to keep the wall time under 45 minutes.
+  # so each run is split sixteen ways to keep each shard well inside the
+  # 90 minute job limit (eight shards took 75 to 90+ minutes after PR #9).
   #
-  # Eight shards of that on every push to a draft PR is real money for a
+  # Sixteen shards of that on every push to a draft PR is real money for a
   # private repo, spent on a diff that is still being written. The mutate
   # jobs below are skipped while the PR is a draft and run for the first time
   # when it is marked ready for review (see the ready_for_review trigger
@@ -99,7 +101,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.oses) }}
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -111,4 +113,4 @@ jobs:
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job.
-      - run: python -u mutate.py --shard ${{ matrix.shard }}/8 --expected mutate_expected_misses.txt
+      - run: python -u mutate.py --shard ${{ matrix.shard }}/16 --expected mutate_expected_misses.txt
