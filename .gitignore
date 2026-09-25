@@ -28,6 +28,10 @@ logs/
 ltcplay_prefs.json
 ltcplay_input.json
 ltcplay_output.lock
+ltcplay_schedule.json
+ltcplay_schedule.previous.json
+ltcplay_tonight_*.json
+ltcplay_operators.json
 
 # Written by Cut a release.command at packaging time
 VERSION

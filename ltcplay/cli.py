@@ -1214,9 +1214,16 @@ def cmd_serve(args):
     from . import web as web_mod
     _hold_the_mac_awake()
     folder = os.path.abspath(args.folder or settings_mod.folder())
+    schedule = None
+    if getattr(args, "schedule", None) is not None:
+        # Only here, and only when asked for, is the scheduler loaded. The
+        # GPL launchers never pass --schedule.
+        from . import schedule_service
+        schedule = os.path.abspath(os.path.expanduser(
+            args.schedule or schedule_service.default_rule_path()))
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
-                              token=args.token)
+                              token=args.token, schedule=schedule)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1233,6 +1240,11 @@ def cmd_serve(args):
     print(f"{_b['product']}  {brand_mod.contact_line(_b)}\n")
     print(f"ltcplay is running. Open this page:\n\n    {url}\n")
     print(f"Show files: {folder}")
+    if httpd.schedule is not None:
+        sv = httpd.schedule
+        print(f"Schedule: {sv.path}")
+        print("  " + (sv.error or "Loaded. It decides but does not act: no "
+                      "show is started by it in this build."))
     if token:
         print(f"\nServing on the network, so the page needs the token in that "
               f"link.\nAnyone who can reach {host}:{args.port} and has it can "
@@ -1265,6 +1277,8 @@ def cmd_serve(args):
     finally:
         print("\nstopping")
         sess = httpd.control.session
+        if httpd.schedule is not None:
+            httpd.schedule.stop()
         httpd.control.stop()
         httpd.server_close()
         _say_blackout(sess)
@@ -1744,6 +1758,13 @@ def main(argv=None):
                          "same network; a token is then required")
     sv.add_argument("--token", help="use this token instead of a generated one")
     sv.add_argument("--no-browser", action="store_true", dest="no_browser")
+    sv.add_argument("--schedule", nargs="?", const="", default=None,
+                    metavar="FILE",
+                    help="run the show scheduler from this rule file "
+                         "(default: ltcplay_schedule.json beside the "
+                         "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay on "
+                         "Windows). It decides and does not act yet. "
+                         "Leave it off and there is no scheduler at all")
     sv.set_defaults(func=cmd_serve)
 
     sdp = sub.add_parser("showdir", help="see or change the folder a show "

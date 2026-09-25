@@ -58,7 +58,6 @@ all | the reload mode is not remembered between runs | needs the real renders (w
 all | the page is not told which reload mode it is in | needs the real renders (web page)
 all | the display reads the clock and the cues at different moments | needs the real renders (web page)
 all | two shows can run at once on the same universes | needs the real renders (web page)
-all | a wrong device name reads as a program fault | needs the real renders (web page)
 all | the sequence position is shown as timecode seconds | needs the real renders (web page)
 all | the page and the server drift apart unnoticed | needs the real renders (web page)
 all | the state stops carrying the API number | needs the real renders (web page)
