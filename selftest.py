@@ -56,12 +56,28 @@ RAN = set()
 # The real renders, for the tests that need a whole show. They are never in
 # the repo (600MB, and CLAUDE.md says never commit them). Say where they are
 # with LTCPLAY_TEST_SHOW_DIR; the default is where they sat in the machine
-# these tests were first written on. Absent, those tests say so and skip.
+# these tests were first written on.
 _SHOW_DIR_DEFAULT = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
 
 
 def real_show_dir():
-    return os.environ.get("LTCPLAY_TEST_SHOW_DIR") or _SHOW_DIR_DEFAULT
+    """Where to read "a real show folder" from.
+
+    LTCPLAY_TEST_SHOW_DIR, then the machine this suite was first written on,
+    win when they exist: they are the actual GPL 2026 renders, and a handful
+    of checks (test_real_show, and anything that reads SHOW_PROBLEMS rather
+    than FAILS) only mean something against those. Absent both, this falls
+    back to a small folder of generated FSEQ files standing in for them --
+    see test_show_fixtures.py -- so the tests that only need SOME valid show
+    folder (not that specific one) run everywhere, including CI, instead of
+    skipping."""
+    env = os.environ.get("LTCPLAY_TEST_SHOW_DIR")
+    if env:
+        return env
+    if os.path.isdir(_SHOW_DIR_DEFAULT):
+        return _SHOW_DIR_DEFAULT
+    import test_show_fixtures
+    return test_show_fixtures.synthetic_show_dir()
 
 
 # That folder can be the LIVE show. The tests only read it, or copy out of it
