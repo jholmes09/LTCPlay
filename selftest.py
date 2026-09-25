@@ -56,12 +56,28 @@ RAN = set()
 # The real renders, for the tests that need a whole show. They are never in
 # the repo (600MB, and CLAUDE.md says never commit them). Say where they are
 # with LTCPLAY_TEST_SHOW_DIR; the default is where they sat in the machine
-# these tests were first written on. Absent, those tests say so and skip.
+# these tests were first written on.
 _SHOW_DIR_DEFAULT = "/mnt/user-data/uploads/PROJECTS/Dollywood/GPL26_xLights"
 
 
 def real_show_dir():
-    return os.environ.get("LTCPLAY_TEST_SHOW_DIR") or _SHOW_DIR_DEFAULT
+    """Where to read "a real show folder" from.
+
+    LTCPLAY_TEST_SHOW_DIR, then the machine this suite was first written on,
+    win when they exist: they are the actual GPL 2026 renders, and a handful
+    of checks (test_real_show, and anything that reads SHOW_PROBLEMS rather
+    than FAILS) only mean something against those. Absent both, this falls
+    back to a small folder of generated FSEQ files standing in for them --
+    see test_show_fixtures.py -- so the tests that only need SOME valid show
+    folder (not that specific one) run everywhere, including CI, instead of
+    skipping."""
+    env = os.environ.get("LTCPLAY_TEST_SHOW_DIR")
+    if env:
+        return env
+    if os.path.isdir(_SHOW_DIR_DEFAULT):
+        return _SHOW_DIR_DEFAULT
+    import test_show_fixtures
+    return test_show_fixtures.synthetic_show_dir()
 
 
 # That folder can be the LIVE show. The tests only read it, or copy out of it
@@ -2594,7 +2610,12 @@ def test_web_ui():
     if folder is None:
         print("  no show folder available, skipped")
         return
-    wav = "/tmp/pause.wav"
+    import tempfile
+    # The real temp dir, not a hardcoded /tmp: this test only ran in CI
+    # once a show folder was configured, which never happened until
+    # synthetic fixtures landed, so a Unix-only path here was never
+    # exercised on Windows. It is now, and Windows has no /tmp.
+    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
@@ -2733,13 +2754,27 @@ def test_web_ui():
 
         # THE POINT OF THE WHOLE DESIGN: the browser is a window, not the
         # program. Stop asking for state entirely, as a closed laptop lid does,
-        # and the show must carry on driving the rig.
+        # and the show must carry on driving the rig -- on its own schedule.
+        # player.py's output loop deliberately gives up a missed slot rather
+        # than bursting to catch up (never flood the controllers), so a
+        # starved runner legitimately sends fewer frames per wall-clock
+        # second than a quiet one; a fixed frame count in a fixed couple of
+        # seconds was measuring the runner's spare CPU, not the engine, and
+        # failed a healthy macOS runner that held 15 of 30 frames a second.
+        # This still demands the same absolute progress -- a genuinely
+        # stalled output thread never reaches it -- but with a deadline
+        # generous enough that only an actually-stuck thread can fail it.
+        # The checks are seconds apart, so "nobody is polling" still holds
+        # for long stretches at a time; it is not a tight read loop.
         before = get("/api/state")["frames_out"]
-        time.sleep(2.0)                       # nobody is polling
-        after = get("/api/state")["frames_out"]
-        check(after > before + 40,
-              f"output stalled while the page was not polling "
-              f"({before} -> {after}); the engine must not depend on a viewer")
+
+        def _advanced():
+            return get("/api/state")["frames_out"] > before + 40
+
+        check(wait_for(_advanced, timeout=30.0, step=2.0),
+              f"output stalled while the page was not polling for 30s "
+              f"(started at frames_out={before}); the engine must not "
+              f"depend on a viewer")
 
         # The page draws NOW and UP NEXT from one snapshot, so the two must
         # never contradict each other. Reading the clock and the cues
@@ -3753,9 +3788,33 @@ def test_a_read_only_folder_is_a_sentence():
     subprocess.run([sys.executable, "-m", "ltcplay.cli", "gen", wav,
                     "--start", "01:00:00:00", "--seconds", "2"],
                    capture_output=True, text=True, cwd=here)
+    # On Windows the show log never lives beside the show folder (see
+    # ltcplay/appdata.py: "On Windows program data never goes beside the
+    # show, which may be a synced folder"). It lives under
+    # %LOCALAPPDATA%\ltcplay instead, so blocking the show folder proves
+    # nothing there -- the run below would open its log just fine and
+    # never print either message this checks for. Block the real
+    # Windows destination instead, under a LOCALAPPDATA this test owns
+    # rather than the operator's own.
+    run_env = None
+    if sys.platform == "win32":
+        from ltcplay import appdata as _appdata
+        fake_local = tempfile.mkdtemp()
+        saved_local = os.environ.get("LOCALAPPDATA")
+        os.environ["LOCALAPPDATA"] = fake_local
+        try:
+            log_p = _appdata.log_path()
+        finally:
+            if saved_local is None:
+                os.environ.pop("LOCALAPPDATA", None)
+            else:
+                os.environ["LOCALAPPDATA"] = saved_local
+        os.makedirs(log_p, exist_ok=True)
+        run_env = dict(os.environ, LOCALAPPDATA=fake_local)
     r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "run", tlp,
                         "--wav", wav, "--no-output", "--quiet"],
-                       capture_output=True, text=True, cwd=here, timeout=60)
+                       capture_output=True, text=True, cwd=here, timeout=60,
+                       env=run_env)
     out = r.stdout + r.stderr
     check("Traceback" not in out,
           f"a run in a folder it cannot write to printed a stack trace:\n"

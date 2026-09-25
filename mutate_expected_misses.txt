@@ -3,65 +3,21 @@
 # any listed mutation that is now caught (so this list can only shrink), and on
 # any SETUP FAIL.
 #
-# THIS LIST EXISTS ONLY UNTIL SYNTHETIC SHOW FIXTURES LAND. Every "all" entry
-# below is caught only by a test that needs a whole real show: the GPL 2026
-# renders and xlights_networks.xml, 600MB that is never committed. Those tests
-# skip when LTCPLAY_TEST_SHOW_DIR (or the old default path) is not there, which
-# in CI is always. On a machine that has the renders, every one of them is
-# caught, and mutate.py is run there without this list. Small generated FSEQ
-# files and a generated network map would let those tests run in CI; when they
-# do, delete the matching lines.
+# The "all" entries this list used to carry -- every mutation only a test
+# that needs a whole real show could catch -- are gone: those tests
+# (verify, the bundle, reload, the `at` timecode lookup, the read-only
+# folder, the web page, and a couple more) now build a small generated show
+# folder of their own (see test_show_fixtures.py) instead of skipping when
+# LTCPLAY_TEST_SHOW_DIR is not set, so they run everywhere, including CI, and
+# every one of those mutations is caught there too.
+#
+# What is left needs the actual GPL 2026 renders and xlights_networks.xml
+# (600MB, never committed; CLAUDE.md), not a stand-in for them -- a check
+# against the real show's own recorded audio names, frame counts or model
+# layout, which a generated fixture cannot honestly claim to reproduce.
 #
 # Format: where | exact mutation name | reason
 #   where is "all" (every OS) or "windows" (Windows only).
-
-# -- verify: test_verify_catches_a_mislabelled_sequence, test_the_bundle_stands_on_its_own
-all | a sequence rendered from the wrong audio passes verify | needs the real renders (verify)
-all | verify stops noticing a file that changed | needs the real renders (verify)
-all | verify stops recording fingerprints at all | needs the real renders (verify)
-all | a missing sequence is passed over in silence | needs the real renders (verify)
-all | an old render against a different model layout passes verify | needs the real renders (verify)
-all | a track number makes every numbered render look mislabelled | needs the real renders (verify)
-all | the shared-file note lists the cue's own timecode back at it | needs the real renders (verify)
-all | verify stops saying a file is used twice | needs the real renders (verify)
-all | verify pins every render in memory again | needs the real renders (verify)
-all | verify stops checking the bundle hashes | needs the real renders (bundle, then verify)
-
-# -- bundle: test_the_bundle_stands_on_its_own
-all | the bundle points back at the machine that made it | needs the real renders (bundle)
-all | the bundle ships without checking anything is missing | needs the real renders (bundle)
-all | bundle keeps the absolute paths of the machine that made it | needs the real renders (bundle)
-all | bundle deletes whatever it finds called ltcplay | needs the real renders (bundle)
-all | a relative show folder resolves against the working directory | needs the real renders (bundle run from elsewhere)
-
-# -- the timecode lookup: test_at_command_on_the_real_show
-all | the timecode lookup stops naming the file it read | needs the real renders (at)
-all | the timecode lookup answers with the next cue | needs the real renders (at)
-
-# -- reading renders: test_sequences_declare_what_they_are, test_opening_a_render_proves_it_reads
-all | the media file inside a sequence is never read | needs the real renders (sequence header)
-all | opening a render stops proving it can be read | needs the real renders (truncated copy)
-all | verify stops checking the block table against the file size | needs the real renders (truncated copy)
-all | verify only looks at the first frame | needs the real renders (rewritten copy)
-
-# -- reload: test_reload_while_the_show_runs
-all | a failed reload half-swaps the show anyway | needs the real renders (reload)
-all | reload keeps the old reader instead of the new one | needs the real renders (reload)
-
-# -- read-only show folder: test_a_read_only_folder_is_a_sentence
-all | a read-only folder throws a stack trace again | needs the real renders (read-only folder)
-
-# -- the web page and its engine: test_web_ui
-all | validating sends to the lighting network | needs the real renders (web page)
-all | the reload mode only takes effect at the next start | needs the real renders (web page)
-all | the reload mode is not remembered between runs | needs the real renders (web page)
-all | the page is not told which reload mode it is in | needs the real renders (web page)
-all | the display reads the clock and the cues at different moments | needs the real renders (web page)
-all | two shows can run at once on the same universes | needs the real renders (web page)
-all | the sequence position is shown as timecode seconds | needs the real renders (web page)
-all | the page and the server drift apart unnoticed | needs the real renders (web page)
-all | the state stops carrying the API number | needs the real renders (web page)
-all | the stale-server banner goes back inside the hiding panel | needs the real renders (web page)
 
 # -- macOS only
 windows | the app runs from the wrong folder | only compiling and running the macOS C launcher catches it; that cannot run on Windows
