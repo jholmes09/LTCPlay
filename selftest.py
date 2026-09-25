@@ -14035,6 +14035,22 @@ def test_journal_nightly_summary():
                                                           "delayed show"),
             ("Logging: complete", "the logging was whole")):
         check(want in text, f"the summary has {why}: {want!r}")
+    def part(title):
+        """One section of the summary, heading to next heading."""
+        body = text.split(f"## {title}\n", 1)[-1] if f"## {title}\n" in \
+            text else ""
+        return body.split("\n## ", 1)[0]
+
+    for title, want in (
+            ("Announcements", "Andy played the Delayed announcement"),
+            ("Faults, in their own words", "MadMapper stopped sending its "
+                                           "heartbeat"),
+            ("Timecode dropouts", "Timecode dropped out for 3.2 s"),
+            ("Restarts", "stopped without warning"),
+            ("Operator actions", "Andy pressed Abort on the rack screen"),
+            ("Delays and holds", "Andy pressed Hold on the rack screen")):
+        check(want in part(title), f"the summary's {title} section has "
+                                   f"{want!r}: {part(title)[:300]!r}")
     check(len(text.splitlines()) < 110, f"the summary is one page: "
                                         f"{len(text.splitlines())} lines")
     _no_dashes(text, "nightly summary")
