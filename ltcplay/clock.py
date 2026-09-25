@@ -57,6 +57,13 @@ import time
 from .output import ARTNET_PORT
 from .tc import frames_to_tc, tc_to_frames
 
+# tctest.py drives this module standalone, on purpose, without ever loading
+# player.py or session.py -- proven fresh in selftest.py. So this does not
+# `from .player import _now`; it uses time.perf_counter() directly, which
+# is exactly what player._now() calls too (see player.py's module
+# docstring). Same clock, by both defaulting to the same builtin, not by
+# sharing an import.
+
 OP_TIMECODE = 0x9700
 PROTOCOL_VERSION = 14
 ARTTIMECODE_LEN = 19
@@ -315,7 +322,9 @@ class Ticker:
     `clock` is time.perf_counter, not time.monotonic. Both are monotonic and
     neither is the wall clock, but under Python 3.12 on Windows monotonic
     ticks every 15.6 ms, which is half a frame, and perf_counter is the
-    high resolution counter on every platform."""
+    high resolution counter on every platform. player.py's chase engine
+    keeps its own time on the same call, player._now(), for the same
+    reason -- see its module docstring."""
 
     MAX_SLEEP_S = 0.05      # so stop() is noticed within a twentieth second
 
@@ -432,8 +441,10 @@ class ZoneReader:
 
       The position is kept as an epoch, the moment its zone's frame zero
       began, and small differences are slewed rather than taken. Frame
-      stamps arrive with the jitter of the audio callback and, under Python
-      3.12 on Windows, of a 15.6 ms clock; taking each one raw makes the
+      stamps arrive with the jitter of the audio callback itself -- real
+      buffer-delivery jitter, not a clock resolution problem, so slewing
+      still earns its keep even now that every stamp on the way here is
+      read from player._now() -- and taking each one raw makes the
       forwarded frames step 0, 1 or 2 instead of 1.
 
       Timecode loss during the show zone free runs to the end of the show.
@@ -864,7 +875,7 @@ class ArtNetMaster(Clock):
     master = True
 
     def __init__(self, cfg, sink=None, out=None, clock=time.perf_counter,
-                 sleep=time.sleep, mono=time.monotonic, log=None,
+                 sleep=time.sleep, mono=time.perf_counter, log=None,
                  on_stop=None):
         self.cfg = cfg
         self.sink = sink
@@ -914,10 +925,15 @@ class ArtNetMaster(Clock):
             self._cue = (float(position_s), frames, label)
             self.cues_played += 1
             self._event(f"timecode from 00:00:00:00 for {label or 'a cue'}")
-            # Frame n began at t0 + n/30 on the pacing clock. The chase
-            # engine keeps time on time.monotonic, so read that clock once,
-            # here, and count from it. Reading it every frame would hand the
-            # pixels its 15.6 ms steps under Python 3.12 on Windows.
+            # Frame n began at t0 + n/30 on the pacing clock. `mono` and
+            # `clock` default to the same call, time.perf_counter -- the
+            # same one player._now() makes -- so this translation is an
+            # identity to within the cost of one extra call, but it stays
+            # written as a translation: a caller can still hand this a
+            # different `mono`, and reading either clock once here and
+            # counting from it, rather than reading it every frame, is what
+            # keeps the pixels off its steps -- 15.6ms on time.monotonic
+            # under Python 3.12 on Windows, if that is ever what `mono` is.
             t0 = self._clock()
             self._mono_t0 = self._mono() - (self._clock() - t0)
             return self.ticker.start(t0)
@@ -1010,7 +1026,7 @@ class LtcAudioSlave(Clock):
 
     def __init__(self, cfg, count=30, drop=False, fps=30.0, show_len_s=None,
                  out=None, clock=time.perf_counter, sleep=time.sleep,
-                 mono=time.monotonic, log=None):
+                 mono=time.perf_counter, log=None):
         self.cfg = cfg
         self.out = out
         self._clock = clock
@@ -1041,8 +1057,12 @@ class LtcAudioSlave(Clock):
             self.out.close()
 
     def ltc_frame(self, h, m, s, f, captured_at):
-        # captured_at is on time.monotonic, the audio thread's clock. The
-        # reader keeps time on the pacing clock, so translate once, here.
+        # captured_at is on `mono`, the audio thread's clock -- the same
+        # time.perf_counter() player._now() calls, by default, which is
+        # what `clock` also defaults to, so this is a same-clock identity
+        # unless a caller hands in two different ones. Translate once,
+        # here, rather than assume: see the same note on
+        # ArtNetMaster.play().
         at = self._clock() - (self._mono() - captured_at)
         zone = self.reader.frame(h, m, s, f, at)
         if zone != self._last_zone:

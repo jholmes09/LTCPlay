@@ -18,6 +18,8 @@ This module is the part that deals with all four.
 import threading
 import time
 
+from .player import _now
+
 
 # ------------------------------------------------------------- classifying ---
 # A Mac accumulates audio inputs. Teams, Zoom, Loom, a webcam app and a
@@ -338,7 +340,7 @@ class InputSource:
     # -- lifecycle --------------------------------------------------------
     def _callback(self, indata, frames, tinfo, status):
         try:
-            self.last_block_at = time.monotonic()
+            self.last_block_at = _now()
             self.blocks += 1
             if indata.ndim > 1:
                 col = min(self._open_channels, indata.shape[1]) - 1
@@ -548,7 +550,7 @@ class InputSource:
         self._fails_since_reset = 0
         self.down_since = None
         self.last_error = ""
-        self.last_block_at = time.monotonic()
+        self.last_block_at = _now()
         return True
 
     def _close(self):
@@ -564,7 +566,7 @@ class InputSource:
     def _supervise(self):
         while self._running:
             time.sleep(0.25)
-            now = time.monotonic()
+            now = _now()
             quiet = (self.last_block_at is None or
                      now - self.last_block_at > self.SILENCE_BEFORE_REOPEN_S)
             if not quiet and self._stream is not None:
@@ -627,7 +629,7 @@ class InputSource:
     def seconds_since_block(self):
         if self.last_block_at is None:
             return None
-        return time.monotonic() - self.last_block_at
+        return _now() - self.last_block_at
 
     def _event(self, kind, msg, throttle=0.0):
         if self.log:

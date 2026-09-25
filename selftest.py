@@ -19,7 +19,7 @@ from ltcplay import (output, netmap, timeline, tc as tcmod,
                      display as disp, audio as audio_mod,
                      trigger as trig_mod)
 from ltcplay.player import (Player, LOCKED, FREEWHEEL, LOST, PARKED,
-                            SHOW, IDLE, HOLD, BLACK)
+                            SHOW, IDLE, HOLD, BLACK, _now)
 
 FAILS = []
 # Things wrong with the SHOW rather than with the program: a trigger channel
@@ -623,13 +623,13 @@ def test_next_cue():
 def _drive(p, seconds, tc_start, feed_until=None, rate=30.0, step=0.05):
     """Feed timecode at wall clock speed for `seconds`, stopping the feed at
     `feed_until` so a dropout can be observed."""
-    t0 = time.monotonic()
+    t0 = _now()
     while True:
-        el = time.monotonic() - t0
+        el = _now() - t0
         if el >= seconds:
             return
         if feed_until is None or el < feed_until:
-            p.feed_timecode(tc_start + el, time.monotonic(), text="fed")
+            p.feed_timecode(tc_start + el, _now(), text="fed")
         time.sleep(step)
 
 
@@ -653,6 +653,13 @@ class _Stepped:
 
         class _Time:
             def monotonic(self):
+                return clock.t
+
+            # player._now() reads time.perf_counter(), not time.monotonic():
+            # see player.py's module docstring. Fake both to the same t, so
+            # a stepped run is deterministic whichever one the chase engine
+            # is calling this month.
+            def perf_counter(self):
                 return clock.t
 
             def sleep(self, s):
@@ -878,6 +885,199 @@ def test_loop_never_dies():
     print("  ok")
 
 
+def test_pixel_output_frame_jitter():
+    section("pixel output: real frame interval over ~2s, measured on every OS")
+    # This is the number that actually matters on the Pico: how evenly the
+    # output thread's frames land, on THIS machine's real clock and real
+    # scheduler. There is no Windows box here, so CI is the bench -- this
+    # runs on ubuntu-latest, macos-latest and windows-latest, and the
+    # measured numbers are printed on every one of them, always, whether or
+    # not the strict bounds below apply.
+    #
+    # The strict bounds only mean anything on a machine that can hold 40
+    # frames a second AT ALL. Reuses the calibration pattern from the
+    # Art-Net clock's own load test (test_the_clock_survives_its_own_faults,
+    # clock.py section): one second unloaded first; a runner that cannot
+    # keep time even then is judged on the deterministic test below instead,
+    # not failed for being slow.
+    fs = FakeFSEQ(frames=4000)
+    tl = _timeline([("01:00:00:00", "A", fs)])
+
+    class TimingSender:
+        def __init__(self):
+            self.at = []
+
+        def send_frame(self, data):
+            self.at.append(_now())
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    def run_for(seconds, step_ms=25):
+        snd = TimingSender()
+        p = Player(tl, FakeNetmap(), snd)
+        p.start(step_ms=step_ms)
+        time.sleep(seconds)
+        p.stop()
+        return snd.at
+
+    period = 0.025          # 40fps, this project's pixel rate
+    base = run_for(1.0)
+    base_gaps = [b - a for a, b in zip(base, base[1:])]
+    fit = len(base) >= 36 and (max(base_gaps, default=1.0) <= 0.075)
+
+    at = run_for(2.0)
+    gaps = [b - a for a, b in zip(at, at[1:])]
+    check(len(at) > 0, "the output thread sent nothing in 2s")
+    mean_ms = (sum(gaps) / len(gaps) * 1000.0) if gaps else 0.0
+    worst_ms = (max(abs(g - period) for g in gaps) * 1000.0) if gaps else 0.0
+    p90_ms = (sorted(abs(g - period) for g in gaps)[int(len(gaps) * 0.9)]
+             * 1000.0 if gaps else 0.0)
+    # Always printed, on every OS: this line IS the measurement the PR
+    # argues from.
+    print(f"  note: {len(at)} frames in 2.0s, mean interval {mean_ms:.2f}ms "
+          f"(target {period*1000:.0f}ms), worst deviation {worst_ms:.2f}ms, "
+          f"90th pct deviation {p90_ms:.2f}ms; unloaded baseline "
+          f"{len(base)} frames/s, longest gap "
+          f"{(max(base_gaps, default=0) * 1000):.1f}ms (fit={fit})")
+    if fit:
+        check(abs(mean_ms - period * 1000.0) < 3.0,
+              f"mean frame interval {mean_ms:.2f}ms strayed more than 3ms "
+              f"from the {period*1000:.0f}ms target")
+        check(worst_ms < 15.0,
+              f"one frame interval was {worst_ms:.2f}ms off target; pixel "
+              f"pacing should hold within half a frame ({period*500:.1f}ms) "
+              f"on a machine that can keep time at all")
+    else:
+        print("  note: this machine cannot hold 40 frames a second even "
+              "unloaded, so the bounds above are not applied here; "
+              "test_pixel_pacing_never_accumulates_error proves the pacing "
+              "arithmetic regardless of the machine")
+    print("  ok")
+
+
+def test_pixel_pacing_never_accumulates_error():
+    section("the output thread's deadline never drifts from stacked sleep error")
+    # Runs Player._loop itself (not a copy of it) on a clock that moves only
+    # when told to, the same technique selftest._Stepped uses, but here the
+    # sleep is deliberately dishonest: it always overshoots a little and
+    # stalls hard now and then, exactly what a real OS timer does under
+    # load. A pacer built on `time.sleep(period)` and a running total would
+    # inherit every one of those overshoots forever; one built on absolute
+    # deadlines (next_at += period, computed fresh from itself, never from
+    # when the last frame actually went out) cannot.
+    #
+    # No thread: _loop's own while loop is driven synchronously by having
+    # the fake sender stop it after N frames, so this is fully deterministic
+    # and costs nothing in wall time.
+    import ltcplay.player as plmod
+    rnd = random.Random(11)
+
+    class Sim:
+        def __init__(self):
+            self.t = 2000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            over = rnd.uniform(0.0, 0.003)
+            if rnd.random() < 0.02:
+                over += rnd.uniform(0.01, 0.04)
+            self.t += s + over
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    tl = _timeline([])
+    N = 400
+    at = []
+
+    class Sender:
+        def send_frame(self, data):
+            at.append(sim.t)
+            if len(at) >= N:
+                p._running = False
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(25)
+    finally:
+        plmod.time = real
+
+    period = 0.025
+    check(len(at) == N, f"expected {N} frames, got {len(at)}")
+    start = at[0]
+    late = [a - (start + i * period) for i, a in enumerate(at)]
+    check(all(x >= -1e-9 for x in late),
+          f"a frame went out before its own deadline: {min(late):.6f}s early")
+    # The property under test: lateness stays bounded by roughly one
+    # iteration's own overshoot, not by how many iterations have run. A
+    # pacer that slept a fixed period and counted sleeps would have this
+    # grow with every frame; one paced on absolute deadlines cannot.
+    check(max(late) < 0.05,
+          f"lateness grew to {max(late) * 1000:.1f}ms over {N} frames -- the "
+          f"deadline is drifting instead of staying put")
+    tail = late[-20:]
+    check(max(tail) - min(tail) < 0.05,
+          f"lateness late in the run ranges {min(tail) * 1000:.2f} to "
+          f"{max(tail) * 1000:.2f}ms -- still growing rather than settled")
+    print(f"  ok ({N} frames on a simulated clock, max lateness "
+          f"{max(late) * 1000:.2f}ms, never compounding)")
+
+
+def test_windows_pixel_clock_choice():
+    section("chase engine clock: measured on this machine, chosen for Windows")
+    # The decision this whole change rests on. Printed on every OS, every
+    # run, so the Windows numbers are on record without a Windows machine
+    # ever having to sit in this room.
+    info_mono = time.get_clock_info("monotonic")
+    info_perf = time.get_clock_info("perf_counter")
+    same_impl = (info_mono.implementation == info_perf.implementation and
+                abs(info_mono.resolution - info_perf.resolution) < 1e-12)
+    print(f"  note: time.monotonic is {info_mono.implementation} "
+          f"(resolution {info_mono.resolution:.2e}s), time.perf_counter is "
+          f"{info_perf.implementation} (resolution {info_perf.resolution:.2e}s) "
+          f"on {sys.platform}; {'identical' if same_impl else 'DIFFERENT'}")
+    if sys.platform == "darwin":
+        check(same_impl,
+              "on macOS, monotonic and perf_counter were measured identical "
+              "(both mach_absolute_time(), same resolution) when player._now() "
+              "was switched to perf_counter unconditionally; if a macOS "
+              "release has changed that, _now() needs a platform switch -- "
+              "see its docstring in player.py")
+    # And prove _now() is actually _reading_ perf_counter, not merely that
+    # the two happen to agree on this machine: a mutation that quietly
+    # swapped it for time.monotonic() would pass every behavioural check on
+    # a Mac (they read the same), so this checks the source, the same way
+    # test_the_stepped_player_is_the_output_thread checks _Stepped against
+    # Player by reading it rather than by behaviour.
+    import inspect
+    import ltcplay.player as plmod
+    src = inspect.getsource(plmod._now)
+    check("perf_counter" in src and "time.monotonic()" not in src,
+          f"player._now() should read time.perf_counter(), not "
+          f"time.monotonic(): {src!r}")
+    print("  ok")
+
+
 def test_socket_healing():
     section("the output socket rebuilds itself")
     class U:
@@ -946,9 +1146,9 @@ def test_display_survives():
             (LOCKED, BLACK, None, None, tl.cues[1].tc_seconds + 200)):
         p.state, p.source = state, source
         p.current_cue, p.next_cue, p.tc_seconds = cue, nxt, tcs
-        p.last_ltc_at = time.monotonic() - 3
+        p.last_ltc_at = _now() - 3
         p.last_ltc_text = "01:00:05:00"
-        lines = disp.render(p, d, tl, sc, time.monotonic() - 90)
+        lines = disp.render(p, d, tl, sc, _now() - 90)
         text = "\n".join(lines)
         check("LTC IN" in text and "PLAYING" in text and "UP NEXT" in text,
               f"the display lost a heading in state {state}/{source}")
@@ -1115,7 +1315,7 @@ def test_display_survives():
     check(any("not open" in w for w in fresh_w),
           f"a dropped input should still say it is not open: {fresh_w}")
     p.audio = None
-    lines = disp.render(p, D2(), tl, sc, time.monotonic() - 10)
+    lines = disp.render(p, D2(), tl, sc, _now() - 10)
     check("input" not in "\n".join(lines),
           "with no live input there should be no input row at all")
     print("  ok")
@@ -3281,7 +3481,7 @@ def test_verify_catches_a_mislabelled_sequence():
 def _tick_at(p, tc_seconds):
     """Run one engine tick with the playback clock parked on an exact
     timecode, so a 33ms window can be tested without racing the wall clock."""
-    now = time.monotonic()
+    now = _now()
     with p._lock:
         p._epoch = now - tc_seconds
         p._last_lock = now
@@ -3413,7 +3613,7 @@ def test_a_bad_frame_does_not_move_the_show():
                     ("02:00:00:00", "set 2", fs)])
     p = Player(tl, FakeNetmap(), CountingSender())
     base = tcmod.parse_tc("01:00:10:00", 30)
-    t0 = time.monotonic()
+    t0 = _now()
     for i in range(6):
         p.feed_timecode(base + i / 30.0, t0 + i / 30.0, text="good")
     check(p.state == LOCKED, f"should be locked, got {p.state}")
@@ -3450,7 +3650,7 @@ def test_a_bad_frame_does_not_move_the_show():
     # to protect, and refusing the first good frame of a restart put a stale
     # frame of the dead clock on the rig at the start of every set.
     cold = Player(tl, FakeNetmap(), CountingSender())
-    t2 = time.monotonic()
+    t2 = _now()
     for i in range(6):
         cold.feed_timecode(tcmod.parse_tc("01:00:10:00", 30) + i / 30.0,
                            t2 + i / 30.0, text="set 1")
@@ -3461,7 +3661,7 @@ def test_a_bad_frame_does_not_move_the_show():
     time.sleep(0.15)
     cold._tick()
     check(cold.state == LOST, f"expected LOST, got {cold.state}")
-    t3 = time.monotonic()
+    t3 = _now()
     cold.feed_timecode(tcmod.parse_tc("02:00:00:00", 30), t3, text="set 2")
     cold._tick()
     check(cold.current_cue is not None and cold.current_cue.name == "set 2",
@@ -3476,7 +3676,7 @@ def test_a_bad_frame_does_not_move_the_show():
     # the epoch directly, so re-read it rather than comparing to the old one.)
     epoch_before = p._epoch
     want = tcmod.parse_tc("01:20:00:00", 30)
-    t1 = time.monotonic()
+    t1 = _now()
     p.feed_timecode(want, t1, text="01:20:00:00")
     check(p._epoch == epoch_before, "the first frame of a real jump is a claim")
     p.feed_timecode(want + 1 / 30.0, t1 + 1 / 30.0, text="01:20:00:01")
@@ -3790,7 +3990,7 @@ def test_up_next_survives_the_interval():
           f"{p.next_cue and p.next_cue.name}")
 
     # Set 1 has run; the feed stops for the interval.
-    t = time.monotonic()
+    t = _now()
     for i in range(6):
         p.feed_timecode(tcmod.parse_tc("01:20:30:00", 30) + i / 30.0,
                         t + i / 30.0, text="01:20:30:00")
@@ -3803,7 +4003,7 @@ def test_up_next_survives_the_interval():
           f"the top of the show: got {p.next_cue and p.next_cue.name}")
 
     # And past the last cue there is honestly nothing next.
-    t = time.monotonic()
+    t = _now()
     for i in range(6):
         p.feed_timecode(tcmod.parse_tc("02:30:00:00", 30) + i / 30.0,
                         t + i / 30.0, text="02:30:00:00")
@@ -3837,7 +4037,7 @@ def test_free_run_does_not_flood_the_log():
     log = CountingLog()
     p = Player(tl, FakeNetmap(), CountingSender(), log=log)
     base = tcmod.parse_tc("01:00:10:00", 30)
-    t0 = time.monotonic()
+    t0 = _now()
     for i in range(4):
         p.feed_timecode(base + i / 30.0, t0 + i / 30.0, text="t")
     p._tick()
@@ -3875,12 +4075,12 @@ def test_the_readout_tells_the_truth_in_a_free_run():
     tl = _timeline([("01:00:00:00", "A", fs)])
     p = Player(tl, FakeNetmap(), CountingSender())
     base = tcmod.parse_tc("01:00:10:00", 30)
-    t0 = time.monotonic()
+    t0 = _now()
     for i in range(4):
         p.feed_timecode(base + i / 30.0, t0 + i / 30.0, text="01:00:10:00")
     p._tick()
     p.go(base)
-    p.feed_timecode(base, time.monotonic(), text="01:00:10:00")
+    p.feed_timecode(base, _now(), text="01:00:10:00")
     p._tick()
     check(p.state == "FREERUN", f"expected FREERUN, got {p.state}")
     check(p.feed_state == LOCKED,
@@ -3895,7 +4095,7 @@ def test_the_readout_tells_the_truth_in_a_free_run():
         measured_span = 12.0
         frames_decoded = 100
         sync_errors = 0
-    screen = "\n".join(_disp.render(p, D(), tl, sc, time.monotonic() - 5))
+    screen = "\n".join(_disp.render(p, D(), tl, sc, _now() - 5))
     check("frozen" not in screen,
           f"the screen says the timecode is frozen while it is arriving:\n"
           f"{screen}")
@@ -3907,13 +4107,13 @@ def test_the_readout_tells_the_truth_in_a_free_run():
     # the engine measures the feed by; last_ltc_at is what the display shows.
     # A real dropout moves both.)
     with p._lock:
-        p._last_lock = time.monotonic() - 30.0
-    p.last_ltc_at = time.monotonic() - 30.0
+        p._last_lock = _now() - 30.0
+    p.last_ltc_at = _now() - 30.0
     p._tick()
     check(p.feed_state == LOST,
           f"with nothing arriving for 30s the FEED is lost, whatever the show "
           f"is doing: {p.feed_state}")
-    screen = "\n".join(_disp.render(p, D(), tl, sc, time.monotonic() - 5))
+    screen = "\n".join(_disp.render(p, D(), tl, sc, _now() - 5))
     check("nothing in for" in screen,
           f"with the feed dead the screen must say so:\n{screen}")
     p.stop()
@@ -3959,7 +4159,7 @@ def test_go_runs_without_the_feed():
           f"{p.current_frame}")
 
     # And a feed that comes back must NOT yank it sideways.
-    now = time.monotonic()
+    now = _now()
     for i in range(6):
         p.feed_timecode(tcmod.parse_tc("02:00:00:00", 30) + i / 30.0,
                         now + i / 30.0, text="02:00:00:00")
@@ -4045,7 +4245,7 @@ def test_go_runs_without_the_feed():
     # Restart: well into a cue it means the top of THIS one.
     p.go(tcmod.parse_tc("01:00:30:00", 30))
     top = p.go_to_cue(0)
-    check(top.name == "A" and abs((time.monotonic() - p.freerun_epoch)
+    check(top.name == "A" and abs((_now() - p.freerun_epoch)
                                   - top.tc_seconds) < 0.2,
           f"restart should go to the top of A, got {top.name}")
     # Just inside a cue it means the one before, which is what a designer
@@ -11729,7 +11929,7 @@ def test_a_slave_clock_forwards_the_show_zone():
 
         sess.clock.ltc_frame = boom
         sess._handle(synthesize(1, 0, 0, 0, 30.0, sess.rate, frames=12),
-                     time.monotonic())
+                     _now())
         got = sess.player.ltc_frames_in
         check(got >= 5 and got == sess.dec.frames_decoded,
               f"a clock fault starved the chase engine: {got} of "
@@ -12500,7 +12700,7 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
             snap = sess.snapshot()
             sc = disp.Screen(colour=False, cols=110)
             screen = "\n".join(disp.render(sess.player, sess.dec, sess.tl,
-                                            sc, time.monotonic() - 5))
+                                            sc, _now() - 5))
             line = disp.one_line(sess.player, sess.dec, sess.tl)
             nodec = [w for w in snap["warnings"]
                      if "No timecode has been decoded yet" in w]
@@ -13065,6 +13265,9 @@ if __name__ == "__main__":
     test_next_cue()
     test_player_states()
     test_loop_never_dies()
+    test_pixel_output_frame_jitter()
+    test_pixel_pacing_never_accumulates_error()
+    test_windows_pixel_clock_choice()
     test_the_stepped_player_is_the_output_thread()
     test_socket_healing()
     test_display_survives()
