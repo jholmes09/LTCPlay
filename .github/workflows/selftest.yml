@@ -1,12 +1,16 @@
 name: selftest
 
 # A PR runs once, as a pull_request. Pushes run only for main and for release
-# tags, so a PR branch is no longer tested twice.
+# tags, so a PR branch is no longer tested twice. ready_for_review is listed
+# alongside the three GitHub gives by default (opened, synchronize, reopened)
+# because that is the moment a draft's mutate job -- skipped below while it
+# stays a draft -- is first allowed to run.
 on:
   push:
     branches: [main]
     tags: ["**"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -46,6 +50,13 @@ jobs:
   #            the real renders, where every mutation has to be caught
   # A mutation counts as caught in CI only if the suite fails under it twice,
   # so each run is split eight ways to keep the wall time under 45 minutes.
+  #
+  # Eight shards of that on every push to a draft PR is real money for a
+  # private repo, spent on a diff that is still being written. The mutate
+  # jobs below are skipped while the PR is a draft and run for the first time
+  # when it is marked ready for review (see the ready_for_review trigger
+  # above); selftest itself still runs on every push, drafts included, since
+  # that is the fast, cheap check a draft is for.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -83,7 +94,7 @@ jobs:
 
   mutate:
     needs: changes
-    if: needs.changes.outputs.oses != '[]'
+    if: needs.changes.outputs.oses != '[]' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
       matrix:
