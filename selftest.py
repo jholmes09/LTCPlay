@@ -12165,7 +12165,15 @@ def test_a_slave_clock_forwards_the_show_zone():
                     clk._tick(x, at)
         finally:
             st.close()
-            clk._clock, clk._mono = time.perf_counter, time.monotonic
+            # Both back to LtcAudioSlave's real default, time.perf_counter --
+            # the same clock the real audio callback stamps captured_at with
+            # (player._now()). This used to read time.monotonic for `mono`,
+            # matching the clock's pre-Windows-pixel-timing default; now that
+            # PR #8 changed that default to perf_counter too, resetting to
+            # the old pair would silently mix clocks for the real threads
+            # started just below -- invisible on a Mac, where the two agree,
+            # and wrong on Windows.
+            clk._clock, clk._mono = time.perf_counter, time.perf_counter
             clk._fly = None
         # From half a second in, the chase engine is locked on the show and
         # exactly where the LTC says: frame 01:00:00:00 began at t_start.
