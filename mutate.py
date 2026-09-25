@@ -1379,6 +1379,42 @@ MUTATIONS = [
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
   '            t0 = self._clock() - n_frozen / MASTER_FPS'),
 
+ # Adversarial review of PR #10 found both of these by construction, then
+ # reproduced them with a widened race window; test_pause_does_not_race_
+ # its_own_ticker and test_resume_does_not_race_its_own_ticker force a
+ # real tick into the exact same gap deterministically, and catch both.
+ ("resume() stops the ticker after clearing paused state again, not "
+  "before", 'ltcplay/clock.py',
+  '            self.ticker.stop()\n'
+  '            label = self._cue[2]\n'
+  '            n_frozen = self._frozen_n\n'
+  '            self._paused = False\n'
+  '            self._frozen = None\n'
+  '            self._frozen_pos = None\n'
+  '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
+  '            label = self._cue[2]\n'
+  '            n_frozen = self._frozen_n\n'
+  '            self._paused = False\n'
+  '            self._frozen = None\n'
+  '            self._frozen_pos = None\n'
+  '            self.ticker.stop()\n'
+  '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS'),
+
+ ("pause() sets the paused flag before the frozen frame again",
+  'ltcplay/clock.py',
+  '            self._frozen = (h, m, s, f)\n'
+  '            self._frozen_n = n\n'
+  '            self._frozen_pos = position_s + n / MASTER_FPS\n'
+  '            self.last_sent = (h, m, s, f)\n'
+  '            self._paused = True\n'
+  '            self._sync_point("pause")',
+  '            self._paused = True\n'
+  '            self._sync_point("pause")\n'
+  '            self._frozen = (h, m, s, f)\n'
+  '            self._frozen_n = n\n'
+  '            self._frozen_pos = position_s + n / MASTER_FPS\n'
+  '            self.last_sent = (h, m, s, f)'),
+
 ]
 
 

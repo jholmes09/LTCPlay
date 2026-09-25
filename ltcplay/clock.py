@@ -902,6 +902,13 @@ class ArtNetMaster(Clock):
         self._frozen_pos = None      # the pixel position fed to the sink
                                      # every tick while paused
         self._frame_n = None         # the last real frame number sent
+        # A test seam, nothing more: called with "pause" the instant
+        # pause() has finished writing everything the paused branch of
+        # _tick() reads, before it can be observed as paused. A no-op in
+        # every real run. Tests use it to hold pause() right there and
+        # let a real tick land in that exact window, proving -- not
+        # assuming -- that the ordering above is what makes it safe.
+        self._sync_point = lambda tag: None
 
     def start(self):
         with self._lock:
@@ -978,11 +985,24 @@ class ArtNetMaster(Clock):
             position_s, _frames, label = self._cue
             n = self._frame_n if self._frame_n is not None else 0
             h, m, s, f = frames_to_tc(n, MASTER_FPS)
-            self._paused = True
+            # Order matters. _tick() runs on the ticker thread and never
+            # takes this lock (see resume()'s note on why not), so it can
+            # read these fields the instant any one of them changes.
+            # Everything the paused branch reads has to be in place BEFORE
+            # _paused flips to True, or a tick landing in the gap sees
+            # paused=True with the frozen frame still unset (or, on a
+            # second pause, still the previous one) and throws trying to
+            # unpack it -- silently dropping that one tick, the one thing
+            # this feature promises never happens. CPython's GIL makes a
+            # single attribute write atomic and preserves the order one
+            # thread issues its writes in, so setting _paused last, after
+            # everything it implies is already true, is enough on its own.
             self._frozen = (h, m, s, f)
             self._frozen_n = n
             self._frozen_pos = position_s + n / MASTER_FPS
             self.last_sent = (h, m, s, f)
+            self._paused = True
+            self._sync_point("pause")
             self._event(f"paused at {h:02d}:{m:02d}:{s:02d}:{f:02d} for "
                         f"{label or 'the cue'}")
 
@@ -1000,12 +1020,28 @@ class ArtNetMaster(Clock):
                                        "is nothing to resume.")
             if self._cue is None:
                 raise ClockConfigError("Nothing is playing to resume.")
+            # Stop the ticker BEFORE touching anything _tick() reads: the
+            # same shape play() and halt() already use, and for the same
+            # reason. _tick() never takes this lock, so the ticker thread
+            # is still alive and still calling it every frame right up
+            # until stop() joins it -- that is the whole mechanism, the
+            # same thread has to keep ticking through the pause so the
+            # frozen frame keeps going out. Its own frame count kept
+            # climbing at 30 a second the entire time regardless, since
+            # pause() never stops it either. Clear _paused/_frozen first
+            # and a tick that lands before the join catches up would take
+            # the UNPAUSED branch with that huge, long-stale frame number,
+            # see it well past the cue's length, end the cue and fire
+            # on_stop -- silently, with resume() itself returning as if
+            # nothing had gone wrong. Stopping first means any tick still
+            # in flight runs against the state that was true when it was
+            # scheduled: still paused, still frozen, harmless.
+            self.ticker.stop()
             label = self._cue[2]
             n_frozen = self._frozen_n
             self._paused = False
             self._frozen = None
             self._frozen_pos = None
-            self.ticker.stop()
             t0 = self._clock() - (n_frozen + 1) / MASTER_FPS
             self._mono_t0 = self._mono() - (self._clock() - t0)
             self._event(f"resumed for {label or 'the cue'}")
@@ -1030,6 +1066,14 @@ class ArtNetMaster(Clock):
                 pass
 
     def _tick(self, n, now):
+        # Deliberately no lock here. This runs on the ticker's own thread,
+        # every frame, and pause()/play()/halt()/resume() all call
+        # ticker.stop() at some point while holding self._lock; stop()
+        # joins this very thread, so if _tick() ever waited on the same
+        # lock, a stop() call could sit blocked on a tick that is itself
+        # blocked waiting for the lock stop() is holding. Safety against
+        # pause()/resume() comes from their own field ordering instead
+        # (see the comments in each), not from serializing this.
         cue = self._cue
         if cue is None:
             return False
