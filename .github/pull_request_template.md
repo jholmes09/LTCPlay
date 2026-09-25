@@ -6,10 +6,13 @@
 
 - [ ] `python3 selftest.py`: every check passes. Last line:
 - [ ] CI is green on ubuntu, windows and macos.
-- [ ] Touches `trigger.py`, `output.py`, `player.py` or `session.py`? Ran
-      `LTCPLAY_TEST_SHOW_DIR=<a copy of the show folder> python3 mutate.py`
-      locally: every mutation caught. Paste the summary line:
+- [ ] Touches `trigger.py`, `output.py`, `player.py` or `session.py`? CI
+      mutate (ubuntu) green against the expected-miss list.
 
-      CI cannot prove this part. The mutations in `mutate_expected_misses.txt`
-      are caught only by tests that need the real show renders, and six of
-      them are in `player.py` and `session.py`.
+      `mutate.py --expected mutate_expected_misses.txt` is what CI runs: it
+      fails if any mutation not on the list is missed, and it fails if any
+      mutation on the list is now caught, so `mutate_expected_misses.txt`
+      can only shrink, never grow. Running
+      `LTCPLAY_TEST_SHOW_DIR=<a copy of the show folder> python3 mutate.py`
+      locally is recommended before a release, on the show Mac, but is no
+      longer required here.
