@@ -185,6 +185,8 @@ def test_rule1_arm_value_is_derived():
     # reached with a table entry that passes everything before it.
     real = rules.ARM_OPTIONS
     try:
+        rules.ARM_OPTIONS = {"30-50%": (60, False)}
+        refused("a table value outside the G-Flame window", arm_value=60)
         rules.ARM_OPTIONS = {"30-50%": (101, False)}
         refused("a table value whose bit-7 neighbour is 229", arm_value=101)
         rules.ARM_OPTIONS = {"60-80%": (157, False)}
