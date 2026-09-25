@@ -2610,7 +2610,12 @@ def test_web_ui():
     if folder is None:
         print("  no show folder available, skipped")
         return
-    wav = "/tmp/pause.wav"
+    import tempfile
+    # The real temp dir, not a hardcoded /tmp: this test only ran in CI
+    # once a show folder was configured, which never happened until
+    # synthetic fixtures landed, so a Unix-only path here was never
+    # exercised on Windows. It is now, and Windows has no /tmp.
+    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
