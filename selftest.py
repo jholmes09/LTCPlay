@@ -12540,6 +12540,337 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
     print("  ok")
 
 
+# ------------------------------------------------------- hold / resume -----
+# Fire & Ice handoff, section 5, "Hold and Start now, as Jeff decided them":
+# Hold during a show pauses it in place -- pixels, video and timecode all
+# hold the current frame, and the timecode keeps sending it so receivers
+# hold instead of timing out. Resume carries on from exactly there. This is
+# the CLOCK half only: MadMapper OSC, the music fade and laser blanking are
+# a later PR, and so is wiring the scheduler's Hold button to any of this.
+
+
+def test_the_clock_freezes_on_hold_and_resume_carries_on():
+    section("show clock: Hold freezes the frame and keeps it flowing; "
+            "Resume carries on with no jump, burst or skipped frame")
+    from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
+
+    def frame_of(pkt):
+        h, mi, s, f, _t = _tc_of(pkt)
+        return tc_to_frames(h, mi, s, f, C.MASTER_FPS)
+
+    fs = FakeFSEQ(frames=20000)          # long enough that no cue here ends
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=150,
+              freewheel_ms=150, hold_ms=2000)
+    st = _Stepped(p, step_ms=25)
+    out = _TcOut()
+    stopped = []
+    cfg, m = _master(C, out=out, sink=p.feed_timecode,
+                     clock=lambda: st.t, mono=lambda: st.t,
+                     on_stop=lambda: stopped.append(True))
+    fps = C.MASTER_FPS
+    # Driven entirely by hand, on the same clock the player's own output
+    # loop reads: no real ticker thread, so a pause here cannot spin one
+    # forever chasing wall time it will never see move, and nothing here
+    # depends on real time passing at all.
+    m.ticker.start = lambda t0=None: (
+        setattr(m.ticker, "t0", st.t if t0 is None else t0), m.ticker.t0)[1]
+    m.ticker.stop = lambda: None
+    try:
+        m.start()
+        st.t = 1000.0
+        t0 = m.play(3600.0, 60.0, "A")          # 60 s cue, 1800 frames
+
+        def art_tick(n):
+            st.t = t0 + n / fps
+            m._tick(n, st.t)
+
+        # Ten real frames, the player's own output ticking alongside.
+        for n in range(10):
+            art_tick(n)
+            st.tick()
+        check(p.state == LOCKED and p.current_cue is not None
+              and p.current_cue.name == "A",
+              f"the pixels never locked onto the clock: {p.state}")
+        check(frame_of(out.sent[-1][1]) == 9,
+              "the tenth Art-Net packet is not frame 9")
+        frame_before_pause = p.current_frame
+
+        # Refused: nothing is paused yet.
+        try:
+            m.resume()
+            check(False, "resume() worked on a clock that was never paused")
+        except ValueError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        try:
+            m.pause()
+            check(False, "a second pause() was accepted")
+        except ValueError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        frozen_pkt = out.sent[-1][1]
+        check(frame_of(frozen_pkt) == 9, "pause froze on the wrong frame")
+
+        # The ticker keeps firing at 30 a second while paused. Every packet
+        # is byte for byte the frozen frame, and the pixels are fed the
+        # exact same repeated position over and over -- proven, not
+        # assumed, by driving a real Player off it and reading its own
+        # state back.
+        for k in range(30):                     # a full second of pause
+            art_tick(10 + k)                    # n is ignored while paused
+            st.tick()
+        check(len(out.sent) == 40,
+              "the clock stopped sending during the pause; MadMapper and "
+              "BEYOND would time out")
+        check(all(pkt == frozen_pkt for _, pkt in out.sent[10:]),
+              "a packet sent during the pause is not byte for byte the "
+              "frozen frame")
+        check(p.state == PARKED,
+              f"the chase engine did not read the paused clock as PARKED, "
+              f"got {p.state}")
+        check(p.source == SHOW,
+              f"a paused clock should keep the show on the rig, not "
+              f"{p.source}")
+        check(p.current_cue is not None and p.current_cue.name == "A",
+              "the cue was dropped while the clock was merely paused")
+        check(p.current_frame == frame_before_pause,
+              "the pixels kept moving while the clock was paused")
+
+        # Resume: the very next frame is frozen + 1 -- never a repeat of
+        # the frozen frame, and never a jump past it -- and it climbs by
+        # exactly one frame at a time from there. No burst.
+        freeze_at = t0 + 9 / fps
+        resume_at = st.t
+        before_t0 = m.ticker.t0
+        m.resume()
+        check(not m.paused, "resume() left the clock marked paused")
+        t0b = m.ticker.t0
+
+        def art_tick2(n):
+            st.t = t0b + n / fps
+            m._tick(n, st.t)
+
+        got = []
+        for n in range(10, 20):
+            art_tick2(n)
+            st.tick()
+            got.append(frame_of(out.sent[-1][1]))
+        check(got == list(range(10, 20)),
+              f"frames after Resume are not strictly increasing by one "
+              f"from the frozen frame: {got}")
+        check(all(pkt != frozen_pkt for _, pkt in out.sent[40:]),
+              "a resumed packet repeated the frozen frame")
+        check(p.state == LOCKED,
+              f"the pixels did not pick the clock back up after Resume, "
+              f"got {p.state}")
+        check(p.jumps <= 1,
+              f"resuming from a pause should cost at most one jump, got "
+              f"{p.jumps}")
+        check(p.current_frame > frame_before_pause,
+              "the pixels did not move again after Resume")
+
+        # The cue's end moves later by what it spent paused, to within the
+        # one frame Resume deliberately does not repeat.
+        span = resume_at - freeze_at
+        ext = t0b - before_t0
+        check(abs(ext - (span - 1.0 / fps)) < 1e-9,
+              f"pausing for {span:.3f}s should push the cue's end back by "
+              f"about that much; it moved by {ext:.3f}s")
+
+        # Two pauses add up: the second pause starts from the already
+        # shifted zero point, not from the original one.
+        before2 = m.ticker.t0
+        m.pause()
+        st.t += 0.5
+        m.resume()
+        ext2 = m.ticker.t0 - before2
+        check(abs(m.ticker.t0 - (t0 + ext + ext2)) < 1e-6,
+              "two pauses did not add up: the clock's zero point is not "
+              "the sum of both")
+
+        # Halt while paused ends cleanly.
+        m.pause()
+        m.halt()
+        check(not m.playing and not m.paused,
+              "halt while paused did not leave the clock stopped")
+        check(stopped == [True],
+              "halting a paused clock did not hand the pixels back")
+    finally:
+        st.close()
+        try:
+            m.stop()
+        except Exception:
+            pass
+    print("  ok")
+
+
+def test_session_hold_and_resume():
+    section("Session.clock_pause / clock_resume: refused with nothing to "
+            "pause or resume, without a master clock, and twice; halt "
+            "works while paused")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=12000)       # 300 s: plenty of runway
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    sessions = []
+    try:
+        # 1. GPL: no clock block at all. Nothing here is reachable.
+        here = os.path.join(work, "gpl")
+        os.makedirs(here)
+        tlp, net = _clock_show(here, None, [("01:00:00:00", "Show.fseq",
+                                             "Show")])
+        gpl = Session(tlp, no_output=True, networks=net, no_log=True,
+                     sd=FakeSD(), device="MOTU M4", channel=2)
+        gpl.open()
+        sessions.append(gpl)
+        for meth in (gpl.clock_pause, gpl.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked with no clock block")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 2. The LTC slave: following timecode, not making it. Refused the
+        # same way as GPL.
+        here = os.path.join(work, "slave")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "ltc_audio_slave",
+                  "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        slave = Session(tlp, no_output=True, networks=net, no_log=True,
+                        sd=FakeSD(), device="MOTU M4", channel=2)
+        slave.open()
+        sessions.append(slave)
+        for meth in (slave.clock_pause, slave.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked on the LTC slave")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 3. The master, but idle: nothing is playing to pause or resume.
+        here = os.path.join(work, "master")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "artnet_master",
+                  "artnet": {"nodes": {"MadMapper": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD(), device="MOTU M4", channel=2)
+        sess.open()
+        sessions.append(sess)
+        out = _TcOut()
+        sess.clock.out = out
+        sess.start()
+        try:
+            sess.clock_pause()
+            check(False, "clock_pause worked with nothing playing")
+        except SessionError as e:
+            check("pause" in str(e).lower() or "playing" in str(e).lower(),
+                  f"unclear refusal: {e}")
+        try:
+            sess.clock_resume()
+            check(False, "clock_resume worked with nothing playing")
+        except SessionError as e:
+            check("paused" in str(e).lower() or "resume" in str(e).lower(),
+                  f"unclear refusal: {e}")
+
+        # 4. Play, pause, and watch the pixels hold; the page agrees.
+        sess.clock_play("Show")
+        check(wait_for(lambda: sess.player.current_cue is not None,
+                       timeout=3.0), "the cue never reached the pixels")
+        sess.clock_pause()
+        # The chase engine only calls a repeating position PARKED once it
+        # has repeated for park_ms: right up to that debounce, the reading
+        # can still say LOCKED for a frame here and there. Let it settle
+        # past that window before trusting the readout, the same margin
+        # test_park_and_pause gives it.
+        check(wait_for(lambda: sess.player._park_since is not None,
+                       timeout=3.0),
+              "the chase engine never noticed the repeated position")
+        time.sleep(sess.player.park_s + 0.2)
+        check(sess.player.state == PARKED,
+              f"the pixels never parked after Hold, got "
+              f"{sess.player.state}")
+        check(sess.clock.paused and sess.snapshot()["clock"]["paused"],
+              "the page does not say the clock is paused")
+        frame = sess.player.current_frame
+        mark = len(out.sent)
+        time.sleep(0.3)
+        check(sess.player.current_frame == frame,
+              "the pixels moved while the show was on Hold")
+        check(len(out.sent) > mark,
+              "Art-Net timecode stopped going out during Hold; MadMapper "
+              "and BEYOND would time out")
+
+        # Refused: already paused.
+        try:
+            sess.clock_pause()
+            check(False, "a second Hold was accepted")
+        except SessionError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        # 5. Resume: the show carries on, and a second Resume is refused.
+        sess.clock_resume()
+        check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
+              "the show did not carry on after Resume")
+        check(not sess.clock.paused, "the clock still reads paused")
+        check(wait_for(lambda: sess.player.current_frame > frame,
+                       timeout=3.0),
+              "the pixels never moved again after Resume")
+        try:
+            sess.clock_resume()
+            check(False, "a second Resume was accepted")
+        except SessionError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        # 6. Halt while paused ends cleanly.
+        sess.clock_pause()
+        check(wait_for(lambda: sess.player.state == PARKED, timeout=3.0),
+              "the pixels never parked for the halt-while-paused check")
+        sess.clock_halt()
+        check(wait_for(lambda: sess.player.current_cue is None, timeout=3.0),
+              "halt while paused did not hand the pixels back")
+        check(not sess.clock.playing and not sess.clock.paused,
+              "halt while paused left the clock playing or paused")
+        for meth in (sess.clock_pause, sess.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked after a halt")
+            except SessionError:
+                pass
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
 # ------------------------------------------------------------ tctest -----
 # The hand-fired test Art-Net timecode command, section 5 of the Fire & Ice
 # handoff: "A timecode test button... yes." None of these import
@@ -13190,6 +13521,8 @@ if __name__ == "__main__":
     test_forwarded_timecode_steps_by_one()
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
+    test_the_clock_freezes_on_hold_and_resume_carries_on()
+    test_session_hold_and_resume()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()

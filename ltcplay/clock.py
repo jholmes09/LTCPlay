@@ -807,7 +807,9 @@ class Clock:
     stop()     called on Stop, before the blackout.
     ltc_frame  each decoded LTC frame, from the audio thread. Masters ignore.
     play()     masters only: run a cue from 00:00:00:00.
-    halt()     masters only: stop the clock now."""
+    halt()     masters only: stop the clock now.
+    pause()    masters only: freeze on the current frame, still sending it.
+    resume()   masters only: carry on from exactly the frozen frame."""
 
     source = ""
     master = False
@@ -829,6 +831,14 @@ class Clock:
 
     def halt(self):
         pass
+
+    def pause(self):
+        raise ClockConfigError("This show follows incoming timecode, so "
+                               "this machine cannot pause the clock.")
+
+    def resume(self):
+        raise ClockConfigError("This show follows incoming timecode, so "
+                               "this machine cannot resume the clock.")
 
     def snapshot(self):
         return {"source": self.source, "master": self.master}
@@ -883,6 +893,15 @@ class ArtNetMaster(Clock):
         self.cues_played = 0
         self.last_sent = None
         self.last_ended = ""
+        # Hold: frozen on one frame, the ticker still ticking so MadMapper
+        # and BEYOND keep getting packets instead of timing out. Set by
+        # pause(), cleared by resume(), play() and halt().
+        self._paused = False
+        self._frozen = None          # (h, m, s, f) while paused
+        self._frozen_n = None        # the cue frame number pause() froze on
+        self._frozen_pos = None      # the pixel position fed to the sink
+                                     # every tick while paused
+        self._frame_n = None         # the last real frame number sent
 
     def start(self):
         with self._lock:
@@ -912,6 +931,11 @@ class ArtNetMaster(Clock):
             self.ticker.stop()
             frames = int(math.ceil(float(length_s) * MASTER_FPS - 1e-9))
             self._cue = (float(position_s), frames, label)
+            self._paused = False
+            self._frozen = None
+            self._frozen_n = None
+            self._frozen_pos = None
+            self._frame_n = None
             self.cues_played += 1
             self._event(f"timecode from 00:00:00:00 for {label or 'a cue'}")
             # Frame n began at t0 + n/30 on the pacing clock. The chase
@@ -927,10 +951,69 @@ class ArtNetMaster(Clock):
             was = self._cue
             self.ticker.stop()
             self._cue = None
+            self._paused = False
+            self._frozen = None
+            self._frozen_n = None
+            self._frozen_pos = None
+            self._frame_n = None
             if was is not None:
                 self.last_ended = f"{was[2] or 'cue'} stopped"
                 self._event(f"timecode stopped for {was[2] or 'a cue'}")
                 self._stopped()
+
+    def pause(self):
+        """Freeze the clock on its current frame.
+
+        It keeps sending that one frame every tick, so MadMapper and BEYOND
+        hold instead of timing out on a dead stream, and the pixels are fed
+        the same repeated position: the chase engine reads a repeated
+        position as PARKED, not lost, and holds too. Master only, and only
+        while a cue is actually playing. Locked with play() and halt(): the
+        scheduler and the web server's threads both call these."""
+        with self._lock:
+            if self._cue is None:
+                raise ClockConfigError("Nothing is playing to pause.")
+            if self._paused:
+                raise ClockConfigError("The clock is already paused.")
+            position_s, _frames, label = self._cue
+            n = self._frame_n if self._frame_n is not None else 0
+            h, m, s, f = frames_to_tc(n, MASTER_FPS)
+            self._paused = True
+            self._frozen = (h, m, s, f)
+            self._frozen_n = n
+            self._frozen_pos = position_s + n / MASTER_FPS
+            self.last_sent = (h, m, s, f)
+            self._event(f"paused at {h:02d}:{m:02d}:{s:02d}:{f:02d} for "
+                        f"{label or 'the cue'}")
+
+    def resume(self):
+        """Carry on from exactly the frame pause() froze.
+
+        Restarts the ticker with its zero point moved back by the frozen
+        frame, so the very next frame sent is the frozen one plus one: no
+        jump, no repeated burst, no skipped frame. The cue runs that much
+        longer than it would have run with no pause, because the frames
+        spent paused were never counted against its length."""
+        with self._lock:
+            if not self._paused:
+                raise ClockConfigError("The clock is not paused, so there "
+                                       "is nothing to resume.")
+            if self._cue is None:
+                raise ClockConfigError("Nothing is playing to resume.")
+            label = self._cue[2]
+            n_frozen = self._frozen_n
+            self._paused = False
+            self._frozen = None
+            self._frozen_pos = None
+            self.ticker.stop()
+            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS
+            self._mono_t0 = self._mono() - (self._clock() - t0)
+            self._event(f"resumed for {label or 'the cue'}")
+            return self.ticker.start(t0)
+
+    @property
+    def paused(self):
+        return self._paused
 
     def _stopped(self):
         if self.on_stop is not None:
@@ -950,6 +1033,20 @@ class ArtNetMaster(Clock):
         cue = self._cue
         if cue is None:
             return False
+        if self._paused:
+            # Ignore the ticker's own frame count entirely: the cue is
+            # frozen, so whatever frame is "due" by the wall clock is not
+            # the one to send. Send the frozen one again, forever, until
+            # resume() restarts the ticker with a corrected zero point.
+            h, m, s, f = self._frozen
+            if self.out is not None:
+                self.out.send(arttimecode(h, m, s, f, MASTER_TYPE,
+                                          self.stream_id))
+            self.last_sent = (h, m, s, f)
+            if self.sink is not None:
+                self.sink(self._frozen_pos, self._mono(), False,
+                          f"{h:02d}:{m:02d}:{s:02d}:{f:02d}")
+            return True
         position_s, frames, label = cue
         if n >= frames:
             # The cue has run its length. Nothing is playing, so nothing is
@@ -966,6 +1063,7 @@ class ArtNetMaster(Clock):
             self.out.send(arttimecode(h, m, s, f, MASTER_TYPE,
                                       self.stream_id))
         self.last_sent = (h, m, s, f)
+        self._frame_n = n
         if self.sink is not None:
             self.sink(position_s + n / MASTER_FPS,
                       self._mono_t0 + n / MASTER_FPS, False,
@@ -981,6 +1079,7 @@ class ArtNetMaster(Clock):
         lt = self.last_sent
         cue = self._cue
         d.update({"playing": cue[2] if cue else None,
+                  "paused": self._paused,
                   "sending": (f"{lt[0]:02d}:{lt[1]:02d}:{lt[2]:02d}:"
                               f"{lt[3]:02d}" if lt and cue else None),
                   "skipped": self.ticker.skipped,
