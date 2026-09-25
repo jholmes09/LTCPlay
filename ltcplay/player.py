@@ -1,10 +1,10 @@
 """The chase engine: incoming LTC in, ArtNet/E1.31 frames out.
 
 Clock model.  Every decoded LTC frame gives a timecode value and the moment it
-was captured.  From those we keep one number, `epoch`: the monotonic clock time
-at which timecode 00:00:00:00 would have occurred.  Current timecode is then
-just `now - epoch`, which is free to evaluate and keeps running when the
-timecode feed hiccups.
+was captured.  From those we keep one number, `epoch`: the clock time at which
+timecode 00:00:00:00 would have occurred.  Current timecode is then just
+`now - epoch`, which is free to evaluate and keeps running when the timecode
+feed hiccups.
 
 Small differences are slewed so the output does not jitter on decode noise; a
 big difference is a deliberate jump (the stage manager going back to bar 40) and
@@ -16,6 +16,22 @@ LOCKED does not mean lit and LOST does not mean dark.  `source` says which of
 show / preshow / hold / black is going out, and the display prints it, since
 from the back of the house a rig chasing timecode and a rig frozen on its last
 frame look identical.
+
+Clock choice.  Every timestamp this module keeps -- `epoch`, `_idle_epoch`,
+`_last_lock`, `freerun_epoch`, the output thread's own pacing -- comes from
+`_now()` below, and so does every timestamp handed to it from outside (LTC
+capture times in audio.py and session.py's WavSource, the show clock in
+clock.py). One function, so nothing can compare two clocks with different
+epochs by accident: see clock.py's Ticker docstring for why that is a real
+bug and not just untidy.  `_now()` is `time.perf_counter()`, on every
+platform, not gated to Windows: on the Mac this show runs on,
+`time.get_clock_info` reports monotonic and perf_counter as the same call
+(`mach_absolute_time()`, identical resolution), so this changes nothing
+there. Under Python 3.12 on Windows, `time.monotonic()` ticks in ~15.6ms
+steps -- more than half of a 25ms pixel frame at 40fps -- while
+`perf_counter()` is the high resolution counter, which is exactly why
+clock.py already paced Art-Net timecode on it. See selftest.py's
+test_windows_pixel_clock_choice for the measurement this rests on.
 """
 import os
 import threading
@@ -23,6 +39,13 @@ import time
 import traceback
 
 from .fseq import FSEQ
+
+
+def _now():
+    """The chase engine's one clock. A function, not a bare alias, so
+    selftest._Stepped can fake it by swapping this module's own `time`
+    reference -- see the class docstring there."""
+    return time.perf_counter()
 
 
 class ReloadError(Exception):
@@ -92,13 +115,13 @@ class Player:
         self._fired_key = None
 
         self._lock = threading.Lock()
-        self._epoch = None            # monotonic time of timecode zero
-        self._last_lock = 0.0         # monotonic time of the last decoded frame
+        self._epoch = None            # _now() time of timecode zero
+        self._last_lock = 0.0         # _now() time of the last decoded frame
         self._buf = bytearray(netmap.total_channels)
         self._running = False
         self._thread = None
         self._super = None
-        self._idle_epoch = time.monotonic()
+        self._idle_epoch = _now()
         self.step_ms = 25
 
         # the preshow / no-timecode look
@@ -287,7 +310,7 @@ class Player:
         self.timeline.cues = fresh
         if new_idle is not None:
             old_idle, self.idle_cue = self.idle_cue, new_idle
-            self._idle_epoch = time.monotonic()
+            self._idle_epoch = _now()
             old.append(old_idle)
         for c in fresh:
             self._opened_at[id(c)] = self._stamp(c.path)
@@ -334,7 +357,7 @@ class Player:
         """Called from the audio thread for each decoded LTC frame."""
         new_epoch = captured_at - tc_seconds + self.offset_s
         with self._lock:
-            now = time.monotonic()
+            now = _now()
             self._last_lock = now
             self.ltc_frames_in += 1
             self.last_ltc_seconds = tc_seconds
@@ -440,7 +463,7 @@ class Player:
     def _now_tc(self):
         if self._epoch is None:
             return None
-        return time.monotonic() - self._epoch
+        return _now() - self._epoch
 
     def _event(self, kind, msg):
         if self.log:
@@ -517,7 +540,7 @@ class Player:
         except Exception as e:
             self.render_errors += 1
             self.last_error = f"{cue.name} frame {idx}: {e}"
-            now = time.monotonic()
+            now = _now()
             if self._render_bad_since is None:
                 self._render_bad_since = now
                 self._event("render", self.last_error)
@@ -549,7 +572,7 @@ class Player:
         if n <= 0:
             self.source = BLACK
             return b""
-        el = time.monotonic() - self._idle_epoch
+        el = _now() - self._idle_epoch
         idx = int(el * 1000.0 // cue.fseq.step_time_ms) % n
         out = self._render(cue, idx)
         if out is None:
@@ -570,7 +593,7 @@ class Player:
         return b""
 
     def _tick(self):
-        now = time.monotonic()
+        now = _now()
         with self._lock:
             epoch = self._epoch
             last = self._last_lock
@@ -771,7 +794,7 @@ class Player:
         if tc_seconds is None or tc_seconds < 0:
             raise ValueError("a free run has to start somewhere on the "
                              "show clock")
-        self.freerun_epoch = time.monotonic() - tc_seconds
+        self.freerun_epoch = _now() - tc_seconds
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -790,8 +813,8 @@ class Player:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot move it. Skipping only applies to a free "
                              "run: press GO first.")
-        at = max(0.0, (time.monotonic() - self.freerun_epoch) + float(seconds))
-        self.freerun_epoch = time.monotonic() - at
+        at = max(0.0, (_now() - self.freerun_epoch) + float(seconds))
+        self.freerun_epoch = _now() - at
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
         return at
 
@@ -809,7 +832,7 @@ class Player:
         cues = self.timeline.cues
         if not cues:
             raise ValueError("This show has no cues to skip between.")
-        at = time.monotonic() - self.freerun_epoch
+        at = _now() - self.freerun_epoch
         here = self.timeline._index_at(at)
         if step == 0:
             # The top of the current cue -- unless we are only just into it,
@@ -825,7 +848,7 @@ class Player:
         else:
             i = min(len(cues) - 1, (here + 1) if here >= 0 else 0)
         target = cues[i]
-        self.freerun_epoch = time.monotonic() - target.tc_seconds
+        self.freerun_epoch = _now() - target.tc_seconds
         self._event("freerun", f"skipped to {target.name} at "
                                f"{target.tc_text}")
         return target
@@ -941,7 +964,7 @@ class Player:
 
     def _loop(self, step_ms):
         period = step_ms / 1000.0
-        next_at = time.monotonic()
+        next_at = _now()
         while self._running:
             try:
                 frame = self._tick()
@@ -966,13 +989,13 @@ class Player:
                         pass
                 time.sleep(0.01)
             next_at += period
-            sleep = next_at - time.monotonic()
+            sleep = next_at - _now()
             if sleep > 0:
                 time.sleep(sleep)
             else:
                 # Fell behind: give up the missed slots rather than sprinting to
                 # catch up, which would burst packets at the controllers.
-                next_at = time.monotonic()
+                next_at = _now()
 
     def _supervise(self):
         """Restart the output thread if it ever stops.
@@ -1012,7 +1035,7 @@ class Player:
         still being written is left alone; and reload is all or nothing, so a
         file that turns out to be half written anyway changes nothing and is
         simply tried again two seconds later."""
-        now = time.monotonic() if now is None else now
+        now = _now() if now is None else now
         if now - self._last_reload_check < self.RELOAD_CHECK_S:
             return None
         self._last_reload_check = now
@@ -1062,7 +1085,7 @@ class Player:
                 steps.add(self.idle_cue.fseq.step_time_ms)
             step_ms = min(steps) if steps else 25
         self.step_ms = step_ms
-        self._idle_epoch = time.monotonic()
+        self._idle_epoch = _now()
         self._running = True
         self._spawn()
         self._super = threading.Thread(target=self._supervise, daemon=True,

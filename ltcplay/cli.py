@@ -17,7 +17,7 @@ from . import settings as settings_mod
 from . import timeline as timeline_mod
 from .ltc import LTCDecoder
 from .output import Sender
-from .player import Player, LOCKED, FREEWHEEL, LOST
+from .player import Player, LOCKED, FREEWHEEL, LOST, _now
 from .showlog import ShowLog
 from .tc import tc_to_frames
 
@@ -1021,7 +1021,11 @@ def cmd_run(args):
             sc.cols = _term_cols()
             display_mod.paint(display_mod.render(p, dec, tl, sc, started),
                               sys.stdout)
-        now = time.monotonic()
+        # started, and so last_beat, is on sess.started_at's clock:
+        # player._now() (perf_counter). Reading time.monotonic() here would
+        # compare it against a clock with an unrelated epoch -- fine on a
+        # Mac, where the two happen to agree, and nonsense on Windows.
+        now = _now()
         if sess.log and now - last_beat[0] >= 60.0:
             last_beat[0] = now
             sess.log.event("heartbeat",
