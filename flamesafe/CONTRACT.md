@@ -1,6 +1,6 @@
 # The flamesafe link contract
 
-Contract version 1. 2026-09-25, build step 7a.
+Contract version 2. 2026-09-25, build step 7a, after the safety review.
 
 This is the only thing ltcplay and flamesafe share. They share it as a
 document, not as code: ltcplay implements its side from this page, and
@@ -9,6 +9,30 @@ neither program imports the other (a test fails the build if one does).
 Both directions are UDP datagrams on loopback. Each datagram is one JSON
 object, UTF-8, no framing. A datagram that is not exactly as written here is
 rejected with a reason and changes nothing. flamesafe never raises on input.
+
+## Version 2: the shared key
+
+Any local process can write a datagram to a loopback port. In version 1 a
+rogue frame with a large sequence number was accepted and then locked the
+real ltcplay out until the link went stale (found in review). Version 2 adds
+two guards:
+
+1. **The key.** flamesafe's config carries `link.key` (16 to 128 printable
+   characters, no spaces). Every flame frame and every status frame carries
+   it as `"k"`. A flame frame without the right key is rejected before any
+   other field is looked at. ltcplay reads the same value from its own
+   config (the same string, typed once into each), sends it in every flame
+   frame, and MUST reject any status frame whose `k` is not its own.
+2. **The sender lock.** While the link is live, flamesafe accepts flame
+   frames only from the (ip, port) of the first accepted sender; a frame
+   from anywhere else is rejected with the reason `another sender`. Once the
+   link is stale (`frame_stale_ms` without an accepted frame) the lock is
+   released, so a restarted ltcplay on a new port takes it.
+
+Neither is secrecy in the cryptographic sense; the key lives in two config
+files on one machine. Together they mean that firing a head from this
+machine needs the key and the socket ltcplay already holds, not one
+datagram.
 
 ## Ports and addresses
 
@@ -20,7 +44,8 @@ From the flamesafe config (`flamesafe.example.json`):
 | flamesafe to ltcplay, status frames | 127.0.0.1, `link.status_port` (example 5572) | ltcplay binds it |
 | flamesafe to the flame node, sACN | `destination.ip`, `destination.port` (5568) | unicast, priority 200 |
 
-The link addresses must be loopback; the config refuses anything else.
+The link addresses must be loopback; the config refuses anything else, and
+refuses a loopback destination on either link port.
 
 ## Flame frame, ltcplay to flamesafe
 
@@ -29,13 +54,14 @@ running. When ltcplay is idle it still sends frames (all zeros), because a
 missing frame means "unknown" to flamesafe, and unknown is zero.
 
 ```json
-{"v": 1, "t": "flame", "seq": 1234, "tc": "00:01:02:03", "mono": 812.4471,
- "universe": 1, "values": [0, 0, 0, ...]}
+{"v": 2, "k": "<link.key>", "t": "flame", "seq": 1234, "tc": "00:01:02:03",
+ "mono": 812.4471, "universe": 1, "values": [0, 0, 0, ...]}
 ```
 
 | Field | Type | Rule |
 |---|---|---|
-| `v` | integer | must be 1 |
+| `v` | integer | must be 2 |
+| `k` | string | must equal flamesafe's `link.key` |
 | `t` | string | must be `"flame"` |
 | `seq` | integer, 0 or more | increases by one per frame; must be greater than the last accepted seq while the link is live |
 | `tc` | string or null | `HH:MM:SS:FF`, or `HH:MM:SS;FF` for drop frame, or null when there is no timecode |
@@ -44,16 +70,26 @@ missing frame means "unknown" to flamesafe, and unknown is zero.
 | `values` | list of exactly 512 integers, each 0 to 255 | the whole flame universe, slot 1 first |
 
 Rejected, with the reason in the next status frame's `frames.last_reject`:
-not JSON, not an object, longer than 16384 bytes, wrong `v`, wrong `t`, any
-field missing or of the wrong type, a `seq` at or below the last accepted
-one, a `mono` below the last accepted one, a `values` list that is not
-exactly 512 integers 0 to 255, a `universe` that is not the flame universe.
+not JSON, not an object, longer than 16384 bytes, wrong `v`, wrong or
+missing `k`, wrong `t`, any field missing or of the wrong type, a `seq` at
+or below the last accepted one, a `mono` below the last accepted one, a
+`values` list that is not exactly 512 integers 0 to 255, a `universe` that
+is not the flame universe, a sender other than the locked one.
 
-Live and stale: the link is live while the last accepted frame is younger
-than `frame_stale_ms` (example 500 ms). Once it is stale, any `seq` is
-accepted, so a restarted ltcplay re-syncs by itself. While the link is
-stale, every fire slot is sent as zero. Arming is not affected by ltcplay
-going quiet: the safety slot keeps the arm value, the fire slots are zero.
+Two windows, both on flamesafe's clock from the last accepted frame:
+
+- **`fire_hold_ms`** (example 100 ms, config; floor two ticks, ceiling
+  below `frame_stale_ms`): how long the last frame's fire values stay on
+  the wire after ltcplay stops sending or its sequence sticks. After it,
+  every fire slot is zero. Jeff and Andy can adjust it: shorter cuts a
+  flame sooner when ltcplay dies, longer rides through a hiccup. Rev 5 had
+  no hold at all; 100 ms is four ticks.
+- **`frame_stale_ms`** (example 500 ms): after it the link is stale, the
+  sender lock is released, and any `seq` is accepted, so a restarted
+  ltcplay re-syncs by itself.
+
+Arming is not affected by ltcplay going quiet: the safety slot keeps the
+arm value, the fire slots are zero.
 
 Clocks: `mono` is compared only with earlier `mono` values from the same
 sender. flamesafe never compares it with its own clock.
@@ -66,13 +102,14 @@ has stopped. The screen never estimates anything from this frame; it shows
 what is in it.
 
 ```json
-{"v": 1, "t": "status", "heartbeat": 88123, "tick_ms": 25.0,
- "universe": 1, "priority": 200, "arm_value": 78, "confirmed": false,
- "fault": "", "fault_age_ms": null,
+{"v": 2, "k": "<link.key>", "t": "status", "heartbeat": 88123,
+ "tick_ms": 25.0, "universe": 1, "priority": 200, "arm_value": 78,
+ "confirmed": false, "fault": "", "fault_age_ms": null,
  "arm_input": {"state": "live", "seq": 4410, "age_ms": 12},
- "frames": {"state": "fresh", "seq": 1234, "timecode": "00:01:02:03",
-            "age_ms": 8, "accepted": 1234, "rejected": 0, "last_reject": ""},
- "sacn": {"sent": 88123, "errors": 0},
+ "frames": {"state": "fresh", "fire": "passing", "seq": 1234,
+            "timecode": "00:01:02:03", "age_ms": 8, "accepted": 1234,
+            "rejected": 0, "last_reject": ""},
+ "sacn": {"sent": 88123, "errors": 0, "status_errors": 0},
  "stats": {"...": "counters, for the journal"},
  "groups": [
    {"name": "front row", "safety_slot": 401,
@@ -87,14 +124,17 @@ Top level:
 
 | Field | Meaning |
 |---|---|
+| `k` | the key. ltcplay rejects a status frame without its own key |
 | `heartbeat` | flamesafe's tick counter. The corner flame and the deck marquee step on this |
 | `tick_ms` | the tick period |
 | `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200 |
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
-| `fault` | empty, or one sentence: an overrun or a compose fault. `fault_age_ms` says how long ago |
+| `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault, or a rising `sacn.errors`, is red for ltcplay**: an armed group is not "fine" while the wire is not being written |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
-| `frames.state` | `never`, `fresh` or `stale`. Stale means every fire slot is zero |
+| `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`) |
+| `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
+| `sacn.sent`, `sacn.errors` | packets sent to the node, and sends that failed. Errors rising means red |
 
 Per group, the two lamps of section 8 panel 5:
 
@@ -117,17 +157,58 @@ If no status frame arrives for 1 s, ltcplay shows red for the safety
 program and keeps running the rest of the show. It never takes over the
 flame universe. There is no fallback path, deliberately.
 
+## The arm input (for build step 7b)
+
+Not on this link; an in-process interface (`flamesafe/arminput.py`), but
+its rules belong here because they are what the consent rule rests on:
+
+- `poll()` returns None while the deck is not connected. It never
+  synthesises a report (no "all down" on boot or unplug). Silence disarms
+  in `arm_stale_ms`.
+- `wanted` is positional, one bool per group in config order, and the
+  assertion carries the group `names` in the same order; the composer
+  rejects an assertion whose names do not match its config exactly.
+- `seq` is a plain int, starts at 0 on every connect and reconnect, and
+  goes up by one per assertion. A counter that jumps UP on a restart looks
+  like nothing happened; a counter that restarts at 0 is how the composer
+  knows. After a stale gap the composer forgets the counter anyway, so the
+  first assertion after a gap proves nothing whatever its value.
+- Assert at 10 Hz or faster (`arm_stale_ms` default 500 ms).
+- On Windows only Ctrl-C and Ctrl-Break reach the stop handler, so the
+  deck must offer an in-band stop that sets the service's stop event.
+
 ## What the wire carries
 
 flamesafe sends the whole flame universe as one ANSI E1.31 data packet per
-tick, priority 200, to the configured unicast destination. Every channel that
-belongs to no group is always zero. A group's safety slot is 0 or the arm
-value. A group's fire slots carry ltcplay's values only while that group's
-safety slot carries the arm value on the same packet and the edge-quiet
-window (3 ticks from the rise) has passed; otherwise zero.
+tick, priority 200, to the configured unicast destination, with its own
+CID (a uuid5 of `flamesafe.jeffholmespresents`) and source name
+`flamesafe`. Every channel that belongs to no group is always zero. A
+group's safety slot is 0 or the arm value. A group's fire slots carry
+ltcplay's values only while that group's safety slot carries the arm value
+on the same packet and the edge-quiet window (3 ticks from the rise) has
+passed; otherwise zero.
 
-On a clean stop flamesafe sends three all-zero packets, then three all-zero
-packets with the stream-terminated bit set.
+On a clean stop (Ctrl-C, SIGTERM, the stop event) flamesafe sends three
+all-zero packets, then three all-zero packets with the stream-terminated
+bit set.
+
+**A hard kill sends no zeros.** End task, an interpreter crash, or a power
+cut leaves the last packet standing until the node's own sACN-loss timeout,
+and a flame that was on stays on until the head's Max. Flame Duration ends
+it. Those two settings are the bounds. Bench items, before 2026-10-14:
+
+1. Set the PixLite Aux port's sACN-loss behaviour to zero the outputs, and
+   measure the timeout.
+2. Set Max. Flame Duration on every G-Flame to the longest cue plus margin
+   (never `----`), and measure it with gas off.
+3. Confirm the PixLite Aux port honours sACN priority: a source at 100 must
+   lose to flamesafe at 200.
+
+**On equal priority.** Two sources at the same priority are merged HTP
+(highest takes precedence) by many nodes, so a second source at 200 would
+not lose, it would add. Priority 200 defends against a source at the
+default 100, nothing more. The keyed-off rule stays the real defence: while
+other computers are on the network, the flame node is keyed off.
 
 ## Timing knobs, all in the flamesafe config
 
@@ -135,12 +216,16 @@ packets with the stream-terminated bit set.
 |---|---|---|
 | `tick_hz` | 40 | sACN and status rate |
 | `arm_stale_ms` | 500 | no fresh arm assertion for this long: every group disarms and needs a cycle |
-| `frame_stale_ms` | 500 | no accepted flame frame for this long: every fire slot is zero |
+| `fire_hold_ms` | 100 | no accepted flame frame for this long: every fire slot is zero |
+| `frame_stale_ms` | 500 | no accepted flame frame for this long: the link is stale, the sender lock is released, any seq is accepted |
 | `overrun_ms` | 250 | a tick later than this: that tick is all zeros, every group needs a cycle |
-| `min_arm_dwell_ms` | 1000 | after a disarm, the group is not raised again for this long |
+| `min_arm_dwell_ms` | 1000 | after a disarm, the group is not raised again for this long. The file loader floors it at 1000 |
 
 ## Versioning
 
 `v` is the contract version. A change to any field's meaning, type or rule
 is a new version. flamesafe rejects any other version outright; there is no
 negotiation, because the two programs are installed together.
+
+Version 1 (2026-09-25, superseded the same day): no `k`, no sender lock, no
+`fire_hold_ms`, no `frames.fire`.

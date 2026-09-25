@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from . import rules
+from .link import KEY_MAX, KEY_MIN, valid_key
 
 CONFIG_FORMAT = 1
 
@@ -19,9 +20,14 @@ CONFIG_FORMAT = 1
 # dead input hold an arm for longer than a person would notice.
 TICK_HZ_MIN, TICK_HZ_MAX = 10, 50
 STALE_MS_MIN, STALE_MS_MAX = 100, 2500
-DWELL_MS_MIN, DWELL_MS_MAX = 0, 10000
+# The re-arm dwell is 1 second (flame panel spec 7a).  The loader cannot set
+# it shorter; tests that need a shorter one set Config.min_arm_dwell_ms
+# directly, through a clearly named test-only path, never through a file.
+DWELL_MS_MIN, DWELL_MS_MAX = 1000, 10000
 OVERRUN_MS_MIN, OVERRUN_MS_MAX = 50, 2500
+FIRE_HOLD_MS_MAX = 2500
 PORT_MIN, PORT_MAX = 1, 65535
+NAME_MAX = 64
 
 
 class ConfigError(Exception):
@@ -54,10 +60,17 @@ class Config:
 
     __slots__ = ("universe", "destination_ip", "destination_port",
                  "link_listen_ip", "link_listen_port", "link_status_ip",
-                 "link_status_port", "gflame_range", "arm_value",
+                 "link_status_port", "link_key", "gflame_range", "arm_value",
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
-                 "frame_stale_ms", "tick_hz", "overrun_ms", "groups",
-                 "confirmed", "note", "log_dir", "lights_warning_led")
+                 "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
+                 "groups", "confirmed", "note", "log_dir",
+                 "lights_warning_led")
+
+    def test_only_override_dwell_ms(self, ms):
+        """FOR TESTS ONLY.  The file loader floors the dwell at 1000 ms; the
+        chatter and property tests need a shorter one to exercise the
+        rules.  Nothing in the program calls this."""
+        self.min_arm_dwell_ms = int(ms)
 
     @property
     def n(self):
@@ -199,6 +212,16 @@ def from_dict(d, source="config"):
             and c.link_status_ip == c.link_listen_ip:
         raise ConfigError("link listen_port and status_port are the same; "
                           "flamesafe would be talking to itself.")
+    if ipaddress.ip_address(c.destination_ip).is_loopback and \
+            c.destination_port in (c.link_listen_port, c.link_status_port):
+        raise ConfigError(f"destination port {c.destination_port} is one of "
+                          f"the link ports; the flame universe would land on "
+                          f"the link.")
+    c.link_key = link.get("key")
+    if not valid_key(c.link_key):
+        raise ConfigError(f"link key is missing or not {KEY_MIN} to "
+                          f"{KEY_MAX} printable characters without spaces; "
+                          f"ltcplay carries the same value in its config.")
 
     c.gflame_range = d.get("gflame_range")
     if not isinstance(c.gflame_range, str):
@@ -222,6 +245,17 @@ def from_dict(d, source="config"):
         raise ConfigError(f"overrun_ms {c.overrun_ms} is less than two ticks "
                           f"at {c.tick_hz} Hz; every tick would count as an "
                           f"overrun.")
+    # How long a fire value from ltcplay's last frame is kept on the wire
+    # after ltcplay stops sending.  Shorter than frame_stale_ms, which only
+    # governs when a restarted ltcplay's sequence is accepted.
+    c.fire_hold_ms = _int(d, "fire_hold_ms", 1, FIRE_HOLD_MS_MAX)
+    if c.fire_hold_ms < 2 * period_ms:
+        raise ConfigError(f"fire_hold_ms {c.fire_hold_ms} is less than two "
+                          f"ticks at {c.tick_hz} Hz; a fire cue could never "
+                          f"reach the wire.")
+    if c.fire_hold_ms >= c.frame_stale_ms:
+        raise ConfigError(f"fire_hold_ms {c.fire_hold_ms} is not below "
+                          f"frame_stale_ms {c.frame_stale_ms}.")
     c.confirmed = _bool(d, "confirmed", False)
     c.note = str(d.get("note", ""))
     log_dir = d.get("log_dir")
@@ -237,6 +271,9 @@ def from_dict(d, source="config"):
         name = g.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ConfigError(f"group {i + 1} has no name.")
+        if len(name) > NAME_MAX:
+            raise ConfigError(f"group {i + 1}: the name is longer than "
+                              f"{NAME_MAX} characters.")
         safety = _int(g, "safety", 1, rules.UNIVERSE_SIZE,
                       f"{name}: safety slot")
         fire = g.get("fire")

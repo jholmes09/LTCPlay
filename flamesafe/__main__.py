@@ -3,6 +3,13 @@
 Starts the safety program with NO arm input: every group stays disarmed and
 the flame universe is all zeros at priority 200 until build step 7b adds the
 Stream Deck.  A config that fails any check stops it here with one sentence.
+
+Stopping.  Ctrl-C, SIGTERM (and Ctrl-Break on Windows) set the stop event,
+and the service then sends zeros and the stream-terminated flag.  On Windows
+nothing else reaches this handler (End task is a hard kill and sends no
+zeros), so build step 7b must give the operator an in-band stop that sets
+the same event.  See service.py's module docstring for what a hard kill
+leaves on the wire.
 """
 
 from __future__ import annotations

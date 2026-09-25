@@ -67,11 +67,13 @@ class Composer:
         self._frame_seq = None
         self._frame_mono = None
         self._frame_tc = None
+        self._frame_sender = None       # (ip, port) locked while live
         self._last_reject = ""
 
         # composing
         self._last_sent = [DISARM] * self.n
         self._disarmed_at = [None] * self.n
+        self._chatter_at = [None] * self.n
         self._edge_quiet = [0] * self.n
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
@@ -89,9 +91,15 @@ class Composer:
 
     # ------------------------------------------------------------ arm input
 
-    def assert_arm(self, wanted, seq):
+    def assert_arm(self, wanted, seq, names=None):
         """The arm input says: I want these groups armed, and my liveness
         counter is `seq`.  Returns True if the assertion was well formed.
+
+        `wanted` is positional: one bool per group, in config order.  An
+        input that knows the group names passes them as `names`, and the
+        assertion is rejected unless they match the config exactly, in
+        order, so a deck built against a different group map cannot arm
+        the wrong head.
 
         Never raises.  A malformed assertion is rejected and counted; the
         staleness rule then disarms within arm_stale_ms if nothing well
@@ -103,6 +111,9 @@ class Composer:
                 raise ValueError("wanted")
             if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
                 raise ValueError("seq")
+            if names is not None:
+                if list(names) != [g.name for g in self.groups]:
+                    raise ValueError("names")
         except Exception:                               # noqa: BLE001
             self.stats["arm_rejected"] += 1
             return False
@@ -153,18 +164,25 @@ class Composer:
 
     # --------------------------------------------------------------- frames
 
-    def ingest_frame(self, frame):
+    def ingest_frame(self, frame, sender=None):
         """Take one decoded flame frame from ltcplay.  Returns "" if it was
-        accepted, otherwise the reason it was rejected.  Never raises."""
+        accepted, otherwise the reason it was rejected.  Never raises.
+
+        `sender` is the (ip, port) the datagram came from.  While the link
+        is live only the first accepted sender is accepted: a second local
+        process cannot slip a frame in, and cannot lock ltcplay out with a
+        large sequence number either.  Once the link is stale the lock is
+        released and the next accepted sender takes it."""
         try:
             if not isinstance(frame, FlameFrame):
                 raise TypeError("not a FlameFrame")
             if len(frame.values) != rules.UNIVERSE_SIZE:
                 raise ValueError("wrong length")
             t = self._clock()
-            fresh = (self._frame_at is not None and
-                     (t - self._frame_at) * 1000.0 <= self.cfg.frame_stale_ms)
+            fresh = self._frame_is_fresh(t)
             if fresh:
+                if sender != self._frame_sender:
+                    raise ValueError("another sender")
                 # While the link is live, frames must arrive in order and the
                 # sender's own clock must not go backwards.  Once the link
                 # has gone stale, any sequence is a new ltcplay and is taken.
@@ -178,6 +196,7 @@ class Composer:
             self._frame_seq = frame.seq
             self._frame_mono = frame.mono
             self._frame_tc = frame.timecode
+            self._frame_sender = sender
             self.stats["frames_accepted"] += 1
             return ""
         except Exception as e:                          # noqa: BLE001
@@ -190,6 +209,26 @@ class Composer:
         self.stats["frames_rejected"] += 1
         self._last_reject = str(why)
 
+    def note_fault(self, sentence):
+        """Something outside the composer failed (a send, a status write).
+        It goes into the status frame's fault so that ltcplay never shows
+        an armed group as fine while the wire is not being written."""
+        self._fault = str(sentence)
+        self._fault_at = self._clock()
+        self._event("fault", self._fault)
+
+    def _frame_is_fresh(self, t):
+        return (self._frame_at is not None and
+                (t - self._frame_at) * 1000.0 <= self.cfg.frame_stale_ms)
+
+    def _fire_is_live(self, t):
+        return (self._frame_at is not None and
+                (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)
+
+    def _arm_is_live(self, t):
+        return (self._arm_fresh_at is not None and
+                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)
+
     # ----------------------------------------------------------------- tick
 
     def tick(self):
@@ -199,6 +238,10 @@ class Composer:
         except Exception as e:                          # noqa: BLE001
             self.stats["compose_faults"] += 1
             self._fault = f"compose fault: {type(e).__name__}: {e}"
+            try:
+                self._fault_at = self._clock()
+            except Exception:                           # noqa: BLE001
+                self._fault_at = None
             self._event("compose-fault", self._fault)
             return self._panic()
 
@@ -225,22 +268,36 @@ class Composer:
         self._last_tick = t
 
         # 2. Arm input liveness.  Fresh means the counter advanced inside
-        # arm_stale_ms.  Not fresh means disarmed, and the latches go too.
-        live = (self._arm_fresh_at is not None and
-                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)
+        # arm_stale_ms.  Not fresh means disarmed, and the latches go too,
+        # and the counter is forgotten: the next assertion is a FIRST one
+        # again and proves nothing, however high its counter is.  Without
+        # that, an input resuming after a gap re-armed with nobody touching
+        # a key (found in review).
+        live = self._arm_is_live(t)
         if not live and self._arm_live:
             self.stats["arm_input_stale"] += 1
             self._event("arm-input", "arm input stale: no fresh assertion "
                                      f"for {self.cfg.arm_stale_ms} ms")
         if not live:
             self._reset_latches("arm input stale")
+            seen_ms = (None if self._arm_seen_at is None
+                       else (t - self._arm_seen_at) * 1000.0)
+            if self._arm_live or (seen_ms is not None
+                                  and seen_ms > self.cfg.arm_stale_ms):
+                # Going stale, or silent for the whole window: forget the
+                # counter.  Not on every not-live tick, or a booting input
+                # could never be seen to advance at all.
+                self._arm_seq = None
         self._arm_live = live
 
-        # 3. ltcplay's frame.  Stale means we know nothing about the cue, so
-        # the fire slots are zero.  It does not touch arming.
-        frame_fresh = (self._frame_at is not None and
-                       (t - self._frame_at) * 1000.0 <= self.cfg.frame_stale_ms)
-        commanded = self._frame if frame_fresh else None
+        # 3. ltcplay's frame.  A fire value is kept on the wire for at most
+        # fire_hold_ms after the last accepted frame; after that we know
+        # nothing about the cue and the fire slots are zero.  The longer
+        # frame_stale_ms only governs when a restarted ltcplay's sequence
+        # is accepted.  Neither touches arming.
+        frame_fresh = self._frame_is_fresh(t)
+        fire_live = self._fire_is_live(t)
+        commanded = self._frame if fire_live else None
 
         # 4. The safety slots.
         want = [live and self._wanted[i] and self._latched[i]
@@ -262,9 +319,14 @@ class Composer:
             da = self._disarmed_at[i]
             if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:
                 # Too soon after a disarm.  Raising now would be the up half
-                # of a chatter cycle.  Steady amber with the countdown.
+                # of a chatter cycle.  Steady amber with the countdown.  A
+                # hold that chatter started keeps saying so for its whole
+                # length.
                 values.append(DISARM)
-                held.append(("re-arm dwell", "steady"))
+                if self._chatter_at[i] is not None and self._chatter_at[i] == da:
+                    held.append(("chatter", "steady"))
+                else:
+                    held.append(("re-arm dwell", "steady"))
                 self.stats["dwell_blocks"] += 1
                 continue
             if self._fire_is_quiet(commanded, g):
@@ -284,6 +346,7 @@ class Composer:
                     # window.  Refused, not recorded (only rises that went
                     # out count), so the hold ends when the window slides.
                     self._disarmed_at[i] = t
+                    self._chatter_at[i] = t
                     self.stats["chatter_holds"] += 1
                     self._event("chatter",
                                 f"{g.name}: {len(rt) + 1} rises inside "
@@ -359,7 +422,7 @@ class Composer:
             self._fault = fault
             self._fault_at = t
         status = self._status(t, values, sent_fire, commanded_fire, held,
-                              live, frame_fresh)
+                              live, frame_fresh, fire_live)
         return Output(bytes(buf), status, fault)
 
     def _why_not(self, i, live):
@@ -397,10 +460,15 @@ class Composer:
             self._held = [("safety program fault", "steady")
                           if self._wanted[i] else ("", "")
                           for i in range(self.n)]
-            status = self._status(self._clock(), self._last_sent,
+            t = self._clock()
+            # The input states in a panic status are the real ones: the
+            # frames may well be fresh and the input live; it is this
+            # program that faulted.
+            status = self._status(t, self._last_sent,
                                   [[0] * len(g.fire) for g in self.groups],
                                   [[0] * len(g.fire) for g in self.groups],
-                                  self._held, False, False)
+                                  self._held, self._arm_is_live(t),
+                                  self._frame_is_fresh(t), False)
         except Exception:                               # noqa: BLE001
             status = {"v": CONTRACT_VERSION, "t": "status",
                       "heartbeat": self.heartbeat, "fault": self._fault,
@@ -419,7 +487,7 @@ class Composer:
         return int(math.ceil(left_ms / 1000.0))
 
     def _status(self, t, values, sent_fire, commanded_fire, held, live,
-                frame_fresh):
+                frame_fresh, fire_live):
         groups = []
         for i, g in enumerate(self.groups):
             reason, amber = held[i]
@@ -470,6 +538,7 @@ class Composer:
             "frames": {
                 "state": ("never" if self._frame_at is None
                           else "fresh" if frame_fresh else "stale"),
+                "fire": "passing" if fire_live else "zeroed",
                 "seq": self._frame_seq,
                 "timecode": self._frame_tc,
                 "age_ms": frame_age,

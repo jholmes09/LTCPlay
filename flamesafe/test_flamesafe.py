@@ -63,6 +63,9 @@ def make_config(**over):
 ARM = 78
 FRONT_SAFETY, FRONT_FIRE = 401, [411, 412, 413, 414, 415]
 N_GROUPS = 6
+KEY = example_dict()["link"]["key"]
+NAMES = [g["name"] for g in example_dict()["groups"]]
+SENDER = ("127.0.0.1", 40001)
 
 
 class Log:
@@ -79,12 +82,16 @@ class Log:
 class Rig:
     """A composer on a fake clock with the scripted arm input."""
 
-    def __init__(self, **over):
+    def __init__(self, test_only_dwell_ms=None, **over):
         self.cfg = make_config(**over)
+        if test_only_dwell_ms is not None:
+            # The file loader floors the dwell at 1000 ms; the chatter and
+            # property tests need it shorter to reach their rules.
+            self.cfg.test_only_override_dwell_ms(test_only_dwell_ms)
         self.t = 0.0
         self.log = Log()
         self.c = Composer(self.cfg, clock=lambda: self.t, log=self.log)
-        self.inp = arminput.ScriptedArmInput(self.cfg.n)
+        self.inp = arminput.ScriptedArmInput(self.cfg.n, names=NAMES)
         self.period = self.cfg.tick_period_s
         self.seq = 0
         self.out = None
@@ -94,7 +101,7 @@ class Rig:
             self.t += self.period if dt is None else dt
             a = self.inp.poll()
             if a is not None:
-                self.c.assert_arm(a.wanted, a.seq)
+                self.c.assert_arm(a.wanted, a.seq, names=a.names)
             self.out = self.c.tick()
         return self.out
 
@@ -110,7 +117,7 @@ class Rig:
             self.step()
         return self.out
 
-    def frame(self, slots=None, seq=None, mono=None):
+    def frame(self, slots=None, seq=None, mono=None, sender=SENDER):
         vals = bytearray(512)
         for slot, v in (slots or {}).items():
             vals[slot - 1] = v
@@ -118,7 +125,7 @@ class Rig:
         f = link.FlameFrame(self.seq, "00:00:01:00",
                             self.t if mono is None else mono,
                             self.cfg.universe, bytes(vals))
-        return self.c.ingest_frame(f)
+        return self.c.ingest_frame(f, sender=sender)
 
     def prove_alive(self):
         """Two ticks with everything down: the counter is seen advancing
@@ -187,6 +194,12 @@ def test_rule1_arm_value_is_derived():
     try:
         rules.ARM_OPTIONS = {"30-50%": (60, False)}
         refused("a table value outside the G-Flame window", arm_value=60)
+        # 130 passes every later check (Showven window, thresholds, every
+        # single-bit neighbour below 229, honest about the unsourced 111,
+        # risk acknowledged, equals the table) and fails ONLY the window.
+        rules.ARM_OPTIONS = {"30-50%": (130, True)}
+        refused("a table value above the G-Flame window that passes every "
+                "other check", arm_value=130, accept_unsourced_risk=True)
         rules.ARM_OPTIONS = {"30-50%": (101, False)}
         refused("a table value whose bit-7 neighbour is 229", arm_value=101)
         rules.ARM_OPTIONS = {"60-80%": (157, False)}
@@ -302,8 +315,33 @@ def test_rule8_config_refuses_every_bad_table():
     refused("a frame staleness above the ceiling",
             lambda d: d.__setitem__("frame_stale_ms", 9999))
     refused("a negative dwell", lambda d: d.__setitem__("min_arm_dwell_ms", -1))
+    refused("a dwell shorter than the spec's one second",
+            lambda d: d.__setitem__("min_arm_dwell_ms", 999))
+    check(make_config(min_arm_dwell_ms=1000).min_arm_dwell_ms == 1000,
+          "a dwell of exactly one second loads")
     refused("an overrun shorter than two ticks",
             lambda d: d.__setitem__("overrun_ms", 40))
+    refused("a fire hold shorter than two ticks",
+            lambda d: d.__setitem__("fire_hold_ms", 40))
+    refused("a fire hold not below frame_stale_ms",
+            lambda d: d.__setitem__("fire_hold_ms", 500))
+    refused("a missing fire hold", lambda d: d.pop("fire_hold_ms"))
+    refused("a missing link key", lambda d: d["link"].pop("key"))
+    refused("a link key that is too short",
+            lambda d: d["link"].__setitem__("key", "short"))
+    refused("a link key with a space",
+            lambda d: d["link"].__setitem__("key", "fire and ice 2026 key"))
+    refused("a link key that is not text",
+            lambda d: d["link"].__setitem__("key", 12345678901234567890))
+    refused("a group name longer than 64 characters",
+            lambda d: g(d, 0).__setitem__("name", "x" * 65))
+    check(config.from_dict(dict(example_dict(), groups=[
+        dict(example_dict()["groups"][0], name="x" * 64)])).groups[0].name
+        == "x" * 64, "a 64-character name is fine")
+    refused("a loopback destination on the frame port",
+            lambda d: d["destination"].__setitem__("port", 5571))
+    refused("a loopback destination on the status port",
+            lambda d: d["destination"].__setitem__("port", 5572))
     refused("a text where a number goes",
             lambda d: d.__setitem__("tick_hz", "40"))
     refused("a boolean where a number goes",
@@ -423,6 +461,76 @@ def test_rule6_consent():
     check(r3.safety(0) == 0,
           "a down edge on a counter that never advanced is not consent")
 
+    # Review: an input that resumes after a stale gap, with its counter
+    # still climbing, asserting all-down and then arm, re-armed with nobody
+    # touching a key.  After a gap the counter is forgotten: the first
+    # assertion back is a first one and proves nothing.
+    r4 = armed_rig()
+    r4.inp.silent = True
+    r4.wait(0.6)
+    check(r4.safety(0) == 0, "stale gap: disarmed")
+    r4.inp.silent = False
+    r4.inp.seq += 1000           # a counter that kept climbing meanwhile
+    r4.inp.set_all(False)
+    r4.step()
+    r4.inp.set(0)
+    r4.step()
+    r4.wait(1.25)
+    check(r4.safety(0) == 0 and r4.group(0)["reason"] == "cycle the arm",
+          f"the first assertion after a stale gap is not consent: "
+          f"{r4.group(0)['reason']!r}")
+    r4.inp.set(0, on=False)
+    r4.step()
+    r4.inp.set(0)
+    r4.wait(1.25)
+    check(r4.safety(0) == ARM, "a real cycle after the gap arms it")
+
+    # Review: an input that restarts (counter back to 0) asserting all-down
+    # and then arm, with the operator never touching a key.
+    r5 = armed_rig()
+    r5.inp.reboot()
+    r5.inp.set_all(False)
+    r5.step()
+    check(r5.safety(0) == 0 and "latch-reset" in r5.log.kinds(),
+          "a restart disarms at once")
+    r5.inp.set(0)
+    r5.step()
+    r5.wait(1.25)
+    check(r5.safety(0) == 0 and r5.group(0)["reason"] == "cycle the arm",
+          f"the first assertion after a restart is not consent: "
+          f"{r5.group(0)['reason']!r}")
+
+    # Review: latched, the counter freezes, the operator cycles while it is
+    # frozen, then it thaws.  The frozen down edge cleared the latch and
+    # was not consent, so the group needs a real cycle.
+    r6 = armed_rig()
+    r6.inp.freeze()
+    r6.inp.set(0, on=False)
+    r6.step()
+    r6.inp.set(0)
+    r6.step()
+    r6.inp.thaw()
+    r6.wait(1.25)
+    check(r6.safety(0) == 0 and r6.group(0)["reason"] == "cycle the arm",
+          f"a down edge on a frozen counter clears the latch and is not "
+          f"consent: {r6.safety(0)}, {r6.group(0)['reason']!r}")
+
+    # The assertion's own shape: a negative seq, a wrong length, non-bools
+    # and wrong group names are all rejected and leave the counter alone.
+    r7 = armed_rig()
+    before = r7.c._arm_seq
+    bad = [r7.c.assert_arm([True] * 6, -1),
+           r7.c.assert_arm([True] * 7, before + 1),
+           r7.c.assert_arm([1] * 6, before + 1),
+           r7.c.assert_arm("yes", "no"),
+           r7.c.assert_arm([True] * 6, before + 1, names=NAMES[::-1]),
+           r7.c.assert_arm([True] * 6, before + 1, names=NAMES[:5])]
+    check(bad == [False] * 6 and r7.c.stats["arm_rejected"] == 6
+          and r7.c._arm_seq == before,
+          f"six malformed assertions rejected, counter untouched: {bad}")
+    check(r7.c.assert_arm([True] * 6, before + 1, names=NAMES),
+          "the same assertion with the right names is accepted")
+
 
 # =========================================================================
 # rule 2: the rising edge must be clean
@@ -447,8 +555,7 @@ def test_rule2_dirty_edge_holds_the_arm():
     check(r.safety(0) == ARM,
           "at 14 the edge is clean and the group arms without a cycle")
     # An established arm is not re-gated by a high fire slot.
-    r.frame({411: 255})
-    r.step(n=6)
+    r.run(6, {411: 255})
     check(r.safety(0) == ARM and r.fire(0)[0] == 255,
           "holding an established arm is not a rising edge")
     # Another group's fire slot does not gate this group.
@@ -495,8 +602,7 @@ def test_rule4_dwell():
     section("rule 4: the re-arm dwell, its countdown, and that cycling "
             "restarts it")
     r = armed_rig(min_arm_dwell_ms=3000)
-    r.frame({411: 200})
-    r.step(n=5)
+    r.run(5, {411: 200})
     check(r.fire(0)[0] == 200, "firing while armed")
     r.inp.set(0, on=False)
     o = r.step()
@@ -559,7 +665,7 @@ def test_rule4_dwell():
 
 def test_rule5_chatter():
     section("rule 5: more than 3 rises inside 2 s is refused and held")
-    r = Rig(min_arm_dwell_ms=100)
+    r = Rig(test_only_dwell_ms=100)
     r.prove_alive()
 
     def cycle():
@@ -574,11 +680,19 @@ def test_rule5_chatter():
     check(r.c.stats["chatter_holds"] == 0, "no hold yet")
     fourth = cycle()
     g = r.group(0)
-    check(fourth == 0 and g["reason"] in ("chatter", "re-arm dwell")
-          and g["amber"] == "steady",
-          f"the fourth rise is refused and held steady: {g}")
+    check(fourth == 0 and g["reason"] == "chatter" and g["amber"] == "steady",
+          f"the fourth rise is refused and held steady as chatter: {g}")
     check(r.c.stats["chatter_holds"] >= 1 and "chatter" in r.log.kinds(),
           "the chatter hold is counted and logged")
+    # The refusal starts the dwell from now: the next ticks are a hold with
+    # a countdown, and they still read "chatter", not "re-arm dwell".
+    seen = set()
+    for _ in range(3):
+        r.step()
+        g = r.group(0)
+        seen.add((g["reason"], g["dwell_s"] >= 1, g["amber"]))
+    check(seen == {("chatter", True, "steady")},
+          f"the hold chatter started reads chatter with a countdown: {seen}")
     # With the request still up, the hold lasts until the window slides:
     # bounded, and no cycle needed.
     first_rise = r.t - 3 * 6 * r.period - r.period
@@ -654,8 +768,7 @@ def test_rule7_interruptions_clear_the_latches():
 
     # (d) our own tick overran
     r = armed_rig()
-    r.frame({411: 200})
-    r.step(n=5)
+    r.run(5, {411: 200})
     check(r.fire(0)[0] == 200, "firing before the overrun")
     o = r.step(dt=r.cfg.overrun_ms / 1000.0 + 0.001)
     check(o.universe == bytes(512), "the overrunning tick is all zeros")
@@ -715,29 +828,42 @@ def test_liveness_loss_zeros_within_a_bounded_time():
 def test_ltcplay_stale_zeros_fire_and_keeps_the_arm():
     section("liveness: ltcplay going quiet zeros the fire slots inside "
             "frame_stale_ms and does not touch arming")
-    r = armed_rig()
-    r.frame({411: 255})
-    r.step(n=4)
-    check(r.fire(0)[0] == 255, "firing")
-    t_last = r.t
-    r.frame({411: 255})
-    zero_at = None
-    while r.t - t_last < 2.0:
-        r.step()
-        if r.fire(0)[0] == 0:
-            zero_at = r.t - t_last
-            break
-    check(zero_at is not None and zero_at <= 0.5 + 0.025 + 1e-9,
-          f"the fire slot is zero after {zero_at} s")
-    check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
-          "the arm is unaffected by ltcplay going quiet")
-    check(r.out.status["frames"]["state"] == "stale",
-          "the status frame says the frames are stale")
+    bound = 0.1 + 0.025 + 1e-9          # fire_hold_ms plus one tick
+    for how in ("dead", "stuck seq"):
+        r = armed_rig()
+        r.frame({411: 255})
+        r.step(n=4)
+        check(r.fire(0)[0] == 255, f"{how}: firing")
+        t_last = r.t
+        r.frame({411: 255})
+        zero_at = None
+        while r.t - t_last < 2.0:
+            r.step()
+            if how == "stuck seq":
+                # ltcplay keeps sending, with the same seq every time
+                check("out of order" in r.frame({411: 255}, seq=r.seq),
+                      "a stuck seq is rejected while the link is live")
+            if r.fire(0)[0] == 0:
+                zero_at = r.t - t_last
+                break
+        check(zero_at is not None and zero_at <= bound,
+              f"{how}: the fire slot is zero after {zero_at} s (rev 5 had "
+              f"no hold; fire_hold_ms is 100)")
+        check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+              f"{how}: the arm is unaffected")
+        check(r.out.status["frames"]["fire"] == "zeroed"
+              and r.out.status["frames"]["state"] == "fresh",
+              f"{how}: the status says fire zeroed while the link is still "
+              f"fresh: {r.out.status['frames']}")
+        r.wait(0.5)
+        check(r.out.status["frames"]["state"] == "stale",
+              f"{how}: and stale after frame_stale_ms")
     # A new ltcplay (sequence restarted) is accepted once the link is stale.
     check(r.frame({411: 100}, seq=0) == "",
           "after the link went stale a restarted sequence is accepted")
     r.step()
-    check(r.fire(0)[0] == 100, "and its values pass")
+    check(r.fire(0)[0] == 100 and r.out.status["frames"]["fire"] == "passing",
+          "and its values pass")
 
 
 # =========================================================================
@@ -747,19 +873,19 @@ def test_ltcplay_stale_zeros_fire_and_keeps_the_arm():
 def test_link_rejects_malformed_datagrams():
     section("the link rejects malformed, wrong-version and wrong-type "
             "datagrams with a reason")
-    good = {"v": 1, "t": "flame", "seq": 5, "tc": "00:01:02:03", "mono": 1.5,
-            "universe": 1, "values": [0] * 512}
-    f = link.decode_flame(json.dumps(good).encode(), 1)
+    good = {"v": 2, "k": KEY, "t": "flame", "seq": 5, "tc": "00:01:02:03",
+            "mono": 1.5, "universe": 1, "values": [0] * 512}
+    f = link.decode_flame(json.dumps(good).encode(), 1, KEY)
     check(f.seq == 5 and f.timecode == "00:01:02:03" and f.mono == 1.5
           and len(f.values) == 512, "a good frame decodes")
-    check(link.decode_flame(link.encode_flame(7, None, 2.0, 1, [3] * 512),
-                            1).values == bytes([3] * 512),
-          "encode_flame round-trips")
+    check(link.decode_flame(link.encode_flame(7, None, 2.0, 1, [3] * 512,
+                                              KEY), 1, KEY).values
+          == bytes([3] * 512), "encode_flame round-trips")
 
     def bad(msg, obj=None, raw=None):
         data = raw if raw is not None else json.dumps(obj).encode()
         try:
-            link.decode_flame(data, 1)
+            link.decode_flame(data, 1, KEY)
         except link.LinkError as e:
             return check(str(e), f"{msg}: {e}")
         return check(False, f"NOT rejected: {msg}")
@@ -777,8 +903,12 @@ def test_link_rejects_malformed_datagrams():
     bad("not an object", raw=b"[1,2,3]")
     bad("empty", raw=b"")
     bad("too long", raw=b"{" + b" " * 20000 + b"}")
-    bad("wrong version", variant(v=2))
+    bad("wrong version", variant(v=1))
     bad("missing version", variant(v=KeyError))
+    bad("wrong key", variant(k=KEY + "x"))
+    bad("missing key", variant(k=KeyError))
+    bad("key of the wrong type", variant(k=12345))
+    bad("empty key", variant(k=""))
     bad("wrong type", variant(t="status"))
     bad("missing type", variant(t=KeyError))
     bad("negative seq", variant(seq=-1))
@@ -789,7 +919,8 @@ def test_link_rejects_malformed_datagrams():
     bad("timecode too short", variant(tc="0:0:0:0"))
     bad("mono text", variant(mono="now"))
     bad("mono missing", variant(mono=KeyError))
-    bad("mono NaN", raw=b'{"v":1,"t":"flame","seq":1,"tc":null,"mono":NaN,'
+    bad("mono NaN", raw=b'{"v":2,"k":"' + KEY.encode() +
+                        b'","t":"flame","seq":1,"tc":null,"mono":NaN,'
                         b'"universe":1,"values":' +
                         json.dumps([0] * 512).encode() + b"}")
     bad("wrong universe", variant(universe=2))
@@ -802,15 +933,30 @@ def test_link_rejects_malformed_datagrams():
     bad("a float value", variant(values=[1.0] + [0] * 511))
     bad("a boolean value", variant(values=[True] + [0] * 511))
     bad("a null value", variant(values=[None] + [0] * 511))
-    check(link.decode_flame(json.dumps(variant(tc=None)).encode(), 1).timecode
-          is None, "a null timecode is allowed")
+    check(link.decode_flame(json.dumps(variant(tc=None)).encode(), 1,
+                            KEY).timecode is None,
+          "a null timecode is allowed")
     check(link.decode_flame(json.dumps(variant(tc="01:02:03;04")).encode(),
-                            1).timecode == "01:02:03;04",
+                            1, KEY).timecode == "01:02:03;04",
           "drop-frame timecode is allowed")
+    # The status frame carries the key, and a reader that checks it
+    # rejects one without it.
+    s = link.encode_status({"v": 2, "t": "status", "heartbeat": 1}, KEY)
+    check(link.decode_status(s, KEY)["k"] == KEY,
+          "the status frame carries the key")
+    try:
+        link.decode_status(s, KEY + "x")
+        check(False, "a status frame with another key was accepted")
+    except link.LinkError:
+        check(True, "")
+    try:
+        link.decode_status(b'{"v":2,"t":"status","heartbeat":1}', KEY)
+        check(False, "a status frame without a key was accepted")
+    except link.LinkError:
+        check(True, "")
     # A rejected datagram changes nothing on the wire.
     r = armed_rig()
-    r.frame({411: 200})
-    r.step(n=5)
+    r.run(5, {411: 200})
     check(r.fire(0)[0] == 200, "firing")
     r.c.reject_frame("rubbish")
     check(r.c.ingest_frame("not a frame") != "", "a non-frame is rejected")
@@ -837,7 +983,7 @@ def test_link_sequence_and_clock_rules():
           "a sender clock going backwards is rejected")
     check(r.frame({411: 60}, seq=11, mono=5.0) == "",
           "an equal sender clock is fine")
-    r.step(n=5)
+    r.step(n=4)                      # the quiet window, inside the fire hold
     check(r.fire(0)[0] == 60, "only the accepted frame reached the wire")
     check(r.c.stats["frames_rejected"] == 3, "three rejections counted")
 
@@ -889,8 +1035,7 @@ def test_rule10_compose_never_raises():
     section("rule 10: a fault inside compose produces zeros, clears the "
             "latches and is reported")
     r = armed_rig()
-    r.frame({411: 200})
-    r.step(n=5)
+    r.run(5, {411: 200})
     check(r.fire(0)[0] == 200, "firing")
     orig = r.c._fire_is_quiet
     r.c._fire_is_quiet = lambda *a: 1 / 0
@@ -921,7 +1066,7 @@ def test_property_a_disarmed_group_never_fires():
     worst = 0
     for case in range(cases):
         dwell = rnd.choice((0, 100, 1000, 3000))
-        r = Rig(min_arm_dwell_ms=dwell)
+        r = Rig(test_only_dwell_ms=dwell)
         cfg = r.cfg
         group_slots = set(cfg.all_slots())
         last_fresh_advance = None
@@ -972,7 +1117,7 @@ def test_property_a_disarmed_group_never_fires():
                         f"case {case} step {step}: an unused channel was "
                         f"not zero")
             fresh = (last_frame_at is not None
-                     and (r.t - last_frame_at) * 1000 <= cfg.frame_stale_ms)
+                     and (r.t - last_frame_at) * 1000 <= cfg.fire_hold_ms)
             commanded = last_frame if fresh else bytes(512)
             for i, g in enumerate(cfg.groups):
                 s = u[g.safety - 1]
@@ -1111,7 +1256,8 @@ def test_service_over_loopback():
                                    "port": node.getsockname()[1]},
                       link={"listen_ip": "127.0.0.1", "listen_port": lp,
                             "status_ip": "127.0.0.1",
-                            "status_port": ltc_status.getsockname()[1]})
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
     t = [0.0]
     log = Log()
     inp = arminput.ScriptedArmInput(cfg.n)
@@ -1123,14 +1269,15 @@ def test_service_over_loopback():
             time.sleep(0.005)
             return svc.run_once()
 
-        def send(seq, slots, universe=1, mono=None):
+        def send(seq, slots, universe=1, mono=None, key=KEY, sock=None):
             vals = [0] * 512
             for s, v in slots.items():
                 vals[s - 1] = v
-            ltc_tx.sendto(link.encode_flame(seq, "00:00:00:01",
-                                            t[0] if mono is None else mono,
-                                            universe, vals),
-                          ("127.0.0.1", lp))
+            (sock or ltc_tx).sendto(
+                link.encode_flame(seq, "00:00:00:01",
+                                  t[0] if mono is None else mono,
+                                  universe, vals, key),
+                ("127.0.0.1", lp))
             time.sleep(0.01)
 
         send(1, {411: 200, 1: 77, 401: 78})
@@ -1144,7 +1291,9 @@ def test_service_over_loopback():
         check(p[126:] == bytes(512),
               "disarmed: all zeros even though ltcplay sent 200, 77 and 78")
         check(len(st) >= 1, "a status frame reached ltcplay's port")
-        s = link.decode_status(st[-1])
+        s = link.decode_status(st[-1], KEY)
+        check(s["k"] == KEY and s["v"] == 2,
+              "the status frame on the wire carries the key, version 2")
         check(s["groups"][0]["armed"] == "disarmed" and s["heartbeat"] >= 1
               and s["priority"] == 200 and s["frames"]["seq"] == 1
               and s["frames"]["timecode"] == "00:00:00:01",
@@ -1152,6 +1301,17 @@ def test_service_over_loopback():
               f"{s['frames']}")
         check("sacn" in s and s["sacn"]["sent"] >= 1,
               "the status frame counts sent packets")
+        # A frame with another key, and a frame from another socket while
+        # the link is live, are both rejected and change nothing.
+        rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        send(50, {411: 255}, key="not-the-key-not-the-key")
+        send(60, {411: 255}, sock=rogue)
+        tick()
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["frames"]["rejected"] == 2 and s["frames"]["seq"] == 1
+              and s["frames"]["last_reject"] == "another sender",
+              f"wrong key and another sender rejected: {s['frames']}")
+        rogue.close()
         # arm group 0 with consent, clean edge
         tick()
         send(2, {})
@@ -1168,7 +1328,7 @@ def test_service_over_loopback():
         check(p[126 + 410] == 200 and p[126 + 400] == 78,
               "after the quiet window the fire value passes")
         check(p[126 + 0] == 0, "and channel 1, no group's, is zero")
-        s = link.decode_status(_drain(ltc_status)[-1])
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
         check(s["groups"][0]["armed"] == "armed"
               and s["groups"][0]["sent_fire"][0] == 200,
               "the status frame says armed with SENT 200")
@@ -1179,10 +1339,10 @@ def test_service_over_loopback():
         time.sleep(0.02)
         tick()
         p = _drain(node)[-1]
-        s = link.decode_status(_drain(ltc_status)[-1])
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
         check(p[126 + 410] == 200, "the good frame still stands")
-        check(s["frames"]["rejected"] == 3 and s["frames"]["last_reject"],
-              f"three rejections reported: {s['frames']}")
+        check(s["frames"]["rejected"] == 5 and s["frames"]["last_reject"],
+              f"five rejections reported so far: {s['frames']}")
         # ltcplay stops: the fire slot zeros, the arm stays
         for _ in range(int(0.5 / cfg.tick_period_s) + 2):
             tick()
@@ -1242,7 +1402,8 @@ def test_service_paces_on_perf_counter():
                                    "port": node.getsockname()[1]},
                       link={"listen_ip": "127.0.0.1", "listen_port": lp,
                             "status_ip": "127.0.0.1",
-                            "status_port": ltc_status.getsockname()[1]})
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
     svc = Service(cfg, arminput.NullArmInput())
     svc.open()
     stop = threading.Event()
@@ -1291,15 +1452,14 @@ def test_the_clock_is_perf_counter_everywhere():
 def test_status_frame_matches_the_contract():
     section("the status frame carries what CONTRACT.md promises")
     r = armed_rig()
-    r.frame({411: 200})
-    r.step(n=5)
+    r.run(5, {411: 200})
     s = r.out.status
     for key in ("v", "t", "heartbeat", "tick_ms", "universe", "priority",
                 "arm_value", "confirmed", "fault", "fault_age_ms",
                 "arm_input", "frames", "stats", "groups"):
         check(key in s, f"top-level {key}")
-    check(s["v"] == link.CONTRACT_VERSION == 1 and s["t"] == "status",
-          "version 1, type status")
+    check(s["v"] == link.CONTRACT_VERSION == 2 and s["t"] == "status",
+          "version 2, type status")
     check(s["arm_input"]["state"] == "live" and s["frames"]["state"] == "fresh",
           f"input states: {s['arm_input']}, {s['frames']}")
     g = s["groups"][0]
@@ -1311,13 +1471,16 @@ def test_status_frame_matches_the_contract():
           and g["sent_fire"][0] == 200 and g["commanded_fire"][0] == 200
           and g["amber"] == "" and g["reason"] == "" and g["dwell_s"] == 0,
           f"an armed, firing group: {g}")
-    check(json.loads(link.encode_status(s).decode()) == s,
-          "the status frame survives the wire")
+    wire = json.loads(link.encode_status(s, KEY).decode())
+    check(wire.pop("k") == KEY and wire == s,
+          "the status frame survives the wire, with the key added")
     h1 = s["heartbeat"]
     r.step()
     check(r.out.status["heartbeat"] == h1 + 1, "the heartbeat counts ticks")
     doc = open(os.path.join(HERE, "CONTRACT.md"), encoding="utf-8").read()
-    for word in ("Contract version 1", '"flame"', '"status"', "priority 200",
+    for word in ("Contract version 2", '"flame"', '"status"', "priority 200",
+                 "fire_hold_ms", "another sender", '"k"', "sacn.errors",
+                 "hard kill", "Max. Flame Duration", "HTP", "positional",
                  "dwell_s", "sent_fire", "commanded_fire", "flashing",
                  "steady", "heartbeat", "arm_stale_ms", "frame_stale_ms"):
         check(word in doc, f"CONTRACT.md mentions {word}")
@@ -1343,6 +1506,165 @@ def test_main_refuses_a_bad_config_with_a_sentence():
     r = subprocess.run([sys.executable, "-m", "flamesafe"], cwd=ROOT,
                        capture_output=True, text=True, timeout=60)
     check(r.returncode == 2 and "Usage" in r.stdout, "no argument: usage")
+
+
+def test_review_sender_lock():
+    section("review: while the link is live only the first sender's frames "
+            "are taken, so one rogue datagram cannot fire a head or lock "
+            "ltcplay out")
+    r = armed_rig()
+    other = ("127.0.0.1", 40002)
+    check(r.frame({411: 0}) == "", "the real sender's frame is accepted")
+    why = r.frame({411: 255}, seq=10 ** 9, sender=other)
+    check(why == "another sender",
+          f"a rogue frame with a huge seq is rejected: {why!r}")
+    r.step(n=2)
+    check(r.fire(0)[0] == 0, "and nothing of it reached the wire")
+    check(r.frame({411: 0}) == "",
+          "the real sender is not locked out by the rogue's seq")
+    check(r.out.status["frames"]["seq"] < 10 ** 9,
+          "the rogue seq never became the link's seq")
+    # once stale, the lock is released and a new sender takes it
+    r.wait(0.6)
+    check(r.frame({411: 0}, seq=0, sender=other) == "",
+          "after the link went stale another sender is accepted")
+    check(r.frame({411: 0}, seq=1) != "",
+          "and the old sender is now the other one")
+
+
+def test_review_send_failures_are_faults():
+    section("review: a failed sACN send or status send is a fault in the "
+            "status frame, never armed and fine")
+    node = _udp()
+    ltc_status = _udp()
+    listen = _udp()
+    lp = listen.getsockname()[1]
+    listen.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    inp = arminput.ScriptedArmInput(cfg.n, names=NAMES)
+    log = Log()
+    svc = Service(cfg, inp, clock=lambda: t[0], log=log)
+    svc.open()
+    try:
+        def tick():
+            t[0] += cfg.tick_period_s
+            return svc.run_once()
+
+        tick()
+        tick()
+        inp.set(0)
+        tick()
+        check(svc.last_output.universe[400] == 78, "armed")
+        check(svc.last_output.status["fault"] == "", "no fault yet")
+
+        class Broken:
+            def sendto(self, *a):
+                raise OSError(65, "No route to host")
+
+            def close(self):
+                pass
+
+        real_tx = svc._tx
+        svc._tx = Broken()
+        tick()
+        out = tick()
+        check(svc.send_errors == 2, f"two failed sends: {svc.send_errors}")
+        check("sACN send failed" in out.status["fault"]
+              and out.status["fault_age_ms"] is not None,
+              f"the fault names the failed send: {out.status['fault']!r}")
+        check(out.status["groups"][0]["armed"] == "armed",
+              "the group is still armed (the fault is the red, not a disarm)")
+        check(("fault", ) == tuple(k for k, _ in log.events if k == "fault")
+              or sum(1 for k, _ in log.events if k == "fault") >= 1,
+              "the fault is journaled")
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["sacn"]["errors"] == 2 and "sACN send failed" in s["fault"],
+              f"and it is on the wire to ltcplay: {s['sacn']}, {s['fault']!r}")
+        svc._tx = real_tx
+        real_status = svc._status_tx
+        svc._status_tx = Broken()
+        out = tick()
+        check(svc.status_errors == 1 and "status frame not sent"
+              in out.status["fault"] or "status frame not sent"
+              in svc.composer._fault,
+              f"a failed status send is a fault too: {svc.composer._fault!r}")
+        svc._status_tx = real_status
+    finally:
+        svc.close()
+    for s_ in (node, ltc_status):
+        s_.close()
+
+
+def test_review_journal_never_blocks_the_tick():
+    section("review: a console that blocks writers cannot stall the tick "
+            "loop (Windows QuickEdit)")
+    from flamesafe.journal import Journal
+
+    class Sticky:
+        """A stream whose every write takes 200 ms."""
+        def __init__(self):
+            self.writes = 0
+
+        def write(self, s):
+            self.writes += 1
+            time.sleep(0.2)
+
+        def flush(self):
+            pass
+
+    stream = Sticky()
+    j = Journal(stream=stream)
+    t0 = time.perf_counter()
+    for i in range(20):
+        j.event("test", f"line {i}")
+    el = time.perf_counter() - t0
+    check(el < 0.5, f"20 events queued in {el * 1000:.0f} ms while every "
+                    f"write blocks for 500 ms")
+    check(len(j.lines) == 20, "the in-memory copy has every line")
+    # And through the composer: events during ticks do not slow the ticks.
+    r = Rig()
+    r.c._log = j
+    t0 = time.perf_counter()
+    r.prove_alive()
+    r.inp.set(0)
+    for _ in range(40):
+        r.frame({411: 255})
+        r.step()                     # edge-block event on every tick
+    el = time.perf_counter() - t0
+    check(el < 1.0, f"40 ticks with a journal event each took "
+                    f"{el * 1000:.0f} ms against a blocking console")
+    check(r.c.stats["edge_blocks"] == 40, "every tick was composed")
+    time.sleep(0.6)
+    check(stream.writes >= 1, "the writer thread is draining the queue")
+
+
+def test_review_panic_status_is_honest():
+    section("review: a panic status reports the real input states and a "
+            "compose fault carries its age")
+    r = armed_rig()
+    r.frame({411: 200})
+    r.step(n=5)
+    o = r.step(dt=0.3)               # an overrun, with live input, fresh frame
+    check(o.status["arm_input"]["state"] == "live"
+          and o.status["frames"]["state"] == "fresh",
+          f"the overrun status says the input is live and the frame fresh: "
+          f"{o.status['arm_input']}, {o.status['frames']}")
+    check(o.status["fault_age_ms"] == 0, "the overrun fault is 0 ms old")
+    r = armed_rig()
+    r.c._fire_is_quiet = lambda *a: 1 / 0
+    r.inp.set(1)
+    o = r.step()
+    check(isinstance(o.status["fault_age_ms"], int),
+          f"a compose fault has an age: {o.status['fault_age_ms']!r}")
+    r.step(n=4)
+    check(r.out.status["fault_age_ms"] >= 90,
+          f"and it grows: {r.out.status['fault_age_ms']}")
 
 
 def test_the_wall_from_this_side():
@@ -1393,6 +1715,10 @@ if __name__ == "__main__":
     test_the_clock_is_perf_counter_everywhere()
     test_status_frame_matches_the_contract()
     test_main_refuses_a_bad_config_with_a_sentence()
+    test_review_sender_lock()
+    test_review_send_failures_are_faults()
+    test_review_journal_never_blocks_the_tick()
+    test_review_panic_status_is_honest()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

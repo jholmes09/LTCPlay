@@ -4,6 +4,16 @@ One loop, paced on perf_counter.  Each tick: drain ltcplay's datagrams,
 poll the arm input, compose, send the universe by sACN at priority 200,
 send the status frame.  The composer decides every value; this file only
 moves bytes.
+
+WHAT A HARD KILL DOES.  A clean stop (Ctrl-C, SIGTERM, the stop event)
+sends zeros and then the stream-terminated flag.  A hard kill (Task
+Manager's End task, a crash of the interpreter, power) sends nothing: the
+last packet on the wire stands until the node's own sACN-loss timeout, and
+a flame that was on stays on until the head's Max. Flame Duration ends it.
+Those two settings are the bounds, and both are bench items (CONTRACT.md).
+On Windows only Ctrl-C and Ctrl-Break reach the stop handler; build step 7b
+must give the operator an in-band stop (a key, or a message) that sets the
+stop event.
 """
 
 from __future__ import annotations
@@ -21,6 +31,20 @@ from .sacn import build_packet
 DRAIN_PER_TICK = 200
 SHUTDOWN_ZERO_FRAMES = 3
 SHUTDOWN_TERMINATE_FRAMES = 3
+
+
+def _no_connreset(sock):
+    """Windows: a UDP socket that has sent to a closed port gets an ICMP
+    port-unreachable back and then raises ConnectionResetError on its NEXT
+    operation, including a send to somewhere else.  SIO_UDP_CONNRESET off
+    stops that.  A no-op elsewhere."""
+    flag = getattr(socket, "SIO_UDP_CONNRESET", None)
+    if flag is None or not hasattr(sock, "ioctl"):
+        return
+    try:
+        sock.ioctl(flag, False)
+    except (OSError, ValueError):
+        pass
 
 
 class Service:
@@ -52,9 +76,12 @@ class Service:
             rx.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         rx.bind((self.cfg.link_listen_ip, self.cfg.link_listen_port))
         rx.setblocking(False)
+        _no_connreset(rx)
         self._rx = rx
         self._tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _no_connreset(self._tx)
         self._status_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _no_connreset(self._status_tx)
         self._event("start", f"flame universe {self.cfg.universe} to "
                              f"{self.cfg.destination_ip}:"
                              f"{self.cfg.destination_port} at sACN priority "
@@ -65,7 +92,8 @@ class Service:
                              f"{self.cfg.link_status_port}")
 
     def close(self):
-        """Zeros on the wire, then the stream terminated, then the sockets."""
+        """Zeros on the wire, then the stream terminated, then the sockets.
+        Only a clean stop gets here; see the module docstring."""
         try:
             if self._tx is not None:
                 zeros = bytes(rules.UNIVERSE_SIZE)
@@ -96,7 +124,7 @@ class Service:
             return
         for _ in range(DRAIN_PER_TICK):
             try:
-                data, _addr = rx.recvfrom(65535)
+                data, addr = rx.recvfrom(65535)
             except BlockingIOError:
                 return
             except ConnectionResetError:
@@ -105,11 +133,12 @@ class Service:
             except OSError:
                 return
             try:
-                frame = decode_flame(data, self.cfg.universe)
+                frame = decode_flame(data, self.cfg.universe,
+                                     self.cfg.link_key)
             except LinkError as e:
                 self.composer.reject_frame(str(e))
                 continue
-            self.composer.ingest_frame(frame)
+            self.composer.ingest_frame(frame, sender=tuple(addr[:2]))
 
     def _poll_arm(self):
         try:
@@ -122,7 +151,8 @@ class Service:
         if a is None:
             return
         try:
-            self.composer.assert_arm(a.wanted, a.seq)
+            self.composer.assert_arm(a.wanted, a.seq,
+                                     names=getattr(a, "names", None))
         except Exception:                               # noqa: BLE001
             self.input_errors += 1
 
@@ -146,20 +176,25 @@ class Service:
             self.sent_packets += 1
         except OSError as e:
             self.send_errors += 1
-            if self.send_errors in (1, 10, 100) or self.send_errors % 1000 == 0:
-                self._event("send", f"sACN send failed ({self.send_errors} "
-                                    f"so far): {e}")
+            # The wire is not being written.  That is a fault the status
+            # frame must carry, or ltcplay would show an armed group as
+            # fine while nothing reaches the node.
+            self.composer.note_fault(f"sACN send failed ({self.send_errors} "
+                                     f"so far): {e}")
 
     def _send_status(self, status):
         try:
             status = dict(status)
             status["sacn"] = {"sent": self.sent_packets,
-                              "errors": self.send_errors}
-            self._status_tx.sendto(encode_status(status),
+                              "errors": self.send_errors,
+                              "status_errors": self.status_errors}
+            self._status_tx.sendto(encode_status(status, self.cfg.link_key),
                                    (self.cfg.link_status_ip,
                                     self.cfg.link_status_port))
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError) as e:
             self.status_errors += 1
+            self.composer.note_fault(f"status frame not sent "
+                                     f"({self.status_errors} so far): {e}")
 
     def run_forever(self, stop):
         """Tick at tick_hz until `stop` (a threading.Event) is set."""
