@@ -13036,7 +13036,11 @@ def test_pause_does_not_race_its_own_ticker():
         check(m.ticker.errors == 0,
               f"a tick raced pause() and errored, dropping that frame: "
               f"{m.ticker.last_error!r}")
-        check(len(out.sent) > sent_before,
+        # Generous and condition-based, not a snapshot at one instant: see
+        # the note in test_resume_does_not_race_its_own_ticker on why a
+        # starved runner answering slowly is not the same as pause()
+        # having actually stopped the stream.
+        check(wait_for(lambda: len(out.sent) > sent_before, timeout=30.0),
               "the clock stopped sending while pause() was resolving")
     finally:
         m._sync_point = lambda tag: None
@@ -13051,14 +13055,28 @@ def test_resume_does_not_race_its_own_ticker():
     # is the feature -- the same thread has to keep ticking through the
     # pause so the frozen frame keeps going out), which means its own
     # frame count keeps climbing the whole time regardless, often well
-    # past the cue's length. If resume() ever cleared _paused/_frozen
-    # before it actually stopped that thread, a tick still in flight in
-    # that gap would take the UNPAUSED branch with that huge stale count,
-    # end the cue and fire on_stop, all before resume() itself returned --
+    # past where a correct resume would continue from. If resume() ever
+    # cleared _paused/_frozen before it actually stopped that thread, a
+    # tick still in flight in that gap would take the UNPAUSED branch
+    # with that stale count -- ending the cue outright if it happens to
+    # exceed the cue's length, or sending a stray frame far ahead of the
+    # frozen one if it does not -- all before resume() itself returned,
     # silently, with no exception. This forces a real tick into exactly
     # that gap with a synchronization hook rather than a sleep and a
     # prayer, so it reproduces on every run, on every OS, or not at all.
+    #
+    # The cue is a full minute, not a handful of frames: a real show cue
+    # is minutes long, and a test cue short enough that ordinary thread
+    # scheduling could exhaust its remaining length on its own -- with no
+    # bug anywhere -- proves nothing except that CI was briefly slow.
+    # (Found the hard way: a 0.15s cue here read as "the show is dead" on
+    # a starved macOS runner even with the fix in place, because resuming
+    # from a couple of frames in left only a few tens of milliseconds of
+    # real, legitimate runway. With a minute of runway, only an actual
+    # bug can end it.) What proves the fix now is not merely "a packet
+    # arrived" but that the timecode never falls backward after resume.
     from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
     cfg = C.ClockConfig.parse({"source": "artnet_master",
                                "artnet": {"nodes": {"t": "127.0.0.1"}}})
     out = _TcOut()
@@ -13068,17 +13086,15 @@ def test_resume_does_not_race_its_own_ticker():
     m.ticker.tick = gate
     m.start()
     try:
-        # A short cue: real elapsed time during the pause below has to
-        # push the ticker's own frame count past its length for this to
-        # mean anything.
-        m.play(0.0, 0.15, "A")           # 0.15s = 5 frames at 30fps
+        m.play(0.0, 60.0, "A")           # 60s: ample legitimate runway
         check(wait_for(lambda: len(out.sent) >= 2, timeout=3.0),
               "the clock never started sending")
         m.pause()
         check(m.paused, "pause() did not mark the clock paused")
+        n_frozen = m._frozen_n
         sent_before = len(out.sent)
         # Let the live ticker keep ticking, unattended, well past the
-        # cue's 5-frame length -- exactly what it does for real during any
+        # frame it froze on -- exactly what it does for real during any
         # pause of real length.
         time.sleep(0.5)
         check(len(out.sent) > sent_before,
@@ -13089,10 +13105,10 @@ def test_resume_does_not_race_its_own_ticker():
         gate.arm()
         check(gate.wait_started(timeout=3.0),
               "the ticker thread never reached the next tick to hold")
-        check(gate.last_n >= m._cue[1],
-              f"the held tick's frame {gate.last_n} never grew past the "
-              f"cue's {m._cue[1]} frames; this run cannot prove anything, "
-              f"widen the sleep above")
+        check(gate.last_n > n_frozen + 5,
+              f"the held tick's frame {gate.last_n} never grew meaningfully "
+              f"past the frozen frame {n_frozen}; this run cannot prove "
+              f"anything, widen the sleep above")
 
         done = []
 
@@ -13108,9 +13124,8 @@ def test_resume_does_not_race_its_own_ticker():
         # waiting for the tick this test is holding. Give it a moment to
         # get there, then release the tick: if resume() had already
         # cleared _paused/_frozen before stopping the ticker, the held
-        # tick reads the unpaused branch with its huge stale n the instant
-        # it is released and ends the cue right here, before resume()
-        # itself has done anything else.
+        # tick reads the unpaused branch with its stale n the instant it
+        # is released, before resume() itself has done anything else.
         time.sleep(0.1)
         check(t.is_alive(),
               "resume() returned before the held tick was even released, "
@@ -13121,15 +13136,54 @@ def test_resume_does_not_race_its_own_ticker():
         check(not t.is_alive(), "resume() never returned")
         check(done, "resume() did not complete")
 
+        # The state, checked directly and strictly: this is "is the show
+        # dead", and nothing about a slow CI runner may weaken it.
         check(m.playing and m._cue is not None,
               "the cue was ended by its own ticker racing resume()")
         check(not m.paused, "resume() left the clock marked paused")
-        mark = len(out.sent)
-        check(wait_for(lambda: len(out.sent) > mark, timeout=3.0),
-              "no Art-Net timecode went out after resume(); the show is "
-              "dead")
         check(m.ticker.errors == 0,
               f"the held tick raised: {m.ticker.last_error!r}")
+        # Whether a packet actually WENT OUT is a different question, and a
+        # starved runner answers it slowly, on purpose: player.py's output
+        # loop gives up a missed slot rather than bursting to catch up, so
+        # a stalled process sends nothing for as long as it is stalled and
+        # then carries on from wherever real time has moved to. A tight
+        # deadline here measures the runner, not resume(); a starved macOS
+        # CI runner (confirmed independently the same run: "sent 19 of 30
+        # frames in a second") failed exactly this line with the state
+        # above intact. Generous and condition-based: only a thread that
+        # is actually stuck, not just slow, can still fail it. With a full
+        # minute of cue left, this cannot time out for any reason except
+        # an actually stuck thread.
+        mark = len(out.sent)
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
+              "no Art-Net timecode went out after resume(); the show is "
+              "dead")
+        # And what arrived is a clean resumed sequence, never a stale
+        # detour. Checked as a monotonicity invariant across the whole
+        # pause-to-resume span, not by matching gate.last_n's specific
+        # frame number byte for byte: on a runner slow enough, the
+        # correctly resumed ticker's own, legitimate count can itself
+        # climb high enough by the time this line runs to pass through
+        # that same frame number too (found the hard way: a single freeze
+        # landing late enough made an otherwise-correct run flag its own,
+        # legitimate frame 18 as "the stale one", because the held tick
+        # had also carried frame 18 -- same number, unrelated cause).
+        # What the old bug actually produces that a correct resume never
+        # can is a frame number that FALLS: the stale tick's far-ahead
+        # count, sent once, followed immediately by the correctly
+        # resumed ticker starting over from n_frozen + 1, which is
+        # necessarily smaller. A held or resumed timecode may repeat
+        # (parked) or climb (playing); it may never drop.
+        seq = []
+        for _, p in out.sent[sent_before:]:
+            h, mnt, s, f, _typ = _tc_of(p)
+            seq.append(tc_to_frames(h, mnt, s, f, C.MASTER_FPS))
+        drops = [(a, b) for a, b in zip(seq, seq[1:]) if b < a]
+        check(not drops,
+              f"the timecode fell backward after resume ({drops[:3]}): a "
+              f"stale, far-ahead frame reached the wire before the "
+              f"correctly resumed sequence")
     finally:
         m.stop()
     print("  ok")
@@ -13194,18 +13248,30 @@ def test_pause_resume_survive_a_real_ticker_under_pressure():
         # given time to settle, must still hold and carry on cleanly.
         mark = len(out.sent)
         m.pause()
-        # Give the ticker a few real ticks to actually reach the frozen
-        # branch (the packet at "mark" itself may still be the last
-        # pre-pause one, sent a moment before pause() flipped the flag).
-        check(wait_for(lambda: len(out.sent) >= mark + 3, timeout=3.0),
+        # Wait for several ticks confirmed to be from after the pause (the
+        # packet at index "mark" itself may still be the last pre-pause
+        # one, sent a moment before pause() flipped the flag). Generous
+        # and condition-based, not a snapshot at one instant: see the note
+        # in test_resume_does_not_race_its_own_ticker on why a starved
+        # runner answering slowly is not a dead or broken clock.
+        check(wait_for(lambda: len(out.sent) >= mark + 6, timeout=30.0),
               "the clock stopped sending right after the settle-down pause")
         time.sleep(0.1)
-        check(len({p for _, p in out.sent[-5:]}) == 1,
+        # Sample only packets confirmed to be from after the pause: index
+        # "mark" itself is excluded (it may be the pre-pause one), and
+        # out.sent[-5:] would be wrong here too, because on a slow runner
+        # few enough packets may have accumulated since "mark" that a
+        # last-5-of-everything window still reaches back across the pause
+        # boundary into normal, non-frozen packets -- failing this check
+        # for a reason that has nothing to do with pause() itself. The
+        # wait above guarantees at least 5 packets past that boundary.
+        since_pause = out.sent[mark + 1:]
+        check(len({p for _, p in since_pause[-5:]}) == 1,
               "packets after the stress run are not holding on one frozen "
               "frame")
         mark = len(out.sent)
         m.resume()
-        check(wait_for(lambda: len(out.sent) > mark, timeout=3.0),
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
               "the clock never resumed sending after the stress run")
         check(m.ticker.errors == 0,
               f"a tick errored on the settle-down resume: "
