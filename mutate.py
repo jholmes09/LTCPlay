@@ -1389,8 +1389,8 @@ MUTATIONS = [
   '                self.writes += 1'),
 
  ("the machine log is not written", "ltcplay/journal.py",
-  '                            ("jsonl", machine_name(night), _jsonl),\n',
-  ''),
+  '                            ("jsonl", machine_name(night), _jsonl),',
+  '                            ("jsonl", machine_name(night), lambda r: b""),'),
 
  ("per-frame state is written to disk", "ltcplay/journal.py",
   '            self.ring.append((at or self.clock(), dict(data)))',

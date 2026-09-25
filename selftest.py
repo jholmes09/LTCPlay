@@ -13598,6 +13598,7 @@ def test_journal_every_event_is_complete():
                   ((18, 7, 20), None), ((18, 30), None)):
         now[0] = _den(S, *t)
         svc.tick() if ev is None else svc._apply(ev)
+    svc._apply(_op(S, S.HOLD_ON, who="  ", screen="rack screen"))  # refused
     svc._apply(_op(S, S.HOLD_ON, who="", screen=""))       # refused
     svc_path = os.path.join(svc_dir, "nights",
                             J.machine_name("2026-11-14"))
@@ -13616,6 +13617,10 @@ def test_journal_every_event_is_complete():
               "By unnamed operator on the unnamed screen."),
           f"a refusal for not naming who is still written, and says so: "
           f"{refused[-1:]}")
+    check(len(refused) >= 2 and refused[-2]["who"] == "unnamed operator"
+          and not any("bug in ltcplay" in r["text"] for r in rows if r),
+          f"a name of only spaces is no name, and never a journal bug: "
+          f"{refused[-2:-1]}")
     check([r["id"] for r in svc.journal] == [r["id"] for r in rows][
         -len(svc.journal):], "the page's rows are the file's records, in "
                             "order")

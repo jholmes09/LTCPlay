@@ -461,8 +461,8 @@ class Service:
             night=self._night(), show=le.show or None,
             # An operator event the engine refused for not naming who or
             # which screen still says so in the journal, in words.
-            who=(le.who or "unnamed operator") if op else None,
-            screen=(le.screen or "unnamed screen") if op else None,
+            who=(le.who.strip() or "unnamed operator") if op else None,
+            screen=(le.screen.strip() or "unnamed screen") if op else None,
             fault=le.outcome in self.FAULT_OUTCOMES)
 
     def _record(self, out, now):
