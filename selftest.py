@@ -12165,7 +12165,15 @@ def test_a_slave_clock_forwards_the_show_zone():
                     clk._tick(x, at)
         finally:
             st.close()
-            clk._clock, clk._mono = time.perf_counter, time.monotonic
+            # Both back to LtcAudioSlave's real default, time.perf_counter --
+            # the same clock the real audio callback stamps captured_at with
+            # (player._now()). This used to read time.monotonic for `mono`,
+            # matching the clock's pre-Windows-pixel-timing default; now that
+            # PR #8 changed that default to perf_counter too, resetting to
+            # the old pair would silently mix clocks for the real threads
+            # started just below -- invisible on a Mac, where the two agree,
+            # and wrong on Windows.
+            clk._clock, clk._mono = time.perf_counter, time.perf_counter
             clk._fly = None
         # From half a second in, the chase engine is locked on the show and
         # exactly where the LTC says: frame 01:00:00:00 began at t_start.
@@ -12920,6 +12928,689 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
     print("  ok")
 
 
+# ------------------------------------------------------- hold / resume -----
+# Fire & Ice handoff, section 5, "Hold and Start now, as Jeff decided them":
+# Hold during a show pauses it in place -- pixels, video and timecode all
+# hold the current frame, and the timecode keeps sending it so receivers
+# hold instead of timing out. Resume carries on from exactly there. This is
+# the CLOCK half only: MadMapper OSC, the music fade and laser blanking are
+# a later PR, and so is wiring the scheduler's Hold button to any of this.
+
+
+def test_the_clock_freezes_on_hold_and_resume_carries_on():
+    section("show clock: Hold freezes the frame and keeps it flowing; "
+            "Resume carries on with no jump, burst or skipped frame")
+    from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
+
+    def frame_of(pkt):
+        h, mi, s, f, _t = _tc_of(pkt)
+        return tc_to_frames(h, mi, s, f, C.MASTER_FPS)
+
+    fs = FakeFSEQ(frames=20000)          # long enough that no cue here ends
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=150,
+              freewheel_ms=150, hold_ms=2000)
+    st = _Stepped(p, step_ms=25)
+    out = _TcOut()
+    stopped = []
+    cfg, m = _master(C, out=out, sink=p.feed_timecode,
+                     clock=lambda: st.t, mono=lambda: st.t,
+                     on_stop=lambda: stopped.append(True))
+    fps = C.MASTER_FPS
+    # Driven entirely by hand, on the same clock the player's own output
+    # loop reads: no real ticker thread, so a pause here cannot spin one
+    # forever chasing wall time it will never see move, and nothing here
+    # depends on real time passing at all.
+    m.ticker.start = lambda t0=None: (
+        setattr(m.ticker, "t0", st.t if t0 is None else t0), m.ticker.t0)[1]
+    m.ticker.stop = lambda: None
+    try:
+        m.start()
+        st.t = 1000.0
+        t0 = m.play(3600.0, 60.0, "A")          # 60 s cue, 1800 frames
+
+        def art_tick(n):
+            st.t = t0 + n / fps
+            m._tick(n, st.t)
+
+        # Ten real frames, the player's own output ticking alongside.
+        for n in range(10):
+            art_tick(n)
+            st.tick()
+        check(p.state == LOCKED and p.current_cue is not None
+              and p.current_cue.name == "A",
+              f"the pixels never locked onto the clock: {p.state}")
+        check(frame_of(out.sent[-1][1]) == 9,
+              "the tenth Art-Net packet is not frame 9")
+        frame_before_pause = p.current_frame
+
+        # Refused: nothing is paused yet.
+        try:
+            m.resume()
+            check(False, "resume() worked on a clock that was never paused")
+        except ValueError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        try:
+            m.pause()
+            check(False, "a second pause() was accepted")
+        except ValueError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        frozen_pkt = out.sent[-1][1]
+        check(frame_of(frozen_pkt) == 9, "pause froze on the wrong frame")
+
+        # The ticker keeps firing at 30 a second while paused. Every packet
+        # is byte for byte the frozen frame, and the pixels are fed the
+        # exact same repeated position over and over -- proven, not
+        # assumed, by driving a real Player off it and reading its own
+        # state back.
+        for k in range(30):                     # a full second of pause
+            art_tick(10 + k)                    # n is ignored while paused
+            st.tick()
+        check(len(out.sent) == 40,
+              "the clock stopped sending during the pause; MadMapper and "
+              "BEYOND would time out")
+        check(all(pkt == frozen_pkt for _, pkt in out.sent[10:]),
+              "a packet sent during the pause is not byte for byte the "
+              "frozen frame")
+        check(p.state == PARKED,
+              f"the chase engine did not read the paused clock as PARKED, "
+              f"got {p.state}")
+        check(p.source == SHOW,
+              f"a paused clock should keep the show on the rig, not "
+              f"{p.source}")
+        check(p.current_cue is not None and p.current_cue.name == "A",
+              "the cue was dropped while the clock was merely paused")
+        check(p.current_frame == frame_before_pause,
+              "the pixels kept moving while the clock was paused")
+
+        # Resume: the very next frame is frozen + 1 -- never a repeat of
+        # the frozen frame, and never a jump past it -- and it climbs by
+        # exactly one frame at a time from there. No burst.
+        freeze_at = t0 + 9 / fps
+        resume_at = st.t
+        before_t0 = m.ticker.t0
+        m.resume()
+        check(not m.paused, "resume() left the clock marked paused")
+        t0b = m.ticker.t0
+
+        def art_tick2(n):
+            st.t = t0b + n / fps
+            m._tick(n, st.t)
+
+        got = []
+        for n in range(10, 20):
+            art_tick2(n)
+            st.tick()
+            got.append(frame_of(out.sent[-1][1]))
+        check(got == list(range(10, 20)),
+              f"frames after Resume are not strictly increasing by one "
+              f"from the frozen frame: {got}")
+        check(all(pkt != frozen_pkt for _, pkt in out.sent[40:]),
+              "a resumed packet repeated the frozen frame")
+        check(p.state == LOCKED,
+              f"the pixels did not pick the clock back up after Resume, "
+              f"got {p.state}")
+        check(p.jumps <= 1,
+              f"resuming from a pause should cost at most one jump, got "
+              f"{p.jumps}")
+        check(p.current_frame > frame_before_pause,
+              "the pixels did not move again after Resume")
+
+        # The cue's end moves later by what it spent paused, to within the
+        # one frame Resume deliberately does not repeat.
+        span = resume_at - freeze_at
+        ext = t0b - before_t0
+        check(abs(ext - (span - 1.0 / fps)) < 1e-9,
+              f"pausing for {span:.3f}s should push the cue's end back by "
+              f"about that much; it moved by {ext:.3f}s")
+
+        # Two pauses add up: the second pause starts from the already
+        # shifted zero point, not from the original one.
+        before2 = m.ticker.t0
+        m.pause()
+        st.t += 0.5
+        m.resume()
+        ext2 = m.ticker.t0 - before2
+        check(abs(m.ticker.t0 - (t0 + ext + ext2)) < 1e-6,
+              "two pauses did not add up: the clock's zero point is not "
+              "the sum of both")
+
+        # Halt while paused ends cleanly.
+        m.pause()
+        m.halt()
+        check(not m.playing and not m.paused,
+              "halt while paused did not leave the clock stopped")
+        check(stopped == [True],
+              "halting a paused clock did not hand the pixels back")
+    finally:
+        st.close()
+        try:
+            m.stop()
+        except Exception:
+            pass
+    print("  ok")
+
+
+def test_session_hold_and_resume():
+    section("Session.clock_pause / clock_resume: refused with nothing to "
+            "pause or resume, without a master clock, and twice; halt "
+            "works while paused")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=12000)       # 300 s: plenty of runway
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    sessions = []
+    try:
+        # 1. GPL: no clock block at all. Nothing here is reachable.
+        here = os.path.join(work, "gpl")
+        os.makedirs(here)
+        tlp, net = _clock_show(here, None, [("01:00:00:00", "Show.fseq",
+                                             "Show")])
+        gpl = Session(tlp, no_output=True, networks=net, no_log=True,
+                     sd=FakeSD(), device="MOTU M4", channel=2)
+        gpl.open()
+        sessions.append(gpl)
+        for meth in (gpl.clock_pause, gpl.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked with no clock block")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 2. The LTC slave: following timecode, not making it. Refused the
+        # same way as GPL.
+        here = os.path.join(work, "slave")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "ltc_audio_slave",
+                  "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        slave = Session(tlp, no_output=True, networks=net, no_log=True,
+                        sd=FakeSD(), device="MOTU M4", channel=2)
+        slave.open()
+        sessions.append(slave)
+        for meth in (slave.clock_pause, slave.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked on the LTC slave")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 3. The master, but idle: nothing is playing to pause or resume.
+        here = os.path.join(work, "master")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "artnet_master",
+                  "artnet": {"nodes": {"MadMapper": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD(), device="MOTU M4", channel=2)
+        sess.open()
+        sessions.append(sess)
+        out = _TcOut()
+        sess.clock.out = out
+        sess.start()
+        try:
+            sess.clock_pause()
+            check(False, "clock_pause worked with nothing playing")
+        except SessionError as e:
+            check("pause" in str(e).lower() or "playing" in str(e).lower(),
+                  f"unclear refusal: {e}")
+        try:
+            sess.clock_resume()
+            check(False, "clock_resume worked with nothing playing")
+        except SessionError as e:
+            check("paused" in str(e).lower() or "resume" in str(e).lower(),
+                  f"unclear refusal: {e}")
+
+        # 4. Play, pause, and watch the pixels hold; the page agrees.
+        sess.clock_play("Show")
+        check(wait_for(lambda: sess.player.current_cue is not None,
+                       timeout=3.0), "the cue never reached the pixels")
+        sess.clock_pause()
+        # The chase engine only calls a repeating position PARKED once it
+        # has repeated for park_ms: right up to that debounce, the reading
+        # can still say LOCKED for a frame here and there. Let it settle
+        # past that window before trusting the readout, the same margin
+        # test_park_and_pause gives it.
+        check(wait_for(lambda: sess.player._park_since is not None,
+                       timeout=3.0),
+              "the chase engine never noticed the repeated position")
+        # A fixed margin, not sess.player.park_s: feed_timecode() itself
+        # sets state=PARKED optimistically the moment a repeat is seen,
+        # racing the output thread's own debounced computation, so reading
+        # state right away can catch that early, unsettled flip. Waiting a
+        # fixed amount comfortably past the DEFAULT 200ms park window
+        # settles it, the same margin test_park_and_pause gives its
+        # simulated clock, without tying this test's own running time to a
+        # Player setting that could be anything (0 from a show file typo,
+        # or a mutation elsewhere in the suite run).
+        time.sleep(0.5)
+        check(sess.player.state == PARKED,
+              f"the pixels never parked after Hold, got "
+              f"{sess.player.state}")
+        check(sess.clock.paused and sess.snapshot()["clock"]["paused"],
+              "the page does not say the clock is paused")
+        frame = sess.player.current_frame
+        mark = len(out.sent)
+        time.sleep(0.3)
+        check(sess.player.current_frame == frame,
+              "the pixels moved while the show was on Hold")
+        check(len(out.sent) > mark,
+              "Art-Net timecode stopped going out during Hold; MadMapper "
+              "and BEYOND would time out")
+
+        # Refused: already paused.
+        try:
+            sess.clock_pause()
+            check(False, "a second Hold was accepted")
+        except SessionError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        # 5. Resume: the show carries on, and a second Resume is refused.
+        sess.clock_resume()
+        check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
+              "the show did not carry on after Resume")
+        check(not sess.clock.paused, "the clock still reads paused")
+        check(wait_for(lambda: sess.player.current_frame > frame,
+                       timeout=3.0),
+              "the pixels never moved again after Resume")
+        try:
+            sess.clock_resume()
+            check(False, "a second Resume was accepted")
+        except SessionError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        # 6. Halt while paused ends cleanly.
+        sess.clock_pause()
+        check(wait_for(lambda: sess.player.state == PARKED, timeout=3.0),
+              "the pixels never parked for the halt-while-paused check")
+        sess.clock_halt()
+        check(wait_for(lambda: sess.player.current_cue is None, timeout=3.0),
+              "halt while paused did not hand the pixels back")
+        check(not sess.clock.playing and not sess.clock.paused,
+              "halt while paused left the clock playing or paused")
+        for meth in (sess.clock_pause, sess.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked after a halt")
+            except SessionError:
+                pass
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+class _TickGate:
+    """Lets a test hold a REAL ticker thread just before it runs one
+    specific tick, so a race with pause()/resume() running concurrently on
+    another thread lands exactly where it matters instead of on luck.
+
+    Wrap this onto ticker.tick (the same swappable slot the drift and
+    fault tests already use to observe ticks). Every call passes straight
+    through to the real tick until arm() is called; the next call after
+    that blocks on release() and signals wait_started() the moment it
+    starts blocking, so the caller knows the ticker thread is parked right
+    there, mid tick, holding whatever frame number it had already computed
+    from real elapsed time."""
+
+    def __init__(self, real_tick):
+        self._real = real_tick
+        self._armed = threading.Event()
+        self._started = threading.Event()
+        self._go = threading.Event()
+        self.last_n = None
+
+    def arm(self):
+        self._started.clear()
+        self._go.clear()
+        self._armed.set()
+
+    def wait_started(self, timeout=3.0):
+        return self._started.wait(timeout)
+
+    def release(self):
+        self._go.set()
+
+    def __call__(self, n, now):
+        if self._armed.is_set():
+            self._armed.clear()
+            self.last_n = n
+            self._started.set()
+            self._go.wait(3.0)
+        return self._real(n, now)
+
+
+def test_pause_does_not_race_its_own_ticker():
+    section("show clock: pause() cannot drop a tick to its own still-live "
+            "ticker thread")
+    # Adversarial review of PR #10, the SHOULD FIX: pause() never stops
+    # the ticker (the same thread has to keep ticking through the pause so
+    # the frozen frame keeps going out), and _tick() never takes the lock
+    # pause() holds, so nothing stops a real tick running while pause() is
+    # part way through. The fix orders pause()'s writes so everything the
+    # paused branch reads is in place before the flag that makes _tick()
+    # read it is set. m._sync_point is a no-op in every real run; here it
+    # holds pause() at the exact instant that ordering is meant to make
+    # safe, and lets the real, still-ticking ticker thread try a tick
+    # right then, rather than hoping one happens to land there.
+    from ltcplay import clock as C
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    held, go = threading.Event(), threading.Event()
+
+    def hook(tag):
+        if tag == "pause":
+            held.set()
+            go.wait(2.0)
+
+    m._sync_point = hook
+    m.start()
+    try:
+        m.play(0.0, 3600.0, "A")
+        check(wait_for(lambda: len(out.sent) >= 3, timeout=3.0),
+              "the clock never started sending")
+        sent_before = len(out.sent)
+
+        done = []
+
+        def do_pause():
+            try:
+                m.pause()
+            finally:
+                done.append(True)
+
+        t = threading.Thread(target=do_pause, name="pause-race")
+        t.start()
+        check(held.wait(3.0),
+              "pause() never reached the point this test holds it at")
+        # pause() is holding right there. The real ticker thread is still
+        # running underneath the whole time -- give it a real chance to
+        # tick before letting pause() finish.
+        time.sleep(0.15)
+        go.set()
+        t.join(3.0)
+        check(not t.is_alive() and done, "pause() never returned")
+
+        check(m.ticker.errors == 0,
+              f"a tick raced pause() and errored, dropping that frame: "
+              f"{m.ticker.last_error!r}")
+        # Generous and condition-based, not a snapshot at one instant: see
+        # the note in test_resume_does_not_race_its_own_ticker on why a
+        # starved runner answering slowly is not the same as pause()
+        # having actually stopped the stream.
+        check(wait_for(lambda: len(out.sent) > sent_before, timeout=30.0),
+              "the clock stopped sending while pause() was resolving")
+    finally:
+        m._sync_point = lambda tag: None
+        m.stop()
+    print("  ok")
+
+
+def test_resume_does_not_race_its_own_ticker():
+    section("show clock: Resume cannot lose the cue to its own still-live "
+            "ticker thread")
+    # Adversarial review of PR #10: pause() never stops the ticker (that
+    # is the feature -- the same thread has to keep ticking through the
+    # pause so the frozen frame keeps going out), which means its own
+    # frame count keeps climbing the whole time regardless, often well
+    # past where a correct resume would continue from. If resume() ever
+    # cleared _paused/_frozen before it actually stopped that thread, a
+    # tick still in flight in that gap would take the UNPAUSED branch
+    # with that stale count -- ending the cue outright if it happens to
+    # exceed the cue's length, or sending a stray frame far ahead of the
+    # frozen one if it does not -- all before resume() itself returned,
+    # silently, with no exception. This forces a real tick into exactly
+    # that gap with a synchronization hook rather than a sleep and a
+    # prayer, so it reproduces on every run, on every OS, or not at all.
+    #
+    # The cue is a full minute, not a handful of frames: a real show cue
+    # is minutes long, and a test cue short enough that ordinary thread
+    # scheduling could exhaust its remaining length on its own -- with no
+    # bug anywhere -- proves nothing except that CI was briefly slow.
+    # (Found the hard way: a 0.15s cue here read as "the show is dead" on
+    # a starved macOS runner even with the fix in place, because resuming
+    # from a couple of frames in left only a few tens of milliseconds of
+    # real, legitimate runway. With a minute of runway, only an actual
+    # bug can end it.) What proves the fix now is not merely "a packet
+    # arrived" but that the timecode never falls backward after resume.
+    from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    gate = _TickGate(m.ticker.tick)
+    m.ticker.tick = gate
+    m.start()
+    try:
+        m.play(0.0, 60.0, "A")           # 60s: ample legitimate runway
+        check(wait_for(lambda: len(out.sent) >= 2, timeout=3.0),
+              "the clock never started sending")
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        n_frozen = m._frozen_n
+        sent_before = len(out.sent)
+        # Let the live ticker keep ticking, unattended, well past the
+        # frame it froze on -- exactly what it does for real during any
+        # pause of real length.
+        time.sleep(0.5)
+        check(len(out.sent) > sent_before,
+              "the clock stopped sending during the pause")
+
+        # Arm the gate: the ticker thread's NEXT tick will block, carrying
+        # whatever frame number real elapsed time has given it by then.
+        gate.arm()
+        check(gate.wait_started(timeout=3.0),
+              "the ticker thread never reached the next tick to hold")
+        check(gate.last_n > n_frozen + 5,
+              f"the held tick's frame {gate.last_n} never grew meaningfully "
+              f"past the frozen frame {n_frozen}; this run cannot prove "
+              f"anything, widen the sleep above")
+
+        done = []
+
+        def do_resume():
+            try:
+                m.resume()
+            finally:
+                done.append(True)
+
+        t = threading.Thread(target=do_resume, name="resume-race")
+        t.start()
+        # resume() should now be blocked inside ticker.stop()'s join,
+        # waiting for the tick this test is holding. Give it a moment to
+        # get there, then release the tick: if resume() had already
+        # cleared _paused/_frozen before stopping the ticker, the held
+        # tick reads the unpaused branch with its stale n the instant it
+        # is released, before resume() itself has done anything else.
+        time.sleep(0.1)
+        check(t.is_alive(),
+              "resume() returned before the held tick was even released, "
+              "so this run proves nothing; it should still be waiting on "
+              "ticker.stop()'s join")
+        gate.release()
+        t.join(3.0)
+        check(not t.is_alive(), "resume() never returned")
+        check(done, "resume() did not complete")
+
+        # The state, checked directly and strictly: this is "is the show
+        # dead", and nothing about a slow CI runner may weaken it.
+        check(m.playing and m._cue is not None,
+              "the cue was ended by its own ticker racing resume()")
+        check(not m.paused, "resume() left the clock marked paused")
+        check(m.ticker.errors == 0,
+              f"the held tick raised: {m.ticker.last_error!r}")
+        # Whether a packet actually WENT OUT is a different question, and a
+        # starved runner answers it slowly, on purpose: player.py's output
+        # loop gives up a missed slot rather than bursting to catch up, so
+        # a stalled process sends nothing for as long as it is stalled and
+        # then carries on from wherever real time has moved to. A tight
+        # deadline here measures the runner, not resume(); a starved macOS
+        # CI runner (confirmed independently the same run: "sent 19 of 30
+        # frames in a second") failed exactly this line with the state
+        # above intact. Generous and condition-based: only a thread that
+        # is actually stuck, not just slow, can still fail it. With a full
+        # minute of cue left, this cannot time out for any reason except
+        # an actually stuck thread.
+        mark = len(out.sent)
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
+              "no Art-Net timecode went out after resume(); the show is "
+              "dead")
+        # And what arrived is a clean resumed sequence, never a stale
+        # detour. Checked as a monotonicity invariant across the whole
+        # pause-to-resume span, not by matching gate.last_n's specific
+        # frame number byte for byte: on a runner slow enough, the
+        # correctly resumed ticker's own, legitimate count can itself
+        # climb high enough by the time this line runs to pass through
+        # that same frame number too (found the hard way: a single freeze
+        # landing late enough made an otherwise-correct run flag its own,
+        # legitimate frame 18 as "the stale one", because the held tick
+        # had also carried frame 18 -- same number, unrelated cause).
+        # What the old bug actually produces that a correct resume never
+        # can is a frame number that FALLS: the stale tick's far-ahead
+        # count, sent once, followed immediately by the correctly
+        # resumed ticker starting over from n_frozen + 1, which is
+        # necessarily smaller. A held or resumed timecode may repeat
+        # (parked) or climb (playing); it may never drop.
+        seq = []
+        for _, p in out.sent[sent_before:]:
+            h, mnt, s, f, _typ = _tc_of(p)
+            seq.append(tc_to_frames(h, mnt, s, f, C.MASTER_FPS))
+        drops = [(a, b) for a, b in zip(seq, seq[1:]) if b < a]
+        check(not drops,
+              f"the timecode fell backward after resume ({drops[:3]}): a "
+              f"stale, far-ahead frame reached the wire before the "
+              f"correctly resumed sequence")
+    finally:
+        m.stop()
+    print("  ok")
+
+
+def test_pause_resume_survive_a_real_ticker_under_pressure():
+    section("show clock: many rapid Hold/Resume cycles on a real ticker "
+            "never drop a tick, never kill the cue")
+    # Adversarial review of PR #10, the SHOULD FIX: pause() writes
+    # _frozen/_frozen_n/_frozen_pos/last_sent and only then _paused, but
+    # _tick() runs on the still-live ticker thread and never takes the
+    # lock, so nothing stops it running in whatever gap exists between
+    # those writes. The fix (this file, ArtNetMaster.pause()) sets every
+    # field the paused branch reads before the flag that makes _tick()
+    # read them, relying on the GIL's own guarantee that one thread's
+    # writes are seen by another in the order they were issued -- but
+    # that guarantee is only as good as the code actually honouring it,
+    # so this hammers it: a real ticker thread, ticking for real, paused
+    # and resumed as fast as this process can manage, with the GIL's
+    # switch interval turned right down so it hands control between
+    # threads far more often than it would by default. If the field order
+    # in pause() or resume() ever regresses, this is built to notice --
+    # a dropped tick shows up as a tick error, and a killed cue shows up
+    # as playing turning False mid-run, either one checked after every
+    # single cycle, not just at the end.
+    from ltcplay import clock as C
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    m.start()
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+        m.play(0.0, 30.0, "A")            # 30s = 900 frames: plenty of room
+        check(wait_for(lambda: len(out.sent) >= 2, timeout=3.0),
+              "the clock never started sending")
+        cycles = 300
+        dead = []
+        for i in range(cycles):
+            m.pause()
+            if not m.playing or m._cue is None:
+                dead.append(("pause", i))
+                break
+            if m.ticker.errors:
+                break
+            m.resume()
+            if not m.playing or m._cue is None:
+                dead.append(("resume", i))
+                break
+            if m.ticker.errors:
+                break
+        check(not dead, f"the cue died mid stress: {dead}")
+        check(m.ticker.errors == 0,
+              f"{m.ticker.errors} tick(s) errored under pressure "
+              f"({cycles} pause/resume cycles): {m.ticker.last_error!r}")
+        check(m.playing and m._cue is not None,
+              "the cue is not alive after the stress cycles")
+        check(not m.paused, "the clock was left paused after the cycles")
+        # And it still actually works afterward: one more full cycle,
+        # given time to settle, must still hold and carry on cleanly.
+        mark = len(out.sent)
+        m.pause()
+        # Wait for several ticks confirmed to be from after the pause (the
+        # packet at index "mark" itself may still be the last pre-pause
+        # one, sent a moment before pause() flipped the flag). Generous
+        # and condition-based, not a snapshot at one instant: see the note
+        # in test_resume_does_not_race_its_own_ticker on why a starved
+        # runner answering slowly is not a dead or broken clock.
+        check(wait_for(lambda: len(out.sent) >= mark + 6, timeout=30.0),
+              "the clock stopped sending right after the settle-down pause")
+        time.sleep(0.1)
+        # Sample only packets confirmed to be from after the pause: index
+        # "mark" itself is excluded (it may be the pre-pause one), and
+        # out.sent[-5:] would be wrong here too, because on a slow runner
+        # few enough packets may have accumulated since "mark" that a
+        # last-5-of-everything window still reaches back across the pause
+        # boundary into normal, non-frozen packets -- failing this check
+        # for a reason that has nothing to do with pause() itself. The
+        # wait above guarantees at least 5 packets past that boundary.
+        since_pause = out.sent[mark + 1:]
+        check(len({p for _, p in since_pause[-5:]}) == 1,
+              "packets after the stress run are not holding on one frozen "
+              "frame")
+        mark = len(out.sent)
+        m.resume()
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
+              "the clock never resumed sending after the stress run")
+        check(m.ticker.errors == 0,
+              f"a tick errored on the settle-down resume: "
+              f"{m.ticker.last_error!r}")
+    finally:
+        sys.setswitchinterval(old_interval)
+        m.stop()
+    print("  ok")
+
+
 # ------------------------------------------------------------ tctest -----
 # The hand-fired test Art-Net timecode command, section 5 of the Fire & Ice
 # handoff: "A timecode test button... yes." None of these import
@@ -13574,6 +14265,11 @@ if __name__ == "__main__":
     test_forwarded_timecode_steps_by_one()
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
+    test_the_clock_freezes_on_hold_and_resume_carries_on()
+    test_session_hold_and_resume()
+    test_pause_does_not_race_its_own_ticker()
+    test_resume_does_not_race_its_own_ticker()
+    test_pause_resume_survive_a_real_ticker_under_pressure()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()
