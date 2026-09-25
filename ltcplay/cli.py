@@ -1225,9 +1225,18 @@ def cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    announce = None
+    if getattr(args, "announce", None) is not None:
+        # Same rule as the scheduler: only here, and only when asked for,
+        # are the announcements loaded. The GPL launchers never pass
+        # --announce.
+        from . import announce as announce_mod
+        announce = os.path.abspath(os.path.expanduser(
+            args.announce or announce_mod.default_config_path()))
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
-                              token=args.token, schedule=schedule)
+                              token=args.token, schedule=schedule,
+                              announce=announce)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1249,6 +1258,10 @@ def cmd_serve(args):
         print(f"Schedule: {sv.path}")
         print("  " + (sv.error or "Loaded. It decides but does not act: no "
                       "show is started by it in this build."))
+    if httpd.announce is not None:
+        av = httpd.announce
+        print(f"Announcements: {av.config_path}")
+        print("  " + (av.error or f"Loaded, on {av.device_name}."))
     if token:
         print(f"\nServing on the network, so the page needs the token in that "
               f"link.\nAnyone who can reach {host}:{args.port} and has it can "
@@ -1283,6 +1296,8 @@ def cmd_serve(args):
         sess = httpd.control.session
         if httpd.schedule is not None:
             httpd.schedule.stop()
+        if httpd.announce is not None:
+            httpd.announce.close()
         httpd.control.stop()
         httpd.server_close()
         _say_blackout(sess)
@@ -1769,6 +1784,13 @@ def main(argv=None):
                          "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay on "
                          "Windows). It decides and does not act yet. "
                          "Leave it off and there is no scheduler at all")
+    sv.add_argument("--announce", nargs="?", const="", default=None,
+                    metavar="FILE",
+                    help="play operator announcements from this config "
+                         "file (default: ltcplay_announce.json beside the "
+                         "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay "
+                         "on Windows). Leave it off and there are no "
+                         "announcements at all")
     sv.set_defaults(func=cmd_serve)
 
     sdp = sub.add_parser("showdir", help="see or change the folder a show "

@@ -1340,6 +1340,54 @@ MUTATIONS = [
   '    return [name for name, _ in dests\n'
   '           if name.strip().lower() == "beyond"]'),
 
+ ("an announcement plays over a running or paused show", "ltcplay/announce.py",
+  '            refusal = interlock_refusal(state)\n            if refusal:',
+  '            refusal = interlock_refusal(state)\n            if False:'),
+
+ ("a second announcement is allowed to start while one plays",
+  "ltcplay/announce.py",
+  '            if self.playing is not None:\n'
+  '                other = LABELS[self.playing]',
+  '            if False:\n'
+  '                other = LABELS[self.playing]'),
+
+ ("an unavailable announcement file plays anyway", "ltcplay/announce.py",
+  '            st = self.status_by_id.get(ann_id, {})\n'
+  '            if not st.get("available"):',
+  '            st = self.status_by_id.get(ann_id, {})\n'
+  '            if False:'),
+
+ ("a name not on the operator list can still press Play",
+  "ltcplay/announce.py",
+  '                raise ValueError(text)\n'
+  '            if who.lower() not in {n.lower() for n in self.operators}:\n'
+  '                reason = (f"{who!r} is not on the operator list "',
+  '                raise ValueError(text)\n'
+  '            if False:\n'
+  '                reason = (f"{who!r} is not on the operator list "'),
+
+ ("a missing announcement output device falls back to another one",
+  "ltcplay/announce.py",
+  '    if not hits:\n'
+  '        raise ValueError(f"{name!r} is not attached. Nothing else will be "\n'
+  '                         f"used in its place. Outputs on this machine: "\n'
+  '                         f"{names}.")',
+  '    if not hits:\n'
+  '        if outputs:\n'
+  '            return outputs[0]'),
+
+ ("a refused announcement play is not written to the journal",
+  "ltcplay/announce.py",
+  '                self._emit(actor="operator", action="play",\n'
+  '                          outcome="refused",\n'
+  '                          reason="another announcement is already playing",\n'
+  '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
+  '                          state=state)\n'
+  '                raise ValueError(text)\n'
+  '            st = self.status_by_id.get(ann_id, {})',
+  '                raise ValueError(text)\n'
+  '            st = self.status_by_id.get(ann_id, {})'),
+
 ]
 
 

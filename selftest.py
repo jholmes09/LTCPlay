@@ -5,9 +5,11 @@ Every check here is anchored to something real: LTC that is synthesised and then
 decoded back, packet bytes compared against the layouts in the xLights source,
 and where a real show folder is available, actual FSEQ files off disk.
 """
+import json
 import os
 import random
 import re
+import tempfile
 import threading
 import sys
 import time
@@ -1678,6 +1680,37 @@ class FakeStream:
         self.close()
 
 
+class FakeOutputStream:
+    """An output stream a test drives BY HAND: no thread, no clock, no
+    sleep. Calling .pump(n) is exactly what a real audio driver would do by
+    invoking the callback on its own thread; a test calls it directly
+    instead, so an announcement's progress is entirely under the test's
+    control and never depends on wall time."""
+
+    def __init__(self, sd, device, channels, samplerate, blocksize, callback):
+        self.sd, self.device, self.channels = sd, device, channels
+        self.rate, self.blocksize, self.callback = samplerate, blocksize, callback
+        self.started = False
+        self.stopped = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def pump(self, n=None):
+        import numpy as np
+        n = self.blocksize if n is None else n
+        outdata = np.zeros((n, self.channels), dtype=np.float32)
+        self.callback(outdata, n, None, None)
+        return outdata
+
+    def stop(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
+
+
 def _seq_seconds(text):
     """Read an xLights-style M:SS.mmm position back into seconds."""
     m, _, rest = text.partition(":")
@@ -1710,6 +1743,8 @@ class FakeSD:
         self.dead = False
         self.opened = []
         self.streams = []
+        self.output_opened = []
+        self.output_streams = []
         self._tone = synthesize(1, 0, 0, 0, 30.0, 48000, frames=300,
                                 amplitude=0.4)
         self._np = np
@@ -1732,6 +1767,14 @@ class FakeSD:
         self.opened.append((device, channels, samplerate))
         s = FakeStream(self, device, channels, samplerate, blocksize, callback)
         self.streams.append(s)
+        return s
+
+    def OutputStream(self, device=None, channels=None, samplerate=None,
+                     blocksize=None, dtype=None, callback=None):
+        self.output_opened.append((device, channels, samplerate))
+        s = FakeOutputStream(self, device, channels, samplerate, blocksize,
+                             callback)
+        self.output_streams.append(s)
         return s
 
     def block_for(self, device, channels, pos, n):
@@ -11074,6 +11117,564 @@ def _tc_of(pkt):
     return pkt[17], pkt[16], pkt[15], pkt[14], pkt[18]
 
 
+# ------------------------------------------------------------ announcements
+def _ann():
+    from ltcplay import announce as A
+    return A
+
+
+def _ann_write_wav(path, seconds=1.0, rate=8000, channels=1):
+    import struct
+    import wave as _wave
+    n = int(seconds * rate)
+    with _wave.open(path, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(struct.pack(f"<{n * channels}h", *([0] * (n * channels))))
+    return n / float(rate)
+
+
+def _ann_workdir(device="MOTU M4"):
+    """A tempdir with three short, valid WAV files and a config naming them.
+    Returns (workdir, config_path, {id: length_s})."""
+    A = _ann()
+    work = tempfile.mkdtemp()
+    lengths = {}
+    for aid, secs in zip(A.IDS, (1.0, 1.5, 0.5)):
+        lengths[aid] = _ann_write_wav(os.path.join(work, aid + ".wav"),
+                                      seconds=secs)
+    cfg = {"device": device,
+           "files": {aid: aid + ".wav" for aid in A.IDS}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    return work, path, lengths
+
+
+def test_announce_interlock_matrix():
+    section("announcements: the interlock, every scheduler state times "
+            "every button")
+    from ltcplay import schedule as sch_mod
+    A = _ann()
+    states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
+              sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
+    check(len(set(states)) == 8,
+          "the matrix must cover all 8 scheduler states")
+    blocked_states = {sch_mod.SHOW, sch_mod.PAUSED}
+    for state in states + (None,):
+        refusal = A.interlock_refusal(state)
+        if state is None:
+            check(refusal is not None and "inert" in refusal,
+                  f"no scheduler: announcements must be inert, got "
+                  f"{refusal!r}")
+        elif state in blocked_states:
+            check(refusal is not None and refusal.endswith("."),
+                  f"{state}: a show running or paused must refuse, got "
+                  f"{refusal!r}")
+        else:
+            check(refusal is None,
+                  f"{state}: announcements must be allowed, got {refusal!r}")
+        _no_dashes(refusal or "", f"interlock refusal in {state}")
+    # Abort is the only way out of SHOW or PAUSED in the real machine, and it
+    # always lands in STANDBY, so the interlock never has to remember Abort
+    # happened; it only has to ask the scheduler what is true right now.
+    check(sch_mod.ALLOWED[sch_mod.ABORT] ==
+          frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
+          "Abort must be exactly the exit from the two blocked states")
+
+    work, cfg, _lengths = _ann_workdir()
+    for state in states + (None,):
+        blocked = state is None or state in blocked_states
+        svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=(lambda s=state: s))
+        for aid in A.IDS:
+            if blocked:
+                try:
+                    svc.play(aid, "Andy", "rack screen")
+                    check(False, f"{state}: {aid} must be refused")
+                except ValueError as e:
+                    check(str(e).endswith("."),
+                          f"{state}/{aid}: refusal must end with a full "
+                          f"stop: {e!r}")
+                check(svc.playing is None,
+                      f"{state}: a refused press must not start anything")
+            else:
+                svc.play(aid, "Andy", "rack screen")
+                check(svc.playing == aid,
+                      f"{state}: {aid} must be allowed to play")
+                svc.stop("Andy", "rack screen")
+                check(svc.playing is None,
+                      "Stop must clear it for the next id")
+    print("  ok")
+
+
+def test_announce_single_flight():
+    section("announcements: one at a time, a second press is refused, "
+            "not queued")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "the first press should start playing")
+    try:
+        svc.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "a second press while one plays must be refused")
+    except ValueError as e:
+        check("already playing" in str(e), f"the refusal must say so: {e}")
+    check(svc.playing == A.DELAYED,
+          "the second press must not queue or replace the first")
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "pressing the SAME one again while it plays must "
+                     "also be refused")
+    except ValueError as e:
+        check("already playing" in str(e), f"{e}")
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop must clear the playing announcement")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.playing == A.CANCELLATION,
+          "after Stop, a different one may play")
+    print("  ok")
+
+
+def test_announce_operator_validation():
+    section("announcements: Play and Stop both name an operator on the "
+            "list and a screen, like the scheduler")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+
+    def svc():
+        return A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                 state_provider=lambda: "IDLE")
+
+    for who, screen, must in (("", "rack screen", "who pressed it"),
+                              ("Andy", "", "which screen"),
+                              ("  ", " ", "who pressed it and which "
+                                          "screen"),
+                              ("Bob", "rack screen",
+                               "not on the operator list")):
+        s = svc()
+        try:
+            s.play(A.DELAYED, who, screen)
+            check(False, f"Play with who={who!r} screen={screen!r} must "
+                         f"be refused")
+        except ValueError as e:
+            check(must in str(e), f"Play with who={who!r} screen={screen!r} "
+                                  f"must name what is wrong: {e}")
+        check(s.playing is None, "a refused Play must not start")
+        s2 = svc()
+        s2.play(A.DELAYED, "Andy", "rack screen")
+        try:
+            s2.stop(who, screen)
+            check(False, f"Stop with who={who!r} screen={screen!r} must "
+                         f"be refused")
+        except ValueError as e:
+            check(must in str(e), f"Stop with who={who!r} screen={screen!r} "
+                                  f"must name what is wrong: {e}")
+        check(s2.playing == A.DELAYED,
+              "a refused Stop must not touch what is playing")
+    for who in ("Jeff", "andy", " Andy "):
+        s = svc()
+        s.play(A.DELAYED, who, "rack screen")
+        check(s.playing == A.DELAYED,
+              f"{who!r} is on the default operator list")
+    other = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                              state_provider=lambda: "IDLE")
+    other.operators = ("Casey",)
+    try:
+        other.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "once the list is Casey only, Andy must be refused")
+    except ValueError as e:
+        check("Casey" in str(e), f"{e}")
+    other.play(A.DELAYED, "Casey", "rack screen")
+    check(other.playing == A.DELAYED, "Casey is on this machine's list")
+    print("  ok")
+
+
+def test_announce_missing_files_at_startup():
+    section("announcements: a missing or broken file is caught at "
+            "startup, never at the press")
+    A = _ann()
+    work = tempfile.mkdtemp()
+    good = os.path.join(work, "delayed.wav")
+    _ann_write_wav(good, seconds=1.0)
+    broken = os.path.join(work, "cancellation.wav")
+    with open(broken, "wb") as fh:
+        fh.write(b"not a wav file at all")
+    # cannot_continue.wav is simply never written: missing.
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id[A.DELAYED]["available"]
+          and abs(by_id[A.DELAYED]["length_s"] - 1.0) < 1e-6,
+          f"a good file must be available with its real length: "
+          f"{by_id[A.DELAYED]}")
+    check(not by_id[A.CANCELLATION]["available"]
+          and by_id[A.CANCELLATION]["reason"],
+          f"a broken WAV must be unavailable with a reason: "
+          f"{by_id[A.CANCELLATION]}")
+    check(not by_id[A.CANNOT_CONTINUE]["available"]
+          and "does not exist" in by_id[A.CANNOT_CONTINUE]["reason"],
+          f"a missing file must say it does not exist: "
+          f"{by_id[A.CANNOT_CONTINUE]}")
+    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+        try:
+            svc.play(aid, "Andy", "rack screen")
+            check(False, f"playing an unavailable file ({aid}) must be "
+                         f"refused")
+        except ValueError as e:
+            check("not available" in str(e), f"{e}")
+    # Deleting the good file AFTER startup must not change its reported
+    # availability: discovery happens once, at startup, never at the press.
+    os.remove(good)
+    by_id2 = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id2[A.DELAYED]["available"],
+          "availability must never be re-probed after startup")
+    print("  ok")
+
+
+def test_announce_device_missing_renamed_reappearing():
+    section("announcements: the output device by name, missing, renamed, "
+            "and back")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    st = svc.status()
+    check(st["device_available"], f"MOTU M4 should resolve: {st}")
+    removed = sd.devices.pop(1)              # "MOTU M4" is index 1
+    check(removed["name"] == "MOTU M4", "test setup: removed the right one")
+    st2 = svc.status()
+    check(not st2["device_available"]
+          and "not attached" in st2["device_reason"],
+          f"a missing device must say so plainly: {st2}")
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "playing on a missing device must be refused")
+    except ValueError as e:
+        check("not attached" in str(e), f"{e}")
+    check(svc.playing is None, "a refused play must not start")
+    check(sd.output_opened == [],
+          "a refused play must never open a stream on some other device: "
+          "there is no silent fallback")
+    # Plug it back in, at a DIFFERENT index, exactly like a real replug.
+    sd.devices.insert(0, removed)
+    st3 = svc.status()
+    check(st3["device_available"],
+          f"a reappeared device must be found by name again: {st3}")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "it must play now that it is back")
+    check(sd.output_opened[-1][0] == 0,
+          f"it must open at its NEW index, found by name: "
+          f"{sd.output_opened}")
+    print("  ok")
+
+
+def test_announce_progress_and_stop():
+    section("announcements: length known before playing, live progress, "
+            "Stop cuts it off")
+    A = _ann()
+    work, cfg, lengths = _ann_workdir()
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    d = {i["id"]: i for i in svc.status()["announcements"]}
+    check(abs(d[A.DELAYED]["length_s"] - lengths[A.DELAYED]) < 1e-6,
+          "the length must be known before it is ever played")
+    check(svc.status()["playing"] is None, "nothing plays yet")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    check(stream.started, "the output stream must actually be started")
+    rate = 8000
+    half = int(rate * lengths[A.DELAYED] / 2)
+    stream.pump(half)
+    st2 = svc.status()
+    check(st2["playing"]["id"] == A.DELAYED, "still playing at the halfway "
+                                             "point")
+    check(abs(st2["playing"]["elapsed_s"] - half / rate) < 1e-6,
+          f"progress must reflect exactly the frames handed to the "
+          f"device, no clock involved: {st2['playing']}")
+    remaining = int(rate * lengths[A.DELAYED]) - half + 10
+    stream.pump(remaining)
+    st3 = svc.status()
+    check(st3["playing"] is None,
+          "a finished announcement must clear itself on the next look, "
+          "with no operator action and no wall clock")
+    check(any(r["outcome"] == "finished" for r in st3["journal"]),
+          "the natural finish must be journalled")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    stream2 = sd.output_streams[-1]
+    stream2.pump(100)
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop must end it immediately")
+    check(stream2.stopped and stream2.closed,
+          "Stop must actually close the device stream")
+    print("  ok")
+
+
+def test_announce_logging_fields():
+    section("announcements: every play, stop, refusal and failure is "
+            "logged, in plain English")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    svc.play(A.DELAYED, "Andy", "rack screen")                  # started
+    try:
+        svc.play(A.CANCELLATION, "Andy", "rack screen")         # refused
+    except ValueError:
+        pass
+    svc.stop("Andy", "rack screen")                             # stopped
+    svc.stop("Andy", "rack screen")                             # no-op
+    sd2 = FakeSD()
+    sd2.devices.pop(1)
+    svc2 = A.AnnounceService(cfg, sd=sd2, operators_folder=work,
+                             state_provider=lambda: "STANDBY")
+    try:
+        svc2.play(A.DELAYED, "Andy", "rack screen")             # failed
+    except ValueError:
+        pass
+    rows = list(svc.journal) + list(svc2.journal)
+    outcomes = {r["outcome"] for r in rows}
+    check({"started", "refused", "stopped", "no-op", "failed"} <= outcomes,
+          f"every category must appear in the journal: {outcomes}")
+    for r in rows:
+        check(r["actor"] in ("operator", "system"),
+              f"a log row must name an actor: {r}")
+        check(bool(r["text"]), f"a log row must have a sentence: {r}")
+        _no_dashes(r["text"], "announce journal")
+        check("at" in r and r["at"], f"a log row must carry a time: {r}")
+        check("show_state" in r, f"a log row must carry the show state "
+                                 f"at the time, without exception: {r}")
+        if r["action"] in ("play", "stop") and r["outcome"] != "refused":
+            check(r["who"], f"an operator action should carry who did "
+                            f"it: {r}")
+        if r["announcement"]:
+            check(r["file"] and r["announcement"] in A.IDS,
+                  f"a per-announcement row must carry the file and which "
+                  f"one: {r}")
+    print("  ok")
+
+
+def test_announce_routes():
+    section("announcements: routes only when configured, wired to the "
+            "scheduler when both are")
+    A = _ann()
+    import json as _json
+    import threading as _threading
+    import urllib.error
+    import urllib.request
+    from ltcplay import web as web_mod
+    work, cfg, _lengths = _ann_workdir()
+
+    def call(base, route, body=None):
+        data = _json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            base + route, data=data,
+            method=("POST" if body is not None else "GET"),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, _json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read() or b"{}")
+
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port, announce=ann)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(httpd.schedule is None and httpd.announce is ann,
+              "announcements alone, no scheduler")
+        code, st = call(base, "/api/announce/status")
+        check(code == 200 and len(st["announcements"]) == 3,
+              f"GET /api/announce/status: {code} {st}")
+        check(st["blocked"] and "inert" in st["blocked"],
+              f"with no scheduler wired, announcements report inert: {st}")
+        code, bad = call(base, "/api/announce/play",
+                         {"id": A.DELAYED, "who": "Andy",
+                          "screen": "rack screen"})
+        check(code == 400 and "inert" in bad.get("error", ""),
+              f"a play attempt with no scheduler is a 400: {code} {bad}")
+        check(A.AnnounceService.POST_ROUTES ==
+              ("/api/announce/play", "/api/announce/stop"),
+              "only play and stop can be posted")
+        code, _r = call(base, "/api/announce/status", {"id": "x"})
+        check(code == 404, "POST to the status route is not a thing")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # Both configured: the announce service reads the scheduler's own
+    # state, live, through nothing but the provider web.serve wires up.
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc())
+    now = [_den(S, 18, 4, 12)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port, schedule=svc, announce=ann2)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(wait_for(lambda: svc.machine is not None),
+              "the scheduler settles")
+        code, st = call(base, "/api/announce/status")
+        check(code == 200 and st["show_state"] == svc.machine.state,
+              f"the announce status must read the SAME state the "
+              f"scheduler is in: {st['show_state']} vs "
+              f"{svc.machine.state}")
+        now[0] = _den(S, 18, 20)
+        svc.tick()
+        check(svc.machine.state == S.SHOW,
+              f"setup: the scheduler should be running a show at 18:20: "
+              f"{svc.machine.state}")
+        code, bad = call(base, "/api/announce/play",
+                         {"id": A.DELAYED, "who": "Andy",
+                          "screen": "rack screen"})
+        check(code == 400 and "running" in bad.get("error", ""),
+              f"a show running must refuse the announcement through the "
+              f"live link: {code} {bad}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        svc.stop()
+
+    # Not configured at all: every announce route is a plain 404.
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(httpd.announce is None, "no announce config, no service")
+        code, _r = call(base, "/api/announce/status")
+        check(code == 404, f"GET without --announce is 404, got {code}")
+        code, _r = call(base, "/api/announce/play", {"id": A.DELAYED})
+        check(code == 404, f"POST without --announce is 404, got {code}")
+        code, _r = call(base, "/api/state")
+        check(code == 200, "the rest of the page is untouched")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_announcements():
+    section("announcements: the GPL path does not import them")
+    import ast
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    pkg = os.path.join(root, "ltcplay")
+    port = _free_port()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('announce')]\n"
+        "failed = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        importlib.import_module('ltcplay.' + m)\n"
+        "    except Exception as e:\n"
+        "        failed.append(m)\n"
+        "from ltcplay import web, cli\n"
+        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/announce/status',):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
+        "    'none': h.announce is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'announce' in "
+        "m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check("web" in out["mods"] and "cli" in out["mods"]
+          and "session" in out["mods"], f"the GPL modules were all "
+                                       f"imported: {out['mods']}")
+    check(out["loaded"] == [], f"the GPL path loaded announcements: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404] and out["none"],
+          f"with no announcements configured the route is 404, got "
+          f"{out['codes']}")
+
+    def top_level(node):
+        """Everything that runs at import time: not function bodies."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            yield child
+            yield from top_level(child)
+
+    for name in sorted(os.listdir(pkg)):
+        if not name.endswith(".py") or name.startswith("announce"):
+            continue
+        tree = ast.parse(open(os.path.join(pkg, name),
+                              encoding="utf-8").read())
+        for sub in top_level(tree):
+            names = []
+            if isinstance(sub, ast.Import):
+                names = [a.name for a in sub.names]
+            elif isinstance(sub, ast.ImportFrom):
+                names = [sub.module or ""] + [a.name for a in sub.names]
+            check(not any("announce" in n for n in names),
+                  f"ltcplay/{name} imports announcements at module level")
+
+    files = [os.path.join(root, n) for n in os.listdir(root)
+             if n.endswith(".command") or n == "ltc"]
+    tools = os.path.join(root, "Tools")
+    if os.path.isdir(tools):
+        files += [os.path.join(tools, n) for n in os.listdir(tools)]
+    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
+        files += [os.path.join(dirpath, n) for n in names]
+    for f in files:
+        try:
+            text = open(f, errors="replace", encoding="utf-8").read()
+        except OSError:
+            continue
+        check("--announce" not in text,
+              f"{os.path.relpath(f, root)} turns announcements on")
+    print("  ok")
+
+
 def test_arttimecode_packet_byte_for_byte():
     section("Art-Net timecode: the packet, byte for byte")
     # Art-Net 4 Protocol Release V1.4, document revision 1.4dp 23/10/2025:
@@ -13561,6 +14162,15 @@ if __name__ == "__main__":
     test_schedule_operator_list()
     test_schedule_a_paused_show_is_never_overlapped()
     test_schedule_a_clock_step_during_a_pause()
+    test_announce_interlock_matrix()
+    test_announce_single_flight()
+    test_announce_operator_validation()
+    test_announce_missing_files_at_startup()
+    test_announce_device_missing_renamed_reappearing()
+    test_announce_progress_and_stop()
+    test_announce_logging_fields()
+    test_announce_routes()
+    test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
