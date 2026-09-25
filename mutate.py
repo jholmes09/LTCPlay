@@ -941,6 +941,14 @@ MUTATIONS = [
   "            next_at += period\n"
   "            time.sleep(period)"),
 
+ ("the run loop's heartbeat reads the other clock", "ltcplay/cli.py",
+  "        # started, and so last_beat, is on sess.started_at's clock:\n"
+  "        # player._now() (perf_counter). Reading time.monotonic() here would\n"
+  "        # compare it against a clock with an unrelated epoch -- fine on a\n"
+  "        # Mac, where the two happen to agree, and nonsense on Windows.\n"
+  "        now = _now()",
+  "        now = time.monotonic()"),
+
  ("skipping a free run does nothing", "ltcplay/player.py",
   "        self.freerun_epoch = _now() - at",
   "        pass  # noqa"),

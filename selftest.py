@@ -1078,6 +1078,127 @@ def test_windows_pixel_clock_choice():
     print("  ok")
 
 
+def test_no_clock_is_ever_mixed_with_another():
+    section("perf_counter and monotonic diverging must never produce a bad age")
+    # test_windows_pixel_clock_choice and _Stepped both fake monotonic and
+    # perf_counter to the SAME value, which cannot catch code that reads one
+    # where it should read the other: on a Mac the two agree anyway, so a
+    # mixed read is invisible there too. A PR #8 review found exactly that
+    # in cli.py's cmd_run: `started = sess.started_at` is _now() (perf_
+    # counter, session.py), but tick_ui's heartbeat did
+    # `now = time.monotonic(); ... now - last_beat[0]`. Nothing here or in
+    # _Stepped would have caught it.
+    #
+    # So this fakes monotonic to a LARGE, constant offset from perf_counter
+    # -- what it is free to be on Windows, where one is GetTickCount64 and
+    # the other QueryPerformanceCounter, unrelated counters with unrelated
+    # epochs -- for the duration of a short, real Session (genuine LTC,
+    # decoded for real, through FakeSD) and one real run through cmd_run's
+    # own tick_ui, via the actual CLI entry point. A same-clock comparison
+    # is unaffected: the offset is constant, so it cancels out of any
+    # `time.monotonic() - time.monotonic()`. Only a MIXED comparison blows
+    # up, by roughly the offset, which is exactly what a diverging Windows
+    # pair could do for real -- so this is the strongest guard against a
+    # third clock-mixing bug the current tests do not already give.
+    import json, tempfile, threading
+    import time as time_mod
+    from ltcplay.session import Session
+    from ltcplay import cli as cli_mod
+    import ltcplay.player as plmod
+
+    work = tempfile.mkdtemp()
+    net = os.path.join(work, "net.xml")
+    open(net, "w").write(
+        '<Networks>\n  <Controller Name="L" IP="127.0.0.1" '
+        'ActiveState="Active">\n    <network NetworkType="ArtNET" '
+        'ComPort="127.0.0.1" BaudRate="1" MaxChannels="510"/>\n'
+        '  </Controller>\n</Networks>\n')
+    tlp = os.path.join(work, "t_timeline.json")
+    json.dump({"name": "t", "fps": 30, "show_dir": work,
+               "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq", "name": "A"}]},
+              open(tlp, "w"))
+    open(os.path.join(work, "A.fseq"), "wb").write(b"not an fseq")
+
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+
+    OFFSET_S = 1e5   # what GetTickCount64 and QueryPerformanceCounter are
+                     # free to differ by; nothing ties the two together
+    real_monotonic = time_mod.monotonic
+
+    def fake_monotonic():
+        return time_mod.perf_counter() + OFFSET_S
+
+    before_threads = {t.name for t in threading.enumerate()}
+    sess = None
+    try:
+        # Patch the real `time` module, not just player.py's reference to
+        # it: every ltcplay module does `import time`, and a genuine
+        # divergent implementation would be visible to all of them, not
+        # only to the one this suite already knows to fake.
+        time_mod.monotonic = fake_monotonic
+
+        # Part 1: a short real Session, genuine LTC decoded through a fake
+        # input, and the same age arithmetic session.snapshot() (the web
+        # page) and display.render() (the terminal) both do.
+        sd = FakeSD(ltc_channel=2)
+        sess = Session(tlp, networks=net, no_log=True, sd=sd,
+                       device="MOTU M4", channel=2, no_output=True)
+        sess.open()
+        sess.start()
+        check(wait_for(lambda: sess.player.ltc_frames_in > 5, timeout=3.0),
+              "no timecode was decoded in 3s under the injected clock offset")
+        snap = sess.snapshot()
+        check(snap["uptime"] is not None and 0 <= snap["uptime"] < 60,
+              f"snapshot uptime is not a sane small number under a "
+              f"diverging monotonic: {snap['uptime']}")
+        check(snap["ltc_age"] is not None and 0 <= snap["ltc_age"] < 60,
+              f"snapshot ltc_age is not a sane small number under a "
+              f"diverging monotonic: {snap['ltc_age']}")
+        sess.stop()
+        sess = None
+
+        # Part 2: the real cmd_run / tick_ui path, through the actual CLI
+        # entry point (cli.main), not a copy of its logic. A heartbeat is
+        # due at 60s of wall time; this run is a couple of seconds and must
+        # log NONE. Under the bug this test guards, the injected offset
+        # makes the very first tick read as ~1e5 seconds since start, and a
+        # heartbeat fires immediately.
+        wav = os.path.join(work, "tc.wav")
+        rc = cli_mod.main(["gen", wav, "--start", "01:00:00:00",
+                           "--seconds", "1.5"])
+        check(rc == 0, "generating the test LTC WAV failed")
+        log_path = os.path.join(work, "run.log")
+        rc = cli_mod.main(["run", tlp, "--networks", net, "--wav", wav,
+                           "--no-output", "--quiet", "--log", log_path])
+        check(rc == 0, "cmd_run itself failed under the injected clock offset")
+        logged = (open(log_path, encoding="utf-8").read()
+                 if os.path.exists(log_path) else "")
+        check("heartbeat" not in logged,
+              f"a heartbeat was logged during a 1.5s run: the run loop's "
+              f"clock is mixed with another one -- {logged[-400:]!r}")
+    finally:
+        time_mod.monotonic = real_monotonic
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+    leaked = [t.name for t in threading.enumerate()
+             if t.name not in before_threads and t.name.startswith("ltcplay")]
+    check(not leaked, f"threads left behind: {leaked}")
+    print("  ok")
+
+
 def test_socket_healing():
     section("the output socket rebuilds itself")
     class U:
@@ -13268,6 +13389,7 @@ if __name__ == "__main__":
     test_pixel_output_frame_jitter()
     test_pixel_pacing_never_accumulates_error()
     test_windows_pixel_clock_choice()
+    test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()
     test_socket_healing()
     test_display_survives()
