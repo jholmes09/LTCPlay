@@ -3774,9 +3774,33 @@ def test_a_read_only_folder_is_a_sentence():
     subprocess.run([sys.executable, "-m", "ltcplay.cli", "gen", wav,
                     "--start", "01:00:00:00", "--seconds", "2"],
                    capture_output=True, text=True, cwd=here)
+    # On Windows the show log never lives beside the show folder (see
+    # ltcplay/appdata.py: "On Windows program data never goes beside the
+    # show, which may be a synced folder"). It lives under
+    # %LOCALAPPDATA%\ltcplay instead, so blocking the show folder proves
+    # nothing there -- the run below would open its log just fine and
+    # never print either message this checks for. Block the real
+    # Windows destination instead, under a LOCALAPPDATA this test owns
+    # rather than the operator's own.
+    run_env = None
+    if sys.platform == "win32":
+        from ltcplay import appdata as _appdata
+        fake_local = tempfile.mkdtemp()
+        saved_local = os.environ.get("LOCALAPPDATA")
+        os.environ["LOCALAPPDATA"] = fake_local
+        try:
+            log_p = _appdata.log_path()
+        finally:
+            if saved_local is None:
+                os.environ.pop("LOCALAPPDATA", None)
+            else:
+                os.environ["LOCALAPPDATA"] = saved_local
+        os.makedirs(log_p, exist_ok=True)
+        run_env = dict(os.environ, LOCALAPPDATA=fake_local)
     r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "run", tlp,
                         "--wav", wav, "--no-output", "--quiet"],
-                       capture_output=True, text=True, cwd=here, timeout=60)
+                       capture_output=True, text=True, cwd=here, timeout=60,
+                       env=run_env)
     out = r.stdout + r.stderr
     check("Traceback" not in out,
           f"a run in a folder it cannot write to printed a stack trace:\n"
