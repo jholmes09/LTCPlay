@@ -1339,6 +1339,167 @@ MUTATIONS = [
   '           if "beyond" in name.lower() or "laser" in name.lower()]',
   '    return [name for name, _ in dests\n'
   '           if name.strip().lower() == "beyond"]'),
+ # -- the night journal (Fire & Ice logging, handoff section 9) --------
+ ("a journal event may have a blank actor", "ltcplay/journal.py",
+  '    if actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor',
+  '    if actor and actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor'),
+
+ ("an operator event may leave out who or which screen",
+  "ltcplay/journal.py",
+  '    if actor == "operator" and not (who and screen):',
+  '    if False:'),
+
+ ("a fault may be logged as just error", "ltcplay/journal.py",
+  '    if len(meaningful) < 3:',
+  '    if not words:'),
+
+ ("the journal line loses its seconds and its two spaces",
+  "ltcplay/journal.py",
+  '    line = f"{local:%H:%M:%S}  {text}"',
+  '    line = f"{local:%H:%M} {text}"'),
+
+ ("an operator line stops naming the operator", "ltcplay/journal.py",
+  '    if actor == "operator" and who.lower() not in text.lower():',
+  '    if False:'),
+
+ ("a journal line can run onto a second line", "ltcplay/journal.py",
+  '    return " ".join(text.split())',
+  '    return text'),
+
+ ("the page shows its own words, not the file's line", "ltcplay/journal.py",
+  '            out.append({"line": r["line"], "at": r.get("at"),',
+  '            out.append({"line": r["text"], "at": r.get("at"),'),
+
+ ("the page's last lines come oldest first", "ltcplay/journal.py",
+  '            rows = list(self.memory)[-n:][::-1]',
+  '            rows = list(self.memory)[-n:]'),
+
+ ("a night file is rewritten instead of appended to", "ltcplay/journal.py",
+  '    return open(path, "ab", buffering=0)',
+  '    return open(path, "wb", buffering=0)'),
+
+ ("a line cut short by a full disk is left unfinished",
+  "ltcplay/journal.py",
+  '            if cut:\n                # A full disk cut the last line short.',
+  '            if False:\n                # A full disk cut the last line short.'),
+
+ ("a record half written is written twice on the retry",
+  "ltcplay/journal.py",
+  '                e[1].add(stream)\n                self.writes += 1',
+  '                self.writes += 1'),
+
+ ("the machine log is not written", "ltcplay/journal.py",
+  '                            ("jsonl", machine_name(night), _jsonl),\n',
+  ''),
+
+ ("per-frame state is written to disk", "ltcplay/journal.py",
+  '            self.ring.append((at or self.clock(), dict(data)))',
+  '            self.ring.append((at or self.clock(), dict(data)))\n'
+  '        self.record(actor="system", action="sample", outcome="done",\n'
+  '                    reason="sample", text="A state sample.")'),
+
+ ("the ring buffer keeps 30 s instead of 60", "ltcplay/journal.py",
+  'RING_SIZE = RING_SECONDS * RING_HZ',
+  'RING_SIZE = RING_SECONDS * RING_HZ // 2'),
+
+ ("the state is sampled once a second", "ltcplay/schedule_service.py",
+  '    SAMPLE_S = 1.0 / journal.RING_HZ',
+  '    SAMPLE_S = 1.0'),
+
+ ("a write failure is not caught by the journal", "ltcplay/journal.py",
+  '                except OSError as e:\n                    self._stop(now, self._why(e))',
+  '                except KeyError as e:\n                    self._stop(now, self._why(e))'),
+
+ ("the service lets a journal failure into the scheduler",
+  "ltcplay/schedule_service.py",
+  '        try:\n            return fn(*args, **kw)\n        except Exception as e:',
+  '        if True:\n            return fn(*args, **kw)\n        try:\n            pass\n        except Exception as e:'),
+
+ ("a full disk raises no health flag", "ltcplay/journal.py",
+  '        self.stopped_why = why\n        self._retry_at',
+  '        self._retry_at'),
+
+ ("the free space floor is ignored", "ltcplay/journal.py",
+  '        if self._free_mb is not None and self._free_mb < self.free_floor_mb:',
+  '        if False:'),
+
+ ("the night files are written without their lock", "ltcplay/journal.py",
+  '            _lock(lk, LOCK_TRIES, LOCK_WAIT_S, self._sleep)\n            try:\n                nights = []',
+  '            try:\n                nights = []'),
+
+ ("a stopped disk is tried again on every line", "ltcplay/journal.py",
+  '            if self.stopped_why and not force and self._retry_at is not None \\',
+  '            if False and self._retry_at is not None \\'),
+
+ ("the lines waiting for a full disk are thrown away", "ltcplay/journal.py",
+  '        self._check_tails = True\n        if first:',
+  '        self._check_tails = True\n        self._pending.clear()\n        if first:'),
+
+ ("pruning keeps 89 days instead of 90", "ltcplay/journal.py",
+  '        cutoff = today - timedelta(days=self.keep_days)',
+  '        cutoff = today - timedelta(days=self.keep_days - 1)'),
+
+ ("pruning goes by the file's timestamp, not its name",
+  "ltcplay/journal.py",
+  '            if d >= cutoff:\n                continue',
+  '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
+  '                    self.folder, name)), timezone.utc).date() >= cutoff:\n'
+  '                continue'),
+
+ ("pruning removes files it did not write", "ltcplay/journal.py",
+  '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
+  '                   r"\\.(journal\\.txt|jsonl|summary\\.md)")'),
+
+ ("a line goes to the UTC date's file, not the night's",
+  "ltcplay/journal.py",
+  '        rec = build_event(at=local, night=night or local.date(),',
+  '        rec = build_event(at=local, night=night or at.astimezone(\n'
+  '                              timezone.utc).date(),'),
+
+ ("a restart reads as a first start", "ltcplay/journal.py",
+  '        if prev is None:\n            text = (f"ltcplay started ({build}).',
+  '        if True:\n            text = (f"ltcplay started ({build}).'),
+
+ ("the summary leaves out the faults", "ltcplay/journal.py",
+  '    out += _bullets([r["line"] for r in faults], "None.")',
+  '    out += _bullets([], "None.")'),
+
+ ("the summary leaves out the announcements", "ltcplay/journal.py",
+  '    out += _bullets([r["line"] for r in anns], "None played.")',
+  '    out += _bullets([], "None played.")'),
+
+ ("End night writes no summary", "ltcplay/schedule_service.py",
+  '            self._write_summary(how)\n        return out',
+  '            pass\n        return out'),
+
+ ("the incident bundle leaves out the last 60 s of state",
+  "ltcplay/journal.py",
+  '        state = self.last_state(now=self.clock())',
+  '        state = []'),
+
+ ("the incident bundle claims flame frames it does not have",
+  "ltcplay/journal.py",
+  '        if self.flames is None:\n            return {"available": False,\n'
+  '                    "note": "Not available: there is no flame bus in this "',
+  '        if self.flames is None:\n            return {"available": True,\n'
+  '                    "note": "Not available: there is no flame bus in this "'),
+
+ ("the incident bundle leaves out the config", "ltcplay/journal.py",
+  '        put("config.json", js(config if config is not None else',
+  '        put("config.json", js({"note": "none"} if config is not None else'),
+
+ ("the scheduler's own lines stay in memory only, as before",
+  "ltcplay/schedule_service.py",
+  '        for le in out.log:\n            self._record_logevent(le)',
+  '        for le in out.log:\n            self.journal.append(le.to_dict())'),
+
+ ("the service never prunes", "ltcplay/schedule_service.py",
+  '            if first:\n                self._log(self.logbook.prune, d, state=self._state_name())',
+  '            if False:\n                self._log(self.logbook.prune, d, state=self._state_name())'),
+
+ ("the GPL path loads the journal", "ltcplay/web.py",
+  'from . import brand as brand_mod\n',
+  'from . import brand as brand_mod\nfrom . import journal as _journal\n'),
 
 ]
 

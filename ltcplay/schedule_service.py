@@ -11,6 +11,10 @@ performs them, because the MadMapper transport does not exist yet. Every
 effect is written to the journal as "not performed" and a show the engine
 starts is ended by the clock after show_len_s, marked as a dry run. There is
 no route here that starts, stops or arms anything, and no switch to make it.
+
+Everything it decides goes to the night journal and the machine log
+(journal.py), written together from the same event, with the last lines
+kept in memory for the page.
 """
 import json
 import os
@@ -18,11 +22,11 @@ import socket
 import struct
 import threading
 import time as _time
-from collections import deque
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import appdata
+from . import journal
 from . import schedule as sch
 from . import settings as settings_mod
 
@@ -327,10 +331,13 @@ class Service:
     """
 
     TICK_S = 0.25
-    JOURNAL = 400
+    JOURNAL = journal.MEMORY_LINES
+    # The ring buffer's pace: 5 samples a second (handoff section 9).
+    SAMPLE_S = 1.0 / journal.RING_HZ
 
     def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
-                 clock_limit_s=CLOCK_CHECK_LIMIT_S):
+                 clock_limit_s=CLOCK_CHECK_LIMIT_S, log_dir=None,
+                 flame_provider=None, logbook=None):
         self.path = path
         self.clock = clock or _utc_now
         self.ntp_query = ntp_query
@@ -341,51 +348,126 @@ class Service:
         self.rule = None
         self.error = ""
         self.machine = None
-        self.journal = deque(maxlen=self.JOURNAL)
         self.clock_check = None
+        # The night journal and the machine log. Given a state folder (the
+        # selftest's), the logs go in it; otherwise in this machine's own
+        # data folder, %LOCALAPPDATA%\ltcplay\nights on Windows.
+        if log_dir is None and state_dir is not None:
+            log_dir = os.path.join(state_dir, journal.FOLDER)
+        self.logbook = logbook or journal.Logbook(
+            log_dir, clock=self.clock, tz=self._tz,
+            flame_provider=flame_provider, memory=self.JOURNAL,
+            state=self._state_name)
+        # The page's lines ARE the journal's records: one deque, not a copy.
+        self.journal = self.logbook.memory
+        self._summarised = set()
+        self._looked_back = False
         self.operators, why = load_operators(self.state_dir)
-        if why:
-            self._journal_line("system", why, action="operators")
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
+        self._sample_thread = None
         self._started = False
-        self.reload()
+        failed = self._load_rule()
+        self._log(self.logbook.started, state=self._state_name(),
+                  night=self._night())
+        if failed:
+            self._journal_rule_error()
+        if why:
+            self._journal_line("system", why, action="operators")
 
     # -- the rule -------------------------------------------------------
     def reload(self):
         """Read the rule file. A bad file leaves the scheduler with no night
         and the reason on the page; it never takes the server down with it."""
         with self.lock:
-            try:
-                self.rule = load_rule(self.path)
-                self.error = ""
-            except (ValueError, OSError) as e:
-                self.rule = None
-                self.error = str(e)
-                self.machine = None
-                self._journal_line("system", "The schedule file was not "
-                                   "loaded, so no show is scheduled. " +
-                                   self.error)
+            if self._load_rule():
+                self._journal_rule_error()
             return self.rule
 
+    def _load_rule(self):
+        """True when the rule file could not be used."""
+        try:
+            self.rule = load_rule(self.path)
+            self.error = ""
+            return False
+        except (ValueError, OSError) as e:
+            self.rule = None
+            self.error = str(e)
+            self.machine = None
+            return True
+
+    def _journal_rule_error(self):
+        self._journal_line("system", "The schedule file was not loaded, so "
+                           "no show is scheduled. " + self.error,
+                           action="load schedule", outcome="failed",
+                           fault=True)
+
     # -- journal ----------------------------------------------------------
+    # What the engine calls a fault. Each of these lines is written as a
+    # fault, so it has to be a sentence, and it lands in the summary's list.
+    FAULT_OUTCOMES = ("fault", "flagged", "recorded as a fault")
+
+    def _tz(self):
+        return self.rule.tz if self.rule else None
+
+    def _state_name(self):
+        m = self.machine
+        if m is not None:
+            return m.state
+        return "NO SCHEDULE" if self.rule is None else sch.BOOT
+
+    def _night(self, now=None):
+        """Which night a line belongs to: tonight's list while there is
+        one, so a show that runs past midnight stays on its own night."""
+        if self.machine is not None:
+            return self.machine.date
+        return self.logbook.night_of(now)
+
+    def _log(self, fn, *args, **kw):
+        """Call the journal. Nothing it does, or fails to do, may stop the
+        scheduler: a bug in a log line is itself written down, as a fault,
+        and the night carries on."""
+        try:
+            return fn(*args, **kw)
+        except Exception as e:
+            try:
+                return self.logbook.fault(
+                    "system", f"A journal line could not be written as it "
+                    f"was made ({type(e).__name__}: {e}). That is a bug in "
+                    f"ltcplay; the scheduler carried on.",
+                    action="journal", state=self._state_name(),
+                    night=self._night())
+            except Exception:
+                return None
+
     def _journal_line(self, actor, text, **extra):
-        now = self.clock()
-        tz = self.rule.tz if self.rule else timezone.utc
-        row = {"at": now.astimezone(tz).isoformat(timespec="seconds"),
-               "state": self.machine.state if self.machine else "",
-               "to_state": self.machine.state if self.machine else "",
-               "actor": actor, "action": extra.pop("action", "note"),
-               "outcome": extra.pop("outcome", "done"),
-               "reason": extra.pop("reason", text), "show": None,
-               "screen": None, "who": None, "text": text}
-        row.update(extra)
-        self.journal.append(row)
+        fault = extra.pop("fault", False)
+        kw = dict(actor=actor, action=extra.pop("action", "note"),
+                  outcome=extra.pop("outcome", "done"),
+                  reason=extra.pop("reason", text), text=text,
+                  state=self._state_name(), night=self._night(),
+                  show=extra.pop("show", None), data=extra or None)
+        if fault:
+            kw["fault"] = True
+        return self._log(self.logbook.record, **kw)
+
+    def _record_logevent(self, le):
+        op = le.actor == "operator"
+        return self._log(
+            self.logbook.record, actor=le.actor, action=le.action,
+            outcome=le.outcome, reason=le.reason, text=le.text,
+            state=le.state, to_state=le.to_state, at=le.at,
+            night=self._night(), show=le.show or None,
+            # An operator event the engine refused for not naming who or
+            # which screen still says so in the journal, in words.
+            who=(le.who or "unnamed operator") if op else None,
+            screen=(le.screen or "unnamed screen") if op else None,
+            fault=le.outcome in self.FAULT_OUTCOMES)
 
     def _record(self, out, now):
         for le in out.log:
-            self.journal.append(le.to_dict())
+            self._record_logevent(le)
         for eff in out.effects:
             desc = eff.kind + (f" show {eff.show}" if eff.show else "") + \
                 (f" over {eff.seconds:g} s" if eff.seconds else "")
@@ -409,7 +491,71 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        if self.machine.state == sch.OFF and before is not None and \
+                before.state != sch.OFF and self.machine.slots:
+            # The night has closed, by End night or after its last show:
+            # the morning read goes beside the journal now.
+            how = (f"closed by {ev.who} with End night"
+                   if ev.kind == sch.END_NIGHT else
+                   "closed after the last show" if before.state != sch.BOOT
+                   else "closed at start up, every show having passed")
+            self._write_summary(how)
         return out
+
+    # -- the nightly summary ------------------------------------------------
+    def _slot_rows(self, m):
+        def hms(t):
+            return t.astimezone(m.tz).strftime("%H:%M:%S") if t else ""
+        rows = []
+        for s in sorted(m.slots, key=lambda s: (s.start, s.n)):
+            planned = sch.clock(s.start.astimezone(m.tz))
+            if s.planned is not None:
+                planned += f" (was {sch.clock(s.planned.astimezone(m.tz))})"
+            rows.append({"show": s.n, "planned": planned,
+                         "status": s.status, "reason": s.reason,
+                         "started": hms(s.fired_at),
+                         "ended": hms(s.ended_at)})
+        return rows
+
+    def _write_summary(self, how="", m=None):
+        m = m or self.machine
+        self._summarised.add(str(m.date))
+        kw = dict(state=m.state, slots=self._slot_rows(m), closed_by=how)
+        if self.logbook.threaded():
+            # Running for real: the summary reads and writes files, so it
+            # happens beside the scheduler, never inside a tick.
+            threading.Thread(target=self._log, daemon=True,
+                             name="ltcplay-summary",
+                             args=(self.logbook.write_summary, m.date),
+                             kwargs=kw).start()
+            return None
+        return self._log(self.logbook.write_summary, m.date, **kw)
+
+    def write_summary(self):
+        """Write tonight's summary now, as it stands."""
+        with self.lock:
+            if self.machine is None:
+                raise ValueError("There is no night loaded, so there is no "
+                                 "summary to write. " + self.error)
+            return self._write_summary("written on request")
+
+    def _look_back(self, d):
+        """Once per run: a night that ended without its summary (the
+        program was not running when it closed, or the power went) gets
+        one from its own journal, so the morning read is always there."""
+        if self._looked_back:
+            return
+        self._looked_back = True
+        prev = d - timedelta(days=1)
+        folder = self.logbook.folder
+        if os.path.exists(os.path.join(folder, journal.machine_name(prev))) \
+                and not os.path.exists(
+                    os.path.join(folder, journal.summary_name(prev))):
+            self._log(self.logbook.write_summary, prev,
+                      state=self._state_name(),
+                      closed_by="written the next day from the journal, "
+                                "because the night never closed while "
+                                "ltcplay was running")
 
     # -- tonight on disk --------------------------------------------------
     def _save_tonight(self):
@@ -424,7 +570,7 @@ class Service:
                    f"lose tonight's changes.")
             if msg != self.persist_error:
                 self._journal_line("system", msg, action="save tonight",
-                                   outcome="failed")
+                                   outcome="failed", fault=True)
             self.persist_error = msg
             return False
         if self.persist_error:
@@ -483,7 +629,7 @@ class Service:
             f"used: {str(e).rstrip('.')}. {where} Tonight starts again from "
             f"the schedule file, so edits made earlier tonight are lost. "
             f"Check tonight's list.",
-            action="load tonight", outcome="failed")
+            action="load tonight", outcome="failed", fault=True)
         # Zero on anything uncertain: a show may have fired moments ago.
         m, notes = sch.assume_the_worst(sch.new_night(self.rule, d), now)
         for text in notes:
@@ -509,8 +655,18 @@ class Service:
                 # Never replace a running night: a show started by hand at
                 # 23:58 finishes on yesterday's list.
                 return True
+            if str(self.machine.date) not in self._summarised and \
+                    self.machine.slots:
+                self._write_summary("written at midnight; the night was "
+                                    "never closed", self.machine)
+            self._looked_back = True
             self.machine = None
+            self._log(self.logbook.prune, d, state=self._state_name())
         if self.machine is None:
+            first = not self._looked_back
+            self._look_back(d)
+            if first:
+                self._log(self.logbook.prune, d, state=self._state_name())
             self.machine = replace(self._load_tonight(d, now),
                                    operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
@@ -555,9 +711,15 @@ class Service:
         if not thread:
             self.check_clock()
             return self
+        # From here the journal writes on its own thread, so a slow or full
+        # disk never holds up a tick.
+        self.logbook.start_writer()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="ltcplay-scheduler")
         self._thread.start()
+        self._sample_thread = threading.Thread(
+            target=self._sample_loop, daemon=True, name="ltcplay-state-ring")
+        self._sample_thread.start()
         self._clock_thread = threading.Thread(
             target=self._check_clock_safely, daemon=True,
             name="ltcplay-clock-check")
@@ -569,8 +731,11 @@ class Service:
             self.check_clock()
         except Exception as e:
             with self.lock:
-                self._journal_line("system", f"The clock check failed: {e}.",
-                                   outcome="error")
+                self._journal_line(
+                    "system", f"The clock check could not run "
+                    f"({type(e).__name__}: {e}). Shows still start by this "
+                    f"machine's clock, unchecked.", action="clock check",
+                    outcome="failed", fault=True)
 
     def _safe_tick(self):
         try:
@@ -579,7 +744,9 @@ class Service:
             with self.lock:
                 self._journal_line(
                     "system", f"The scheduler hit a problem and carried "
-                    f"on: {type(e).__name__}: {e}.", outcome="error")
+                    f"on ({type(e).__name__}: {e}). It tries again on the "
+                    f"next tick, a quarter of a second later.",
+                    action="tick", outcome="failed", fault=True)
 
     def _run(self):
         while not self._stop.is_set():
@@ -588,9 +755,47 @@ class Service:
 
     def stop(self):
         self._stop.set()
-        t = self._thread
-        if t is not None:
-            t.join(timeout=2)
+        for t in (self._thread, self._sample_thread):
+            if t is not None:
+                t.join(timeout=2)
+        with self.lock:
+            self._log(self.logbook.stopping, state=self._state_name(),
+                      night=self._night())
+        self.logbook.close()
+
+    # -- the ring buffer ----------------------------------------------------
+    def _snapshot(self):
+        """What the scheduler looks like right now, for the ring buffer. Kept
+        small: it is taken 5 times a second and never written to disk."""
+        m, now = self.machine, self.clock()
+        snap = {"state": self._state_name(),
+                "logging_ok": not self.logbook.stopped_why}
+        if m is not None:
+            nxt = m.next_slot()
+            snap.update(
+                running=m.running or None, paused=m.state == sch.PAUSED,
+                fault=m.fault, faults=len(m.faults),
+                delayed=(m.delayed().n if m.delayed() else None),
+                next_show=nxt.n if nxt else None,
+                next_in_s=(int((nxt.start - now).total_seconds())
+                           if nxt else None))
+        return snap
+
+    def sample(self):
+        with self.lock:
+            snap = self._snapshot()
+        self.logbook.sample(snap)
+
+    def _sample_loop(self):
+        nxt = _time.monotonic()
+        while True:
+            nxt += self.SAMPLE_S
+            if self._stop.wait(max(0.0, nxt - _time.monotonic())):
+                return
+            try:
+                self.sample()
+            except Exception:       # a sample is never worth a thread
+                pass
 
     # -- views ----------------------------------------------------------
     def rule_view(self):
@@ -631,6 +836,7 @@ class Service:
                                              self.state_dir)
                                 if self.machine else None),
                    "save_error": self.persist_error or None,
+                   "logging": self.logbook.health(),
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
@@ -663,12 +869,69 @@ class Service:
                 raise ValueError(out.refused)
         return self.tonight_view()
 
+    # -- the journal, for the page -------------------------------------------
+    def journal_view(self, n=journal.PAGE_LINES):
+        """The log strip: the last 20 journal lines, newest first, exactly as
+        they are in the file, each with its age."""
+        return {"ok": True,
+                "as_of": self.logbook.local().isoformat(timespec="seconds"),
+                "lines": self.logbook.recent(n)}
+
+    def logging_view(self):
+        return self.logbook.health()
+
+    def _config_in_force(self):
+        text = None
+        try:
+            with open(self.path, encoding="utf-8-sig") as fh:
+                text = fh.read(1 << 20)
+        except OSError as e:
+            text = f"(could not be read: {e.strerror or e})"
+        m = self.machine
+        return {"schedule_file": self.path, "schedule_file_text": text,
+                "rule": sch.rule_to_doc(self.rule) if self.rule else None,
+                "rule_error": self.error or None,
+                "operators": list(self.operators),
+                "tonight": sch.machine_to_doc(m) if m else None,
+                "tonight_file": (tonight_path(m.date, self.state_dir)
+                                 if m else None),
+                "dry_run": DRY_RUN, "state_dir": self.state_dir,
+                "log_folder": self.logbook.folder,
+                "clock_check": self.clock_check}
+
+    def save_incident(self, body):
+        """Save the last incident, for an operator on the list, from a named
+        screen. Starts, stops and arms nothing."""
+        body = body or {}
+        who = str(body.get("who") or "").strip()
+        screen = str(body.get("screen") or "").strip()
+        if not who or not screen:
+            raise ValueError("Save the last incident has to say who pressed "
+                             "it and which screen it came from, so the "
+                             "journal can say who did what. Nothing was "
+                             "saved.")
+        names = {n.lower(): n for n in self.operators}
+        if who.lower() not in names:
+            raise ValueError(f"{who!r} is not on the operator list "
+                             f"({', '.join(self.operators)}). Pick a name "
+                             f"from the list. Nothing was saved.")
+        with self.lock:
+            config = self._config_in_force()
+            state, night = self._state_name(), self._night()
+        # The copy happens outside the scheduler's lock: saving a folder of
+        # files must never hold up a tick.
+        return self.logbook.save_incident(
+            who=names[who.lower()], screen=screen, state=state, night=night,
+            config=config, why=str(body.get("why") or ""))
+
     # -- the web routes ---------------------------------------------------
     GET_ROUTES = ("/api/schedule", "/api/schedule/tonight",
-                  "/api/schedule/state")
-    # Editing tonight's list is the only thing that can be posted. There is
-    # deliberately no route that starts, stops, holds or arms anything.
-    POST_ROUTES = ("/api/schedule/tonight",)
+                  "/api/schedule/state", "/api/schedule/journal",
+                  "/api/schedule/logging")
+    # Editing tonight's list and saving an incident are the only things that
+    # can be posted. There is deliberately no route that starts, stops,
+    # holds or arms anything.
+    POST_ROUTES = ("/api/schedule/tonight", "/api/schedule/incident")
 
     def get(self, route):
         if route == "/api/schedule":
@@ -677,9 +940,16 @@ class Service:
             return 200, self.tonight_view()
         if route == "/api/schedule/state":
             return 200, self.state_view()
+        if route == "/api/schedule/journal":
+            return 200, self.journal_view()
+        if route == "/api/schedule/logging":
+            return 200, self.logging_view()
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body):
         if route == "/api/schedule/tonight":
             return 200, self.edit_tonight(body)
+        if route == "/api/schedule/incident":
+            out = self.save_incident(body)
+            return (200 if out["ok"] else 500), out
         return 404, {"error": "no such thing here"}
