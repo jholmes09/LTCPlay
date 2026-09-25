@@ -2754,13 +2754,27 @@ def test_web_ui():
 
         # THE POINT OF THE WHOLE DESIGN: the browser is a window, not the
         # program. Stop asking for state entirely, as a closed laptop lid does,
-        # and the show must carry on driving the rig.
+        # and the show must carry on driving the rig -- on its own schedule.
+        # player.py's output loop deliberately gives up a missed slot rather
+        # than bursting to catch up (never flood the controllers), so a
+        # starved runner legitimately sends fewer frames per wall-clock
+        # second than a quiet one; a fixed frame count in a fixed couple of
+        # seconds was measuring the runner's spare CPU, not the engine, and
+        # failed a healthy macOS runner that held 15 of 30 frames a second.
+        # This still demands the same absolute progress -- a genuinely
+        # stalled output thread never reaches it -- but with a deadline
+        # generous enough that only an actually-stuck thread can fail it.
+        # The checks are seconds apart, so "nobody is polling" still holds
+        # for long stretches at a time; it is not a tight read loop.
         before = get("/api/state")["frames_out"]
-        time.sleep(2.0)                       # nobody is polling
-        after = get("/api/state")["frames_out"]
-        check(after > before + 40,
-              f"output stalled while the page was not polling "
-              f"({before} -> {after}); the engine must not depend on a viewer")
+
+        def _advanced():
+            return get("/api/state")["frames_out"] > before + 40
+
+        check(wait_for(_advanced, timeout=30.0, step=2.0),
+              f"output stalled while the page was not polling for 30s "
+              f"(started at frames_out={before}); the engine must not "
+              f"depend on a viewer")
 
         # The page draws NOW and UP NEXT from one snapshot, so the two must
         # never contradict each other. Reading the clock and the cues
