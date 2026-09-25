@@ -12809,7 +12809,16 @@ def test_session_hold_and_resume():
         check(wait_for(lambda: sess.player._park_since is not None,
                        timeout=3.0),
               "the chase engine never noticed the repeated position")
-        time.sleep(sess.player.park_s + 0.2)
+        # A fixed margin, not sess.player.park_s: feed_timecode() itself
+        # sets state=PARKED optimistically the moment a repeat is seen,
+        # racing the output thread's own debounced computation, so reading
+        # state right away can catch that early, unsettled flip. Waiting a
+        # fixed amount comfortably past the DEFAULT 200ms park window
+        # settles it, the same margin test_park_and_pause gives its
+        # simulated clock, without tying this test's own running time to a
+        # Player setting that could be anything (0 from a show file typo,
+        # or a mutation elsewhere in the suite run).
+        time.sleep(0.5)
         check(sess.player.state == PARKED,
               f"the pixels never parked after Hold, got "
               f"{sess.player.state}")
