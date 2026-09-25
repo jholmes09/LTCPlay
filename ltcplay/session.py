@@ -21,7 +21,7 @@ from . import timeline as timeline_mod
 from .ltc import LTCDecoder
 from .output import Sender
 from . import version as version_mod
-from .player import Player
+from .player import Player, _now
 from .showlog import ShowLog
 from .tc import tc_to_frames
 
@@ -74,7 +74,7 @@ class WavSource:
     def blocks(self):
         import struct
         scale = float(1 << (self.width * 8 - 1))
-        t0 = time.monotonic()
+        t0 = _now()
         sent = 0
         while True:
             raw = self.w.readframes(self.block)
@@ -94,10 +94,10 @@ class WavSource:
                 out.append(v / scale)
             sent += n
             due = t0 + sent / self.rate
-            slp = due - time.monotonic()
+            slp = due - _now()
             if slp > 0:
                 time.sleep(slp)
-            yield out, time.monotonic()
+            yield out, _now()
 
 
 def ltc_seconds(fr, tl):
@@ -470,7 +470,7 @@ class Session:
                 [u.ip for u in self.nm.universes], log=self.log).start()
             self.player.rig = self.rig
         step = self.player.start()
-        self.started_at = time.monotonic()
+        self.started_at = _now()
         self._running = True
         if self.clock is not None:
             # Run pressed. A master still sends nothing until a cue plays.
@@ -801,7 +801,7 @@ class Session:
         wrong."""
         from . import display as display_mod
         p, tl, dec = self.player, self.tl, self.dec
-        now = time.monotonic()
+        now = _now()
         # Read the clock ONCE and derive both cues from that one value. Reading
         # p.current_cue, p.next_cue and p.tc_seconds separately lets the engine
         # tick between them, and the page then draws a "next" cue that has

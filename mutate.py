@@ -918,13 +918,44 @@ MUTATIONS = [
   "        try:\n            with open(mpath, \"w\") as fh:",
   "        if True:\n            with open(mpath, \"w\") as fh:"),
 
+ ("the chase engine's clock regresses to the coarse one on Windows",
+  "ltcplay/player.py",
+  'def _now():\n    """The chase engine\'s one clock. A function, not a bare alias, so\n'
+  "    selftest._Stepped can fake it by swapping this module's own `time`\n"
+  '    reference -- see the class docstring there."""\n'
+  "    return time.perf_counter()",
+  'def _now():\n    """The chase engine\'s one clock. A function, not a bare alias, so\n'
+  "    selftest._Stepped can fake it by swapping this module's own `time`\n"
+  '    reference -- see the class docstring there."""\n'
+  "    return time.monotonic()"),
+
+ ("the pixel output thread's pacing accumulates sleep error", "ltcplay/player.py",
+  "            next_at += period\n"
+  "            sleep = next_at - _now()\n"
+  "            if sleep > 0:\n"
+  "                time.sleep(sleep)\n"
+  "            else:\n"
+  "                # Fell behind: give up the missed slots rather than sprinting to\n"
+  "                # catch up, which would burst packets at the controllers.\n"
+  "                next_at = _now()",
+  "            next_at += period\n"
+  "            time.sleep(period)"),
+
+ ("the run loop's heartbeat reads the other clock", "ltcplay/cli.py",
+  "        # started, and so last_beat, is on sess.started_at's clock:\n"
+  "        # player._now() (perf_counter). Reading time.monotonic() here would\n"
+  "        # compare it against a clock with an unrelated epoch -- fine on a\n"
+  "        # Mac, where the two happen to agree, and nonsense on Windows.\n"
+  "        now = _now()",
+  "        now = time.monotonic()"),
+
  ("skipping a free run does nothing", "ltcplay/player.py",
-  "        self.freerun_epoch = time.monotonic() - at",
+  "        self.freerun_epoch = _now() - at",
   "        pass  # noqa"),
 
  ("skipping back runs off the front of the show", "ltcplay/player.py",
-  "        at = max(0.0, (time.monotonic() - self.freerun_epoch) + float(seconds))",
-  "        at = (time.monotonic() - self.freerun_epoch) + float(seconds)"),
+  "        at = max(0.0, (_now() - self.freerun_epoch) + float(seconds))",
+  "        at = (_now() - self.freerun_epoch) + float(seconds)"),
 
  ("skipping is allowed while following timecode", "ltcplay/player.py",
   "        if self.freerun_epoch is None:\n"

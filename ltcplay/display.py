@@ -19,7 +19,8 @@ import collections
 import re
 import time
 
-from .player import LOCKED, FREEWHEEL, LOST, PARKED, SHOW, IDLE, HOLD, BLACK
+from .player import LOCKED, FREEWHEEL, LOST, PARKED, SHOW, IDLE, HOLD, BLACK, \
+    _now
 from .tc import format_tc, format_clock, rate_label
 
 R = "\033[0m"
@@ -409,7 +410,7 @@ def _bar(frac, width):
 
 
 def render(p, dec, tl, sc, started_at):
-    now = time.monotonic()
+    now = _now()
     W = sc.cols
     L = []
     add = L.append
