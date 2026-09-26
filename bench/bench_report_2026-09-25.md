@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B11 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B12 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -20,6 +20,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B10 Flame safety program (flamesafe-core d5b398f) | PASSED | Suites pass on Windows; 40.0 packets/s at priority 200, all zero, no sequence breaks, idle and under show load (p99 interval 25.5 ms, 0.84% of a thread); survives a dead destination; clean stop sends zeros then stream-terminated; hard kill stops at once with no zeros (as documented); bad configs refuse with exit 2 |
 | B9 Long soak | PASSED (ltcplay, MadMapper, pixels); BEYOND demo FAILED at its 2 h limit | 12 shows of 7:24 every 20 min, 3 h 47 min on main fa5274a: 0 timecode frames skipped, MadMapper 1 to 28 ms behind with no drift, heartbeat never silent over 75 ms, ltcplay 22.1 MB flat, SSD 61 to 64 °C with the box lifted. BEYOND demo crashed on its time-limit box at 2 h and sat frozen but "running". Findings: pixel repeat/skip pairs for 3 min in show 6; BEYOND's own audio probably mixed into MadMapper's output; intermission clip did not loop (bench setup) |
 | B11 Web page under show load | PASSED with one viewer / FAILED with several | One open page: no effect on the pixels. Two viewers: 181 repeat/skip pairs and a 79 ms gap. Five: about 7% of frames dropped. Ten: 12 to 14 fps all show. The page also has no Play for the master clock (GO runs pixels only, no timecode) |
+| B12 Show JSON saved with a UTF-8 BOM (PR #16, c226d80) | PASSED | main refuses the file (and its page silently leaves the show out of the list); the branch lists it, checks it, verifies it and starts it; selftest passes on Windows |
 
 ## B0 The machine
 
@@ -377,6 +378,22 @@ The page itself polls `/api/state` about 4 times a second, and `/api/log?n=40` a
 **What this means for the show:** until the main session changes this, **only one device should have the ltcplay page open during a show** (the operator's). Crew phones and iPads should not keep it open. Worth fixing before opening night: the rig will be run from a page, and a second tablet left open on a shelf is realistic. Ideas for the main session, in plain words: answer `/api/state` from a snapshot the engine refreshes a few times a second, rather than building it per request; poll less often; or serve the page from a separate process.
 
 Evidence: `B11_web_runs.txt` (the per-run summaries above, from `scratch/web_px.py` and `scratch/web_hammer.py`).
+
+
+## B12 Show files saved with a UTF-8 BOM (PR #16)
+
+**Verdict: PASSED.** Branch `accept-utf8-bom` at **`c226d80`** (PR #16, not merged), in its own worktree `wt-bom`, run on 2026-09-26 at 06:00; no code changed. The test show was a copy of the bench444 folder (`bench_bom\`, the FSEQ hard-linked), with the show JSON re-saved by PowerShell 5.1 `Set-Content -Encoding UTF8`. Its first bytes are **EF BB BF 7B**; the original's are 7B 0D 0A. Loopback only, no output to anything.
+
+| | main `fa5274a` | branch `c226d80` |
+|---|---|---|
+| `check` | exit 2, "Unexpected UTF-8 BOM (decode using utf-8-sig)" | reads the cue (444.4 s, 78,768 ch at 25 ms); exit 1, the same as main on the no-BOM file, because this venv has no `sounddevice` |
+| `verify` | exit 2, same error | exit 0, "Every sequence is the one this show file names" |
+| `serve`: show list (`/api/timelines`) | **the show is not listed at all** (empty list, no error shown) | listed: "Fire and Ice bench", 1 cue |
+| `serve`: Validate (`/api/check`) | ok false, BOM error | ok true |
+| `serve`: Run (`/api/start`, no_output) | HTTP error, BOM error | started, STANDBY, display only; `/api/stop` clean |
+| `selftest.py` on Windows | | **"all checks passed in 99.1s"**, 0 FAIL, including the five new BOM checks |
+
+A side note from the same run: `check` counts a missing `sounddevice` as a Problem (exit 1) even for a show whose clock is `artnet_master`, where no audio input is used.
 
 ## Not tested yet
 
