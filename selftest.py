@@ -2787,6 +2787,38 @@ def test_saved_input_setting():
     print("  ok")
 
 
+def test_settings_files_accept_a_utf8_bom():
+    section("the input and prefs files read the same with a UTF-8 BOM")
+    # ltcplay_input.json and ltcplay_prefs.json are both meant to be
+    # hand-editable, so a Windows operator opening one in Notepad and saving
+    # it must not turn a working setup into "an input error at 6pm".
+    import json
+    import tempfile
+    from ltcplay import settings as st
+
+    d = tempfile.mkdtemp()
+    real_path, real_prefs_path = st.path, st.prefs_path
+    st.path = lambda: os.path.join(d, st.FILENAME)
+    st.prefs_path = lambda: os.path.join(d, st.PREFS_FILE)
+    try:
+        with open(st.path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"device": "Dante USB I/O Module", "channel": 2}, fh)
+        check(open(st.path(), "rb").read(3) == b"\xef\xbb\xbf",
+              "the test file does not actually have a BOM")
+        got = st.load()
+        check(got.get("device") == "Dante USB I/O Module"
+              and got.get("channel") == 2,
+              f"a BOM input file should load like any other: {got}")
+
+        with open(st.prefs_path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"auto_reload": True}, fh)
+        check(st.load_prefs()["auto_reload"] is True,
+              "a BOM prefs file should load like any other")
+    finally:
+        st.path, st.prefs_path = real_path, real_prefs_path
+    print("  ok")
+
+
 def test_input_precedence():
     section("which input wins, and saying which")
     from ltcplay import settings as st
@@ -3351,6 +3383,148 @@ def test_web_token_gate():
         httpd.server_close()
     print("  ok")
 
+
+def test_web_state_cache_refresh_interval():
+    section("/api/state is rebuilt no faster than its cache interval")
+    # B11 (bench/bench_report_2026-09-25.md): a second or fifth viewer of the
+    # operator page costs the pixel loop real frames, because building the
+    # state answer hashes every file the program ships (ltcplay/version.py's
+    # build id), TWICE, on every single request. The fix is Control.state()
+    # serving a snapshot refreshed at most every STATE_CACHE_S; this proves
+    # that ceiling actually holds for the ordinary, single-caller case.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    # Read the REAL default off the class rather than overriding it on this
+    # instance: a mutation to STATE_CACHE_S itself (e.g. "helpfully" set to
+    # 0) must show up here, which an instance override would hide from this
+    # test entirely.
+    interval = c.STATE_CACHE_S
+    calls = []
+
+    def fake_build():
+        calls.append(1)
+        return {"n": len(calls)}
+    c._build_state = fake_build
+
+    s1 = c.state()
+    s2 = c.state()                  # right away: still inside the window
+    check(s1 == {"n": 1} and s2 == {"n": 1},
+          f"two calls inside the cache interval must be the same answer, "
+          f"not a rebuild each time: got {s1} then {s2}")
+    check(len(calls) == 1,
+          f"the builder must run once for both calls, ran {len(calls)} times")
+
+    time.sleep(interval + 0.1)
+    s3 = c.state()
+    check(s3 == {"n": 2} and len(calls) == 2,
+          f"a call after the interval has passed must rebuild, got {s3} "
+          f"after {len(calls)} builds")
+    print("  ok")
+
+
+def test_web_state_cache_dedupes_concurrent_misses():
+    section("N threads that all miss /api/state's cache at once still "
+            "build it only once")
+    # The bench's five- and ten-viewer runs are many threads landing inside
+    # the SAME instant, not one at a time: the cache above is not enough on
+    # its own if every one of them can still slip through to a fresh build
+    # before the first one finishes and the cache fills in. Ten threads that
+    # all miss together must produce one build, not ten.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    c.STATE_CACHE_S = 0.5
+    calls = []
+    calls_lock = threading.Lock()
+
+    def fake_build():
+        with calls_lock:
+            calls.append(1)
+        time.sleep(0.15)            # widen the race window so misses overlap
+        return {"n": len(calls)}
+    c._build_state = fake_build
+
+    threads = [threading.Thread(target=c.state) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    check(len(calls) == 1,
+          f"20 threads that all missed the cache at the same instant must "
+          f"call the builder once, called it {len(calls)} times")
+    print("  ok")
+
+
+def test_web_state_cache_content_matches_a_direct_build():
+    section("the cached /api/state answer equals a direct build")
+    # Caching only helps if it hands out exactly what a fresh build would
+    # have said. A Control with nothing running is fully deterministic (no
+    # session, no clock, nothing time-based in the payload), so its answer
+    # can be compared byte for byte, cold and warm.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    c.STATE_CACHE_S = 5.0            # comfortably longer than this test runs
+
+    direct = c._build_state()
+    cold = c.state()                 # first call: nothing cached yet
+    check(cold == direct,
+          f"the first (cold) answer must equal a direct build, got {cold!r} "
+          f"vs {direct!r}")
+    warm = c.state()                 # second call: served from the cache
+    check(warm == direct,
+          f"the cached (warm) answer must still equal a direct build, got "
+          f"{warm!r} vs {direct!r}")
+    print("  ok")
+
+
+def test_web_state_cache_never_reaches_the_gpl_terminal_path():
+    section("the /api/state cache never reaches the terminal/GPL path")
+    # GPL 2026 at Dollywood runs through this same repo, and its own
+    # console/log reads Session.snapshot() directly -- ltcplay/cli.py's
+    # `run`, never through ltcplay/web.py's Control. That path must keep
+    # paying for, and getting, a byte-fresh build id on every single call,
+    # exactly as it did before this fix. The tempting WRONG fix -- caching
+    # version_mod.build() itself, at module scope, so every caller benefits
+    # -- would silently freeze the terminal path's build/show status for
+    # the rest of the process too. This proves that has not happened by
+    # counting real hashes, not just calls: a module-level cache still gets
+    # "called" every time, it just stops doing the work.
+    from ltcplay.session import Session
+    from ltcplay import version as version_mod
+    folder = _web_fixture()
+    if folder is None:
+        print("  no show folder available, skipped")
+        return
+    tlp = os.path.join(folder, "webtest_timeline.json")
+    net = os.path.join(folder, "net.xml")
+    sess = Session(tlp, networks=net, no_log=True, sd=FakeSD(),
+                   device="MOTU M4", channel=2, no_output=True)
+    sess.open()
+    sess.start()
+    calls = []
+    orig_sha256 = version_mod.hashlib.sha256
+
+    def counting_sha256(*a, **kw):
+        calls.append(1)
+        return orig_sha256(*a, **kw)
+    version_mod.hashlib.sha256 = counting_sha256
+    try:
+        sess.snapshot()
+        after_one = len(calls)
+        check(after_one > 0,
+              "Session.snapshot() must hash the build at all")
+        for _ in range(4):
+            sess.snapshot()
+    finally:
+        version_mod.hashlib.sha256 = orig_sha256
+        sess.stop()
+    # Uncached, 5 calls hash exactly 5 times what 1 call hashes -- a real
+    # per-call cost, not memoized away. A module-level cache (the tempting
+    # wrong fix) would make this LESS than 5x, most starkly 1x.
+    check(len(calls) == after_one * 5,
+          f"Session.snapshot() (the terminal/GPL path) must hash the "
+          f"build fresh on every call with no caching anywhere in it -- "
+          f"{after_one} hash(es) for 1 call but {len(calls)} for 5")
+    print("  ok")
 
 
 def test_which_file_plays_when():
@@ -4696,6 +4870,60 @@ def test_the_bundle_stands_on_its_own():
     print("  ok")
 
 
+def test_cli_show_commands_accept_a_utf8_bom():
+    section("showdir, retime and bundle all read a BOM show file")
+    import json, subprocess, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    sd = real_show_dir()
+    work = tempfile.mkdtemp()
+    render = copy_render(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"), work)
+    open(os.path.join(work, "xlights_networks.xml"), "w").write("<Networks/>")
+    tlp = os.path.join(work, "bom_timeline.json")
+    doc = {"name": "BOM Show", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00",
+                    "fseq": os.path.basename(render), "name": "Opener"}]}
+    with open(tlp, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(tlp, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "showdir", tlp],
+                       capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr
+          and work in r.stdout,
+          f"showdir must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "retime", tlp,
+                        "--start", "02:00:00:00"],
+                       capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr,
+          f"retime must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+    check(json.load(open(tlp))["cues"][0]["tc"] == "02:00:00:00",
+          "retime should have rewritten the cue it just read")
+
+    out = os.path.join(tempfile.mkdtemp(), "bundle")
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "bundle",
+                        tlp, out], capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr,
+          f"bundle must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+    bundled = json.load(open(os.path.join(out, "bom_timeline.json")))
+    check(bundled["show_dir"] == "show",
+          "the bundled copy of a BOM show file should be rewritten normally")
+
+    # A file that is not UTF-8 at all must still fail as a plain sentence,
+    # not a stack trace, wherever main() catches it.
+    utf16 = os.path.join(work, "utf16_timeline.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "showdir", utf16],
+                       capture_output=True, text=True, cwd=here)
+    out = r.stdout + r.stderr
+    check(r.returncode != 0 and "Traceback" not in out
+          and out.strip().startswith("error:"),
+          f"a non-UTF-8 show file must refuse with a sentence, not a "
+          f"stack trace:\n{out}")
+    print("  ok")
+
+
 def test_the_credit_travels_with_it():
     section("whose tool this is")
     from ltcplay import brand as brand_mod
@@ -4753,6 +4981,31 @@ def test_the_credit_travels_with_it():
     page = open(os.path.join(here, "ltcplay", "web", "index.html")).read()
     check("/api/brand" in page and "creditcontact" in page,
           "the page never asks for the credit")
+    print("  ok")
+
+
+def test_brand_file_accepts_a_utf8_bom():
+    section("ltcplay_brand.json reads the same with a UTF-8 BOM")
+    # "Read from ltcplay_brand.json beside the launcher... so it can be
+    # changed without touching code" (brand.py's own docstring) -- that is
+    # exactly the file a Windows operator hand-edits in Notepad.
+    import json
+    import tempfile
+    from ltcplay import brand as brand_mod
+
+    work = tempfile.mkdtemp()
+    real = brand_mod.path
+    brand_mod.path = lambda: os.path.join(work, brand_mod.FILENAME)
+    try:
+        with open(brand_mod.path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"phone": "+1 555 010 1234", "url": "example.com"}, fh)
+        check(open(brand_mod.path(), "rb").read(3) == b"\xef\xbb\xbf",
+              "the test file does not actually have a BOM")
+        b = brand_mod.load()
+        check(b["phone"] == "+1 555 010 1234" and b["url"] == "example.com",
+              f"a BOM brand file was not read: {b}")
+    finally:
+        brand_mod.path = real
     print("  ok")
 
 
@@ -6621,6 +6874,58 @@ def test_a_misspelled_setting_is_refused():
     print("  ok")
 
 
+def test_timeline_load_accepts_a_utf8_bom():
+    section("a show file saved with a UTF-8 BOM reads the same as one without")
+    # Windows Notepad and PowerShell both write a UTF-8 BOM by default. The
+    # JSON itself is perfectly fine; only the first three bytes are not what
+    # a plain "utf-8" open() expects, and that used to be reported as
+    # "Unexpected UTF-8 BOM", a sentence that names a byte, not the problem.
+    import tempfile
+    work = tempfile.mkdtemp()
+    open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+    doc = {"name": "GPL", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq", "name": "Opener"}]}
+
+    plain = os.path.join(work, "plain.json")
+    json.dump(doc, open(plain, "w"))
+    bom = os.path.join(work, "bom.json")
+    with open(bom, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(bom, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    tl_plain = timeline.Timeline.load(plain)
+    tl_bom = timeline.Timeline.load(bom)
+    check(tl_bom.name == tl_plain.name and tl_bom.fps == tl_plain.fps
+          and [c.path for c in tl_bom.cues] == [c.path for c in tl_plain.cues],
+          "a show file with a BOM should load exactly like one without")
+
+    # A Notepad "Unicode" save is actually UTF-16, not UTF-8-with-a-BOM. It
+    # must be refused with a plain sentence, not crash.
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    try:
+        timeline.Timeline.load(utf16)
+        check(False, "a UTF-16 show file was accepted")
+    except ValueError as e:
+        check(bool(str(e)), f"a UTF-16 show file must refuse with a "
+                            f"sentence, not silently: {e!r}")
+
+    # Three bytes that happen to match the BOM, but sitting in the middle of
+    # the file rather than leading it, are not a BOM: they are a corrupt
+    # file, and must fail as an ordinary bad-JSON refusal.
+    mid = os.path.join(work, "mid_bom.json")
+    raw = json.dumps(doc).encode("utf-8")
+    open(mid, "wb").write(raw[:1] + b"\xef\xbb\xbf" + raw[1:])
+    try:
+        timeline.Timeline.load(mid)
+        check(False, "a file with a stray BOM in the middle was accepted")
+    except ValueError as e:
+        check(bool(str(e)), f"a corrupt file must refuse with a sentence: "
+                            f"{e!r}")
+    print("  ok")
+
+
 def test_one_sequence_at_two_timecodes():
     section("the same sequence closing both sets")
     # Jeff, 2026-09-13: the ending is the same programming in Set 1 and Set 2.
@@ -6892,6 +7197,40 @@ def test_pointing_a_show_at_a_different_folder():
           page.split("loadTimelines(andFolder)")[1],
           "the picker must be filled in at the end of loadTimelines, or it "
           "draws before a show file is selected")
+
+
+def test_web_show_reads_accept_a_utf8_bom():
+    section("the web page's own show-file reads tolerate a UTF-8 BOM")
+    import json
+    import tempfile
+    from ltcplay import web as web_mod
+
+    work = tempfile.mkdtemp()
+    open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+    open(os.path.join(work, "xlights_networks.xml"), "w").write("<Networks/>")
+    show = os.path.join(work, "gpl_timeline.json")
+    doc = {"name": "GPL", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq", "name": "A"}]}
+    with open(show, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(show, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    # The sniffer used to decide whether an unparsable file is still worth
+    # listing as "a show with a problem".
+    check(web_mod._looks_like_a_show(show),
+          "a BOM show file should still be recognised as a show")
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    check(not web_mod._looks_like_a_show(utf16),
+          "a file that is not UTF-8 at all must not crash the sniffer")
+
+    # show_folder() reads the file directly to report or change show_dir.
+    c = web_mod.Control(work, sd=object())
+    j = c.show_folder("gpl_timeline.json")
+    check(j["folder"] == work and j["ok"],
+          f"reading a BOM show file's folder should just work: {j}")
+    print("  ok")
 
 
 
@@ -15167,6 +15506,41 @@ def test_tctest_refusals():
     print("  ok")
 
 
+def test_tctest_show_file_accepts_a_utf8_bom():
+    section("tctest: --show reads a BOM show file's clock block")
+    import json
+    import tempfile
+    from ltcplay import tctest as TT
+
+    work = tempfile.mkdtemp()
+    doc = {"fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}],
+          "clock": {"source": "artnet_master",
+                    "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                        "BEYOND": "127.0.0.2"}}}}
+    plain = os.path.join(work, "plain.json")
+    json.dump(doc, open(plain, "w"))
+    bom = os.path.join(work, "bom.json")
+    with open(bom, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(bom, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    check(TT.load_show_nodes(bom) == TT.load_show_nodes(plain),
+          "a BOM show file should name the same Art-Net nodes as one "
+          "without")
+
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    try:
+        TT.load_show_nodes(utf16)
+        check(False, "a UTF-16 show file was accepted by --show")
+    except TT.TcTestError as e:
+        check(bool(str(e)), f"a UTF-16 show file must refuse with a "
+                            f"sentence, not silently: {e!r}")
+    print("  ok")
+
+
 def test_tctest_beyond_warning():
     section("tctest: every run warns, and laser-named nodes get more")
     import io
@@ -15354,6 +15728,108 @@ print(json.dumps({
     check(res["clock"], "tctest ran but never loaded the clock it sends "
                         "timecode through")
     print("  ok")
+
+
+def test_flamesafe_in_its_own_process():
+    """The flame safety program's own suite (flamesafe/test_flamesafe.py),
+    run in a SUBPROCESS so that the wall holds: that process never has
+    ltcplay loaded, and this one never loads flamesafe. Its FAIL lines are
+    relayed here with the same prefix so mutate.py can say what caught a
+    mutation in flamesafe/."""
+    section("flamesafe: the safety program's own suite, in its own process")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    r = subprocess.run([sys.executable, "-u", "-m", "flamesafe.test_flamesafe"],
+                       cwd=root, capture_output=True, text=True, timeout=240)
+    out = (r.stdout or "") + (r.stderr or "")
+    fails = [l for l in out.splitlines() if l.startswith("  FAIL")]
+    for l in fails[:30]:
+        print("  FAIL  flamesafe> " + l[len("  FAIL"):].strip())
+    if r.returncode != 0 and not fails:
+        print(out[-3000:])
+    check(r.returncode == 0, f"flamesafe's own suite passed (exit "
+                             f"{r.returncode}, {len(fails)} FAIL line(s))")
+    lines = [l for l in out.strip().splitlines() if l.strip()]
+    last = lines[-1] if lines else ""
+    check(last.startswith("flamesafe: all checks passed"),
+          f"flamesafe's last line: {last}")
+    check("random cases, seed" in out, "the property test ran")
+    check("flamesafe" not in {m.split(".")[0] for m in sys.modules},
+          "running flamesafe's suite loaded nothing of it into this process")
+
+
+def test_the_wall_between_ltcplay_and_flamesafe():
+    """Two processes, and neither imports the other's code (handoff section
+    15). Proved three ways: by the import statements in every file of both
+    packages, by loading every ltcplay module in a clean interpreter and
+    looking for flamesafe, and by loading every flamesafe module in a clean
+    interpreter and looking for ltcplay."""
+    section("the wall: ltcplay never imports flamesafe and flamesafe never "
+            "imports ltcplay")
+    import ast
+    import json
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    check("flamesafe" not in {m.split(".")[0] for m in sys.modules},
+          "this process, with all of ltcplay loaded, has no flamesafe module")
+
+    def imports_of(path):
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    out.add(node.module.split(".")[0])
+        return out
+
+    scanned = 0
+    for d, forbidden in (("ltcplay", "flamesafe"), ("flamesafe", "ltcplay")):
+        for name in sorted(os.listdir(os.path.join(root, d))):
+            if name.endswith(".py"):
+                scanned += 1
+                imps = imports_of(os.path.join(root, d, name))
+                check(forbidden not in imps, f"{d}/{name} imports {forbidden}")
+    check(scanned > 30, f"both packages were scanned ({scanned} files)")
+    check("flamesafe" not in imports_of(os.path.join(root, "selftest.py")),
+          "selftest.py itself never imports flamesafe")
+
+    def loaded_after_importing(pkg, other):
+        code = (
+            "import sys, json, importlib, pkgutil\n"
+            f"sys.path.insert(0, {root!r})\n"
+            f"import {pkg}\n"
+            "failed = []\n"
+            f"for m in pkgutil.iter_modules({pkg}.__path__):\n"
+            "    if m.name.startswith('__'):\n"
+            "        continue\n"
+            "    try:\n"
+            f"        importlib.import_module('{pkg}.' + m.name)\n"
+            "    except Exception as e:\n"
+            "        failed.append(m.name + ': ' + type(e).__name__)\n"
+            f"mine = sorted(m for m in sys.modules if m.split('.')[0] == {pkg!r})\n"
+            f"theirs = sorted(m for m in sys.modules if m.split('.')[0] == {other!r})\n"
+            "print(json.dumps({'mine': mine, 'theirs': theirs, "
+            "'failed': failed}))\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=120, cwd=root)
+        try:
+            return json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"mine": [], "theirs": ["(the probe did not run: "
+                                           + r.stderr[-500:] + ")"],
+                    "failed": []}
+
+    res = loaded_after_importing("ltcplay", "flamesafe")
+    check(len(res["mine"]) > 20, f"every ltcplay module loaded: {res['mine']}")
+    check(res["theirs"] == [], f"loading all of ltcplay loaded flamesafe: "
+                               f"{res['theirs']}")
+    res = loaded_after_importing("flamesafe", "ltcplay")
+    check(len(res["mine"]) >= 8 and res["failed"] == [],
+          f"every flamesafe module loaded: {res['mine']} {res['failed']}")
+    check(res["theirs"] == [], f"loading all of flamesafe loaded ltcplay: "
+                               f"{res['theirs']}")
 
 
 # The GPL show log (showlog.py) as the Dollywood show runs it, line endings
@@ -17425,10 +17901,15 @@ if __name__ == "__main__":
     test_real_hardware_is_picked_out_of_the_noise()
     test_only_plausible_inputs_are_scanned()
     test_saved_input_setting()
+    test_settings_files_accept_a_utf8_bom()
     test_input_precedence()
     test_show_dir_survives_the_wrong_machine()
     test_web_ui()
     test_web_token_gate()
+    test_web_state_cache_refresh_interval()
+    test_web_state_cache_dedupes_concurrent_misses()
+    test_web_state_cache_content_matches_a_direct_build()
+    test_web_state_cache_never_reaches_the_gpl_terminal_path()
     test_which_file_plays_when()
     test_one_frame_between_cues_is_not_a_gap()
     test_a_cue_owns_the_whole_rig()
@@ -17443,7 +17924,9 @@ if __name__ == "__main__":
     test_the_readout_tells_the_truth_in_a_free_run()
     test_go_runs_without_the_feed()
     test_the_bundle_stands_on_its_own()
+    test_cli_show_commands_accept_a_utf8_bom()
     test_the_credit_travels_with_it()
+    test_brand_file_accepts_a_utf8_bom()
     test_a_dead_controller_stops_being_hammered()
     test_broadcast_destinations_are_called_out()
     test_a_controller_ping_means_what_it_says()
@@ -17463,12 +17946,14 @@ if __name__ == "__main__":
     test_a_cue_that_will_not_open_stops_the_show()
     test_preshow_can_be_held_by_hand()
     test_a_misspelled_setting_is_refused()
+    test_timeline_load_accepts_a_utf8_bom()
     test_one_sequence_at_two_timecodes()
     test_at_command_on_the_real_show()
     test_track_numbers_are_not_identity()
     test_sequences_declare_what_they_are()
     test_verify_catches_a_mislabelled_sequence()
     test_pointing_a_show_at_a_different_folder()
+    test_web_show_reads_accept_a_utf8_bom()
     test_trigger_mode_mutes_the_advateks_and_nothing_else()
     test_a_muted_controller_is_not_reported_as_a_fault()
     test_a_cue_fires_its_scene_once_and_only_once()
@@ -17586,9 +18071,12 @@ if __name__ == "__main__":
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()
     test_tctest_refusals()
+    test_tctest_show_file_accepts_a_utf8_bom()
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
+    test_flamesafe_in_its_own_process()
+    test_the_wall_between_ltcplay_and_flamesafe()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
