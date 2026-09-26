@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B12 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B13 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -21,6 +21,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B9 Long soak | PASSED (ltcplay, MadMapper, pixels); BEYOND demo FAILED at its 2 h limit | 12 shows of 7:24 every 20 min, 3 h 47 min on main fa5274a: 0 timecode frames skipped, MadMapper 1 to 28 ms behind with no drift, heartbeat never silent over 75 ms, ltcplay 22.1 MB flat, SSD 61 to 64 °C with the box lifted. BEYOND demo crashed on its time-limit box at 2 h and sat frozen but "running". Findings: pixel repeat/skip pairs for 3 min in show 6; BEYOND's own audio probably mixed into MadMapper's output; intermission clip did not loop (bench setup) |
 | B11 Web page under show load | PASSED with one viewer / FAILED with several | One open page: no effect on the pixels. Two viewers: 181 repeat/skip pairs and a 79 ms gap. Five: about 7% of frames dropped. Ten: 12 to 14 fps all show. The page also has no Play for the master clock (GO runs pixels only, no timecode) |
 | B12 Show JSON saved with a UTF-8 BOM (PR #16, c226d80) | PASSED | main refuses the file (and its page silently leaves the show out of the list); the branch lists it, checks it, verifies it and starts it; selftest passes on Windows |
+| B13 Web page load on the snapshot fix (PR #18, e43f415) | PASSED | 2 and 5 viewers: 0 skips (main: 181 and 1,185). 10 unthrottled clients: 40 fps, 623 skips at 313 answered requests/s (main: 12 to 14 fps at 21/s). The page shows GO within 13 ms, Stop 134 ms, Run 82 ms |
 
 ## B0 The machine
 
@@ -394,6 +395,27 @@ Evidence: `B11_web_runs.txt` (the per-run summaries above, from `scratch/web_px.
 | `selftest.py` on Windows | | **"all checks passed in 99.1s"**, 0 FAIL, including the five new BOM checks |
 
 A side note from the same run: `check` counts a missing `sounddevice` as a Problem (exit 1) even for a show whose clock is `artnet_master`, where no audio input is used.
+
+## B13 Web page under show load, again, on the snapshot fix (PR #18)
+
+**Verdict: PASSED. The fix works: two and five viewers now cost the pixels nothing (0 skips), where main dropped up to 7% of frames. Ten unthrottled clients, answered 15 times faster than main could, hold 40 fps with 623 skips (main: 12 to 14 fps and 11,160 skips). The page still reacts to its own buttons at once.** Branch `web-state-snapshot` at **`e43f415`** (PR #18, not merged; contains main `fa5274a`), in its own worktree `wt-snap`, with no code changed. Run on 2026-09-26 from 08:05 to 08:45 using B11's method exactly: the same bench444 show (26,256 pixels, 40 fps), GO free runs, the same pixel sink, `scratch/web_hammer.py` and `scratch/web_px.py`. Loopback only, Ethernet unplugged. BEYOND was not running.
+
+| Viewers | main `fa5274a` (B11) | branch `e43f415` |
+|---|---|---|
+| none | 2 skips, 2 repeats; longest gap 46 ms; CPU 11.1% | 1 skip, 1 repeat; 49 ms; CPU 11.5% |
+| one real page (in-app Chromium) | 2 skips, 2 repeats; 49 ms; CPU 17.1%; `/api/state` 61 ms average (max 85) | 4 skips, 6 repeats; 59 ms; CPU 14.6%; `/api/state` **31 ms** average (max 69) |
+| two page-like clients (4 Hz each) | 181 skips, 178 repeats, 43 s under 39 fps; 79 ms; CPU 25.4%; requests median 88 ms | **0 skips, 0 repeats**; 32 ms; CPU 15.2%; requests **median 1.6 ms**, p95 64, max 81 |
+| five page-like clients | 1,185 skips (about 7%), 31 fps in the first minute; 58 ms; CPU 61.0%; 19 requests/s, median 166 ms | **0 skips, 0 repeats**; 29 ms; CPU 16.6%; 20 requests/s, **median 1.4 ms**, p95 62, max 118 |
+| ten clients, as fast as they can | **12 to 14 fps all show**, 11,160 skips; 133 ms; CPU 68.2%; **21** requests/s answered, median 492 ms | **40 fps median**, 623 skips, 24 repeats, 102 s under 39 fps; 57 ms; CPU 57.2%; **313** requests/s answered, median 5.7 ms, p99 172 ms |
+
+- **The ten-client run's 213,287 "errors" were my tool, not ltcplay.** `web_hammer.py` opens a new connection for every request. At about 800 attempts a second, Windows ran out of local ports: every error was `WinError 10048` ("Only one usage of each socket address"), with about 17,000 connections waiting to close (checked with a 20 s repeat; `netstat` showed 17,250 in TIME_WAIT). The server answered 131,391 requests with no error of its own. `serve.err` holds only `ConnectionResetError` tracebacks from clients hanging up. So the ten-client row is a harder test than on main (15 times the answered requests), not the same one.
+- **Where it still costs:** in the two- and five-client runs about 1 request in 20 took around 60 ms (p95 62 to 64 ms), against 1.5 ms for the rest. That looks like the one request per 0.2 s window that rebuilds the snapshot, and so still pays for the hashing the Mac session found. It is harmless at these rates. If it matters later, the build id could be computed once at start, or when the files change, rather than 5 times a second.
+- **The page after its own buttons** (one real page, a timer in the page checking its text every 10 ms): **GO to "FREERUN" on screen: 12 to 13 ms** in three repeats (the very first GO of the session took 415 ms). **Stop and black out to "NOTHING RUNNING": 134 ms. Run to "STANDBY": 82 ms.** `/api/go` answered in 2 ms and `/api/start` in 28 ms. The page updates at once after a press.
+- Caveats:
+  - In the automated runs my batch stopped the recorders 20 s before the end of each show, so those rows cover 424 of the 444 s.
+  - BEYOND was not running here, and was not in B11 either.
+
+Evidence: `B13_web_runs.txt`.
 
 ## Not tested yet
 
