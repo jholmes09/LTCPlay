@@ -313,7 +313,9 @@ class Session:
                 self.clock = clock_mod.build(
                     self.tl.clock, self.tl, self.player.feed_timecode,
                     log=self.log, no_output=self.no_output,
-                    bind_ip=self.bind, on_stop=self.player.drop_clock)
+                    bind_ip=self.bind, on_stop=self.player.drop_clock,
+                    on_pause=lambda: self.player.set_hard_park(True),
+                    on_resume=lambda: self.player.set_hard_park(False))
             except clock_mod.ClockConfigError as e:
                 raise SessionError(str(e))
             # The display reads the clock's health from the player, the way

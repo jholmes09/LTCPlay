@@ -14542,7 +14542,7 @@ def test_the_clock_freezes_on_hold_and_resume_carries_on():
     # loop reads: no real ticker thread, so a pause here cannot spin one
     # forever chasing wall time it will never see move, and nothing here
     # depends on real time passing at all.
-    m.ticker.start = lambda t0=None: (
+    m.ticker.start = lambda t0=None, n0=0: (
         setattr(m.ticker, "t0", st.t if t0 is None else t0), m.ticker.t0)[1]
     m.ticker.stop = lambda: None
     try:
@@ -14676,6 +14676,290 @@ def test_the_clock_freezes_on_hold_and_resume_carries_on():
     print("  ok")
 
 
+def test_resume_backdating_a_ticker_is_not_a_skip():
+    section("Ticker: resume() moving t0 into the past on purpose must "
+            "never be counted as the ticker having fallen behind")
+    # Bench evidence, Fire & Ice 2026-09-25, run hold1 (B4): 20 cues of a
+    # 58s show, each held at 20s for 5s. The clock's own "skipped" count
+    # rose by about 600 every 5s Hold (11,424 after 19 cues) while the
+    # pixel receiver saw almost nothing skipped. Reproduced here directly,
+    # on an injected clock, never wall time: Ticker.run() is called twice,
+    # the second time exactly as ArtNetMaster.resume() calls it -- t0
+    # moved back by the frozen frame's own length, so the very first frame
+    # computed lands on frame_frozen + 1.
+    from ltcplay import clock as C
+
+    class Exact:
+        """clock()/sleep() that move only when told to."""
+        def __init__(self, start):
+            self.now = start
+
+        def clock(self):
+            return self.now
+
+        def sleep(self, d):
+            self.now += d
+
+    fps = C.MASTER_FPS
+
+    # A plain start (play()): the zero point IS now, so nothing is owed.
+    ex = Exact(1000.0)
+    got = []
+    tk = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 5)[1],
+                 clock=ex.clock, sleep=ex.sleep)
+    tk.run(ex.now)
+    check(got == [0, 1, 2, 3, 4], f"a plain start sent {got}")
+    check(tk.skipped == 0,
+          f"a plain start should never skip a frame, got {tk.skipped}")
+
+    # Exactly what resume() does: 20s into a 30fps cue (hold1's own
+    # position), t0 moved back by (n_frozen + 1) / fps, n0 carried
+    # alongside it so the ticker knows that is where it already is.
+    n_frozen = 599                      # 20s into the cue, 30 a second
+    resume_now = 2000.0                 # some time after a 5s hold; the
+                                        # value itself does not matter
+    t0 = resume_now - (n_frozen + 1) / fps
+
+    got.clear()
+    ex_fixed = Exact(resume_now)
+    tk_fixed = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 10)[1],
+                        clock=ex_fixed.clock, sleep=ex_fixed.sleep)
+    tk_fixed.run(t0, n0=n_frozen + 1)
+    check(got[:3] == [600, 601, 602],
+          f"resuming should continue at frame 600, got {got[:3]}")
+    check(tk_fixed.skipped == 0,
+          f"a Hold that dropped nothing on the wire must never be counted "
+          f"as skipped frames; got {tk_fixed.skipped}")
+
+    # The bug itself, shown directly: the identical resume with n0 left
+    # out -- what clock.py did before this fix.
+    got.clear()
+    ex_bug = Exact(resume_now)
+    tk_bug = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 10)[1],
+                      clock=ex_bug.clock, sleep=ex_bug.sleep)
+    tk_bug.run(t0)                      # n0 defaults to 0: the old call
+    check(tk_bug.skipped == n_frozen + 1,
+          f"this is the exact mechanism the bench found, not a guess: "
+          f"leaving out n0 turns a Hold that lost nothing into "
+          f"{tk_bug.skipped} 'skipped' frames -- matching the bench's "
+          f"~600-per-hold reading (11,424 after 19 cues) almost exactly")
+    print("  ok")
+
+
+def test_hold_freezes_the_pixels_at_once_and_resume_never_reorders():
+    section("Hold: the pixels freeze on the spot, not up to a debounce "
+            "window later; Resume never sends an earlier pixel frame than "
+            "one already sent, and drops at most one on the way back")
+    # Bench evidence, Fire & Ice 2026-09-25, run hold1 (B4): pixels held
+    # the frame through the hold (about 190 repeats per 5s hold) with 0
+    # skipped during, BUT "one frame number arrived out of order around
+    # most holds", and "14 pixel frames were skipped in total in the 3s
+    # after resume, across 19 holds". Reproduced here with the real Player
+    # and ArtNetMaster, on one injected clock shared by two independently
+    # paced tickers -- the show clock's own 30fps and the pixel output's
+    # own 40fps (25ms step) -- exactly as they run for real, never wall
+    # time.
+    from ltcplay import clock as C
+
+    fs = FakeFSEQ(frames=200000, step=25)      # 40fps, ample runway
+    tl = _timeline([("00:00:00:00", "A", fs)])
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=200,
+              freewheel_ms=250, hold_ms=2000)
+    st = _Stepped(p, step_ms=25)
+    out = _TcOut()
+    cfg, m = _master(C, out=out, sink=p.feed_timecode,
+                     clock=lambda: st.t, mono=lambda: st.t,
+                     on_pause=lambda: p.set_hard_park(True),
+                     on_resume=lambda: p.set_hard_park(False))
+    fps = C.MASTER_FPS
+    try:
+        m.start()
+        st.t = 1000.0
+        t0 = m.play(0.0, 100000.0, "A")
+
+        next_clock_t = [t0]
+        next_out_t = [st.t]
+        n = [0]
+        idxs = []
+
+        def step():
+            # Whichever of the two independent tickers is due first, never
+            # both at once: the same discipline clock.py's own Ticker and
+            # player.py's output loop each keep on their own. The clock
+            # ticks at 30fps the whole time, paused or not -- that is the
+            # feature -- but n only advances when it is not paused: while
+            # paused, _tick() ignores n entirely (it sends the frozen frame
+            # regardless), so holding it at n_frozen + 1 costs nothing and
+            # is exactly the frame a real resume() restarts its own ticker
+            # counting from (see clock.py's Ticker.run() and resume()).
+            if next_clock_t[0] <= next_out_t[0]:
+                st.t = next_clock_t[0]
+                m._tick(n[0], st.t)
+                if not m._paused:
+                    n[0] += 1
+                next_clock_t[0] += 1.0 / fps
+            else:
+                st.t = next_out_t[0]
+                st.tick()
+                idxs.append(p.current_frame)
+                next_out_t[0] += st.step
+
+        # Run to 20s into the cue -- hold1's own position -- then Hold for
+        # 5s, matching the bench run exactly.
+        PAUSE_AT_N = int(round(20.0 * fps))     # 600
+        while n[0] < PAUSE_AT_N:
+            step()
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        # pause() itself feeds nothing; only its own ticker's very next
+        # tick does, and this test's clock and output tickers are not
+        # phase locked to each other, so the frozen value is whatever that
+        # first post-pause output tick reads -- never a later one, which
+        # is exactly the property under test.
+        before_len = len(idxs)
+        while len(idxs) == before_len:
+            step()
+        frozen_idx = idxs[-1]
+
+        # Not one pixel frame may differ from the one pause() froze on:
+        # no forward creep while a debounce window catches up, so no snap
+        # back either. hold_ms=2000 here is unrelated to this park_ms=200
+        # debounce; the fix must beat it by more than an order of
+        # magnitude, so 5s of hold, sampled at both tickers' full rate,
+        # is a hard check, not a lucky one.
+        hold_end_t = st.t + 5.0
+        bad = []
+        while st.t < hold_end_t or next_clock_t[0] < hold_end_t \
+                or next_out_t[0] < hold_end_t:
+            before = len(idxs)
+            step()
+            if len(idxs) > before and idxs[-1] != frozen_idx:
+                bad.append((round(st.t - t0, 4), idxs[-1]))
+        check(not bad,
+              f"the pixels moved during the hold before settling on the "
+              f"frozen frame ({frozen_idx}), or moved at all: {bad[:5]}")
+        check(p.state == PARKED,
+              f"expected PARKED throughout the hold, got {p.state}")
+
+        m.resume()
+        check(not m.paused, "resume() left the clock marked paused")
+
+        # 3s after Resume, matching the bench's own measurement window.
+        # idx must never fall (an out-of-order frame, B4's finding), and
+        # what it skips is bounded and small, never a burst. A resume is a
+        # 1/30s step on the clock landing on a 1/25s grid of pixel frames:
+        # 30 and 40 do not share a per-frame boundary, so the very first
+        # frame after almost every Resume is, by simple arithmetic, not
+        # the very next pixel frame but the one after -- one frame short
+        # every time, not a bug to fix, exactly as B4 measured (14 skipped
+        # across 19 holds, well under 1 per hold on average, never
+        # growing, never backward). This is that bound, checked directly,
+        # not assumed: a real pacing bug would show up here as a gap that
+        # keeps growing, or a burst of many frames at once, neither of
+        # which this tolerates.
+        seq = [frozen_idx]
+        window_end_t = st.t + 3.0
+        while st.t < window_end_t or next_clock_t[0] < window_end_t \
+                or next_out_t[0] < window_end_t:
+            before = len(idxs)
+            step()
+            if len(idxs) > before:
+                seq.append(idxs[-1])
+        gaps = [b - a for a, b in zip(seq, seq[1:])]
+        check(all(g >= 0 for g in gaps),
+              f"a pixel frame arrived out of order after Resume: {seq}")
+        check(all(g <= 3 for g in gaps),
+              f"more than two pixel frames skipped in a single step after "
+              f"Resume (a catch-up burst, not the one-off quantising "
+              f"between the 30fps clock and the 40fps pixel grid this "
+              f"tolerates): gaps {gaps}")
+        skipped = sum(g - 1 for g in gaps if g > 1)
+        check(skipped <= 3,
+              f"{skipped} pixel frames skipped in the 3s after Resume, "
+              f"more than the bench's own worst case (B4: 14 skipped in "
+              f"total across 19 holds, well under 1 per hold on average)")
+        check(seq[-1] > frozen_idx, "the pixels never moved again after "
+                                    "Resume")
+    finally:
+        st.close()
+        try:
+            m.stop()
+        except Exception:
+            pass
+    print("  ok")
+
+
+def test_hard_park_is_seen_at_once_under_every_override():
+    section("Hold: Freerun, Blackout and Preshow all read a machine-"
+            "generated pause as PARKED at once, not after the debounce "
+            "window")
+    # player.py has two copies of the "parked" computation: _tick()'s own,
+    # used for the ordinary show path, and _state_from_feed()'s, used only
+    # while an override (Freerun, Blackout, Preshow) is engaged, to keep
+    # the feed's own readout honest underneath it. The fix for the
+    # out-of-order pixel frame (set_hard_park(), wired from
+    # ArtNetMaster.pause()/resume()) has to reach both, or the display
+    # still waits out the park_s debounce whenever an override happens to
+    # be up during a Hold.
+    from ltcplay.player import FREERUN
+    fs = FakeFSEQ(frames=20000)
+    idle = FakeFSEQ(frames=40)
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=200,
+              freewheel_ms=250, hold_ms=2000)
+    p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
+    p.idle_cue.fseq = idle
+    p.idle_cue._spans = [(0, 0, 64)]
+    clk = _Stepped(p, step_ms=25)
+    try:
+        base = tcmod.parse_tc("01:00:30:00", 30)
+        clk.run(0.5, tc_from=base)
+        check(p.state == LOCKED, f"expected LOCKED before Hold, got {p.state}")
+
+        # Exactly what ArtNetMaster.pause() does via set_hard_park(): told
+        # immediately, no repeated frame needed, no waiting for park_s
+        # (200ms here). A single tick, right after, is well inside that
+        # window.
+        p.set_hard_park(True)
+
+        # Freerun beats the feed for the SHOW's own state (FREERUN, so the
+        # rig keeps running the free run and does not yank sideways), but
+        # the feed's own honest reading -- what the operator sees the LTC
+        # line doing underneath it -- lives in feed_state.
+        p.go(base + 0.5)
+        clk.tick()
+        check(p.state == FREERUN, f"expected FREERUN, got {p.state}")
+        check(p.feed_state == PARKED,
+              f"Freerun did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.feed_state}")
+        p.release()
+
+        # Blackout
+        p.override = "blackout"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Blackout did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        # Preshow
+        p.override = "preshow"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Preshow did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        p.set_hard_park(False)
+        clk.tick()
+        check(p.state != PARKED,
+              "releasing the hard park left the state stuck on PARKED")
+    finally:
+        clk.close()
+        p.stop()
+    print("  ok")
+
+
 def test_session_hold_and_resume():
     section("Session.clock_pause / clock_resume: refused with nothing to "
             "pause or resume, without a master clock, and twice; halt "
@@ -14768,7 +15052,20 @@ def test_session_hold_and_resume():
         sess.clock_play("Show")
         check(wait_for(lambda: sess.player.current_cue is not None,
                        timeout=3.0), "the cue never reached the pixels")
+        # A real quarter second in, not the first frame: the skipped-count
+        # bug this guards (below, at Resume) scales with how far into the
+        # cue the freeze happens, and a Hold in the first instant of a cue
+        # would hide it almost entirely.
+        time.sleep(0.25)
         sess.clock_pause()
+        # Told immediately, not after the debounce settles: this is the
+        # whole point of wiring on_pause through Session.open() to
+        # Player.set_hard_park (clock.py's ArtNetMaster._set_paused(),
+        # session.py's clock_mod.build() call). No sleep, no wait_for --
+        # right here, before anything has had time to settle on its own.
+        check(sess.player._hard_parked,
+              "Session never told the player Hold is a real pause "
+              "(on_pause is not wired, or never called)")
         # The chase engine only calls a repeating position PARKED once it
         # has repeated for park_ms: right up to that debounce, the reading
         # can still say LOCKED for a frame here and there. Let it settle
@@ -14809,7 +15106,23 @@ def test_session_hold_and_resume():
             check("already paused" in str(e), f"unclear refusal: {e}")
 
         # 5. Resume: the show carries on, and a second Resume is refused.
+        # The pause above ran real time (the 0.5s settle sleep is real,
+        # not simulated), so by now the ticker has legitimately been
+        # frozen for many real frames -- exactly the shape that exposed
+        # the bogus skipped-frame count on the Fire & Ice bench: resume()
+        # backdates the ticker's zero point by that many frames on
+        # purpose, and forgetting to also tell it where it already is
+        # (n0) reads as the ticker having just fallen that far behind.
+        skipped_before = sess.clock.ticker.skipped
         sess.clock_resume()
+        check(sess.clock.ticker.skipped - skipped_before <= 3,
+              f"Resume added {sess.clock.ticker.skipped - skipped_before} "
+              f"to the clock's own skipped-frame count for a hold that "
+              f"dropped nothing on the wire")
+        check(not sess.player._hard_parked,
+              "Session never told the player Hold is over (on_resume is "
+              "not wired, or never called), so a later Hold would find "
+              "the pixels already told they are paused")
         check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
               "the show did not carry on after Resume")
         check(not sess.clock.paused, "the clock still reads paused")
@@ -15150,6 +15463,15 @@ def test_pause_resume_survive_a_real_ticker_under_pressure():
         check(m.ticker.errors == 0,
               f"{m.ticker.errors} tick(s) errored under pressure "
               f"({cycles} pause/resume cycles): {m.ticker.last_error!r}")
+        # Each cycle's resume() backdates the ticker's own zero point by
+        # whatever it was frozen for; forgetting to say so (n0) reads as
+        # that many frames having been dropped, on every single cycle.
+        # 300 cycles of real, if tiny, backdating would add up fast; a
+        # genuinely clean resume leaves this near zero however many
+        # cycles ran.
+        check(m.ticker.skipped < cycles,
+              f"{m.ticker.skipped} frames counted as skipped over "
+              f"{cycles} pause/resume cycles that dropped nothing")
         check(m.playing and m._cue is not None,
               "the cue is not alive after the stress cycles")
         check(not m.paused, "the clock was left paused after the cycles")
@@ -17905,6 +18227,9 @@ if __name__ == "__main__":
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
     test_the_clock_freezes_on_hold_and_resume_carries_on()
+    test_resume_backdating_a_ticker_is_not_a_skip()
+    test_hold_freezes_the_pixels_at_once_and_resume_never_reorders()
+    test_hard_park_is_seen_at_once_under_every_override()
     test_session_hold_and_resume()
     test_pause_does_not_race_its_own_ticker()
     test_resume_does_not_race_its_own_ticker()

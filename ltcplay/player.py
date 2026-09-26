@@ -186,6 +186,11 @@ class Player:
 
         self._last_tc_value = None
         self._park_since = None
+        # Set only by a master clock (clock.py's ArtNetMaster, via
+        # set_hard_park()) around its own pause()/resume(). See
+        # set_hard_park()'s docstring for why a repeated LTC frame is not
+        # enough on its own to make this true.
+        self._hard_parked = False
         self.parked_since = None
         self.last_ltc_seconds = None
         self.last_ltc_text = None
@@ -443,6 +448,24 @@ class Player:
                 self._epoch += delta * self.slew
             self.state = LOCKED
 
+    def set_hard_park(self, active):
+        """A master clock (clock.py) telling us, without ambiguity, that it
+        has frozen the frame right now, or just let it go again.
+
+        feed_timecode() already reads a repeated position as PARKED on the
+        spot -- but only for ITSELF; the state it sets there is overwritten
+        a moment later by _tick(), which recomputes PARKED on its own,
+        gated by `park_s`: at least a fifth of a second of the same value
+        before it is trusted, on purpose, so that one corrupt LTC frame
+        that happens to repeat the last one does not freeze a real deck's
+        playback. A machine-generated clock has nothing to debounce -- it
+        already knows the difference between a pause and noise -- so for
+        the span this is True, _tick() skips that debounce and holds
+        immediately. Nothing here touches park_s or the debounce itself, so
+        a real LTC deck (GPL/Dollywood) reads exactly as it always has."""
+        with self._lock:
+            self._hard_parked = bool(active)
+
     def drop_clock(self):
         """The show clock stopped on purpose: hand the rig to the idle look.
 
@@ -456,6 +479,7 @@ class Player:
             self._epoch = None
             self._pending_jump = None
             self._park_since = None
+            self._hard_parked = False
             self._last_tc_value = None
             self.freerun_epoch = None
         self._event("clock", "the show clock stopped; back to the idle look")
@@ -653,7 +677,9 @@ class Player:
 
         with self._lock:
             park_since = self._park_since
-        parked = (park_since is not None and now - park_since >= self.park_s)
+            hard_parked = self._hard_parked
+        parked = hard_parked or (park_since is not None
+                                 and now - park_since >= self.park_s)
 
         since = now - last
         if since > self.hold_s:
@@ -875,7 +901,9 @@ class Player:
             return
         with self._lock:
             park_since = self._park_since
-        parked = (park_since is not None and now - park_since >= self.park_s)
+            hard_parked = self._hard_parked
+        parked = hard_parked or (park_since is not None
+                                 and now - park_since >= self.park_s)
         since = now - last
         if since > self.hold_s:
             self.state = LOST
