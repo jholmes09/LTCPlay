@@ -17,6 +17,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B6 Six video tracks | PASSED at panel size / FAILED at 1080p H.264 | Panel-sized: 38% CPU at 4K desktop, 19.5% at 1080p, 28% with BEYOND too, smooth 30 fps; six 1080p H.264: 100% CPU |
 | B7 ltcplay's own tests | PASSED | main 9291c35: all checks passed in 90.5 s |
 | B8 BEYOND | PASSED with required settings | Follows on 127.0.0.2 while MadMapper takes 127.0.0.1, both within a frame over 60 s; blank by OSC brightness 0; turn off "Keep running" or it plays through Hold; OSC port must not be 8000; demo quits after 1 h |
+| B10 Flame safety program (flamesafe-core d5b398f) | PASSED | Suites pass on Windows; 40.0 packets/s at priority 200, all zero, no sequence breaks, idle and under show load (p99 interval 25.5 ms, 0.84% of a thread); survives a dead destination; clean stop sends zeros then stream-terminated; hard kill stops at once with no zeros (as documented); bad configs refuse with exit 2 |
 | B9 Long soak | PASSED on the desk with airflow (1 h 34 min + 2 h); 4 h with intermission gaps: NOT YET RUN | Heat is the limit: the SSD stalled up to 20 s and froze the PC when the box sat flat on a desk |
 
 ## B0 The machine
@@ -256,6 +257,36 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 **B8.4 Changing source port:** tctest sends from an ephemeral port (a new one every run); BEYOND accepted every run (message counter and timeline). PASSED.
 
 **B8.5 Show vs intermission:** NOT TESTED. Both start at 00:00:00:00. Candidates from Pangolin's OSC list: `/beyond/general/StartCue` / `SelectCue` (string) to select a different timeline show before the clock starts, or an hour offset per show in File > Show properties > Time code input. Needs Andy's show files.
+
+## B10 The flame safety program on Windows
+
+**Verdict: PASSED on every item.** Branch `flamesafe-core` at **`d5b398f`** (PR #12, not merged), in its own worktree `C:\Users\VIOSO\Desktop\Show\wt-flamesafe`; no code changed. Run on Jeff's first-hand approval in this session (2026-09-26, "When the other session says flame related code testing is ready, I give you explicit permission"), after the main session said it was ready. **No flame hardware anywhere in the building (Jeff); both Ethernet ports unplugged (checked); every packet went to 127.0.0.1.** 00:36 to 00:47.
+
+Config: a copy of `flamesafe\flamesafe.example.json` (unconfirmed rev 6 numbers, universe 1, 6 groups, example link key) with only `destination` changed to **127.0.0.1:5578** (a throwaway listener) and `log_dir` set; `scratch\flamesafe_bench.json`. Throwaway tools: `scratch\flame_sink.py` (E1.31 listener logging source, priority, universe, sequence, options and whether all 512 slots are zero) and `scratch\b10_run.py` (starts `python -m flamesafe`, measures its CPU, stops it cleanly with Ctrl+Break or hard with TerminateProcess, the same as Task Manager's End task). flamesafe was run with the **base Python 3.12** (`C:\Users\VIOSO\AppData\Local\Programs\Python\Python312\python.exe`): the venv's `python.exe` on Windows is a launcher that starts the real interpreter as a hidden child, so a kill or CPU reading aimed at the launcher misses flamesafe itself. **Worth knowing for the real launcher and the Task Scheduler entry.**
+
+1. **Suites on Windows:** `python -u -m flamesafe.test_flamesafe`: **"flamesafe: all checks passed in 11.7s"**, no FAIL lines. `python -u selftest.py` in the same worktree: **"all checks passed in 106.1s"**, no FAIL lines (pixel note: 81 frames in 2.0 s, mean 25.00 ms, 90th percentile 0.44 ms).
+2. **Idle, 60 s:** **2,482 packets in 61.90 s = 40.08 per second**; interval min 0.00, **mean 24.95, 99th percentile 25.64, max 33.30 ms**; **priority 200** on every packet; **universe 1**; **every one of the 512 slots zero in every packet** (nothing can arm without the Stream Deck, and the journal says so: "no arm input in this build: every group stays disarmed and the flame universe is all zeros"); **sequence numbers continuous (0 breaks, wrapping at 255)**; source name `flamesafe`.
+3. **Under show load, 3 minutes** (the full layout: ltcplay 26,256 pixels + Art-Net timecode to MadMapper and BEYOND, MadMapper six montage tracks + audio, BEYOND timeline): **7,003 packets in 174.93 s = 40.03 per second; interval mean 24.98, 99th percentile 25.46, max 25.90 ms**; priority 200, universe 1, all zero, 0 sequence breaks. **flamesafe CPU 0.84% of one thread** (idle runs: 0.44% and 1.08%). The show's own pixels in the same run: median 40 fps, 3 frames skipped in 3 minutes, longest gap 52 ms; system CPU 27.0% average, GPU 21.8%.
+4. **Nobody listening (the SIO_UDP_CONNRESET case):** flamesafe sent to 127.0.0.1:5578 with no listener for 30 s (and its status frames to 127.0.0.1:5572 with no listener for the whole run): **no crash, no error lines in the journal** (4 lines total: two config, start, stop), CPU 0.44%. **A listener started at +30 s received packets at once: 1,289 in 32.08 s = 40.16 per second**, all zero, 0 sequence breaks.
+5. **Kill tests:**
+   - **Clean stop (Ctrl+Break, handled the same as Ctrl+C):** exited in 27 ms with code 0. The listener saw the last normal packet (seq 172, all zero), then **3 all-zero packets (seq 173 to 175, options 0) then 3 all-zero packets with the stream-terminated bit (seq 175 to 177, options 0x40)**, all within the same millisecond; journal "stop: flame universe zeroed and the stream terminated".
+   - **Hard kill (TerminateProcess):** **the last packet arrived 20 ms before the kill call** (the next 25 ms tick never came), **no zeros and no stream-terminated packets after it**, and no "stop" line in the journal, exactly as `service.py` and CONTRACT.md describe ("A hard kill sends no zeros"). Here the last packet was all zeros because nothing was armed; with a group armed and firing, the node would hold that last packet until its own sACN-loss timeout. **The "dead PC" case therefore rests on the PixLite Aux port's loss behaviour and each G-Flame's Max. Flame Duration** (CONTRACT.md bench items 1 and 2, which need the real hardware).
+6. **Bad configs** (each run with `python -m flamesafe <file>`):
+   - A misspelt key (`destinaton`): **exit 2**, "flamesafe will not start: the config has a key this program does not know: destinaton. Check the spelling against flamesafe.example.json."
+   - A missing file: **exit 2**, "flamesafe will not start: the config file C:\Users\VIOSO\Desktop\Show\scratch\does_not_exist.json cannot be read: No such file or directory."
+   - Two heads on one fire slot (cat-walk's first fire slot set to 411, front row's): **exit 2**, "flamesafe will not start: cat-walk and front row share fire slot 411. Arming either one would zero that slot for 3 frames under the other."
+   - No argument: exit 2, "Usage: python -m flamesafe <config.json>".
+7. **Journal:** to stdout and to `<log_dir>\flamesafe.log` (here `C:\Users\VIOSO\Desktop\Show\scratch\flamesafe_log\flamesafe.log`, 15 lines over 5 runs), one line per event, local time to the second:
+
+```
+2026-09-26 00:43:22  config: no arm input in this build: every group stays disarmed and the flame universe is all zeros
+2026-09-26 00:43:22  start: flame universe 1 to 127.0.0.1:5578 at sACN priority 200, 40 Hz; frames in on 127.0.0.1:5571, status out to 127.0.0.1:5572
+2026-09-26 00:46:17  stop: flame universe zeroed and the stream terminated
+```
+
+   Each start also writes the config's UNCONFIRMED note in full. With `log_dir` null (the example's default) the journal goes to stdout only: on a show PC with no console that means no file, so the real config should set `log_dir` (under `%LOCALAPPDATA%`, per handoff section 10).
+
+Not tested (needs the Stream Deck driver, build step 7b): arming, fire values passing, the dwell, the link from ltcplay (no ltcplay side exists yet), status-frame contents.
 
 ## B9 Long soak
 
