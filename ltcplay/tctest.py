@@ -92,7 +92,7 @@ def load_show_nodes(show_path):
     from .clock import ArtNetConfig
 
     try:
-        with open(show_path, encoding="utf-8") as fh:
+        with open(show_path, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except OSError as e:
         raise TcTestError(f"{show_path}: {e.strerror or e}")
