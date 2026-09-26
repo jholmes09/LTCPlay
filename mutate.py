@@ -1340,6 +1340,524 @@ MUTATIONS = [
   '    return [name for name, _ in dests\n'
   '           if name.strip().lower() == "beyond"]'),
 
+ # ---------------------------------------------------------------------
+ # flamesafe/: the flame safety program (handoff section 15, build step
+ # 7a). One mutation per rule in flamesafe/rules.py, plus the link, the
+ # packet, the clock and the wall. All caught by flamesafe's own suite,
+ # which selftest.py runs in a subprocess.
+ # ---------------------------------------------------------------------
+
+ # rule 1: the arm value is derived, not chosen
+ ("flamesafe: an arm value outside the G-Flame window is accepted",
+  "flamesafe/config.py",
+  "    if not (lo <= arm_value <= hi):",
+  "    if False:"),
+
+ ("flamesafe: a single-bit flip of the arm value reaching 229 is accepted",
+  "flamesafe/config.py",
+  "        neighbour = arm_value ^ (1 << bit)\n"
+  "        if neighbour >= rules.GFLAME_FIRE_AT:",
+  "        neighbour = arm_value ^ (1 << bit)\n"
+  "        if False:"),
+
+ ("flamesafe: the unsourced Showven risk needs no acknowledgement",
+  "flamesafe/config.py",
+  "    if above_unsourced and not accept_unsourced_risk:",
+  "    if False:"),
+
+ ("flamesafe: any arm value in the window is accepted, not the derived one",
+  "flamesafe/config.py",
+  "    if arm_value != derived:",
+  "    if False:"),
+
+ # rule 2: the rising edge must be clean
+ ("flamesafe: a fire slot at exactly 15 no longer blocks the rise",
+  "flamesafe/composer.py",
+  "            if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:",
+  "            if commanded[f - 1] > rules.GFLAME_EDGE_BELOW:"),
+
+ ("flamesafe: the edge gate is skipped entirely",
+  "flamesafe/composer.py",
+  "            if self._fire_is_quiet(commanded, g):",
+  "            if True:"),
+
+ # rule 3: the edge is held quiet
+ ("flamesafe: fire slots are not held quiet after the rise",
+  "flamesafe/composer.py",
+  "                self._edge_quiet[i] = rules.EDGE_QUIET_FRAMES + 1",
+  "                self._edge_quiet[i] = 0"),
+
+ ("flamesafe: the quiet window is one frame instead of three",
+  "flamesafe/rules.py",
+  "EDGE_QUIET_FRAMES = 3",
+  "EDGE_QUIET_FRAMES = 1"),
+
+ # rule 4: the re-arm dwell
+ ("flamesafe: the re-arm dwell is never applied",
+  "flamesafe/composer.py",
+  "            if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:",
+  "            if False:"),
+
+ ("flamesafe: an operator disarm does not start the dwell",
+  "flamesafe/composer.py",
+  "                if self._wanted[i]:\n"
+  "                    # The operator disarmed this group.  The dwell applies.\n"
+  "                    self._disarmed_at[i] = t",
+  "                if self._wanted[i]:\n"
+  "                    pass"),
+
+ ("flamesafe: the dwell countdown rounds down and reads 0 with time to go",
+  "flamesafe/composer.py",
+  "        return int(math.ceil(left_ms / 1000.0))",
+  "        return int(left_ms // 1000)"),
+
+ ("flamesafe: the dwell shows flashing amber, telling the operator to cycle",
+  "flamesafe/composer.py",
+  '                held.append(("re-arm dwell", "steady"))',
+  '                held.append(("re-arm dwell", "flashing"))'),
+
+ ("flamesafe: a dirty edge shows steady amber, telling the operator to wait",
+  "flamesafe/composer.py",
+  '                held.append(("dirty edge", "flashing"))',
+  '                held.append(("dirty edge", "steady"))'),
+
+ # rule 5: chatter
+ ("flamesafe: chatter is never detected",
+  "flamesafe/composer.py",
+  "                if len(rt) >= rules.CHATTER_RISES:",
+  "                if False:"),
+
+ ("flamesafe: thirty rises in two seconds are fine",
+  "flamesafe/rules.py",
+  "CHATTER_RISES = 3",
+  "CHATTER_RISES = 30"),
+
+ # rule 6: consent
+ ("flamesafe: a down edge counts as consent whether or not the input is alive",
+  "flamesafe/composer.py",
+  "        consent_ok = advanced",
+  "        consent_ok = True"),
+
+ ("flamesafe: a group latches without ever having been seen down",
+  "flamesafe/composer.py",
+  "            elif self._seen_down[i] and consent_ok:",
+  "            elif consent_ok:"),
+
+ ("flamesafe: the first assertion counts as proof of life",
+  "flamesafe/composer.py",
+  "            # synthetic all-down report a booting watcher emits.\n"
+  "            advanced = False",
+  "            # synthetic all-down report a booting watcher emits.\n"
+  "            advanced = True"),
+
+
+ ("flamesafe: the latches start out set",
+  "flamesafe/composer.py",
+  "        self._latched = [False] * self.n\n"
+  "        self._arm_seq = None",
+  "        self._latched = [True] * self.n\n"
+  "        self._arm_seq = None"),
+
+ # rule 7: interruptions clear the latches
+ ("flamesafe: the arm input never goes stale",
+  "flamesafe/composer.py",
+  "        return (self._arm_fresh_at is not None and\n"
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)",
+  "        return (self._arm_fresh_at is not None and\n"
+  "                (t - self._arm_fresh_at) * 1000.0 <= 1e9)"),
+
+ ("flamesafe: a stalled counter still counts as fresh",
+  "flamesafe/composer.py",
+  "        if advanced:\n            self._arm_fresh_at = t",
+  "        if True:\n            self._arm_fresh_at = t"),
+
+ ("flamesafe: an input that restarted keeps every latch",
+  "flamesafe/composer.py",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = False",
+  "            advanced = False"),
+
+ ("flamesafe: a stale input keeps every latch and re-arms when it returns",
+  "flamesafe/composer.py",
+  "        if not live:\n"
+  '            self._reset_latches("arm input stale")',
+  "        if not live:\n"
+  "            pass"),
+
+ ("flamesafe: an overrun is never noticed",
+  "flamesafe/composer.py",
+  "                (t - self._last_tick) * 1000.0 > self.cfg.overrun_ms:",
+  "                (t - self._last_tick) * 1000.0 > 1e9:"),
+
+ ("flamesafe: a malformed arm assertion is taken as a real one",
+  "flamesafe/composer.py",
+  "            if len(w) != self.n or any(not isinstance(x, bool) for x in w):\n"
+  '                raise ValueError("wanted")',
+  "            if False:\n"
+  '                raise ValueError("wanted")'),
+
+ # rule 8: the table
+ ("flamesafe: two groups may share a fire slot",
+  "flamesafe/config.py",
+  "            if f in fire_owner:",
+  "            if False:"),
+
+ ("flamesafe: a fire slot may be its own safety slot",
+  "flamesafe/config.py",
+  "            if f == safety:",
+  "            if False:"),
+
+ ("flamesafe: a group with no fire slots is accepted",
+  "flamesafe/config.py",
+  "        if not fire:",
+  "        if False:"),
+
+ ("flamesafe: a fire slot may be another group's safety slot",
+  "flamesafe/config.py",
+  "        if clash:",
+  "        if False:"),
+
+ ("flamesafe: two groups may share a safety slot",
+  "flamesafe/config.py",
+  "        if g.safety in seen:",
+  "        if False:"),
+
+ ("flamesafe: the link may leave this machine",
+  "flamesafe/config.py",
+  "    if loopback_only and not ip.is_loopback:",
+  "    if False:"),
+
+ ("flamesafe: an overrun limit shorter than a tick is accepted",
+  "flamesafe/config.py",
+  "    if c.overrun_ms < 2 * period_ms:",
+  "    if False:"),
+
+ # rule 9: only the writer
+ ("flamesafe: ltcplay's values on channels that belong to no group pass through",
+  "flamesafe/composer.py",
+  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        sent_fire = []",
+  "        buf = bytearray(commanded if commanded is not None\n"
+  "                        else rules.UNIVERSE_SIZE)\n        sent_fire = []"),
+
+ ("flamesafe: a disarmed group passes its fire values through",
+  "flamesafe/composer.py",
+  "                if armed_now and not quiet:\n                    out = v",
+  "                if not quiet:\n                    out = v"),
+
+ ("flamesafe: fire commanded on a disarmed group is not logged as a fault",
+  "flamesafe/composer.py",
+  "            if not armed_now and any(v != 0 for v in cf):",
+  "            if False:"),
+
+ # rule 10: zero on anything uncertain
+ ("flamesafe: a frame from ltcplay never goes stale",
+  "flamesafe/composer.py",
+  "        return (self._frame_at is not None and\n"
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.frame_stale_ms)",
+  "        return (self._frame_at is not None and\n"
+  "                (t - self._frame_at) * 1000.0 <= 1e9)"),
+
+ ("flamesafe: a compose fault keeps the latches",
+  "flamesafe/composer.py",
+  '            self._reset_latches("panic")',
+  "            pass"),
+
+ ("flamesafe: the shutdown frames carry the last values instead of zeros",
+  "flamesafe/service.py",
+  "                zeros = bytes(rules.UNIVERSE_SIZE)",
+  "                zeros = (self.last_output.universe if self.last_output\n"
+  "                         else bytes(rules.UNIVERSE_SIZE))"),
+
+ # the link
+ ("flamesafe: a frame with the wrong contract version is accepted",
+  "flamesafe/link.py",
+  '    if obj.get("v") != CONTRACT_VERSION:',
+  "    if False:"),
+
+ ("flamesafe: a frame that is not 512 values is accepted",
+  "flamesafe/link.py",
+  "    if not isinstance(values, list) or len(values) != rules.UNIVERSE_SIZE:",
+  "    if not isinstance(values, list):"),
+
+ ("flamesafe: a frame for another universe is accepted",
+  "flamesafe/link.py",
+  "    if universe != expect_universe:",
+  "    if False:"),
+
+ ("flamesafe: out-of-order frames are accepted",
+  "flamesafe/composer.py",
+  "                if frame.seq <= self._frame_seq:",
+  "                if False:"),
+
+ # the packet
+ ("flamesafe: the sACN packet says priority 100",
+  "flamesafe/sacn.py",
+  "    b[108] = priority",
+  "    b[108] = 100"),
+
+ ("flamesafe: the service sends at priority 100",
+  "flamesafe/service.py",
+  "        pkt = build_packet(self.cfg.universe, values, self.sacn_seq,\n"
+  "                           terminated=terminated)",
+  "        pkt = build_packet(self.cfg.universe, values, self.sacn_seq,\n"
+  "                           priority=100, terminated=terminated)"),
+
+ ("flamesafe: the priority constant is 100",
+  "flamesafe/rules.py",
+  "SACN_PRIORITY = 200",
+  "SACN_PRIORITY = 100"),
+
+ # the clock
+ ("flamesafe: the clock is time.monotonic",
+  "flamesafe/composer.py",
+  "    return time.perf_counter()",
+  "    return time.monotonic()"),
+
+ # the wall
+ ("flamesafe imports ltcplay",
+  "flamesafe/composer.py",
+  "import math\nimport time\n",
+  "import math\nimport time\nimport ltcplay.player\n"),
+
+ ("ltcplay imports flamesafe",
+  "ltcplay/output.py",
+  "import uuid\n",
+  "import uuid\nimport flamesafe.rules\n"),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the safety review of 0bcc3c6 (draft PR #12), one mutation
+ # per finding, plus the audit's own entries that were not already here.
+ # ---------------------------------------------------------------------
+
+ # finding 1: any local process could fire an armed head with one datagram
+ ("flamesafe: a frame with the wrong key is accepted",
+  "flamesafe/link.py",
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:',
+  "    if False:"),
+
+ ("flamesafe: a second sender's frames are taken while the link is live",
+  "flamesafe/composer.py",
+  "                if sender != self._frame_sender:\n"
+  '                    raise ValueError("another sender")',
+  "                if False:\n"
+  '                    raise ValueError("another sender")'),
+
+ ("flamesafe: the status frame carries no key",
+  "flamesafe/link.py",
+  '    status["k"] = key\n',
+  ""),
+
+ # finding 2: the first assertion after an interruption counted as proof
+ ("flamesafe: the first assertion after a stale gap counts as proof of life",
+  "flamesafe/composer.py",
+  "        consent_ok = advanced and was_live",
+  "        consent_ok = advanced"),
+
+ ("flamesafe: the first assertion after an input restart counts as proof of life",
+  "flamesafe/composer.py",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = False",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = True"),
+
+ # finding 3: a surviving consent mutation
+ ("flamesafe: a down edge no longer clears the latch",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok\n"
+  "                self._latched[i] = False",
+  "                self._seen_down[i] = consent_ok"),
+
+ # finding 4: send failures while armed showed green
+ ("flamesafe: a failed sACN send is not a fault",
+  "flamesafe/service.py",
+  '            self.composer.note_fault(f"sACN send failed ({self.send_errors} "\n'
+  '                                     f"so far): {e}")',
+  "            pass"),
+
+ ("flamesafe: a failed status send is not a fault",
+  "flamesafe/service.py",
+  '            self.composer.note_fault(f"status frame not sent "\n'
+  '                                     f"({self.status_errors} so far): {e}")',
+  "            pass"),
+
+ # finding 5: a fire value held for frame_stale_ms after ltcplay stops
+ ("flamesafe: a fire value is held for frame_stale_ms after ltcplay stops",
+  "flamesafe/composer.py",
+  "        commanded = self._frame if fire_live else None",
+  "        commanded = self._frame if frame_fresh else None"),
+
+ # finding 6: the console could block the tick loop
+ ("flamesafe: the journal writes to the console inline",
+  "flamesafe/journal.py",
+  "            try:\n"
+  "                self._q.put_nowait(line)\n"
+  "            except queue.Full:\n"
+  "                self.dropped += 1",
+  "            print(line, file=self.stream, flush=True)"),
+
+ # finding 7: the dwell could be shorter than the spec's second
+ ("flamesafe: the dwell may be shorter than a second",
+  "flamesafe/config.py",
+  "DWELL_MS_MIN, DWELL_MS_MAX = 1000, 10000",
+  "DWELL_MS_MIN, DWELL_MS_MAX = 0, 10000"),
+
+ # minor findings
+ ("flamesafe: a chatter refusal does not start the dwell",
+  "flamesafe/composer.py",
+  "                    self._disarmed_at[i] = t\n"
+  "                    self._chatter_at[i] = t",
+  "                    self._chatter_at[i] = t"),
+
+ ("flamesafe: a chatter hold reads re-arm dwell",
+  "flamesafe/composer.py",
+  "                if self._chatter_at[i] is not None and self._chatter_at[i] == da:",
+  "                if False:"),
+
+ ("flamesafe: a compose fault has no age",
+  "flamesafe/composer.py",
+  "                self._fault_at = self._clock()\n"
+  "            except Exception:                           # noqa: BLE001\n"
+  "                self._fault_at = None",
+  "                self._fault_at = None\n"
+  "            except Exception:                           # noqa: BLE001\n"
+  "                self._fault_at = None"),
+
+ ("flamesafe: a panic status calls a live input stale",
+  "flamesafe/composer.py",
+  "                                  self._held, self._arm_is_live(t),\n"
+  "                                  self._frame_is_fresh(t), False)",
+  "                                  self._held, False, False, False)"),
+
+ ("flamesafe: group names are unbounded",
+  "flamesafe/config.py",
+  "        if len(name) > NAME_MAX:",
+  "        if False:"),
+
+ ("flamesafe: the flame universe may be sent to a link port",
+  "flamesafe/config.py",
+  "            c.destination_port in (c.link_listen_port, c.link_status_port):",
+  "            False:"),
+
+ ("flamesafe: wrong group names in an assertion are accepted",
+  "flamesafe/composer.py",
+  "                if list(names) != [g.name for g in self.groups]:",
+  "                if False:"),
+
+ ("flamesafe: a negative arm seq is taken as a real assertion",
+  "flamesafe/composer.py",
+  "            if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:",
+  "            if isinstance(seq, bool) or not isinstance(seq, int):"),
+
+ # the audit's own entries, kept
+ ("flamesafe: the quiet window is ignored on the fire pass",
+  "flamesafe/composer.py",
+  "                if armed_now and not quiet:\n                    out = v",
+  "                if armed_now:\n                    out = v"),
+
+ ("flamesafe: the arm input is live 30 ms longer than arm_stale_ms",
+  "flamesafe/composer.py",
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)",
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms + 30)"),
+
+ ("flamesafe: the edge gate reads the slot before each fire slot",
+  "flamesafe/composer.py",
+  "            if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:",
+  "            if commanded[f - 2] >= rules.GFLAME_EDGE_BELOW:"),
+
+ ("flamesafe: the safety value is written one slot high",
+  "flamesafe/composer.py",
+  "            buf[g.safety - 1] = values[i]",
+  "            buf[g.safety] = values[i]"),
+
+ ("flamesafe: the dwell ends 30 ms early",
+  "flamesafe/composer.py",
+  "            if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:",
+  "            if da is not None and (t - da) * 1000.0 + 30 < self.cfg.min_arm_dwell_ms:"),
+
+
+ ("flamesafe: the fire hold is 30 ms longer than fire_hold_ms",
+  "flamesafe/composer.py",
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)",
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms + 30)"),
+
+
+ ("flamesafe: the status calls a group armed when it is wanted and latched",
+  "flamesafe/composer.py",
+  "            if values[i] != DISARM:\n                state = \"armed\"",
+  "            if self._wanted[i] and self._latched[i]:\n                state = \"armed\""),
+
+ ("flamesafe: a repeated seq is accepted while live",
+  "flamesafe/composer.py",
+  "                if frame.seq <= self._frame_seq:",
+  "                if frame.seq < self._frame_seq:"),
+
+ ("flamesafe: the service sends the previous tick's universe",
+  "flamesafe/service.py",
+  "        out = self.composer.tick()\n        self.last_output = out\n        self._send_universe(out.universe)",
+  "        prev = self.last_output\n        out = self.composer.tick()\n        self.last_output = out\n        self._send_universe(prev.universe if prev is not None else out.universe)"),
+
+
+
+ ("flamesafe: the rise is recorded even when refused for chatter",
+  "flamesafe/composer.py",
+  "                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue",
+  "                    rt.append(t)\n                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue"),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the review's second pass on ed58b35.
+ # ---------------------------------------------------------------------
+
+ # A: a stalled counter defeated the transition-based reset
+ ("flamesafe: a counter frozen past arm_stale_ms then advancing is consent",
+  "flamesafe/composer.py",
+  "        was_live = self._arm_is_live(t)\n        advanced = False",
+  "        was_live = True\n        advanced = False"),
+
+ # B: a fault never cleared
+ ("flamesafe: a fault never clears",
+  "flamesafe/composer.py",
+  "                (t - self._fault_at) >= FAULT_CLEAR_S:",
+  "                (t - self._fault_at) >= 1e9:"),
+
+ ("flamesafe: a fault clears after one clean second, not five",
+  "flamesafe/composer.py",
+  "FAULT_CLEAR_S = 5.0",
+  "FAULT_CLEAR_S = 1.0"),
+
+ # C: journal drops
+ ("flamesafe: a dropped journal line is not counted",
+  "flamesafe/journal.py",
+  "            except queue.Full:\n                self.dropped += 1",
+  "            except queue.Full:\n                pass"),
+
+ ("flamesafe: the status frame does not carry the journal drop count",
+  "flamesafe/composer.py",
+  "            \"stats\": dict(self.stats,\n"
+  "                          journal_dropped=int(getattr(self._log, \"dropped\",\n"
+  "                                                      0) or 0)),",
+  "            \"stats\": dict(self.stats, journal_dropped=0),"),
+
+ ("flamesafe: the journal never says how many lines it lost",
+  "flamesafe/journal.py",
+  "            if self._q.empty() and self.dropped > self._reported_dropped:",
+  "            if False:"),
+
+ # E: keys and config strictness
+ ("flamesafe: a confirmed config may keep the example key",
+  "flamesafe/config.py",
+  "    if c.confirmed and c.link_key == EXAMPLE_KEY:",
+  "    if False:"),
+
+ ("flamesafe: the status frame carries the example key whatever the config says",
+  "flamesafe/link.py",
+  '    status["k"] = key\n',
+  '    status["k"] = EXAMPLE_KEY\n'),
+
+ ("flamesafe: unknown config keys are ignored",
+  "flamesafe/config.py",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
+
  ("an announcement plays over a running or paused show", "ltcplay/announce.py",
   '    if state in BLOCKED_STATES:\n'
   '        how = "paused" if state == "PAUSED" else "running"',
@@ -1467,6 +1985,7 @@ MUTATIONS = [
   '            for hook in pending:\n'
   '                self._run_hook(hook)'),
 
+ # ---------------------------------------------------------------------
  # Hold / Resume, Fire & Ice handoff section 5. The clock half only:
  # ArtNetMaster.pause()/resume() in clock.py, Session.clock_pause()/
  # clock_resume() in session.py.
@@ -1581,8 +2100,24 @@ _LAST_FAILS = []
 
 
 def run_suite():
-    r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
-                       capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        # A suite that does not finish is not a green suite. Under a
+        # mutation that counts as caught (the mutation broke a test so
+        # badly it hung); with nothing mutated it is a failed baseline.
+        # Either way the sweep reports it rather than crashing the shard,
+        # which is what CI run 36206230939 did.
+        out = ((e.stdout or b"") if isinstance(e.stdout, (bytes, str))
+               else b"")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        _LAST_FAILS[:] = ["  FAIL  the suite did not finish inside 300 s "
+                          "(TimeoutExpired)"] + \
+            [l.strip() for l in out.splitlines()
+             if l.startswith("  FAIL")][:5]
+        return False
     out = (r.stdout or "") + (r.stderr or "")
     _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
                       if l.startswith("  FAIL") or "Error" in l][:6]

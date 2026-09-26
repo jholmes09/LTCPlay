@@ -15354,6 +15354,109 @@ print(json.dumps({
     print("  ok")
 
 
+def test_flamesafe_in_its_own_process():
+    """The flame safety program's own suite (flamesafe/test_flamesafe.py),
+    run in a SUBPROCESS so that the wall holds: that process never has
+    ltcplay loaded, and this one never loads flamesafe. Its FAIL lines are
+    relayed here with the same prefix so mutate.py can say what caught a
+    mutation in flamesafe/."""
+    section("flamesafe: the safety program's own suite, in its own process")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    r = subprocess.run([sys.executable, "-u", "-m", "flamesafe.test_flamesafe"],
+                       cwd=root, capture_output=True, text=True, timeout=240)
+    out = (r.stdout or "") + (r.stderr or "")
+    fails = [l for l in out.splitlines() if l.startswith("  FAIL")]
+    for l in fails[:30]:
+        print("  FAIL  flamesafe> " + l[len("  FAIL"):].strip())
+    if r.returncode != 0 and not fails:
+        print(out[-3000:])
+    check(r.returncode == 0, f"flamesafe's own suite passed (exit "
+                             f"{r.returncode}, {len(fails)} FAIL line(s))")
+    lines = [l for l in out.strip().splitlines() if l.strip()]
+    last = lines[-1] if lines else ""
+    check(last.startswith("flamesafe: all checks passed"),
+          f"flamesafe's last line: {last}")
+    check("random cases, seed" in out, "the property test ran")
+    check("flamesafe" not in {m.split(".")[0] for m in sys.modules},
+          "running flamesafe's suite loaded nothing of it into this process")
+
+
+def test_the_wall_between_ltcplay_and_flamesafe():
+    """Two processes, and neither imports the other's code (handoff section
+    15). Proved three ways: by the import statements in every file of both
+    packages, by loading every ltcplay module in a clean interpreter and
+    looking for flamesafe, and by loading every flamesafe module in a clean
+    interpreter and looking for ltcplay."""
+    section("the wall: ltcplay never imports flamesafe and flamesafe never "
+            "imports ltcplay")
+    import ast
+    import json
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    check("flamesafe" not in {m.split(".")[0] for m in sys.modules},
+          "this process, with all of ltcplay loaded, has no flamesafe module")
+
+    def imports_of(path):
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    out.add(node.module.split(".")[0])
+        return out
+
+    scanned = 0
+    for d, forbidden in (("ltcplay", "flamesafe"), ("flamesafe", "ltcplay")):
+        for name in sorted(os.listdir(os.path.join(root, d))):
+            if name.endswith(".py"):
+                scanned += 1
+                imps = imports_of(os.path.join(root, d, name))
+                check(forbidden not in imps, f"{d}/{name} imports {forbidden}")
+    check(scanned > 30, f"both packages were scanned ({scanned} files)")
+    check("flamesafe" not in imports_of(os.path.join(root, "selftest.py")),
+          "selftest.py itself never imports flamesafe")
+
+    def loaded_after_importing(pkg, other):
+        code = (
+            "import sys, json, importlib, pkgutil\n"
+            f"sys.path.insert(0, {root!r})\n"
+            f"import {pkg}\n"
+            "failed = []\n"
+            f"for m in pkgutil.iter_modules({pkg}.__path__):\n"
+            "    if m.name.startswith('__'):\n"
+            "        continue\n"
+            "    try:\n"
+            f"        importlib.import_module('{pkg}.' + m.name)\n"
+            "    except Exception as e:\n"
+            "        failed.append(m.name + ': ' + type(e).__name__)\n"
+            f"mine = sorted(m for m in sys.modules if m.split('.')[0] == {pkg!r})\n"
+            f"theirs = sorted(m for m in sys.modules if m.split('.')[0] == {other!r})\n"
+            "print(json.dumps({'mine': mine, 'theirs': theirs, "
+            "'failed': failed}))\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=120, cwd=root)
+        try:
+            return json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"mine": [], "theirs": ["(the probe did not run: "
+                                           + r.stderr[-500:] + ")"],
+                    "failed": []}
+
+    res = loaded_after_importing("ltcplay", "flamesafe")
+    check(len(res["mine"]) > 20, f"every ltcplay module loaded: {res['mine']}")
+    check(res["theirs"] == [], f"loading all of ltcplay loaded flamesafe: "
+                               f"{res['theirs']}")
+    res = loaded_after_importing("flamesafe", "ltcplay")
+    check(len(res["mine"]) >= 8 and res["failed"] == [],
+          f"every flamesafe module loaded: {res['mine']} {res['failed']}")
+    check(res["theirs"] == [], f"loading all of flamesafe loaded ltcplay: "
+                               f"{res['theirs']}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -15536,6 +15639,8 @@ if __name__ == "__main__":
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
+    test_flamesafe_in_its_own_process()
+    test_the_wall_between_ltcplay_and_flamesafe()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
