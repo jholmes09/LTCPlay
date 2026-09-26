@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B14 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B15 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -23,6 +23,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B12 Show JSON saved with a UTF-8 BOM (PR #16, c226d80) | PASSED | main refuses the file (and its page silently leaves the show out of the list); the branch lists it, checks it, verifies it and starts it; selftest passes on Windows |
 | B13 Web page load on the snapshot fix (PR #18, e43f415) | PASSED | 2 and 5 viewers: 0 skips (main: 181 and 1,185). 10 unthrottled clients: 40 fps, 623 skips at 313 answered requests/s (main: 12 to 14 fps at 21/s). The page shows GO within 13 ms, Stop 134 ms, Run 82 ms |
 | B14 MadMapper and BEYOND link modules (PR #17, 4d91045) | PASSED, 4 notes | Banks, fades, blank and unblank all work as in B2, B4 and B8; BlackOut and MasterPause refused, nothing sent; watchdog alarms 3.0 s after a freeze and recovers within 10 ms; Hold order silent and dark. Notes: one false drift line per recovery; MadMapper sits 2 frames further behind after a Resume; stop does not rewind a non-chasing bank; BEYOND's own audio reaches the show output |
+| B15 MadMapper offset over 10 Holds in one show | No ratchet, no recovery | -10 ms before any Hold; -42 after Hold 1, -57 after Hold 2, then creeping back about 2 ms per Hold to -43 over the last 60 s; flat within seconds of each resume; worst -64 ms, inside the 100 ms allowance; every freeze lands exactly on the held frame |
 
 ## B0 The machine
 
@@ -450,6 +451,41 @@ The screen and audio figures include about 0.1 to 0.3 s of capture delay.
 **Note on MadMapper after a Resume.** Before the Hold, MadMapper was 19 to 26 ms behind the sender. After the Resume it stayed **75 to 82 ms behind** for all 15 s measured, about two 30 fps frames more. The audio's LTC shifted the same way (from -299 to -330 ms, including capture delay). The picture and sound were unaffected, but that is **most of the watchdog's 100 ms drift allowance used up after a single Hold**. Worth checking over a longer run whether it creeps back, and whether repeated Holds add up.
 
 Evidence: `B14_madmapper_link.txt` (driver journals, M4 health samples, the numbers above), `B14_m1_stop_Bank-2.png`, `B14_m5_held.png`.
+
+
+## B15 MadMapper's offset over ten Holds in one show
+
+**Verdict: no ratchet, and no recovery either. After the first two Holds MadMapper settles about 1 to 1.5 frames later than it started, stays there, and then creeps back about 2 ms with each further Hold. Worst single reading -64 ms: inside the watchdog's 100 ms allowance all show.** Asked for by the main session after B14's note 2. Run on 2026-09-26 at 09:10 to 09:18, with the same throwaway sender and module as B14 (`scratch/b14.py b15`, `madmapper-link` `4d91045`).
+
+The run:
+- One show of 444.42 s from 00:00:00:00 to MadMapper (192.168.4.42, Bank-1 chasing, its heartbeat keyframed 0 to 1 over 444.42 s).
+- **Ten Holds of 5 s**, at show seconds 35, 75, 115 and so on to 395, each done by `Link.hold(i, clock=sender)`: a 1 s music fade, then the freeze. The freeze keeps sending the same frame. Each Hold ended with `Link.resume(i, clock=sender)`.
+- No BEYOND. 14,833 timecode packets, 26,690 heartbeat packets.
+- Offset = heartbeat value × 444.42 minus the sender's own position at that instant; negative means MadMapper is behind.
+- Analysis: `scratch/b15_an.py`, evidence `B15_offsets.txt`.
+
+| Hold (show s) | 10 s before the fade: median (range) | 10 s after the resume: median (range) | after the resume: 0 to 2 s / 2 to 5 s / 5 to 10 s |
+|---|---|---|---|
+| before any Hold (5 to 34 s) | **-10 ms** (-25 to +8) | | |
+| 1 (35) | -10 (-16 to -4) | **-42** (-48 to -36) | -42 / -42 / -42 |
+| 2 (75) | -42 | **-57** (-64 to -51) | -57 / -57 / -57 |
+| 3 (115) | -57 | -55 | -55 / -55 / -55 |
+| 4 (155) | -55 | -53 | -53 / -53 / -53 |
+| 5 (195) | -53 | -52 | -52 / -52 / -52 |
+| 6 (235) | -52 | -50 | -50 / -49 / -50 |
+| 7 (275) | -49 | -48 | -47 / -48 / -48 |
+| 8 (315) | -47 | -46 | -46 / -46 / -46 |
+| 9 (355) | -46 | -44 | -44 / -44 / -44 |
+| 10 (395) | -44 | -42 | -43 / -43 / -42 |
+| **last 60 s** | **-43 ms** (-50 to -36) | | |
+
+- **The three questions:**
+  - Ratchet? **No.** Only Holds 1 and 2 moved it later (+32 ms, then +15 ms). Holds 3 to 10 each moved it about 2 ms earlier.
+  - Recover within seconds? **No.** It is flat to the millisecond from 0 to 10 s after each resume, and the same 40 s later, just before the next Hold.
+  - Stay at +2 frames? **About that.** It stayed 1 to 1.5 frames (33 to 47 ms) later than at the start, and ended the show at -43 ms.
+- **The freeze itself is exact every time.** MadMapper's last position before each freeze was the held frame exactly (35.000, 75.000 … 395.000), reached 0.23 to 0.29 s after the sender froze: MadMapper's own lag, not run-on past the frame. Its first position after each resume was 1 frame on (35.017 …), 0.08 to 0.10 s after the sender restarted. **No jumps**, and no heartbeat while held.
+- For the watchdog: the default 100 ms drift allowance was never reached (worst -64 ms, after Hold 2). An operator who holds a lot will see the drift figure sit around -40 to -60 ms rather than -10 to -25.
+- Why the first Holds move it and later ones do not was not measured. It looks like how MadMapper re-locks after timecode stops, not like anything ltcplay sends: the sender's timing is identical before and after each Hold (the same 30 fps deadlines, the held frame repeated, then the next frame).
 
 ## Not tested yet
 
