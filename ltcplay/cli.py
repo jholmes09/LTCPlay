@@ -1294,14 +1294,36 @@ def cmd_serve(args):
     finally:
         print("\nstopping")
         sess = httpd.control.session
-        if httpd.schedule is not None:
-            httpd.schedule.stop()
-        if httpd.announce is not None:
-            httpd.announce.close()
-        httpd.control.stop()
-        httpd.server_close()
+        _shutdown(httpd)
         _say_blackout(sess)
     return 0
+
+
+def _shutdown(httpd):
+    """The way out, in the order that keeps the rig safe: the show's own
+    stop (the blackout) first, then the announcements, then the scheduler
+    and its journal, which may be waiting on a disk, then the page. Nothing that writes a log may
+    stand between Ctrl-C and the blackout. The scheduler's ticking is
+    halted before the rig stops, so no tick can start anything after it."""
+    halt = getattr(httpd.schedule, "halt", None)
+    if halt is not None:
+        try:
+            halt()
+        except Exception as e:
+            print(f"The scheduler did not halt cleanly: {e}")
+    httpd.control.stop()
+    announce = getattr(httpd, "announce", None)
+    if announce is not None:
+        try:
+            announce.close()
+        except Exception as e:
+            print(f"The announcements did not stop cleanly: {e}")
+    if httpd.schedule is not None:
+        try:
+            httpd.schedule.stop()
+        except Exception as e:
+            print(f"The scheduler did not stop cleanly: {e}")
+    httpd.server_close()
 
 
 def _lan_address():
