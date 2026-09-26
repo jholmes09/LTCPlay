@@ -366,6 +366,13 @@ class Service:
         # next status() poll. schedule_service.py never imports announce.py
         # to make this call; it only ever calls whatever was set here.
         self.on_show_started = None
+        # A second, more general hook, added the same way, for the
+        # MadMapper link (madmapper.py's Link.on_transition; see web.py's
+        # serve()): called after EVERY real state change, not only a show
+        # starting, since Hold, Resume, Abort and Closing each need to know
+        # too. schedule_service.py never imports madmapper.py either; see
+        # _apply()'s own comment beside where this is queued.
+        self.on_transition = None
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -511,6 +518,23 @@ class Service:
                 and self.on_show_started is not None:
             state_now, hook = self.machine.state, self.on_show_started
             self._pending_hooks.append(lambda: hook(state_now))
+        # Same shape, same reason, for madmapper.py's Link.on_transition:
+        # queued here so it too only ever runs after self.lock is truly
+        # free (see _locked()'s docstring), and on its own thread, since a
+        # 1 s fade is exactly the kind of "hook that does real work" that
+        # comment already anticipates. `before` can be None (the very
+        # first _apply() of the process); `show` favours whichever side of
+        # the transition actually names one, since a show that just ended
+        # or was aborted has already been reset to 0 on `self.machine`.
+        if self.on_transition is not None and self.machine is not before:
+            before_state = before.state if before is not None else None
+            before_show = before.running if before is not None else 0
+            after_state, after_show = self.machine.state, self.machine.running
+            ev_kind = ev.kind
+            show_now = after_show or before_show
+            fn = self.on_transition
+            self._pending_hooks.append(
+                lambda: fn(before_state, after_state, ev_kind, show_now))
         return out
 
     # -- tonight on disk --------------------------------------------------
