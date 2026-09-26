@@ -95,10 +95,18 @@ class Rig:
         self.period = self.cfg.tick_period_s
         self.seq = 0
         self.out = None
+        # ltcplay is alive unless a test says otherwise: every step sends
+        # the current cue as a frame, because since 2026-09-26 a lost link
+        # disarms every group and nothing could arm in a rig without one.
+        self.link_alive = True
+        self.cue = {}
+        self.mono_floor = 0.0
 
     def step(self, dt=None, n=1):
         for _ in range(n):
             self.t += self.period if dt is None else dt
+            if self.link_alive:
+                self.frame(self.cue)
             a = self.inp.poll()
             if a is not None:
                 self.c.assert_arm(a.wanted, a.seq, names=a.names)
@@ -112,20 +120,29 @@ class Rig:
 
     def run(self, n, slots=None):
         """n ticks with ltcplay sending `slots` every tick."""
-        for _ in range(n):
-            self.frame(slots)
-            self.step()
-        return self.out
+        self.cue = dict(slots or {})
+        return self.step(n=n)
 
     def frame(self, slots=None, seq=None, mono=None, sender=SENDER):
+        """One frame from ltcplay, which also becomes the cue the rig keeps
+        sending on every step while the link is alive."""
+        self.cue = dict(slots or {})
         vals = bytearray(512)
-        for slot, v in (slots or {}).items():
+        for slot, v in self.cue.items():
             vals[slot - 1] = v
+        before = self.seq
         self.seq = self.seq + 1 if seq is None else seq
+        if mono is not None:
+            self.mono_floor = max(self.mono_floor, mono)
         f = link.FlameFrame(self.seq, "00:00:01:00",
-                            self.t if mono is None else mono,
+                            max(self.t, self.mono_floor) if mono is None
+                            else mono,
                             self.cfg.universe, bytes(vals))
-        return self.c.ingest_frame(f, sender=sender)
+        why = self.c.ingest_frame(f, sender=sender)
+        if why and seq is not None and seq > before:
+            # a rejected explicit seq must not move the rig's own counter
+            self.seq = before
+        return why
 
     def prove_alive(self):
         """Three ticks with everything down: the counter is seen
@@ -434,12 +451,22 @@ def test_rule10_startup_is_all_zeros():
     o = c.tick()
     check(o.universe == bytes(512),
           "two arm requests before the first tick: the first frame is zeros")
-    check(all(g["armed"] == "held" and g["reason"] == "cycle the arm"
-              for g in o.status["groups"]),
-          f"every group held for a cycle: "
-          f"{[(g['armed'], g['reason']) for g in o.status['groups']]}")
+    check(all(g["armed"] == "held" and g["reason"] == composer.LINK_NEVER
+              and g["amber"] == "steady" for g in o.status["groups"]),
+          f"every group held, and with no show program yet the lamp says "
+          f"so: {[(g['armed'], g['reason']) for g in o.status['groups']]}")
     check(c.stats["latch_resets"] == 0,
           "and no latch had to be cleared, because none was ever set")
+    # The same two requests, with the show program answering: still zeros,
+    # and now the operator is told to cycle.
+    c = Composer(cfg, clock=lambda: 0.0)
+    c.ingest_frame(link.FlameFrame(1, None, 0.0, 1, bytes(512)), SENDER)
+    c.assert_arm([True] * 6, 1, names=NAMES)
+    c.assert_arm([True] * 6, 2, names=NAMES)
+    o = c.tick()
+    check(o.universe == bytes(512) and all(
+        g["reason"] == "cycle the arm" for g in o.status["groups"]),
+        "with a live link the first frame is still zeros, held for a cycle")
 
 
 # =========================================================================
@@ -862,45 +889,52 @@ def test_liveness_loss_zeros_within_a_bounded_time():
               "and stays zero")
 
 
-def test_ltcplay_stale_zeros_fire_and_keeps_the_arm():
+def test_ltcplay_stale_zeros_fire_then_disarms():
     section("liveness: ltcplay going quiet zeros the fire slots inside "
-            "frame_stale_ms and does not touch arming")
-    bound = 0.1 + 0.025 + 1e-9          # fire_hold_ms plus one tick
+            "fire_hold_ms and disarms every group at frame_stale_ms")
+    hold = 0.1 + 0.025 + 1e-9           # fire_hold_ms plus one tick
+    lost = 0.5 + 0.025 + 1e-9           # frame_stale_ms plus one tick
     for how in ("dead", "stuck seq"):
         r = armed_rig()
-        r.frame({411: 255})
-        r.step(n=4)
+        r.run(4, {411: 255})
         check(r.fire(0)[0] == 255, f"{how}: firing")
+        r.link_alive = False
         t_last = r.t
         r.frame({411: 255})
         zero_at = None
         while r.t - t_last < 2.0:
             r.step()
-            if how == "stuck seq":
+            if how == "stuck seq" and r.t - t_last <= 0.5:
                 # ltcplay keeps sending, with the same seq every time
                 check("out of order" in r.frame({411: 255}, seq=r.seq),
                       "a stuck seq is rejected while the link is live")
-            if r.fire(0)[0] == 0:
+            if zero_at is None and r.fire(0)[0] == 0:
                 zero_at = r.t - t_last
+                check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
+                      f"{how}: at {zero_at:.3f} s the fire is zero and the "
+                      f"arm is still up")
+                check(r.out.status["frames"]["fire"] == "zeroed"
+                      and r.out.status["frames"]["state"] == "fresh",
+                      f"{how}: the status says fire zeroed, link fresh: "
+                      f"{r.out.status['frames']}")
+            if r.safety(0) == 0:
                 break
-        check(zero_at is not None and zero_at <= bound,
+        check(zero_at is not None and zero_at <= hold,
               f"{how}: the fire slot is zero after {zero_at} s (rev 5 had "
               f"no hold; fire_hold_ms is 100)")
-        check(r.safety(0) == ARM and r.group(0)["armed"] == "armed",
-              f"{how}: the arm is unaffected")
-        check(r.out.status["frames"]["fire"] == "zeroed"
-              and r.out.status["frames"]["state"] == "fresh",
-              f"{how}: the status says fire zeroed while the link is still "
-              f"fresh: {r.out.status['frames']}")
-        r.wait(0.5)
+        gone_at = r.t - t_last
+        check(r.safety(0) == 0 and gone_at <= lost,
+              f"{how}: the arm value came off the safety slot after "
+              f"{gone_at:.3f} s")
         check(r.out.status["frames"]["state"] == "stale",
-              f"{how}: and stale after frame_stale_ms")
+              f"{how}: and the status says the link is stale")
     # A new ltcplay (sequence restarted) is accepted once the link is stale.
+    r.wait(0.6)
     check(r.frame({411: 100}, seq=0) == "",
           "after the link went stale a restarted sequence is accepted")
     r.step()
-    check(r.fire(0)[0] == 100 and r.out.status["frames"]["fire"] == "passing",
-          "and its values pass")
+    check(r.out.status["frames"]["fire"] == "passing" and r.fire(0)[0] == 0,
+          "its frames pass, but nothing fires: the group is disarmed")
 
 
 # =========================================================================
@@ -1104,6 +1138,7 @@ def test_property_a_disarmed_group_never_fires():
     for case in range(cases):
         dwell = rnd.choice((0, 100, 1000, 3000))
         r = Rig(test_only_dwell_ms=dwell)
+        r.link_alive = False              # this loop sends its own frames
         cfg = r.cfg
         group_slots = set(cfg.all_slots())
         last_fresh_advance = None
@@ -1198,6 +1233,12 @@ def test_property_a_disarmed_group_never_fires():
                                     for g in cfg.groups),
                                 f"case {case} step {step}: armed {age:.0f} "
                                 f"ms after the last fresh assertion")
+            link_age = (None if last_frame_at is None
+                        else (r.t - last_frame_at) * 1000)
+            if link_age is None or link_age > cfg.frame_stale_ms + 0.001:
+                ok &= check(all(u[g.safety - 1] == 0 for g in cfg.groups),
+                            f"case {case} step {step}: armed with the show "
+                            f"program silent for {link_age} ms")
             worst = max(worst, 0)
             if not ok:
                 print(f"  (stopping case {case} at step {step}; dwell "
@@ -1382,12 +1423,23 @@ def test_service_over_loopback():
         check(p[126 + 410] == 200, "the good frame still stands")
         check(s["frames"]["rejected"] == 5 and s["frames"]["last_reject"],
               f"five rejections reported so far: {s['frames']}")
-        # ltcplay stops: the fire slot zeros, the arm stays
-        for _ in range(int(0.5 / cfg.tick_period_s) + 2):
+        # ltcplay stops: the fire slot zeros inside fire_hold_ms, and after
+        # frame_stale_ms the link is lost and the group is disarmed
+        for _ in range(int(0.1 / cfg.tick_period_s) + 1):
             tick()
         p = _drain(node)[-1]
         check(p[126 + 410] == 0 and p[126 + 400] == 78,
-              "ltcplay quiet: fire zero, arm kept")
+              "ltcplay quiet for the fire hold: fire zero, arm still up")
+        for _ in range(int(0.4 / cfg.tick_period_s) + 2):
+            tick()
+        p = _drain(node)[-1]
+        check(p[126 + 400] == 0, "ltcplay quiet past frame_stale_ms: disarmed")
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["groups"][0]["armed"] == "held"
+              and s["groups"][0]["reason"] == composer.LINK_LOST
+              and s["groups"][0]["amber"] == "steady",
+              f"and the lamp says the show program stopped answering: "
+              f"{s['groups'][0]}")
         # the arm input goes: everything zeros
         inp.silent = True
         for _ in range(int(0.5 / cfg.tick_period_s) + 2):
@@ -1396,13 +1448,19 @@ def test_service_over_loopback():
         check(p[126:] == bytes(512), "arm input gone: all zeros")
         check(p[112] == 0, "still not terminated")
         # back, cycled, armed and firing again, so that the shutdown below
-        # has something to zero
+        # has something to zero: ltcplay first (the link must be live before
+        # a cycle counts), then the cycle
         inp.silent = False
+        for k in range(9, 14):
+            send(k, {411: 0})
+            tick()
         inp.set(0, on=False)
+        send(14, {411: 0})
         tick()
+        send(15, {411: 0})
         tick()
         inp.set(0)
-        for k in range(9, 60):
+        for k in range(16, 60):
             send(k, {411: 0})
             tick()
         for k in range(60, 66):
@@ -1602,6 +1660,7 @@ def test_review_sender_lock():
     check(r.out.status["frames"]["seq"] < 10 ** 9,
           "the rogue seq never became the link's seq")
     # once stale, the lock is released and a new sender takes it
+    r.link_alive = False
     r.wait(0.6)
     check(r.frame({411: 0}, seq=0, sender=other) == "",
           "after the link went stale another sender is accepted")
@@ -1633,10 +1692,20 @@ def test_review_send_failures_are_faults():
             t[0] += cfg.tick_period_s
             return svc.run_once()
 
-        tick()
-        tick()
-        tick()
+        ltc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        seq = [0]
+
+        def frame():
+            seq[0] += 1
+            ltc.sendto(link.encode_flame(seq[0], None, t[0], 1, [0] * 512,
+                                         KEY), ("127.0.0.1", lp))
+            time.sleep(0.005)
+
+        for _ in range(3):
+            frame()
+            tick()
         inp.set(0)
+        frame()
         tick()
         check(svc.last_output.universe[400] == 78, "armed")
         check(svc.last_output.status["fault"] == "", "no fault yet")
@@ -1650,7 +1719,9 @@ def test_review_send_failures_are_faults():
 
         real_tx = svc._tx
         svc._tx = Broken()
+        frame()
         tick()
+        frame()
         out = tick()
         check(svc.send_errors == 2, f"two failed sends: {svc.send_errors}")
         check("sACN send failed" in out.status["fault"]
@@ -1667,12 +1738,14 @@ def test_review_send_failures_are_faults():
         svc._tx = real_tx
         real_status = svc._status_tx
         svc._status_tx = Broken()
+        frame()
         out = tick()
         check(svc.status_errors == 1 and "status frame not sent"
               in out.status["fault"] or "status frame not sent"
               in svc.composer._fault,
               f"a failed status send is a fault too: {svc.composer._fault!r}")
         svc._status_tx = real_status
+        ltc.close()
     finally:
         svc.close()
     for s_ in (node, ltc_status):
@@ -1988,6 +2061,106 @@ def test_review2_keys():
             s_.close()
 
 
+def test_link_loss_disarms_every_group():
+    section("Jeff, 2026-09-26: losing the show program disarms every group, "
+            "nothing re-arms when it is back, and a cycle then works")
+    # 1. Link loss disarms: latches cleared, arm value off, sentence on the
+    # lamp and in the journal, inside frame_stale_ms plus one tick.
+    r = armed_rig()
+    r.inp.set(1)
+    r.run(45, {411: 255})
+    check(r.safety(0) == ARM and r.safety(1) == ARM and r.fire(0)[0] == 255,
+          "two groups armed, one firing")
+    resets_before = r.c.stats["latch_resets"]
+    r.link_alive = False
+    t_lost = r.t
+    gone_at = None
+    while r.t - t_lost < 2.0:
+        r.step()
+        if r.safety(0) == 0 and r.safety(1) == 0:
+            gone_at = r.t - t_lost
+            break
+    check(gone_at is not None and gone_at <= 0.5 + 0.025 + 1e-9,
+          f"every group disarmed {gone_at} s after the last frame")
+    check(r.out.universe == bytes(512), "the whole universe is zero")
+    check(r.c.stats["latch_resets"] == resets_before + 1
+          and r.c.stats["link_lost"] == 1,
+          "the latches were cleared once and the loss counted")
+    check(("link", ) == tuple(k for k, _ in r.log.events if k == "link")
+          and any("stopped answering" in m for k, m in r.log.events
+                  if k == "link"),
+          "the journal has one sentence about the show program")
+    g = r.group(0)
+    check(g["armed"] == "held" and g["reason"] == composer.LINK_LOST
+          and g["amber"] == "steady" and g["reason"].startswith(
+              "Show program stopped answering: disarmed."),
+          f"the lamp reads steady amber with the sentence: {g}")
+    # 2. Recovery does not re-arm: frames come back, the request is still
+    # up, and nothing arms, for as long as you like.
+    r.wait(1.0)
+    r.link_alive = True
+    r.frame({}, seq=0)                # a restarted ltcplay
+    r.wait(2.0)
+    check(r.safety(0) == 0 and r.safety(1) == 0,
+          "the show program is back and nothing re-armed by itself")
+    check(r.group(0)["reason"] == "cycle the arm"
+          and r.group(0)["amber"] == "flashing",
+          f"the lamp now asks for a cycle: {r.group(0)}")
+    check(r.out.status["frames"]["state"] == "fresh",
+          "and the status says the link is fresh again")
+    # 3. The cycle after recovery works, then fire passes again.
+    r.inp.set(0, on=False)
+    r.step()
+    r.inp.set(0)
+    r.wait(1.25)
+    check(r.safety(0) == ARM and r.safety(1) == 0,
+          "a cycle on group 0 arms it, and group 1 (not cycled) stays down")
+    r.run(6, {411: 200})
+    check(r.fire(0)[0] == 200, "and it fires again")
+    # A cycle made while the link is still down does not count: the down
+    # edge is forgotten on every stale tick, so the operator cycles again.
+    r.link_alive = False
+    r.wait(0.6)
+    check(r.safety(0) == 0, "lost again")
+    r.inp.set(0, on=False)
+    r.step()
+    r.inp.set(0)
+    r.step()
+    r.link_alive = True
+    r.frame({}, seq=0)
+    r.wait(1.5)
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
+          "a cycle made while the show program was down does not count")
+    # 4. Startup with no link stays disarmed, whatever the input asks.
+    r = Rig()
+    r.link_alive = False
+    r.prove_alive()
+    r.inp.set_all(True)
+    r.wait(2.0)
+    check(r.out.universe == bytes(512), "no show program yet: all zeros")
+    g = r.group(0)
+    check(g["armed"] == "held" and g["reason"] == composer.LINK_NEVER
+          and g["amber"] == "steady", f"the lamp says it has not answered: "
+                                       f"{g}")
+    r.inp.set_all(False)
+    r.step()
+    r.inp.set_all(True)
+    r.wait(1.25)
+    check(r.out.universe == bytes(512),
+          "a cycle before the show program answers changes nothing")
+    r.link_alive = True
+    r.wait(0.5)
+    check(r.out.universe == bytes(512)
+          and r.group(0)["reason"] == "cycle the arm",
+          "once it answers, still zeros, and the lamp asks for a cycle")
+    r.inp.set_all(False)
+    r.step()
+    r.inp.set_all(True)
+    r.wait(1.25)
+    check(all(r.safety(i) == ARM for i in range(N_GROUPS)),
+          "a cycle with the show program answering arms every group asked")
+
+
 def test_the_wall_from_this_side():
     section("the wall: nothing in flamesafe imports ltcplay")
     loaded = sorted(m for m in sys.modules if m.split(".")[0] == "ltcplay")
@@ -2024,7 +2197,7 @@ if __name__ == "__main__":
     test_rule5_chatter()
     test_rule7_interruptions_clear_the_latches()
     test_liveness_loss_zeros_within_a_bounded_time()
-    test_ltcplay_stale_zeros_fire_and_keeps_the_arm()
+    test_ltcplay_stale_zeros_fire_then_disarms()
     test_link_rejects_malformed_datagrams()
     test_link_sequence_and_clock_rules()
     test_rule9_only_the_writer()
@@ -2045,6 +2218,7 @@ if __name__ == "__main__":
     test_review2_journal_drops_are_counted_and_written_up()
     test_review2_udp_connreset_is_really_switched_off()
     test_review2_keys()
+    test_link_loss_disarms_every_group()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}
