@@ -67,6 +67,13 @@ class Control:
     same universes would fight frame by frame and the result on the rig would
     look like a hardware fault."""
 
+    # How often state() is allowed to actually rebuild, in seconds. The page
+    # polls every 250ms (ltcplay/web/index.html's `setInterval(poll, 250)`),
+    # so this keeps every viewer's freshness the same as it always was, one
+    # poll cycle old at worst; a second or fifth viewer just reads the same
+    # answer instead of paying to build another one. See state() below.
+    STATE_CACHE_S = 0.2
+
     def __init__(self, folder, defaults=None, sd=None):
         self.folder = folder
         self.defaults = defaults or {}
@@ -76,6 +83,9 @@ class Control:
         self._start_gen = 0
         self.last_error = ""
         self._sd = sd
+        # -- state() cache: see the method itself for why this exists.
+        self._state_cache = None            # (payload, built_at) or None
+        self._state_building = threading.Lock()
 
     # -- audio ------------------------------------------------------------
     def sd(self):
@@ -540,6 +550,59 @@ class Control:
         return s is not None
 
     def state(self):
+        """What the page's poll asks for, served from a cache at most
+        STATE_CACHE_S old.
+
+        Building this calls Session.snapshot(), which calls into
+        version_mod twice for the build id -- a full SHA-256 of every file
+        this program ships, read off disk, on every single call. That is
+        cheap once. It is not cheap on every poll from every device that
+        happens to have the page open: profiled 2026-09-26 against
+        bench/bench_report_2026-09-25.md's B11 (a real show PC bench, one
+        viewer costs nothing measurable, five to ten cost the pixel loop
+        real frames), a single /api/state call spent the great majority of
+        its own time in that hash, and it runs on the SAME interpreter as
+        the pixel-sending thread -- so a second viewer, or a stray tablet
+        left open on a shelf, competes with the show for the interpreter
+        lock, purely to answer a question nobody needed answered again yet.
+
+        So: build it at most once every STATE_CACHE_S, and hand every asker
+        in that window the same answer. The page already polls every 250ms
+        and redraws from whatever it is given; it cannot tell an answer
+        that is a few hundred milliseconds old from one built the instant
+        it asked, and it does not need to -- the rig runs off the engine's
+        own clock, never off what the page has drawn.
+
+        Concurrent misses do not pile up: if a rebuild is already under way
+        when this is called, the caller gets whatever is cached rather than
+        starting a second build of the same answer (or, on the very first
+        call ever, waits for the one in flight instead of racing it)."""
+        now = time.monotonic()
+        cached = self._state_cache
+        if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+            return cached[0]
+        if not self._state_building.acquire(blocking=False):
+            cached = self._state_cache
+            if cached is not None:
+                # Someone else is building this instant. Their answer is
+                # about to be at least as fresh as one started now, so read
+                # it instead of doing the same work twice at once.
+                return cached[0]
+            self._state_building.acquire()  # first call ever: wait it out
+        try:
+            cached = self._state_cache
+            now = time.monotonic()
+            if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+                return cached[0]             # built while this waited for the lock
+            fresh = self._build_state()
+            self._state_cache = (fresh, time.monotonic())
+            return fresh
+        finally:
+            self._state_building.release()
+
+    def _build_state(self):
+        """The actual answer, built fresh. Never called more than once per
+        STATE_CACHE_S across every thread; see state() above."""
         s = self.session
         if self._starting and (s is None or not s.running):
             # Mid-start. The engine may already be sending, so the page has
@@ -696,6 +759,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorised():
             return self._send(403, {"error": "token required"})
         c = self.server.control
+        # An operator action (Start, Stop, GO, autoreload, override, ...) must
+        # never be hidden behind a stale cached /api/state answer: the whole
+        # point of Control.state()'s cache is to spare a PASSIVE poll, never
+        # to make the button that just changed something lie about it. This
+        # just clears the slot; the next state() call rebuilds, lazily, once.
+        c._state_cache = None
         body = self._body()
         if route == "/api/schedule" or route.startswith("/api/schedule/"):
             # Kept apart from the show's routes: a refused edit to tonight's

@@ -3384,6 +3384,148 @@ def test_web_token_gate():
     print("  ok")
 
 
+def test_web_state_cache_refresh_interval():
+    section("/api/state is rebuilt no faster than its cache interval")
+    # B11 (bench/bench_report_2026-09-25.md): a second or fifth viewer of the
+    # operator page costs the pixel loop real frames, because building the
+    # state answer hashes every file the program ships (ltcplay/version.py's
+    # build id), TWICE, on every single request. The fix is Control.state()
+    # serving a snapshot refreshed at most every STATE_CACHE_S; this proves
+    # that ceiling actually holds for the ordinary, single-caller case.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    # Read the REAL default off the class rather than overriding it on this
+    # instance: a mutation to STATE_CACHE_S itself (e.g. "helpfully" set to
+    # 0) must show up here, which an instance override would hide from this
+    # test entirely.
+    interval = c.STATE_CACHE_S
+    calls = []
+
+    def fake_build():
+        calls.append(1)
+        return {"n": len(calls)}
+    c._build_state = fake_build
+
+    s1 = c.state()
+    s2 = c.state()                  # right away: still inside the window
+    check(s1 == {"n": 1} and s2 == {"n": 1},
+          f"two calls inside the cache interval must be the same answer, "
+          f"not a rebuild each time: got {s1} then {s2}")
+    check(len(calls) == 1,
+          f"the builder must run once for both calls, ran {len(calls)} times")
+
+    time.sleep(interval + 0.1)
+    s3 = c.state()
+    check(s3 == {"n": 2} and len(calls) == 2,
+          f"a call after the interval has passed must rebuild, got {s3} "
+          f"after {len(calls)} builds")
+    print("  ok")
+
+
+def test_web_state_cache_dedupes_concurrent_misses():
+    section("N threads that all miss /api/state's cache at once still "
+            "build it only once")
+    # The bench's five- and ten-viewer runs are many threads landing inside
+    # the SAME instant, not one at a time: the cache above is not enough on
+    # its own if every one of them can still slip through to a fresh build
+    # before the first one finishes and the cache fills in. Ten threads that
+    # all miss together must produce one build, not ten.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    c.STATE_CACHE_S = 0.5
+    calls = []
+    calls_lock = threading.Lock()
+
+    def fake_build():
+        with calls_lock:
+            calls.append(1)
+        time.sleep(0.15)            # widen the race window so misses overlap
+        return {"n": len(calls)}
+    c._build_state = fake_build
+
+    threads = [threading.Thread(target=c.state) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    check(len(calls) == 1,
+          f"20 threads that all missed the cache at the same instant must "
+          f"call the builder once, called it {len(calls)} times")
+    print("  ok")
+
+
+def test_web_state_cache_content_matches_a_direct_build():
+    section("the cached /api/state answer equals a direct build")
+    # Caching only helps if it hands out exactly what a fresh build would
+    # have said. A Control with nothing running is fully deterministic (no
+    # session, no clock, nothing time-based in the payload), so its answer
+    # can be compared byte for byte, cold and warm.
+    from ltcplay import web as web_mod
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    c.STATE_CACHE_S = 5.0            # comfortably longer than this test runs
+
+    direct = c._build_state()
+    cold = c.state()                 # first call: nothing cached yet
+    check(cold == direct,
+          f"the first (cold) answer must equal a direct build, got {cold!r} "
+          f"vs {direct!r}")
+    warm = c.state()                 # second call: served from the cache
+    check(warm == direct,
+          f"the cached (warm) answer must still equal a direct build, got "
+          f"{warm!r} vs {direct!r}")
+    print("  ok")
+
+
+def test_web_state_cache_never_reaches_the_gpl_terminal_path():
+    section("the /api/state cache never reaches the terminal/GPL path")
+    # GPL 2026 at Dollywood runs through this same repo, and its own
+    # console/log reads Session.snapshot() directly -- ltcplay/cli.py's
+    # `run`, never through ltcplay/web.py's Control. That path must keep
+    # paying for, and getting, a byte-fresh build id on every single call,
+    # exactly as it did before this fix. The tempting WRONG fix -- caching
+    # version_mod.build() itself, at module scope, so every caller benefits
+    # -- would silently freeze the terminal path's build/show status for
+    # the rest of the process too. This proves that has not happened by
+    # counting real hashes, not just calls: a module-level cache still gets
+    # "called" every time, it just stops doing the work.
+    from ltcplay.session import Session
+    from ltcplay import version as version_mod
+    folder = _web_fixture()
+    if folder is None:
+        print("  no show folder available, skipped")
+        return
+    tlp = os.path.join(folder, "webtest_timeline.json")
+    net = os.path.join(folder, "net.xml")
+    sess = Session(tlp, networks=net, no_log=True, sd=FakeSD(),
+                   device="MOTU M4", channel=2, no_output=True)
+    sess.open()
+    sess.start()
+    calls = []
+    orig_sha256 = version_mod.hashlib.sha256
+
+    def counting_sha256(*a, **kw):
+        calls.append(1)
+        return orig_sha256(*a, **kw)
+    version_mod.hashlib.sha256 = counting_sha256
+    try:
+        sess.snapshot()
+        after_one = len(calls)
+        check(after_one > 0,
+              "Session.snapshot() must hash the build at all")
+        for _ in range(4):
+            sess.snapshot()
+    finally:
+        version_mod.hashlib.sha256 = orig_sha256
+        sess.stop()
+    # Uncached, 5 calls hash exactly 5 times what 1 call hashes -- a real
+    # per-call cost, not memoized away. A module-level cache (the tempting
+    # wrong fix) would make this LESS than 5x, most starkly 1x.
+    check(len(calls) == after_one * 5,
+          f"Session.snapshot() (the terminal/GPL path) must hash the "
+          f"build fresh on every call with no caching anywhere in it -- "
+          f"{after_one} hash(es) for 1 call but {len(calls)} for 5")
+    print("  ok")
+
 
 def test_which_file_plays_when():
     section("which file plays at a given timecode")
@@ -17608,6 +17750,10 @@ if __name__ == "__main__":
     test_show_dir_survives_the_wrong_machine()
     test_web_ui()
     test_web_token_gate()
+    test_web_state_cache_refresh_interval()
+    test_web_state_cache_dedupes_concurrent_misses()
+    test_web_state_cache_content_matches_a_direct_build()
+    test_web_state_cache_never_reaches_the_gpl_terminal_path()
     test_which_file_plays_when()
     test_one_frame_between_cues_is_not_a_gap()
     test_a_cue_owns_the_whole_rig()

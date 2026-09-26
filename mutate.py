@@ -2432,6 +2432,94 @@ MUTATIONS = [
   'with open(path(), encoding="utf-8-sig") as fh:',
   'with open(path(), encoding="utf-8") as fh:'),
 
+ # -- B11: the operator page's /api/state cache (web.py's Control.state()) --
+
+ ("the /api/state cache never actually holds for its interval",
+  "ltcplay/web.py",
+  "    STATE_CACHE_S = 0.2",
+  "    STATE_CACHE_S = 0.0"),
+
+ ("concurrent misses of the /api/state cache all rebuild it at once",
+  "ltcplay/web.py",
+  """        try:
+            cached = self._state_cache
+            now = time.monotonic()
+            if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+                return cached[0]             # built while this waited for the lock
+            fresh = self._build_state()
+            self._state_cache = (fresh, time.monotonic())
+            return fresh
+        finally:
+            self._state_building.release()""",
+  """        try:
+            fresh = self._build_state()
+            self._state_cache = (fresh, time.monotonic())
+            return fresh
+        finally:
+            self._state_building.release()"""),
+
+ ("a cached /api/state answer is the raw cache entry, not its payload",
+  "ltcplay/web.py",
+  """        now = time.monotonic()
+        cached = self._state_cache
+        if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+            return cached[0]
+        if not self._state_building.acquire(blocking=False):""",
+  """        now = time.monotonic()
+        cached = self._state_cache
+        if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+            return cached
+        if not self._state_building.acquire(blocking=False):"""),
+
+ ("the terminal/GPL build id is cached at module scope, "
+  "so it stops updating for the rest of the run",
+  "ltcplay/version.py",
+  '''def build():
+    """(id, file count, newest mtime) for the program as it sits on disk."""
+    h = hashlib.sha256()
+    newest = 0.0
+    files = _files()
+    for p in files:
+        # Forward slashes whatever the OS, so the same files give the same
+        # build id on a Mac and on Windows. On a Mac this changes nothing.
+        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
+        h.update(rel.encode("utf-8", "replace"))
+        h.update(b"\\0")
+        try:
+            with open(p, "rb") as fh:
+                for b in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(b)
+            newest = max(newest, os.path.getmtime(p))
+        except OSError:
+            h.update(b"<unreadable>")
+    return h.hexdigest()[:10], len(files), newest''',
+  '''_BUILD_CACHE = None
+
+
+def build():
+    """(id, file count, newest mtime) for the program as it sits on disk."""
+    global _BUILD_CACHE
+    if _BUILD_CACHE is not None:
+        return _BUILD_CACHE
+    h = hashlib.sha256()
+    newest = 0.0
+    files = _files()
+    for p in files:
+        # Forward slashes whatever the OS, so the same files give the same
+        # build id on a Mac and on Windows. On a Mac this changes nothing.
+        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
+        h.update(rel.encode("utf-8", "replace"))
+        h.update(b"\\0")
+        try:
+            with open(p, "rb") as fh:
+                for b in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(b)
+            newest = max(newest, os.path.getmtime(p))
+        except OSError:
+            h.update(b"<unreadable>")
+    _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
+    return _BUILD_CACHE'''),
+
 ]
 
 
