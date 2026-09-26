@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B13 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B14 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -22,6 +22,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B11 Web page under show load | PASSED with one viewer / FAILED with several | One open page: no effect on the pixels. Two viewers: 181 repeat/skip pairs and a 79 ms gap. Five: about 7% of frames dropped. Ten: 12 to 14 fps all show. The page also has no Play for the master clock (GO runs pixels only, no timecode) |
 | B12 Show JSON saved with a UTF-8 BOM (PR #16, c226d80) | PASSED | main refuses the file (and its page silently leaves the show out of the list); the branch lists it, checks it, verifies it and starts it; selftest passes on Windows |
 | B13 Web page load on the snapshot fix (PR #18, e43f415) | PASSED | 2 and 5 viewers: 0 skips (main: 181 and 1,185). 10 unthrottled clients: 40 fps, 623 skips at 313 answered requests/s (main: 12 to 14 fps at 21/s). The page shows GO within 13 ms, Stop 134 ms, Run 82 ms |
+| B14 MadMapper and BEYOND link modules (PR #17, 4d91045) | PASSED, 4 notes | Banks, fades, blank and unblank all work as in B2, B4 and B8; BlackOut and MasterPause refused, nothing sent; watchdog alarms 3.0 s after a freeze and recovers within 10 ms; Hold order silent and dark. Notes: one false drift line per recovery; MadMapper sits 2 frames further behind after a Resume; stop does not rewind a non-chasing bank; BEYOND's own audio reaches the show output |
 
 ## B0 The machine
 
@@ -416,6 +417,39 @@ A side note from the same run: `check` counts a missing `sounddevice` as a Probl
   - BEYOND was not running here, and was not in B11 either.
 
 Evidence: `B13_web_runs.txt`.
+
+
+## B14 The MadMapper and BEYOND link modules (PR #17)
+
+**Verdict: PASSED on M1 to M5, with four notes for the main session.** Branch `madmapper-link` at **`4d91045`** (PR #17, not merged), in its own worktree `wt-mmlink`, with no code changed. Run on 2026-09-26 from 08:50 to 09:10. The modules were driven directly by a throwaway script, `scratch/b14.py`, against the real MadMapper 6.1.5 trial and a freshly restarted BEYOND Essentials Demo. Timecode came from a throwaway 30 fps Art-Net sender built on ltcplay's own `arttimecode()`. Its "freeze" keeps sending the same frame, which is what ltcplay's Hold sends. It sent to MadMapper at 192.168.4.42 and BEYOND at 127.0.0.2. Loopback plus the Pico's own address only; Ethernet unplugged. The branch's `selftest.py` on Windows: **"all checks passed in 107.8s"**, 0 FAIL.
+
+Measured with:
+- the Scarlett loopback, as an LTC decoder and as a 50 ms RMS meter;
+- a screen probe of MadMapper's stage view and of BEYOND's laser preview, about every 80 ms;
+- MadMapper's heartbeat on 9001.
+
+The screen and audio figures include about 0.1 to 0.3 s of capture delay.
+
+**Before the tests: BEYOND's own sound goes to the show output (confirms the B9 suspicion).** With MadMapper's `master_audio_level` at 0 and BEYOND's DemoShow playing, the Scarlett carried **RMS 0.17**, BEYOND's demo soundtrack. That drops to 0.000 with BEYOND's Audio track switched off (the circle icon on the track header). **Setup rule for the show PC: switch off the audio track in BEYOND's show, or give BEYOND a different audio device.**
+
+**BEYOND after a fresh launch** (recorded for the setup steps):
+- Enabling timecode for the show and pressing TC-IN was not enough. The timeline stayed at 00:00:00:00 while its Art-Net counter ran.
+- It followed only after **pressing its own Play once, then turning TC-IN back on** during timecode.
+- "Show it now" (output on) turns TC-IN off again, so press TC-IN last.
+- Timecode stopping switches BEYOND's output off by itself (`TimecodeToEnableOutput=1` in BEYOND.ini), and it came back on by itself when timecode resumed (M5).
+
+| Test | Result |
+|---|---|
+| **M1 Link bank commands** | **PASSED, as in B2.** The intermission bank's LTC decoded from the output:<br>- `play_from_beginning("Bank-2")` started it at 01:00:00:00 (first frame decoded 0.4 s after the command, including capture).<br>- `stop_bank` ended it within 0.2 s (twice).<br>- `select_bank` swapped the Conductor's bank (screenshots).<br>- `show_ended(1)` stopped Bank-1, selected Bank-2 and restarted it at 01:00:00:02.<br>- `show_started(2)` stopped Bank-2 (audio ended 0.2 s later) and selected Bank-1.<br>**Note:** on a non-chasing bank MadMapper's `conductor/stop` works like pause. The playhead stayed at 0:00:07:05 (`B14_m1_stop_Bank-2.png`), and `play_bank` then carried on from 01:00:07. The module never relies on stop rewinding (it uses `play_from_beginning`), but the comment in `show_ended` that stop leaves the show bank "at zero" is not what the trial does. For the chasing show bank this does not matter: the next timecode positions it. |
+| **M2 fades** | **PASSED, as in B2 and B4.**<br>- `fade_audio(1,0)`: level 0.478 to 0.000 in an even ramp over 1.0 s, every 50 ms sample lower than the last; `fade_audio(0,1)` back to 0.478 the same way. Each call returned after 1.001 s.<br>- `fade_video` on Quad-1 to 6: stage brightness 130 to 2.6 (black but for the trial watermark) and back to 140, **the same shape as B4**: it holds for the first half and drops in the last 0.5 s (129.9 128.5 123.6 117.0 98.7 77.7 25.3 2.6). The ramp is linear in opacity, and MadMapper's output is not linear in brightness. A ramp shaped for the eye (for example opacity = t squared) would look more even. Cosmetic. |
+| **M3 BEYOND blank and unblank** (port 8100, BEYOND following timecode) | **PASSED.** `blank()`: preview brightness 1.9 to **0.1 by the next sample, under 75 ms**. `unblank()`: beams back (0.1 to 4.8) **within 60 ms**. `health()` = last_command "unblank", packets_sent 2. |
+| **M3 forbidden addresses** (a `Beyond` aimed at a throwaway listener on 8199, never at BEYOND) | **PASSED.** `_send("/beyond/general/BlackOut")` and `_send("/beyond/general/MasterPause")` both **raised `BeyondConfigError`** with a plain sentence, and **the listener received nothing from either**. A control `blank()` through the same object did arrive (1 packet: brightness 0.0). Public methods are only `blank`, `unblank`, `health`, `close`. (The guard is an exact string match; nothing public takes an address, so that is enough.) |
+| **M4 Watchdog** (real heartbeat on 9001 /float-1, show length 444.42 s, a 60 s show) | **PASSED, with one false note.**<br>- Healthy: heartbeat age never over **22 ms**; drift (MadMapper minus the sender's position) **-3 to -38 ms, median -17 ms** over 512 samples (B9's soak: 1 to 28 ms behind). The default 100 ms flag never fired.<br>- **MadMapper suspended for 5 s** (at 32.4 s into the show): state "fault" and the sentence "MadMapper stopped answering 33 s into show 1. Video may be frozen. The rest of the show carries on." at 35.42 s, **3.0 s after the last packet**. "MadMapper answered again" at 37.44 s, **within 10 ms of the resume**.<br>- **False drift note:** the first packet after the resume carried MadMapper's stale position, so the watchdog logged **"MadMapper is 5016 ms behind ltcplay's own timecode."** and 9 ms later "back in step". One spurious line per recovery. Suggest: skip the drift check for the first packet or so after a recovery.<br>- Disarmed at the end, then timecode stopped: state "quiet", **no alarm** in 16 s.<br>- Between shows, `select_bank("Bank-2")` then `("Bank-1")` while disarmed: `packets_in` stayed **3,327**, and no drift or state change (B9's single select packet is ignored). |
+| **M5 Hold order by hand** (`Link(beyond=Beyond)`, `hold(1, clock=sender)`, 8.8 s held, `resume(1, clock=sender)`) | **PASSED; looks and measures right.**<br>- Hold: **BEYOND preview black within one sample (under 60 ms)**, then **music faded 0.35 to 0.000 over 1 s**, then the sender froze at 76.900 s. **Level 0.000 for the whole hold: no audio run-on.** MadMapper froze on exactly **76.900 s** (heartbeat silent 8.67 s). BEYOND's own clock ran on about 1.2 s past the frozen frame ("Keep running" off, then its 1 s timeout) and switched its output off (`B14_m5_held.png`), but it was already blanked.<br>- Resume: sender first, then unblank, then fade up. MadMapper moved on from **76.917 s**, 0.10 s after the sender (no jump). **Beams back 0.17 s after resume**, output switched back on by itself. **Music rose smoothly from 0 to 0.34 over 1 s**; the first sample above silence was 0.008, and no repeat blip showed. |
+
+**Note on MadMapper after a Resume.** Before the Hold, MadMapper was 19 to 26 ms behind the sender. After the Resume it stayed **75 to 82 ms behind** for all 15 s measured, about two 30 fps frames more. The audio's LTC shifted the same way (from -299 to -330 ms, including capture delay). The picture and sound were unaffected, but that is **most of the watchdog's 100 ms drift allowance used up after a single Hold**. Worth checking over a longer run whether it creeps back, and whether repeated Holds add up.
+
+Evidence: `B14_madmapper_link.txt` (driver journals, M4 health samples, the numbers above), `B14_m1_stop_Bank-2.png`, `B14_m5_held.png`.
 
 ## Not tested yet
 
