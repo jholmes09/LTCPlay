@@ -101,8 +101,19 @@ Two windows, both on flamesafe's clock from the last accepted frame:
   sender lock is released, and any `seq` is accepted, so a restarted
   ltcplay re-syncs by itself.
 
-Arming is not affected by ltcplay going quiet: the safety slot keeps the
-arm value, the fire slots are zero.
+**Losing the link disarms (Jeff, 2026-09-26).** When the link goes stale
+while the safety program is running, every group is disarmed exactly as
+for a stale arm input: the latches are cleared, the arm value comes off
+every safety slot, the journal gets one sentence, and the ARMED lamp reads
+steady amber with "Show program stopped answering: disarmed. Cycle the arm
+to re-arm once it is back." When ltcplay comes back nothing re-arms by
+itself; the operator cycles the arm (the lamp then reads "cycle the arm",
+flashing). A cycle made while the link is still down does not count. At
+startup, before ltcplay has answered at all, no group can arm: the lamp
+reads "Show program has not answered yet: disarmed. Cycle the arm once it
+is running." This replaces the earlier design in which the arm value stayed
+on the safety slot with only the fire slots zeroed; handoff section 15 is
+updated to match.
 
 Clocks: `mono` is compared only with earlier `mono` values from the same
 sender. flamesafe never compares it with its own clock.
@@ -144,7 +155,7 @@ Top level:
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
-| `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`) |
+| `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
 | `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
@@ -156,7 +167,7 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault` |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.` |
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `sent_safety` | the SENT safety value this tick: 0 or the arm value |
@@ -237,7 +248,7 @@ other computers are on the network, the flame node is keyed off.
 | `tick_hz` | 40 | sACN and status rate |
 | `arm_stale_ms` | 500 | no fresh arm assertion for this long: every group disarms and needs a cycle |
 | `fire_hold_ms` | 100 | no accepted flame frame for this long: every fire slot is zero |
-| `frame_stale_ms` | 500 | no accepted flame frame for this long: the link is stale, the sender lock is released, any seq is accepted |
+| `frame_stale_ms` | 500 | no accepted flame frame for this long: the link is lost, every group disarms and needs a cycle once it is back, the sender lock is released, any seq is accepted |
 | `overrun_ms` | 250 | a tick later than this: that tick is all zeros, every group needs a cycle |
 | `min_arm_dwell_ms` | 1000 | after a disarm, the group is not raised again for this long. The file loader floors it at 1000 |
 
@@ -253,3 +264,6 @@ negotiation, because the two programs are installed together.
 
 Version 1 (2026-09-25, superseded the same day): no `k`, no sender lock, no
 `fire_hold_ms`, no `frames.fire`.
+
+Version 2, 2026-09-26: link loss disarms every group (no field changed;
+two new `reason` sentences).

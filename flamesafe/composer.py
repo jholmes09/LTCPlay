@@ -24,6 +24,13 @@ from .link import FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
 FAULT_CLEAR_S = 5.0
+# The words on the ARMED lamp when the show program (ltcplay) is not
+# answering.  Both steady amber: cycling now fixes nothing; the fix is the
+# show program coming back, and then a cycle.
+LINK_LOST = ("Show program stopped answering: disarmed. Cycle the arm to "
+             "re-arm once it is back.")
+LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
+              "once it is running.")
 
 
 def now():
@@ -61,6 +68,7 @@ class Composer:
         self._arm_fresh_at = None       # our clock, last time seq advanced
         self._arm_seen_at = None        # our clock, last assertion of any kind
         self._arm_live = False
+        self._link_live = False         # ltcplay's frames fresh last tick
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -89,6 +97,7 @@ class Composer:
             "arm_assertions", "arm_rejected", "overruns", "compose_faults",
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
+            "link_lost",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -309,15 +318,27 @@ class Composer:
 
         # 3. ltcplay's frame.  A fire value is kept on the wire for at most
         # fire_hold_ms after the last accepted frame; after that we know
-        # nothing about the cue and the fire slots are zero.  The longer
-        # frame_stale_ms only governs when a restarted ltcplay's sequence
-        # is accepted.  Neither touches arming.
+        # nothing about the cue and the fire slots are zero.  After
+        # frame_stale_ms the link itself is lost, and that DISARMS every
+        # group (Jeff, 2026-09-26): the latches go, the arm value comes off
+        # every safety slot, and a fresh arm cycle is needed once the show
+        # program is back, exactly as for a stale arm input.  A group never
+        # arms before the show program has answered at all.
         frame_fresh = self._frame_is_fresh(t)
         fire_live = self._fire_is_live(t)
         commanded = self._frame if fire_live else None
+        link_live = frame_fresh
+        if not link_live and self._link_live:
+            self.stats["link_lost"] += 1
+            self._event("link", "show program stopped answering: every group "
+                                "disarmed; cycle the arm to re-arm once it "
+                                "is back")
+        if not link_live:
+            self._reset_latches("show program link lost")
+        self._link_live = link_live
 
         # 4. The safety slots.
-        want = [live and self._wanted[i] and self._latched[i]
+        want = [live and link_live and self._wanted[i] and self._latched[i]
                 for i in range(self.n)]
         values = []
         held = []
@@ -325,7 +346,7 @@ class Composer:
             prev = self._last_sent[i]
             if not want[i]:
                 values.append(DISARM)
-                held.append(self._why_not(i, live))
+                held.append(self._why_not(i, live, link_live))
                 continue
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
@@ -442,7 +463,7 @@ class Composer:
                               live, frame_fresh, fire_live)
         return Output(bytes(buf), status, fault)
 
-    def _why_not(self, i, live):
+    def _why_not(self, i, live, link_live):
         """Why a group the input wants armed is not: (reason, amber mode).
         Flashing amber means cycling the arm is the fix.  Steady amber means
         wait, or fix something else; cycling would only restart the dwell."""
@@ -452,6 +473,10 @@ class Composer:
             return ("arm input has never asserted", "steady")
         if not live:
             return ("arm input stale", "steady")
+        if not link_live:
+            if self._frame_at is None:
+                return (LINK_NEVER, "steady")
+            return (LINK_LOST, "steady")
         if not self._latched[i]:
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
