@@ -1693,6 +1693,74 @@ MUTATIONS = [
   "nothing", "ltcplay/clock.py",
   "        if s.tl is None or s.tl.clock is None:",
   "        if True:"),
+
+ ("the hold epoch never bumps, so a stale claim looks still good",
+  "ltcplay/schedule_service.py",
+  "            if was_held != is_held:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
+ ("the second check re-Holds instead of only reading the state",
+  "ltcplay/announce.py",
+  "            if self.hold_requester is not None \\\n"
+  "                    and not self._check_still_held(claim_epoch):",
+  "            if False:"),
+
+ ("hold_still_claimed ignores the epoch, only the state",
+  "ltcplay/schedule_service.py",
+  "            return (self.hold_epoch == claim_epoch\n"
+  "                    and self.machine.state in (sch.HOLD, sch.PAUSED))",
+  "            return self.machine.state in (sch.HOLD, sch.PAUSED)"),
+
+ ("on_show_started always says a show started, never that it resumed",
+  "ltcplay/announce.py",
+  "            self._player.stop_reason = (\"the show resumed\"\n"
+  "                                        if reason == \"resume\" else\n"
+  "                                        \"a show started\")",
+  "            self._player.stop_reason = \"a show started\""),
+
+ ("the resume reason is never computed, on_show_started never learns why",
+  "ltcplay/schedule_service.py",
+  "            reason = \"resume\" if ev.kind == sch.RESUME else \"new\"",
+  "            reason = \"new\""),
+
+ ("hold_for_announcement issues HOLD_ON even when already held or paused",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if False:\n"
+  "                return None, self.hold_epoch"),
+
+ ("an announcement's Hold claim never names the announcement in the "
+  "journal", "ltcplay/announce.py",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen,\n"
+  "                    detail=f\"played the {label} announcement{screen_txt}\")",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen)"),
+
+ ("schedule.py never uses the announcement's own claim wording, during a "
+  "show", "ltcplay/schedule.py",
+  "        if ev.detail:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")",
+  "        if False:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")"),
+
+ ("schedule.py never uses the announcement's own claim wording, between "
+  "shows", "ltcplay/schedule.py",
+  "    if ev.detail:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")",
+  "    if False:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")"),
 ]
 
 

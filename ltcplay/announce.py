@@ -556,12 +556,20 @@ class AnnounceService:
         # docstring: this is the whole coupling to the scheduler in the
         # "may I play" direction.
         self.state_provider = state_provider
-        # A plain callable `(who, screen) -> refusal or None`, or None. The
-        # other new coupling, in the "hold the show first" direction; see
-        # _request_hold and the module docstring. None until web.py wires it
-        # (only when a scheduler is ALSO configured), and an announcement
-        # with no scheduler never tries to call it.
+        # A plain callable `(who, screen, detail=None) -> (refusal_or_None,
+        # epoch)`, or None. The other new coupling, in the "hold the show
+        # first" direction; see _request_hold and the module docstring.
+        # None until web.py wires it (only when a scheduler is ALSO
+        # configured), and an announcement with no scheduler never tries
+        # to call it.
         self.hold_requester = None
+        # A plain callable `(claim_epoch) -> bool`, or None. The read-only
+        # partner to hold_requester, used for the SECOND check right
+        # before the stream opens: never re-Holds, only asks whether the
+        # claim from the first check still stands, so an operator's own
+        # Resume during the file read always wins (review round 2,
+        # 2026-09-26: audit15_resume_race.py). See _check_still_held.
+        self.hold_still_claimed = None
         # Where to read ltcplay_operators.json from. None means the real
         # machine folder (data_dir()); a test points this at a tempdir so
         # it never touches, or depends on, anything really on disk.
@@ -712,21 +720,46 @@ class AnnounceService:
         except Exception:
             return None
 
-    def _request_hold(self, who, screen):
+    def _request_hold(self, who, screen, detail=None):
         """Ask the scheduler to Hold, through hold_requester, with THIS
         press's own who and screen so the journal attributes it the same
-        way an operator's own Hold would (Jeff, 2026-09-26). Returns the
-        refusal sentence, or None: Hold took effect, or the scheduler was
+        way an operator's own Hold would (Jeff, 2026-09-26), and `detail`
+        so it reads as held FOR this announcement rather than as a plain
+        operator Hold press (review round 2, 2026-09-26:
+        audit15_journal_noise2.py). Returns (refusal_or_None, epoch):
+        refusal is None when Hold took effect, or the scheduler was
         already on Hold, or the show was already paused (see
         Service.hold_for_announcement); an announcement never needs the
-        schedule to already be idle before it plays. Called with no
-        scheduler wired is a programming error (play() only calls this when
-        hold_requester is not None), so anything hold_requester itself
-        raises is still turned into a plain sentence rather than a 500."""
+        schedule to already be idle before it plays. epoch is used by
+        _check_still_held, the SECOND, read-only check, never by this one.
+        Called with no scheduler wired is a programming error (play() only
+        calls this when hold_requester is not None), so anything
+        hold_requester itself raises is still turned into a plain sentence
+        rather than a 500 -- with no epoch to compare against, which is
+        fine, because a raised exception is refused right here and the
+        second check is never reached for this attempt."""
         try:
-            return self.hold_requester(who, screen)
+            return self.hold_requester(who, screen, detail=detail)
         except Exception as e:
-            return _clean(str(e))
+            return _clean(str(e)), None
+
+    def _check_still_held(self, claim_epoch):
+        """The SECOND check, immediately before the stream opens: read-only,
+        never asks for Hold again (review round 2, 2026-09-26:
+        audit15_resume_race.py -- the old second hold_requester call here
+        could silently re-pause a show the operator had just resumed
+        during the file read). True when the claim from checkpoint 1 is
+        still good. No hold_still_claimed wired (no scheduler at all) is
+        vacuously fine, the same as interlock_refusal(None) already having
+        refused earlier for that case. Anything hold_still_claimed itself
+        raises is treated as NOT still held: the safe reading of a check
+        that could not be completed is to refuse, not to guess yes."""
+        if self.hold_still_claimed is None:
+            return True
+        try:
+            return bool(self.hold_still_claimed(claim_epoch))
+        except Exception:
+            return False
 
     @staticmethod
     def _operator_problem(who, screen):
@@ -808,7 +841,7 @@ class AnnounceService:
                            f"announcement can be played.",
                       ann_id=ann_id, state=state)
 
-    def on_show_started(self, state=None):
+    def on_show_started(self, state=None, reason=None):
         """Called by whoever wires this service to the scheduler (web.py's
         serve(), see its module docstring) the instant the scheduler
         decides to start a show. A push hook, not something this module
@@ -816,6 +849,16 @@ class AnnounceService:
         lock shared with this service, so an announcement that must stop
         the moment a show starts has to be told, not merely discovered on
         the next status() poll (review, blocker 1b).
+
+        `reason` is "resume" when the show did not actually START, it
+        merely CONTINUED from a Hold (an operator's Resume while an
+        announcement was still playing), or "new" (also the default, for
+        an older caller that does not pass it) for a genuinely new show
+        beginning. Jeff's own intent is the same either way -- a playing
+        announcement still fades and stops, because the show is moving
+        again -- only the JOURNAL's wording differs: "the show resumed"
+        vs "a show started" (review round 2, 2026-09-26:
+        audit15_resume_fires_showstart.py).
 
         This method must return almost instantly and must NEVER touch the
         output stream. It is called from inside schedule_service.py's own
@@ -843,7 +886,9 @@ class AnnounceService:
                 return                      # already stopping
             fade_frames = max(1, int(SHOW_START_FADE_S *
                                      (self._player.rate or 1)))
-            self._player.stop_reason = "a show started"
+            self._player.stop_reason = ("the show resumed"
+                                        if reason == "resume" else
+                                        "a show started")
             self._player.start_fade(fade_frames)
 
     def play(self, ann_id, who, screen):
@@ -912,9 +957,17 @@ class AnnounceService:
             # show in place. Already on Hold, or already paused, counts as
             # success. No scheduler wired (hold_requester is None) means
             # interlock_refusal(None) above already refused, so this is
-            # never reached inert.
+            # never reached inert. claim_epoch is captured here and
+            # checked again, read-only, right before the stream opens
+            # (_check_still_held): it is what lets an operator's Resume,
+            # pressed during the file read below, win outright rather than
+            # being silently undone (review round 2, 2026-09-26:
+            # audit15_resume_race.py).
+            claim_epoch = None
             if self.hold_requester is not None:
-                hold_refusal = self._request_hold(who, screen)
+                hold_refusal, claim_epoch = self._request_hold(
+                    who, screen,
+                    detail=f"played the {label} announcement{screen_txt}")
                 if hold_refusal:
                     text = (f"{who} pressed Play on {label}{screen_txt}. "
                             f"Refused: {hold_refusal}")
@@ -991,17 +1044,21 @@ class AnnounceService:
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=self._current_state())
                 raise ValueError(text)
-            # Re-check the interlock, and re-request the Hold, immediately
-            # before the stream actually starts, INSIDE the same locked
-            # section as start(): the window since the first check included
-            # a device query and the file read above, both real wall time,
-            # during which the scheduler's own tick thread runs
-            # independently, on its own lock (review, blocker 1a:
-            # audit13_toctou_race.py). Asking for Hold again here is what
-            # catches a schedule that moved OUT of Hold and back into a
-            # running show during that window (an operator's Resume and
-            # Start now, both real, both possible in that gap): it simply
-            # Holds it again, the same as the first ask.
+            # Re-check the interlock immediately before the stream actually
+            # starts, INSIDE the same locked section as start(): the
+            # window since the first check included a device query and
+            # the file read above, both real wall time, during which the
+            # scheduler's own tick thread runs independently, on its own
+            # lock (review, blocker 1a: audit13_toctou_race.py).
+            #
+            # This second check is READ-ONLY (never asks for Hold again):
+            # an earlier version re-Held here, which could silently
+            # re-pause a show the operator had just RESUMED during the
+            # file read -- the operator's own Resume must win, not be
+            # undone by an announcement still loading (review round 2,
+            # 2026-09-26: audit15_resume_race.py). If the claim from
+            # checkpoint 1 no longer stands, the announcement is refused,
+            # not the show re-held.
             state = self._current_state()
             refusal = interlock_refusal(state)
             if refusal:
@@ -1012,18 +1069,18 @@ class AnnounceService:
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
-            if self.hold_requester is not None:
-                hold_refusal = self._request_hold(who, screen)
-                if hold_refusal:
-                    self.playing = None
-                    text = (f"{who} pressed Play on {label}{screen_txt}. "
-                            f"Refused: {hold_refusal}")
-                    self._emit(actor="operator", action="play",
-                              outcome="refused", reason=hold_refusal,
-                              text=text, ann_id=ann_id, who=who,
-                              screen=screen, state=state)
-                    raise ValueError(text)
-                state = self._current_state()
+            if self.hold_requester is not None \
+                    and not self._check_still_held(claim_epoch):
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. The "
+                        f"show was resumed while the announcement was "
+                        f"loading, so it did not play.")
+                self._emit(actor="operator", action="play",
+                          outcome="refused",
+                          reason="the show was resumed while loading",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(text)
             out_ch = min(channels, dev["channels"]) or 1
             if out_ch < channels:
                 self._emit(actor="system", action="play", outcome="note",

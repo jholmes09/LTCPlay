@@ -793,15 +793,18 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
 
     `announce` is the same shape for the announcements config: a path, or a
     ready-made AnnounceService. Without it announcements are not imported
-    either. When BOTH are configured, the two are wired together in three
+    either. When BOTH are configured, the two are wired together in four
     directions, here and nowhere else: the announcement service reads the
     scheduler's state through its one-method provider (may I play), the
     scheduler pushes to the announcement service's on_show_started hook the
-    instant it starts a show (stop, a show just started), and the
-    announcement service asks the scheduler to Hold, through
-    hold_requester, before it ever plays (Jeff, 2026-09-26: every
-    announcement triggers a Hold). Neither module imports the other; this
-    function is the only place that knows both.
+    instant it starts a show (stop, a show just started), the announcement
+    service asks the scheduler to Hold, through hold_requester, before it
+    ever plays (Jeff, 2026-09-26: every announcement triggers a Hold), and
+    it asks again, read-only, through hold_still_claimed, immediately
+    before the stream opens, so an operator's own Resume during the file
+    read always wins rather than being silently undone (review round 2,
+    2026-09-26: audit15_resume_race.py). Neither module imports the other;
+    this function is the only place that knows both.
 
     This is also the only place that knows both the schedule rules and the
     show's own media (Jeff, 2026-09-26: show length follows the music,
@@ -865,6 +868,12 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # first, through the same path an operator's own Hold uses. See
         # Service.hold_for_announcement and announce.py's play().
         httpd.announce.hold_requester = sched.hold_for_announcement
+        # The read-only partner to the above, for the second check right
+        # before the stream opens: never re-Holds, so an operator's own
+        # Resume during the file read always wins (review round 2,
+        # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
+        # and announce.py's _check_still_held.
+        httpd.announce.hold_still_claimed = sched.hold_still_claimed
     if on_ready:
         on_ready(httpd, control, token)
     return httpd

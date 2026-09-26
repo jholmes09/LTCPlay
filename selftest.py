@@ -11406,34 +11406,45 @@ def test_announce_device_exact_match_only():
 
 
 def test_announce_toctou_recheck_before_start():
-    section("announcements: Hold is re-requested immediately before the "
-            "stream actually starts, catching a show that started again "
-            "during the file read")
+    section("announcements: the SECOND check, immediately before the "
+            "stream actually starts, is read-only -- it refuses the "
+            "announcement rather than re-Holding a show the operator "
+            "resumed during the file read (review round 2, 2026-09-26: "
+            "audit15_resume_race.py)")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
-    state_holder = {"v": "STANDBY"}
+    fake = {"state": "STANDBY", "epoch": 0}
     hold_calls = []
+    claimed_checks = []
 
-    def fake_hold(who, screen):
+    def fake_hold(who, screen, detail=None):
         # Hold always succeeds here and moves the fake schedule to HOLD,
-        # exactly as the real Service would; what this test cares about is
-        # WHEN it is called, and how many times.
-        hold_calls.append((who, screen, state_holder["v"]))
-        state_holder["v"] = "HOLD"
-        return None
+        # bumping its epoch, exactly as the real Service would.
+        hold_calls.append((who, screen, detail, fake["state"]))
+        fake["state"] = "HOLD"
+        fake["epoch"] += 1
+        return None, fake["epoch"]
+
+    def fake_still_claimed(claim_epoch):
+        claimed_checks.append(claim_epoch)
+        return (claim_epoch == fake["epoch"]
+                and fake["state"] in ("HOLD", "PAUSED"))
 
     sd = FakeSD()
     svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
-                            state_provider=lambda: state_holder["v"])
+                            state_provider=lambda: fake["state"])
     svc.hold_requester = fake_hold
+    svc.hold_still_claimed = fake_still_claimed
     real_decode = svc._decode
 
     def decode_and_flip(ann_id):
         # Stands in for real wall time elapsing during the file read: an
-        # operator resuming and starting a show again in that window is
-        # entirely realistic, since the scheduler ticks on its own thread
-        # with no lock shared with this service (audit13_toctou_race.py).
-        state_holder["v"] = "SHOW"
+        # operator resuming (a real Resume bumps the epoch, same as
+        # fake_hold above) in that window is entirely realistic, since
+        # the scheduler ticks on its own thread with no lock shared with
+        # this service (audit13_toctou_race.py / audit15_resume_race.py).
+        fake["state"] = "SHOW"
+        fake["epoch"] += 1
         return real_decode(ann_id)
 
     svc._decode = decode_and_flip
@@ -11441,27 +11452,22 @@ def test_announce_toctou_recheck_before_start():
         check(A.interlock_refusal(svc._current_state()) is None,
               "setup: the interlock legitimately allows it at the first "
               "check")
-        r = svc.play(A.DELAYED, "Andy", "rack screen")
-        check(r["playing"]["id"] == A.DELAYED,
-              f"the recheck must Hold the show that started again during "
-              f"the read, not refuse the announcement: {r}")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "a Resume during the file read must refuse the "
+                         "announcement, not silently re-Hold the show")
+        except ValueError as e:
+            check("resumed while the announcement was loading" in str(e),
+                  f"the refusal must say why: {e}")
     finally:
         svc._decode = real_decode
-    # Guarded, not a bare index: a mutation that skips one of the two Hold
-    # requests must fail with a clear message here, not crash on
-    # hold_calls[1] with fewer than two entries in the list (found by
-    # mutate.py, 2026-09-26).
-    if check(len(hold_calls) == 2,
-             f"Hold must be requested twice: once before the file read, "
-             f"once again immediately before the stream starts, catching "
-             f"the state that changed in between: {hold_calls}"):
-        check(hold_calls[1][2] == "SHOW",
-              f"the SECOND Hold request is what must catch the show that "
-              f"started again during the read: {hold_calls}")
-        check(all(c[0] == "Andy" and c[1] == "rack screen"
-                  for c in hold_calls),
-              f"both Hold requests must carry the SAME who and screen as "
-              f"the Play press: {hold_calls}")
+    check(svc.playing is None, "a refused claim must never start playing")
+    check(len(hold_calls) == 1,
+          f"Hold must be requested only ONCE, before the file read: the "
+          f"second check must be read-only, never Hold again: {hold_calls}")
+    check(len(claimed_checks) == 1 and claimed_checks[0] == 1,
+          f"the second check must ask about the epoch captured at the "
+          f"FIRST Hold, not the current one: {claimed_checks}")
     print("  ok")
 
 
@@ -11793,7 +11799,7 @@ def test_schedule_hook_runs_outside_service_lock():
     HANG_S = 1.0
     calls = []
 
-    def slow_hook(state):
+    def slow_hook(state, reason=None):
         calls.append(state)
         # A deliberately slow hook, standing in for ANY future hook that
         # is not as careful as announce.py's own about never touching a
@@ -12030,13 +12036,20 @@ def test_announce_hold_between_shows():
           f"between shows, Hold is what Play must trigger first: "
           f"{svc.machine.state}")
     # The journal line for the Hold itself carries the SAME who/screen the
-    # Play press used, exactly as the operator's own Hold would.
+    # Play press used, exactly as the operator's own Hold would, and reads
+    # as held FOR the announcement (review round 2, 2026-09-26:
+    # audit15_journal_noise2.py), not as an indistinguishable operator
+    # Hold press.
     hold_lines = [r for r in svc.journal
-                 if "pressed Hold" in (r.get("text") or "")]
+                 if r.get("action") == S.HOLD_ON]
     check(hold_lines and hold_lines[0]["who"] == "Andy"
           and hold_lines[0]["screen"] == "rack screen",
           f"the Hold the announcement triggered must be attributed to the "
           f"SAME operator and screen as the Play press: {hold_lines}")
+    check(hold_lines and "played the Delayed announcement" in
+          hold_lines[0]["text"],
+          f"the Hold's own journal line must name the announcement, not "
+          f"just say 'pressed Hold': {hold_lines}")
 
     # The next show's time passes while held: it must not fire.
     now[0] = _den(S, 17, 55)
@@ -12080,6 +12093,14 @@ def test_announce_hold_during_show():
           f"during a show, Hold must pause it in place, not refuse the "
           f"announcement (the old 'locked during a show' rule is gone): "
           f"{svc.machine.state}")
+    # The journal line for THIS Hold also reads as held for the
+    # announcement, not just a plain operator Hold press (review round 2,
+    # 2026-09-26: audit15_journal_noise2.py).
+    hold_lines = [row for row in svc.journal if row.get("action") == S.HOLD_ON]
+    check(hold_lines and "played the Cancellation announcement" in
+          hold_lines[0]["text"] and "is held for it" in hold_lines[0]["text"],
+          f"the Hold's own journal line, during a show, must name the "
+          f"announcement: {hold_lines}")
     ann.stop("Andy", "rack screen")
     print("  ok")
 
@@ -12163,6 +12184,297 @@ def test_announce_stays_held_after_it_ends():
     check(svc.machine.state == S.SHOW,
           f"an operator's Resume, and only that, carries the show on: "
           f"{svc.machine.state}")
+    print("  ok")
+
+
+def test_announce_resume_wins_over_second_hold_request():
+    section("announcements: an operator's Resume, pressed while an "
+            "announcement is still loading, wins outright -- the second "
+            "check never re-Holds the show it was just resumed from "
+            "(review round 2, 2026-09-26: audit15_resume_race.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5),
+              "setup: the announcement thread must reach the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              f"setup: the FIRST Hold request must pause the show: "
+              f"{svc.machine.state}")
+        # The operator, on a different screen, presses Resume -- a real,
+        # independent action -- while the announcement is still mid-decode.
+        with svc._locked():
+            out = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                     screen="Rack"))
+        check(not out.refused, f"setup: Resume must be accepted: "
+                               f"{out.refused}")
+        check(svc.machine.state == S.SHOW,
+              f"the operator's Resume must take effect immediately, not "
+              f"wait for the announcement: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"the announcement must be refused, not silently re-pause the "
+          f"resumed show: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(svc.machine.state == S.SHOW,
+          f"the operator's Resume must still hold, never silently undone "
+          f"by the announcement's own second check: {svc.machine.state}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_resume_then_rehold_still_refuses():
+    section("announcements: Resume immediately followed by a FRESH Hold "
+            "(the state looks the same again, PAUSED, but it is a "
+            "DIFFERENT claim) must still refuse a stale announcement "
+            "attempt -- this is exactly why the second check compares an "
+            "epoch, not just the state (review round 2, 2026-09-26: "
+            "\"Resume then Hold again should still refuse this attempt\")")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5), "setup: reached the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              "setup: the first Hold request must pause the show")
+        # Resume, then IMMEDIATELY Hold again from someone else (a real
+        # scenario: an operator's own Hold press, back to back with the
+        # Resume, both real actions the announcement never asked for).
+        # State ends up PAUSED again -- the same as the original claim --
+        # but this is a DIFFERENT hold, and the stale attempt must still
+        # be refused.
+        with svc._locked():
+            svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                               screen="Rack"))
+        with svc._locked():
+            svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                               screen="Rack"))
+        check(svc.machine.state == S.PAUSED,
+              f"setup: the state must look the same again (PAUSED), which "
+              f"is exactly what makes this case need the epoch, not just "
+              f"the state: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"a stale claim must still refuse even though the state looks "
+          f"unchanged: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_on_show_started_reason_new_vs_resume():
+    section("announcements: on_show_started's journal wording says WHY "
+            "the show is moving -- 'a show started' for a genuinely new "
+            "show, 'the show resumed' for a Resume from Hold (review "
+            "round 2, 2026-09-26: audit15_resume_fires_showstart.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=90.0,
+                   rate=8000)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34, 0)]
+    sd = FakeSD()
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY, "setup: intermission running")
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    # Between shows: Play Holds (HOLD), then the next slot's time arrives
+    # -- but the schedule is held, so nothing fires by itself. Resume it
+    # by hand via Start now instead, landing the announcement's own show
+    # start under the "new show" label.
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.machine.state == S.HOLD, "setup: held between shows")
+    stream_a = sd.output_streams[-1]
+    # Through _locked(), not a bare _apply(): the on_show_started hook is
+    # only ever drained on the outermost exit from _locked() (see
+    # Service._locked's own docstring), so a bare _apply() here would
+    # queue the hook and never actually run it.
+    with svc._locked():
+        out = svc._apply(S.Event(S.START_NOW, "operator", who="Andy",
+                                 screen="Rack"))
+    check(not out.refused and svc.machine.state == S.SHOW,
+          f"setup: Start now must fire a genuinely new show: "
+          f"{out.refused} {svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "a show started",
+                   timeout=2.0),
+          "a genuinely new show must fade the announcement out labelled "
+          "'a show started'")
+    stream_a.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "a show started"
+             for r in status["journal"]),
+          f"the journal must say 'a show started' for a genuinely new "
+          f"show: {status['journal']}")
+
+    # Now the resume case: hold DURING a show (pauses it), play another
+    # announcement, then Resume while it is still playing.
+    now2_ok = svc.machine.state == S.SHOW
+    check(now2_ok, "setup: a show is running for the resume case")
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: Hold paused the show")
+    stream_b = sd.output_streams[-1]
+    with svc._locked():
+        out2 = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack"))
+    check(not out2.refused and svc.machine.state == S.SHOW,
+          f"setup: Resume must carry the show on: {out2.refused} "
+          f"{svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "the show resumed",
+                   timeout=2.0),
+          "a Resume from Hold must fade the announcement out labelled "
+          "'the show resumed', not 'a show started'")
+    stream_b.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status2 = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "the show resumed"
+             for r in status2["journal"]),
+          f"the journal must say 'the show resumed', not 'a show "
+          f"started', for a Resume: {status2['journal']}")
+    print("  ok")
+
+
+def test_announce_hold_for_announcement_no_noise_when_already_held():
+    section("announcements: hold_for_announcement never writes a "
+            "'refused' line for the routine case of asking for Hold when "
+            "the schedule is already held or paused (review round 2, "
+            "2026-09-26: audit15_journal_noise.py / "
+            "audit15_journal_noise2.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "19:00", "interval_min": 20,
+                        "last_end": "23:00"}},
+        exceptions={}))
+    now = [_den(S, 20, 0, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show fired at boot")
+
+    r1, epoch1 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cancellation "
+        "announcement on the Announce Panel")
+    check(r1 is None and svc.machine.state == S.PAUSED,
+          f"setup: the first claim must pause the show: {r1} "
+          f"{svc.machine.state}")
+    before = len(svc.journal)
+    r2, epoch2 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cannot continue "
+        "announcement on the Announce Panel")
+    check(r2 is None, f"the second, routine claim must also succeed: {r2}")
+    check(epoch1 == epoch2,
+          f"asking again while already held must NOT bump the epoch: "
+          f"{epoch1} {epoch2}")
+    check(len(svc.journal) == before,
+          f"the routine second claim must add NOTHING to the journal, "
+          f"not even a refused line: "
+          f"{list(svc.journal)[len(svc.journal) - before:]}")
+    check(not any("refused" in (r.get("text") or "").lower()
+                 for r in svc.journal),
+          f"no 'refused' line must appear anywhere for this routine "
+          f"sequence: {list(svc.journal)}")
     print("  ok")
 
 
@@ -16030,6 +16342,10 @@ if __name__ == "__main__":
     test_announce_hold_during_show()
     test_announce_hold_refused_refuses_the_announcement()
     test_announce_stays_held_after_it_ends()
+    test_announce_resume_wins_over_second_hold_request()
+    test_announce_resume_then_rehold_still_refuses()
+    test_announce_on_show_started_reason_new_vs_resume()
+    test_announce_hold_for_announcement_no_noise_when_already_held()
     test_announce_no_scheduler_stays_inert()
     test_announce_single_flight()
     test_announce_operator_validation()

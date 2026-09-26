@@ -366,6 +366,14 @@ class Service:
         # next status() poll. schedule_service.py never imports announce.py
         # to make this call; it only ever calls whatever was set here.
         self.on_show_started = None
+        # Bumped by _apply() every time the machine crosses into or out of
+        # a held or paused state. See hold_for_announcement and
+        # hold_still_claimed: the second, read-only check an announcement
+        # makes right before its stream opens compares against the epoch
+        # it captured at claim time, not just the state, so a Resume that
+        # happens during the file read is never silently undone (review
+        # round 2, 2026-09-26: audit15_resume_race.py).
+        self.hold_epoch = 0
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -488,6 +496,19 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # Bumped every time the machine crosses INTO or OUT OF a held or
+        # paused state, whoever does it: an operator's own Hold or Resume,
+        # or an announcement's hold_for_announcement. hold_still_claimed
+        # compares against this, not just against the state, so a Resume
+        # followed by a fresh Hold (state looks the same again) still
+        # shows as a DIFFERENT claim -- the operator's Resume always wins
+        # over an announcement still loading (review round 2, 2026-09-26:
+        # audit15_resume_race.py).
+        if before is not None and self.machine is not None:
+            was_held = before.state in (sch.HOLD, sch.PAUSED)
+            is_held = self.machine.state in (sch.HOLD, sch.PAUSED)
+            if was_held != is_held:
+                self.hold_epoch += 1
         # A push, not a poll: an announcement playing must be told the
         # instant a show starts, not found out about on its own next
         # status() look, which could be seconds behind. See on_show_started
@@ -510,7 +531,14 @@ class Service:
                 and self.machine.state == sch.SHOW \
                 and self.on_show_started is not None:
             state_now, hook = self.machine.state, self.on_show_started
-            self._pending_hooks.append(lambda: hook(state_now))
+            # PAUSED -> SHOW (a Resume) fires this hook exactly like a
+            # genuinely new show starting, on purpose: either way, an
+            # announcement still playing must fade and stop, because the
+            # show is moving. Only the WORDING differs, so the journal
+            # says why (review round 2, 2026-09-26:
+            # audit15_resume_fires_showstart.py).
+            reason = "resume" if ev.kind == sch.RESUME else "new"
+            self._pending_hooks.append(lambda: hook(state_now, reason))
         return out
 
     # -- tonight on disk --------------------------------------------------
@@ -765,27 +793,58 @@ class Service:
                 raise ValueError(out.refused)
         return self.tonight_view()
 
-    def hold_for_announcement(self, who, screen):
+    def hold_for_announcement(self, who, screen, detail=None):
         """Put the scheduler on Hold exactly as the operator's own Hold
         does, `who` and `screen` carried through so the journal attributes
         it the same way (Jeff, 2026-09-26: "any announcement actually just
-        auto triggers a hold"). Wired by web.py's serve() as
-        AnnounceService.hold_requester, alongside state_provider and
+        auto triggers a hold"). `detail`, when given, replaces the journal
+        line's own "pressed Hold" wording (see schedule.py's _hold): an
+        announcement's own claim reads as held FOR the announcement, not
+        as an indistinguishable operator Hold press (review round 2,
+        2026-09-26: audit15_journal_noise2.py). Wired by web.py's serve()
+        as AnnounceService.hold_requester, alongside state_provider and
         on_show_started; see announce.py's play().
 
-        Returns the refusal sentence, or None when Hold took effect, or
-        when the scheduler was already on Hold or the show was already
-        paused: an announcement never needs the schedule to already be
-        idle before it plays."""
+        Checks the state FIRST: already on Hold or already paused is
+        success without ever issuing HOLD_ON, so the routine case (a
+        second announcement, or this same call succeeding twice) never
+        writes a "Hold was refused" line for something that was not
+        actually refused from the operator's point of view (review round
+        2, audit15_journal_noise.py / audit15_journal_noise2.py).
+
+        Returns (refusal_or_None, epoch): epoch is self.hold_epoch right
+        after this call, for hold_still_claimed to compare against later
+        -- seeing THIS claim through, not just seeing the same state
+        again by coincidence (review round 2: audit15_resume_race.py)."""
         with self._locked():
             self.tick()
             if self.machine is None:
-                return self.error or "There is no schedule loaded."
+                return self.error or "There is no schedule loaded.", \
+                    self.hold_epoch
+            if self.machine.state in (sch.HOLD, sch.PAUSED):
+                return None, self.hold_epoch
             out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,
-                                        screen=screen))
-            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):
-                return None
-            return out.refused or None
+                                        screen=screen, detail=detail or ""))
+            return out.refused or None, self.hold_epoch
+
+    def hold_still_claimed(self, claim_epoch):
+        """True if the schedule is still on Hold or paused AND nothing has
+        crossed a Hold/Resume boundary since `claim_epoch` was captured
+        (see hold_for_announcement). Read-only: this NEVER issues Hold
+        itself, unlike the old second check it replaces -- an operator's
+        own Resume, pressed while an announcement is still loading, always
+        wins, rather than being silently undone by the announcement's own
+        recheck re-Holding the show it was just resumed from (review round
+        2, 2026-09-26: audit15_resume_race.py). Comparing the epoch, not
+        only the state, is what catches a Resume immediately followed by a
+        fresh Hold from someone else: the state looks the same again, but
+        this claim is still stale."""
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                return False
+            return (self.hold_epoch == claim_epoch
+                    and self.machine.state in (sch.HOLD, sch.PAUSED))
 
     # -- the web routes ---------------------------------------------------
     GET_ROUTES = ("/api/schedule", "/api/schedule/tonight",
