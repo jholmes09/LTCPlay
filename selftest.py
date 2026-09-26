@@ -1043,22 +1043,145 @@ def test_pixel_pacing_never_accumulates_error():
     period = 0.025
     check(len(at) == N, f"expected {N} frames, got {len(at)}")
     start = at[0]
-    late = [a - (start + i * period) for i, a in enumerate(at)]
-    check(all(x >= -1e-9 for x in late),
-          f"a frame went out before its own deadline: {min(late):.6f}s early")
-    # The property under test: lateness stays bounded by roughly one
-    # iteration's own overshoot, not by how many iterations have run. A
-    # pacer that slept a fixed period and counted sleeps would have this
-    # grow with every frame; one paced on absolute deadlines cannot.
-    check(max(late) < 0.05,
-          f"lateness grew to {max(late) * 1000:.1f}ms over {N} frames -- the "
-          f"deadline is drifting instead of staying put")
-    tail = late[-20:]
-    check(max(tail) - min(tail) < 0.05,
-          f"lateness late in the run ranges {min(tail) * 1000:.2f} to "
-          f"{max(tail) * 1000:.2f}ms -- still growing rather than settled")
-    print(f"  ok ({N} frames on a simulated clock, max lateness "
-          f"{max(late) * 1000:.2f}ms, never compounding)")
+    # Every send lands close to a whole number of periods after the loop's
+    # own fixed origin (approximately `start`, its first tick) -- not "the
+    # i-th frame is therefore i periods after start", which a big overshoot
+    # (a hard stall, injected 2% of the time above) stops being true for:
+    # player.py's _loop() gives up the CONTENT of a slot it truly missed
+    # (the frame number jumps ahead) rather than sending it late, the same
+    # "skip, never burst" policy clock.py's Ticker already proved out for
+    # Art-Net timecode -- one send still goes out every period, so `at`
+    # stays exactly N long, just not evenly spaced through a stall. What
+    # must never happen is the ORIGIN itself moving: a pacer that gives up
+    # a missed slot by re-anchoring to "now" loses exactly that, and every
+    # send after it lands off phase by however late that one wake was,
+    # forever. This is the bug the Fire & Ice bench found, 2026-09-25, B9:
+    # a show's pixel timing against the cue stepped once, under load, and
+    # never came back.
+    phase = [(((a - start) + period / 2) % period) - period / 2 for a in at]
+    check(all(b >= a - 1e-9 for a, b in zip(at, at[1:])),
+          "a send went out before an earlier one")
+    # A single send CAN legitimately land up to about one overshoot late
+    # (0.003 + 0.04s, the worst this simulated clock ever injects in one
+    # sleep) -- that send really did wake up that late, and no pacer can
+    # un-happen a slow wake. What a fixed origin buys is that this is a
+    # one-off: the NEXT send is judged against the same origin afresh, not
+    # against where the late one happened to land.
+    worst_ms = max(abs(x) for x in phase) * 1000.0
+    check(worst_ms < 60.0,
+          f"a send landed {worst_ms:.2f}ms off its own period boundary -- "
+          f"further off than this clock's worst single overshoot can "
+          f"explain")
+    # The property that actually distinguishes a fixed origin from one
+    # that moves: the AVERAGE phase near the end of the run must read the
+    # same as near the start. A pacer that re-anchors to "now" on a big
+    # overshoot would show these shifted apart by roughly that overshoot,
+    # permanently -- this is the Fire & Ice bench's B9 finding (2026-09-25):
+    # a show's pixel timing against the cue stepped once, under load, and
+    # never came back for the rest of the show. Windows enough (20 samples
+    # each) that one rare big overshoot landing in a window barely moves
+    # its mean; a real, permanent step would not average out.
+    head, tail = phase[5:25], phase[-20:]
+    head_ms = sum(head) / len(head) * 1000.0
+    tail_ms = sum(tail) / len(tail) * 1000.0
+    check(abs(tail_ms - head_ms) < 5.0,
+          f"the average phase drifted from {head_ms:.2f}ms near the start "
+          f"to {tail_ms:.2f}ms near the end of the run -- the loop's "
+          f"origin moved")
+    print(f"  ok ({len(at)} of {N} frames sent, worst phase {worst_ms:.2f}ms, "
+          f"phase {head_ms:.2f}ms near the start vs {tail_ms:.2f}ms near "
+          f"the end)")
+
+
+def test_pixel_scheduler_recovers_after_one_late_wake():
+    section("pixel output: one very late wake shifts a single send, and "
+            "the schedule is back on the original grid for the next one")
+    # The Fire & Ice bench's B9 finding, isolated to one deliberate event
+    # instead of leaving it to chance: at a frame this test chooses, one
+    # sleep overshoots by 60ms -- more than two whole 25ms periods, well
+    # past what ordinary Windows timer jitter would ever produce in a
+    # single wake, but exactly the shape of a real stall (a screen
+    # capture, a GC pause, anything that steals the thread for a while).
+    # Runs Player._loop itself, not a copy, on a clock that moves only
+    # when told to: no thread, no wall time, fully deterministic.
+    import ltcplay.player as plmod
+    at = []
+    STALL_AFTER = 150
+    N = 300
+
+    class Sim:
+        def __init__(self):
+            self.t = 5000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            over = 0.06 if len(at) == STALL_AFTER else 0.0
+            self.t += s + over
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    tl = _timeline([])
+
+    class Sender:
+        def send_frame(self, data):
+            at.append(sim.t)
+            if len(at) >= N:
+                p._running = False
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(25)
+    finally:
+        plmod.time = real
+
+    period = 0.025
+    check(len(at) == N, f"expected {N} frames, got {len(at)}")
+    start = at[0]
+    phase = [(((a - start) + period / 2) % period) - period / 2 for a in at]
+    # Well before and well after the stall, clear of the one send it
+    # actually delays.
+    before = phase[100:STALL_AFTER - 5]
+    after = phase[STALL_AFTER + 10:STALL_AFTER + 60]
+    before_ms = sum(before) / len(before) * 1000.0
+    after_ms = sum(after) / len(after) * 1000.0
+    check(abs(after_ms - before_ms) < 2.0,
+          f"one 60ms late wake shifted the pixel schedule from "
+          f"{before_ms:.2f}ms to {after_ms:.2f}ms off its own grid, and "
+          f"it never came back -- this is the bug found on the Fire & Ice "
+          f"bench, 2026-09-25 (B9): a show's pixel timing against the cue "
+          f"stepped once, under load, and stayed there for the rest of "
+          f"the show")
+    # And it must not have caught up by bursting: the two-and-some periods
+    # the stall ate are given up, not sprinted through, the same policy
+    # clock.py's Ticker already proved out ("never a burst" -- see its own
+    # docstring). A pacer that resends every missed slot back to back the
+    # instant it wakes would show one or more gaps here far shorter than a
+    # real period.
+    around = [at[i + 1] - at[i]
+              for i in range(STALL_AFTER - 3, STALL_AFTER + 5)]
+    check(min(around) > period * 0.5,
+          f"frames were sent {min(around) * 1000:.2f}ms apart right after "
+          f"the stall -- the missed slots were sprinted through instead "
+          f"of given up")
+    print(f"  ok (phase {before_ms:.2f}ms before the stall, {after_ms:.2f}ms "
+          f"after, one 60ms overshoot injected at frame {STALL_AFTER})")
 
 
 def test_windows_pixel_clock_choice():
@@ -15377,6 +15500,7 @@ if __name__ == "__main__":
     test_loop_never_dies()
     test_pixel_output_frame_jitter()
     test_pixel_pacing_never_accumulates_error()
+    test_pixel_scheduler_recovers_after_one_late_wake()
     test_windows_pixel_clock_choice()
     test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()
