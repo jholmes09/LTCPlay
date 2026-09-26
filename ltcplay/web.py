@@ -801,8 +801,37 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     announcement service asks the scheduler to Hold, through
     hold_requester, before it ever plays (Jeff, 2026-09-26: every
     announcement triggers a Hold). Neither module imports the other; this
-    function is the only place that knows both."""
+    function is the only place that knows both.
+
+    This is also the only place that knows both the schedule rules and the
+    show's own media (Jeff, 2026-09-26: show length follows the music,
+    everywhere the code has access to it): if a schedule is configured and
+    `folder` has a show file naming a clock block with a derivable show
+    length, the schedule's own show_len_s is cross-checked against it
+    before anything is served, and refused, naming both numbers, if it is
+    shorter. schedule.py stays pure and schedule_service.py is not touched
+    for this: see clock.derive_show_length_in_folder."""
     control = Control(folder, defaults=defaults, sd=sd)
+    httpd_schedule = None
+    if schedule is not None:
+        if isinstance(schedule, str):
+            from . import schedule_service
+            schedule = schedule_service.Service(schedule)
+        if schedule.rule is not None:
+            from . import clock as clock_mod
+            found = clock_mod.derive_show_length_in_folder(folder)
+            if found is not None:
+                show_path, derived = found
+                configured = schedule.rule.show_len_s
+                if configured < derived:
+                    raise ValueError(
+                        f"The schedule's show_len_s is {configured:g} s, "
+                        f"shorter than the show's own media in "
+                        f"{os.path.basename(show_path)}, which runs "
+                        f"{derived:g} s. Set show_len_s in the schedule to "
+                        f"at least {derived:g}, or leave the show's media "
+                        f"alone to run its own length, before serving.")
+        httpd_schedule = schedule
     on_network = bind not in LOOPBACK
     if on_network and token is None:
         # Anyone who can reach this port can black out the rig. On a venue
@@ -814,11 +843,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     httpd.token = token if on_network else None
     httpd.daemon_threads = True
     httpd.schedule = None
-    if schedule is not None:
-        if isinstance(schedule, str):
-            from . import schedule_service
-            schedule = schedule_service.Service(schedule)
-        httpd.schedule = schedule.start()
+    if httpd_schedule is not None:
+        httpd.schedule = httpd_schedule.start()
     httpd.announce = None
     if announce is not None:
         if isinstance(announce, str):

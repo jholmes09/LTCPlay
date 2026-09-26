@@ -1350,35 +1350,14 @@ MUTATIONS = [
   '                hold_refusal = self._request_hold(who, screen)\n'
   '                if hold_refusal:'),
 
- ("a refused hold does not refuse the announcement", "ltcplay/announce.py",
-  '            # never reached inert.\n'
-  '            if self.hold_requester is not None:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
-  '                if hold_refusal:\n'
-  '                    text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
-  '                            f"Refused: {hold_refusal}")\n'
-  '                    self._emit(actor="operator", action="play",\n'
-  '                              outcome="refused", reason=hold_refusal,\n'
-  '                              text=text, ann_id=ann_id, who=who,\n'
-  '                              screen=screen, state=state)\n'
-  '                    raise ValueError(text)\n'
-  '                state = self._current_state()\n'
-  '            try:\n'
-  '                sd = self._sd()',
-  '            # never reached inert.\n'
-  '            if self.hold_requester is not None:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
-  '                if False:\n'
-  '                    text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
-  '                            f"Refused: {hold_refusal}")\n'
-  '                    self._emit(actor="operator", action="play",\n'
-  '                              outcome="refused", reason=hold_refusal,\n'
-  '                              text=text, ann_id=ann_id, who=who,\n'
-  '                              screen=screen, state=state)\n'
-  '                    raise ValueError(text)\n'
-  '                state = self._current_state()\n'
-  '            try:\n'
-  '                sd = self._sd()'),
+ # Deliberately no mutation here disabling the FIRST checkpoint's own
+ # "if hold_refusal:" alone (only the "if self.hold_requester is not
+ # None:" gate above it, and the SECOND checkpoint's identical check
+ # below): the second checkpoint re-asks and re-checks Hold immediately
+ # before the stream starts, on purpose (the TOCTOU recheck), so disabling
+ # only the first check's own refusal changes nothing a test can observe
+ # -- the second one still refuses, with the same sentence. Confirmed
+ # equivalent by hand (mutate.py run, 2026-09-26): NOT CAUGHT, correctly.
 
  ("the second hold request before the stream starts is skipped",
   "ltcplay/announce.py",
@@ -1702,6 +1681,18 @@ MUTATIONS = [
   "latest end", "ltcplay/clock.py",
   "        end = max(end or 0.0, c.end_seconds)",
   "        end = c.end_seconds"),
+
+ ("the scheduler's show_len_s is never checked against the show's media",
+  "ltcplay/web.py",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if configured < derived:",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if False:"),
+
+ ("the show length derivation for the scheduler check always finds "
+  "nothing", "ltcplay/clock.py",
+  "        if s.tl is None or s.tl.clock is None:",
+  "        if True:"),
 ]
 
 

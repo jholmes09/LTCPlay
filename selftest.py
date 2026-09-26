@@ -11447,16 +11447,21 @@ def test_announce_toctou_recheck_before_start():
               f"the read, not refuse the announcement: {r}")
     finally:
         svc._decode = real_decode
-    check(len(hold_calls) == 2,
-          f"Hold must be requested twice: once before the file read, once "
-          f"again immediately before the stream starts, catching the "
-          f"state that changed in between: {hold_calls}")
-    check(hold_calls[1][2] == "SHOW",
-          f"the SECOND Hold request is what must catch the show that "
-          f"started again during the read: {hold_calls}")
-    check(all(c[0] == "Andy" and c[1] == "rack screen" for c in hold_calls),
-          f"both Hold requests must carry the SAME who and screen as the "
-          f"Play press: {hold_calls}")
+    # Guarded, not a bare index: a mutation that skips one of the two Hold
+    # requests must fail with a clear message here, not crash on
+    # hold_calls[1] with fewer than two entries in the list (found by
+    # mutate.py, 2026-09-26).
+    if check(len(hold_calls) == 2,
+             f"Hold must be requested twice: once before the file read, "
+             f"once again immediately before the stream starts, catching "
+             f"the state that changed in between: {hold_calls}"):
+        check(hold_calls[1][2] == "SHOW",
+              f"the SECOND Hold request is what must catch the show that "
+              f"started again during the read: {hold_calls}")
+        check(all(c[0] == "Andy" and c[1] == "rack screen"
+                  for c in hold_calls),
+              f"both Hold requests must carry the SAME who and screen as "
+              f"the Play press: {hold_calls}")
     print("  ok")
 
 
@@ -13324,6 +13329,107 @@ def test_clock_show_length_follows_the_music():
               f"the refusal must name both the configured and the media "
               f"length: {msg}")
         _no_dashes(msg, "show length refusal")
+    print("  ok")
+
+
+def test_scheduler_show_len_s_checked_against_the_show_media():
+    section("serving: the scheduler's own show_len_s is cross-checked "
+            "against the show's own media at startup (Jeff, 2026-09-26, "
+            "the coordinator's own follow-up: show length follows the "
+            "music wherever the code has access to it)")
+    import json
+    import test_show_fixtures as fixtures
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    from ltcplay import clock as C
+
+    show_dir = fixtures.synthetic_show_dir()
+    # The Opener fixture is 2000 frames at 25ms: 50.0s exactly.
+    opener = "GPL 2026_Set 1_Opener.fseq"
+
+    def _write_show(folder, name="show.json"):
+        doc = {"fps": 25, "show_dir": show_dir,
+              "cues": [{"tc": "01:00:00:00", "fseq": opener}],
+              "clock": {"source": "artnet_master",
+                       "artnet": {"nodes": {"test": "127.0.0.1"}},
+                       "zones": {"show": 1, "intermission": 2,
+                                "forward": ["show"]}}}
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def _write_rule(folder, show_len_s):
+        path = os.path.join(folder, SV.RULE_FILE)
+        SV.save_rule(path, {
+            "timezone": "America/Denver",
+            "season": {"first_date": "2026-11-14",
+                      "last_date": "2027-01-02"},
+            "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+            "exceptions": {}, "show_len_s": show_len_s, "guard_s": 5,
+            "late_grace_s": 0})
+        return path
+
+    # Direct unit check of the derivation helper first.
+    work0 = tempfile.mkdtemp()
+    show_path0 = _write_show(work0)
+    found = C.derive_show_length_in_folder(work0)
+    check(found is not None and found[0] == show_path0
+          and abs(found[1] - 50.0) < 1e-6,
+          f"the folder's own show file must derive to the Opener fixture's "
+          f"real 50.0s: {found}")
+
+    # A configured show_len_s SHORTER than the media: refuse to serve at
+    # all, naming both numbers, before anything is bound.
+    work1 = tempfile.mkdtemp()
+    _write_show(work1)
+    spath1 = _write_rule(work1, 40)
+    try:
+        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        check(False, "40s configured against 50s of media must refuse to "
+                     "serve, not silently start")
+    except ValueError as e:
+        msg = str(e)
+        check("40" in msg and "50" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "scheduler show_len_s refusal")
+
+    # A configured show_len_s at least as long as the media: fine.
+    work2 = tempfile.mkdtemp()
+    _write_show(work2)
+    spath2 = _write_rule(work2, 60)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    try:
+        check(httpd2.schedule is not None and httpd2.schedule.rule is not
+              None, "a long-enough show_len_s must serve normally")
+    finally:
+        httpd2.schedule.stop()
+        httpd2.server_close()
+
+    # No show media in the folder at all: the check is skipped, whatever
+    # show_len_s says (the GPL path's own shape: a schedule with no show
+    # file to check against must behave exactly as it always has).
+    work3 = tempfile.mkdtemp()
+    spath3 = _write_rule(work3, 1)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    try:
+        check(httpd3.schedule is not None,
+              "no show media in the folder must not block serving")
+    finally:
+        httpd3.schedule.stop()
+        httpd3.server_close()
+
+    # No schedule configured at all: the GPL path, entirely unchanged.
+    work4 = tempfile.mkdtemp()
+    _write_show(work4)
+    httpd4 = web_mod.serve(work4, port=_free_port())
+    try:
+        check(httpd4.schedule is None,
+              "with no --schedule, this check never runs at all")
+    finally:
+        httpd4.server_close()
     print("  ok")
 
 
@@ -15938,6 +16044,7 @@ if __name__ == "__main__":
     test_artnet_timecode_never_drifts_from_its_clock()
     test_timecode_zones_for_fallback_3()
     test_clock_show_length_follows_the_music()
+    test_scheduler_show_len_s_checked_against_the_show_media()
     test_clock_settings_fail_loudly()
     test_the_gpl_path_never_loads_the_clock()
     test_a_master_clock_runs_the_show()

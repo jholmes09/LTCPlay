@@ -1340,3 +1340,59 @@ def _show_length(timeline, hour):
             f"free run would never stop. Set 'clock.zones.show_len_s', or "
             f"put the show at {hour:02d}:00:00:00.")
     return end - start
+
+
+def derive_show_length_in_folder(folder, sd=None):
+    """(path, length_s) for the first show file in `folder` (sorted by
+    name) that names a clock block and has a cue in its own show hour, or
+    None if nothing in the folder can say what the show's own length is:
+    no show file, no clock block, or no cue in the show hour.
+
+    Used at startup, before anything is served, to cross-check the
+    SCHEDULER's own show_len_s against the show's own media the same way
+    `build` already checks `clock.zones.show_len_s` (Jeff, 2026-09-26:
+    show length follows the music, wherever the code has access to it).
+    See web.serve(), the only place that has both the schedule rules and a
+    show folder at once; schedule.py stays pure and never reads a file of
+    its own, and this function does not touch it or schedule_service.py.
+
+    A plain Timeline.load() is not enough: a cue's own end_seconds needs
+    its duration, which only a real open reads off the FSEQ header, the
+    same as clock.build() itself is only ever called from inside one (see
+    session.py). So each candidate is opened the same way the page's own
+    Check button does (Session, no_output, no_log): safe to call for every
+    file in the folder, and it never touches real audio or network output.
+
+    Never raises: a file that is not JSON, is not a show, has no clock
+    block, will not open (a missing FSEQ, a bad setting) or cannot derive
+    a length is silently skipped, exactly like a folder with no show media
+    in it at all."""
+    import glob
+    import json as _json
+    import os as _os
+    from .session import Session
+    for path in sorted(glob.glob(_os.path.join(folder, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = _json.load(fh)
+        except (OSError, ValueError):
+            continue
+        # A cheap pre-filter before the expensive part (opening every FSEQ
+        # a candidate names): only a real show names cues, and only one
+        # with a clock block is a candidate for this check at all.
+        if not (isinstance(doc, dict) and isinstance(doc.get("cues"), list)
+                and "clock" in doc):
+            continue
+        try:
+            s = Session(path, no_output=True, no_log=True, sd=sd)
+            s.open()
+        except Exception:
+            continue
+        if s.tl is None or s.tl.clock is None:
+            continue
+        try:
+            length_s = _show_length(s.tl, s.tl.clock.zones.show)
+        except ClockConfigError:
+            continue
+        return path, length_s
+    return None
