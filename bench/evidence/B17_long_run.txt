@@ -1,0 +1,49 @@
+# B17 BEYOND demo long run, 2026-09-26 11:55-13:47, main fa5274a
+== BEYOND preview per show
+show 1 11:55:25-12:02:49: preview 5979 samples, beams in 40%, first beams 0.26 s after start, last 203.2 s | after the show: 0 of 737 lit | on/off pattern matches show 1 in 100% of samples
+show 2 12:15:25-12:22:49: preview 5992 samples, beams in 40%, first beams 0.28 s after start, last 203.2 s | after the show: 0 of 762 lit | on/off pattern matches show 1 in 93% of samples
+show 3 12:35:25-12:42:49: preview 5997 samples, beams in 40%, first beams 0.29 s after start, last 203.2 s | after the show: 0 of 762 lit | on/off pattern matches show 1 in 92% of samples
+show 4 12:55:25-13:02:49: preview 5924 samples, beams in 40%, first beams 0.23 s after start, last 203.2 s | after the show: 0 of 741 lit | on/off pattern matches show 1 in 92% of samples
+show 5 13:15:25-13:22:49: preview 5986 samples, beams in 40%, first beams 0.32 s after start, last 203.2 s | after the show: 0 of 765 lit | on/off pattern matches show 1 in 91% of samples
+show 6 13:35:25-13:42:49: preview 6031 samples, beams in 40%, first beams 0.28 s after start, last 203.3 s | after the show: 0 of 757 lit | on/off pattern matches show 1 in 92% of samples
+
+== analyze_soak.py soak4
+shows completed: 6
+show 1 11:55:25-12:02:49 444.52 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26668 pkts, first 10 ms after start, gaps>100ms 0 (max 32 ms), gaps>3s 0, silent last 0.07 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.002 / MadMapper 59.989 (-13 ms)
+    220s: ltcplay 00:03:40:00 / elapsed 220.002 / MadMapper 219.990 (-12 ms)
+    440s: ltcplay 00:07:20:00 / elapsed 440.003 / MadMapper 439.996 (-7 ms)
+show 2 12:15:25-12:22:49 444.52 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26660 pkts, first 21 ms after start, gaps>100ms 0 (max 63 ms), gaps>3s 0, silent last 0.07 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.003 / MadMapper 59.976 (-27 ms)
+    220s: ltcplay 00:03:39:29 / elapsed 220.001 / MadMapper 219.989 (-12 ms)
+    440s: ltcplay 00:07:20:00 / elapsed 440.003 / MadMapper 439.983 (-20 ms)
+show 3 12:35:25-12:42:49 444.52 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26662 pkts, first 11 ms after start, gaps>100ms 0 (max 83 ms), gaps>3s 0, silent last 0.09 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.004 / MadMapper 60.005 (+1 ms)
+    220s: ltcplay 00:03:40:00 / elapsed 220.004 / MadMapper 219.999 (-5 ms)
+    440s: ltcplay 00:07:20:00 / elapsed 440.004 / MadMapper 440.003 (-1 ms)
+show 4 12:55:25-13:02:49 444.52 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26661 pkts, first 20 ms after start, gaps>100ms 0 (max 84 ms), gaps>3s 0, silent last 0.07 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.004 / MadMapper 59.981 (-23 ms)
+    220s: ltcplay 00:03:40:00 / elapsed 220.005 / MadMapper 219.986 (-19 ms)
+    440s: ltcplay 00:07:19:29 / elapsed 440.001 / MadMapper 439.979 (-22 ms)
+show 5 13:15:25-13:22:49 444.51 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26661 pkts, first 21 ms after start, gaps>100ms 1 (max 103 ms), gaps>3s 0, silent last 0.06 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.005 / MadMapper 59.990 (-15 ms)
+    220s: ltcplay 00:03:40:00 / elapsed 220.004 / MadMapper 219.970 (-34 ms)
+    440s: ltcplay 00:07:20:00 / elapsed 440.001 / MadMapper 439.984 (-17 ms)
+show 6 13:35:25-13:42:49 444.51 s | tc skipped 0 | ltcplay 22.0 MB | heartbeat 26653 pkts, first 22 ms after start, gaps>100ms 1 (max 104 ms), gaps>3s 0, silent last 0.19 s
+    60s: ltcplay 00:01:00:00 / elapsed 60.005 / MadMapper 59.984 (-21 ms)
+    220s: ltcplay 00:03:39:29 / elapsed 220.000 / MadMapper 219.985 (-15 ms)
+    440s: ltcplay 00:07:19:29 / elapsed 440.000 / MadMapper 439.976 (-24 ms)
+heartbeat packets during intermissions (expected 0): 5
+pixels: 2670 busy seconds, median 40.0 fps, skipped 13, longest gap 58.3 ms, incomplete 0
+  hourly 11:55:08 MadMapper 2320 MB, BEYOND 1468 MB, ltcplay 0 MB, new problem events 0
+  hourly 12:05:09 MadMapper 2305 MB, BEYOND 1305 MB, ltcplay 21 MB, new problem events 0
+  hourly 12:15:09 MadMapper 2304 MB, BEYOND 1298 MB, ltcplay 21 MB, new problem events 0
+  hourly 12:25:09 MadMapper 2305 MB, BEYOND 1314 MB, ltcplay 21 MB, new problem events 0
+  hourly 12:35:09 MadMapper 2305 MB, BEYOND 1308 MB, ltcplay 21 MB, new problem events 0
+  hourly 12:45:09 MadMapper 2306 MB, BEYOND 1309 MB, ltcplay 21 MB, new problem events 0
+  hourly 12:55:09 MadMapper 2306 MB, BEYOND 1309 MB, ltcplay 21 MB, new problem events 0
+  hourly 13:05:10 MadMapper 2307 MB, BEYOND 1316 MB, ltcplay 21 MB, new problem events 0
+  hourly 13:15:10 MadMapper 2307 MB, BEYOND 1309 MB, ltcplay 21 MB, new problem events 0
+  hourly 13:25:10 MadMapper 2308 MB, BEYOND 1317 MB, ltcplay 21 MB, new problem events 0
+  hourly 13:35:10 MadMapper 2307 MB, BEYOND 1309 MB, ltcplay 21 MB, new problem events 0
+  hourly 13:45:10 MadMapper 2316 MB, BEYOND 1309 MB, ltcplay 0 MB, new problem events 0

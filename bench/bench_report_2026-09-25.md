@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B16 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B17 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -25,6 +25,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B14 MadMapper and BEYOND link modules (PR #17, 4d91045) | PASSED, 4 notes | Banks, fades, blank and unblank all work as in B2, B4 and B8; BlackOut and MasterPause refused, nothing sent; watchdog alarms 3.0 s after a freeze and recovers within 10 ms; Hold order silent and dark. Notes: one false drift line per recovery; MadMapper sits 2 frames further behind after a Resume; stop does not rewind a non-chasing bank; BEYOND's own audio reaches the show output |
 | B15 MadMapper offset over 10 Holds in one show | No ratchet, no recovery | -10 ms before any Hold; -42 after Hold 1, -57 after Hold 2, then creeping back about 2 ms per Hold to -43 over the last 60 s; flat within seconds of each resume; worst -64 ms, inside the 100 ms allowance; every freeze lands exactly on the held frame |
 | B16 Timecode by broadcast (Jeff's yes) | FAILED for MadMapper / PASSED for BEYOND | Broadcast to 192.168.7.255 and 255.255.255.255 reached BEYOND (listening on 0.0.0.0) but not MadMapper (listening on 192.168.4.42 and 127.0.0.1 only); the show must send to each program's own address |
+| B17 BEYOND long run on the demo | PASSED for the 2 h the demo allows | 6 shows: BEYOND followed each identically (beams 0.23 to 0.32 s after start, dark after each show), memory flat at 1.3 GB, no effect on ltcplay (0 frames skipped) or MadMapper (1 to 34 ms). The demo shows its 1 h limit box but keeps running, then crashes at exactly 2 h (3 times now) |
 
 ## B0 The machine
 
@@ -511,8 +512,31 @@ Who held UDP 6454 during the test: MadMapper on **192.168.4.42** and **127.0.0.1
 - **The Wi-Fi broadcasts left the Pico.** 192.168.7.255 and 255.255.255.255 were sent on Jeff's first-hand yes, as 15 s of test timecode each, onto the Pico's Wi-Fi network, before his condition (relayed by the main session) arrived: broadcast on the Wi-Fi only if nothing else on that network follows Art-Net timecode. I did not check the rest of that network first. The loopback test (127.255.255.255) meets that condition and gives the same answer.
 - **For the show:** send timecode to each program's own address (MadMapper's interface address, BEYOND's address), never broadcast. Broadcast would also reach anything else on the network that follows Art-Net timecode.
 
+
+## B17 BEYOND long run on the demo (the most one launch allows)
+
+**Verdict: PASSED for the two hours the demo allows. BEYOND followed all 6 shows identically, with steady memory and no effect on ltcplay, MadMapper or the pixels. The demo itself stops working at exactly 2 hours, repeatably.** Jeff, 2026-09-26: the licence arrives only on site, so the long run can only be done on the demo. Run from 11:55 to 13:47. The layout was the same as B9:
+- ltcplay main `fa5274a` via `drive_soak.py`: 6 shows of 7:24 every 20 minutes, Art-Net timecode to MadMapper at 192.168.4.42 and BEYOND at 127.0.0.2, 26,256 pixels, intermission bank between shows.
+- **BEYOND Essentials Demo**, launched at 11:46:37 and set up per B14: timecode enabled for the show; its own Play, then TC-IN during timecode; DemoShow's audio track switched off.
+- BEYOND in front, with its laser preview measured about 12 times a second, a screenshot every 2 minutes (`soak4/shots`), and memory every 10 minutes.
+- Loopback plus the Pico's own address; Ethernet unplugged.
+
+| Show | ltcplay and MadMapper | BEYOND's laser preview |
+|---|---|---|
+| 1 to 6 | **0 timecode frames skipped** in every show; ltcplay 22.0 MB throughout; MadMapper **1 to 34 ms behind** (median 15 ms, 18 readings); heartbeat never silent over 104 ms; pixels 40 fps, 13 skipped in 2,670 busy seconds, longest gap 58 ms | **Beams from 0.23 to 0.32 s after each show started**, the same on/off pattern every show (**91 to 100% the same as show 1**), lit in 40% of each show (the demo's own show ends at 3:23), and **dark after every show** (0 lit samples in the minute after) |
+
+- **BEYOND's memory:** 1,298 to 1,317 MB from 12:05 to 13:35, **not growing**. (Last night's launch sat at about 600 MB: this launch has the demo's video track loaded.) MadMapper 2,304 to 2,308 MB. No new Windows problem events.
+- **The demo's limit, now seen three times:**
+  - **At 1 hour** (the box appeared between the 12:45:44 and 12:47:45 screenshots; launch plus 1 hour was 12:46:37), BEYOND shows **"Demo Time Limit Reached: The demo version of BEYOND has a time limit of 1 hour. Because this time limit has been reached, the demo version of BEYOND will now exit."** It does **not** exit. With the box left open, **BEYOND kept following shows 4, 5 and 6 exactly as before** (`B17_beyond_following_behind_limit_box.png`, 13:38 in show 6: beams in the preview, output on).
+  - **At 2 hours, it crashes:** 13:46:42, 2 hours and 5 seconds after launch. `EAccessViolation`, "Read of address 00000000000000C0". The code address was 000000000211643C this time, against 000000000273CA6A on 09-26 at 01:53 and 10:47. The screenshot at 13:46:07 shows the crash handler's "Please wait a moment" over the limit box (`B17_beyond_2h_crash.png`).
+  - After that it sits on "An error occurred in the application", still "Responding", following nothing (as in B9).
+- **So on the demo, 2 hours per launch is the ceiling, and it ends in a crash, not a clean exit.** A show night longer than 2 hours cannot be tested on the demo. That test waits for Andy's licence on site.
+- Cost of watching: this run's heartbeat gaps (up to 104 ms, against 75 ms in B9) came with BEYOND in front and a screen probe plus screenshots running. Nothing was dropped.
+
+Evidence: `B17_beyond_2h_crash.png`, `B17_beyond_following_behind_limit_box.png`, `B17_beyond_problem_report_head.txt` (machine and user names removed), `B17_long_run.txt` (per-show numbers).
+
 ## Not tested yet
 
-- **ASIO audio.** The Pico has no Focusrite ASIO driver: the Scarlett Solo runs on Windows' own USB audio driver. The ASIO drivers installed are all PreSonus and Behringer (AudioBox, Quantum, Studio, StudioLive, X-USB and others). The show's real interface (USB to the DSP) and its driver are needed for this test. I did not download or install a driver.
+- **ASIO audio.** The Pico has no Focusrite ASIO driver: the Scarlett Solo runs on Windows' own USB audio driver. The ASIO drivers installed are all PreSonus and Behringer (AudioBox, Quantum, Studio, StudioLive, X-USB and others). The show's real interface (USB to the DSP) and its driver are needed for this test: **on site** (Jeff, 2026-09-26). I did not download or install a driver.
 - **Rack network** (two Ethernet ports, real controllers): needs the rack.
-- **Licensed BEYOND, multi-hour** (B9): needs Andy's licence on this PC.
+- **Licensed BEYOND, longer than 2 hours** (B9, B17): the demo cannot go past 2 hours per launch; needs Andy's licence, on site.

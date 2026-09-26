@@ -1,0 +1,57 @@
+date/time          : 2026-09-26, 13:46:42, 436ms
+operating system   : Windows 11 x64 build 22631
+system language    : English
+system up time     : 18 hours 22 minutes
+program up time    : 2 hours
+processors         : 8x 12th Gen Intel(R) Core(TM) i3-1215U
+physical memory    : 6409/16150 MB (free/total)
+free disk space    : (C:) 793.11 GB
+display mode       : 1920x1080, 32 bit
+process id         : $cb8
+allocated memory   : 1.30 GB
+largest free block : 131021.80 GB
+executable         : BEYOND.exe
+exec. date/time    : 2024-03-14 22:16
+version            : 5.5.0.1919
+compiled with      : Delphi 10.3 Rio
+madExcept version  : 5.1.3
+BEYOND.exe.mad     : $001e0930, $115a586f, $8f2eb852
+callstack crc      : $e886eedc, $ad5ad3c8, $ad5ad3c8
+exception number   : 1
+exception class    : EAccessViolation
+exception message  : Access violation at address 000000000211643C in module 'BEYOND.exe'. Read of address 00000000000000C0.
+
+main thread ($3488):
+0211643c +05c BEYOND.exe   segment%1078 public%100528
+02116b2b +2cb BEYOND.exe   segment%1078 public%100530
+0057a8c8 +138 BEYOND.exe   segment%52   public%5870
+0089b35b +a2b BEYOND.exe   segment%115  public%20305
+00580913 +023 BEYOND.exe   segment%52   public%6086
+7ff85552 +086 user32.dll                CallWindowProcW
+0141bb8e +07e BEYOND.exe   segment%484  public%56448
+00580913 +023 BEYOND.exe   segment%52   public%6086
+7ff85552 +1fc user32.dll                DispatchMessageW
+7ff85558 +821 user32.dll                SoftModalMessageBox
+7ff85558 +193 user32.dll                MessageBoxTimeoutW
+7ff85558 +049 user32.dll                MessageBoxW
+02c1a5fb +44b BEYOND.exe   segment%1574 public%133961
+007da530 +020 BEYOND.exe   segment%107  public%17046
+007da358 +038 BEYOND.exe   segment%107  public%17041
+00580913 +023 BEYOND.exe   segment%52   public%6086
+7ff85552 +1fc user32.dll                DispatchMessageW
+0089c0de +12e BEYOND.exe   segment%115  public%20326
+0089c153 +013 BEYOND.exe   segment%115  public%20328
+0089c5a1 +0e1 BEYOND.exe   segment%115  public%20333
+7ff8558b +018 KERNEL32.DLL              BaseThreadInitThunk
+7ff85682 +022 ntdll.dll                 RtlUserThreadStart
+
+thread $36ac:
+7ff85553 +50 user32.dll    MsgWaitForMultipleObjects
+7ff8558b +18 KERNEL32.DLL  BaseThreadInitThunk
+7ff85682 +22 ntdll.dll     RtlUserThreadStart
+
+thread $11e4: <priority:-2>
+7ff853c1 +e2 KERNELBASE.dll             WaitForMultipleObjectsEx
+00655abf +7f BEYOND.exe     segment%62  public%10884
+01372dd8 +88 BEYOND.exe     segment%445 public%54065
+0050f0c4 +24 BEYOND.exe     segment%45  public%4601
