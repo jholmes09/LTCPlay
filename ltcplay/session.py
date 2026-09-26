@@ -793,6 +793,32 @@ class Session:
         if self.clock is not None:
             self.clock.halt()
 
+    def clock_pause(self):
+        """Freeze the show clock on its current frame.
+
+        Only when this machine is the clock, and only while a cue is
+        actually playing. The timecode keeps going out, still carrying the
+        frozen frame, so MadMapper and BEYOND hold instead of timing out;
+        the pixels hold too, because the chase engine reads a position that
+        stops changing as PARKED, not lost."""
+        if self.clock is None or not self.clock.master:
+            raise SessionError("This show follows incoming timecode, so "
+                               "this machine cannot pause the clock.")
+        try:
+            self.clock.pause()
+        except ValueError as e:
+            raise SessionError(str(e))
+
+    def clock_resume(self):
+        """Carry the show clock on from exactly the frame it was frozen at."""
+        if self.clock is None or not self.clock.master:
+            raise SessionError("This show follows incoming timecode, so "
+                               "this machine cannot resume the clock.")
+        try:
+            self.clock.resume()
+        except ValueError as e:
+            raise SessionError(str(e))
+
     def snapshot(self):
         """Everything a display needs, as plain data.
 

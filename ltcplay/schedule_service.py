@@ -414,6 +414,9 @@ class Service:
             if outermost:
                 pending, self._pending_hooks = self._pending_hooks, []
             self.lock.release()
+            # Reviewer note: each hook gets its own unpooled daemon thread,
+            # so a hook must never block -- nothing here caps how many run
+            # at once or reaps them when they finish.
             for hook in pending:
                 threading.Thread(target=self._run_hook, args=(hook,),
                                  daemon=True,

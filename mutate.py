@@ -1467,6 +1467,112 @@ MUTATIONS = [
   '            for hook in pending:\n'
   '                self._run_hook(hook)'),
 
+ # Hold / Resume, Fire & Ice handoff section 5. The clock half only:
+ # ArtNetMaster.pause()/resume() in clock.py, Session.clock_pause()/
+ # clock_resume() in session.py.
+ ("Session.clock_pause accepts a clock that only follows timecode",
+  'ltcplay/session.py',
+  '        if self.clock is None or not self.clock.master:\n'
+  '            raise SessionError("This show follows incoming timecode, so "\n'
+  '                               "this machine cannot pause the clock.")\n'
+  '        try:\n'
+  '            self.clock.pause()',
+  '        try:\n'
+  '            self.clock.pause()'),
+
+ ("Session.clock_resume accepts a clock that only follows timecode",
+  'ltcplay/session.py',
+  '        if self.clock is None or not self.clock.master:\n'
+  '            raise SessionError("This show follows incoming timecode, so "\n'
+  '                               "this machine cannot resume the clock.")\n'
+  '        try:\n'
+  '            self.clock.resume()',
+  '        try:\n'
+  '            self.clock.resume()'),
+
+ ("a refused Hold raises the clock's own exception, not a sentence",
+  'ltcplay/session.py',
+  '        try:\n'
+  '            self.clock.pause()\n'
+  '        except ValueError as e:\n'
+  '            raise SessionError(str(e))',
+  '        self.clock.pause()'),
+
+ ("a refused Resume raises the clock's own exception, not a sentence",
+  'ltcplay/session.py',
+  '        try:\n'
+  '            self.clock.resume()\n'
+  '        except ValueError as e:\n'
+  '            raise SessionError(str(e))',
+  '        self.clock.resume()'),
+
+ ("Hold pressed twice on a paused show is accepted", 'ltcplay/clock.py',
+  '            if self._paused:\n'
+  '                raise ClockConfigError("The clock is already paused.")',
+  '            if False:\n'
+  '                raise ClockConfigError("The clock is already paused.")'),
+
+ ("Resume is accepted on a clock that was never paused", 'ltcplay/clock.py',
+  '            if not self._paused:\n'
+  '                raise ClockConfigError("The clock is not paused, so there "\n'
+  '                                       "is nothing to resume.")',
+  '            if False:\n'
+  '                raise ClockConfigError("The clock is not paused, so there "\n'
+  '                                       "is nothing to resume.")'),
+
+ ("Hold always freezes on frame zero instead of where the show is",
+  'ltcplay/clock.py',
+  '            n = self._frame_n if self._frame_n is not None else 0',
+  '            n = 0'),
+
+ ("a paused clock stops sending instead of repeating the frozen frame",
+  'ltcplay/clock.py',
+  '        if self._paused:\n'
+  '            # Ignore the ticker\'s own frame count entirely',
+  '        if False:\n'
+  '            # Ignore the ticker\'s own frame count entirely'),
+
+ ("Resume repeats the frozen frame instead of stepping past it",
+  'ltcplay/clock.py',
+  '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
+  '            t0 = self._clock() - n_frozen / MASTER_FPS'),
+
+ # Adversarial review of PR #10 found both of these by construction, then
+ # reproduced them with a widened race window; test_pause_does_not_race_
+ # its_own_ticker and test_resume_does_not_race_its_own_ticker force a
+ # real tick into the exact same gap deterministically, and catch both.
+ ("resume() stops the ticker after clearing paused state again, not "
+  "before", 'ltcplay/clock.py',
+  '            self.ticker.stop()\n'
+  '            label = self._cue[2]\n'
+  '            n_frozen = self._frozen_n\n'
+  '            self._paused = False\n'
+  '            self._frozen = None\n'
+  '            self._frozen_pos = None\n'
+  '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
+  '            label = self._cue[2]\n'
+  '            n_frozen = self._frozen_n\n'
+  '            self._paused = False\n'
+  '            self._frozen = None\n'
+  '            self._frozen_pos = None\n'
+  '            self.ticker.stop()\n'
+  '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS'),
+
+ ("pause() sets the paused flag before the frozen frame again",
+  'ltcplay/clock.py',
+  '            self._frozen = (h, m, s, f)\n'
+  '            self._frozen_n = n\n'
+  '            self._frozen_pos = position_s + n / MASTER_FPS\n'
+  '            self.last_sent = (h, m, s, f)\n'
+  '            self._paused = True\n'
+  '            self._sync_point("pause")',
+  '            self._paused = True\n'
+  '            self._sync_point("pause")\n'
+  '            self._frozen = (h, m, s, f)\n'
+  '            self._frozen_n = n\n'
+  '            self._frozen_pos = position_s + n / MASTER_FPS\n'
+  '            self.last_sent = (h, m, s, f)'),
+
 ]
 
 
