@@ -1343,10 +1343,18 @@ def _show_length(timeline, hour):
 
 
 def derive_show_length_in_folder(folder, sd=None):
-    """(path, length_s) for the first show file in `folder` (sorted by
-    name) that names a clock block and has a cue in its own show hour, or
-    None if nothing in the folder can say what the show's own length is:
-    no show file, no clock block, or no cue in the show hour.
+    """(path, length_s, warning) about the show the folder's clock config
+    actually names:
+
+    - (path, length_s, None): exactly one show file in the folder names a
+      clock block with a derivable show length. Use it.
+    - (None, None, sentence): otherwise -- more than one candidate, with
+      no way to tell which one is the real one (refuse rather than guess
+      "the first *.json", review round 2, 2026-09-26), or none at all, or
+      one that named a clock block but would not open or would not
+      derive. `sentence` says which, and names every candidate file
+      involved, so the caller can warn instead of silently skipping the
+      check (review round 2: "never silently skip").
 
     Used at startup, before anything is served, to cross-check the
     SCHEDULER's own show_len_s against the show's own media the same way
@@ -1365,12 +1373,14 @@ def derive_show_length_in_folder(folder, sd=None):
 
     Never raises: a file that is not JSON, is not a show, has no clock
     block, will not open (a missing FSEQ, a bad setting) or cannot derive
-    a length is silently skipped, exactly like a folder with no show media
-    in it at all."""
+    a length is recorded as a problem, not thrown."""
     import glob
     import json as _json
     import os as _os
     from .session import Session
+    candidates = []       # [(path, length_s)]
+    problems = []          # [sentence], one per candidate that could not
+                           # be used
     for path in sorted(glob.glob(_os.path.join(folder, "*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -1383,16 +1393,36 @@ def derive_show_length_in_folder(folder, sd=None):
         if not (isinstance(doc, dict) and isinstance(doc.get("cues"), list)
                 and "clock" in doc):
             continue
+        name = _os.path.basename(path)
         try:
             s = Session(path, no_output=True, no_log=True, sd=sd)
             s.open()
-        except Exception:
+        except Exception as e:
+            problems.append(f"{name} could not be opened: {_clean_e(e)}")
             continue
         if s.tl is None or s.tl.clock is None:
             continue
         try:
             length_s = _show_length(s.tl, s.tl.clock.zones.show)
-        except ClockConfigError:
+        except ClockConfigError as e:
+            problems.append(f"{name}'s show length could not be read: "
+                            f"{_clean_e(e)}")
             continue
-        return path, length_s
-    return None
+        candidates.append((path, length_s))
+    if len(candidates) == 1:
+        return candidates[0][0], candidates[0][1], None
+    if len(candidates) > 1:
+        names = ", ".join(_os.path.basename(p) for p, _ in candidates)
+        return None, None, (
+            f"more than one show file in the folder names a clock block "
+            f"({names}), so it is not clear which one to check the "
+            f"schedule's show_len_s against")
+    if problems:
+        return None, None, "; ".join(problems)
+    return None, None, ("no show file in the folder names a clock block, "
+                        "so the schedule's show_len_s could not be checked "
+                        "against the show's own media")
+
+
+def _clean_e(e):
+    return str(e).replace("—", "-").replace("–", "-")

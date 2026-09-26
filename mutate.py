@@ -1761,6 +1761,16 @@ MUTATIONS = [
   "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
   "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
   "                f\"is delayed and waits for Start now.\")"),
+
+ ("more than one candidate show file is not treated as ambiguous",
+  "ltcplay/clock.py",
+  "    if len(candidates) > 1:",
+  "    if False:"),
+
+ ("a folder with no derivable show length never warns, it silently skips",
+  "ltcplay/web.py",
+  "            elif warning:",
+  "            elif False:"),
 ]
 
 

@@ -808,12 +808,17 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
 
     This is also the only place that knows both the schedule rules and the
     show's own media (Jeff, 2026-09-26: show length follows the music,
-    everywhere the code has access to it): if a schedule is configured and
-    `folder` has a show file naming a clock block with a derivable show
-    length, the schedule's own show_len_s is cross-checked against it
-    before anything is served, and refused, naming both numbers, if it is
-    shorter. schedule.py stays pure and schedule_service.py is not touched
-    for this: see clock.derive_show_length_in_folder."""
+    everywhere the code has access to it): if a schedule is configured
+    and exactly one show file in `folder` names a clock block with a
+    derivable show length, the schedule's own show_len_s is cross-checked
+    against it before anything is served, and refused, naming both
+    numbers, if it is shorter. More than one candidate, with no way to
+    tell which one is the real one, refuses too, naming them, rather than
+    guessing the first one alphabetically (review round 2, 2026-09-26).
+    The check is never silently skipped: unable to identify or derive a
+    show length is printed and journalled as a warning, not passed over
+    in silence. schedule.py stays pure and schedule_service.py is not
+    touched for this: see clock.derive_show_length_in_folder."""
     control = Control(folder, defaults=defaults, sd=sd)
     httpd_schedule = None
     if schedule is not None:
@@ -822,9 +827,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             schedule = schedule_service.Service(schedule)
         if schedule.rule is not None:
             from . import clock as clock_mod
-            found = clock_mod.derive_show_length_in_folder(folder)
-            if found is not None:
-                show_path, derived = found
+            show_path, derived, warning = \
+                clock_mod.derive_show_length_in_folder(folder)
+            if show_path is not None:
                 configured = schedule.rule.show_len_s
                 if configured < derived:
                     raise ValueError(
@@ -834,6 +839,18 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                         f"{derived:g} s. Set show_len_s in the schedule to "
                         f"at least {derived:g}, or leave the show's media "
                         f"alone to run its own length, before serving.")
+            elif warning:
+                # Never silently skip the check (review round 2,
+                # 2026-09-26): a schedule that could not be checked
+                # against the show's media is not the same as one that
+                # was checked and found fine, and the operator has to be
+                # told which.
+                msg = (f"The schedule's show_len_s could not be checked "
+                      f"against the show's own media: {warning}.")
+                print(msg)
+                schedule._journal_line("system", msg,
+                                       action="show length check",
+                                       outcome="warning")
         httpd_schedule = schedule
     on_network = bind not in LOOPBACK
     if on_network and token is None:

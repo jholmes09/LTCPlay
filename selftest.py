@@ -13686,11 +13686,11 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     # Direct unit check of the derivation helper first.
     work0 = tempfile.mkdtemp()
     show_path0 = _write_show(work0)
-    found = C.derive_show_length_in_folder(work0)
-    check(found is not None and found[0] == show_path0
-          and abs(found[1] - 50.0) < 1e-6,
+    found_path, found_len, found_warn = C.derive_show_length_in_folder(work0)
+    check(found_path == show_path0 and abs(found_len - 50.0) < 1e-6
+          and found_warn is None,
           f"the folder's own show file must derive to the Opener fixture's "
-          f"real 50.0s: {found}")
+          f"real 50.0s: {(found_path, found_len, found_warn)}")
 
     # A configured show_len_s SHORTER than the media: refuse to serve at
     # all, naming both numbers, before anything is bound.
@@ -13720,18 +13720,51 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
         httpd2.schedule.stop()
         httpd2.server_close()
 
-    # No show media in the folder at all: the check is skipped, whatever
-    # show_len_s says (the GPL path's own shape: a schedule with no show
-    # file to check against must behave exactly as it always has).
+    # No show media in the folder at all: never silently skipped (review
+    # round 2, 2026-09-26) -- it must still serve (a schedule with no show
+    # file to check against cannot be blocked by this), but it must WARN,
+    # in the journal, saying the check could not be done and why.
     work3 = tempfile.mkdtemp()
     spath3 = _write_rule(work3, 1)
     httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
     try:
         check(httpd3.schedule is not None,
               "no show media in the folder must not block serving")
+        check(any(row["outcome"] == "warning"
+                 and "could not be checked" in row["text"]
+                 for row in httpd3.schedule.journal),
+              f"no show media must still warn, not silently skip: "
+              f"{list(httpd3.schedule.journal)}")
     finally:
         httpd3.schedule.stop()
         httpd3.server_close()
+
+    # More than one candidate show file: refuse to GUESS which one is the
+    # real one (review round 2, 2026-09-26) -- still serves (this is a
+    # warning, not a hard refusal: only a KNOWN-shorter length refuses to
+    # serve), but names both files in the warning.
+    work5 = tempfile.mkdtemp()
+    _write_show(work5, "show_a.json")
+    _write_show(work5, "show_b.json")
+    spath5 = _write_rule(work5, 1)
+    p5, l5, w5 = C.derive_show_length_in_folder(work5)
+    check(p5 is None and l5 is None and w5 is not None
+          and "show_a.json" in w5 and "show_b.json" in w5,
+          f"two candidates must refuse to pick one, naming both: "
+          f"{(p5, l5, w5)}")
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    try:
+        check(httpd5.schedule is not None,
+              "an ambiguous folder must still serve (this warns, it does "
+              "not refuse to start)")
+        check(any(row["outcome"] == "warning" and "show_a.json" in row["text"]
+                 and "show_b.json" in row["text"]
+                 for row in httpd5.schedule.journal),
+              f"the ambiguity warning must name both files, in the "
+              f"journal: {list(httpd5.schedule.journal)}")
+    finally:
+        httpd5.schedule.stop()
+        httpd5.server_close()
 
     # No schedule configured at all: the GPL path, entirely unchanged.
     work4 = tempfile.mkdtemp()
