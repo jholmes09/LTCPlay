@@ -22,6 +22,7 @@ import socket
 import struct
 import threading
 import time as _time
+import traceback
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -598,20 +599,17 @@ class Service:
                                  "summary to write. " + self.error)
             return self._write_summary("written on request")
 
-    def _look_back(self, d):
-        """Once per run: a night that ended without its summary (the
-        program was not running when it closed, or the power went) gets
-        one from its own journal, so the morning read is always there."""
-        if self._looked_back:
-            return
-        self._looked_back = True
+    def _look_back(self, d, state):
+        """Once per run (housekeeping decides when): a night that ended
+        without its summary (the program was not running when it closed,
+        or the power went) gets one from its own journal, so the morning
+        read is always there."""
         prev = d - timedelta(days=1)
         folder = self.logbook.folder
         if os.path.exists(os.path.join(folder, journal.machine_name(prev))) \
                 and not os.path.exists(
                     os.path.join(folder, journal.summary_name(prev))):
-            self._log(self.logbook.write_summary, prev,
-                      state=self._state_name(),
+            self._log(self.logbook.write_summary, prev, state=state,
                       closed_by="written the next day from the journal, "
                                 "because the night never closed while "
                                 "ltcplay was running")
@@ -779,9 +777,12 @@ class Service:
         """Pruning and a missing summary, outside the scheduler's lock, and
         on a thread of their own when running for real, so reading and
         deleting files never holds up a tick."""
-        if not self._housekeeping_due():
-            return
-        self._hk_busy = True
+        with self.lock:
+            # Tested and set together: the tick and the clock check both
+            # come here, and only one of them may start the housekeeping.
+            if not self._housekeeping_due():
+                return
+            self._hk_busy = True
         if self.logbook.threaded():
             threading.Thread(target=self._housekeeping, daemon=True,
                              name="ltcplay-housekeeping").start()
@@ -791,14 +792,20 @@ class Service:
     def _housekeeping(self):
         try:
             with self.lock:
+                # Decided and recorded under the lock, so no second caller
+                # can decide the same work before this one has done it.
                 m = self.machine
                 if m is None:
                     return
                 d, state = m.date, m.state
+                look = not self._looked_back
+                self._looked_back = True
                 prune = self._pruned_for != d and self._prune_allowed()
-            self._look_back(d)
+                if prune:
+                    self._pruned_for = d
+            if look:
+                self._look_back(d, state)
             if prune:
-                self._pruned_for = d
                 self._log(self.logbook.prune, d, state=state)
         finally:
             self._hk_busy = False
@@ -844,58 +851,98 @@ class Service:
                     f"machine's clock, unchecked.", action="clock check",
                     outcome="failed", fault=True)
 
-    # A tick that keeps failing the same way is written once, then once a
-    # minute with its count, not four times a second.
+    # A tick that keeps failing is written once per kind of failure, then
+    # the repeats are counted and written at most once a minute, never two
+    # such lines closer than FAULT_GAP_S. A failure of a kind not seen in
+    # this run of failures is always written at once. The kind is the
+    # exception's type and where it was raised, not its message, so a
+    # message that carries a number, or two failures taking turns, cannot
+    # defeat the count.
     FAULT_REPEAT_S = 60
+    FAULT_GAP_S = 10
+    FAULT_KINDS_MAX = 20
+
+    @staticmethod
+    def _fault_key(e):
+        tb = traceback.extract_tb(e.__traceback__)
+        where = (f"{os.path.basename(tb[-1].filename)} line {tb[-1].lineno}"
+                 if tb else "an unknown place")
+        return f"{type(e).__name__} at {where}"
 
     def _safe_tick(self):
         try:
             self.tick()
         except Exception as e:                     # never kill the ticker
-            self._tick_failed(f"{type(e).__name__}: {e}")
+            self._tick_failed(self._fault_key(e), f"{type(e).__name__}: {e}")
         else:
             if self._tick_fault is not None:
                 with self.lock:
                     tf, self._tick_fault = self._tick_fault, None
                     self._journal_repeats(tf)
                     self._journal_line(
-                        "system", f"The scheduler's problem ({tf['key']}) "
-                        f"has stopped; ticks are working again.",
-                        action="tick", outcome="recovered")
+                        "system", f"The scheduler's problem "
+                        f"({', '.join(tf['kinds'])}) has stopped; ticks are "
+                        f"working again.", action="tick", outcome="recovered")
 
-    def _tick_failed(self, key):
+    def _tick_failed(self, key, text):
         with self.lock:
             now = self.clock()
             tf = self._tick_fault
-            if tf is not None and tf["key"] == key:
-                tf["count"] += 1
-                if (now - tf["at"]).total_seconds() >= self.FAULT_REPEAT_S:
-                    self._journal_repeats(tf)
-                    tf["at"], tf["count"] = now, 0
+            if tf is None:
+                tf = self._tick_fault = {"kinds": {}, "since": now,
+                                         "last_line": None}
+            kinds = tf["kinds"]
+            if key not in kinds and len(kinds) < self.FAULT_KINDS_MAX:
+                kinds[key] = 0
+                tf["last_line"] = now
+                self._journal_line(
+                    "system", f"The scheduler hit a problem and carried on "
+                    f"({text}, {key}). It tries again on the next tick, a "
+                    f"quarter of a second later.", action="tick",
+                    outcome="failed", fault=True, fault_key=key)
                 return
-            if tf is not None:
-                self._journal_repeats(tf)
-            self._tick_fault = {"key": key, "at": now, "count": 0}
-            self._journal_line(
-                "system", f"The scheduler hit a problem and carried on "
-                f"({key}). It tries again on the next tick, a quarter of a "
-                f"second later.", action="tick", outcome="failed",
-                fault=True)
+            kinds[key] = kinds.get(key, 0) + 1
+            quiet = tf["last_line"] is None or \
+                (now - tf["last_line"]).total_seconds() >= self.FAULT_GAP_S
+            if quiet and (now - tf["since"]).total_seconds() >= \
+                    self.FAULT_REPEAT_S:
+                self._journal_repeats(tf, now)
 
-    def _journal_repeats(self, tf):
-        if tf and tf["count"]:
-            self._journal_line(
-                "system", f"The same scheduler problem happened "
-                f"{tf['count']} more time(s) since "
-                f"{self.logbook.local(tf['at']):%H:%M:%S} ({tf['key']}). It "
-                f"is tried again every tick.", action="tick",
-                outcome="failed again", fault=True,
-                repeats=tf["count"])
+    def _journal_repeats(self, tf, now=None):
+        counted = {k: n for k, n in tf["kinds"].items() if n}
+        if not counted:
+            return
+        since = f"{self.logbook.local(tf['since']):%H:%M:%S}"
+        if len(counted) == 1:
+            (k, n), = counted.items()
+            text = (f"The same scheduler problem happened {n} more time(s) "
+                    f"since {since} ({k}). It is tried again every tick.")
+        else:
+            parts = "; ".join(f"{k}, {n} time(s)" for k, n in counted.items())
+            k = "tick problems: " + ", ".join(sorted(counted))
+            text = (f"The scheduler's problems happened again since {since}: "
+                    f"{parts}. They are tried again every tick.")
+        self._journal_line("system", text, action="tick",
+                           outcome="failed again", fault=True,
+                           repeats=sum(counted.values()), fault_key=k)
+        for key in tf["kinds"]:
+            tf["kinds"][key] = 0
+        now = now or self.clock()
+        tf["since"] = tf["last_line"] = now
 
     def _run(self):
         while not self._stop.is_set():
             self._safe_tick()
             self._stop.wait(self.TICK_S)
+
+    def halt(self):
+        """Stop ticking at once, so nothing new can start: the first thing
+        on the way out, before the rig is stopped. The slow part, closing
+        the journal, is stop()'s."""
+        self._stop.set()
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=0.2)
 
     def stop(self):
         """Stop ticking and close the journal. Returns within a couple of
@@ -905,6 +952,9 @@ class Service:
         for t in (self._thread, self._sample_thread):
             if t is not None:
                 t.join(timeout=1)
+        # From here no line is written in this thread's time; close()
+        # writes what is left within its own time limit.
+        self.logbook.begin_close()
         if self.lock.acquire(timeout=1):
             try:
                 self._log(self.logbook.stopping, state=self._state_name(),

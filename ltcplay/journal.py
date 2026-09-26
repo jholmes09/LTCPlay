@@ -634,8 +634,15 @@ class Logbook:
     def _kick(self):
         if self._writer is not None:
             self._wake.set()
-        else:
+        elif not self._closing:
             self.drain()
+        # Closing: the line waits for close()'s last, time-limited drain.
+
+    def begin_close(self):
+        """From here nothing is written in the caller's own time: lines
+        wait for close(), which writes them within its time limit or not
+        at all."""
+        self._closing = True
 
     # -- the writer -------------------------------------------------------
     def start_writer(self):
@@ -656,8 +663,10 @@ class Logbook:
             self._wake.clear()
             try:
                 self.drain()
-            except Exception:        # drain says its own problems; belt
-                pass                 # and braces for the thread's sake
+            except Exception as e:
+                # drain() never raises; if it ever does, the logging stops
+                # out loud rather than the thread going quiet.
+                self._stop(self.clock(), self._why(e))
 
     def close(self, wait_s=0.5):
         """Stop the writer and write what is left, if the disk will take it
@@ -674,7 +683,20 @@ class Logbook:
             if t.is_alive():
                 return False
         self._writer = None
-        return self.drain(force=True, timeout=wait_s)
+        # The last drain runs on a thread of its own and is waited for only
+        # so long: the time limit on the lock does not cover a write, or a
+        # free space check, that the disk never answers.
+        box = {}
+        done = threading.Event()
+
+        def last():
+            box["ok"] = self.drain(force=True, timeout=wait_s)
+            done.set()
+
+        threading.Thread(target=last, daemon=True,
+                         name="ltcplay-journal-close").start()
+        done.wait(wait_s * 2)
+        return box.get("ok", False)
 
     def pending(self):
         with self._lock:
@@ -689,6 +711,10 @@ class Logbook:
             return False
         try:
             return self._drain(force)
+        except Exception as e:
+            # Nothing that goes wrong while writing is ever silent.
+            self._stop(self.clock(), self._why(e))
+            return False
         finally:
             self._io.release()
 
@@ -706,13 +732,10 @@ class Logbook:
                 batch = list(self._pending)
             if not batch:
                 return True
-            try:
-                self._write(batch)
-            except Exception as e:
-                # ANY failure stops the logging out loud, with a flag
-                # and a sentence, never silently.
-                self._stop(now, self._why(e))
-                return False
+            # A failure here, disk error or anything else, is caught one
+            # level up in drain(): the logging stops with a flag and a
+            # sentence, never silently.
+            self._write(batch)
             done = {id(e) for e in batch}
             with self._lock:
                 while self._pending and id(self._pending[0]) in done:
@@ -1379,13 +1402,18 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
                  for r in drops)
     fault_rows, seen = [], {}
     for r in faults:
-        key = r.get("text")
+        # A fault that says it stands for several (a tick failing again and
+        # again) is grouped by its own key and counted by its repeats.
+        d = r.get("data") or {}
+        key = d.get("fault_key") or r.get("text")
+        n = int(d.get("repeats") or 1)
         if key in seen:
-            seen[key][1] += 1
+            seen[key][1] += n
             seen[key][2] = r.get("at")
         else:
-            seen[key] = [r, 1, r.get("at")]
+            seen[key] = [r, n, r.get("at")]
             fault_rows.append(key)
+    fault_total = sum(v[1] for v in seen.values())
     fault_rows = [seen[k][0]["line"]
                   + (f" (and {seen[k][1] - 1} more time(s), the last at "
                      f"{_hms(seen[k][2])})" if seen[k][1] > 1 else "")
@@ -1443,9 +1471,9 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
             + (" (" + ", ".join(_hms(r['at']) for r in restarts[:5]) + ")"
                if restarts else "") + ".",
             f"- Operator actions: {len(ops)}. Announcements: {len(anns)}. "
-            f"Faults: {len(faults)}"
+            f"Faults: {fault_total}"
             + (f" ({len(fault_rows)} different)"
-               if len(fault_rows) != len(faults) else "") + ".",
+               if len(fault_rows) != fault_total else "") + ".",
             f"- Timecode dropouts: {len(drops)}"
             + (f", {drop_s:.1f} s in total" if drops else "") + ".",
             f"- Flame mismatches: {flame_line}",

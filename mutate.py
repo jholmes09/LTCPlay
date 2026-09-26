@@ -1406,10 +1406,6 @@ MUTATIONS = [
   '    SAMPLE_S = 1.0 / journal.RING_HZ',
   '    SAMPLE_S = 1.0'),
 
- ("a write failure is not caught by the journal", "ltcplay/journal.py",
-  '            except Exception as e:\n                # ANY failure stops',
-  '            except KeyError as e:\n                # ANY failure stops'),
-
  ("the service lets a journal failure into the scheduler",
   "ltcplay/schedule_service.py",
   '        try:\n            return fn(*args, **kw)\n        except Exception as e:',
@@ -1495,8 +1491,8 @@ MUTATIONS = [
   '        for le in out.log:\n            self.journal.append(le.to_dict())'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
-  '            if prune:\n                self._pruned_for = d',
-  '            if False:\n                self._pruned_for = d'),
+  '            if prune:\n                self._log(self.logbook.prune, d, state=state)',
+  '            if False:\n                self._log(self.logbook.prune, d, state=state)'),
 
  ("the GPL path loads the journal", "ltcplay/web.py",
   'from . import brand as brand_mod\n',
@@ -1504,10 +1500,8 @@ MUTATIONS = [
  # -- the journal, after the review of PR 14 ---------------------------
  ("closing the journal waits for a hung disk", "ltcplay/journal.py",
   '            if t.is_alive():\n                return False\n'
-  '        self._writer = None\n'
-  '        return self.drain(force=True, timeout=wait_s)',
-  '        self._writer = None\n'
-  '        return self.drain(force=True)'),
+  '        self._writer = None\n',
+  '        self._writer = None\n        return self.drain(force=True)\n'),
 
  ("the way out stops the scheduler before the rig", "ltcplay/cli.py",
   '    httpd.control.stop()\n    if httpd.schedule is not None:\n'
@@ -1521,10 +1515,6 @@ MUTATIONS = [
  ("a character UTF-8 cannot carry jams the writer", "ltcplay/journal.py",
   '    return text.encode("utf-8", "backslashreplace")',
   '    return text.encode("utf-8")'),
-
- ("only a disk error stops the logging out loud", "ltcplay/journal.py",
-  '            except Exception as e:\n                # ANY failure stops',
-  '            except OSError as e:\n                # ANY failure stops'),
 
  ("a record that cannot be written blocks every line behind it",
   "ltcplay/journal.py",
@@ -1545,8 +1535,10 @@ MUTATIONS = [
 
  ("a failing tick writes a line four times a second",
   "ltcplay/schedule_service.py",
-  '            if tf is not None and tf["key"] == key:',
-  '            if False:'),
+  '            kinds[key] = kinds.get(key, 0) + 1\n',
+  '            kinds[key] = kinds.get(key, 0) + 1\n'
+  '            tf["since"] = now - timedelta(seconds=self.FAULT_REPEAT_S)\n'
+  '            tf["last_line"] = None\n'),
 
  ("the journal's own lines go to the calendar day's file",
   "ltcplay/schedule_service.py",
@@ -1611,6 +1603,56 @@ MUTATIONS = [
   "ltcplay/journal.py",
   '                if _STALE.match(name):',
   '                if False:'),
+ # -- the journal, round 3 of the review of PR 14 ----------------------
+ ("close() drains with no time limit", "ltcplay/journal.py",
+  '        threading.Thread(target=last, daemon=True,\n'
+  '                         name="ltcplay-journal-close").start()\n'
+  '        done.wait(wait_s * 2)\n'
+  '        return box.get("ok", False)',
+  '        last()\n'
+  '        return box.get("ok", False)'),
+
+ ("a different tick fault in the middle of a flood counted as a repeat",
+  "ltcplay/schedule_service.py",
+  '            if key not in kinds and len(kinds) < self.FAULT_KINDS_MAX:',
+  '            if not kinds:'),
+
+ ("a failing tick is told apart by its message, not where it failed",
+  "ltcplay/schedule_service.py",
+  '            self._tick_failed(self._fault_key(e), f"{type(e).__name__}: {e}")',
+  '            self._tick_failed(f"{type(e).__name__}: {e}",\n'
+  '                              f"{type(e).__name__}: {e}")'),
+
+ ("the way out lets the scheduler tick after the rig stops",
+  "ltcplay/cli.py",
+  '    halt = getattr(httpd.schedule, "halt", None)',
+  '    halt = None'),
+
+ ("housekeeping decides its work outside the lock",
+  "ltcplay/schedule_service.py",
+  '                look = not self._looked_back\n'
+  '                self._looked_back = True\n'
+  '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '                if prune:\n'
+  '                    self._pruned_for = d\n'
+  '            if look:\n'
+  '                self._look_back(d, state)\n'
+  '            if prune:\n',
+  '                look = not self._looked_back\n'
+  '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '            if look:\n'
+  '                self._look_back(d, state)\n'
+  '                self._looked_back = True\n'
+  '            if prune:\n'
+  '                self._pruned_for = d\n'),
+
+ ("a failure while writing is silent", "ltcplay/journal.py",
+  '        except Exception as e:\n'
+  '            # Nothing that goes wrong while writing is ever silent.\n'
+  '            self._stop(self.clock(), self._why(e))\n'
+  '            return False',
+  '        except Exception:\n'
+  '            return False'),
 
 ]
 

@@ -14658,6 +14658,7 @@ def test_journal_the_way_out_never_waits_on_the_disk():
     S = _sched()
     if S is None:
         return
+    import errno
     import tempfile
     import threading
     import time as _t
@@ -14703,9 +14704,11 @@ def test_journal_the_way_out_never_waits_on_the_disk():
         # returns even though the journal's writer is stuck.
         class Control:
             stopped_at = None
+            halted_first = None
 
             def stop(self):
                 self.stopped_at = _t.monotonic()
+                self.halted_first = svc._stop.is_set()
 
         class Server:
             control = Control()
@@ -14733,8 +14736,41 @@ def test_journal_the_way_out_never_waits_on_the_disk():
                    encoding="utf-8").read()
         check("_shutdown(httpd)" in src, "ltcplay serve leaves through "
                                          "_shutdown")
+        check(h.control.halted_first is True,
+              "the scheduler stops ticking before the rig is stopped")
     finally:
         gate.set()
+
+    # A disk that failed earlier (logging already stopped) and then stops
+    # answering: the journal's last drain is time limited too.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 17, 30)]
+    svc2 = _svc(S, work2, now2).start()
+    gate2 = threading.Event()
+    try:
+        def failing(path):
+            raise OSError(errno.EIO, "I/O error")
+
+        svc2.logbook._opener = failing
+        now2[0] = _den(S, 17, 31)
+        svc2._journal_line("system", "A line the failing disk refuses.")
+        check(wait_for(lambda: not svc2.logbook.health()["ok"]),
+              "logging stops on the failing disk")
+
+        def hung2(path):
+            gate2.wait(30)
+            return J._open_append(path)
+
+        svc2.logbook._opener = hung2
+        now2[0] = _den(S, 17, 31, 10)          # before the 30 s retry
+        stopped = threading.Event()
+        t0 = _t.monotonic()
+        threading.Thread(target=lambda: (svc2.stop(), stopped.set()),
+                         daemon=True).start()
+        check(stopped.wait(4), f"stop returns with a stopped disk that then "
+                               f"hangs: {_t.monotonic() - t0:.1f} s")
+    finally:
+        gate2.set()
     print("  ok")
 
 
@@ -14813,6 +14849,20 @@ def test_journal_a_line_the_disk_cannot_take():
           f"any failure sets the flag with a sentence: {h['sentence']}")
     svc.logbook._opener = J._open_append
     now[0] = _den(S, 17, 34)
+    svc.logbook.drain()
+    # The free space check failing in a way nobody planned for is loud too.
+    def odd_usage(path):
+        raise ValueError("the free space answer made no sense")
+
+    svc.logbook._disk_usage = odd_usage
+    svc.logbook._free_at = None
+    now[0] = _den(S, 17, 34, 30)
+    svc._journal_line("system", "A line while the free space check is odd.")
+    h = svc.logbook.health()
+    check(not h["ok"] and "ValueError" in h["sentence"],
+          f"a failure in the free space check sets the flag: {h['sentence']}")
+    svc.logbook._disk_usage = lambda p: type("U", (), {"free": 10 ** 12})()
+    now[0] = _den(S, 17, 35, 30)
     svc.logbook.drain()
     check(svc.logbook.health()["ok"] and
           [x for x in _jsonl_rows(mp) if x][-1]["action"] ==
@@ -14925,6 +14975,49 @@ def test_journal_a_repeating_fault_does_not_flood():
     tail = [r["text"] for r in list(svc.journal)[-2:]]
     check("119 more time(s)" in tail[0] and "has stopped" in tail[1],
           f"when it stops, the rest are counted and the end is said: {tail}")
+
+    def minute(make, middle=None):
+        w = tempfile.mkdtemp()
+        now[0] = _den(S, 18, 1)
+        sv = _svc(S, w, now).start(thread=False)
+        base = len(sv.journal)
+        n = {"i": 0}
+
+        def failing(*a, **k):
+            n["i"] += 1
+            if middle is not None and n["i"] == 120:
+                raise middle
+            raise make(n["i"])
+
+        SV.sch.step = failing
+        try:
+            for i in range(4 * 60):
+                now[0] = _den(S, 18, 1, 1) + timedelta(seconds=i / 4)
+                sv._safe_tick()
+        finally:
+            SV.sch.step = real
+        return sv, [r for r in list(sv.journal)[base:] if r["action"] ==
+                    "tick"]
+
+    sv, rows = minute(lambda i: ValueError(f"late by {i * 0.25:.2f} s"))
+    check(len(rows) <= 3, f"a message carrying a number does not defeat "
+                          f"the count: {len(rows)} lines in a minute")
+    sv, rows = minute(lambda i: KeyError("a") if i % 2 else KeyError("b"))
+    check(len(rows) <= 3, f"nor do two failures taking turns: {len(rows)}")
+    sv, rows = minute(lambda i: KeyError("slot"),
+                      middle=RuntimeError("the MadMapper link was None"))
+    check(any("the MadMapper link was None" in r["text"] for r in rows)
+          and len(rows) <= 4,
+          f"a different failure in the middle of a flood is written at "
+          f"once: {[r['text'][:60] for r in rows]}")
+    now[0] = _den(S, 18, 2, 30)
+    sv._safe_tick()                     # working again: the count is said
+    text = open(sv.logbook.write_summary("2026-11-14", state="STANDBY"),
+                encoding="utf-8").read()
+    part = text.split("## Faults, in their own words\n", 1)[-1].split(
+        "\n## ", 1)[0]
+    check(part.count("\n- ") <= 3 and "more time(s)" in part,
+          f"the summary lists a flood as one line with its count: {part}")
     print("  ok")
 
 
@@ -15136,6 +15229,75 @@ def test_journal_leftover_temp_files_are_cleared():
     print("  ok")
 
 
+
+def test_journal_housekeeping_runs_once():
+    section("journal: two callers at once never prune or look back twice")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    import time as _t
+    from datetime import date, timedelta
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
+    twice = []
+    for trial in range(5):
+        work = tempfile.mkdtemp()
+        nights = os.path.join(work, "nights")
+        os.makedirs(nights)
+        for i in range(100):
+            open(os.path.join(nights, J.machine_name(
+                str(date(2026, 5, 1) + timedelta(days=i)))), "w").write("x\n")
+        _book(J, nights, [_den(S, 20, 0, d=(2026, 11, 13))]).record(
+            actor="system", action="note", outcome="done", reason="r",
+            text="Yesterday, never summarised.")
+        base = _den(S, 17, 30)
+        slow = {"on": False}
+
+        def clock():
+            if slow["on"]:
+                _t.sleep(0.005)          # a busy machine
+            return base
+
+        rule = os.path.join(work, SV.RULE_FILE)
+        SV.save_rule(rule, _sched_doc(
+            weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                            "last_end": "22:00"}}, exceptions={}))
+        svc = SV.Service(rule, clock=clock, state_dir=work,
+                         ntp_query=lambda: 0.0)
+        with svc.lock:
+            svc._ensure_night(base)
+        svc.clock_check = {"level": "ok"}
+        calls = {"prune": 0, "summary": 0}
+        real_prune, real_sum = svc.logbook.prune, svc.logbook.write_summary
+
+        def prune(*a, **k):
+            calls["prune"] += 1
+            return real_prune(*a, **k)
+
+        def summary(*a, **k):
+            calls["summary"] += 1
+            return real_sum(*a, **k)
+
+        svc.logbook.prune, svc.logbook.write_summary = prune, summary
+        slow["on"] = True
+        go = threading.Barrier(2)
+        ts = [threading.Thread(target=lambda: (go.wait(),
+                                               svc._housekeeping()))
+              for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+        slow["on"] = False
+        if calls["prune"] > 1 or calls["summary"] > 1:
+            twice.append(dict(calls))
+    check(not twice, f"housekeeping is decided under the lock, so it runs "
+                     f"once: {twice}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -15293,6 +15455,7 @@ if __name__ == "__main__":
     test_journal_screens_come_from_a_list()
     test_journal_summary_lists_every_fault()
     test_journal_leftover_temp_files_are_cleared()
+    test_journal_housekeeping_runs_once()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()

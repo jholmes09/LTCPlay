@@ -1290,7 +1290,14 @@ def _shutdown(httpd):
     """The way out, in the order that keeps the rig safe: the show's own
     stop (the blackout) first, then the scheduler and its journal, which
     may be waiting on a disk, then the page. Nothing that writes a log may
-    stand between Ctrl-C and the blackout."""
+    stand between Ctrl-C and the blackout. The scheduler's ticking is
+    halted before the rig stops, so no tick can start anything after it."""
+    halt = getattr(httpd.schedule, "halt", None)
+    if halt is not None:
+        try:
+            halt()
+        except Exception as e:
+            print(f"The scheduler did not halt cleanly: {e}")
     httpd.control.stop()
     if httpd.schedule is not None:
         try:
