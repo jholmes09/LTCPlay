@@ -1134,8 +1134,22 @@ MUTATIONS = [
   '        try:\n'),
 
  ('a stopped master cue leaves the pixels chasing on their own', 'ltcplay/session.py',
-  '                    bind_ip=self.bind, on_stop=self.player.drop_clock)',
-  '                    bind_ip=self.bind, on_stop=None)'),
+  '                    bind_ip=self.bind, on_stop=self.player.drop_clock,\n'
+  '                    on_pause=lambda: self.player.set_hard_park(True),\n'
+  '                    on_resume=lambda: self.player.set_hard_park(False))',
+  '                    bind_ip=self.bind, on_stop=None,\n'
+  '                    on_pause=lambda: self.player.set_hard_park(True),\n'
+  '                    on_resume=lambda: self.player.set_hard_park(False))'),
+
+ ('a Hold never tells the pixels it is a real pause, so they wait out '
+  'the noise debounce', 'ltcplay/session.py',
+  '                    on_pause=lambda: self.player.set_hard_park(True),',
+  '                    on_pause=lambda: None,'),
+
+ ('a Resume never tells the pixels the pause is over, so a hard park '
+  'can get stuck on', 'ltcplay/session.py',
+  '                    on_resume=lambda: self.player.set_hard_park(False))',
+  '                    on_resume=lambda: None)'),
 
  ('a master clock lets on_lost run the show file on its own', 'ltcplay/session.py',
   '                    self.player.on_lost = "hold"',
@@ -1546,13 +1560,13 @@ MUTATIONS = [
   '            self.ticker.stop()\n'
   '            label = self._cue[2]\n'
   '            n_frozen = self._frozen_n\n'
-  '            self._paused = False\n'
+  '            self._set_paused(False)\n'
   '            self._frozen = None\n'
   '            self._frozen_pos = None\n'
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
   '            label = self._cue[2]\n'
   '            n_frozen = self._frozen_n\n'
-  '            self._paused = False\n'
+  '            self._set_paused(False)\n'
   '            self._frozen = None\n'
   '            self._frozen_pos = None\n'
   '            self.ticker.stop()\n'
@@ -1564,14 +1578,32 @@ MUTATIONS = [
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)\n'
-  '            self._paused = True\n'
+  '            self._set_paused(True)\n'
   '            self._sync_point("pause")',
-  '            self._paused = True\n'
+  '            self._set_paused(True)\n'
   '            self._sync_point("pause")\n'
   '            self._frozen = (h, m, s, f)\n'
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
+
+ # This fix, 2026-09-26: bench evidence, Fire & Ice, run hold1 (B4). Two
+ # findings, two mutations.
+ ("resume() forgets which frame the ticker already considers itself at, "
+  "so it double-counts a hold as skipped", 'ltcplay/clock.py',
+  '            return self.ticker.start(t0, n0=n_frozen + 1)',
+  '            return self.ticker.start(t0)'),
+
+ ("a machine-generated pause waits for the same debounce a real LTC "
+  "deck's noise needs", 'ltcplay/player.py',
+  '        parked = hard_parked or (park_since is not None\n'
+  '                                 and now - park_since >= self.park_s)\n'
+  '\n'
+  '        since = now - last',
+  '        parked = (park_since is not None\n'
+  '                  and now - park_since >= self.park_s)\n'
+  '\n'
+  '        since = now - last'),
 
 ]
 

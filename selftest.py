@@ -14640,7 +14640,20 @@ def test_session_hold_and_resume():
         sess.clock_play("Show")
         check(wait_for(lambda: sess.player.current_cue is not None,
                        timeout=3.0), "the cue never reached the pixels")
+        # A real quarter second in, not the first frame: the skipped-count
+        # bug this guards (below, at Resume) scales with how far into the
+        # cue the freeze happens, and a Hold in the first instant of a cue
+        # would hide it almost entirely.
+        time.sleep(0.25)
         sess.clock_pause()
+        # Told immediately, not after the debounce settles: this is the
+        # whole point of wiring on_pause through Session.open() to
+        # Player.set_hard_park (clock.py's ArtNetMaster._set_paused(),
+        # session.py's clock_mod.build() call). No sleep, no wait_for --
+        # right here, before anything has had time to settle on its own.
+        check(sess.player._hard_parked,
+              "Session never told the player Hold is a real pause "
+              "(on_pause is not wired, or never called)")
         # The chase engine only calls a repeating position PARKED once it
         # has repeated for park_ms: right up to that debounce, the reading
         # can still say LOCKED for a frame here and there. Let it settle
@@ -14681,7 +14694,23 @@ def test_session_hold_and_resume():
             check("already paused" in str(e), f"unclear refusal: {e}")
 
         # 5. Resume: the show carries on, and a second Resume is refused.
+        # The pause above ran real time (the 0.5s settle sleep is real,
+        # not simulated), so by now the ticker has legitimately been
+        # frozen for many real frames -- exactly the shape that exposed
+        # the bogus skipped-frame count on the Fire & Ice bench: resume()
+        # backdates the ticker's zero point by that many frames on
+        # purpose, and forgetting to also tell it where it already is
+        # (n0) reads as the ticker having just fallen that far behind.
+        skipped_before = sess.clock.ticker.skipped
         sess.clock_resume()
+        check(sess.clock.ticker.skipped - skipped_before <= 3,
+              f"Resume added {sess.clock.ticker.skipped - skipped_before} "
+              f"to the clock's own skipped-frame count for a hold that "
+              f"dropped nothing on the wire")
+        check(not sess.player._hard_parked,
+              "Session never told the player Hold is over (on_resume is "
+              "not wired, or never called), so a later Hold would find "
+              "the pixels already told they are paused")
         check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
               "the show did not carry on after Resume")
         check(not sess.clock.paused, "the clock still reads paused")
@@ -15022,6 +15051,15 @@ def test_pause_resume_survive_a_real_ticker_under_pressure():
         check(m.ticker.errors == 0,
               f"{m.ticker.errors} tick(s) errored under pressure "
               f"({cycles} pause/resume cycles): {m.ticker.last_error!r}")
+        # Each cycle's resume() backdates the ticker's own zero point by
+        # whatever it was frozen for; forgetting to say so (n0) reads as
+        # that many frames having been dropped, on every single cycle.
+        # 300 cycles of real, if tiny, backdating would add up fast; a
+        # genuinely clean resume leaves this near zero however many
+        # cycles ran.
+        check(m.ticker.skipped < cycles,
+              f"{m.ticker.skipped} frames counted as skipped over "
+              f"{cycles} pause/resume cycles that dropped nothing")
         check(m.playing and m._cue is not None,
               "the cue is not alive after the stress cycles")
         check(not m.paused, "the clock was left paused after the cycles")
