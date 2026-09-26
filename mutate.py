@@ -1451,6 +1451,13 @@ MUTATIONS = [
   "            advanced = True"),
 
 
+ ("flamesafe: the latches start out set",
+  "flamesafe/composer.py",
+  "        self._latched = [False] * self.n\n"
+  "        self._arm_seq = None",
+  "        self._latched = [True] * self.n\n"
+  "        self._arm_seq = None"),
+
  # rule 7: interruptions clear the latches
  ("flamesafe: the arm input never goes stale",
   "flamesafe/composer.py",

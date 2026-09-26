@@ -422,6 +422,24 @@ def test_rule10_startup_is_all_zeros():
     check(o.status["groups"][0]["amber"] == "flashing"
           and o.status["groups"][0]["reason"] == "cycle the arm",
           f"the operator is told to cycle the arm: {o.status['groups'][0]}")
+    # Rule 10 belongs to the composer, not to the service's polling order.
+    # Two assertions asking for arm BEFORE the first tick never pass
+    # through a not-live tick, so nothing has cleared any latch: the first
+    # compose must still be zeros with no consent (review of 120ce04: a
+    # composer whose latches started out set sent 78 on its first tick).
+    cfg = make_config()
+    c = Composer(cfg, clock=lambda: 0.0)
+    c.assert_arm([True] * 6, 1, names=NAMES)
+    c.assert_arm([True] * 6, 2, names=NAMES)
+    o = c.tick()
+    check(o.universe == bytes(512),
+          "two arm requests before the first tick: the first frame is zeros")
+    check(all(g["armed"] == "held" and g["reason"] == "cycle the arm"
+              for g in o.status["groups"]),
+          f"every group held for a cycle: "
+          f"{[(g['armed'], g['reason']) for g in o.status['groups']]}")
+    check(c.stats["latch_resets"] == 0,
+          "and no latch had to be cleared, because none was ever set")
 
 
 # =========================================================================
