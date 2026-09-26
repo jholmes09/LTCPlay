@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B15 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B16 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -24,6 +24,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B13 Web page load on the snapshot fix (PR #18, e43f415) | PASSED | 2 and 5 viewers: 0 skips (main: 181 and 1,185). 10 unthrottled clients: 40 fps, 623 skips at 313 answered requests/s (main: 12 to 14 fps at 21/s). The page shows GO within 13 ms, Stop 134 ms, Run 82 ms |
 | B14 MadMapper and BEYOND link modules (PR #17, 4d91045) | PASSED, 4 notes | Banks, fades, blank and unblank all work as in B2, B4 and B8; BlackOut and MasterPause refused, nothing sent; watchdog alarms 3.0 s after a freeze and recovers within 10 ms; Hold order silent and dark. Notes: one false drift line per recovery; MadMapper sits 2 frames further behind after a Resume; stop does not rewind a non-chasing bank; BEYOND's own audio reaches the show output |
 | B15 MadMapper offset over 10 Holds in one show | No ratchet, no recovery | -10 ms before any Hold; -42 after Hold 1, -57 after Hold 2, then creeping back about 2 ms per Hold to -43 over the last 60 s; flat within seconds of each resume; worst -64 ms, inside the 100 ms allowance; every freeze lands exactly on the held frame |
+| B16 Timecode by broadcast (Jeff's yes) | FAILED for MadMapper / PASSED for BEYOND | Broadcast to 192.168.7.255 and 255.255.255.255 reached BEYOND (listening on 0.0.0.0) but not MadMapper (listening on 192.168.4.42 and 127.0.0.1 only); the show must send to each program's own address |
 
 ## B0 The machine
 
@@ -237,7 +238,7 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 | 127.0.0.1 | follows | not received (timeline still; message count unchanged) |
 | 192.168.4.42 (Pico's own Wi-Fi address) | follows | not received |
 | **127.0.0.2** (any other loopback address) | not received | **received and follows** (240 of 240 messages counted in 8 s) |
-| broadcast | not tested (Jeff asleep; nothing laser-related is connected, but broadcast was listed as ask-first) | |
+| broadcast | not received (B16) | received (B16) |
 
 **So: MadMapper on 127.0.0.1 (or the card's address), BEYOND on 127.0.0.2, and ltcplay sends each packet to both nodes.** One tctest to both (`--node MadMapper=192.168.4.42 --node BEYOND=127.0.0.2 --seconds 60`, `scratch/b8_both.ps1`): at +5, 15, 30, 45 and 59 s, BEYOND's display read 00:04:52, 00:14:52, 00:29:48, 00:44:52, 00:58:52 (s:1/60) and MadMapper's heartbeat position 4.850, 14.850, 29.832, 44.848, 58.848 s: **both within one 60 fps frame of each other at every check, over 60 s.** `B8_0_both_beyond.png`. On the rack network the same rule will apply to the card's address: whichever program binds the specific address gets the packets, so BEYOND should listen on its own address (a second Ethernet port, or 127.0.0.2 if ltcplay is on the same PC).
 
@@ -487,9 +488,31 @@ The run:
 - For the watchdog: the default 100 ms drift allowance was never reached (worst -64 ms, after Hold 2). An operator who holds a lot will see the drift figure sit around -40 to -60 ms rather than -10 to -25.
 - Why the first Holds move it and later ones do not was not measured. It looks like how MadMapper re-locks after timecode stops, not like anything ltcplay sends: the sender's timing is identical before and after each Hold (the same 30 fps deadlines, the held frame repeated, then the next frame).
 
+
+## B16 Art-Net timecode by broadcast
+
+**Verdict: FAILED for MadMapper, PASSED for BEYOND. Broadcast reaches BEYOND but not MadMapper, so the show must send timecode to each program's own address (as B8.0 recommends), not broadcast.** Run on 2026-09-26 at 11:49 with Jeff's go-ahead ("You have approval for broadcasting the time code"). The broadcast went onto the Pico's Wi-Fi network, the only one connected; both Ethernet ports were unplugged (checked).
+- **Sender:** `ltcplay tctest --broadcast` from main `fa5274a`, 15 s per address.
+- **MadMapper:** Bank-1 chasing, its interface on the Wi-Fi address, heartbeat on 9001.
+- **BEYOND:** Essentials Demo, freshly restarted.
+
+Who held UDP 6454 during the test: MadMapper on **192.168.4.42** and **127.0.0.1** (specific addresses), BEYOND on **0.0.0.0** (every address).
+
+| Destination | MadMapper | BEYOND (its "ArtNet TC IN" counter) |
+|---|---|---|
+| **192.168.7.255** (the Wi-Fi subnet's broadcast: the Pico is 192.168.4.42/22) | **not received**: no heartbeat in 15 s beyond the one packet from selecting Bank-1 | **received**: 00:10:10:03, count up about 30 a second (`B16_beyond_A.png`) |
+| **255.255.255.255** | **not received**: no heartbeat | **received**: 00:20:10:04, count up about 30 a second (`B16_beyond_B.png`) |
+| **127.255.255.255** (loopback broadcast, stays inside the Pico; 11:57) | **not received**: 0 heartbeats in 15 s | **received**: 00:30:10:01, count up about 30 a second (`B16_beyond_D.png`) |
+| control: **192.168.4.42** (unicast) | **follows**: 611 heartbeat packets in 10 s | |
+
+- MadMapper listens only on the specific addresses of its chosen interface, and on this PC that does not include broadcasts. I did not look for an "all interfaces" choice in MadMapper's interface list; the B1 choices were single interfaces.
+- tctest printed its warnings before sending ("Test timecode is about to go to: broadcast (…). Anything that follows timecode will play its cues, lasers included" and "broadcast: This looks like a laser system. Confirm the laser operator is ready before you continue.") and then sent without a question, as designed.
+- BEYOND's own timeline did not follow in these two runs: after the restart it sat "Stopped" and needed its Play-then-TC-IN routine (B14). Its counter is what shows reception, the same measure B8.0 used.
+- **The Wi-Fi broadcasts left the Pico.** 192.168.7.255 and 255.255.255.255 were sent on Jeff's first-hand yes, as 15 s of test timecode each, onto the Pico's Wi-Fi network, before his condition (relayed by the main session) arrived: broadcast on the Wi-Fi only if nothing else on that network follows Art-Net timecode. I did not check the rest of that network first. The loopback test (127.255.255.255) meets that condition and gives the same answer.
+- **For the show:** send timecode to each program's own address (MadMapper's interface address, BEYOND's address), never broadcast. Broadcast would also reach anything else on the network that follows Art-Net timecode.
+
 ## Not tested yet
 
 - **ASIO audio.** The Pico has no Focusrite ASIO driver: the Scarlett Solo runs on Windows' own USB audio driver. The ASIO drivers installed are all PreSonus and Behringer (AudioBox, Quantum, Studio, StudioLive, X-USB and others). The show's real interface (USB to the DSP) and its driver are needed for this test. I did not download or install a driver.
-- **Broadcast destination for Art-Net timecode** (B8.0 table): waits for Jeff's yes.
 - **Rack network** (two Ethernet ports, real controllers): needs the rack.
 - **Licensed BEYOND, multi-hour** (B9): needs Andy's licence on this PC.
