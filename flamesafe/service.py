@@ -74,10 +74,12 @@ def _no_connreset(sock):
 
 class Service:
 
-    def __init__(self, config, arm_input, clock=now, log=None):
+    def __init__(self, config, arm_input, clock=now, log=None,
+                 sleep=time.sleep):
         self.cfg = config
         self.arm_input = arm_input
         self._clock = clock
+        self._sleep = sleep         # injected with the clock, for the tests
         self._log = log
         self.composer = Composer(config, clock=clock, log=log)
         self._rx = None
@@ -239,7 +241,7 @@ class Service:
                 next_at = t
             delay = next_at - t
             if delay > 0:
-                time.sleep(delay)
+                self._sleep(delay)
 
     def _event(self, kind, msg):
         if self._log is None:

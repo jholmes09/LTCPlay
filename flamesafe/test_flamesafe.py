@@ -320,8 +320,18 @@ def test_rule8_config_refuses_every_bad_table():
             lambda d: d.__setitem__("min_arm_dwell_ms", 999))
     check(make_config(min_arm_dwell_ms=1000).min_arm_dwell_ms == 1000,
           "a dwell of exactly one second loads")
-    refused("an overrun shorter than two ticks",
+    refused("an overrun below the floor",
             lambda d: d.__setitem__("overrun_ms", 40))
+    # Past the floor (50 ms) but under two ticks at 10 Hz (200 ms): only
+    # the two-ticks rule can refuse this one.  CI found the old case (40 ms
+    # at 40 Hz) was refused by the floor whether or not the rule existed.
+    refused("an overrun shorter than two ticks",
+            lambda d: (d.__setitem__("tick_hz", 10),
+                       d.__setitem__("fire_hold_ms", 200),
+                       d.__setitem__("overrun_ms", 150)))
+    check(make_config(tick_hz=10, overrun_ms=200,
+                      fire_hold_ms=200).overrun_ms == 200,
+          "exactly two ticks is accepted")
     refused("a fire hold shorter than two ticks",
             lambda d: d.__setitem__("fire_hold_ms", 40))
     refused("a fire hold not below frame_stale_ms",
@@ -421,10 +431,16 @@ def test_rule10_startup_is_all_zeros():
 def test_rule6_consent():
     section("rule 6: a group arms only after a live down edge")
     r = Rig()
-    # One assertion proves nothing: the counter has not been seen to move.
+    # One assertion proves nothing: the counter has not been seen to move,
+    # and the status must not claim otherwise.
     r.step(n=1)
+    check(r.out.status["arm_input"]["state"] == "never",
+          f"after one assertion the input is 'never', not live: "
+          f"{r.out.status['arm_input']}")
     r.inp.set(0)
     o = r.step()
+    check(r.out.status["arm_input"]["state"] == "live",
+          "after the counter was seen to advance the input is live")
     check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
           "a down edge in the FIRST assertion is not consent")
     r.inp.set(0, on=False)
@@ -624,9 +640,11 @@ def test_rule4_dwell():
         seen.append((g["reason"], g["amber"], g["dwell_s"]))
         if ticks > 200:
             break
+    check(seen, "the re-arm request was held at all (a dwell that never "
+                "applies arms on the first tick)")
     check(all(s[0] == "re-arm dwell" and s[1] == "steady" for s in seen),
           f"held with steady amber and the dwell reason: {set(seen)}")
-    countdown = [s[2] for s in seen]
+    countdown = [s[2] for s in seen] or [0]
     check(countdown[0] == 3 and countdown[-1] == 1
           and countdown == sorted(countdown, reverse=True)
           and set(countdown) == {3, 2, 1},
@@ -1407,27 +1425,57 @@ def test_service_paces_on_perf_counter():
                             "status_ip": "127.0.0.1",
                             "status_port": ltc_status.getsockname()[1],
                             "key": KEY})
-    svc = Service(cfg, arminput.NullArmInput())
-    svc.open()
+    # The pacing is proved on an injected clock and an injected sleep, so no
+    # runner's wall clock is trusted: a starved macOS runner once managed 7
+    # ticks in 0.59 s and failed a real-time version of this check.
+    t = [100.0]
+    sleeps = []
     stop = threading.Event()
-    th = threading.Thread(target=svc.run_forever, args=(stop,), daemon=True)
-    t0 = time.perf_counter()
-    th.start()
-    time.sleep(0.5)
-    stop.set()
-    th.join(2.0)
-    el = time.perf_counter() - t0
+
+    def fake_sleep(d):
+        sleeps.append(d)
+        t[0] += d                     # time passes exactly as asked
+        if len(sleeps) >= 40:
+            stop.set()
+
+    svc = Service(cfg, arminput.NullArmInput(), clock=lambda: t[0],
+                  sleep=fake_sleep)
+    svc.open()
+    svc.run_forever(stop)
     n = svc.composer.heartbeat
-    check(not th.is_alive(), "the loop stopped when asked")
-    check(0.5 * 40 * 0.6 <= n <= el * 40 + 2,
-          f"{n} ticks in {el:.2f} s at 40 Hz")
-    check(svc.composer.stats["overruns"] == 0,
-          "no overrun while idling on this machine")
+    check(n == 40, f"40 ticks, one before each of the 40 sleeps: {n}")
+    check(all(0 < d <= 0.025 + 1e-9 for d in sleeps),
+          f"every sleep is at most one period: {sorted(sleeps)[-1]:.4f}")
+    check(abs((t[0] - 100.0) - 40 * 0.025) < 1e-6,
+          f"40 periods of 25 ms took exactly 1.000 s of clock: {t[0] - 100:.4f}")
+    check(svc.composer.stats["overruns"] == 0, "no overrun on a kept clock")
+    # A tick that runs long is not caught up in a burst.
+    t[0] += 0.4                       # the next tick sees a 400 ms gap
+    sleeps.clear()
+    stop.clear()
+    svc.run_forever(stop)
+    check(svc.composer.stats["overruns"] == 1,
+          "the late tick was counted as an overrun")
+    check(all(0 < d <= 0.025 + 1e-9 for d in sleeps),
+          "and the loop did not burst to catch up")
     pk = _drain(node)
-    check(len(pk) >= n * 0.5 and all(p[126:] == bytes(512) for p in pk),
+    check(len(pk) >= 80 and all(p[126:] == bytes(512) for p in pk),
           f"{len(pk)} packets, every one all zeros with no arm input")
     check(all(p[108] == 200 for p in pk), "every packet at priority 200")
     svc.close()
+    # And the real loop, on the real clock, only has to start and stop; it
+    # makes no claim about the rate this machine can manage right now.
+    svc2 = Service(cfg, arminput.NullArmInput())
+    svc2.open()
+    stop2 = threading.Event()
+    th = threading.Thread(target=svc2.run_forever, args=(stop2,), daemon=True)
+    th.start()
+    time.sleep(0.2)
+    stop2.set()
+    th.join(5.0)
+    check(not th.is_alive(), "the real loop stopped when asked")
+    check(svc2.composer.heartbeat >= 1, "and ticked at least once")
+    svc2.close()
     for s_ in (node, ltc_status):
         s_.close()
     check(composer.now.__code__.co_names and "perf_counter" in
@@ -1497,15 +1545,23 @@ def test_main_refuses_a_bad_config_with_a_sentence():
                                      encoding="utf-8") as fh:
         json.dump(d, fh)
         path = fh.name
+    # A bounded wait: if the config were accepted the service would run
+    # for ever, and that must read as a failure in seconds, not a hang.
+    proc = subprocess.Popen([sys.executable, "-m", "flamesafe", path],
+                            cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
     try:
-        r = subprocess.run([sys.executable, "-m", "flamesafe", path],
-                           cwd=ROOT, capture_output=True, text=True,
-                           timeout=60)
+        out, _err = proc.communicate(timeout=15)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _err = proc.communicate()
+        rc = "still running after 15 s"
     finally:
         os.unlink(path)
-    check(r.returncode == 2, f"exit 2: {r.returncode}")
-    check("flamesafe will not start" in r.stdout and "share fire slot 411"
-          in r.stdout, f"the sentence: {r.stdout.strip()[:200]}")
+    check(rc == 2, f"exit 2: {rc}")
+    check("flamesafe will not start" in out and "share fire slot 411" in out,
+          f"the sentence: {out.strip()[:200]}")
     r = subprocess.run([sys.executable, "-m", "flamesafe"], cwd=ROOT,
                        capture_output=True, text=True, timeout=60)
     check(r.returncode == 2 and "Usage" in r.stdout, "no argument: usage")
@@ -1611,13 +1667,14 @@ def test_review_journal_never_blocks_the_tick():
     from flamesafe.journal import Journal
 
     class Sticky:
-        """A stream whose every write takes 200 ms."""
+        """A stream whose every write takes 50 ms.  Inline, 20 writes
+        would take a second; through the queue they take microseconds."""
         def __init__(self):
             self.writes = 0
 
         def write(self, s):
             self.writes += 1
-            time.sleep(0.2)
+            time.sleep(0.05)
 
         def flush(self):
             pass
@@ -1629,7 +1686,7 @@ def test_review_journal_never_blocks_the_tick():
         j.event("test", f"line {i}")
     el = time.perf_counter() - t0
     check(el < 0.5, f"20 events queued in {el * 1000:.0f} ms while every "
-                    f"write blocks for 500 ms")
+                    f"write blocks for 50 ms")
     check(len(j.lines) == 20, "the in-memory copy has every line")
     # And through the composer: events during ticks do not slow the ticks.
     r = Rig()
@@ -1764,13 +1821,20 @@ def test_review2_journal_drops_are_counted_and_written_up():
     from flamesafe.journal import Journal, QUEUE_MAX
 
     class Gate:
-        """A stream that blocks every write until released."""
+        """A stream that blocks every write until released.  The wait is
+        short and bounded so that a journal writing INLINE (the mutation)
+        fails this test in seconds instead of hanging the suite."""
         def __init__(self):
             self.open = threading.Event()
             self.writes = []
 
         def write(self, s):
-            self.open.wait(5.0)
+            # Block only the journal's own writer thread.  A journal that
+            # writes INLINE (the mutation) calls this from the test thread,
+            # is not blocked, drops nothing, and fails the drop check at
+            # once instead of hanging the suite.
+            if threading.current_thread().name == "flamesafe-journal":
+                self.open.wait(5.0)
             self.writes.append(s)
 
         def flush(self):

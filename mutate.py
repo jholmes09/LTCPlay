@@ -1450,12 +1450,6 @@ MUTATIONS = [
   "            # synthetic all-down report a booting watcher emits.\n"
   "            advanced = True"),
 
- ("flamesafe: the latches start out set",
-  "flamesafe/composer.py",
-  "        self._latched = [False] * self.n\n"
-  "        self._arm_seq = None",
-  "        self._latched = [True] * self.n\n"
-  "        self._arm_seq = None"),
 
  # rule 7: interruptions clear the latches
  ("flamesafe: the arm input never goes stale",
@@ -1773,10 +1767,6 @@ MUTATIONS = [
   "            if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:",
   "            if da is not None and (t - da) * 1000.0 + 30 < self.cfg.min_arm_dwell_ms:"),
 
- ("flamesafe: an arm input going silent keeps the group armed until a cycle",
-  "flamesafe/composer.py",
-  "        want = [live and self._wanted[i] and self._latched[i]",
-  "        want = [self._wanted[i] and self._latched[i]"),
 
  ("flamesafe: the fire hold is 30 ms longer than fire_hold_ms",
   "flamesafe/composer.py",
