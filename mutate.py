@@ -1341,69 +1341,49 @@ MUTATIONS = [
   '           if name.strip().lower() == "beyond"]'),
 
  ("an announcement never holds the show first", "ltcplay/announce.py",
-  '            # never reached inert.\n'
+  '            claim_epoch = None\n'
   '            if self.hold_requester is not None:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
   '                if hold_refusal:',
-  '            # never reached inert.\n'
+  '            claim_epoch = None\n'
   '            if False:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
   '                if hold_refusal:'),
 
  # Deliberately no mutation here disabling the FIRST checkpoint's own
  # "if hold_refusal:" alone (only the "if self.hold_requester is not
- # None:" gate above it, and the SECOND checkpoint's identical check
- # below): the second checkpoint re-asks and re-checks Hold immediately
- # before the stream starts, on purpose (the TOCTOU recheck), so disabling
- # only the first check's own refusal changes nothing a test can observe
- # -- the second one still refuses, with the same sentence. Confirmed
+ # None:" gate above it, and the SECOND checkpoint's own check): the
+ # second checkpoint re-checks (now read-only: _check_still_held)
+ # immediately before the stream starts, on purpose (the TOCTOU
+ # recheck), so disabling only the first check's own refusal changes
+ # nothing a test can observe -- the second one still refuses. Confirmed
  # equivalent by hand (mutate.py run, 2026-09-26): NOT CAUGHT, correctly.
-
- ("the second hold request before the stream starts is skipped",
-  "ltcplay/announce.py",
-  '                raise ValueError(text)\n'
-  '            if self.hold_requester is not None:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
-  '                if hold_refusal:\n'
-  '                    self.playing = None',
-  '                raise ValueError(text)\n'
-  '            if False:\n'
-  '                hold_refusal = self._request_hold(who, screen)\n'
-  '                if hold_refusal:\n'
-  '                    self.playing = None'),
+ # The second checkpoint's own gate is covered instead by "the second
+ # check re-Holds instead of only reading the state" (review round 2).
 
  ("the Hold request does not carry the Play press's own operator and "
   "screen", "ltcplay/announce.py",
   '        try:\n'
-  '            return self.hold_requester(who, screen)\n'
+  '            return self.hold_requester(who, screen, detail=detail)\n'
   '        except Exception as e:\n'
-  '            return _clean(str(e))',
+  '            return _clean(str(e)), None',
   '        try:\n'
-  '            return self.hold_requester("", "")\n'
+  '            return self.hold_requester("", "", detail=detail)\n'
   '        except Exception as e:\n'
-  '            return _clean(str(e))'),
+  '            return _clean(str(e)), None'),
 
  ("Service.hold_for_announcement never refuses, even when Hold itself "
   "was refused", "ltcplay/schedule_service.py",
   '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
-  '                                        screen=screen))\n'
-  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
-  '                return None\n'
-  '            return out.refused or None',
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return out.refused or None, self.hold_epoch',
   '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
-  '                                        screen=screen))\n'
-  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
-  '                return None\n'
-  '            return None'),
-
- ("already being on Hold or paused is treated as a Hold refusal",
-  "ltcplay/schedule_service.py",
-  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
-  '                return None\n'
-  '            return out.refused or None',
-  '            if False:\n'
-  '                return None\n'
-  '            return out.refused or None'),
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return None, self.hold_epoch'),
 
  ("announcements never Hold the scheduler in production, web.py never "
   "wires it", "ltcplay/web.py",
@@ -1493,7 +1473,7 @@ MUTATIONS = [
 
  ("an unsupported WAV format tag is accepted", "ltcplay/announce.py",
   '    is_float = tag == 3\n'
-  '    if tag is not None and tag not in (1, 3, 0xFFFE):',
+  '    if tag is not None and tag not in (1, 3):',
   '    is_float = tag == 3\n'
   '    if False:'),
 
@@ -1509,9 +1489,9 @@ MUTATIONS = [
   '        if False:'),
 
  ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
   '            pass'),
 
  ("the show-start hook tears the stream down synchronously",
@@ -1534,8 +1514,8 @@ MUTATIONS = [
 
  ("the announcements hook runs inside Service.lock again",
   "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
   '            self.on_show_started(self.machine.state)'),
 
  ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
