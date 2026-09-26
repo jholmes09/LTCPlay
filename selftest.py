@@ -14676,12 +14676,18 @@ def test_journal_the_way_out_never_waits_on_the_disk():
             return J._open_append(path)
 
         svc.logbook._opener = hung
-        t0 = _t.monotonic()
-        for i in range(20):
-            svc._journal_line("system", f"Line {i} while the disk hangs.")
-        took = _t.monotonic() - t0
-        check(took < 0.5, f"lines are handed over, never written in the "
-                          f"scheduler's own time: {took:.2f} s for 20")
+        handed = threading.Event()
+
+        def hand():
+            for i in range(20):
+                svc._journal_line("system", f"Line {i} while the disk hangs.")
+            handed.set()
+
+        # On a thread of its own, so a writer that is not running shows up
+        # as a failed check rather than a selftest that hangs.
+        threading.Thread(target=hand, daemon=True).start()
+        check(handed.wait(0.5), "lines are handed over, never written in "
+                                "the scheduler's own time")
         # End night with the disk hung: the summary is written beside the
         # scheduler, never inside the step that closed the night.
         done = threading.Event()
