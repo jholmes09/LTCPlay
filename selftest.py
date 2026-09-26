@@ -15356,19 +15356,46 @@ print(json.dumps({
 
 
 # ============================================================ madmapper ====
-# Step 3 of the Fire & Ice handoff: the MadMapper OSC transport link, the
-# heartbeat watchdog, and ltcplay's half of Hold/Resume/Abort/Closing.
-# Anchored to bench_report_2026-09-25.md (branch bench/2026-09-25), B1-B4.
+# Step 3 of the Fire & Ice handoff: the MadMapper OSC transport link and the
+# heartbeat watchdog -- DEVICE LAYER ONLY. Anchored to
+# bench_report_2026-09-25.md (branch bench/2026-09-25), B1-B4 and B9.
+#
+# An earlier version of this PR also wired Hold/Resume/Abort/Closing
+# sequencing straight into a Link.on_transition hook, driven by the
+# scheduler's own state transitions. An opus review (round 2) found two
+# real races in that design -- deriving an action from a PAIR of scheduler
+# states, on the scheduler's own unordered per-transition hook threads,
+# means a Hold immediately followed by a quick Resume can interleave or
+# run out of order (audit17_repros.py, R1/R2) -- so that whole mechanism
+# was removed. This module is now pure primitives; a future "conductor"
+# module will run the scheduler's own ORDERED effects list through one
+# serialized executor and call these.
 
 class _FakeMMSock:
     """Stands in for a real UDP socket: records every (packet, addr) sent,
-    never touches the network."""
+    never touches the network. Also inert for the INBOUND side (bind/
+    settimeout/recvfrom): a couple of tests hand this to a real Watchdog
+    through web.serve()'s own construction path, which starts a real
+    listener thread against whatever socket_factory it was given -- these
+    stubs let that thread idle harmlessly (a timeout loop, exactly like a
+    real socket with nothing arriving) instead of crashing with an
+    AttributeError on a background thread."""
 
     def __init__(self):
         self.sent = []
 
     def sendto(self, pkt, addr):
         self.sent.append((pkt, addr))
+
+    def bind(self, addr):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def recvfrom(self, n):
+        import socket as _socket
+        raise _socket.timeout()
 
     def close(self):
         pass
@@ -15398,7 +15425,7 @@ def _mm_cfg(**over):
     return MM.MadMapperConfig.parse(doc)
 
 
-def _mm_link(cfg=None, journal=None, watchdog=None):
+def _mm_link(cfg=None, journal=None):
     from ltcplay import madmapper as MM
     cfg = cfg or _mm_cfg()
     steps = _Steps()
@@ -15410,7 +15437,7 @@ def _mm_link(cfg=None, journal=None, watchdog=None):
         return s
 
     link = MM.Link(cfg, socket_factory=factory, clock=steps.clock,
-                  sleep=steps.sleep, journal=journal, watchdog=watchdog)
+                  sleep=steps.sleep, journal=journal)
     return link, socks, steps
 
 
@@ -15474,6 +15501,24 @@ def test_madmapper_osc_bytes_match_the_bench_capture():
     print("  ok")
 
 
+def test_madmapper_primitives_send_the_right_addresses():
+    section("madmapper: each primitive sends exactly the address it "
+            "should, and nothing else")
+    link, socks, steps = _mm_link()
+    link.select_bank("Bank-1")
+    link.stop_bank("Bank-1")
+    link.play("Bank-1")
+    link.play_from_beginning("Bank-2")
+    link.close()
+    addrs = _mm_addrs(socks[0])
+    check(addrs == ["/timelines/Bank-1/select",
+                   "/timelines/Bank-1/conductor/stop",
+                   "/timelines/Bank-1/conductor/play",
+                   "/timelines/Bank-2/conductor/play_from_beginning"],
+         f"primitives sent the wrong sequence: {addrs}")
+    print("  ok")
+
+
 def test_madmapper_ramp_step_count_and_values():
     section("madmapper: the ramp's step count and its endpoints")
     from ltcplay import madmapper as MM
@@ -15504,229 +15549,247 @@ def test_madmapper_ramp_step_count_and_values():
     check(abs(steps.t - 1.0) < 1e-9,
          f"31 steps over 1 s must take exactly 1 s of paced time: "
          f"{steps.t}")
+
+    link2, socks2, steps2 = _mm_link()
+    link2.fade_surfaces(0.0, 1.0, seconds=0.5, steps=5)
+    link2.close()
+    addrs2 = _mm_addrs(socks2[0])
+    check(addrs2 == (["/surfaces/Quad-1/opacity",
+                     "/surfaces/Quad-2/opacity"] * 5),
+         f"fade_surfaces must send both surfaces together, every step: "
+         f"{addrs2}")
     print("  ok")
 
 
-def test_madmapper_hold_order_is_fade_then_freeze():
-    section("madmapper: Hold fades the music out, THEN freezes the clock "
-            "(bench B4) -- never the other way around")
+def test_madmapper_fade_surfaces_perceptual_curve_step_values():
+    section("madmapper: fade_surfaces defaults to a perceptual curve "
+            "(bench B14: a plain linear opacity fade looks like it "
+            "holds, then drops in the last 0.5 s); fade_audio always "
+            "stays linear")
     from ltcplay import madmapper as MM
-    link, socks, steps = _mm_link(cfg=_mm_cfg(fade_s=1.0, ramp_steps=5))
-    order = []
 
-    class FakeClock:
-        def pause(self):
-            order.append(("pause", steps.t))
+    # The pure math, exactly, with no socket at all.
+    lin = MM.ramp_values(1.0, 0.0, 5)
+    down = MM.shape_values(lin, 1.0, 0.0, MM.CURVE_PERCEPTUAL)
+    check(down == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fading down must be an ease-in-quad (steep first, lingers "
+         f"near black): {down}")
+    lin_up = MM.ramp_values(0.0, 1.0, 5)
+    up = MM.shape_values(lin_up, 0.0, 1.0, MM.CURVE_PERCEPTUAL)
+    check(up == [0.0, 0.4375, 0.75, 0.9375, 1.0],
+         f"fading up must be the mirrored ease-out: {up}")
+    check(MM.shape_values(lin, 1.0, 0.0, MM.CURVE_LINEAR) == lin,
+         "CURVE_LINEAR must be a no-op")
+    try:
+        MM.shape_values(lin, 1.0, 0.0, "bogus")
+        check(False, "an unknown curve name must be refused")
+    except ValueError:
+        pass
 
-        def resume(self):
-            order.append(("resume", steps.t))
-
-    link.hold(4, clock=FakeClock())
+    # As Link actually sends it: fade_surfaces defaults to perceptual,
+    # fade_audio never does, regardless of config.
+    cfg = _mm_cfg()
+    check(cfg.video_curve == MM.CURVE_PERCEPTUAL,
+         f"perceptual is the default: {cfg.video_curve}")
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link.fade_audio(1.0, 0.0, seconds=0.4, steps=5)
     link.close()
-    check(order == [("pause", 1.0)],
-         f"pause() must be called exactly once, after the 1 s fade: "
-         f"{order}")
-    sent = socks[0].sent
-    check(len(sent) == 5, f"the fade sent {len(sent)} packets, expected 5")
-    vals = [struct.unpack(">f", p[-4:])[0] for p, _a in sent]
-    check(vals[0] == 1.0 and abs(vals[-1]) < 1e-6,
-         f"Hold's fade runs 1 -> 0: {vals}")
+    surface_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    audio_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fade_surfaces must actually apply the curve: {surface_vals}")
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"fade_audio must stay plain linear regardless of "
+         f"video_curve: {audio_vals}")
+
+    # A show file can still ask for plain linear video explicitly.
+    cfg2 = _mm_cfg(video_curve="linear")
+    link2, socks2, _s = _mm_link(cfg=cfg2)
+    link2.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link2.close()
+    vals2 = [MM.decode_float(p)[1] for p, _a in socks2[0].sent
+            if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(vals2 == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"video_curve: linear must actually turn the shaping off: "
+         f"{vals2}")
     print("  ok")
 
 
-def test_madmapper_resume_order_is_clock_then_fade():
-    section("madmapper: Resume restarts the clock, THEN fades the music "
-            "back up (bench B4.3, hiding MadMapper's own audio repeat)")
+def test_madmapper_ramp_is_cancellable():
+    section("madmapper: a new ramp, or an explicit cancel(), stops an "
+            "in-flight ramp at once (S3)")
+    import threading as _threading
+    import time as _time
     from ltcplay import madmapper as MM
-    link, socks, steps = _mm_link(cfg=_mm_cfg(fade_s=1.0, ramp_steps=5))
-    order = []
 
-    class FakeClock:
-        def pause(self):
-            order.append(("pause", steps.t))
+    # A real thread and a real (short) clock this time: cancellation is a
+    # genuine race against a ramp actually running on the worker thread,
+    # which a purely virtual clock (as in the tests above) can never
+    # exercise, since sleep() there never really yields control.
+    cfg = _mm_cfg(fade_s=0.3, ramp_steps=30)      # 10 ms/step, real time
+    socks = []
 
-        def resume(self):
-            order.append(("resume", steps.t))
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
 
-    link.resume(4, clock=FakeClock())
+    link = MM.Link(cfg, socket_factory=factory)
+    link.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)                              # a handful of steps in
+    link.cancel()
+    _time.sleep(0.05)                              # let it actually stop
+    stopped_at = len(socks[0].sent)
+    _time.sleep(0.3)                                # long past the full ramp
+    check(0 < stopped_at < 30,
+         f"cancel() must stop the ramp partway through, not let it "
+         f"finish: {stopped_at} of 30 packets went out")
+    check(len(socks[0].sent) == stopped_at,
+         f"nothing more may be sent after cancel(): sent "
+         f"{len(socks[0].sent)} total, {stopped_at} at cancel time")
     link.close()
-    check(order == [("resume", 0.0)],
-         f"resume() must be called exactly once, BEFORE the fade starts: "
-         f"{order}")
-    sent = socks[0].sent
-    vals = [struct.unpack(">f", p[-4:])[0] for p, _a in sent]
-    check(abs(vals[0]) < 1e-6 and vals[-1] == 1.0,
-         f"Resume's fade runs 0 -> 1: {vals}")
+
+    # Starting a NEW ramp must cancel an old one still in flight, with no
+    # explicit cancel() call at all.
+    socks.clear()
+    link2 = MM.Link(cfg, socket_factory=factory)
+    link2.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    partial = len(socks[0].sent)
+    link2.fade_audio(0.0, 1.0, seconds=0.05, steps=5)   # supersedes it
+    link2.close()
+    from_first_ramp = [v for p, _a in socks[0].sent
+                       for _addr, v in [MM.decode_float(p)]]
+    check(0 < partial < 30, f"setup: the first ramp must be interrupted "
+                           f"partway: {partial}")
+    # The interrupting ramp's own 5 values (0 -> 1) must all be present at
+    # the end, and the very last value sent must be its end value (1.0),
+    # not something left over from the cancelled ramp being resumed.
+    check(from_first_ramp[-1] == 1.0,
+         f"the new ramp must finish normally after superseding the old "
+         f"one: last value sent was {from_first_ramp[-1]}")
     print("  ok")
 
 
-def test_madmapper_abort_order():
-    section("madmapper: Abort fades audio AND video to black TOGETHER, "
-            "then stops the conductor -- never restarts the intermission")
-    from ltcplay import madmapper as MM
-    j = []
-    link, socks, steps = _mm_link(cfg=_mm_cfg(fade_s=1.0, ramp_steps=3),
-                                  journal=_mm_journal(j))
-    link.abort(4)
-    link.close()
-    sent = socks[0].sent
-    addrs = _mm_addrs(socks[0])
-    # 3 steps * 3 addresses (audio + 2 surfaces) = 9 fade packets, then one
-    # stop.
-    check(addrs[:9] == ([MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
-                        "/surfaces/Quad-2/opacity"] * 3),
-         f"Abort's fade must send audio and both surfaces together, every "
-         f"step, in the same order each time: {addrs[:9]}")
-    check(addrs[9] == "/timelines/Bank-1/conductor/stop",
-         f"the conductor stop must come AFTER the fade finishes, not "
-         f"before or during it: {addrs}")
-    check(len(addrs) == 10, f"abort() must send nothing else: {addrs}")
-    check(any("aborted" in t and "Nothing was disarmed" in t
-              for t, _e in j),
-         f"the journal must say the show was aborted and that nothing "
-         f"was disarmed (Jeff, 2026-09-24): {j}")
-    print("  ok")
-
-
-def test_madmapper_closing_stops_every_bank_with_no_intermission_restart():
-    section("madmapper: Closing fades to black, stops every bank, and "
-            "never brings the intermission back (End night, section 5)")
-    from ltcplay import madmapper as MM
-    link, socks, steps = _mm_link(cfg=_mm_cfg(fade_s=0.1, ramp_steps=2))
-    link.closing()
-    link.close()
-    addrs = _mm_addrs(socks[0])
-    check(addrs[-2:] == ["/timelines/Bank-1/conductor/stop",
-                        "/timelines/Bank-2/conductor/stop"],
-         f"closing() must stop both the show and the intermission bank: "
-         f"{addrs}")
-    check("play_from_beginning" not in " ".join(addrs),
-         f"closing() must never restart anything: {addrs}")
-    print("  ok")
-
-
-def test_madmapper_show_started_and_show_ended_manage_the_banks():
-    section("madmapper: a show starting stops the intermission and "
-            "selects the show bank; a show ending stops the show bank and "
-            "brings the intermission back (bench B2.3)")
+def test_madmapper_restore_levels():
+    section("madmapper: restore_levels() sets audio and every surface "
+            "back to 1.0, instantly, no ramp (B3 -- MadMapper keeps "
+            "whatever level a fade last left it at)")
     from ltcplay import madmapper as MM
     link, socks, steps = _mm_link()
-    link.show_started(4)
-    link.show_ended(4)
+    link.restore_levels()
     link.close()
+    sent = socks[0].sent
+    check(len(sent) == 3, f"audio (1) + 2 surfaces (2) = 3 packets, no "
+                         f"ramp: {len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(value == 1.0, f"every level must be set to exactly 1.0: "
+                            f"{addr} = {value}")
     addrs = _mm_addrs(socks[0])
-    check(addrs == ["/timelines/Bank-2/conductor/stop",
-                   "/timelines/Bank-1/select",
-                   "/timelines/Bank-1/conductor/stop",
-                   "/timelines/Bank-2/select",
-                   "/timelines/Bank-2/conductor/play_from_beginning"],
-         f"show_started then show_ended must send exactly this sequence: "
-         f"{addrs}")
-    print("  ok")
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"],
+         f"restore_levels must touch audio then every surface: {addrs}")
+    check(steps.t == 0.0, "restore_levels must not pace or sleep at all")
 
-
-def test_madmapper_on_transition_dispatch():
-    section("madmapper: Link.on_transition reads the scheduler's own "
-            "state names and dispatches the right action, arming and "
-            "disarming the watchdog to match")
-    from ltcplay import madmapper as MM
-    j = []
-    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0), journal=_mm_journal(j))
-    link, socks, steps = _mm_link(journal=_mm_journal(j))
-    link.watchdog = wd
-
-    link.on_transition(None, "SHOW", "TICK", 3)
-    check(wd.armed and wd._show == 3, "a fresh show start arms the watchdog")
-
-    link.on_transition("SHOW", "PAUSED", "HOLD", 3)
-    check(not wd.armed, "Hold disarms the watchdog (bench B3.3: silence "
-                       "while frozen is expected)")
-
-    link.on_transition("PAUSED", "SHOW", "RESUME", 3)
-    check(wd.armed, "Resume re-arms the watchdog")
-
-    link.on_transition("SHOW", "STANDBY", "SHOW_ENDED", 0)
-    check(not wd.armed, "a show ending disarms the watchdog")
-
-    link.on_transition("STANDBY", "SHOW", "TICK", 5)
-    link.on_transition("SHOW", "STANDBY", "ABORT", 5)
-    check(not wd.armed, "Abort disarms the watchdog")
-
-    link.on_transition("STANDBY", "SHOW", "TICK", 6)
-    before = len(_mm_addrs(socks[0]))
-    link.on_transition("SHOW", "STANDBY", "SHOW_FAILED", 6)
-    link.close()
-    new = _mm_addrs(socks[0])[before:]
-    # Positive proof, not just an absence: show_ended() would end with a
-    # play_from_beginning and never touch the audio address at all, and a
-    # no-op (the bug this guards against directly) would send nothing.
-    # Only abort()'s own shape -- the fade-to-black ramp, THEN the
-    # conductor stop, last -- satisfies both of these at once.
-    check(MM.AUDIO_ADDR in new and new and
-          new[-1] == "/timelines/Bank-1/conductor/stop",
-         f"a SHOW_FAILED stop must be treated exactly like an Abort -- "
-         f"fade to black, then stop, section 5: 'The same applies after "
-         f"a failed start ... as an abort' -- not silently do nothing and "
-         f"never restart the intermission: {new}")
-
-    # A repeated call with the same before/after state must be a no-op:
-    # tick() calls this on every 0.25 s tick, and most ticks change
-    # nothing.
-    link2, socks2, _s = _mm_link()
-    link2.on_transition("STANDBY", "STANDBY", "TICK", 0)
+    # set_audio/set_surfaces on their own, the same way: instant, no ramp.
+    link2, socks2, steps2 = _mm_link()
+    link2.set_audio(0.5)
+    link2.set_surfaces(0.25)
     link2.close()
-    check(socks2 == [], "no state change must send nothing at all -- not "
-                       "even open a socket")
+    vals = [MM.decode_float(p)[1] for p, _a in socks2[0].sent]
+    check(vals == [0.5, 0.25, 0.25], f"set_audio/set_surfaces: {vals}")
     print("  ok")
 
 
-def test_madmapper_watchdog_alarms_only_while_armed():
-    section("madmapper: the watchdog alarms on silence only while "
-            "armed -- quiet on Hold, between shows, and on a bank with no "
-            "heartbeat track of its own (bench B3.3)")
+def test_madmapper_config_refusals():
+    section("madmapper: config refusals are clear sentences, not stack "
+            "traces")
+    from ltcplay import madmapper as MM
+
+    def refused(doc, contains):
+        try:
+            MM.MadMapperConfig.parse(doc)
+        except MM.MadMapperConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"host": "", "surfaces": ["Quad-1"]}, "host")
+    refused({"surfaces": []}, "surfaces")
+    refused({"surfaces": ["Quad-1", "Quad-1"]}, "twice")
+    refused({"surfaces": ["Quad-1"], "show_bank": "Bank-1",
+            "intermission_bank": "Bank-1"}, "cannot share one name")
+    refused({"surfaces": ["Quad-1"], "port": 70000}, "port")
+    refused({"surfaces": ["Quad-1"], "port": True}, "port")
+    refused({"surfaces": ["Quad-1"], "ramp_steps": 1}, "ramp_steps")
+    refused({"surfaces": ["Quad-1"], "fade_s": 0}, "fade_s")
+    refused({"surfaces": ["Quad-1"], "typo_field": 1}, "typo_field")
+    refused({"surfaces": ["Quad-1"], "heartbeat": {}}, "show_len_s")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "address": "float-1"}},
+           "start with /")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "port": 0}}, "port")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "bind": "0.0.0.0"}},
+           "not loopback")
+
+    # A valid, minimal config must not raise, and must round-trip through
+    # summary() (used by the health route) without error.
+    cfg = MM.MadMapperConfig.parse({"surfaces": ["Quad-1"],
+                                    "heartbeat": {"show_len_s": 444.42}})
+    check("Bank-1" in cfg.summary(), f"summary(): {cfg.summary()}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_bind_must_be_loopback():
+    section("madmapper: the heartbeat listener refuses to bind off "
+            "loopback unless explicitly told to (handoff section 4)")
+    from ltcplay import madmapper as MM
+    for good in ("127.0.0.1", "127.5.5.5", "::1", "localhost"):
+        hb = MM.HeartbeatConfig.parse({"bind": good, "show_len_s": 10.0},
+                                      "timeline")
+        check(hb.bind == good, f"{good!r} is loopback and must be "
+                              f"accepted: {hb.bind}")
+    try:
+        MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0},
+                                 "timeline")
+        check(False, "a non-loopback bind must be refused by default")
+    except MM.MadMapperConfigError as e:
+        check("not loopback" in str(e) and "allow_non_loopback_bind" in
+              str(e), f"the refusal must name the escape hatch: {e}")
+    hb2 = MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0,
+                                   "allow_non_loopback_bind": True},
+                                  "timeline")
+    check(hb2.bind == "0.0.0.0" and hb2.allow_non_loopback_bind,
+         "the escape hatch must actually work when set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_start_bind_failure_has_its_own_sentence():
+    section("madmapper: a heartbeat bind failure names the heartbeat "
+            "port, never the web server's own port message")
     from ltcplay import madmapper as MM
     j = []
-    steps = _Steps()
-    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
-                     clock=steps.clock, journal=_mm_journal(j))
 
-    # Disarmed: an hour of silence is not news.
-    steps.t += 3600.0
-    wd._check()
-    check(not wd._alarmed, "disarmed silence must never alarm")
-    check(j == [], f"disarmed silence must never journal anything: {j}")
-
-    wd.arm(show=4)
-    wd.on_packet(0.0)
-    steps.t += 2.9
-    wd._check()
-    check(not wd._alarmed, "under the 3 s timeout must stay quiet")
-    steps.t += 0.2                       # 3.1 s since the last packet
-    wd._check()
-    check(wd._alarmed, "past the 3 s timeout while armed must alarm")
-    check(any("stopped answering" in t and "show 4" in t for t, _e in j),
-         f"the fault must be a plain sentence naming the show: {j}")
-
-    # Disarming an active alarm (Hold arriving mid-fault) must not leave a
-    # stale alarm armed the moment it is re-armed later.
-    wd.disarm()
-    wd.arm(show=5)
-    check(not wd._alarmed, "arm() must always start with a clean slate")
-
-    # Defense in depth, on top of on_packet()'s own refusal to touch
-    # anything while disarmed (test_madmapper_watchdog_ignores_a_lone_
-    # packet_while_disarmed): _check() must independently refuse to
-    # alarm while disarmed even if _last_packet_at were somehow left set
-    # -- poked directly here, bypassing the public API, because
-    # on_packet()'s own guard already makes this unreachable through it
-    # alone; a future change to on_packet() must not silently remove the
-    # only thing standing between a stray packet and a false alarm.
-    wd.disarm()
-    with wd._lock:
-        wd._last_packet_at = steps.t - 3600.0
-    wd._check()
-    check(not wd._alarmed, "_check() must never alarm while disarmed, "
-                          "even if the last-packet time were somehow set")
+    def bad_factory():
+        raise OSError(48, "Address already in use")
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0),
+                     socket_factory=bad_factory, journal=_mm_journal(j))
+    ok = wd.start()
+    check(ok is False, "start() must report failure, not raise or hang")
+    check(wd.bind_error is not None and "9001" in wd.bind_error and
+          "heartbeat" in wd.bind_error.lower(),
+         f"the bind error must name the heartbeat port specifically: "
+         f"{wd.bind_error}")
+    check(any("9001" in t and "heartbeat" in t.lower() for t, _e in j),
+         f"the journal must carry the same specific sentence: {j}")
+    wd.stop()
     print("  ok")
 
 
@@ -15770,7 +15833,120 @@ def test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed():
     wd.arm(show=7)
     wd.on_packet(0.1)
     check(wd.packets_in == 1 and wd._last_packet_at is not None,
-         "once armed, a real packet must count normally")
+         "once armed, and near the start, a real packet must count "
+         "normally")
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start():
+    section("madmapper: the SAME B9 lone packet, but armed BEFORE it "
+            "arrives (S1) -- any real wiring arms before or at bank "
+            "select, so disarmed alone is not enough; the packet must "
+            "still be ignored until one reads near the show's own start")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.42, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)                        # armed first, as any real wiring
+                                          # would (the bank must be
+                                          # selected before a show starts)
+    wd.on_packet(1.0)                     # MadMapper's re-sent stale value
+    check(wd.packets_in == 0, f"the lone stale packet must not be counted "
+                             f"even while armed: {wd.packets_in}")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"and must never be read as a position or compared for drift: "
+         f"{wd.last_drift_ms}, flagged={wd.drift_flagged}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no drift alarm may ever come from it: {j}")
+
+    # The real show then actually starts: a packet near 0 clears the gate.
+    steps.t += 2.0
+    wd.on_packet(0.002)                   # 0.002 * 444.42 = 0.89 s: near 0
+    check(wd.packets_in == 1, f"the first real, near-start packet must be "
+                             f"counted: {wd.packets_in}")
+
+    # And a genuine drift once tracking has begun still works normally.
+    wd.note_position(50.0, at=steps.t)
+    wd.on_packet(50.3 / 444.42, at=steps.t)   # 300 ms of real drift
+    check(wd.drift_flagged, f"drift must still be caught once real "
+                           f"tracking has begun: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_nan_is_a_drift_fault():
+    section("madmapper: a NaN heartbeat value counts as bad -- a drift "
+            "fault, never silently read as zero drift")
+    import math as _math
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0), clock=steps.clock,
+                     journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)
+    wd.on_packet(0.0)                     # clears the awaiting-start gate
+    check(wd.packets_in == 1, "setup: the clean packet must count")
+
+    wd.note_position(1.0, at=steps.t)
+    wd.on_packet(float("nan"), at=steps.t)
+    check(wd.drift_flagged, f"a NaN value must flag a drift fault: "
+                           f"{wd.last_drift_ms}")
+    check(wd.last_drift_ms is None,
+         f"a NaN value has no meaningful drift number to report: "
+         f"{wd.last_drift_ms}")
+    check(any("NaN" in t or "nan" in t for t, _e in j),
+         f"the journal sentence must say the value was not usable: {j}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_alarms_only_while_armed():
+    section("madmapper: the watchdog alarms on silence only while "
+            "armed -- quiet on Hold, between shows, and on a bank with no "
+            "heartbeat track of its own (bench B3.3)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+
+    # Disarmed: an hour of silence is not news.
+    steps.t += 3600.0
+    wd._check()
+    check(not wd._alarmed, "disarmed silence must never alarm")
+    check(j == [], f"disarmed silence must never journal anything: {j}")
+
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 2.9
+    wd._check()
+    check(not wd._alarmed, "under the 3 s timeout must stay quiet")
+    steps.t += 0.2                       # 3.1 s since the last packet
+    wd._check()
+    check(wd._alarmed, "past the 3 s timeout while armed must alarm")
+    check(any("stopped answering" in t and "show 4" in t for t, _e in j),
+         f"the fault must be a plain sentence naming the show: {j}")
+
+    # Disarming an active alarm (Hold arriving mid-fault) must not leave a
+    # stale alarm armed the moment it is re-armed later.
+    wd.disarm()
+    wd.arm(show=5)
+    check(not wd._alarmed, "arm() must always start with a clean slate")
+
+    # Defense in depth, on top of on_packet()'s own refusal to touch
+    # anything while disarmed: _check() must independently refuse to
+    # alarm while disarmed even if _last_packet_at were somehow left set
+    # -- poked directly here, bypassing the public API, because
+    # on_packet()'s own guard already makes this unreachable through it
+    # alone; a future change to on_packet() must not silently remove the
+    # only thing standing between a stray packet and a false alarm.
+    wd.disarm()
+    with wd._lock:
+        wd._last_packet_at = steps.t - 3600.0
+    wd._check()
+    check(not wd._alarmed, "_check() must never alarm while disarmed, "
+                          "even if the last-packet time were somehow set")
     print("  ok")
 
 
@@ -15809,6 +15985,11 @@ def test_madmapper_watchdog_drift_flag():
     wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
                      clock=steps.clock, journal=_mm_journal(j))
     wd.arm(show=4)
+    wd.note_position(0.0)
+    wd.on_packet(0.0)                    # a clean start: clears the
+                                         # awaiting-start gate (S1)
+    j.clear()
+
     wd.note_position(5.0)
     wd.on_packet(0.5)                    # MadMapper says 5.0 s too: 0 drift
     check(wd.last_drift_ms == 0.0 and not wd.drift_flagged,
@@ -15850,7 +16031,8 @@ def test_madmapper_watchdog_suspend_and_resume():
     wd.arm(show=4)
     # 60/s for a second, then nothing for 10 s (suspended), matching the
     # bench's own numbers (mean 16.7 ms between packets, silent at once on
-    # suspend).
+    # suspend). Starts at value 0.2 (2.0/10.0), inside the START_WINDOW_S
+    # gate, so tracking begins on the very first packet.
     for i in range(60):
         wd.note_position(2.0 + i / 60.0, at=steps.t)
         wd.on_packet((2.0 + i / 60.0) / 10.0)
@@ -15865,48 +16047,83 @@ def test_madmapper_watchdog_suspend_and_resume():
     wd.note_position(13.0, at=steps.t)   # ltcplay kept its own clock moving
     wd.on_packet(1.3)                    # MadMapper: 1.3 * 10 = 13.0 s
     check(not wd._alarmed, "the first packet back must clear the alarm")
+    # The recovery packet itself is settle-gated (bench B14, see
+    # test_madmapper_watchdog_skips_drift_right_after_recovery): drift is
+    # simply not computed on it, so last_drift_ms here is whatever it was
+    # from the clean tracking just before the suspend -- still near 0,
+    # but the real proof that this is not a stale carry-over is that the
+    # VERY NEXT packet resumes fresh, correct tracking.
+    steps.t += 1.0 / 60.0
+    wd.note_position(13.0 + 1.0 / 60.0, at=steps.t)
+    wd.on_packet((13.0 + 1.0 / 60.0) / 10.0)
     check(wd.last_drift_ms is not None and abs(wd.last_drift_ms) < 1.0,
          f"a suspend-and-resume with both sides caught up must show ~0 "
-         f"drift, not a stale comparison: {wd.last_drift_ms}")
+         f"drift once tracking has resumed, not a stale comparison: "
+         f"{wd.last_drift_ms}")
     print("  ok")
 
 
-def test_madmapper_config_refusals():
-    section("madmapper: config refusals are clear sentences, not stack "
-            "traces")
+def test_madmapper_watchdog_skips_drift_right_after_recovery():
+    section("madmapper: the first heartbeat right after a recovery is "
+            "never judged for drift either (bench B14, on the Pico "
+            "against the real MadMapper: the first packet back from a "
+            "Hold carried a stale position -- '5016 ms behind', then "
+            "'back in step' 9 ms later)")
     from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0,
+                                        drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=1)
+    wd.note_position(0.0, at=0.0)
+    wd.on_packet(0.0, at=0.0)             # clears awaiting-start
+    check(not wd.drift_flagged, "setup: clean tracking begins")
 
-    def refused(doc, contains):
-        try:
-            MM.MadMapperConfig.parse(doc)
-        except MM.MadMapperConfigError as e:
-            check(contains in str(e), f"refusal did not mention "
-                                     f"{contains!r}: {e}")
-            return
-        check(False, f"{doc} should have been refused")
+    steps.t = 5.0
+    wd._check()
+    check(wd._alarmed, "setup: silence past the timeout must alarm")
 
-    refused({"host": "", "surfaces": ["Quad-1"]}, "host")
-    refused({"surfaces": []}, "surfaces")
-    refused({"surfaces": ["Quad-1", "Quad-1"]}, "twice")
-    refused({"surfaces": ["Quad-1"], "show_bank": "Bank-1",
-            "intermission_bank": "Bank-1"}, "cannot share one name")
-    refused({"surfaces": ["Quad-1"], "port": 70000}, "port")
-    refused({"surfaces": ["Quad-1"], "port": True}, "port")
-    refused({"surfaces": ["Quad-1"], "ramp_steps": 1}, "ramp_steps")
-    refused({"surfaces": ["Quad-1"], "fade_s": 0}, "fade_s")
-    refused({"surfaces": ["Quad-1"], "typo_field": 1}, "typo_field")
-    refused({"surfaces": ["Quad-1"], "heartbeat": {}}, "show_len_s")
-    refused({"surfaces": ["Quad-1"],
-            "heartbeat": {"show_len_s": 10, "address": "float-1"}},
-           "start with /")
-    refused({"surfaces": ["Quad-1"],
-            "heartbeat": {"show_len_s": 10, "port": 0}}, "port")
+    # The bench's own shape: ltcplay's own clock kept moving (now at
+    # 5.0 s), but MadMapper's first packet back still reports something
+    # stale (here, still 0 -- a full 5 s "behind", the same order of
+    # magnitude the bench saw).
+    j.clear()
+    wd.note_position(5.0, at=5.0)
+    wd.on_packet(0.0, at=5.0)
+    check(not wd._alarmed, "the recovery packet must still clear the "
+                          "alarm -- the video really is back")
+    check(not wd.drift_flagged, f"but it must NOT be judged for drift: "
+                               f"{wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no false drift alarm may be journaled from it: {j}")
 
-    # A valid, minimal config must not raise, and must round-trip through
-    # summary() (used by the health route) without error.
-    cfg = MM.MadMapperConfig.parse({"surfaces": ["Quad-1"],
-                                    "heartbeat": {"show_len_s": 444.42}})
-    check("Bank-1" in cfg.summary(), f"summary(): {cfg.summary()}")
+    # The very next packet, back in step, resumes normal tracking.
+    wd.note_position(5.01, at=5.01)
+    wd.on_packet(0.501, at=5.01)
+    check(not wd.drift_flagged, f"normal tracking must resume "
+                               f"immediately after: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_submit_has_a_timeout():
+    section("madmapper: a wedged worker cannot make _submit() wait "
+            "forever (item 9)")
+    import time as _time
+    from ltcplay import madmapper as MM
+    j = []
+    link = MM.Link(_mm_cfg(), socket_factory=lambda: _FakeMMSock(),
+                  journal=_mm_journal(j))
+    link._submit_timeout_s = 0.05
+    t0 = _time.monotonic()
+    link._submit(lambda: _time.sleep(0.3), wait=True)
+    elapsed = _time.monotonic() - t0
+    check(elapsed < 0.2, f"_submit() must give up after its own timeout, "
+                        f"not the job's: waited {elapsed:.2f}s")
+    check(any("did not finish" in t and "timeout" == e.get("outcome")
+              for t, e in j), f"a timeout must be journaled as a fault: "
+                             f"{j}")
+    link.close()
     print("  ok")
 
 
@@ -15971,91 +16188,6 @@ def test_the_gpl_path_never_loads_madmapper():
     print("  ok")
 
 
-def test_madmapper_schedule_hook_runs_outside_service_lock():
-    section("madmapper: Link.on_transition is wired through Service."
-            "on_transition, fires with the right actor and shows, and "
-            "never runs while Service.lock is held")
-    S = _sched()
-    if S is None:
-        return
-    from ltcplay import madmapper as MM
-    from ltcplay import schedule_service as SV
-    work = tempfile.mkdtemp()
-    path = os.path.join(work, SV.RULE_FILE)
-    doc = {"timezone": "America/Denver",
-          "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
-          "weekly": {"sat": {"first_start": "18:00", "interval_min": 20,
-                             "last_end": "22:00"}},
-          "exceptions": {}, "show_len_s": 440, "guard_s": 120,
-          "late_grace_s": 0}
-    SV.save_rule(path, doc)
-    now = [_den(S, 17, 59)]
-    svc = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0,
-                     state_dir=work)
-    svc.start(thread=False)
-
-    j = []
-
-    def journal(text, **extra):
-        with svc._locked():
-            svc._journal_line("madmapper", text, **extra)
-
-    cfg = _mm_cfg()
-    steps = _Steps()
-    socks = []
-
-    def factory():
-        s = _FakeMMSock()
-        socks.append(s)
-        return s
-
-    wd = MM.Watchdog(cfg.heartbeat, clock=steps.clock, journal=journal)
-    link = MM.Link(cfg, socket_factory=factory, clock=steps.clock,
-                  sleep=steps.sleep, journal=journal, watchdog=wd)
-    svc.on_transition = link.on_transition
-
-    now[0] = _den(S, 18, 0, 0)
-    t0 = time.monotonic()
-    svc.tick()
-    elapsed = time.monotonic() - t0
-    check(svc.machine.state == S.SHOW, f"setup: expected SHOW, got "
-                                       f"{svc.machine.state}")
-    # wd.armed flips True at the START of on_transition's SHOW branch,
-    # before show_started() has even sent its OSC commands or written its
-    # own journal line -- both still to come on the SAME hook thread. Wait
-    # for the journal line itself, the last thing the hook does, so this
-    # is not a race against its own middle.
-    check(wait_for(lambda: any(r["actor"] == "madmapper"
-                              for r in svc.journal), timeout=2.0),
-         "the hook must actually run and journal something")
-    check(wd.armed, "the watchdog must be armed once the hook has run")
-    check(elapsed < 0.5, f"tick() must not wait for the hook: {elapsed:.2f}s")
-
-    madmapper_lines = [r for r in svc.journal if r["actor"] == "madmapper"]
-    check(any("selected for show 1" in r["text"] for r in madmapper_lines),
-         f"the journal must carry a plain-English madmapper line for the "
-         f"show start: {madmapper_lines}")
-
-    lock_wait = {}
-
-    def other_thread():
-        t0 = time.monotonic()
-        with svc.lock:
-            pass
-        lock_wait["s"] = time.monotonic() - t0
-
-    other = threading.Thread(target=other_thread)
-    other.start()
-    other.join(timeout=3.0)
-    check(lock_wait.get("s", 999) < 0.5,
-         f"a separate thread wanting Service.lock must never wait behind "
-         f"a madmapper hook: {lock_wait.get('s')}")
-
-    link.close()
-    wd.stop()
-    print("  ok")
-
-
 def test_madmapper_web_route_reports_health():
     section("madmapper: web.py's /api/madmapper/state answers the health "
             "panel's dot with no scheduler required")
@@ -16090,9 +16222,49 @@ def test_madmapper_web_route_reports_health():
     print("  ok")
 
 
+def test_web_does_not_close_a_ready_made_madmapper_link():
+    section("madmapper: web.py only closes a link IT built from a "
+            "config -- a ready-made pair passed in is the caller's own")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock())
+    wd = MM.Watchdog(cfg.heartbeat)
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), madmapper=(link, wd))
+    h.server_close()
+    check(not link._closed, "a ready-made link must not be closed by "
+                           "serve()'s own server_close()")
+    link.close()
+    wd.stop()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_madmapper_link():
+    section("madmapper: web.py DOES close a link it built itself from a "
+            "config, on server_close()")
+    from ltcplay import web, madmapper as MM
+    real_build = MM.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, link_socket_factory=lambda: _FakeMMSock(),
+                          watchdog_socket_factory=lambda: _FakeMMSock(),
+                          **kw)
+    MM.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), madmapper=_mm_cfg())
+        link, wd = h.madmapper
+        h.server_close()
+        check(link._closed, "a config-built link must be closed by "
+                           "server_close()")
+    finally:
+        MM.build = real_build
+    print("  ok")
+
+
 # ============================================================== beyond ====
-# The laser blank/unblank half, unblocked by the Pico's B8 bench result
-# (bench/2026-09-25 at 1c64621).
+# The laser blank/unblank device layer, unblocked by the Pico's B8 bench
+# result. Device layer only, like madmapper.py -- see its module docstring.
 
 def _beyond_link(cfg=None, journal=None):
     from ltcplay import beyond as B
@@ -16106,7 +16278,7 @@ def _beyond_link(cfg=None, journal=None):
         return s
 
     link = B.Beyond(cfg, socket_factory=factory, clock=steps.clock,
-                    journal=journal)
+                    sleep=steps.sleep, journal=journal)
     return link, socks, steps
 
 
@@ -16140,25 +16312,216 @@ def test_beyond_osc_bytes_and_config_refusals():
     refused({"port": 70000}, "port")
     refused({"host": ""}, "host")
     refused({"typo": 1}, "typo")
+    refused({"address": "/beyond/general/BlackOut"}, "no setting")
+    print("  ok")
+
+
+def test_beyond_allow_list_rejects_everything_but_brightness():
+    section("beyond: the allow-list refuses everything but the exact "
+            "brightness address with 0.0 or 100.0 (S5, R6's own variants)")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+
+    def refused(address, value=0.0):
+        try:
+            link._send(address, value)
+        except B.BeyondConfigError:
+            return True
+        return False
+
+    variants = ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
+               "/beyond/general/blackout", "/BEYOND/general/BlackOut",
+               "/beyond/general/BlackOut/", "/beyond/general/BlackOut ",
+               "/beyond//general/BlackOut", "/beyond/general/Black*",
+               "/beyond/general/{BlackOut,Nothing}",
+               "/beyond/*/MasterPause", "/beyond/general/Master?ause",
+               "#bundle", "/beyond/master/livecontrol/brightness ")
+    for v in variants:
+        check(refused(v), f"{v!r} must be refused, not sent")
+    # The right address, but a wrong value.
+    for bad_value in (50.0, 1.0, -0.0 - 1, float("nan"), "0.0", True):
+        check(refused(B.BRIGHTNESS_ADDR, bad_value),
+             f"{B.BRIGHTNESS_ADDR!r} with value {bad_value!r} must be "
+             f"refused: only exactly 0.0 or 100.0 is allowed")
+    # The right address, right values: must NOT be refused.
+    check(not refused(B.BRIGHTNESS_ADDR, 0.0), "0.0 must be allowed")
+    check(not refused(B.BRIGHTNESS_ADDR, 100.0), "100.0 must be allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_lowest_level_socket_also_enforces_allow_list():
+    section("beyond: the guard holds even below _send() -- an audit "
+            "(R6) found a direct call to the socket's own send() went "
+            "straight through with no guard at all")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    try:
+        link._osc.send("/beyond/general/BlackOut", 0.0)
+        check(False, "the socket's own send() must refuse this too")
+    except B.BeyondConfigError:
+        pass
+    try:
+        link._osc.send(B.BRIGHTNESS_ADDR, 42.0)
+        check(False, "the socket's own send() must refuse a bad value "
+                    "even for the right address")
+    except B.BeyondConfigError:
+        pass
+    check(socks == [], "nothing refused at the socket layer may open a "
+                      "socket at all")
+    ok = link._osc.send(B.BRIGHTNESS_ADDR, 0.0)
+    check(ok, "the socket's own send() must still work for what IS "
+             "allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_and_unblank_succeed_and_report_ok():
+    section("beyond: blank()/unblank() each send the brightness packet "
+            "3 times, about 20 ms apart, and report success")
+    from ltcplay import beyond as B, madmapper as MM
+    link, socks, steps = _beyond_link()
+    ok = link.blank(4)
+    check(ok is True, "blank() must return True when at least one packet "
+                     "got out")
+    sent = socks[0].sent
+    check(len(sent) == B.RETRY_COUNT, f"blank() must send exactly "
+                                     f"{B.RETRY_COUNT} packets: "
+                                     f"{len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(addr == B.BRIGHTNESS_ADDR and value == 0.0,
+             f"every retry must send the same brightness 0.0: "
+             f"{addr} {value}")
+    check(abs(steps.t - (B.RETRY_COUNT - 1) * B.RETRY_INTERVAL_S) < 1e-9,
+         f"the retries must be paced about {B.RETRY_INTERVAL_S * 1000:g} "
+         f"ms apart: took {steps.t}s")
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"health fields: {link.last_command} {link.last_result}")
+
+    ok2 = link.unblank(4)
+    check(ok2 is True, "unblank() must return True too")
+    vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent[B.RETRY_COUNT:]]
+    check(all(v == 100.0 for v in vals),
+         f"unblank must send exactly 100.0 every time: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_retries_and_reports_failure():
+    section("beyond: a blank that never gets a packet out is reported "
+            "as a failure, never silently journaled as 'blanked' (S4, "
+            "the audit's R5)")
+    from ltcplay import beyond as B
+    journal = []
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   journal=_mm_journal_beyond(journal),
+                   socket_factory=lambda: Dead())
+    ok = link.blank(3)
+    check(ok is False, "blank() must return False when nothing got out")
+    check(link.last_result == "failed", f"health must show failed: "
+                                       f"{link.health()}")
+    texts = [t for t, _e in journal]
+    check(not any("BEYOND blanked" in t for t in texts),
+         f"a failed blank must NEVER be journaled as a plain success: "
+         f"{texts}")
+    fault_lines = [(t, e) for t, e in journal if e.get("fault")]
+    check(any("failed to blank" in t for t, _e in fault_lines),
+         f"a failure must be journaled as its own, flagged sentence: "
+         f"{journal}")
+
+    # A failed socket OPEN, retried within the same call rather than
+    # silently dropped by the normal 1 s reopen backoff (which exists for
+    # ordinary traffic, not a deliberate ~40 ms retry burst).
+    journal.clear()
+    calls = [0]
+
+    def bad_factory():
+        calls[0] += 1
+        raise OSError(24, "Too many open files")
+    link2 = B.Beyond(B.BeyondConfig.parse({}),
+                     journal=_mm_journal_beyond(journal),
+                     socket_factory=bad_factory)
+    link2.blank(3)
+    check(calls[0] == B.RETRY_COUNT,
+         f"every one of the {B.RETRY_COUNT} retries must attempt to "
+         f"reopen the socket, not be swallowed by the reopen backoff: "
+         f"{calls[0]} attempts")
+    check(link2.last_result == "failed", "still reported as failed")
+    print("  ok")
+
+
+def _mm_journal_beyond(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def test_beyond_health_reports_last_result_and_packets_sent():
+    section("beyond: health() reports the last result and the packets "
+            "actually sent, never a liveness claim")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    h0 = link.health()
+    check(h0["last_command"] is None and h0["last_result"] is None,
+         f"before any command: {h0}")
+    check("armed" not in h0 and "state" not in h0,
+         f"beyond's health dict must never claim 'armed' or 'state' the "
+         f"way the watchdog's does -- there is no heartbeat to base "
+         f"either on: {h0}")
+    link.blank(4)
+    h1 = link.health()
+    check(h1["last_command"] == "blank" and h1["last_result"] == "ok"
+          and h1["packets_sent"] == B.RETRY_COUNT, f"after blank(): {h1}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_builds_blank_at_construction_and_close_blanks_again():
+    section("beyond: build() blanks once immediately; close() blanks "
+            "again before closing the socket (S6, safe defaults)")
+    from ltcplay import beyond as B
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+    steps = _Steps()
+    link = B.build(B.BeyondConfig.parse({}), clock=steps.clock,
+                   sleep=steps.sleep, socket_factory=factory)
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"build() must blank once before returning: {link.health()}")
+    check(len(socks[0].sent) == B.RETRY_COUNT,
+         f"that first blank must go through the same 3x retry: "
+         f"{len(socks[0].sent)}")
+    link.close()
+    check(len(socks[0].sent) == B.RETRY_COUNT * 2,
+         f"close() must blank again, its own full 3x retry, before "
+         f"closing the socket: {len(socks[0].sent)}")
     print("  ok")
 
 
 def test_beyond_never_sends_blackout_or_masterpause():
     section("beyond: BlackOut and MasterPause are never sent, under any "
-            "path -- a hard guard, not just an unused code path")
+            "path -- the exact-name deny list, kept as a second, "
+            "explicit layer on top of the allow-list")
     from ltcplay import beyond as B
     link, socks, steps = _beyond_link()
     for addr in B.FORBIDDEN_ADDRESSES:
         try:
             link._send(addr)
+            check(False, f"_send() must refuse {addr!r}")
         except B.BeyondConfigError:
             pass
-        else:
-            check(False, f"_send() must refuse {addr!r}")
-
-    # The empirical proof: exercise every public method a great many times
-    # and confirm not one packet ever carries a forbidden address.
-    for i in range(50):
+    for i in range(20):
         link.blank(i)
         link.unblank(i)
     link.close()
@@ -16171,137 +16534,6 @@ def test_beyond_never_sends_blackout_or_masterpause():
          f"only the brightness address may ever be sent: {seen}")
     check(not (seen & B.FORBIDDEN_ADDRESSES),
          f"a forbidden address was sent: {seen & B.FORBIDDEN_ADDRESSES}")
-    print("  ok")
-
-
-def test_beyond_blank_needs_no_ramp():
-    section("beyond: blank and unblank are each exactly one packet, no "
-            "ramp (bench B8.3: brightness jumps at once)")
-    from ltcplay import beyond as B, madmapper as MM
-    link, socks, steps = _beyond_link()
-    link.blank(4)
-    check(len(socks[0].sent) == 1, f"blank() must send exactly one "
-                                  f"packet: {len(socks[0].sent)}")
-    got = MM.decode_float(socks[0].sent[0][0])
-    check(got == (B.BRIGHTNESS_ADDR, 0.0), f"blank() must send brightness "
-                                          f"0.0, not {got}")
-    link.unblank(4)
-    check(len(socks[0].sent) == 2, f"unblank() must send exactly one more "
-                                  f"packet: {len(socks[0].sent)}")
-    got = MM.decode_float(socks[0].sent[1][0])
-    check(got == (B.BRIGHTNESS_ADDR, 100.0), f"unblank() must send "
-                                            f"brightness 100.0, not {got}")
-    check(steps.t == 0.0, f"neither call may pace or sleep at all: "
-                         f"{steps.t}")
-    print("  ok")
-
-
-def test_beyond_health_reports_command_sent_only():
-    section("beyond: health() claims no liveness at all, only that a "
-            "command was sent (Jeff/Andy, 2026-09-26 -- BEYOND answers "
-            "nothing, ever)")
-    from ltcplay import beyond as B
-    link, socks, steps = _beyond_link()
-    h0 = link.health()
-    check(h0["last_command"] is None and h0["last_sent_at"] is None,
-         f"before any command: {h0}")
-    check("armed" not in h0 and "state" not in h0,
-         f"beyond's health dict must never claim 'armed' or 'state' the "
-         f"way the watchdog's does -- there is no heartbeat to base "
-         f"either on: {h0}")
-    link.blank(4)
-    h1 = link.health()
-    check(h1["last_command"] == "blank" and h1["packets_sent"] == 1,
-         f"after blank(): {h1}")
-    print("  ok")
-
-
-def test_beyond_hold_blanks_at_once_before_the_fade():
-    section("beyond: Hold blanks the lasers AT ONCE, before the music "
-            "fade even starts -- never after it (Jeff/Andy, 2026-09-26)")
-    from ltcplay import madmapper as MM
-    from ltcplay import beyond as B
-
-    # A direct, order-of-actual-packets proof, immune to a reorder inside
-    # hold() that still happens to leave hold()'s own trailing journal
-    # line last (which a note-order check alone cannot tell apart from
-    # the blank simply moving later but still before that one line): every
-    # send, from EITHER link, is tagged and recorded in one shared list in
-    # the exact order it was actually sent.
-    order = []
-
-    class _Tagged(_FakeMMSock):
-        def __init__(self, tag):
-            super().__init__()
-            self.tag = tag
-
-        def sendto(self, pkt, addr):
-            order.append(self.tag)
-            super().sendto(pkt, addr)
-
-    steps = _Steps()
-    mm_sock = _Tagged("madmapper")
-    b_sock = _Tagged("beyond")
-    mm_link = MM.Link(_mm_cfg(fade_s=1.0, ramp_steps=3),
-                      socket_factory=lambda: mm_sock, clock=steps.clock,
-                      sleep=steps.sleep)
-    b_link = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: b_sock,
-                      clock=steps.clock)
-    mm_link.beyond = b_link
-    mm_link.hold(4)
-    mm_link.close()
-    check(order and order[0] == "beyond",
-         f"the very first packet sent, of either kind, must be BEYOND's "
-         f"blank: {order[:5]}")
-    check(order.count("beyond") == 1, f"exactly one blank: {order}")
-    check(all(x == "madmapper" for x in order[1:]),
-         f"every packet after the blank must be MadMapper's own fade, "
-         f"never another blank: {order}")
-    print("  ok")
-
-
-def test_beyond_resume_unblanks_right_after_the_clock_restarts():
-    section("beyond: Resume restarts the clock, THEN unblanks, THEN fades "
-            "the music up -- unblanking before the clock restarts would "
-            "risk a static, stale beam (see beyond.py's own docstring)")
-    from ltcplay import madmapper as MM
-    from ltcplay import beyond as B
-    mm_link, mm_socks, steps = _mm_link(cfg=_mm_cfg(fade_s=1.0,
-                                                    ramp_steps=3))
-    b_link, b_socks, _ = _beyond_link()
-    mm_link.beyond = b_link
-    order = []
-
-    class FakeClock:
-        def pause(self):
-            order.append("pause")
-
-        def resume(self):
-            order.append("resume")
-            check(b_socks == [] or b_socks[0].sent == [],
-                 "the clock must restart BEFORE the unblank, not after")
-
-    mm_link.resume(4, clock=FakeClock())
-    mm_link.close()
-    check(order == ["resume"], f"resume() must be called: {order}")
-    check(len(b_socks[0].sent) == 1, f"exactly one unblank: "
-                                    f"{len(b_socks[0].sent)}")
-    print("  ok")
-
-
-def test_beyond_abort_and_closing_blank_first():
-    section("beyond: Abort blanks first thing; Closing blanks too "
-            "(section 5, and Jeff/Andy 2026-09-26)")
-    from ltcplay import madmapper as MM
-    for method, args in (("abort", (4,)), ("closing", ())):
-        mm_link, mm_socks, steps = _mm_link(cfg=_mm_cfg(fade_s=0.1,
-                                                        ramp_steps=2))
-        b_link, b_socks, _ = _beyond_link()
-        mm_link.beyond = b_link
-        getattr(mm_link, method)(*args)
-        mm_link.close()
-        check(len(b_socks[0].sent) == 1, f"{method}() must blank exactly "
-                                        f"once: {len(b_socks[0].sent)}")
     print("  ok")
 
 
@@ -16354,8 +16586,7 @@ def test_the_gpl_path_never_loads_beyond():
 
 def test_beyond_web_route_reports_health():
     section("beyond: web.py's /api/beyond/state answers 'command sent' "
-            "only, and wiring both madmapper and beyond together attaches "
-            "the laser link to the MadMapper link")
+            "only, with no scheduler wiring at all")
     from ltcplay import web, madmapper as MM, beyond as B
     steps = _Steps()
     mm_cfg = _mm_cfg()
@@ -16363,15 +16594,11 @@ def test_beyond_web_route_reports_health():
                       clock=steps.clock, sleep=steps.sleep)
     b_cfg = B.BeyondConfig.parse({})
     b_link = B.Beyond(b_cfg, socket_factory=lambda: _FakeMMSock(),
-                      clock=steps.clock)
+                      clock=steps.clock, sleep=steps.sleep)
     wd = MM.Watchdog(mm_cfg.heartbeat, clock=steps.clock)
     work = tempfile.mkdtemp()
     port = _free_port()
-    h = web.serve(work, port=port, madmapper=(mm_link, wd),
-                 beyond=b_link)
-    check(mm_link.beyond is b_link,
-         "serve() must attach the laser link to the MadMapper link when "
-         "both are configured")
+    h = web.serve(work, port=port, madmapper=(mm_link, wd), beyond=b_link)
     t = threading.Thread(target=h.serve_forever,
                         kwargs={"poll_interval": 0.05}, daemon=True)
     t.start()
@@ -16389,6 +16616,45 @@ def test_beyond_web_route_reports_health():
     check(body["beyond"]["last_command"] is None,
          f"nothing sent yet: {body}")
     check("armed" not in body["beyond"], f"no liveness claim: {body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_beyond_link():
+    section("beyond: web.py only closes a link IT built from a config "
+            "-- a ready-made Beyond passed in is the caller's own")
+    from ltcplay import web, beyond as B
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _FakeMMSock())
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), beyond=link)
+    before = link.health()["packets_sent"]
+    h.server_close()
+    check(link.health()["packets_sent"] == before,
+         "a ready-made beyond link must not be blanked by serve()'s own "
+         "server_close()")
+    link.close()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_beyond_link():
+    section("beyond: web.py DOES close (and so blank) a beyond link it "
+            "built itself from a config, on server_close()")
+    from ltcplay import web, beyond as B
+    real_build = B.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, socket_factory=lambda: _FakeMMSock(), **kw)
+    B.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), beyond=B.BeyondConfig.parse({}))
+        link = h.beyond
+        before = link.health()["packets_sent"]
+        h.server_close()
+        check(link.health()["packets_sent"] > before,
+             "closing a config-built beyond link must blank it again")
+    finally:
+        B.build = real_build
     print("  ok")
 
 
@@ -16575,32 +16841,40 @@ if __name__ == "__main__":
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
     test_madmapper_osc_bytes_match_the_bench_capture()
+    test_madmapper_primitives_send_the_right_addresses()
     test_madmapper_ramp_step_count_and_values()
-    test_madmapper_hold_order_is_fade_then_freeze()
-    test_madmapper_resume_order_is_clock_then_fade()
-    test_madmapper_abort_order()
-    test_madmapper_closing_stops_every_bank_with_no_intermission_restart()
-    test_madmapper_show_started_and_show_ended_manage_the_banks()
-    test_madmapper_on_transition_dispatch()
-    test_madmapper_watchdog_alarms_only_while_armed()
+    test_madmapper_fade_surfaces_perceptual_curve_step_values()
+    test_madmapper_ramp_is_cancellable()
+    test_madmapper_restore_levels()
+    test_madmapper_config_refusals()
+    test_madmapper_watchdog_bind_must_be_loopback()
+    test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
     test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed()
+    test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start()
+    test_madmapper_watchdog_nan_is_a_drift_fault()
+    test_madmapper_watchdog_alarms_only_while_armed()
     test_madmapper_watchdog_recovery()
     test_madmapper_watchdog_drift_flag()
     test_madmapper_watchdog_suspend_and_resume()
-    test_madmapper_config_refusals()
+    test_madmapper_watchdog_skips_drift_right_after_recovery()
+    test_madmapper_submit_has_a_timeout()
     test_madmapper_no_clock_is_ever_mixed_with_another()
     test_the_gpl_path_never_loads_madmapper()
-    test_madmapper_schedule_hook_runs_outside_service_lock()
     test_madmapper_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_madmapper_link()
+    test_web_closes_a_config_built_madmapper_link()
     test_beyond_osc_bytes_and_config_refusals()
+    test_beyond_allow_list_rejects_everything_but_brightness()
+    test_beyond_lowest_level_socket_also_enforces_allow_list()
+    test_beyond_blank_and_unblank_succeed_and_report_ok()
+    test_beyond_blank_retries_and_reports_failure()
+    test_beyond_health_reports_last_result_and_packets_sent()
+    test_beyond_builds_blank_at_construction_and_close_blanks_again()
     test_beyond_never_sends_blackout_or_masterpause()
-    test_beyond_blank_needs_no_ramp()
-    test_beyond_health_reports_command_sent_only()
-    test_beyond_hold_blanks_at_once_before_the_fade()
-    test_beyond_resume_unblanks_right_after_the_clock_restarts()
-    test_beyond_abort_and_closing_blank_first()
     test_the_gpl_path_never_loads_beyond()
     test_beyond_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_beyond_link()
+    test_web_closes_a_config_built_beyond_link()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

@@ -643,16 +643,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _madmapper(self):
         """Same rule again: without a madmapper config every route here is
-        a plain 404, and madmapper.py is never imported. Read-only -- there
-        is deliberately no POST here, the same rule schedule_service.py's
-        own module docstring states: nothing on this page starts, stops or
-        arms anything on its own."""
+        a plain 404, and madmapper.py is never imported."""
         mm = getattr(self.server, "madmapper", None)
         return _MadMapperRoutes(*mm) if mm is not None else _NoMadMapper()
 
     def _beyond(self):
         """Same rule again: without a beyond config every route here is a
-        plain 404, and beyond.py is never imported."""
+        plain 404, and beyond.py is never imported. Read-only -- there is
+        no POST here: this build has no sequencing logic anywhere (see
+        madmapper.py's module docstring), so there is nothing for a route
+        here to trigger."""
         b = getattr(self.server, "beyond", None)
         return _BeyondRoutes(b) if b is not None else _NoBeyond()
 
@@ -814,7 +814,9 @@ class _NoMadMapper:
 class _MadMapperRoutes:
     """The one read-only route the MadMapper link answers: the health dict
     for the 'MadMapper link' dot (handoff section 8), from the link's
-    outbound side and the watchdog's heartbeat side together."""
+    outbound side and the watchdog's heartbeat side together. Read-only:
+    this build's madmapper.py is device layer only (select_bank, fade_*,
+    set_*, ...), with no sequencing logic here to trigger over a route."""
 
     def __init__(self, link, watchdog):
         self.link = link
@@ -868,27 +870,17 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     MadMapperConfig, or a ready-made (Link, Watchdog) pair from
     madmapper.build(). Without it madmapper.py is not even imported, the
     same inertness announce.py and schedule_service.py each already rely
-    on. With BOTH `schedule` and `madmapper` configured, the scheduler
-    pushes every real state change to the link's on_transition hook (Hold,
-    Resume, Abort, Closing, a show starting or ending), and the link's and
-    the watchdog's own journal lines are wired to the scheduler's night
-    journal at actor "madmapper" (handoff section 9). Nothing here passes a
-    `clock` into on_transition: freezing and resuming ltcplay's own Art-Net
-    clock on Hold and Resume is not wired to the scheduler yet (see
-    madmapper.py's module docstring and the PR body's open question).
+    on. `beyond` is the same shape for beyond.py's laser link: a
+    BeyondConfig, or a ready-made Beyond from beyond.build().
 
-    `beyond` is the same shape again, for beyond.py's laser blank: a
-    validated BeyondConfig, or a ready-made Beyond from beyond.build().
-    Without it beyond.py is not imported either. With BOTH `madmapper` and
-    `beyond` configured, the link's `beyond` attribute is set so Hold,
-    Resume, Abort and Closing each blank or unblank the lasers at the
-    right point in their own sequence (see madmapper.Link.hold/resume/
-    abort/closing); its journal lines are wired the same way, also at
-    actor "madmapper" (there is no separate "beyond" actor in schedule.py's
-    vocabulary; Jeff/Andy, 2026-09-26, said madmapper fits well enough).
-    `beyond` with no `madmapper` configured is accepted but never wired to
-    anything: the laser link on its own has no scheduler hook to attach
-    to."""
+    Deliberately NOT wired to the scheduler at all: madmapper.py and
+    beyond.py are device layer only in this build, with no sequencing
+    logic to attach to a scheduler transition (see madmapper.py's module
+    docstring for why an earlier version of this wiring was removed). This
+    function only constructs the links, exposes their read-only health
+    routes, and -- when it built them itself, from a config -- closes them
+    on server_close() (which blanks BEYOND, a safe default; see beyond.py).
+    A ready-made pair or link passed in is the caller's own to close."""
     control = Control(folder, defaults=defaults, sd=sd)
     on_network = bind not in LOOPBACK
     if on_network and token is None:
@@ -923,46 +915,37 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # See announce.py's module docstring and on_show_started.
         sched.on_show_started = httpd.announce.on_show_started
     httpd.madmapper = None
+    _built_madmapper = False
     if madmapper is not None:
         from . import madmapper as madmapper_mod
-
-        def _journal(text, **extra):
-            # _journal_line reads self.machine/self.rule, so it is called
-            # under the scheduler's own lock, never bare -- the same rule
-            # _run_hook already follows for a failed hook. This runs on
-            # the link's or the watchdog's own thread, never on the thread
-            # holding Service.lock, so acquiring it here cannot stall a
-            # show. httpd.schedule is already set by the time this is
-            # ever called (never before serve() returns).
-            with httpd.schedule._locked():
-                httpd.schedule._journal_line("madmapper", text, **extra)
-
         if isinstance(madmapper, madmapper_mod.MadMapperConfig):
-            link, watchdog = madmapper_mod.build(madmapper, journal=_journal)
-            watchdog.start()
-        else:
-            link, watchdog = madmapper
-        httpd.madmapper = (link, watchdog)
-        if httpd.schedule is not None:
-            httpd.schedule.on_transition = link.on_transition
+            madmapper = madmapper_mod.build(madmapper)
+            madmapper[1].start()      # the watchdog's own listener thread
+            _built_madmapper = True
+        httpd.madmapper = madmapper
     httpd.beyond = None
+    _built_beyond = False
     if beyond is not None:
         from . import beyond as beyond_mod
-
-        _beyond_journal = None
-        if httpd.schedule is not None:
-            def _beyond_journal(text, **extra):
-                # Same rule, same reason as madmapper's own _journal above.
-                with httpd.schedule._locked():
-                    httpd.schedule._journal_line("madmapper", text, **extra)
-
         if isinstance(beyond, beyond_mod.BeyondConfig):
-            beyond_link = beyond_mod.build(beyond, journal=_beyond_journal)
-        else:
-            beyond_link = beyond
-        httpd.beyond = beyond_link
-        if httpd.madmapper is not None:
-            httpd.madmapper[0].beyond = beyond_link
+            beyond = beyond_mod.build(beyond)
+            _built_beyond = True
+        httpd.beyond = beyond
+    if _built_madmapper or _built_beyond:
+        # Close only what this call built from a config: a ready-made pair
+        # or link the caller passed in is the caller's own to close, on
+        # whatever schedule the caller (a test, a future conductor) wants.
+        _orig_server_close = httpd.server_close
+
+        def _server_close():
+            _orig_server_close()
+            if _built_madmapper:
+                link, watchdog = httpd.madmapper
+                link.close()
+                watchdog.stop()
+            if _built_beyond:
+                httpd.beyond.close()
+        httpd.server_close = _server_close
     if on_ready:
         on_ready(httpd, control, token)
     return httpd

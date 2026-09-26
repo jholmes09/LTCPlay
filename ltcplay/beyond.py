@@ -1,4 +1,4 @@
-"""BEYOND: the laser blank/unblank half of Hold, Resume, Abort and Closing.
+"""BEYOND: the laser blank/unblank device layer.
 
 Imported ONLY when a show file has a "beyond" block. The GPL show at
 Dollywood never has one, so on the Mac none of this is loaded -- the same
@@ -16,33 +16,57 @@ B8.0 found: MadMapper on 127.0.0.1 or its Interface address, BEYOND on
 127.0.0.2, because MadMapper binds specific addresses and BEYOND binds
 0.0.0.0).
 
+This module is DEVICE LAYER ONLY, like madmapper.py: blank() and unblank()
+are the only two operations, there is no sequencing logic here, and this
+module has no idea when a show starts, holds or aborts. An earlier version
+of this PR wired blank/unblank into a scheduler-state-derived sequence
+(hold()/resume()/abort()/closing(), reached through Link.on_transition);
+that entire mechanism was removed after an opus review found real races
+from deriving actions from state pairs on the scheduler's own unordered
+hook threads (see madmapper.py's module docstring). The follow-up
+"conductor" module is what will decide WHEN to call blank()/unblank(), on
+one serialized executor, with the real ordering guarantees Hold, Resume,
+Abort and Closing each need.
+
 The facts that shape this module:
 
   No feedback, ever (like MadMapper: bench B2.4, and BEYOND's own OSC
   Monitor in the bench only ever showed messages ltcplay SENT, never a
-  reply). So, exactly like madmapper.py's Link, nothing here can confirm a
-  command landed, and the health dict this module exposes says only that a
-  command was sent -- never "armed" or "ok", which would claim a liveness
-  check this module cannot make (Jeff/Andy, 2026-09-26: "Don't show any
-  liveness for BEYOND on the health panel beyond command sent").
+  reply). So nothing here can confirm a command landed on its own -- see
+  blank()/unblank()'s own retry-and-report design below, and health(),
+  which says only that a command was sent and what happened trying,
+  never a liveness claim (Jeff/Andy, 2026-09-26: "Don't show any liveness
+  for BEYOND on the health panel beyond command sent").
 
   The blank (B8.3): `/beyond/master/livecontrol/brightness` ,f 0. BEYOND's
   preview went black at once, no ramp needed (bench: "Preview black at 0,
-  back at 100" -- unlike MadMapper's master_audio_level and surface
-  opacity, which both need this module's own ramp because MadMapper does
-  not smooth them; BEYOND's brightness needs none). Unblank is the same
-  address with ,f 100. The timeline and the timecode input both keep
-  running throughout: this is a real blank, not a stop.
+  back at 100"). Unblank is the same address with ,f 100. The timeline and
+  the timecode input both keep running throughout: this is a real blank,
+  not a stop.
 
-  Two addresses are PERMANENTLY FORBIDDEN and this module never sends
-  either, under any path -- see FORBIDDEN_ADDRESSES, the _send() guard that
-  refuses them outright, and test_beyond_never_sends_blackout_or_masterpause:
+  blank()/unblank() send the brightness packet 3 times, about 20 ms apart,
+  and check whether at least one actually got out (an audit of the first
+  version of this PR, round 2, found a failed send was still journaled as
+  "blanked" -- a false "the lasers are down" report is worse than no
+  report, since it is trusted). A failed socket open is retried within the
+  same call rather than silently dropped by the socket's own reopen
+  backoff, which exists for ordinary traffic, not a deliberate short retry
+  burst a few tens of milliseconds long.
+
+  ONLY the brightness address, and ONLY the values 0.0 and 100.0, are ever
+  allowed off this module at all (S5, an audit finding: a deny list alone
+  let `/beyond/general/blackout` (wrong case), a trailing slash, a
+  wildcard, an OSC bundle-looking string and a dozen other near-misses
+  straight through, and nothing below _send() enforced anything at all).
+  See _allowed(), enforced at BOTH _send() and the socket's own send() --
+  two layers, so a future change that bypasses one still meets the other.
+  The original exact-address deny list for BlackOut/MasterPause is kept as
+  a third, explicit layer on top of that, named for what it is (the two
+  addresses that must never be sent, not just "not brightness"):
 
     /beyond/general/BlackOut restarts BEYOND's own application core (bench
     B8.3) and switches its TC-IN toolbar toggle off; the only way back is a
-    manual "Show it now" press, and a second BlackOut does not undo it. A
-    scheduler hook that sent this on every Hold would need a person at the
-    keyboard to recover the very first time it fired.
+    manual "Show it now" press, and a second BlackOut does not undo it.
 
     /beyond/general/MasterPause freezes the beams on whatever they were
     doing when it arrived (bench: "beams frozen") -- a static beam, the
@@ -50,35 +74,20 @@ The facts that shape this module:
 
   "Keep running even though timecode stops" MUST be OFF in BEYOND's own
   Settings > Configuration > Timecode In (bench B8.2): the default, ON,
-  keeps the lasers moving straight through a frozen or lost timecode feed,
-  which is unsafe for Hold on its own terms even before this module's
-  blank ever reaches it. This is a manual, one-time BEYOND setting, not
-  something OSC can read back or this module can enforce in code -- see
-  the PR body's BEYOND setup section, and the same section's note that the
-  TC-IN toolbar toggle has to be checked by eye before every show, since it
-  switches itself off after a BlackOut or a Configuration OK and BEYOND
-  exposes no OSC way to read it.
+  keeps the lasers moving straight through a frozen or lost timecode feed.
+  This is a manual, one-time BEYOND setting, not something OSC can read
+  back or this module can enforce in code -- see the PR body's BEYOND
+  setup section, and the same section's note that the TC-IN toolbar
+  toggle has to be checked by eye before every show, since it switches
+  itself off after a BlackOut or a Configuration OK and BEYOND exposes no
+  OSC way to read it.
 
-  Hold and Resume ordering (Jeff/Andy, 2026-09-26, building on bench B8.2):
-  blank the lasers AT ONCE -- the same moment the flame cues go to zero,
-  never after the music fade -- then fade the music, then freeze the
-  clock. On Resume: restart the clock, THEN unblank, then fade the music
-  back up. With "Keep running" off, BEYOND itself goes dark about 1 s
-  after ltcplay's clock freezes and picks the timeline back up the moment
-  timecode moves again (bench B8.2's own "OFF" case: it relocks and
-  follows on resume, the same quick relock B1 measured for MadMapper), so
-  unblanking right after the clock restarts -- rather than before, or
-  waiting for BEYOND's own second of run-on to finish -- is the earliest
-  moment a real blank is actually redundant, and it costs nothing to send
-  it that early: BEYOND is still dark from its own 1 s timeout at that
-  instant regardless, so brightness back to 100 cannot expose a static or
-  stale beam by arriving "too soon". Unblanking BEFORE the clock restarts,
-  by contrast, would show a laser sitting on whatever the last live frame
-  was for however long the operator's Resume-to-clock-restart gap runs --
-  exactly the static-beam risk a blank exists to avoid, on the one edge
-  that this module's own hold()/resume() sequencing controls. See
-  madmapper.Link.hold()/resume() for where this is wired in.
+  Safe defaults (an audit finding, S6): build() blanks once immediately,
+  before returning, so a fresh link never starts in an unknown state; and
+  close() blanks before it closes the socket, so tearing a link down never
+  leaves the lasers live by omission.
 """
+import math
 import socket
 import struct
 import time
@@ -86,24 +95,34 @@ import time
 # Deliberately NOT `from . import madmapper`: this module has its own tiny
 # copy of the OSC wire format and the self-healing socket, the same way
 # clock.py's TimecodeOut and output.py's Sender each have their own socket
-# rather than sharing one ("one should never be able to take the other
-# down" -- clock.py's own module docstring). It also keeps this module's
-# own inertness proof honest: a show file with a "beyond" block but no
-# "madmapper" block must not load madmapper.py just to blank the lasers,
-# and test_the_gpl_path_never_loads_madmapper enumerates every module
-# except madmapper.py itself, which would otherwise import it right back
-# in through here.
+# rather than sharing one. It also keeps this module's own inertness proof
+# honest: a show file with a "beyond" block but no "madmapper" block must
+# not load madmapper.py just to blank the lasers, and
+# test_the_gpl_path_never_loads_madmapper enumerates every module except
+# madmapper.py itself, which would otherwise import it right back in
+# through here.
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8100                    # bench B8: 8000 clashes with MadMapper
 BRIGHTNESS_ADDR = "/beyond/master/livecontrol/brightness"
 BLANK_VALUE = 0.0
 UNBLANK_VALUE = 100.0
+ALLOWED_VALUES = (BLANK_VALUE, UNBLANK_VALUE)
 
-# NEVER sent by this module, under any path. See the module docstring and
-# _send()'s guard.
+# OSC pattern-matching special characters (the OSC 1.0 spec's own address
+# pattern syntax) plus the bundle marker: none of these can ever appear in
+# a single, exact, allowed address, but _allowed() checks for them
+# explicitly anyway -- see its own docstring for why.
+_SPECIAL_CHARS = frozenset("*?[]{}#")
+
+# NEVER sent by this module, under any path. Named for what they are, on
+# top of (not instead of) the allow-list in _allowed(): see the module
+# docstring's "ONLY the brightness address" paragraph.
 FORBIDDEN_ADDRESSES = frozenset(("/beyond/general/BlackOut",
                                  "/beyond/general/MasterPause"))
+
+RETRY_COUNT = 3
+RETRY_INTERVAL_S = 0.02          # about 20 ms apart, per the audit
 
 
 class BeyondConfigError(ValueError):
@@ -145,7 +164,9 @@ def _port(doc, key, where, what, default):
 
 
 class BeyondConfig:
-    """The "beyond" block of a show file, validated."""
+    """The "beyond" block of a show file, validated. There is no
+    "address" setting on purpose: the brightness address is the only one
+    this module ever sends, and it is not configurable -- see _allowed()."""
 
     KEYS = frozenset(("host", "port", "notes"))
 
@@ -174,6 +195,32 @@ class BeyondConfig:
         return f"{self.host}:{self.port}"
 
 
+def _allowed(address, value):
+    """S5's allow-list: the ONLY thing this module may ever send is the
+    brightness address, with the value exactly 0.0 or 100.0. Checked at
+    BOTH _send() and _Socket.send() (see each) -- an audit (R6) found a
+    deny list alone let a wrong-case address, a trailing slash, a doubled
+    slash, an OSC wildcard/range/alternation pattern and a direct call
+    below _send() all straight through; none of those can pass an
+    EXACT-match allow-list, which is what this is, checked as such (not
+    merely inferred from the special-character reject, which is kept as
+    an explicit, separately testable condition even though the exact-match
+    check below already excludes every string that contains one)."""
+    if not isinstance(address, str):
+        return False
+    if address.startswith("#"):
+        return False
+    if any(c in _SPECIAL_CHARS for c in address):
+        return False
+    if address != BRIGHTNESS_ADDR:
+        return False
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    if math.isnan(value):
+        return False
+    return any(value == v for v in ALLOWED_VALUES)
+
+
 def _pad(b):
     """Null-terminate then pad to a 4-byte boundary: at least one null,
     always. The identical rule madmapper.py's own _pad follows -- both are
@@ -199,12 +246,16 @@ def _encode_float(address, value):
 
 
 class _Socket:
-    """One UDP socket to BEYOND. Never raises into the caller -- the same
-    self-healing rule clock.py's TimecodeOut, output.py's Sender and
-    madmapper.py's own socket all follow, scaled down for one destination
-    and no acks (bench B8: BEYOND answers nothing at all, so a "failure"
-    here only ever means the OS refused to hand the packet to the
-    network)."""
+    """One UDP socket to BEYOND. Never raises OSError into the caller --
+    the same self-healing rule clock.py's TimecodeOut, output.py's Sender
+    and madmapper.py's own socket all follow, scaled down for one
+    destination and no acks (bench B8: BEYOND answers nothing at all, so a
+    "failure" here only ever means the OS refused to hand the packet to
+    the network). DOES raise BeyondConfigError for anything that fails
+    _allowed() or is one of the two forbidden addresses -- see the module
+    docstring's "ONLY the brightness address" paragraph: this is the
+    lowest level anything reaches the network from, so this is where the
+    guard has to hold even if every layer above it did not."""
 
     FAILURES_BEFORE_REOPEN = 3
     REOPEN_BACKOFF_S = 1.0
@@ -229,10 +280,10 @@ class _Socket:
     def _default_socket():
         return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    def _ensure(self, now):
+    def _ensure(self, now, force=False):
         if self._sock is not None:
             return self._sock
-        if self._last_open is not None and \
+        if not force and self._last_open is not None and \
                 now - self._last_open < self.REOPEN_BACKOFF_S:
             return None
         self._last_open = now
@@ -253,9 +304,14 @@ class _Socket:
             except Exception:
                 pass
 
-    def send(self, address, value):
+    def send(self, address, value, force=False):
+        if address in FORBIDDEN_ADDRESSES or not _allowed(address, value):
+            raise BeyondConfigError(
+                f"beyond.py's socket layer refuses to send {address!r} "
+                f"with value {value!r}: only the brightness address, "
+                f"with 0.0 or 100.0, is ever allowed off this module (S5).")
         now = self._clock()
-        sock = self._ensure(now)
+        sock = self._ensure(now, force=force)
         if sock is None:
             return False
         pkt = _encode_float(address, value)
@@ -282,27 +338,37 @@ class _Socket:
                 pass
 
 
+def _for_show(show):
+    return f" for show {show}" if show else ""
+
+
 class Beyond:
     """BEYOND's OSC transport: blank and unblank ONLY (bench B8.3). No
-    ramp -- brightness jumps at once in the bench, unlike MadMapper's
-    audio and video, which both need madmapper.Link's own ramp because
-    MadMapper does not smooth them itself.
+    ramp -- brightness jumps at once in the bench. Pure device layer: no
+    sequencing, no idea when a show starts, holds or aborts (see the
+    module docstring).
 
-    Sends are fire-and-forget UDP, on this module's own socket: BEYOND
-    answers nothing, ever, so a "failure" here only ever means the OS
-    refused to hand the packet to the network."""
+    Each call sends the brightness packet 3 times, about 20 ms apart
+    (RETRY_COUNT/RETRY_INTERVAL_S), forcing the socket open on every
+    attempt rather than trusting a single try. Returns True the instant at
+    least one of the 3 got out, False if all 3 failed -- and only ever
+    journals the calm "blanked"/"unblanked" sentence when it actually
+    succeeded; a failure gets its own sentence, flagged as a fault, never
+    silently reported as done."""
 
     def __init__(self, cfg, socket_factory=None, clock=time.perf_counter,
-                journal=None):
+                sleep=time.sleep, journal=None):
         self.cfg = cfg
         self.journal = journal
+        self._sleep = sleep
         self._osc = _Socket(cfg.host, cfg.port, socket_factory=socket_factory,
                             clock=clock, on_fail=self._on_send_fail)
-        self.last_command = None       # "blank" or "unblank", for health()
+        self.last_command = None       # "blank" or "unblank"
+        self.last_result = None        # "ok" or "failed"
 
     def _on_send_fail(self, msg):
         self._note(f"A BEYOND command failed: {msg}.", action="command",
-                  outcome="failed")
+                  outcome="failed", fault=True)
 
     def _note(self, text, **extra):
         if self.journal:
@@ -311,52 +377,89 @@ class Beyond:
             except Exception:
                 pass
 
-    def _send(self, address, value=0.0):
-        """The one place any OSC message reaches BEYOND. Refuses the two
-        forbidden addresses outright, rather than merely never calling
-        them from blank()/unblank(): see test_beyond_never_sends_
-        blackout_or_masterpause and its matching mutations, which prove
-        this guard is what actually stops them, not just that today's two
-        public methods happen not to try."""
-        if address in FORBIDDEN_ADDRESSES:
+    def _send(self, address, value=0.0, force=False):
+        """The one place any OSC message reaches BEYOND above the socket
+        layer. Refuses the two forbidden addresses AND anything that
+        fails the allow-list outright (both checked again, independently,
+        at _Socket.send() itself -- see its own docstring)."""
+        if address in FORBIDDEN_ADDRESSES or not _allowed(address, value):
             raise BeyondConfigError(
-                f"beyond.py refuses to send {address!r}: see the module "
-                f"docstring for why (BlackOut restarts BEYOND's own core "
-                f"and needs a manual recovery; MasterPause freezes the "
-                f"beams, a static-beam hazard).")
-        return self._osc.send(address, value)
+                f"beyond.py refuses to send {address!r} with value "
+                f"{value!r}: only the brightness address, with 0.0 or "
+                f"100.0, is ever allowed (S5), and BlackOut/MasterPause "
+                f"are refused by name as well (BlackOut restarts BEYOND's "
+                f"own core and needs a manual recovery; MasterPause "
+                f"freezes the beams, a static-beam hazard).")
+        return self._osc.send(address, value, force=force)
+
+    def _send_retried(self, value):
+        ok = False
+        for i in range(RETRY_COUNT):
+            if self._send(BRIGHTNESS_ADDR, value, force=True):
+                ok = True
+            if i < RETRY_COUNT - 1:
+                self._sleep(RETRY_INTERVAL_S)
+        return ok
 
     def blank(self, show=None):
         """A real blank command: brightness to 0. The timeline and the
         timecode input both keep running (bench B8.3) -- this never stops
-        or pauses anything on BEYOND's side, only dims its output dark."""
-        self._send(BRIGHTNESS_ADDR, BLANK_VALUE)
+        or pauses anything on BEYOND's side, only dims its output dark.
+        Returns True if at least one of the 3 packets got out."""
+        ok = self._send_retried(BLANK_VALUE)
         self.last_command = "blank"
-        self._note(f"BEYOND blanked{_for_show(show)}.", action="blank",
-                  show=show)
+        self.last_result = "ok" if ok else "failed"
+        if ok:
+            self._note(f"BEYOND blanked{_for_show(show)}.", action="blank",
+                      show=show)
+        else:
+            self._note(
+                f"BEYOND failed to blank{_for_show(show)}: no packet got "
+                f"out after {RETRY_COUNT} tries. The lasers may still be "
+                f"showing whatever they were.", action="blank",
+                outcome="failed", show=show, fault=True)
+        return ok
 
     def unblank(self, show=None):
-        self._send(BRIGHTNESS_ADDR, UNBLANK_VALUE)
+        """Returns True if at least one of the 3 packets got out."""
+        ok = self._send_retried(UNBLANK_VALUE)
         self.last_command = "unblank"
-        self._note(f"BEYOND unblanked{_for_show(show)}.", action="unblank",
-                  show=show)
+        self.last_result = "ok" if ok else "failed"
+        if ok:
+            self._note(f"BEYOND unblanked{_for_show(show)}.",
+                      action="unblank", show=show)
+        else:
+            self._note(
+                f"BEYOND failed to unblank{_for_show(show)}: no packet "
+                f"got out after {RETRY_COUNT} tries. The lasers stay "
+                f"dark.", action="unblank", outcome="failed", show=show,
+                fault=True)
+        return ok
 
     def health(self):
         """No liveness claim -- BEYOND sends no feedback at all (bench
-        B8), so this says only that a command was sent, never "armed" or
-        "ok" (Jeff/Andy, 2026-09-26)."""
+        B8), so this says only that a command was sent, what happened
+        trying, and how many packets actually went out."""
         return {"last_command": self.last_command,
+                "last_result": self.last_result,
                 "packets_sent": self._osc.packets_sent,
                 "last_sent_at": self._osc.last_ok_at}
 
     def close(self):
+        """A safe default (S6): blank before closing, so tearing this
+        link down never leaves the lasers live by omission."""
+        try:
+            self.blank()
+        except Exception:
+            pass
         self._osc.close()
 
 
-def _for_show(show):
-    return f" for show {show}" if show else ""
-
-
-def build(cfg, journal=None, clock=time.perf_counter, socket_factory=None):
-    return Beyond(cfg, socket_factory=socket_factory, clock=clock,
-                 journal=journal)
+def build(cfg, journal=None, clock=time.perf_counter, sleep=time.sleep,
+         socket_factory=None):
+    """A Beyond, blanked once immediately (S6's other safe default: a
+    fresh link never starts in an unknown state)."""
+    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,
+                 sleep=sleep, journal=journal)
+    link.blank()
+    return link
