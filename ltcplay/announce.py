@@ -15,8 +15,22 @@ web.py's job, once both are configured; this module never imports
 schedule.py or schedule_service.py. See `interlock_refusal` for exactly what
 that provider is used for.
 
+A show starting while an announcement is playing is the OTHER half of that
+same coupling, in the other direction: the scheduler ticks on a thread of its
+own, with no lock shared with this service, so a status() poll here could be
+seconds behind a show actually starting. `on_show_started` is a push hook
+web.py wires the scheduler to call the moment it starts a show; it is not
+something this module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+
+The interlock itself is check-then-act around real work (a device query, a
+file read), so play() re-checks it a second time immediately before the
+output stream actually starts, inside the same locked section: see the
+comment in play() beside that second check.
+
 The output device is never the system default. A show's device is picked by
-config, by name, and stays that device even if it briefly disappears: see
+config, by an EXACT name (never a substring: a substring can silently land on
+a different physical device whose name merely contains the configured text),
+and stays that device even if it briefly disappears: see
 `resolve_output_device`. The real reason a name is required rather than a
 default is section 10 of the handoff: the system default on the show PC is
 whatever MadMapper's own show audio is on, and grabbing that silently is the
@@ -51,6 +65,44 @@ DEFAULT_OPERATORS = ("Andy", "Jeff")
 BLOCKED_STATES = frozenset(("SHOW", "PAUSED"))
 
 JOURNAL = 400
+
+# Jeff has not signed off on this (see the PR's Questions section): the
+# coordinator's default, implemented here, is that a show starting stops a
+# playing announcement so the show starts on time. The alternative -- hold
+# the show until the announcement finishes -- is deliberately NOT built.
+# Flip this one constant to False and a show starts regardless of what is
+# playing, exactly as if on_show_started did not exist.
+SHOW_START_STOPS_ANNOUNCEMENT = True
+# How long the announcement's own audio takes to ramp down once a show
+# starts it over. The show itself is never held up by this: only the
+# announcement's own output fades, in the background, on its own stream.
+SHOW_START_FADE_S = 0.15
+
+# A wrong file pointed at by mistake, or a device that has quietly stopped
+# answering: both are caught by a plain limit rather than an unbounded read
+# or an announcement that never lets the lock go.
+MAX_FILE_BYTES = 50 * 1024 * 1024      # 50 MB: generous for a spoken line
+MAX_LENGTH_S = 300.0                   # 5 minutes: a sentence, not a show
+STALL_S = 3.0            # no callback at all for this long means the device
+                         # has gone away, not that the file is just long
+CALLBACK_ERROR_LIMIT = 20      # the device answers, but every time with a
+                               # reported problem: also treated as a failure
+
+_DTYPE_BY_SAMPWIDTH = {1: "uint8", 2: "int16", 4: "int32"}
+_DASHES = ("—", "–")          # em dash, en dash
+
+
+def _clean(text):
+    """Strip em and en dashes from anything that ends up in operator facing
+    text but did not originate as a sentence written by this module: an
+    exception's own message, a path, an operator-typed screen name.
+    CLAUDE.md: operator-facing text carries no em or en dash, and this
+    module cannot vouch for what a path or a third-party error string
+    contains."""
+    s = str(text)
+    for d in _DASHES:
+        s = s.replace(d, "-")
+    return s
 
 
 # ---------------------------------------------------------- where things live
@@ -150,10 +202,15 @@ def list_outputs(sd):
 
 
 def resolve_output_device(sd, name):
-    """By name, never by index: an index shifts when something else on the
-    machine unplugs or replugs, and following the name is what lets a
-    device that goes away mid-run come back on its own. No name at all is a
-    config error, not a fallback to the system default."""
+    """By an EXACT name, case-insensitive, never by index and never by a
+    partial match. An index shifts when something else on the machine
+    unplugs or replugs, and following the name is what lets a device that
+    goes away mid-run come back on its own; a SUBSTRING match, this
+    function's previous behaviour, can silently land on a completely
+    different physical device whose Windows-assigned name merely happens to
+    contain the configured text (found in review: audit13_device_wrong_
+    match.py, where the show's own DSP output was matched by mistake). No
+    name at all is a config error, not a fallback to the system default."""
     if not name or not str(name).strip():
         raise ValueError("No output device is named for announcements. "
                          "There is no default: announcements never use "
@@ -161,19 +218,17 @@ def resolve_output_device(sd, name):
                          "audio is on.")
     outputs = list_outputs(sd)
     want = str(name).strip().lower()
-    hits = [d for d in outputs if want in d["name"].lower()]
-    exact = [d for d in hits if d["name"].strip().lower() == want]
-    if exact:
-        hits = exact
+    hits = [d for d in outputs if d["name"].strip().lower() == want]
     if len(hits) == 1:
         return hits[0]
     names = ", ".join(d["name"] for d in outputs) or "nothing"
     if not hits:
-        raise ValueError(f"{name!r} is not attached. Nothing else will be "
-                         f"used in its place. Outputs on this machine: "
-                         f"{names}.")
-    raise ValueError(f"{name!r} matches {len(hits)} outputs, so it is not "
-                     f"specific enough: {names}.")
+        raise ValueError(f"{_clean(name)!r} is not attached. Nothing else "
+                         f"will be used in its place. Outputs on this "
+                         f"machine: {_clean(names)}.")
+    raise ValueError(f"{_clean(name)!r} is the exact name of {len(hits)} "
+                     f"outputs on this machine, so it is not specific "
+                     f"enough: {_clean(names)}.")
 
 
 # ------------------------------------------------------------- the interlock
@@ -198,35 +253,165 @@ def interlock_refusal(state):
     return None
 
 
+# ------------------------------------------------------------------ wav I/O
+def _wav_format_tag(path):
+    """The format tag from the WAV's own fmt chunk: 1 is PCM, 3 is IEEE
+    float, 0xFFFE is extensible with a further sub-format. Python's `wave`
+    module always assumes PCM and never looks at this, so a 32-bit float
+    file opens exactly like a 32-bit int one, and its sample bytes would be
+    reinterpreted as integers: loud noise, with no error anywhere (review:
+    audit13_probe_weaker_than_open.py, part b). Returns None if it cannot be
+    read, which is treated as PCM, the safer reading of a file the standard
+    library reader already accepted."""
+    try:
+        with open(path, "rb") as fh:
+            riff = fh.read(12)
+            if len(riff) < 12 or riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+                return None
+            while True:
+                header = fh.read(8)
+                if len(header) < 8:
+                    return None
+                chunk_id = header[:4]
+                size = int.from_bytes(header[4:8], "little")
+                if chunk_id == b"fmt ":
+                    body = fh.read(2)
+                    return (int.from_bytes(body, "little")
+                            if len(body) == 2 else None)
+                fh.seek(size + (size & 1), 1)
+    except OSError:
+        return None
+
+
+def _wav_info(path, decode=True):
+    """Open, validate, and (when `decode`) fully read a WAV file:
+    (pcm_or_None, channels, rate, length_s). Raises ValueError with a plain
+    sentence for anything that could not actually be played, so the startup
+    probe (`decode=False`) and a real Play press (`decode=True`) can never
+    disagree: they are the same function.
+
+    The format tag is checked BEFORE Python's own `wave` module ever opens
+    the file. `wave` rejects a non-PCM file on its own on a modern Python,
+    but with its own message ("unknown format: 3"), which is not a
+    sentence an operator should have to read, and tying this module's
+    wording to whatever a given Python version's `wave` module happens to
+    check would be exactly the kind of disagreement between the probe and
+    a real Play press that this function exists to rule out (review:
+    audit13_probe_weaker_than_open.py, part b)."""
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        raise ValueError(f"{_clean(path)} could not be read: "
+                         f"{_clean(str(e))}.")
+    if size > MAX_FILE_BYTES:
+        raise ValueError(f"{_clean(path)} is {size / 1e6:.0f} MB, over "
+                         f"the {MAX_FILE_BYTES / 1e6:.0f} MB limit for an "
+                         f"announcement.")
+    tag = _wav_format_tag(path)
+    if tag == 3:
+        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "
+                         f"which is not supported. Export 16-bit or "
+                         f"32-bit PCM (integer), not float, instead.")
+    if tag is not None and tag not in (1, 0xFFFE):
+        raise ValueError(f"{_clean(path)} is WAV format {tag}, which is "
+                         f"not supported. Export 16-bit or 32-bit PCM "
+                         f"instead.")
+    try:
+        with wave.open(path, "rb") as w:
+            n = w.getnframes()
+            rate = w.getframerate()
+            channels = w.getnchannels()
+            sampwidth = w.getsampwidth()
+            raw = w.readframes(n) if decode else b""
+    except (OSError, EOFError, wave.Error) as e:
+        raise ValueError(f"{_clean(path)} could not be read as a WAV "
+                         f"file: {_clean(str(e))}.")
+    if sampwidth not in _DTYPE_BY_SAMPWIDTH:
+        raise ValueError(f"{_clean(path)} is a {sampwidth * 8}-bit WAV, "
+                         f"which is not supported. Export 16-bit or "
+                         f"32-bit PCM instead.")
+    length_s = n / float(rate) if rate else 0.0
+    if length_s > MAX_LENGTH_S:
+        raise ValueError(f"{_clean(path)} is {length_s:.0f} s long, over "
+                         f"the {MAX_LENGTH_S:g} s limit for an "
+                         f"announcement.")
+    if not decode:
+        return None, channels, rate, length_s
+    import numpy as np
+    np_dtype = {"uint8": np.uint8, "int16": np.int16,
+               "int32": np.int32}[_DTYPE_BY_SAMPWIDTH[sampwidth]]
+    pcm = np.frombuffer(raw, dtype=np_dtype)
+    pcm = pcm.reshape(-1, channels) if channels > 1 else pcm.reshape(-1, 1)
+    return pcm, channels, rate, length_s
+
+
 # ------------------------------------------------------------------ player --
 class _Player:
     """How much of a loaded announcement has actually been handed to the
-    output device.
+    output device, and whether the device is still actually taking it.
 
-    Driven by the real audio callback in production, one block at a time.
-    A test drives it the same way, by calling next_block itself: no clock,
-    no thread, no sleep, and so no wall time anywhere in what it proves."""
+    Driven by the real audio callback in production, one block at a time. A
+    test drives it the same way, by calling next_block itself: no clock
+    inside the frame math, no thread, no sleep needed to prove what a block
+    of audio did. last_progress_at is the one place real time enters, and
+    only to notice a device that has stopped calling back at all (see
+    AnnounceService._settle and STALL_S); it is always read through an
+    injectable clock so a test never has to sleep for real seconds to prove
+    a stall is caught.
+    """
 
     __slots__ = ("pcm", "channels", "rate", "total_frames", "frames_written",
-                "done")
+                "done", "_clock", "last_progress_at", "callback_errors",
+                "_fade_total", "_fade_pos", "stop_reason")
 
-    def __init__(self, pcm, channels, rate):
+    def __init__(self, pcm, channels, rate, clock=None):
         self.pcm = pcm
         self.channels = channels
         self.rate = rate
         self.total_frames = pcm.shape[0]
         self.frames_written = 0
         self.done = self.total_frames == 0
+        self._clock = clock or time.monotonic
+        self.last_progress_at = self._clock()
+        self.callback_errors = 0
+        self._fade_total = 0
+        self._fade_pos = 0
+        # Set by AnnounceService when something other than the file simply
+        # ending is why playback is about to stop ("a show started", for
+        # instance). None means a natural finish.
+        self.stop_reason = None
 
-    def next_block(self, n):
+    def start_fade(self, frames):
+        """Begin fading out over the given number of frames; once that many
+        more frames have been produced, `done` becomes True even if the
+        file itself has not finished."""
+        self._fade_total = max(1, int(frames))
+        self._fade_pos = 0
+
+    def next_block(self, n, status=None):
         import numpy as np
+        self.last_progress_at = self._clock()
+        if status:
+            self.callback_errors += 1
         start = self.frames_written
         end = min(start + n, self.total_frames)
         block = np.zeros((n, self.channels), dtype=self.pcm.dtype)
         if end > start:
             block[:end - start] = self.pcm[start:end]
         self.frames_written = end
-        if end >= self.total_frames:
+        if self._fade_total:
+            take = min(n, self._fade_total - self._fade_pos)
+            if take > 0:
+                ramp = 1.0 - (np.arange(self._fade_pos, self._fade_pos + take)
+                             / float(self._fade_total))
+                block[:take] = (block[:take].astype(np.float64)
+                               * ramp[:, None]).astype(block.dtype)
+            if take < n:
+                block[take:] = 0
+            self._fade_pos += n
+            if self._fade_pos >= self._fade_total:
+                self.done = True
+        elif end >= self.total_frames:
             self.done = True
         return block
 
@@ -247,16 +432,20 @@ class AnnounceService:
     POST_ROUTES = ("/api/announce/play", "/api/announce/stop")
 
     def __init__(self, config_path, sd=None, state_provider=None,
-                 operators_folder=None):
+                 operators_folder=None, clock=None):
         self.config_path = config_path
         self._sd_obj = sd
         # A plain callable, or None. See interlock_refusal and the module
-        # docstring: this is the whole coupling to the scheduler.
+        # docstring: this is the whole coupling to the scheduler in the
+        # "may I play" direction.
         self.state_provider = state_provider
         # Where to read ltcplay_operators.json from. None means the real
         # machine folder (data_dir()); a test points this at a tempdir so
         # it never touches, or depends on, anything really on disk.
         self.operators_folder = operators_folder
+        # Monotonic clock, injectable so the stall watchdog never needs a
+        # test to sleep for real seconds.
+        self._clock = clock or time.monotonic
         self.lock = threading.RLock()
         self.journal = deque(maxlen=JOURNAL)
         self.error = ""
@@ -284,10 +473,10 @@ class AnnounceService:
                          f"{self.config_path}.")
         except OSError as e:
             self.error = (f"The announcements file {self.config_path} "
-                         f"cannot be read: {e.strerror or e}.")
+                         f"cannot be read: {_clean(str(e))}.")
         except ValueError as e:
             self.error = (f"The announcements file {self.config_path} is "
-                         f"not valid JSON: {e}.")
+                         f"not valid JSON: {_clean(str(e))}.")
         else:
             try:
                 self.device_name, files = parse_config(doc, self.config_path)
@@ -311,20 +500,19 @@ class AnnounceService:
     def _probe_file(path):
         """A missing or unreadable file is decided HERE, once, so a press
         later never has to discover it: the button is already grey with a
-        reason by the time anyone could press it."""
+        reason by the time anyone could press it. Shares _wav_info with the
+        code that actually plays a file (see _decode), so nothing can be
+        reported available here and then fail at the press (review:
+        audit13_probe_weaker_than_open.py)."""
         if not os.path.exists(path):
             return {"available": False,
-                    "reason": f"{path} does not exist.", "length_s": None}
+                    "reason": f"{_clean(path)} does not exist.",
+                    "length_s": None}
         try:
-            with wave.open(path, "rb") as w:
-                frames = w.getnframes()
-                rate = w.getframerate()
-        except (OSError, EOFError, wave.Error) as e:
-            return {"available": False,
-                    "reason": f"{path} could not be read as a WAV file: "
-                             f"{e}.", "length_s": None}
-        return {"available": True, "reason": None,
-                "length_s": frames / float(rate) if rate else 0.0}
+            _pcm, _channels, _rate, length_s = _wav_info(path, decode=False)
+        except ValueError as e:
+            return {"available": False, "reason": str(e), "length_s": None}
+        return {"available": True, "reason": None, "length_s": length_s}
 
     # -- audio ------------------------------------------------------------
     def _sd(self):
@@ -339,43 +527,24 @@ class AnnounceService:
         try:
             sd = self._sd()
         except Exception as e:
-            return False, f"The audio system could not be reached: {e}"
+            return False, (f"The audio system could not be reached: "
+                           f"{_clean(str(e))}")
         try:
             resolve_output_device(sd, self.device_name)
         except ValueError as e:
             return False, str(e)
         return True, None
 
-    def _open(self, sd, dev, ann_id):
-        import numpy as np
-        path = self.files[ann_id]
-        with wave.open(path, "rb") as w:
-            n = w.getnframes()
-            rate = w.getframerate()
-            channels = w.getnchannels()
-            sampwidth = w.getsampwidth()
-            raw = w.readframes(n)
-        dtype = {1: np.uint8, 2: np.int16, 4: np.int32}.get(sampwidth)
-        if dtype is None:
-            raise ValueError(f"{path} is a {sampwidth * 8}-bit WAV, which "
-                             f"is not supported.")
-        pcm = np.frombuffer(raw, dtype=dtype)
-        pcm = pcm.reshape(-1, channels) if channels > 1 else pcm.reshape(-1, 1)
-        out_ch = min(channels, dev["channels"]) or 1
-        player = _Player(pcm[:, :out_ch] if out_ch < channels else pcm,
-                         out_ch, rate)
-
-        def cb(outdata, frames, tinfo, status):
-            block = player.next_block(frames)
-            outdata[:, :block.shape[1]] = block
-            if outdata.shape[1] > block.shape[1]:
-                outdata[:, block.shape[1]:] = 0
-
-        stream = sd.OutputStream(device=dev["index"], channels=out_ch,
-                                 samplerate=rate, blocksize=1024,
-                                 dtype=pcm.dtype.name, callback=cb)
-        stream.start()
-        return player, stream
+    def _decode(self, ann_id):
+        """Read and validate the file off disk: the one part of a Play
+        press that touches disk. Deliberately called WITHOUT self.lock held
+        (see play()): self.files never changes after startup, so this is
+        safe to run unlocked, and it must never hold up Stop, a status
+        poll, or another operator's press for as long as it takes (review,
+        minor: do not read a big file while holding the lock)."""
+        pcm, channels, rate, _length_s = _wav_info(self.files[ann_id],
+                                                    decode=True)
+        return pcm, channels, rate
 
     # -- the journal, one call site ---------------------------------------
     def _emit(self, *, actor, action, outcome, reason, text, ann_id=None,
@@ -425,33 +594,94 @@ class AnnounceService:
                 pass
 
     def _settle(self):
-        """Notice a file that finished on its own since the last look. Real
-        playback runs on the audio driver's own thread; ltcplay only finds
-        out it ended the next time something asks, the same way the
-        scheduler only advances when ticked. The page already polls status
-        continuously, which is what drives this in practice."""
-        if self._player is not None and self._player.done \
-                and self.playing is not None:
-            ann_id = self.playing
+        """Notice a file that finished, was faded out because a show
+        started, or has simply stopped answering, since the last look.
+
+        Real playback runs on the audio driver's own thread; ltcplay only
+        learns about any of this the next time something asks (a status
+        poll, another press), the same way the scheduler only advances when
+        ticked. The page already polls status continuously, which is what
+        drives this in practice, and on_show_started puts the fade in
+        motion synchronously the moment a show starts, so the
+        announcement's OWN audio stops in real time regardless of when this
+        catches up.
+        """
+        if self._player is None or self.playing is None:
+            return
+        ann_id = self.playing
+        label = LABELS[ann_id]
+        if self._player.done:
             elapsed = self._player.elapsed_s
+            stop_reason = self._player.stop_reason
             state = self._current_state()
             self._finish()
-            self._emit(actor="system", action="play", outcome="finished",
-                      reason="finished normally",
-                      text=f"{LABELS[ann_id]} finished playing, "
-                           f"{elapsed:.0f} s, finished normally.",
+            if stop_reason:
+                self._emit(actor="system", action="stop", outcome="stopped",
+                          reason=stop_reason,
+                          text=f"{label} was stopped after {elapsed:.0f} s, "
+                               f"faded over {SHOW_START_FADE_S:g} s, "
+                               f"because {stop_reason}.",
+                          ann_id=ann_id, state=state)
+            else:
+                self._emit(actor="system", action="play", outcome="finished",
+                          reason="finished normally",
+                          text=f"{label} finished playing, {elapsed:.0f} s, "
+                               f"finished normally.",
+                          ann_id=ann_id, state=state)
+            return
+        stalled = (self._clock() - self._player.last_progress_at) > STALL_S
+        too_many_errors = self._player.callback_errors >= CALLBACK_ERROR_LIMIT
+        if stalled or too_many_errors:
+            elapsed = self._player.elapsed_s
+            why = (f"no audio for over {STALL_S:g} s" if stalled else
+                  f"the output device reported a problem on "
+                  f"{self._player.callback_errors} callbacks in a row")
+            state = self._current_state()
+            self._finish()
+            self._emit(actor="system", action="play", outcome="failed",
+                      reason=why,
+                      text=f"{label} stopped answering after "
+                           f"{elapsed:.0f} s ({why}); the output device "
+                           f"may have gone away. Marked failed so another "
+                           f"announcement can be played.",
                       ann_id=ann_id, state=state)
 
-    def play(self, ann_id, who, screen):
+    def on_show_started(self, state=None):
+        """Called by whoever wires this service to the scheduler (web.py's
+        serve(), see its module docstring) the instant the scheduler
+        decides to start a show. A push hook, not something this module
+        polls for: schedule_service.py ticks on a thread of its own with no
+        lock shared with this service, so an announcement that must stop
+        the moment a show starts has to be told, not merely discovered on
+        the next status() poll (review, blocker 1b).
+
+        See SHOW_START_STOPS_ANNOUNCEMENT for the one place this decision
+        lives; it is not Jeff's call yet.
+        """
         with self.lock:
             self._settle()
-            who = (who or "").strip()
-            screen = (screen or "").strip()
+            if not SHOW_START_STOPS_ANNOUNCEMENT:
+                return
+            if self.playing is None or self._player is None:
+                return
+            if self._player.stop_reason is not None:
+                return                      # already stopping
+            fade_frames = max(1, int(SHOW_START_FADE_S *
+                                     (self._player.rate or 1)))
+            self._player.stop_reason = "a show started"
+            self._player.start_fade(fade_frames)
+
+    def play(self, ann_id, who, screen):
+        who = _clean((who or "").strip())
+        screen = _clean((screen or "").strip())
+        if ann_id not in IDS:
+            raise ValueError(f"{ann_id!r} is not one of {', '.join(IDS)}.")
+        label = LABELS[ann_id]
+        screen_txt = f" on the {screen}"
+
+        with self.lock:
+            self._settle()
             state = self._current_state()
-            if ann_id not in IDS:
-                raise ValueError(f"{ann_id!r} is not one of "
-                                 f"{', '.join(IDS)}.")
-            label = LABELS[ann_id]
             missing = self._operator_problem(who, screen)
             if missing:
                 text = (f"A Play press on {label} did not say {missing}. "
@@ -472,7 +702,6 @@ class AnnounceService:
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(reason + " Pick a name from the list. "
                                  "Nothing was changed.")
-            screen_txt = f" on the {screen}"
             if self.playing is not None:
                 other = LABELS[self.playing]
                 text = (f"{who} pressed Play on {label}{screen_txt}, but "
@@ -507,22 +736,94 @@ class AnnounceService:
                 dev = resolve_output_device(sd, self.device_name)
             except Exception as e:
                 text = (f"{who} pressed Play on {label}{screen_txt}. It "
-                        f"failed: {e}")
+                        f"failed: {_clean(str(e))}")
                 self._emit(actor="operator", action="play",
-                          outcome="failed", reason=str(e), text=text,
-                          ann_id=ann_id, who=who, screen=screen, state=state)
-                raise ValueError(str(e))
-            try:
-                player, stream = self._open(sd, dev, ann_id)
-            except Exception as e:
-                text = (f"{who} pressed Play on {label}{screen_txt}. It "
-                        f"failed to open {self.device_name}: {e}")
-                self._emit(actor="operator", action="play",
-                          outcome="failed", reason=str(e), text=text,
-                          ann_id=ann_id, who=who, screen=screen, state=state)
-                raise ValueError(f"{label} could not be played: {e}")
-            self.last_good_device = dev["name"]
+                          outcome="failed", reason=_clean(str(e)),
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(_clean(str(e)))
+            # Claim the slot now, before the lock is released for the file
+            # read below: a second press must be refused as "already
+            # playing" even while this one is still decoding, and nothing
+            # may act on self.playing except while holding self.lock.
             self.playing = ann_id
+
+        # The file read happens WITHOUT the lock held: self.files never
+        # changes after startup, so this is safe to do unlocked, and it is
+        # the one part of a Play press that touches disk. Holding the lock
+        # across it would block Stop, a status poll and every other
+        # operator action for as long as the read takes (review, minor).
+        try:
+            pcm, channels, rate = self._decode(ann_id)
+        except Exception as e:
+            with self.lock:
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. It "
+                        f"failed: {_clean(str(e))}")
+                self._emit(actor="operator", action="play",
+                          outcome="failed", reason=_clean(str(e)),
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=self._current_state())
+            raise ValueError(_clean(str(e)))
+
+        with self.lock:
+            if self.playing != ann_id:
+                # Stop, or close(), ran while the file was being read, and
+                # already logged itself. Starting audio now would be
+                # exactly the bug this rewrite exists to close.
+                raise ValueError(f"{label} was stopped before it started "
+                                 f"playing.")
+            # Re-check the interlock immediately before the stream actually
+            # starts, INSIDE the same locked section as start(): the window
+            # since the first check included a device query and the file
+            # read above, both real wall time, during which the
+            # scheduler's own tick thread runs independently, on its own
+            # lock (review, blocker 1a: audit13_toctou_race.py).
+            state = self._current_state()
+            refusal = interlock_refusal(state)
+            if refusal:
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. "
+                        f"Refused: {refusal}")
+                self._emit(actor="operator", action="play",
+                          outcome="refused", reason=refusal, text=text,
+                          ann_id=ann_id, who=who, screen=screen, state=state)
+                raise ValueError(text)
+            out_ch = min(channels, dev["channels"]) or 1
+            if out_ch < channels:
+                self._emit(actor="system", action="play", outcome="note",
+                          reason="channels dropped",
+                          text=f"{label} is {channels}-channel but "
+                               f"{_clean(self.device_name)} only has "
+                               f"{dev['channels']}; only the first "
+                               f"{out_ch} will play.", ann_id=ann_id,
+                          state=state)
+            player = _Player(pcm[:, :out_ch] if out_ch < channels else pcm,
+                             out_ch, rate, clock=self._clock)
+
+            def cb(outdata, frames, tinfo, status):
+                block = player.next_block(frames, status)
+                outdata[:, :block.shape[1]] = block
+                if outdata.shape[1] > block.shape[1]:
+                    outdata[:, block.shape[1]:] = 0
+
+            try:
+                stream = sd.OutputStream(device=dev["index"], channels=out_ch,
+                                         samplerate=rate, blocksize=1024,
+                                         dtype=pcm.dtype.name, callback=cb)
+                stream.start()
+            except Exception as e:
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. It "
+                        f"failed to open {_clean(self.device_name)}: "
+                        f"{_clean(str(e))}")
+                self._emit(actor="operator", action="play",
+                          outcome="failed", reason=_clean(str(e)),
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
+                raise ValueError(f"{label} could not be played: "
+                                 f"{_clean(str(e))}")
+            self.last_good_device = dev["name"]
             self._player = player
             self._stream = stream
             length = st.get("length_s") or 0.0
@@ -537,8 +838,8 @@ class AnnounceService:
     def stop(self, who, screen):
         with self.lock:
             self._settle()
-            who = (who or "").strip()
-            screen = (screen or "").strip()
+            who = _clean((who or "").strip())
+            screen = _clean((screen or "").strip())
             state = self._current_state()
             missing = self._operator_problem(who, screen)
             if missing:

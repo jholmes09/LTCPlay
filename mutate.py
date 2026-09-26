@@ -1341,8 +1341,10 @@ MUTATIONS = [
   '           if name.strip().lower() == "beyond"]'),
 
  ("an announcement plays over a running or paused show", "ltcplay/announce.py",
-  '            refusal = interlock_refusal(state)\n            if refusal:',
-  '            refusal = interlock_refusal(state)\n            if False:'),
+  '    if state in BLOCKED_STATES:\n'
+  '        how = "paused" if state == "PAUSED" else "running"',
+  '    if False:\n'
+  '        how = "paused" if state == "PAUSED" else "running"'),
 
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",
@@ -1369,9 +1371,9 @@ MUTATIONS = [
  ("a missing announcement output device falls back to another one",
   "ltcplay/announce.py",
   '    if not hits:\n'
-  '        raise ValueError(f"{name!r} is not attached. Nothing else will be "\n'
-  '                         f"used in its place. Outputs on this machine: "\n'
-  '                         f"{names}.")',
+  '        raise ValueError(f"{_clean(name)!r} is not attached. Nothing else "\n'
+  '                         f"will be used in its place. Outputs on this "\n'
+  '                         f"machine: {_clean(names)}.")',
   '    if not hits:\n'
   '        if outputs:\n'
   '            return outputs[0]'),
@@ -1387,6 +1389,41 @@ MUTATIONS = [
   '            st = self.status_by_id.get(ann_id, {})',
   '                raise ValueError(text)\n'
   '            st = self.status_by_id.get(ann_id, {})'),
+
+ ("an announcement's device name matches by substring again",
+  "ltcplay/announce.py",
+  '    hits = [d for d in outputs if d["name"].strip().lower() == want]',
+  '    hits = [d for d in outputs if want in d["name"].lower()]'),
+
+ ("the announcement interlock is never rechecked before the stream starts",
+  "ltcplay/announce.py",
+  '            state = self._current_state()\n'
+  '            refusal = interlock_refusal(state)\n'
+  '            if refusal:\n',
+  '            state = self._current_state()\n'
+  '            refusal = interlock_refusal(state)\n'
+  '            if False:\n'),
+
+ ("a 32-bit float announcement file is played as noise", "ltcplay/announce.py",
+  '    if tag == 3:\n'
+  '        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "\n'
+  '                         f"which is not supported. Export 16-bit or "\n'
+  '                         f"32-bit PCM (integer), not float, instead.")',
+  '    if False:\n'
+  '        pass'),
+
+ ("an announcement device that stopped answering is never noticed",
+  "ltcplay/announce.py",
+  '        if stalled or too_many_errors:',
+  '        if False:'),
+
+ ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
+  '                and self.on_show_started is not None:\n'
+  '            try:\n'
+  '                self.on_show_started(self.machine.state)',
+  '                and self.on_show_started is not None:\n'
+  '            try:\n'
+  '                pass'),
 
 ]
 

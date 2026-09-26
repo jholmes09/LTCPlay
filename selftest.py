@@ -1697,11 +1697,11 @@ class FakeOutputStream:
     def start(self):
         self.started = True
 
-    def pump(self, n=None):
+    def pump(self, n=None, status=None):
         import numpy as np
         n = self.blocksize if n is None else n
         outdata = np.zeros((n, self.channels), dtype=np.float32)
-        self.callback(outdata, n, None, None)
+        self.callback(outdata, n, None, status)
         return outdata
 
     def stop(self):
@@ -11152,6 +11152,373 @@ def _ann_workdir(device="MOTU M4"):
     return work, path, lengths
 
 
+def _ann_write_24bit(path, seconds=1.0, rate=8000):
+    """A real 24-bit PCM WAV: 3 bytes per sample, valid RIFF/WAVE, which
+    Python's `wave` opens fine (getsampwidth() == 3) -- it does not reject
+    24-bit on its own."""
+    import wave as _wave
+    n = int(seconds * rate)
+    with _wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00\x00" * n)
+
+
+def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
+    """A real 32-bit IEEE-float WAV (format tag 3), built by hand: Python's
+    `wave` module cannot write float, only PCM, and cannot read the format
+    tag back out either -- exactly what an external tool (a DAW, a field
+    recorder) would hand an operator."""
+    import array
+    import struct
+    n = int(seconds * rate)
+    data = array.array("f", [value] * n).tobytes()
+    byte_rate = rate * 4
+    fmt_chunk = struct.pack("<HHIIHH", 3, 1, rate, byte_rate, 4, 32)
+    riff = (b"RIFF" +
+           struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+           b"WAVE")
+    fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+    data_chunk = b"data" + struct.pack("<I", len(data)) + data
+    with open(path, "wb") as fh:
+        fh.write(riff + fmt + data_chunk)
+
+
+def test_announce_probe_matches_open_for_format():
+    section("announcements: the startup probe catches exactly what "
+            "playing would fail on: 24-bit and 32-bit float WAVs")
+    A = _ann()
+    work = tempfile.mkdtemp()
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=1.0)
+    _ann_write_24bit(os.path.join(work, "cancellation.wav"), seconds=1.0)
+    _ann_write_float32(os.path.join(work, "cannot_continue.wav"),
+                       seconds=1.0)
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id[A.DELAYED]["available"], "a plain 16-bit WAV is fine")
+    check(not by_id[A.CANCELLATION]["available"]
+          and "24-bit" in by_id[A.CANCELLATION]["reason"],
+          f"a 24-bit WAV must be caught AT STARTUP, not at the press: "
+          f"{by_id[A.CANCELLATION]}")
+    check(not by_id[A.CANNOT_CONTINUE]["available"]
+          and "floating point" in by_id[A.CANNOT_CONTINUE]["reason"],
+          f"a 32-bit float WAV must be caught too, never played as "
+          f"reinterpreted noise: {by_id[A.CANNOT_CONTINUE]}")
+    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+        try:
+            svc.play(aid, "Andy", "rack screen")
+            check(False, f"{aid} must never actually play")
+        except ValueError as e:
+            check("not available" in str(e), f"{e}")
+    print("  ok")
+
+
+def test_announce_device_exact_match_only():
+    section("announcements: the output device is matched by its EXACT "
+            "name, never a substring")
+    A = _ann()
+
+    class _SD:
+        def __init__(self, devices):
+            self._devices = devices
+
+            class _Default:
+                device = (0, 0)
+            self.default = _Default()
+
+        def query_devices(self):
+            return self._devices
+
+    # The configured device is gone; the only device left merely CONTAINS
+    # the configured text, and is a different physical device (here: the
+    # show's own DSP output). A substring match would silently pick it
+    # (audit13_device_wrong_match.py).
+    devices_after_unplug = [
+        {"name": "Line In (Realtek)", "max_output_channels": 0,
+         "default_samplerate": 48000},
+        {"name": "Speakers (High Definition Audio Device)",
+         "max_output_channels": 8, "default_samplerate": 48000},
+    ]
+    try:
+        A.resolve_output_device(_SD(devices_after_unplug), "Speakers")
+        check(False, "a substring match must be refused, not returned")
+    except ValueError as e:
+        check("not attached" in str(e),
+              f"a device gone with only a substring hit left must refuse "
+              f"plainly: {e}")
+
+    devices_present = devices_after_unplug + [
+        {"name": "Speakers", "max_output_channels": 2,
+         "default_samplerate": 48000}]
+    dev = A.resolve_output_device(_SD(devices_present), "Speakers")
+    check(dev["name"] == "Speakers",
+          f"the exact name must still resolve: {dev}")
+    dev2 = A.resolve_output_device(_SD(devices_present), "SPEAKERS")
+    check(dev2["name"] == "Speakers",
+          "the match is case-insensitive, just never partial")
+    print("  ok")
+
+
+def test_announce_toctou_recheck_before_start():
+    section("announcements: the interlock is rechecked immediately "
+            "before the stream actually starts")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    state_holder = {"v": "STANDBY"}
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: state_holder["v"])
+    real_decode = svc._decode
+
+    def decode_and_flip(ann_id):
+        # Stands in for real wall time elapsing during the file read: a
+        # show starting in that window is entirely realistic, since the
+        # scheduler ticks on its own thread with no lock shared with this
+        # service (audit13_toctou_race.py).
+        state_holder["v"] = "SHOW"
+        return real_decode(ann_id)
+
+    svc._decode = decode_and_flip
+    try:
+        check(A.interlock_refusal(svc._current_state()) is None,
+              "setup: the interlock legitimately allows it at the first "
+              "check")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "the recheck must catch the state that changed "
+                         "during the file read and refuse")
+        except ValueError as e:
+            check("running" in str(e), f"the refusal must say why: {e}")
+    finally:
+        svc._decode = real_decode
+    check(svc.playing is None, "a caught race must never start playing")
+    check(sd.output_opened == [],
+          "the stream must never actually be opened once the recheck "
+          "refuses")
+    print("  ok")
+
+
+def test_announce_show_start_stops_announcement():
+    section("announcements: a scheduled show stops a playing "
+            "announcement, faded, and logs it")
+    A = _ann()
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    work, cfg, _lengths = _ann_workdir()
+    # A long announcement, so it is still going when the next slot fires.
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=90.0,
+                   rate=8000)
+
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    doc = {"timezone": "America/Denver",
+           "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+           "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+           "exceptions": {}, "show_len_s": 440, "guard_s": 120,
+           "late_grace_s": 0}
+    SV.save_rule(spath, doc)
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: the scheduler is in intermission: {svc.machine.state}")
+
+    sd = FakeSD()
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    check(ann.playing == A.DELAYED, "setup: the announcement is playing "
+                                    "during intermission, fully allowed")
+    stream = sd.output_streams[-1]
+
+    now[0] = _den(S, 17, 50, 0)          # the next slot fires
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          f"setup: the next slot fired: {svc.machine.state}")
+    check(ann._player is not None
+          and ann._player.stop_reason == "a show started",
+          "the show-started hook must put the player into a fade, "
+          "synchronously, inside svc.tick() itself: the hook is a push, "
+          "not something announce.py polled the scheduler for")
+    check(ann.playing == A.DELAYED,
+          "the fade has not finished yet, so it is still the one playing")
+
+    # The real audio driver keeps calling back on its own thread in
+    # production; the test drives that explicitly, the same way the
+    # natural-completion test does.
+    stream.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status = ann.status()
+    check(status["playing"] is None,
+          "once the fade finishes, the announcement must show as stopped")
+    check(any(r["outcome"] == "stopped" and r["reason"] == "a show started"
+             for r in status["journal"]),
+          f"the stop must be journalled with why: {status['journal']}")
+    check(stream.stopped and stream.closed,
+          "the device stream must actually be closed")
+
+    # The alternative Jeff has not chosen -- flip the one constant, and a
+    # show starting must leave whatever is playing alone.
+    old = A.SHOW_START_STOPS_ANNOUNCEMENT
+    A.SHOW_START_STOPS_ANNOUNCEMENT = False
+    try:
+        # A provider of its own, deliberately not tied to the real
+        # scheduler above (which is already in SHOW by now): this checks
+        # only what the constant itself controls.
+        ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                 state_provider=lambda: "STANDBY")
+        ann2.play(A.CANCELLATION, "Andy", "rack screen")
+        ann2.on_show_started("SHOW")
+        check(ann2.playing == A.CANCELLATION,
+              "with the constant off, a show starting must not touch "
+              "what is playing")
+    finally:
+        A.SHOW_START_STOPS_ANNOUNCEMENT = old
+    print("  ok")
+
+
+def test_announce_stall_watchdog():
+    section("announcements: a device that stops answering is caught and "
+            "marked failed, not stuck forever")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    clock_box = [0.0]
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY",
+                            clock=lambda: clock_box[0])
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    stream.pump(256)          # some real audio came out
+    stream.pump(256)
+    check(svc.playing == A.DELAYED,
+          "setup: still playing after two real callbacks")
+
+    # The device dies: the backend simply stops calling back. Nothing
+    # about the fake stream itself changes -- that IS the failure mode
+    # (audit13_stuck_on_output_error.py). Time passes with no more
+    # callbacks at all.
+    clock_box[0] += A.STALL_S + 1.0
+    status = svc.status()
+    check(status["playing"] is None,
+          "a device that stopped answering must not stay 'playing' "
+          "forever")
+    check(any(r["outcome"] == "failed" for r in status["journal"]),
+          f"the stall must be journalled as a failure: {status['journal']}")
+    check(svc.playing is None, "the one-at-a-time lock must be released")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.playing == A.CANCELLATION,
+          "a different announcement must be playable again once the "
+          "stall is caught")
+    print("  ok")
+
+
+def test_announce_callback_status_errors():
+    section("announcements: repeated callback errors are also caught, "
+            "even while the device keeps answering")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    clock_box = [0.0]
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY",
+                            clock=lambda: clock_box[0])
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    for _ in range(A.CALLBACK_ERROR_LIMIT):
+        stream.pump(64, status=1)
+        clock_box[0] += 0.01          # well under STALL_S: not a stall
+    status = svc.status()
+    check(status["playing"] is None,
+          "enough reported problems in a row must also be caught, even "
+          "though the device kept calling back")
+    check(any(r["outcome"] == "failed"
+             and "reported a problem" in r["text"]
+             for r in status["journal"]),
+          f"the reason must say it was reported errors, not a stall: "
+          f"{status['journal']}")
+    print("  ok")
+
+
+def test_announce_minor_hardening():
+    section("announcements: size and duration caps, dash-free text, "
+            "channels dropped are logged")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    long_path = os.path.join(work, "long.wav")
+    _ann_write_wav(long_path, seconds=A.MAX_LENGTH_S + 1, rate=200)
+    st = A.AnnounceService._probe_file(long_path)
+    check(not st["available"] and "s long" in st["reason"],
+          f"over the length cap must be unavailable: {st}")
+
+    small_path = os.path.join(work, "small.wav")
+    _ann_write_wav(small_path, seconds=1.0, rate=8000)
+    real_cap = A.MAX_FILE_BYTES
+    A.MAX_FILE_BYTES = 100          # smaller than the file just written
+    try:
+        st2 = A.AnnounceService._probe_file(small_path)
+    finally:
+        A.MAX_FILE_BYTES = real_cap
+    check(not st2["available"] and "MB" in st2["reason"],
+          f"over the byte cap must be unavailable: {st2}")
+    ok_path = os.path.join(work, "ok.wav")
+    _ann_write_wav(ok_path, seconds=1.0)
+    st3 = A.AnnounceService._probe_file(ok_path)
+    check(st3["available"], "an ordinary file under both caps is fine")
+
+    class _BoomSD:
+        def __init__(self):
+            class _Default:
+                device = (0, 0)
+            self.default = _Default()
+
+        def query_devices(self):
+            raise RuntimeError("PortAudio failed — device busy")
+
+    work2, cfg2, _lengths2 = _ann_workdir()
+    svc2 = A.AnnounceService(cfg2, sd=_BoomSD(), operators_folder=work2,
+                             state_provider=lambda: "STANDBY")
+    try:
+        svc2.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "a broken audio system must refuse the press")
+    except ValueError as e:
+        check("—" not in str(e) and "–" not in str(e),
+              f"an em or en dash from a third-party error must be "
+              f"scrubbed: {e!r}")
+
+    work3, cfg3, _lengths3 = _ann_workdir()
+    _ann_write_wav(os.path.join(work3, "delayed.wav"), seconds=1.0,
+                   channels=2)
+
+    class _MonoSD(FakeSD):
+        def __init__(self):
+            super().__init__()
+            self.devices = [{"name": "MOTU M4", "max_input_channels": 4,
+                            "max_output_channels": 1,
+                            "default_samplerate": 48000, "hostapi": 0}]
+    svc3 = A.AnnounceService(cfg3, sd=_MonoSD(), operators_folder=work3,
+                             state_provider=lambda: "STANDBY")
+    svc3.play(A.DELAYED, "Andy", "rack screen")
+    check(any(r["reason"] == "channels dropped" for r in svc3.journal),
+          f"playing a 2-channel file on a 1-channel device must log a "
+          f"note: {list(svc3.journal)}")
+    print("  ok")
+
+
 def test_announce_interlock_matrix():
     section("announcements: the interlock, every scheduler state times "
             "every button")
@@ -14162,6 +14529,13 @@ if __name__ == "__main__":
     test_schedule_operator_list()
     test_schedule_a_paused_show_is_never_overlapped()
     test_schedule_a_clock_step_during_a_pause()
+    test_announce_probe_matches_open_for_format()
+    test_announce_device_exact_match_only()
+    test_announce_toctou_recheck_before_start()
+    test_announce_show_start_stops_announcement()
+    test_announce_stall_watchdog()
+    test_announce_callback_status_errors()
+    test_announce_minor_hardening()
     test_announce_interlock_matrix()
     test_announce_single_flight()
     test_announce_operator_validation()

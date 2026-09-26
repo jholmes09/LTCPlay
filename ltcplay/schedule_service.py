@@ -346,6 +346,13 @@ class Service:
         self.operators, why = load_operators(self.state_dir)
         if why:
             self._journal_line("system", why, action="operators")
+        # A plain callable, or None: set by web.py when an announcements
+        # service is ALSO configured (serve()'s own job, see its module
+        # docstring). Called the instant a show starts, so a playing
+        # announcement can be told to stop without waiting on its own
+        # next status() poll. schedule_service.py never imports announce.py
+        # to make this call; it only ever calls whatever was set here.
+        self.on_show_started = None
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -409,6 +416,21 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # A push, not a poll: an announcement playing must be told the
+        # instant a show starts, not found out about on its own next
+        # status() look, which could be seconds behind. See on_show_started
+        # in __init__ and web.py's serve(), which is the only place this
+        # attribute is ever set.
+        if before is not None and before.state != sch.SHOW \
+                and self.machine is not None \
+                and self.machine.state == sch.SHOW \
+                and self.on_show_started is not None:
+            try:
+                self.on_show_started(self.machine.state)
+            except Exception as e:
+                self._journal_line(
+                    "system", f"The announcements hook failed: {e}.",
+                    action="announce hook", outcome="error")
         return out
 
     # -- tonight on disk --------------------------------------------------

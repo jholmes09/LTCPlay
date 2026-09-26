@@ -793,10 +793,12 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
 
     `announce` is the same shape for the announcements config: a path, or a
     ready-made AnnounceService. Without it announcements are not imported
-    either. When BOTH are configured, the announcement service is wired to
-    read the scheduler's state through its one-method provider; that wiring
-    lives here and nowhere in announce.py itself, which never imports the
-    scheduler."""
+    either. When BOTH are configured, the two are wired together in both
+    directions, here and nowhere else: the announcement service reads the
+    scheduler's state through its one-method provider (may I play), and the
+    scheduler pushes to the announcement service's on_show_started hook the
+    instant it starts a show (stop, a show just started). Neither module
+    imports the other; this function is the only place that knows both."""
     control = Control(folder, defaults=defaults, sd=sd)
     on_network = bind not in LOOPBACK
     if on_network and token is None:
@@ -825,6 +827,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.announce.state_provider = (
             lambda: sched.machine.state if sched.machine is not None
             else None)
+        # The other half of the same bridge, in the other direction: the
+        # scheduler pushes the instant it starts a show, rather than the
+        # announcement service finding out on its own next status() poll.
+        # See announce.py's module docstring and on_show_started.
+        sched.on_show_started = httpd.announce.on_show_started
     if on_ready:
         on_ready(httpd, control, token)
     return httpd
