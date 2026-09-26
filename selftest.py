@@ -11600,6 +11600,58 @@ def test_announce_toctou_recheck_before_start():
     print("  ok")
 
 
+def test_announce_interlock_recheck_catches_a_state_provider_with_no_hold():
+    section("announcements: the interlock recheck immediately before the "
+            "stream starts still matters on its own -- not made redundant "
+            "by hold_still_claimed -- when state_provider is wired but "
+            "hold_requester is not, the one configuration "
+            "test_announce_interlock_matrix already proves the module "
+            "must support even though web.serve() never wires it that "
+            "way: the epoch has nothing to compare there, so the interlock "
+            "recheck is the ONLY thing standing between a state that goes "
+            "away mid-decode and an announcement playing into it blind "
+            "(coordinator review, 2026-09-26, on CI's shard 1 survivor)")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    fake = {"state": "STANDBY"}
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: fake["state"])
+    check(svc.hold_requester is None and svc.hold_still_claimed is None,
+          "setup: state_provider only, exactly as "
+          "test_announce_interlock_matrix wires it -- no scheduler is Held "
+          "and there is no epoch to ask about")
+    real_decode = svc._decode
+
+    def decode_and_drop(ann_id):
+        # Stands in for the scheduler going away entirely during the file
+        # read (unloaded, its rule file failed to reload, the process that
+        # owned it exited) -- with no hold_requester wired, nothing bumps
+        # an epoch for this to be caught by; the state provider itself is
+        # the only signal left, and it now says "I don't know".
+        fake["state"] = None
+        return real_decode(ann_id)
+
+    svc._decode = decode_and_drop
+    try:
+        check(A.interlock_refusal(svc._current_state()) is None,
+              "setup: the interlock legitimately allows it at the first "
+              "check")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "the state going away during the file read must "
+                         "refuse the announcement, not let it play blind "
+                         "into an unknown show state")
+        except ValueError as e:
+            check("inert" in str(e),
+                  f"the refusal must be the plain interlock sentence, the "
+                  f"only guard left once hold_requester is not wired: {e}")
+    finally:
+        svc._decode = real_decode
+    check(svc.playing is None,
+          "a refused claim must never start playing")
+    print("  ok")
+
+
 def test_announce_show_start_stops_announcement():
     section("announcements: a scheduled show stops a playing "
             "announcement, faded, and logs it")
@@ -16493,6 +16545,7 @@ if __name__ == "__main__":
     test_announce_wav_data_chunk_sanity()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()
+    test_announce_interlock_recheck_catches_a_state_provider_with_no_hold()
     test_announce_show_start_stops_announcement()
     test_announce_stall_watchdog()
     test_announce_callback_status_errors()
