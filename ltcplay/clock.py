@@ -1290,9 +1290,24 @@ def build(cfg, timeline, sink, log=None, no_output=False, out=None,
         return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop)
     if cfg.source == "ltc_audio_slave":
         show_len = cfg.zones.show_len_s
-        if show_len is None and "show" in cfg.zones.forward \
-                and cfg.artnet is not None:
-            show_len = _show_length(timeline, cfg.zones.show)
+        derived = None
+        if "show" in cfg.zones.forward and cfg.artnet is not None:
+            derived = _show_length(timeline, cfg.zones.show)
+        if show_len is None:
+            # Show length follows the show's own media (Jeff, 2026-09-26):
+            # read from the renders, never typed in a second place, so a
+            # config that names no length cannot drift from the show.
+            show_len = derived
+        elif derived is not None and show_len < derived:
+            # A configured length shorter than the show's own media would
+            # cut it off mid-cue (the handoff's own example: 440 configured
+            # against a 444.42 s music track). Refuse rather than free run
+            # to a made-up end that is short by the difference.
+            raise ClockConfigError(
+                f"'clock.zones.show_len_s' is {show_len:g} s, shorter than "
+                f"the show's own media, which runs {derived:g} s. Set "
+                f"'clock.zones.show_len_s' to at least {derived:g}, or "
+                f"leave it out so the length is read from the show.")
         return LtcAudioSlave(cfg, count=timeline.count, drop=timeline.drop,
                              fps=timeline.fps, show_len_s=show_len, out=out,
                              log=log)
@@ -1305,7 +1320,11 @@ def _show_length(timeline, hour):
     """How long the show zone runs: to the end of its last cue.
 
     Free running to the end of the show needs to know where the end is.
-    Read from the renders rather than typed in a second place."""
+    Read from the renders rather than typed in a second place. This is also
+    what "show length follows the music track" (Jeff, 2026-09-26) means in
+    practice: the show's cues cover its own music, so the last cue's own end
+    is the music's own length, without opening the audio file a second time
+    to ask again."""
     start = hour * 3600.0
     end = None
     for c in timeline.cues:
@@ -1321,3 +1340,93 @@ def _show_length(timeline, hour):
             f"free run would never stop. Set 'clock.zones.show_len_s', or "
             f"put the show at {hour:02d}:00:00:00.")
     return end - start
+
+
+def derive_show_length_in_folder(folder, sd=None):
+    """(path, length_s, warning) about the show the folder's clock config
+    actually names:
+
+    - (path, length_s, None): exactly one show file in the folder names a
+      clock block with a derivable show length. Use it.
+    - (None, None, sentence): otherwise -- more than one candidate, with
+      no way to tell which one is the real one (refuse rather than guess
+      "the first *.json", review round 2, 2026-09-26), or none at all, or
+      one that named a clock block but would not open or would not
+      derive. `sentence` says which, and names every candidate file
+      involved, so the caller can warn instead of silently skipping the
+      check (review round 2: "never silently skip").
+
+    Used at startup, before anything is served, to cross-check the
+    SCHEDULER's own show_len_s against the show's own media the same way
+    `build` already checks `clock.zones.show_len_s` (Jeff, 2026-09-26:
+    show length follows the music, wherever the code has access to it).
+    See web.serve(), the only place that has both the schedule rules and a
+    show folder at once; schedule.py stays pure and never reads a file of
+    its own, and this function does not touch it or schedule_service.py.
+
+    A plain Timeline.load() is not enough: a cue's own end_seconds needs
+    its duration, which only a real open reads off the FSEQ header, the
+    same as clock.build() itself is only ever called from inside one (see
+    session.py). So each candidate is opened the same way the page's own
+    Check button does (Session, no_output, no_log): safe to call for every
+    file in the folder, and it never touches real audio or network output.
+
+    Never raises: a file that is not JSON, is not a show, has no clock
+    block, will not open (a missing FSEQ, a bad setting) or cannot derive
+    a length is recorded as a problem, not thrown."""
+    import glob
+    import json as _json
+    import os as _os
+    from .session import Session
+    candidates = []       # [(path, length_s)]
+    problems = []          # [sentence], one per candidate that could not
+                           # be used
+    for path in sorted(glob.glob(_os.path.join(folder, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = _json.load(fh)
+        except (OSError, ValueError):
+            continue
+        # A cheap pre-filter before the expensive part (opening every FSEQ
+        # a candidate names): only a real show names cues, and only one
+        # with a clock block is a candidate for this check at all.
+        if not (isinstance(doc, dict) and isinstance(doc.get("cues"), list)
+                and "clock" in doc):
+            continue
+        name = _os.path.basename(path)
+        try:
+            s = Session(path, no_output=True, no_log=True, sd=sd)
+            s.open()
+        except Exception as e:
+            problems.append(f"{name} could not be opened: {_clean_e(e)}")
+            continue
+        if s.tl is None or s.tl.clock is None:
+            continue
+        try:
+            length_s = _show_length(s.tl, s.tl.clock.zones.show)
+        except ClockConfigError as e:
+            problems.append(f"{name}'s show length could not be read: "
+                            f"{_clean_e(e)}")
+            continue
+        candidates.append((path, length_s))
+    if len(candidates) == 1:
+        return candidates[0][0], candidates[0][1], None
+    if len(candidates) > 1:
+        names = ", ".join(_os.path.basename(p) for p, _ in candidates)
+        return None, None, (
+            f"more than one show file in the folder names a clock block "
+            f"({names}), so it is not clear which one to check the "
+            f"schedule's show_len_s against")
+    if problems:
+        return None, None, "; ".join(problems)
+    return None, None, ("no show file in the folder names a clock block, "
+                        "so the schedule's show_len_s could not be checked "
+                        "against the show's own media")
+
+
+def _clean_e(e):
+    # Unicode escapes, not literal characters: this file's own source is
+    # scanned for a bare em or en dash (test_clock_settings_fail_loudly),
+    # and this is the one place clock.py has to name them in order to
+    # strip them from someone else's exception text.
+    return str(e).replace("\u2014", "-").replace("\u2013", "-")

@@ -11186,8 +11186,9 @@ def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
 
 
 def test_announce_probe_matches_open_for_format():
-    section("announcements: the startup probe catches exactly what "
-            "playing would fail on: 24-bit and 32-bit float WAVs")
+    section("announcements: 16-bit, 24-bit and 32-bit float WAVs are all "
+            "accepted (Jeff, 2026-09-26), and the startup probe agrees "
+            "with the press-time open on exactly what will play")
     A = _ann()
     work = tempfile.mkdtemp()
     _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=1.0)
@@ -11205,20 +11206,285 @@ def test_announce_probe_matches_open_for_format():
                             state_provider=lambda: "STANDBY")
     by_id = {i["id"]: i for i in svc.status()["announcements"]}
     check(by_id[A.DELAYED]["available"], "a plain 16-bit WAV is fine")
-    check(not by_id[A.CANCELLATION]["available"]
-          and "24-bit" in by_id[A.CANCELLATION]["reason"],
-          f"a 24-bit WAV must be caught AT STARTUP, not at the press: "
+    check(by_id[A.CANCELLATION]["available"],
+          f"a 24-bit WAV must be accepted, at startup: "
           f"{by_id[A.CANCELLATION]}")
-    check(not by_id[A.CANNOT_CONTINUE]["available"]
-          and "floating point" in by_id[A.CANNOT_CONTINUE]["reason"],
-          f"a 32-bit float WAV must be caught too, never played as "
-          f"reinterpreted noise: {by_id[A.CANNOT_CONTINUE]}")
-    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+    check(by_id[A.CANNOT_CONTINUE]["available"],
+          f"a 32-bit float WAV must be accepted too, at startup: "
+          f"{by_id[A.CANNOT_CONTINUE]}")
+    for aid in A.IDS:
+        r = svc.play(aid, "Andy", "rack screen")
+        check(r["playing"]["id"] == aid,
+              f"{aid} must actually play, agreeing with the probe, not "
+              f"just look clean and then fail at the press: {r}")
+        svc.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_unsupported_wav_formats_rejected():
+    section("announcements: a WAV format this module cannot play safely "
+            "is still refused, the same way at startup and at the press")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_alaw(path, seconds=1.0, rate=8000):
+        import struct
+        n = int(seconds * rate)
+        data = b"\x00" * n
+        fmt_chunk = struct.pack("<HHIIHH", 6, 1, rate, rate, 1, 8)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    def write_float64(path, seconds=1.0, rate=8000):
+        import array
+        import struct
+        n = int(seconds * rate)
+        data = array.array("d", [0.1] * n).tobytes()
+        byte_rate = rate * 8
+        fmt_chunk = struct.pack("<HHIIHH", 3, 1, rate, byte_rate, 8, 64)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    write_alaw(os.path.join(work, "delayed.wav"))
+    write_float64(os.path.join(work, "cancellation.wav"))
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(not by_id[A.DELAYED]["available"]
+          and "format 6" in by_id[A.DELAYED]["reason"],
+          f"A-law (a non-PCM, non-float tag) must still be caught at "
+          f"startup: {by_id[A.DELAYED]}")
+    check(not by_id[A.CANCELLATION]["available"]
+          and "64-bit" in by_id[A.CANCELLATION]["reason"],
+          f"64-bit float must still be caught at startup, never silently "
+          f"truncated to 32-bit: {by_id[A.CANCELLATION]}")
+    check(by_id[A.CANNOT_CONTINUE]["available"], "the plain WAV is fine")
+    for aid in (A.DELAYED, A.CANCELLATION):
         try:
             svc.play(aid, "Andy", "rack screen")
             check(False, f"{aid} must never actually play")
         except ValueError as e:
             check("not available" in str(e), f"{e}")
+    print("  ok")
+
+
+def test_announce_wav_decode_values():
+    section("announcements: 24-bit PCM and 32-bit float samples decode "
+            "to the right values, not just the right length")
+    import struct
+    import wave
+    import numpy as np
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    # 24-bit: known samples, left-justified (shifted up 8 bits) into
+    # int32 is the only conversion that keeps both the sign and the full
+    # scale right.
+    path24 = os.path.join(work, "a24.wav")
+    samples = (0, 1, -1, 8388607, -8388608, 12345)
+    raw = b"".join(int(s & 0xFFFFFF).to_bytes(3, "little")
+                  for s in samples)
+    with wave.open(path24, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(8000)
+        w.writeframes(raw)
+    pcm, channels, rate, _length = A._wav_info(path24, decode=True)
+    check(pcm.dtype == np.int32, f"24-bit PCM must decode to int32: "
+                                 f"{pcm.dtype}")
+    got = pcm.reshape(-1).astype(np.int64).tolist()
+    want = [s * 256 for s in samples]
+    check(got == want,
+          f"24-bit samples must be shifted up 8 bits, sign and all, not "
+          f"reinterpreted some other way: want {want}, got {got}")
+
+    # 32-bit float: the wav module cannot write this format, so it is
+    # built by hand, the same way a DAW or field recorder would hand one
+    # over (Jeff, 2026-09-26: recordings may be float).
+    path32 = os.path.join(work, "a32f.wav")
+    values = (0.5, -0.5, 0.999, -1.0)
+    data = _pack_float32(values)
+    byte_rate = 8000 * 4
+    fmt_chunk = struct.pack("<HHIIHH", 3, 1, 8000, byte_rate, 4, 32)
+    riff = (b"RIFF" +
+           struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+           b"WAVE")
+    fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+    data_chunk = b"data" + struct.pack("<I", len(data)) + data
+    with open(path32, "wb") as fh:
+        fh.write(riff + fmt + data_chunk)
+    pcm2, channels2, rate2, length2 = A._wav_info(path32, decode=True)
+    check(pcm2.dtype == np.float32,
+          f"32-bit float must decode to float32, not be reinterpreted as "
+          f"int32 (loud noise, no error anywhere): {pcm2.dtype}")
+    got2 = [round(float(v), 3) for v in pcm2.reshape(-1)]
+    check(got2 == list(values),
+          f"the float samples themselves must round-trip: want "
+          f"{list(values)}, got {got2}")
+    check(rate2 == 8000 and channels2 == 1 and abs(length2 - 0.0005) < 1e-6,
+          f"channels, rate and length must all be read off the float "
+          f"file's own fmt chunk: {channels2} {rate2} {length2}")
+
+    # The probe (decode=False) must agree with the open on both.
+    _, ch3, rate3, len3 = A._wav_info(path24, decode=False)
+    check(ch3 == 1 and rate3 == 8000, f"probe must read the same header "
+                                      f"a real open would: {ch3} {rate3}")
+    _, ch4, rate4, len4 = A._wav_info(path32, decode=False)
+    check(ch4 == 1 and rate4 == 8000 and abs(len4 - 0.0005) < 1e-6,
+          f"the probe must agree with the open on the float file too: "
+          f"{ch4} {rate4} {len4}")
+    print("  ok")
+
+
+def _pack_float32(values):
+    import array
+    return array.array("f", values).tobytes()
+
+
+def _chunk(cid, body):
+    import struct
+    out = cid + struct.pack("<I", len(body)) + body
+    if len(body) % 2:
+        out += b"\x00"
+    return out
+
+
+def _riff(body):
+    import struct
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+
+
+def _fmt_extensible(channels, rate, bits, subformat_guid):
+    import struct
+    block_align = channels * (bits // 8)
+    byte_rate = rate * block_align
+    body = struct.pack("<HHIIHH", 0xFFFE, channels, rate, byte_rate,
+                       block_align, bits)
+    body += struct.pack("<H", 22)          # cbSize
+    body += struct.pack("<H", bits)        # wValidBitsPerSample
+    body += struct.pack("<I", 0)           # dwChannelMask
+    body += subformat_guid
+    return _chunk(b"fmt ", body)
+
+
+_SUBTYPE_FLOAT = bytes.fromhex("0300000000001000800000aa00389b71")
+_SUBTYPE_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
+
+
+def test_announce_wav_extensible_float_accepted():
+    section("announcements: WAVE_FORMAT_EXTENSIBLE wrapping IEEE float is "
+            "accepted and decoded as float, not refused with a raw GUID "
+            "(review round 2, 2026-09-26, should-fix 5: many DAWs, "
+            "Audacity among them, write 32-bit float this way)")
+    A = _ann()
+    n = 50
+    data = _pack_float32([0.5] * n)
+    body = _fmt_extensible(1, 48000, 32, _SUBTYPE_FLOAT) + _chunk(b"data",
+                                                                  data)
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, "ext_float.wav")
+    with open(path, "wb") as fh:
+        fh.write(_riff(body))
+    pcm, channels, rate, length_s = A._wav_info(path, decode=True)
+    check(str(pcm.dtype) == "float32",
+          f"an extensible float file must decode as float32, not be "
+          f"reinterpreted as integers: {pcm.dtype}")
+    check(float(pcm.ravel()[0]) == 0.5,
+          f"the float value itself must round-trip: {pcm.ravel()[:1]}")
+    _, ch2, rate2, len2 = A._wav_info(path, decode=False)
+    check(ch2 == 1 and rate2 == 48000,
+          f"the probe must agree with the open: {ch2} {rate2}")
+
+    # An extensible sub-format this module does not recognize (A-law
+    # under extensible) must still be a PLAIN sentence, never a raw GUID.
+    alaw_guid = bytes.fromhex("0600000000001000800000aa00389b71")
+    body2 = _fmt_extensible(1, 8000, 8, alaw_guid) + _chunk(
+        b"data", b"\x00" * 100)
+    path2 = os.path.join(work, "ext_alaw.wav")
+    with open(path2, "wb") as fh:
+        fh.write(_riff(body2))
+    try:
+        A._wav_info(path2, decode=False)
+        check(False, "an unrecognized extensible sub-format must be "
+                     "refused, not accepted")
+    except ValueError as e:
+        msg = str(e)
+        check("8000-00aa00389b71" not in msg and "0000-0010" not in msg,
+              f"the refusal must never contain a raw GUID: {msg}")
+        _no_dashes(msg, "extensible unrecognized sub-format refusal")
+    print("  ok")
+
+
+def test_announce_wav_data_chunk_sanity():
+    section("announcements: a WAV whose data chunk declares an impossible "
+            "size is refused loudly, the same way at the probe and the "
+            "press, for BOTH the PCM and the float path (review round 2, "
+            "2026-09-26, should-fix 6: audit15_wav_floatparser.py / "
+            "audit15_wav_edgecases.py)")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_pcm16(name, real_frames, declared_size):
+        import struct
+        real = struct.pack(f"<{real_frames}h", *([1000] * real_frames))
+        fmt = _chunk(b"fmt ", struct.pack("<HHIIHH", 1, 1, 8000, 16000,
+                                          2, 16))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt + header + real))
+        return path
+
+    def write_float(name, real_frames, declared_size):
+        import struct
+        real = _pack_float32([0.25] * real_frames)
+        fmt_chunk = _chunk(b"fmt ", struct.pack("<HHIIHH", 3, 1, 48000,
+                                                48000 * 4, 4, 32))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt_chunk + header + real))
+        return path
+
+    cases = [
+        ("pcm_truncated.wav", write_pcm16, 100, 400, "cut off"),
+        ("pcm_zero.wav", write_pcm16, 100, 0, "placeholder"),
+        ("pcm_ffffffff.wav", write_pcm16, 100, 0xFFFFFFFF, "placeholder"),
+        ("float_truncated.wav", write_float, 50, 1000, "cut off"),
+        ("float_zero.wav", write_float, 50, 0, "placeholder"),
+        ("float_ffffffff.wav", write_float, 50, 0xFFFFFFFF, "placeholder"),
+    ]
+    for name, writer, frames, declared, must_say in cases:
+        path = writer(name, frames, declared)
+        for decode in (False, True):
+            try:
+                A._wav_info(path, decode=decode)
+                check(False, f"{name} (decode={decode}) must be refused, "
+                             f"not read as a healthy file")
+            except ValueError as e:
+                msg = str(e)
+                check(must_say in msg,
+                      f"{name} (decode={decode}): the refusal must say "
+                      f"why: {msg}")
+                _no_dashes(msg, f"{name} data-chunk-sanity refusal")
     print("  ok")
 
 
@@ -11269,22 +11535,45 @@ def test_announce_device_exact_match_only():
 
 
 def test_announce_toctou_recheck_before_start():
-    section("announcements: the interlock is rechecked immediately "
-            "before the stream actually starts")
+    section("announcements: the SECOND check, immediately before the "
+            "stream actually starts, is read-only -- it refuses the "
+            "announcement rather than re-Holding a show the operator "
+            "resumed during the file read (review round 2, 2026-09-26: "
+            "audit15_resume_race.py)")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
-    state_holder = {"v": "STANDBY"}
+    fake = {"state": "STANDBY", "epoch": 0}
+    hold_calls = []
+    claimed_checks = []
+
+    def fake_hold(who, screen, detail=None):
+        # Hold always succeeds here and moves the fake schedule to HOLD,
+        # bumping its epoch, exactly as the real Service would.
+        hold_calls.append((who, screen, detail, fake["state"]))
+        fake["state"] = "HOLD"
+        fake["epoch"] += 1
+        return None, fake["epoch"]
+
+    def fake_still_claimed(claim_epoch):
+        claimed_checks.append(claim_epoch)
+        return (claim_epoch == fake["epoch"]
+                and fake["state"] in ("HOLD", "PAUSED"))
+
     sd = FakeSD()
     svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
-                            state_provider=lambda: state_holder["v"])
+                            state_provider=lambda: fake["state"])
+    svc.hold_requester = fake_hold
+    svc.hold_still_claimed = fake_still_claimed
     real_decode = svc._decode
 
     def decode_and_flip(ann_id):
-        # Stands in for real wall time elapsing during the file read: a
-        # show starting in that window is entirely realistic, since the
-        # scheduler ticks on its own thread with no lock shared with this
-        # service (audit13_toctou_race.py).
-        state_holder["v"] = "SHOW"
+        # Stands in for real wall time elapsing during the file read: an
+        # operator resuming (a real Resume bumps the epoch, same as
+        # fake_hold above) in that window is entirely realistic, since
+        # the scheduler ticks on its own thread with no lock shared with
+        # this service (audit13_toctou_race.py / audit15_resume_race.py).
+        fake["state"] = "SHOW"
+        fake["epoch"] += 1
         return real_decode(ann_id)
 
     svc._decode = decode_and_flip
@@ -11294,16 +11583,72 @@ def test_announce_toctou_recheck_before_start():
               "check")
         try:
             svc.play(A.DELAYED, "Andy", "rack screen")
-            check(False, "the recheck must catch the state that changed "
-                         "during the file read and refuse")
+            check(False, "a Resume during the file read must refuse the "
+                         "announcement, not silently re-Hold the show")
         except ValueError as e:
-            check("running" in str(e), f"the refusal must say why: {e}")
+            check("resumed while the announcement was loading" in str(e),
+                  f"the refusal must say why: {e}")
     finally:
         svc._decode = real_decode
-    check(svc.playing is None, "a caught race must never start playing")
-    check(sd.output_opened == [],
-          "the stream must never actually be opened once the recheck "
-          "refuses")
+    check(svc.playing is None, "a refused claim must never start playing")
+    check(len(hold_calls) == 1,
+          f"Hold must be requested only ONCE, before the file read: the "
+          f"second check must be read-only, never Hold again: {hold_calls}")
+    check(len(claimed_checks) == 1 and claimed_checks[0] == 1,
+          f"the second check must ask about the epoch captured at the "
+          f"FIRST Hold, not the current one: {claimed_checks}")
+    print("  ok")
+
+
+def test_announce_interlock_recheck_catches_a_state_provider_with_no_hold():
+    section("announcements: the interlock recheck immediately before the "
+            "stream starts still matters on its own -- not made redundant "
+            "by hold_still_claimed -- when state_provider is wired but "
+            "hold_requester is not, the one configuration "
+            "test_announce_interlock_matrix already proves the module "
+            "must support even though web.serve() never wires it that "
+            "way: the epoch has nothing to compare there, so the interlock "
+            "recheck is the ONLY thing standing between a state that goes "
+            "away mid-decode and an announcement playing into it blind "
+            "(coordinator review, 2026-09-26, on CI's shard 1 survivor)")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    fake = {"state": "STANDBY"}
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: fake["state"])
+    check(svc.hold_requester is None and svc.hold_still_claimed is None,
+          "setup: state_provider only, exactly as "
+          "test_announce_interlock_matrix wires it -- no scheduler is Held "
+          "and there is no epoch to ask about")
+    real_decode = svc._decode
+
+    def decode_and_drop(ann_id):
+        # Stands in for the scheduler going away entirely during the file
+        # read (unloaded, its rule file failed to reload, the process that
+        # owned it exited) -- with no hold_requester wired, nothing bumps
+        # an epoch for this to be caught by; the state provider itself is
+        # the only signal left, and it now says "I don't know".
+        fake["state"] = None
+        return real_decode(ann_id)
+
+    svc._decode = decode_and_drop
+    try:
+        check(A.interlock_refusal(svc._current_state()) is None,
+              "setup: the interlock legitimately allows it at the first "
+              "check")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "the state going away during the file read must "
+                         "refuse the announcement, not let it play blind "
+                         "into an unknown show state")
+        except ValueError as e:
+            check("inert" in str(e),
+                  f"the refusal must be the plain interlock sentence, the "
+                  f"only guard left once hold_requester is not wired: {e}")
+    finally:
+        svc._decode = real_decode
+    check(svc.playing is None,
+          "a refused claim must never start playing")
     print("  ok")
 
 
@@ -11635,7 +11980,7 @@ def test_schedule_hook_runs_outside_service_lock():
     HANG_S = 1.0
     calls = []
 
-    def slow_hook(state):
+    def slow_hook(state, reason=None):
         calls.append(state)
         # A deliberately slow hook, standing in for ANY future hook that
         # is not as careful as announce.py's own about never touching a
@@ -11791,60 +12136,551 @@ def test_announce_reentrant_claim_does_not_orphan_a_stream():
 
 
 def test_announce_interlock_matrix():
-    section("announcements: the interlock, every scheduler state times "
-            "every button")
+    section("announcements: the interlock, every scheduler state (a show "
+            "running or paused is no longer refused HERE, since Play "
+            "Holds it first instead, Jeff, 2026-09-26)")
     from ltcplay import schedule as sch_mod
     A = _ann()
     states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
               sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
     check(len(set(states)) == 8,
           "the matrix must cover all 8 scheduler states")
-    blocked_states = {sch_mod.SHOW, sch_mod.PAUSED}
     for state in states + (None,):
         refusal = A.interlock_refusal(state)
         if state is None:
             check(refusal is not None and "inert" in refusal,
                   f"no scheduler: announcements must be inert, got "
                   f"{refusal!r}")
-        elif state in blocked_states:
-            check(refusal is not None and refusal.endswith("."),
-                  f"{state}: a show running or paused must refuse, got "
-                  f"{refusal!r}")
         else:
             check(refusal is None,
-                  f"{state}: announcements must be allowed, got {refusal!r}")
+                  f"{state}: the interlock itself must not refuse a real "
+                  f"state any more; a show running or paused is Held "
+                  f"first instead. Got {refusal!r}")
         _no_dashes(refusal or "", f"interlock refusal in {state}")
-    # Abort is the only way out of SHOW or PAUSED in the real machine, and it
-    # always lands in STANDBY, so the interlock never has to remember Abort
-    # happened; it only has to ask the scheduler what is true right now.
+    # Abort is still the only way out of SHOW or PAUSED in the real
+    # machine, and it always lands in STANDBY; unrelated to the interlock
+    # change above, this is a schedule.py fact that used to matter here too.
     check(sch_mod.ALLOWED[sch_mod.ABORT] ==
           frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
-          "Abort must be exactly the exit from the two blocked states")
+          "Abort must be exactly the exit from SHOW and PAUSED")
 
+    # With state_provider set but no hold_requester -- an announcements
+    # config with no scheduler ALSO wired for Hold, which web.serve() never
+    # actually does (see test_announce_routes), but which the interlock's
+    # own contract above has to hold for regardless -- a real state is
+    # allowed straight through: nothing can Hold it, and the interlock no
+    # longer refuses a running show on its own.
     work, cfg, _lengths = _ann_workdir()
-    for state in states + (None,):
-        blocked = state is None or state in blocked_states
+    for state in states:
         svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                                 state_provider=(lambda s=state: s))
+        check(svc.hold_requester is None, "setup: no scheduler wired")
         for aid in A.IDS:
-            if blocked:
-                try:
-                    svc.play(aid, "Andy", "rack screen")
-                    check(False, f"{state}: {aid} must be refused")
-                except ValueError as e:
-                    check(str(e).endswith("."),
-                          f"{state}/{aid}: refusal must end with a full "
-                          f"stop: {e!r}")
-                check(svc.playing is None,
-                      f"{state}: a refused press must not start anything")
-            else:
-                svc.play(aid, "Andy", "rack screen")
-                check(svc.playing == aid,
-                      f"{state}: {aid} must be allowed to play")
-                svc.stop("Andy", "rack screen")
-                check(svc.playing is None,
-                      "Stop must clear it for the next id")
+            svc.play(aid, "Andy", "rack screen")
+            check(svc.playing == aid,
+                  f"{state}, no hold_requester: {aid} must be allowed to "
+                  f"play")
+            svc.stop("Andy", "rack screen")
+            check(svc.playing is None, "Stop must clear it for the next id")
     print("  ok")
+
+
+def test_announce_hold_between_shows():
+    section("announcements: between shows, Play Holds the schedule first "
+            "(the same path the operator's own Hold uses), then plays, "
+            "and the next show does not start at its time")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: intermission running, waiting for the next slot: "
+          f"{svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.DELAYED,
+          f"the announcement must actually play: {r}")
+    check(svc.machine.state == S.HOLD,
+          f"between shows, Hold is what Play must trigger first: "
+          f"{svc.machine.state}")
+    # The journal line for the Hold itself carries the SAME who/screen the
+    # Play press used, exactly as the operator's own Hold would, and reads
+    # as held FOR the announcement (review round 2, 2026-09-26:
+    # audit15_journal_noise2.py), not as an indistinguishable operator
+    # Hold press.
+    hold_lines = [r for r in svc.journal
+                 if r.get("action") == S.HOLD_ON]
+    check(hold_lines and hold_lines[0]["who"] == "Andy"
+          and hold_lines[0]["screen"] == "rack screen",
+          f"the Hold the announcement triggered must be attributed to the "
+          f"SAME operator and screen as the Play press: {hold_lines}")
+    check(hold_lines and "played the Delayed announcement" in
+          hold_lines[0]["text"],
+          f"the Hold's own journal line must name the announcement, not "
+          f"just say 'pressed Hold': {hold_lines}")
+
+    # The next show's time passes while held: it must not fire.
+    now[0] = _den(S, 17, 55)
+    svc.tick()
+    check(svc.machine.state == S.HOLD, "still on hold")
+    slot2 = svc.machine.slot(2)
+    check(slot2.status == S.DELAYED,
+          f"the next show's time passed during the Hold, so it waits "
+          f"instead of starting: {slot2.status} {slot2.reason}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_during_show():
+    section("announcements: during a show, Play Holds it (pauses it in "
+            "place, the section 5 Hold actions), then plays")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          f"setup: a show is running at its start time: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.CANCELLATION,
+          f"the announcement must actually play over the paused show: {r}")
+    check(svc.machine.state == S.PAUSED,
+          f"during a show, Hold must pause it in place, not refuse the "
+          f"announcement (the old 'locked during a show' rule is gone): "
+          f"{svc.machine.state}")
+    # The journal line for THIS Hold also reads as held for the
+    # announcement, not just a plain operator Hold press (review round 2,
+    # 2026-09-26: audit15_journal_noise2.py).
+    hold_lines = [row for row in svc.journal if row.get("action") == S.HOLD_ON]
+    check(hold_lines and "played the Cancellation announcement" in
+          hold_lines[0]["text"] and "is held for it" in hold_lines[0]["text"],
+          f"the Hold's own journal line, during a show, must name the "
+          f"announcement: {hold_lines}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_refused_refuses_the_announcement():
+    section("announcements: if Hold is refused (the night is over), the "
+            "announcement is refused too, with the same sentence")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "18:00"}},
+        exceptions={}))
+    now = [_den(S, 23, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state in (S.CLOSING, S.OFF),
+          f"setup: the night is over: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "Hold being refused must refuse the announcement too")
+    except ValueError as e:
+        msg = str(e)
+        check("over" in msg and "hold" in msg.lower(),
+              f"the refusal must carry Hold's own plain sentence: {msg}")
+        _no_dashes(msg, "hold-refused announcement refusal")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def test_announce_stays_held_after_it_ends():
+    section("announcements: when the announcement ends, the system STAYS "
+            "on Hold until an operator presses Resume; nothing resumes "
+            "by itself")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: the show is paused")
+    # The announcement finishes on its own (a natural end, not a Stop).
+    ann._player.done = True
+    ann._settle()
+    check(ann.playing is None, "the announcement itself must clear")
+    check(svc.machine.state == S.PAUSED,
+          f"the schedule must STAY held after the announcement ends: "
+          f"{svc.machine.state}")
+    # More time passing changes nothing by itself.
+    now[0] = _den(S, 18, 5)
+    svc.tick()
+    check(svc.machine.state == S.PAUSED,
+          f"nothing resumes by itself, however much time passes: "
+          f"{svc.machine.state}")
+    # Only an operator's own Resume moves it on.
+    svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                       screen="rack screen"))
+    check(svc.machine.state == S.SHOW,
+          f"an operator's Resume, and only that, carries the show on: "
+          f"{svc.machine.state}")
+    print("  ok")
+
+
+def test_announce_resume_wins_over_second_hold_request():
+    section("announcements: an operator's Resume, pressed while an "
+            "announcement is still loading, wins outright -- the second "
+            "check never re-Holds the show it was just resumed from "
+            "(review round 2, 2026-09-26: audit15_resume_race.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5),
+              "setup: the announcement thread must reach the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              f"setup: the FIRST Hold request must pause the show: "
+              f"{svc.machine.state}")
+        # The operator, on a different screen, presses Resume -- a real,
+        # independent action -- while the announcement is still mid-decode.
+        with svc._locked():
+            out = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                     screen="Rack"))
+        check(not out.refused, f"setup: Resume must be accepted: "
+                               f"{out.refused}")
+        check(svc.machine.state == S.SHOW,
+              f"the operator's Resume must take effect immediately, not "
+              f"wait for the announcement: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"the announcement must be refused, not silently re-pause the "
+          f"resumed show: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(svc.machine.state == S.SHOW,
+          f"the operator's Resume must still hold, never silently undone "
+          f"by the announcement's own second check: {svc.machine.state}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_resume_then_rehold_still_refuses():
+    section("announcements: Resume immediately followed by a FRESH Hold "
+            "(the state looks the same again, PAUSED, but it is a "
+            "DIFFERENT claim) must still refuse a stale announcement "
+            "attempt -- this is exactly why the second check compares an "
+            "epoch, not just the state (review round 2, 2026-09-26: "
+            "\"Resume then Hold again should still refuse this attempt\")")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5), "setup: reached the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              "setup: the first Hold request must pause the show")
+        # Resume, then IMMEDIATELY Hold again from someone else (a real
+        # scenario: an operator's own Hold press, back to back with the
+        # Resume, both real actions the announcement never asked for).
+        # State ends up PAUSED again -- the same as the original claim --
+        # but this is a DIFFERENT hold, and the stale attempt must still
+        # be refused.
+        with svc._locked():
+            svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                               screen="Rack"))
+        with svc._locked():
+            svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                               screen="Rack"))
+        check(svc.machine.state == S.PAUSED,
+              f"setup: the state must look the same again (PAUSED), which "
+              f"is exactly what makes this case need the epoch, not just "
+              f"the state: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"a stale claim must still refuse even though the state looks "
+          f"unchanged: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_on_show_started_reason_new_vs_resume():
+    section("announcements: on_show_started's journal wording says WHY "
+            "the show is moving -- 'a show started' for a genuinely new "
+            "show, 'the show resumed' for a Resume from Hold (review "
+            "round 2, 2026-09-26: audit15_resume_fires_showstart.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=90.0,
+                   rate=8000)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34, 0)]
+    sd = FakeSD()
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY, "setup: intermission running")
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    # Between shows: Play Holds (HOLD), then the next slot's time arrives
+    # -- but the schedule is held, so nothing fires by itself. Resume it
+    # by hand via Start now instead, landing the announcement's own show
+    # start under the "new show" label.
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.machine.state == S.HOLD, "setup: held between shows")
+    stream_a = sd.output_streams[-1]
+    # Through _locked(), not a bare _apply(): the on_show_started hook is
+    # only ever drained on the outermost exit from _locked() (see
+    # Service._locked's own docstring), so a bare _apply() here would
+    # queue the hook and never actually run it.
+    with svc._locked():
+        out = svc._apply(S.Event(S.START_NOW, "operator", who="Andy",
+                                 screen="Rack"))
+    check(not out.refused and svc.machine.state == S.SHOW,
+          f"setup: Start now must fire a genuinely new show: "
+          f"{out.refused} {svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "a show started",
+                   timeout=2.0),
+          "a genuinely new show must fade the announcement out labelled "
+          "'a show started'")
+    stream_a.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "a show started"
+             for r in status["journal"]),
+          f"the journal must say 'a show started' for a genuinely new "
+          f"show: {status['journal']}")
+
+    # Now the resume case: hold DURING a show (pauses it), play another
+    # announcement, then Resume while it is still playing.
+    now2_ok = svc.machine.state == S.SHOW
+    check(now2_ok, "setup: a show is running for the resume case")
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: Hold paused the show")
+    stream_b = sd.output_streams[-1]
+    with svc._locked():
+        out2 = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack"))
+    check(not out2.refused and svc.machine.state == S.SHOW,
+          f"setup: Resume must carry the show on: {out2.refused} "
+          f"{svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "the show resumed",
+                   timeout=2.0),
+          "a Resume from Hold must fade the announcement out labelled "
+          "'the show resumed', not 'a show started'")
+    stream_b.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status2 = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "the show resumed"
+             for r in status2["journal"]),
+          f"the journal must say 'the show resumed', not 'a show "
+          f"started', for a Resume: {status2['journal']}")
+    print("  ok")
+
+
+def test_announce_hold_for_announcement_no_noise_when_already_held():
+    section("announcements: hold_for_announcement never writes a "
+            "'refused' line for the routine case of asking for Hold when "
+            "the schedule is already held or paused (review round 2, "
+            "2026-09-26: audit15_journal_noise.py / "
+            "audit15_journal_noise2.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "19:00", "interval_min": 20,
+                        "last_end": "23:00"}},
+        exceptions={}))
+    now = [_den(S, 20, 0, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show fired at boot")
+
+    r1, epoch1 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cancellation "
+        "announcement on the Announce Panel")
+    check(r1 is None and svc.machine.state == S.PAUSED,
+          f"setup: the first claim must pause the show: {r1} "
+          f"{svc.machine.state}")
+    before = len(svc.journal)
+    r2, epoch2 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cannot continue "
+        "announcement on the Announce Panel")
+    check(r2 is None, f"the second, routine claim must also succeed: {r2}")
+    check(epoch1 == epoch2,
+          f"asking again while already held must NOT bump the epoch: "
+          f"{epoch1} {epoch2}")
+    check(len(svc.journal) == before,
+          f"the routine second claim must add NOTHING to the journal, "
+          f"not even a refused line: "
+          f"{list(svc.journal)[len(svc.journal) - before:]}")
+    check(not any("refused" in (r.get("text") or "").lower()
+                 for r in svc.journal),
+          f"no 'refused' line must appear anywhere for this routine "
+          f"sequence: {list(svc.journal)}")
+    print("  ok")
+
+
+def test_announce_no_scheduler_stays_inert():
+    section("announcements: with no scheduler configured (the GPL path), "
+            "an announcement behaves exactly as before: inert, and it "
+            "never tries to Hold anything")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    check(ann.state_provider is None and ann.hold_requester is None,
+          "setup: neither the state nor the hold path is wired")
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "with no scheduler, Play must still refuse")
+    except ValueError as e:
+        check("inert" in str(e), f"the refusal must say why: {e}")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def _sched_and_service_modules():
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    return S, SV
 
 
 def test_announce_single_flight():
@@ -12186,12 +13022,16 @@ def test_announce_routes():
         check(svc.machine.state == S.SHOW,
               f"setup: the scheduler should be running a show at 18:20: "
               f"{svc.machine.state}")
-        code, bad = call(base, "/api/announce/play",
-                         {"id": A.DELAYED, "who": "Andy",
-                          "screen": "rack screen"})
-        check(code == 400 and "running" in bad.get("error", ""),
-              f"a show running must refuse the announcement through the "
-              f"live link: {code} {bad}")
+        code, ok = call(base, "/api/announce/play",
+                        {"id": A.DELAYED, "who": "Andy",
+                         "screen": "rack screen"})
+        check(code == 200 and ok.get("playing", {}).get("id") == A.DELAYED,
+              f"a show running is Held first, through the live link, then "
+              f"the announcement plays: {code} {ok}")
+        check(svc.machine.state == S.PAUSED,
+              f"the show must end up paused: the announcement Held it, "
+              f"through hold_requester, before it played: "
+              f"{svc.machine.state}")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -12909,6 +13749,213 @@ def test_timecode_zones_for_fallback_3():
     r.frame(1, 0, 59, 29, 7.0)
     check(r.at(7.0 + 1.0 / 29.97 + 1e-6) == ("show", (0, 1, 0, 2)),
           "drop frame free run did not skip frames 00 and 01")
+    print("  ok")
+
+
+def test_clock_show_length_follows_the_music():
+    section("clock: show length follows the show's own media (Jeff, "
+            "2026-09-26), and a configured length shorter than it is "
+            "refused rather than cutting the show short")
+    import math
+    import types
+    from ltcplay import clock as C
+
+    def cue(tc, end):
+        return types.SimpleNamespace(tc_seconds=tc, end_seconds=end)
+
+    class _FakeTimeline:
+        def __init__(self, cues):
+            self.cues = cues
+            self.fps = 30.0
+            self.drop = False
+            self.count = 30
+
+    # The show zone is hour 1 (3600 to 7200 s). The cue that opens FURTHEST
+    # in ends LATEST, at 3600 + 444.42, matching the handoff's own example:
+    # the music (IgniteTheNight_Music_Unmixed_092526.wav) runs 444.42 s, and
+    # the handoff's own show_len_s of 440 is 4.42 s short of it. It is
+    # listed FIRST here on purpose: the derivation has to take the latest
+    # end across every cue in the hour, not whichever cue happens to come
+    # last in the list.
+    tl = _FakeTimeline([cue(3610.0, 3600.0 + 444.42),
+                       cue(3600.0, 3600.0 + 200.0)])
+    got = C._show_length(tl, 1)
+    check(abs(got - 444.42) < 1e-9,
+          f"the derived length must be the LATEST cue end in that hour, "
+          f"not the first one, the last one in the list, or a shorter "
+          f"one: {got}")
+
+    artnet = {"nodes": {"MadMapper": "127.0.0.1"}}
+    cfg_derived = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"]}})
+    clk = C.build(cfg_derived, tl, sink=None, no_output=True)
+    check(abs(clk.reader.show_len_frames / 30.0 - 444.42) < 0.05,
+          f"with no show_len_s configured, the length must come from the "
+          f"show's own media, not a fixed number: "
+          f"{clk.reader.show_len_frames / 30.0}")
+
+    # A configured length that meets or exceeds the media is fine.
+    cfg_ok = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 445}})
+    clk2 = C.build(cfg_ok, tl, sink=None, no_output=True)
+    check(clk2.reader.show_len_frames == math.ceil(445 * 30.0 - 1e-9),
+          "a configured length at least as long as the media is used "
+          "as given")
+
+    # The handoff's own example: 440 s configured against 444.42 s of
+    # music must be refused when the show file loads, not silently cut
+    # the last 4.4 s off the show.
+    cfg_short = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 440}})
+    try:
+        C.build(cfg_short, tl, sink=None, no_output=True)
+        check(False, "440 s configured against 444.42 s of music must be "
+                     "refused, not silently cut the show short")
+    except C.ClockConfigError as e:
+        msg = str(e)
+        check("444.42" in msg and "440" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "show length refusal")
+    print("  ok")
+
+
+def test_scheduler_show_len_s_checked_against_the_show_media():
+    section("serving: the scheduler's own show_len_s is cross-checked "
+            "against the show's own media at startup (Jeff, 2026-09-26, "
+            "the coordinator's own follow-up: show length follows the "
+            "music wherever the code has access to it)")
+    import json
+    import test_show_fixtures as fixtures
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    from ltcplay import clock as C
+
+    show_dir = fixtures.synthetic_show_dir()
+    # The Opener fixture is 2000 frames at 25ms: 50.0s exactly.
+    opener = "GPL 2026_Set 1_Opener.fseq"
+
+    def _write_show(folder, name="show.json"):
+        doc = {"fps": 25, "show_dir": show_dir,
+              "cues": [{"tc": "01:00:00:00", "fseq": opener}],
+              "clock": {"source": "artnet_master",
+                       "artnet": {"nodes": {"test": "127.0.0.1"}},
+                       "zones": {"show": 1, "intermission": 2,
+                                "forward": ["show"]}}}
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def _write_rule(folder, show_len_s):
+        path = os.path.join(folder, SV.RULE_FILE)
+        SV.save_rule(path, {
+            "timezone": "America/Denver",
+            "season": {"first_date": "2026-11-14",
+                      "last_date": "2027-01-02"},
+            "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+            "exceptions": {}, "show_len_s": show_len_s, "guard_s": 5,
+            "late_grace_s": 0})
+        return path
+
+    # Direct unit check of the derivation helper first.
+    work0 = tempfile.mkdtemp()
+    show_path0 = _write_show(work0)
+    found_path, found_len, found_warn = C.derive_show_length_in_folder(work0)
+    check(found_path == show_path0 and abs(found_len - 50.0) < 1e-6
+          and found_warn is None,
+          f"the folder's own show file must derive to the Opener fixture's "
+          f"real 50.0s: {(found_path, found_len, found_warn)}")
+
+    # A configured show_len_s SHORTER than the media: refuse to serve at
+    # all, naming both numbers, before anything is bound.
+    work1 = tempfile.mkdtemp()
+    _write_show(work1)
+    spath1 = _write_rule(work1, 40)
+    try:
+        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        check(False, "40s configured against 50s of media must refuse to "
+                     "serve, not silently start")
+    except ValueError as e:
+        msg = str(e)
+        check("40" in msg and "50" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "scheduler show_len_s refusal")
+
+    # A configured show_len_s at least as long as the media: fine.
+    work2 = tempfile.mkdtemp()
+    _write_show(work2)
+    spath2 = _write_rule(work2, 60)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    try:
+        check(httpd2.schedule is not None and httpd2.schedule.rule is not
+              None, "a long-enough show_len_s must serve normally")
+    finally:
+        httpd2.schedule.stop()
+        httpd2.server_close()
+
+    # No show media in the folder at all: never silently skipped (review
+    # round 2, 2026-09-26) -- it must still serve (a schedule with no show
+    # file to check against cannot be blocked by this), but it must WARN,
+    # in the journal, saying the check could not be done and why.
+    work3 = tempfile.mkdtemp()
+    spath3 = _write_rule(work3, 1)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    try:
+        check(httpd3.schedule is not None,
+              "no show media in the folder must not block serving")
+        check(any(row["outcome"] == "warning"
+                 and "could not be checked" in row["text"]
+                 for row in httpd3.schedule.journal),
+              f"no show media must still warn, not silently skip: "
+              f"{list(httpd3.schedule.journal)}")
+    finally:
+        httpd3.schedule.stop()
+        httpd3.server_close()
+
+    # More than one candidate show file: refuse to GUESS which one is the
+    # real one (review round 2, 2026-09-26) -- still serves (this is a
+    # warning, not a hard refusal: only a KNOWN-shorter length refuses to
+    # serve), but names both files in the warning.
+    work5 = tempfile.mkdtemp()
+    _write_show(work5, "show_a.json")
+    _write_show(work5, "show_b.json")
+    spath5 = _write_rule(work5, 1)
+    p5, l5, w5 = C.derive_show_length_in_folder(work5)
+    check(p5 is None and l5 is None and w5 is not None
+          and "show_a.json" in w5 and "show_b.json" in w5,
+          f"two candidates must refuse to pick one, naming both: "
+          f"{(p5, l5, w5)}")
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    try:
+        check(httpd5.schedule is not None,
+              "an ambiguous folder must still serve (this warns, it does "
+              "not refuse to start)")
+        check(any(row["outcome"] == "warning" and "show_a.json" in row["text"]
+                 and "show_b.json" in row["text"]
+                 for row in httpd5.schedule.journal),
+              f"the ambiguity warning must name both files, in the "
+              f"journal: {list(httpd5.schedule.journal)}")
+    finally:
+        httpd5.schedule.stop()
+        httpd5.server_close()
+
+    # No schedule configured at all: the GPL path, entirely unchanged.
+    work4 = tempfile.mkdtemp()
+    _write_show(work4)
+    httpd4 = web_mod.serve(work4, port=_free_port())
+    try:
+        check(httpd4.schedule is None,
+              "with no --schedule, this check never runs at all")
+    finally:
+        httpd4.server_close()
     print("  ok")
 
 
@@ -15492,8 +16539,13 @@ if __name__ == "__main__":
     test_schedule_a_paused_show_is_never_overlapped()
     test_schedule_a_clock_step_during_a_pause()
     test_announce_probe_matches_open_for_format()
+    test_announce_unsupported_wav_formats_rejected()
+    test_announce_wav_decode_values()
+    test_announce_wav_extensible_float_accepted()
+    test_announce_wav_data_chunk_sanity()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()
+    test_announce_interlock_recheck_catches_a_state_provider_with_no_hold()
     test_announce_show_start_stops_announcement()
     test_announce_stall_watchdog()
     test_announce_callback_status_errors()
@@ -15503,6 +16555,15 @@ if __name__ == "__main__":
     test_schedule_hook_runs_outside_service_lock()
     test_announce_reentrant_claim_does_not_orphan_a_stream()
     test_announce_interlock_matrix()
+    test_announce_hold_between_shows()
+    test_announce_hold_during_show()
+    test_announce_hold_refused_refuses_the_announcement()
+    test_announce_stays_held_after_it_ends()
+    test_announce_resume_wins_over_second_hold_request()
+    test_announce_resume_then_rehold_still_refuses()
+    test_announce_on_show_started_reason_new_vs_resume()
+    test_announce_hold_for_announcement_no_noise_when_already_held()
+    test_announce_no_scheduler_stays_inert()
     test_announce_single_flight()
     test_announce_operator_validation()
     test_announce_missing_files_at_startup()
@@ -15515,6 +16576,8 @@ if __name__ == "__main__":
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
     test_timecode_zones_for_fallback_3()
+    test_clock_show_length_follows_the_music()
+    test_scheduler_show_len_s_checked_against_the_show_media()
     test_clock_settings_fail_loudly()
     test_the_gpl_path_never_loads_the_clock()
     test_a_master_clock_runs_the_show()

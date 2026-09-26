@@ -15,17 +15,36 @@ web.py's job, once both are configured; this module never imports
 schedule.py or schedule_service.py. See `interlock_refusal` for exactly what
 that provider is used for.
 
-A show starting while an announcement is playing is the OTHER half of that
-same coupling, in the other direction: the scheduler ticks on a thread of its
-own, with no lock shared with this service, so a status() poll here could be
-seconds behind a show actually starting. `on_show_started` is a push hook
-web.py wires the scheduler to call the moment it starts a show; it is not
-something this module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+Every announcement triggers a Hold first (Jeff, 2026-09-26: "an announcement
+is a cancellation, hold, or abort... any announcement actually just auto
+triggers a hold"). Pressing Play asks the scheduler to Hold, through the
+SAME path the operator's own Hold uses, with this press's own who and screen,
+before the file ever reaches the output device: between shows that delays
+the next show; during a show it pauses the show in place, exactly as if the
+operator had pressed Hold. If Hold is refused, the announcement is refused
+with the same sentence. If the schedule is already on Hold, or the show is
+already paused, that counts as success and the announcement just plays. When
+it ends, nothing resumes the schedule by itself; only an operator's own
+Resume does. This is the second, one-method coupling to the scheduler
+(`hold_requester`, a plain callable `(who, screen) -> refusal or None`),
+wired by web.py alongside `state_provider`, for the same reason: with no
+scheduler configured, `hold_requester` is never set, and an announcement
+stays exactly as inert as `interlock_refusal(None)` already makes it.
 
-The interlock itself is check-then-act around real work (a device query, a
-file read), so play() re-checks it a second time immediately before the
-output stream actually starts, inside the same locked section: see the
-comment in play() beside that second check.
+A show starting while an announcement is playing used to be a real question;
+now it is moot, because playing an announcement Holds the show first, and a
+held schedule never starts one. `on_show_started` stays anyway, as a
+backstop from PR 13: the scheduler ticks on a thread of its own, with no lock
+shared with this service, so if a show ever did start while an announcement
+was going (a hand-edited race, a future bug), the announcement's own audio
+still stops rather than run under it. It is a push hook web.py wires the
+scheduler to call the moment it starts a show; it is not something this
+module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+
+Both the interlock and the Hold request are check-then-act around real work
+(a device query, a file read), so play() re-checks and re-Holds a second
+time immediately before the output stream actually starts, inside the same
+locked section: see the comment in play() beside that second check.
 
 The output device is never the system default. A show's device is picked by
 config, by an EXACT name (never a substring: a substring can silently land on
@@ -58,12 +77,6 @@ CONFIG_FILE = "ltcplay_announce.json"
 OPERATORS_FILE = "ltcplay_operators.json"
 DEFAULT_OPERATORS = ("Andy", "Jeff")
 
-# Only these two scheduler states refuse a play. The moment Abort is pressed
-# during either one, the scheduler's own state machine leaves that state (it
-# lands in STANDBY), so nothing here has to remember that Abort happened: it
-# falls out of asking the scheduler what is true right now.
-BLOCKED_STATES = frozenset(("SHOW", "PAUSED"))
-
 JOURNAL = 400
 
 # Jeff has not signed off on this (see the PR's Questions section): the
@@ -89,6 +102,9 @@ CALLBACK_ERROR_LIMIT = 20      # the device answers, but every time with a
                                # reported problem: also treated as a failure
 
 _DTYPE_BY_SAMPWIDTH = {1: "uint8", 2: "int16", 4: "int32"}
+# 3 (24-bit) is accepted too, decoded by hand in _wav_info: neither numpy
+# nor sounddevice has a 3-byte dtype, so it is never a key in the map above.
+_PCM_SAMPWIDTHS = frozenset(_DTYPE_BY_SAMPWIDTH) | {3}
 _DASHES = ("—", "–")          # em dash, en dash
 
 
@@ -242,28 +258,47 @@ def interlock_refusal(state):
     the safe answer is to refuse: an announcement that could play without
     knowing whether a show is running is worse than one that never plays at
     all, so announcements are inert until a scheduler is wired in.
+
+    A show running or paused no longer refuses here (Jeff, 2026-09-26): Play
+    Holds the show first, through hold_requester, so by the time a file
+    would actually play the schedule is on Hold, or the show is paused, one
+    way or another. See AnnounceService.play and _request_hold.
     """
     if state is None:
         return ("No scheduler is configured, so ltcplay does not know "
                 "whether a show is running. Announcements are inert until "
                 "the scheduler is set up.")
-    if state in BLOCKED_STATES:
-        how = "paused" if state == "PAUSED" else "running"
-        return (f"A show is {how}. Press Abort first, or wait for the "
-                f"show to end, before playing an announcement.")
     return None
 
 
 # ------------------------------------------------------------------ wav I/O
+# The 12 bytes every standard WAVE_FORMAT_EXTENSIBLE SubFormat GUID shares;
+# only the leading 4 bytes (little-endian) vary, and match the classic
+# format tag (1 PCM, 3 IEEE float, ...). KSDATAFORMAT_SUBTYPE_* in the
+# Windows SDK; review round 2, 2026-09-26 (should-fix 5): many DAWs,
+# Audacity among them, write 32-bit float this way.
+_EXTENSIBLE_SUBFORMAT_TAIL = bytes.fromhex("00001000800000aa00389b71")
+
+
 def _wav_format_tag(path):
     """The format tag from the WAV's own fmt chunk: 1 is PCM, 3 is IEEE
-    float, 0xFFFE is extensible with a further sub-format. Python's `wave`
-    module always assumes PCM and never looks at this, so a 32-bit float
-    file opens exactly like a 32-bit int one, and its sample bytes would be
-    reinterpreted as integers: loud noise, with no error anywhere (review:
-    audit13_probe_weaker_than_open.py, part b). Returns None if it cannot be
-    read, which is treated as PCM, the safer reading of a file the standard
-    library reader already accepted."""
+    float. Python's `wave` module always assumes PCM and never looks at
+    this, so a 32-bit float file opens exactly like a 32-bit int one, and
+    its sample bytes would be reinterpreted as integers unless this module
+    reads the tag itself and decodes float samples as float (review:
+    audit13_probe_weaker_than_open.py, part b; recordings are WAV, possibly
+    24-bit or 32-bit float, Jeff, 2026-09-26).
+
+    WAVE_FORMAT_EXTENSIBLE (0xFFFE) is resolved to the classic tag hiding
+    in its own SubFormat GUID, so an extensible-wrapped float or PCM file
+    is treated exactly like a plain one; an extensible file wrapping
+    anything else this module does not recognize still comes back as
+    0xFFFE, which _wav_info refuses with a plain "WAV format N" sentence,
+    never `wave`'s own raw GUID text (review round 2, 2026-09-26,
+    should-fix 5: audit15_wav_edgecases.py).
+
+    Returns None if it cannot be read, which is treated as PCM, the safer
+    reading of a file the standard library reader already accepted."""
     try:
         with open(path, "rb") as fh:
             riff = fh.read(12)
@@ -276,9 +311,111 @@ def _wav_format_tag(path):
                 chunk_id = header[:4]
                 size = int.from_bytes(header[4:8], "little")
                 if chunk_id == b"fmt ":
-                    body = fh.read(2)
-                    return (int.from_bytes(body, "little")
-                            if len(body) == 2 else None)
+                    body = fh.read(size)
+                    if len(body) < 2:
+                        return None
+                    tag = int.from_bytes(body[:2], "little")
+                    if tag == 0xFFFE and len(body) >= 40:
+                        guid = body[24:40]
+                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:
+                            return int.from_bytes(guid[:4], "little")
+                    return tag
+                fh.seek(size + (size & 1), 1)
+    except OSError:
+        return None
+
+
+def _read_float_wav(path, decode):
+    """A minimal RIFF/WAVE reader for the one case Python's own `wave`
+    module cannot be trusted to open at all: a 32-bit IEEE float file
+    (format tag 3). Some Python builds refuse it outright ("unknown
+    format: 3") rather than merely mis-decoding it as integers, so relying
+    on `wave.open` for this case would make this module's own behaviour
+    depend on which Python it happens to run under -- exactly the kind of
+    probe/play disagreement this module exists to rule out (review:
+    audit13_probe_weaker_than_open.py, part b). Reads only what play()
+    needs off the fmt and data chunks: (channels, rate, bits, raw bytes or
+    b"" when not decoding, data chunk size in bytes). Raises ValueError
+    with a plain sentence."""
+    with open(path, "rb") as fh:
+        riff = fh.read(12)
+        if len(riff) < 12 or riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+            raise ValueError(f"{_clean(path)} is not a WAV file.")
+        channels = rate = bits = None
+        data, data_size = b"", 0
+        while True:
+            header = fh.read(8)
+            if len(header) < 8:
+                break
+            chunk_id = header[:4]
+            size = int.from_bytes(header[4:8], "little")
+            if chunk_id == b"fmt ":
+                body = fh.read(size)
+                if len(body) < 16:
+                    raise ValueError(f"{_clean(path)}'s fmt chunk is too "
+                                     f"short to read.")
+                channels = int.from_bytes(body[2:4], "little")
+                rate = int.from_bytes(body[4:8], "little")
+                bits = int.from_bytes(body[14:16], "little")
+                if size & 1:
+                    fh.read(1)
+            elif chunk_id == b"data":
+                data_size = size
+                if decode:
+                    data = fh.read(size)
+                else:
+                    fh.seek(size, 1)
+                if size & 1:
+                    fh.read(1)
+            else:
+                fh.seek(size + (size & 1), 1)
+    if channels is None or rate is None or bits is None:
+        raise ValueError(f"{_clean(path)} has no fmt chunk to read.")
+    if not channels or not rate:
+        raise ValueError(f"{_clean(path)}'s fmt chunk names no channels "
+                         f"or no sample rate.")
+    return channels, rate, bits, data, data_size
+
+
+def _data_chunk_size_problem(path, size_on_disk):
+    """None if the WAV's own "data" chunk declares a plausible size: not
+    0, not the streaming placeholder 0xFFFFFFFF, and not more bytes than
+    are actually left in the file. Otherwise a plain sentence.
+
+    Checked once, by hand, ahead of BOTH the PCM path (Python's `wave`
+    module trusts the declared size exactly the same way) and the float
+    path (_read_float_wav), so the two can never disagree on this, and a
+    file that looks cut off or was still being written when it was read
+    is refused loudly instead of quietly serving silence (a declared size
+    of 0, with real audio actually sitting right after it) or a length
+    that overstates what is really playable (declared size bigger than
+    the bytes on disk) (review round 2, 2026-09-26, should-fix 6:
+    audit15_wav_floatparser.py / audit15_wav_edgecases.py)."""
+    try:
+        with open(path, "rb") as fh:
+            riff = fh.read(12)
+            if len(riff) < 12 or riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+                return None      # let the normal reader say what is wrong
+            while True:
+                header = fh.read(8)
+                if len(header) < 8:
+                    return None
+                chunk_id = header[:4]
+                size = int.from_bytes(header[4:8], "little")
+                if chunk_id == b"data":
+                    remaining = size_on_disk - fh.tell()
+                    if size == 0 or size == 0xFFFFFFFF:
+                        return (f"{_clean(path)}'s data chunk declares a "
+                               f"placeholder size ({size}); the file "
+                               f"looks cut off, or was still being "
+                               f"written when it was read.")
+                    if size > remaining:
+                        return (f"{_clean(path)}'s data chunk declares "
+                               f"{size} bytes, but only {remaining} are "
+                               f"actually in the file; it looks cut off, "
+                               f"or was still being written when it was "
+                               f"read.")
+                    return None
                 fh.seek(size + (size & 1), 1)
     except OSError:
         return None
@@ -291,14 +428,29 @@ def _wav_info(path, decode=True):
     probe (`decode=False`) and a real Play press (`decode=True`) can never
     disagree: they are the same function.
 
+    Accepted: 16-bit, 24-bit and 32-bit PCM (integer), mono or stereo, any
+    common sample rate, plus 32-bit IEEE float (Jeff, 2026-09-26: recordings
+    are WAV, possibly 24-bit; float is accepted too since a field recorder
+    or a DAW may hand one over), plain or wrapped in WAVE_FORMAT_EXTENSIBLE
+    (review round 2, 2026-09-26, should-fix 5: many DAWs, Audacity among
+    them, write 32-bit float that way). Nothing else.
+
+    A data chunk that declares an impossible size -- 0, the streaming
+    placeholder 0xFFFFFFFF, or more bytes than are actually left in the
+    file -- is refused outright, for both paths, rather than read as a
+    healthy but truncated or silent file (review round 2, 2026-09-26,
+    should-fix 6: audit15_wav_floatparser.py / audit15_wav_edgecases.py).
+
     The format tag is checked BEFORE Python's own `wave` module ever opens
-    the file. `wave` rejects a non-PCM file on its own on a modern Python,
-    but with its own message ("unknown format: 3"), which is not a
-    sentence an operator should have to read, and tying this module's
-    wording to whatever a given Python version's `wave` module happens to
-    check would be exactly the kind of disagreement between the probe and
-    a real Play press that this function exists to rule out (review:
-    audit13_probe_weaker_than_open.py, part b)."""
+    the file, and a float file is never handed to `wave` at all (see
+    _read_float_wav): `wave` rejects a non-PCM file on its own on a modern
+    Python, but with its own message ("unknown format: 3"), and on some
+    Python builds it refuses to open the file at all rather than merely
+    mis-decode it, which is not a sentence an operator should have to read,
+    and not a way of failing this module can offer consistently across
+    Python versions (review: audit13_probe_weaker_than_open.py, part b).
+    Without checking the tag here, a float file `wave` DID accept would
+    have its samples silently reinterpreted as integers."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -309,28 +461,44 @@ def _wav_info(path, decode=True):
                          f"the {MAX_FILE_BYTES / 1e6:.0f} MB limit for an "
                          f"announcement.")
     tag = _wav_format_tag(path)
-    if tag == 3:
-        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "
-                         f"which is not supported. Export 16-bit or "
-                         f"32-bit PCM (integer), not float, instead.")
-    if tag is not None and tag not in (1, 0xFFFE):
+    is_float = tag == 3
+    if tag is not None and tag not in (1, 3):
         raise ValueError(f"{_clean(path)} is WAV format {tag}, which is "
-                         f"not supported. Export 16-bit or 32-bit PCM "
-                         f"instead.")
-    try:
-        with wave.open(path, "rb") as w:
-            n = w.getnframes()
-            rate = w.getframerate()
-            channels = w.getnchannels()
-            sampwidth = w.getsampwidth()
-            raw = w.readframes(n) if decode else b""
-    except (OSError, EOFError, wave.Error) as e:
-        raise ValueError(f"{_clean(path)} could not be read as a WAV "
-                         f"file: {_clean(str(e))}.")
-    if sampwidth not in _DTYPE_BY_SAMPWIDTH:
-        raise ValueError(f"{_clean(path)} is a {sampwidth * 8}-bit WAV, "
-                         f"which is not supported. Export 16-bit or "
-                         f"32-bit PCM instead.")
+                         f"not supported. Export 16-bit, 24-bit or 32-bit "
+                         f"PCM, or 32-bit float, instead.")
+    problem = _data_chunk_size_problem(path, size)
+    if problem:
+        raise ValueError(problem)
+    if is_float:
+        try:
+            channels, rate, bits, raw, data_size = _read_float_wav(path,
+                                                                    decode)
+        except OSError as e:
+            raise ValueError(f"{_clean(path)} could not be read as a WAV "
+                             f"file: {_clean(str(e))}.")
+        if bits != 32:
+            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "
+                             f"point WAV, which is not supported. 32-bit "
+                             f"float is the only floating point WAV this "
+                             f"reads.")
+        sampwidth = 4
+        n = data_size // (channels * sampwidth)
+    else:
+        try:
+            with wave.open(path, "rb") as w:
+                n = w.getnframes()
+                rate = w.getframerate()
+                channels = w.getnchannels()
+                sampwidth = w.getsampwidth()
+                raw = w.readframes(n) if decode else b""
+        except (OSError, EOFError, wave.Error) as e:
+            raise ValueError(f"{_clean(path)} could not be read as a WAV "
+                             f"file: {_clean(str(e))}.")
+        if sampwidth not in _PCM_SAMPWIDTHS:
+            raise ValueError(f"{_clean(path)} is a {sampwidth * 8}-bit "
+                             f"WAV, which is not supported. Export 16-bit, "
+                             f"24-bit or 32-bit PCM, or 32-bit float, "
+                             f"instead.")
     length_s = n / float(rate) if rate else 0.0
     if length_s > MAX_LENGTH_S:
         raise ValueError(f"{_clean(path)} is {length_s:.0f} s long, over "
@@ -339,9 +507,27 @@ def _wav_info(path, decode=True):
     if not decode:
         return None, channels, rate, length_s
     import numpy as np
-    np_dtype = {"uint8": np.uint8, "int16": np.int16,
-               "int32": np.int32}[_DTYPE_BY_SAMPWIDTH[sampwidth]]
-    pcm = np.frombuffer(raw, dtype=np_dtype)
+    if is_float:
+        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted
+        # as int32 (what this module did before this decision: loud noise,
+        # no error anywhere; review, audit13_probe_weaker_than_open.py,
+        # part b).
+        pcm = np.frombuffer(raw, dtype=np.float32).copy()
+    elif sampwidth == 3:
+        # 24-bit PCM: 3 bytes per sample, little-endian. Neither numpy nor
+        # sounddevice's OutputStream has a 3-byte dtype, so each sample is
+        # left-justified into an int32 (padded with a zero LOW byte): the
+        # same value, shifted up 8 bits, at full 32-bit scale, with the
+        # original sign bit landing exactly on int32's own sign bit.
+        n_samples = len(raw) // 3
+        padded = np.zeros((n_samples, 4), dtype=np.uint8)
+        padded[:, 1:] = np.frombuffer(raw, dtype=np.uint8)[
+            :n_samples * 3].reshape(-1, 3)
+        pcm = padded.view(np.int32).reshape(-1)
+    else:
+        np_dtype = {"uint8": np.uint8, "int16": np.int16,
+                   "int32": np.int32}[_DTYPE_BY_SAMPWIDTH[sampwidth]]
+        pcm = np.frombuffer(raw, dtype=np_dtype)
     pcm = pcm.reshape(-1, channels) if channels > 1 else pcm.reshape(-1, 1)
     return pcm, channels, rate, length_s
 
@@ -447,6 +633,20 @@ class AnnounceService:
         # docstring: this is the whole coupling to the scheduler in the
         # "may I play" direction.
         self.state_provider = state_provider
+        # A plain callable `(who, screen, detail=None) -> (refusal_or_None,
+        # epoch)`, or None. The other new coupling, in the "hold the show
+        # first" direction; see _request_hold and the module docstring.
+        # None until web.py wires it (only when a scheduler is ALSO
+        # configured), and an announcement with no scheduler never tries
+        # to call it.
+        self.hold_requester = None
+        # A plain callable `(claim_epoch) -> bool`, or None. The read-only
+        # partner to hold_requester, used for the SECOND check right
+        # before the stream opens: never re-Holds, only asks whether the
+        # claim from the first check still stands, so an operator's own
+        # Resume during the file read always wins (review round 2,
+        # 2026-09-26: audit15_resume_race.py). See _check_still_held.
+        self.hold_still_claimed = None
         # Where to read ltcplay_operators.json from. None means the real
         # machine folder (data_dir()); a test points this at a tempdir so
         # it never touches, or depends on, anything really on disk.
@@ -597,6 +797,47 @@ class AnnounceService:
         except Exception:
             return None
 
+    def _request_hold(self, who, screen, detail=None):
+        """Ask the scheduler to Hold, through hold_requester, with THIS
+        press's own who and screen so the journal attributes it the same
+        way an operator's own Hold would (Jeff, 2026-09-26), and `detail`
+        so it reads as held FOR this announcement rather than as a plain
+        operator Hold press (review round 2, 2026-09-26:
+        audit15_journal_noise2.py). Returns (refusal_or_None, epoch):
+        refusal is None when Hold took effect, or the scheduler was
+        already on Hold, or the show was already paused (see
+        Service.hold_for_announcement); an announcement never needs the
+        schedule to already be idle before it plays. epoch is used by
+        _check_still_held, the SECOND, read-only check, never by this one.
+        Called with no scheduler wired is a programming error (play() only
+        calls this when hold_requester is not None), so anything
+        hold_requester itself raises is still turned into a plain sentence
+        rather than a 500 -- with no epoch to compare against, which is
+        fine, because a raised exception is refused right here and the
+        second check is never reached for this attempt."""
+        try:
+            return self.hold_requester(who, screen, detail=detail)
+        except Exception as e:
+            return _clean(str(e)), None
+
+    def _check_still_held(self, claim_epoch):
+        """The SECOND check, immediately before the stream opens: read-only,
+        never asks for Hold again (review round 2, 2026-09-26:
+        audit15_resume_race.py -- the old second hold_requester call here
+        could silently re-pause a show the operator had just resumed
+        during the file read). True when the claim from checkpoint 1 is
+        still good. No hold_still_claimed wired (no scheduler at all) is
+        vacuously fine, the same as interlock_refusal(None) already having
+        refused earlier for that case. Anything hold_still_claimed itself
+        raises is treated as NOT still held: the safe reading of a check
+        that could not be completed is to refuse, not to guess yes."""
+        if self.hold_still_claimed is None:
+            return True
+        try:
+            return bool(self.hold_still_claimed(claim_epoch))
+        except Exception:
+            return False
+
     @staticmethod
     def _operator_problem(who, screen):
         missing = " and ".join(
@@ -677,7 +918,7 @@ class AnnounceService:
                            f"announcement can be played.",
                       ann_id=ann_id, state=state)
 
-    def on_show_started(self, state=None):
+    def on_show_started(self, state=None, reason=None):
         """Called by whoever wires this service to the scheduler (web.py's
         serve(), see its module docstring) the instant the scheduler
         decides to start a show. A push hook, not something this module
@@ -685,6 +926,16 @@ class AnnounceService:
         lock shared with this service, so an announcement that must stop
         the moment a show starts has to be told, not merely discovered on
         the next status() poll (review, blocker 1b).
+
+        `reason` is "resume" when the show did not actually START, it
+        merely CONTINUED from a Hold (an operator's Resume while an
+        announcement was still playing), or "new" (also the default, for
+        an older caller that does not pass it) for a genuinely new show
+        beginning. Jeff's own intent is the same either way -- a playing
+        announcement still fades and stops, because the show is moving
+        again -- only the JOURNAL's wording differs: "the show resumed"
+        vs "a show started" (review round 2, 2026-09-26:
+        audit15_resume_fires_showstart.py).
 
         This method must return almost instantly and must NEVER touch the
         output stream. It is called from inside schedule_service.py's own
@@ -712,7 +963,9 @@ class AnnounceService:
                 return                      # already stopping
             fade_frames = max(1, int(SHOW_START_FADE_S *
                                      (self._player.rate or 1)))
-            self._player.stop_reason = "a show started"
+            self._player.stop_reason = ("the show resumed"
+                                        if reason == "resume" else
+                                        "a show started")
             self._player.start_fade(fade_frames)
 
     def play(self, ann_id, who, screen):
@@ -775,6 +1028,32 @@ class AnnounceService:
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
+            # Every announcement Holds the show first, through the same
+            # path the operator's own Hold uses (Jeff, 2026-09-26). Between
+            # shows that delays the next show; during a show it pauses the
+            # show in place. Already on Hold, or already paused, counts as
+            # success. No scheduler wired (hold_requester is None) means
+            # interlock_refusal(None) above already refused, so this is
+            # never reached inert. claim_epoch is captured here and
+            # checked again, read-only, right before the stream opens
+            # (_check_still_held): it is what lets an operator's Resume,
+            # pressed during the file read below, win outright rather than
+            # being silently undone (review round 2, 2026-09-26:
+            # audit15_resume_race.py).
+            claim_epoch = None
+            if self.hold_requester is not None:
+                hold_refusal, claim_epoch = self._request_hold(
+                    who, screen,
+                    detail=f"played the {label} announcement{screen_txt}")
+                if hold_refusal:
+                    text = (f"{who} pressed Play on {label}{screen_txt}. "
+                            f"Refused: {hold_refusal}")
+                    self._emit(actor="operator", action="play",
+                              outcome="refused", reason=hold_refusal,
+                              text=text, ann_id=ann_id, who=who,
+                              screen=screen, state=state)
+                    raise ValueError(text)
+                state = self._current_state()
             try:
                 sd = self._sd()
                 dev = resolve_output_device(sd, self.device_name)
@@ -843,11 +1122,20 @@ class AnnounceService:
                           state=self._current_state())
                 raise ValueError(text)
             # Re-check the interlock immediately before the stream actually
-            # starts, INSIDE the same locked section as start(): the window
-            # since the first check included a device query and the file
-            # read above, both real wall time, during which the
+            # starts, INSIDE the same locked section as start(): the
+            # window since the first check included a device query and
+            # the file read above, both real wall time, during which the
             # scheduler's own tick thread runs independently, on its own
             # lock (review, blocker 1a: audit13_toctou_race.py).
+            #
+            # This second check is READ-ONLY (never asks for Hold again):
+            # an earlier version re-Held here, which could silently
+            # re-pause a show the operator had just RESUMED during the
+            # file read -- the operator's own Resume must win, not be
+            # undone by an announcement still loading (review round 2,
+            # 2026-09-26: audit15_resume_race.py). If the claim from
+            # checkpoint 1 no longer stands, the announcement is refused,
+            # not the show re-held.
             state = self._current_state()
             refusal = interlock_refusal(state)
             if refusal:
@@ -857,6 +1145,18 @@ class AnnounceService:
                 self._emit(actor="operator", action="play",
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
+                raise ValueError(text)
+            if self.hold_requester is not None \
+                    and not self._check_still_held(claim_epoch):
+                self.playing = None
+                text = (f"{who} pressed Play on {label}{screen_txt}. The "
+                        f"show was resumed while the announcement was "
+                        f"loading, so it did not play.")
+                self._emit(actor="operator", action="play",
+                          outcome="refused",
+                          reason="the show was resumed while loading",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=state)
                 raise ValueError(text)
             out_ch = min(channels, dev["channels"]) or 1
             if out_ch < channels:
