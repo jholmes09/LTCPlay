@@ -765,6 +765,28 @@ class Service:
                 raise ValueError(out.refused)
         return self.tonight_view()
 
+    def hold_for_announcement(self, who, screen):
+        """Put the scheduler on Hold exactly as the operator's own Hold
+        does, `who` and `screen` carried through so the journal attributes
+        it the same way (Jeff, 2026-09-26: "any announcement actually just
+        auto triggers a hold"). Wired by web.py's serve() as
+        AnnounceService.hold_requester, alongside state_provider and
+        on_show_started; see announce.py's play().
+
+        Returns the refusal sentence, or None when Hold took effect, or
+        when the scheduler was already on Hold or the show was already
+        paused: an announcement never needs the schedule to already be
+        idle before it plays."""
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                return self.error or "There is no schedule loaded."
+            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,
+                                        screen=screen))
+            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):
+                return None
+            return out.refused or None
+
     # -- the web routes ---------------------------------------------------
     GET_ROUTES = ("/api/schedule", "/api/schedule/tonight",
                   "/api/schedule/state")

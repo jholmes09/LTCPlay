@@ -1340,11 +1340,96 @@ MUTATIONS = [
   '    return [name for name, _ in dests\n'
   '           if name.strip().lower() == "beyond"]'),
 
- ("an announcement plays over a running or paused show", "ltcplay/announce.py",
-  '    if state in BLOCKED_STATES:\n'
-  '        how = "paused" if state == "PAUSED" else "running"',
-  '    if False:\n'
-  '        how = "paused" if state == "PAUSED" else "running"'),
+ ("an announcement never holds the show first", "ltcplay/announce.py",
+  '            # never reached inert.\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if hold_refusal:',
+  '            # never reached inert.\n'
+  '            if False:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if hold_refusal:'),
+
+ ("a refused hold does not refuse the announcement", "ltcplay/announce.py",
+  '            # never reached inert.\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if hold_refusal:\n'
+  '                    text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                            f"Refused: {hold_refusal}")\n'
+  '                    self._emit(actor="operator", action="play",\n'
+  '                              outcome="refused", reason=hold_refusal,\n'
+  '                              text=text, ann_id=ann_id, who=who,\n'
+  '                              screen=screen, state=state)\n'
+  '                    raise ValueError(text)\n'
+  '                state = self._current_state()\n'
+  '            try:\n'
+  '                sd = self._sd()',
+  '            # never reached inert.\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if False:\n'
+  '                    text = (f"{who} pressed Play on {label}{screen_txt}. "\n'
+  '                            f"Refused: {hold_refusal}")\n'
+  '                    self._emit(actor="operator", action="play",\n'
+  '                              outcome="refused", reason=hold_refusal,\n'
+  '                              text=text, ann_id=ann_id, who=who,\n'
+  '                              screen=screen, state=state)\n'
+  '                    raise ValueError(text)\n'
+  '                state = self._current_state()\n'
+  '            try:\n'
+  '                sd = self._sd()'),
+
+ ("the second hold request before the stream starts is skipped",
+  "ltcplay/announce.py",
+  '                raise ValueError(text)\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if hold_refusal:\n'
+  '                    self.playing = None',
+  '                raise ValueError(text)\n'
+  '            if False:\n'
+  '                hold_refusal = self._request_hold(who, screen)\n'
+  '                if hold_refusal:\n'
+  '                    self.playing = None'),
+
+ ("the Hold request does not carry the Play press's own operator and "
+  "screen", "ltcplay/announce.py",
+  '        try:\n'
+  '            return self.hold_requester(who, screen)\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e))',
+  '        try:\n'
+  '            return self.hold_requester("", "")\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e))'),
+
+ ("Service.hold_for_announcement never refuses, even when Hold itself "
+  "was refused", "ltcplay/schedule_service.py",
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen))\n'
+  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
+  '                return None\n'
+  '            return out.refused or None',
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen))\n'
+  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
+  '                return None\n'
+  '            return None'),
+
+ ("already being on Hold or paused is treated as a Hold refusal",
+  "ltcplay/schedule_service.py",
+  '            if out.refused and self.machine.state in (sch.HOLD, sch.PAUSED):\n'
+  '                return None\n'
+  '            return out.refused or None',
+  '            if False:\n'
+  '                return None\n'
+  '            return out.refused or None'),
+
+ ("announcements never Hold the scheduler in production, web.py never "
+  "wires it", "ltcplay/web.py",
+  '        httpd.announce.hold_requester = sched.hold_for_announcement',
+  '        pass'),
 
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",

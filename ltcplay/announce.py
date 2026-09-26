@@ -15,17 +15,36 @@ web.py's job, once both are configured; this module never imports
 schedule.py or schedule_service.py. See `interlock_refusal` for exactly what
 that provider is used for.
 
-A show starting while an announcement is playing is the OTHER half of that
-same coupling, in the other direction: the scheduler ticks on a thread of its
-own, with no lock shared with this service, so a status() poll here could be
-seconds behind a show actually starting. `on_show_started` is a push hook
-web.py wires the scheduler to call the moment it starts a show; it is not
-something this module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+Every announcement triggers a Hold first (Jeff, 2026-09-26: "an announcement
+is a cancellation, hold, or abort... any announcement actually just auto
+triggers a hold"). Pressing Play asks the scheduler to Hold, through the
+SAME path the operator's own Hold uses, with this press's own who and screen,
+before the file ever reaches the output device: between shows that delays
+the next show; during a show it pauses the show in place, exactly as if the
+operator had pressed Hold. If Hold is refused, the announcement is refused
+with the same sentence. If the schedule is already on Hold, or the show is
+already paused, that counts as success and the announcement just plays. When
+it ends, nothing resumes the schedule by itself; only an operator's own
+Resume does. This is the second, one-method coupling to the scheduler
+(`hold_requester`, a plain callable `(who, screen) -> refusal or None`),
+wired by web.py alongside `state_provider`, for the same reason: with no
+scheduler configured, `hold_requester` is never set, and an announcement
+stays exactly as inert as `interlock_refusal(None)` already makes it.
 
-The interlock itself is check-then-act around real work (a device query, a
-file read), so play() re-checks it a second time immediately before the
-output stream actually starts, inside the same locked section: see the
-comment in play() beside that second check.
+A show starting while an announcement is playing used to be a real question;
+now it is moot, because playing an announcement Holds the show first, and a
+held schedule never starts one. `on_show_started` stays anyway, as a
+backstop from PR 13: the scheduler ticks on a thread of its own, with no lock
+shared with this service, so if a show ever did start while an announcement
+was going (a hand-edited race, a future bug), the announcement's own audio
+still stops rather than run under it. It is a push hook web.py wires the
+scheduler to call the moment it starts a show; it is not something this
+module polls for. See SHOW_START_STOPS_ANNOUNCEMENT.
+
+Both the interlock and the Hold request are check-then-act around real work
+(a device query, a file read), so play() re-checks and re-Holds a second
+time immediately before the output stream actually starts, inside the same
+locked section: see the comment in play() beside that second check.
 
 The output device is never the system default. A show's device is picked by
 config, by an EXACT name (never a substring: a substring can silently land on
@@ -57,12 +76,6 @@ LABELS = {DELAYED: "Delayed", CANCELLATION: "Cancellation",
 CONFIG_FILE = "ltcplay_announce.json"
 OPERATORS_FILE = "ltcplay_operators.json"
 DEFAULT_OPERATORS = ("Andy", "Jeff")
-
-# Only these two scheduler states refuse a play. The moment Abort is pressed
-# during either one, the scheduler's own state machine leaves that state (it
-# lands in STANDBY), so nothing here has to remember that Abort happened: it
-# falls out of asking the scheduler what is true right now.
-BLOCKED_STATES = frozenset(("SHOW", "PAUSED"))
 
 JOURNAL = 400
 
@@ -242,15 +255,16 @@ def interlock_refusal(state):
     the safe answer is to refuse: an announcement that could play without
     knowing whether a show is running is worse than one that never plays at
     all, so announcements are inert until a scheduler is wired in.
+
+    A show running or paused no longer refuses here (Jeff, 2026-09-26): Play
+    Holds the show first, through hold_requester, so by the time a file
+    would actually play the schedule is on Hold, or the show is paused, one
+    way or another. See AnnounceService.play and _request_hold.
     """
     if state is None:
         return ("No scheduler is configured, so ltcplay does not know "
                 "whether a show is running. Announcements are inert until "
                 "the scheduler is set up.")
-    if state in BLOCKED_STATES:
-        how = "paused" if state == "PAUSED" else "running"
-        return (f"A show is {how}. Press Abort first, or wait for the "
-                f"show to end, before playing an announcement.")
     return None
 
 
@@ -447,6 +461,12 @@ class AnnounceService:
         # docstring: this is the whole coupling to the scheduler in the
         # "may I play" direction.
         self.state_provider = state_provider
+        # A plain callable `(who, screen) -> refusal or None`, or None. The
+        # other new coupling, in the "hold the show first" direction; see
+        # _request_hold and the module docstring. None until web.py wires it
+        # (only when a scheduler is ALSO configured), and an announcement
+        # with no scheduler never tries to call it.
+        self.hold_requester = None
         # Where to read ltcplay_operators.json from. None means the real
         # machine folder (data_dir()); a test points this at a tempdir so
         # it never touches, or depends on, anything really on disk.
@@ -596,6 +616,22 @@ class AnnounceService:
             return self.state_provider()
         except Exception:
             return None
+
+    def _request_hold(self, who, screen):
+        """Ask the scheduler to Hold, through hold_requester, with THIS
+        press's own who and screen so the journal attributes it the same
+        way an operator's own Hold would (Jeff, 2026-09-26). Returns the
+        refusal sentence, or None: Hold took effect, or the scheduler was
+        already on Hold, or the show was already paused (see
+        Service.hold_for_announcement); an announcement never needs the
+        schedule to already be idle before it plays. Called with no
+        scheduler wired is a programming error (play() only calls this when
+        hold_requester is not None), so anything hold_requester itself
+        raises is still turned into a plain sentence rather than a 500."""
+        try:
+            return self.hold_requester(who, screen)
+        except Exception as e:
+            return _clean(str(e))
 
     @staticmethod
     def _operator_problem(who, screen):
@@ -775,6 +811,24 @@ class AnnounceService:
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
+            # Every announcement Holds the show first, through the same
+            # path the operator's own Hold uses (Jeff, 2026-09-26). Between
+            # shows that delays the next show; during a show it pauses the
+            # show in place. Already on Hold, or already paused, counts as
+            # success. No scheduler wired (hold_requester is None) means
+            # interlock_refusal(None) above already refused, so this is
+            # never reached inert.
+            if self.hold_requester is not None:
+                hold_refusal = self._request_hold(who, screen)
+                if hold_refusal:
+                    text = (f"{who} pressed Play on {label}{screen_txt}. "
+                            f"Refused: {hold_refusal}")
+                    self._emit(actor="operator", action="play",
+                              outcome="refused", reason=hold_refusal,
+                              text=text, ann_id=ann_id, who=who,
+                              screen=screen, state=state)
+                    raise ValueError(text)
+                state = self._current_state()
             try:
                 sd = self._sd()
                 dev = resolve_output_device(sd, self.device_name)
@@ -842,12 +896,17 @@ class AnnounceService:
                           text=text, ann_id=ann_id, who=who, screen=screen,
                           state=self._current_state())
                 raise ValueError(text)
-            # Re-check the interlock immediately before the stream actually
-            # starts, INSIDE the same locked section as start(): the window
-            # since the first check included a device query and the file
-            # read above, both real wall time, during which the
-            # scheduler's own tick thread runs independently, on its own
-            # lock (review, blocker 1a: audit13_toctou_race.py).
+            # Re-check the interlock, and re-request the Hold, immediately
+            # before the stream actually starts, INSIDE the same locked
+            # section as start(): the window since the first check included
+            # a device query and the file read above, both real wall time,
+            # during which the scheduler's own tick thread runs
+            # independently, on its own lock (review, blocker 1a:
+            # audit13_toctou_race.py). Asking for Hold again here is what
+            # catches a schedule that moved OUT of Hold and back into a
+            # running show during that window (an operator's Resume and
+            # Start now, both real, both possible in that gap): it simply
+            # Holds it again, the same as the first ask.
             state = self._current_state()
             refusal = interlock_refusal(state)
             if refusal:
@@ -858,6 +917,18 @@ class AnnounceService:
                           outcome="refused", reason=refusal, text=text,
                           ann_id=ann_id, who=who, screen=screen, state=state)
                 raise ValueError(text)
+            if self.hold_requester is not None:
+                hold_refusal = self._request_hold(who, screen)
+                if hold_refusal:
+                    self.playing = None
+                    text = (f"{who} pressed Play on {label}{screen_txt}. "
+                            f"Refused: {hold_refusal}")
+                    self._emit(actor="operator", action="play",
+                              outcome="refused", reason=hold_refusal,
+                              text=text, ann_id=ann_id, who=who,
+                              screen=screen, state=state)
+                    raise ValueError(text)
+                state = self._current_state()
             out_ch = min(channels, dev["channels"]) or 1
             if out_ch < channels:
                 self._emit(actor="system", action="play", outcome="note",

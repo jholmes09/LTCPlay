@@ -11269,21 +11269,33 @@ def test_announce_device_exact_match_only():
 
 
 def test_announce_toctou_recheck_before_start():
-    section("announcements: the interlock is rechecked immediately "
-            "before the stream actually starts")
+    section("announcements: Hold is re-requested immediately before the "
+            "stream actually starts, catching a show that started again "
+            "during the file read")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
     state_holder = {"v": "STANDBY"}
+    hold_calls = []
+
+    def fake_hold(who, screen):
+        # Hold always succeeds here and moves the fake schedule to HOLD,
+        # exactly as the real Service would; what this test cares about is
+        # WHEN it is called, and how many times.
+        hold_calls.append((who, screen, state_holder["v"]))
+        state_holder["v"] = "HOLD"
+        return None
+
     sd = FakeSD()
     svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
                             state_provider=lambda: state_holder["v"])
+    svc.hold_requester = fake_hold
     real_decode = svc._decode
 
     def decode_and_flip(ann_id):
-        # Stands in for real wall time elapsing during the file read: a
-        # show starting in that window is entirely realistic, since the
-        # scheduler ticks on its own thread with no lock shared with this
-        # service (audit13_toctou_race.py).
+        # Stands in for real wall time elapsing during the file read: an
+        # operator resuming and starting a show again in that window is
+        # entirely realistic, since the scheduler ticks on its own thread
+        # with no lock shared with this service (audit13_toctou_race.py).
         state_holder["v"] = "SHOW"
         return real_decode(ann_id)
 
@@ -11292,18 +11304,22 @@ def test_announce_toctou_recheck_before_start():
         check(A.interlock_refusal(svc._current_state()) is None,
               "setup: the interlock legitimately allows it at the first "
               "check")
-        try:
-            svc.play(A.DELAYED, "Andy", "rack screen")
-            check(False, "the recheck must catch the state that changed "
-                         "during the file read and refuse")
-        except ValueError as e:
-            check("running" in str(e), f"the refusal must say why: {e}")
+        r = svc.play(A.DELAYED, "Andy", "rack screen")
+        check(r["playing"]["id"] == A.DELAYED,
+              f"the recheck must Hold the show that started again during "
+              f"the read, not refuse the announcement: {r}")
     finally:
         svc._decode = real_decode
-    check(svc.playing is None, "a caught race must never start playing")
-    check(sd.output_opened == [],
-          "the stream must never actually be opened once the recheck "
-          "refuses")
+    check(len(hold_calls) == 2,
+          f"Hold must be requested twice: once before the file read, once "
+          f"again immediately before the stream starts, catching the "
+          f"state that changed in between: {hold_calls}")
+    check(hold_calls[1][2] == "SHOW",
+          f"the SECOND Hold request is what must catch the show that "
+          f"started again during the read: {hold_calls}")
+    check(all(c[0] == "Andy" and c[1] == "rack screen" for c in hold_calls),
+          f"both Hold requests must carry the SAME who and screen as the "
+          f"Play press: {hold_calls}")
     print("  ok")
 
 
@@ -11791,60 +11807,245 @@ def test_announce_reentrant_claim_does_not_orphan_a_stream():
 
 
 def test_announce_interlock_matrix():
-    section("announcements: the interlock, every scheduler state times "
-            "every button")
+    section("announcements: the interlock, every scheduler state (a show "
+            "running or paused is no longer refused HERE, since Play "
+            "Holds it first instead, Jeff, 2026-09-26)")
     from ltcplay import schedule as sch_mod
     A = _ann()
     states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
               sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
     check(len(set(states)) == 8,
           "the matrix must cover all 8 scheduler states")
-    blocked_states = {sch_mod.SHOW, sch_mod.PAUSED}
     for state in states + (None,):
         refusal = A.interlock_refusal(state)
         if state is None:
             check(refusal is not None and "inert" in refusal,
                   f"no scheduler: announcements must be inert, got "
                   f"{refusal!r}")
-        elif state in blocked_states:
-            check(refusal is not None and refusal.endswith("."),
-                  f"{state}: a show running or paused must refuse, got "
-                  f"{refusal!r}")
         else:
             check(refusal is None,
-                  f"{state}: announcements must be allowed, got {refusal!r}")
+                  f"{state}: the interlock itself must not refuse a real "
+                  f"state any more; a show running or paused is Held "
+                  f"first instead. Got {refusal!r}")
         _no_dashes(refusal or "", f"interlock refusal in {state}")
-    # Abort is the only way out of SHOW or PAUSED in the real machine, and it
-    # always lands in STANDBY, so the interlock never has to remember Abort
-    # happened; it only has to ask the scheduler what is true right now.
+    # Abort is still the only way out of SHOW or PAUSED in the real
+    # machine, and it always lands in STANDBY; unrelated to the interlock
+    # change above, this is a schedule.py fact that used to matter here too.
     check(sch_mod.ALLOWED[sch_mod.ABORT] ==
           frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
-          "Abort must be exactly the exit from the two blocked states")
+          "Abort must be exactly the exit from SHOW and PAUSED")
 
+    # With state_provider set but no hold_requester -- an announcements
+    # config with no scheduler ALSO wired for Hold, which web.serve() never
+    # actually does (see test_announce_routes), but which the interlock's
+    # own contract above has to hold for regardless -- a real state is
+    # allowed straight through: nothing can Hold it, and the interlock no
+    # longer refuses a running show on its own.
     work, cfg, _lengths = _ann_workdir()
-    for state in states + (None,):
-        blocked = state is None or state in blocked_states
+    for state in states:
         svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                                 state_provider=(lambda s=state: s))
+        check(svc.hold_requester is None, "setup: no scheduler wired")
         for aid in A.IDS:
-            if blocked:
-                try:
-                    svc.play(aid, "Andy", "rack screen")
-                    check(False, f"{state}: {aid} must be refused")
-                except ValueError as e:
-                    check(str(e).endswith("."),
-                          f"{state}/{aid}: refusal must end with a full "
-                          f"stop: {e!r}")
-                check(svc.playing is None,
-                      f"{state}: a refused press must not start anything")
-            else:
-                svc.play(aid, "Andy", "rack screen")
-                check(svc.playing == aid,
-                      f"{state}: {aid} must be allowed to play")
-                svc.stop("Andy", "rack screen")
-                check(svc.playing is None,
-                      "Stop must clear it for the next id")
+            svc.play(aid, "Andy", "rack screen")
+            check(svc.playing == aid,
+                  f"{state}, no hold_requester: {aid} must be allowed to "
+                  f"play")
+            svc.stop("Andy", "rack screen")
+            check(svc.playing is None, "Stop must clear it for the next id")
     print("  ok")
+
+
+def test_announce_hold_between_shows():
+    section("announcements: between shows, Play Holds the schedule first "
+            "(the same path the operator's own Hold uses), then plays, "
+            "and the next show does not start at its time")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: intermission running, waiting for the next slot: "
+          f"{svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.DELAYED,
+          f"the announcement must actually play: {r}")
+    check(svc.machine.state == S.HOLD,
+          f"between shows, Hold is what Play must trigger first: "
+          f"{svc.machine.state}")
+    # The journal line for the Hold itself carries the SAME who/screen the
+    # Play press used, exactly as the operator's own Hold would.
+    hold_lines = [r for r in svc.journal
+                 if "pressed Hold" in (r.get("text") or "")]
+    check(hold_lines and hold_lines[0]["who"] == "Andy"
+          and hold_lines[0]["screen"] == "rack screen",
+          f"the Hold the announcement triggered must be attributed to the "
+          f"SAME operator and screen as the Play press: {hold_lines}")
+
+    # The next show's time passes while held: it must not fire.
+    now[0] = _den(S, 17, 55)
+    svc.tick()
+    check(svc.machine.state == S.HOLD, "still on hold")
+    slot2 = svc.machine.slot(2)
+    check(slot2.status == S.DELAYED,
+          f"the next show's time passed during the Hold, so it waits "
+          f"instead of starting: {slot2.status} {slot2.reason}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_during_show():
+    section("announcements: during a show, Play Holds it (pauses it in "
+            "place, the section 5 Hold actions), then plays")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          f"setup: a show is running at its start time: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.CANCELLATION,
+          f"the announcement must actually play over the paused show: {r}")
+    check(svc.machine.state == S.PAUSED,
+          f"during a show, Hold must pause it in place, not refuse the "
+          f"announcement (the old 'locked during a show' rule is gone): "
+          f"{svc.machine.state}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_refused_refuses_the_announcement():
+    section("announcements: if Hold is refused (the night is over), the "
+            "announcement is refused too, with the same sentence")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "18:00"}},
+        exceptions={}))
+    now = [_den(S, 23, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state in (S.CLOSING, S.OFF),
+          f"setup: the night is over: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "Hold being refused must refuse the announcement too")
+    except ValueError as e:
+        msg = str(e)
+        check("over" in msg and "hold" in msg.lower(),
+              f"the refusal must carry Hold's own plain sentence: {msg}")
+        _no_dashes(msg, "hold-refused announcement refusal")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def test_announce_stays_held_after_it_ends():
+    section("announcements: when the announcement ends, the system STAYS "
+            "on Hold until an operator presses Resume; nothing resumes "
+            "by itself")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: the show is paused")
+    # The announcement finishes on its own (a natural end, not a Stop).
+    ann._player.done = True
+    ann._settle()
+    check(ann.playing is None, "the announcement itself must clear")
+    check(svc.machine.state == S.PAUSED,
+          f"the schedule must STAY held after the announcement ends: "
+          f"{svc.machine.state}")
+    # More time passing changes nothing by itself.
+    now[0] = _den(S, 18, 5)
+    svc.tick()
+    check(svc.machine.state == S.PAUSED,
+          f"nothing resumes by itself, however much time passes: "
+          f"{svc.machine.state}")
+    # Only an operator's own Resume moves it on.
+    svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                       screen="rack screen"))
+    check(svc.machine.state == S.SHOW,
+          f"an operator's Resume, and only that, carries the show on: "
+          f"{svc.machine.state}")
+    print("  ok")
+
+
+def test_announce_no_scheduler_stays_inert():
+    section("announcements: with no scheduler configured (the GPL path), "
+            "an announcement behaves exactly as before: inert, and it "
+            "never tries to Hold anything")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    check(ann.state_provider is None and ann.hold_requester is None,
+          "setup: neither the state nor the hold path is wired")
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "with no scheduler, Play must still refuse")
+    except ValueError as e:
+        check("inert" in str(e), f"the refusal must say why: {e}")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def _sched_and_service_modules():
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    return S, SV
 
 
 def test_announce_single_flight():
@@ -12186,12 +12387,16 @@ def test_announce_routes():
         check(svc.machine.state == S.SHOW,
               f"setup: the scheduler should be running a show at 18:20: "
               f"{svc.machine.state}")
-        code, bad = call(base, "/api/announce/play",
-                         {"id": A.DELAYED, "who": "Andy",
-                          "screen": "rack screen"})
-        check(code == 400 and "running" in bad.get("error", ""),
-              f"a show running must refuse the announcement through the "
-              f"live link: {code} {bad}")
+        code, ok = call(base, "/api/announce/play",
+                        {"id": A.DELAYED, "who": "Andy",
+                         "screen": "rack screen"})
+        check(code == 200 and ok.get("playing", {}).get("id") == A.DELAYED,
+              f"a show running is Held first, through the live link, then "
+              f"the announcement plays: {code} {ok}")
+        check(svc.machine.state == S.PAUSED,
+              f"the show must end up paused: the announcement Held it, "
+              f"through hold_requester, before it played: "
+              f"{svc.machine.state}")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -15503,6 +15708,11 @@ if __name__ == "__main__":
     test_schedule_hook_runs_outside_service_lock()
     test_announce_reentrant_claim_does_not_orphan_a_stream()
     test_announce_interlock_matrix()
+    test_announce_hold_between_shows()
+    test_announce_hold_during_show()
+    test_announce_hold_refused_refuses_the_announcement()
+    test_announce_stays_held_after_it_ends()
+    test_announce_no_scheduler_stays_inert()
     test_announce_single_flight()
     test_announce_operator_validation()
     test_announce_missing_files_at_startup()
