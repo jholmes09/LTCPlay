@@ -1858,6 +1858,133 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
+ ("an announcement plays over a running or paused show", "ltcplay/announce.py",
+  '    if state in BLOCKED_STATES:\n'
+  '        how = "paused" if state == "PAUSED" else "running"',
+  '    if False:\n'
+  '        how = "paused" if state == "PAUSED" else "running"'),
+
+ ("a second announcement is allowed to start while one plays",
+  "ltcplay/announce.py",
+  '            if self.playing is not None:\n'
+  '                other = LABELS[self.playing]',
+  '            if False:\n'
+  '                other = LABELS[self.playing]'),
+
+ ("an unavailable announcement file plays anyway", "ltcplay/announce.py",
+  '            st = self.status_by_id.get(ann_id, {})\n'
+  '            if not st.get("available"):',
+  '            st = self.status_by_id.get(ann_id, {})\n'
+  '            if False:'),
+
+ ("a name not on the operator list can still press Play",
+  "ltcplay/announce.py",
+  '                raise ValueError(text)\n'
+  '            if who.lower() not in {n.lower() for n in self.operators}:\n'
+  '                reason = (f"{who!r} is not on the operator list "',
+  '                raise ValueError(text)\n'
+  '            if False:\n'
+  '                reason = (f"{who!r} is not on the operator list "'),
+
+ ("a missing announcement output device falls back to another one",
+  "ltcplay/announce.py",
+  '    if not hits:\n'
+  '        raise ValueError(f"{_clean(name)!r} is not attached. Nothing else "\n'
+  '                         f"will be used in its place. Outputs on this "\n'
+  '                         f"machine: {_clean(names)}.")',
+  '    if not hits:\n'
+  '        if outputs:\n'
+  '            return outputs[0]'),
+
+ ("a refused announcement play is not written to the journal",
+  "ltcplay/announce.py",
+  '                self._emit(actor="operator", action="play",\n'
+  '                          outcome="refused",\n'
+  '                          reason="another announcement is already playing",\n'
+  '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
+  '                          state=state)\n'
+  '                raise ValueError(text)\n'
+  '            st = self.status_by_id.get(ann_id, {})',
+  '                raise ValueError(text)\n'
+  '            st = self.status_by_id.get(ann_id, {})'),
+
+ ("an announcement's device name matches by substring again",
+  "ltcplay/announce.py",
+  '    hits = [d for d in outputs if d["name"].strip().lower() == want]',
+  '    hits = [d for d in outputs if want in d["name"].lower()]'),
+
+ ("the announcement interlock is never rechecked before the stream starts",
+  "ltcplay/announce.py",
+  '            state = self._current_state()\n'
+  '            refusal = interlock_refusal(state)\n'
+  '            if refusal:\n',
+  '            state = self._current_state()\n'
+  '            refusal = interlock_refusal(state)\n'
+  '            if False:\n'),
+
+ ("a 32-bit float announcement file is played as noise", "ltcplay/announce.py",
+  '    if tag == 3:\n'
+  '        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "\n'
+  '                         f"which is not supported. Export 16-bit or "\n'
+  '                         f"32-bit PCM (integer), not float, instead.")',
+  '    if False:\n'
+  '        pass'),
+
+ ("an announcement device that stopped answering is never noticed",
+  "ltcplay/announce.py",
+  '        if stalled or too_many_errors:',
+  '        if False:'),
+
+ ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            pass'),
+
+ ("the show-start hook tears the stream down synchronously",
+  "ltcplay/announce.py",
+  '        with self.lock:\n'
+  '            if not SHOW_START_STOPS_ANNOUNCEMENT:\n'
+  '                return\n'
+  '            if self.playing is None or self._player is None:\n'
+  '                return\n'
+  '            if self._player.stop_reason is not None:\n'
+  '                return                      # already stopping',
+  '        with self.lock:\n'
+  '            self._settle()\n'
+  '            if not SHOW_START_STOPS_ANNOUNCEMENT:\n'
+  '                return\n'
+  '            if self.playing is None or self._player is None:\n'
+  '                return\n'
+  '            if self._player.stop_reason is not None:\n'
+  '                return                      # already stopping'),
+
+ ("the announcements hook runs inside Service.lock again",
+  "ltcplay/schedule_service.py",
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            self.on_show_started(self.machine.state)'),
+
+ ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
+  '            if self._claim_gen != my_gen or self.playing != ann_id:',
+  '            if self.playing != ann_id:'),
+
+ ("load_operators' own sentence is not cleaned of dashes",
+  "ltcplay/announce.py",
+  '            f"The operator list {_clean(path)} could not be used: "\n'
+  '            f"{_clean(str(e)).rstrip(\'.\')}. Using "',
+  '            f"The operator list {path} could not be used: "\n'
+  '            f"{str(e).rstrip(\'.\')}. Using "'),
+
+ ("tick() waits for the show-start hook even after releasing the lock",
+  "ltcplay/schedule_service.py",
+  '            for hook in pending:\n'
+  '                threading.Thread(target=self._run_hook, args=(hook,),\n'
+  '                                 daemon=True,\n'
+  '                                 name="ltcplay-announce-hook").start()',
+  '            for hook in pending:\n'
+  '                self._run_hook(hook)'),
+
  # ---------------------------------------------------------------------
  # Hold / Resume, Fire & Ice handoff section 5. The clock half only:
  # ArtNetMaster.pause()/resume() in clock.py, Session.clock_pause()/

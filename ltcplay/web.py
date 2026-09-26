@@ -635,6 +635,12 @@ class Handler(BaseHTTPRequestHandler):
         sched = getattr(self.server, "schedule", None)
         return sched if sched is not None else _NoSchedule()
 
+    def _announce(self):
+        """Same rule as _schedule: without --announce every announcement
+        route is a plain 404, and nothing about announcements is imported."""
+        ann = getattr(self.server, "announce", None)
+        return ann if ann is not None else _NoAnnounce()
+
     # -- routes -----------------------------------------------------------
     def do_GET(self):
         route = urllib.parse.urlparse(self.path).path
@@ -677,6 +683,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"lines": c.log_tail(q.get("n", [120])[0])})
             if route == "/api/schedule" or route.startswith("/api/schedule/"):
                 return self._send(*self._schedule().get(route))
+            if route == "/api/announce" or route.startswith("/api/announce/"):
+                return self._send(*self._announce().get(route))
         except USER_ERRORS as e:
             return self._send(400, {"error": str(e)})
         except Exception as e:
@@ -694,6 +702,15 @@ class Handler(BaseHTTPRequestHandler):
             # list is not the show's last error and must not appear as one.
             try:
                 return self._send(*self._schedule().post(route, body))
+            except USER_ERRORS as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:
+                return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+        if route == "/api/announce" or route.startswith("/api/announce/"):
+            # Kept apart from the show's routes for the same reason: a
+            # refused announcement press is not the show's last error.
+            try:
+                return self._send(*self._announce().post(route, body))
             except USER_ERRORS as e:
                 return self._send(400, {"error": str(e)})
             except Exception as e:
@@ -758,11 +775,30 @@ class _NoSchedule:
         return 404, {"error": "no such thing here"}
 
 
+class _NoAnnounce:
+    """Stands in for the announcements service when none is configured."""
+
+    def get(self, route):
+        return 404, {"error": "no such thing here"}
+
+    def post(self, route, body):
+        return 404, {"error": "no such thing here"}
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
-          token=None, on_ready=None, schedule=None):
+          token=None, on_ready=None, schedule=None, announce=None):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
-    GPL show runs exactly the program it ran before the scheduler existed."""
+    GPL show runs exactly the program it ran before the scheduler existed.
+
+    `announce` is the same shape for the announcements config: a path, or a
+    ready-made AnnounceService. Without it announcements are not imported
+    either. When BOTH are configured, the two are wired together in both
+    directions, here and nowhere else: the announcement service reads the
+    scheduler's state through its one-method provider (may I play), and the
+    scheduler pushes to the announcement service's on_show_started hook the
+    instant it starts a show (stop, a show just started). Neither module
+    imports the other; this function is the only place that knows both."""
     control = Control(folder, defaults=defaults, sd=sd)
     on_network = bind not in LOOPBACK
     if on_network and token is None:
@@ -780,6 +816,22 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             from . import schedule_service
             schedule = schedule_service.Service(schedule)
         httpd.schedule = schedule.start()
+    httpd.announce = None
+    if announce is not None:
+        if isinstance(announce, str):
+            from . import announce as announce_mod
+            announce = announce_mod.AnnounceService(announce)
+        httpd.announce = announce
+    if httpd.announce is not None and httpd.schedule is not None:
+        sched = httpd.schedule
+        httpd.announce.state_provider = (
+            lambda: sched.machine.state if sched.machine is not None
+            else None)
+        # The other half of the same bridge, in the other direction: the
+        # scheduler pushes the instant it starts a show, rather than the
+        # announcement service finding out on its own next status() poll.
+        # See announce.py's module docstring and on_show_started.
+        sched.on_show_started = httpd.announce.on_show_started
     if on_ready:
         on_ready(httpd, control, token)
     return httpd
