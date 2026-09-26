@@ -1,8 +1,8 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B9 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B10 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
-**Safety throughout:** no flames (flame hardware unplugged; the flamesafe code was not run, on Jeff's instruction). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
+**Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
 ## Headline
 
@@ -16,9 +16,9 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B5 Audio while chasing | PASSED, with a note | No drift; one 33 ms nudge per 7.4 min; listening test by Jeff outstanding |
 | B6 Six video tracks | PASSED at panel size / FAILED at 1080p H.264 | Panel-sized: 38% CPU at 4K desktop, 19.5% at 1080p, 28% with BEYOND too, smooth 30 fps; six 1080p H.264: 100% CPU |
 | B7 ltcplay's own tests | PASSED | main 9291c35: all checks passed in 90.5 s |
-| B8 BEYOND | PASSED with required settings | Follows on 127.0.0.2 while MadMapper takes 127.0.0.1, both within a frame over 60 s; blank by OSC brightness 0; turn off "Keep running" or it plays through Hold; OSC port must not be 8000; demo quits after 1 h |
+| B8 BEYOND | PASSED with required settings | Follows on 127.0.0.2 while MadMapper takes 127.0.0.1, both within a frame over 60 s; blank by OSC brightness 0; turn off "Keep running" or it plays through Hold; OSC port must not be 8000; demo stops after 1 to 2 h (crashed at 2 h overnight, B9) |
 | B10 Flame safety program (flamesafe-core d5b398f) | PASSED | Suites pass on Windows; 40.0 packets/s at priority 200, all zero, no sequence breaks, idle and under show load (p99 interval 25.5 ms, 0.84% of a thread); survives a dead destination; clean stop sends zeros then stream-terminated; hard kill stops at once with no zeros (as documented); bad configs refuse with exit 2 |
-| B9 Long soak | PASSED on the desk with airflow (1 h 34 min + 2 h); 4 h with intermission gaps: NOT YET RUN | Heat is the limit: the SSD stalled up to 20 s and froze the PC when the box sat flat on a desk |
+| B9 Long soak | PASSED (ltcplay, MadMapper, pixels); BEYOND demo FAILED at its 2 h limit | 12 shows of 7:24 every 20 min, 3 h 47 min on main fa5274a: 0 timecode frames skipped, MadMapper 1 to 28 ms behind with no drift, heartbeat never silent over 75 ms, ltcplay 22.1 MB flat, SSD 61 to 64 °C with the box lifted. BEYOND demo crashed on its time-limit box at 2 h and sat frozen but "running". Findings: pixel repeat/skip pairs for 3 min in show 6; BEYOND's own audio probably mixed into MadMapper's output; intermission clip did not loop (bench setup) |
 
 ## B0 The machine
 
@@ -214,7 +214,7 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 
 ## B8 BEYOND
 
-**Verdict: PASSED for following Art-Net timecode on the same PC as MadMapper (with a split of loopback addresses) and for a blank command; the default "Keep running" setting FAILS Hold (the lasers keep playing through a freeze) and must be turned off.** BEYOND 5.5 **Essentials Demo** (activated by Jeff about 23:00; **the demo quits after 1 hour per launch** and has to be restarted, which bounds any soak that includes BEYOND). No laser hardware connected (checked: no Pangolin device in Windows, both Ethernet ports unplugged); BEYOND drew only to its on-screen preview. BEYOND runs on the Pico with Andy's licence (Jeff, 2026-09-25; handoff section 2 is out of date). 2026-09-26 00:00 to 00:35, tctest from main 9291c35.
+**Verdict: PASSED for following Art-Net timecode on the same PC as MadMapper (with a split of loopback addresses) and for a blank command; the default "Keep running" setting FAILS Hold (the lasers keep playing through a freeze) and must be turned off.** BEYOND 5.5 **Essentials Demo** (activated by Jeff about 23:00; **the demo quits after about 1 hour per launch**; on the overnight launch it instead showed "Demo Time Limit Reached" at 2 h and crashed, see B9; either way it bounds any soak that includes BEYOND). No laser hardware connected (checked: no Pangolin device in Windows, both Ethernet ports unplugged); BEYOND drew only to its on-screen preview. BEYOND runs on the Pico with Andy's licence (Jeff, 2026-09-25; handoff section 2 is out of date). 2026-09-26 00:00 to 00:35, tctest from main 9291c35.
 
 **Settings, click by click** (BEYOND keeps these between launches, unlike the MadMapper trial):
 1. First launch: language box (English), then "Welcome to BEYOND" > **Go BEYOND...**, then "Select BEYOND version" > **BEYOND Essentials**. It then opens a Pangolin promo video in VLC (close it) and, after an unclean exit, a "Problem encountered during the last session" box (**Cancel**, then **No** to deleting the logs). My screen capture could not see some of these boxes; they are ordinary Windows dialogs and I pressed their buttons by name.
@@ -290,8 +290,63 @@ Not tested (needs the Stream Deck driver, build step 7b): arming, fire values pa
 
 ## B9 Long soak
 
-**Done so far (not yet the 4 h run with the handoff's intermission gaps):**
-- Soak 1: 7:20 cues with 30 s gaps, 1 h 34 min clean until an accidental unplug (not a freeze: the last second before power loss was a clean 40 fps). Timecode 7 frames skipped in about 145,000; pixels 0 send errors; SSD 56 to 70 C.
-- Soak 2: 120 cues of 58 s with 2 s gaps, 2 h, cold start: timecode 19 skipped in 208,781; pixels no drift (-1.7 ms first minute, -1.4 ms last); SSD 32 to 67 C, no stall; MadMapper memory 2.35 to 2.52 GB, not growing; flight recorder never paused over 7 s.
-- Windows event log: the only problem entries today are the two unexpected shutdowns (10:12 freeze, 15:30 unplug).
-- The 4 h run with 7:20 shows and the handoff's 20-minute interval, with the B3 heartbeat watched: to run overnight.
+**Verdict: PASSED for ltcplay, MadMapper and the pixels over 3 h 47 min: 12 shows of 7:24 on the handoff's 20-minute interval, with an intermission bank between shows. BEYOND FAILED at 2 h, but that is the demo's time limit, not the show layout (below). Two small findings for the main session: a patch of pixel frame repeat/skip pairs in show 6, and the intermission clip not looping.** Ran 2026-09-26 00:58 to 04:46 on main **`fa5274a`** (the approved soak plan), with the Pico lifted about an inch for airflow. Both Ethernet ports were unplugged and all traffic went to 127.0.0.1 or 127.0.0.2. Audio went to the Scarlett with nothing connected to its outputs.
+
+**What ran.** Throwaway driver `bench_show/drive_soak.py` (not in the repo). It opened ltcplay's `Session` on `bench444_timeline.json`: one cue, `bench444.fseq`, 26,256 pixels, 155 universes, 444.42 s (the length of Jeff's music). Art-Net timecode went to MadMapper at 192.168.4.42 (the Pico's own Wi-Fi address) and BEYOND at 127.0.0.2. Every 1200 s it did this:
+1. OSC `/timelines/Bank-2/conductor/stop` and `/timelines/Bank-1/select` to MadMapper, 2 s before the slot.
+2. `clock_play("Bench")`.
+3. Read ltcplay's last-sent timecode at 60, 220 and 440 s.
+4. When the cue ended, selected Bank-2 (the intermission, not chasing) and started it with `play_from_beginning`.
+
+MadMapper ran six looping panel-sized montage tracks, Bank-1's audio clip, and the B3 heartbeat (an OSC Float track ramping 0 to 1 over 444.42 s, sent to 127.0.0.1:9001). BEYOND ran its DemoShow timeline chasing timecode, with "Keep running" off.
+
+The recorders were:
+- the pixel sink (every packet, per-second stats),
+- the heartbeat listener,
+- the LTC decoder on the Scarlett loopback (right channel),
+- a 1 s CPU and GPU sampler,
+- a 10-minute memory and event-log snapshot,
+- the SSD watchdog and flight recorder.
+
+**Results, all 12 shows:**
+
+| Item | Result |
+|---|---|
+| Show length (ltcplay) | 444.51 to 444.52 s every show (cue 444.42 s plus the end frame) |
+| Timecode | **0 frames skipped in 12 shows** (319,992 packets to the two nodes), 0 send errors |
+| ltcplay memory | 22.0 MB after show 1, **22.1 MB after shows 2 to 12** (no growth) |
+| MadMapper position vs ltcplay (heartbeat × 444.42 s at 60, 220, 440 s, 36 readings) | **MadMapper 1 to 28 ms behind** ltcplay's clock, mean 15.7 ms, median 14.4 ms. **No drift within a show, none across the night.** Per-show means: -24, -13, -17, -11, -20, -18, -17, -8, -17, -14, -18, -11 ms. Every reading is under one 30 fps frame (33 ms). |
+| Heartbeat | 26,664 to 26,668 packets per show (60/s); first packet 10 to 22 ms after ltcplay started; **longest gap 75 ms (shows 2 and 3; 23 to 33 ms in the others), 0 gaps over 100 ms, 0 over 3 s**; silent within 0.05 to 0.08 s of the end |
+| Heartbeat between shows | One packet per intermission, value 1.0, **exactly 2 s before each show**: that is MadMapper re-sending the Float track's current value when the driver selects Bank-1 again. Otherwise silent. **A heartbeat watcher must expect one packet at bank select.** |
+| Pixels | 40 fps median. Skipped frames per show: 0, 1, 0, 3, 0, **51**, 0, 0, 0, 0, 2, 0. **Longest gap 58 ms**, 1 incomplete frame in 5,340 show seconds, 0 send errors. Show 6 is explained below. |
+| Audio (LTC on Bank-1's right channel, decoded from the Scarlett) | Steady within every show: the first half and second half medians are identical to the millisecond, so **no audio drift in 7:24**. The offset from ltcplay's start differs between shows: -217 to -272 ms. That includes the recorder's own capture latency, so the spread (55 ms, under 2 frames) is what matters, not the absolute value: it is where MadMapper's audio locks each time a cue starts. |
+| Intermission | Bank-2's LTC (hour 01) started **within about 1 s of every show ending**, 11 of 11. Show start after intermission: the decoder saw 00:00:00:01 about 0.25 s after ltcplay started. |
+| MadMapper memory | 2,387 MB at 00:55, **2,400 MB at 04:45**: +13 MB in 3 h 50 min (about 3.4 MB an hour). Not a concern for a show night. |
+| CPU / GPU | CPU mean 22.5% (23.8% while BEYOND ran, 21.9% after); GPU 3D 21.6%. The highest one-second samples (72 to 87%) came at 00:56, 01:27, 01:57 and 02:45, each for a single sample. |
+| SSD | 61 to 64 °C for the whole run. The drive's own worst read/write latency counters stayed at their since-boot values (1,257 / 720 ms, set at boot 19:28). **No new stall.** The watchdog raised no alarm. |
+| Windows | **0 new error or critical events in the System log**; 0 unexpected shutdowns. The Windows Time service is not running, so the clock was never adjusted during the run. |
+
+**BEYOND: the demo's time limit, then a crash (FAILED, demo only).** BEYOND was launched at 23:53:18. At **01:53:22, exactly 2 hours later**, the Essentials Demo opened a **"Demo Time Limit Reached"** window, and while that box was up BEYOND crashed. BEYOND's crash handler wrote a local problem report (`C:\BEYOND55_Demo\Log\SendToPangolin---BEYONDProblemReport.txt`; nothing was sent). It gives:
+- program up time 2 hours,
+- version 5.5.0.1919,
+- `EAccessViolation: Access violation at address 000000000273CA6A in module 'BEYOND.exe'. Read of address 00000000000000C0`,
+- a main-thread call stack inside `MessageBoxW`.
+
+From then on BEYOND showed "An error occurred in the application" (continue / restart / close, `B9_show6.png`). Its main window was disabled, so **it followed nothing for shows 4 to 12**. The process stayed alive: 600 to 646 MB, Windows "Responding", about 1% CPU. **A check that only asks whether BEYOND.exe is running would not have noticed.**
+- This is the demo's limit. B8 said the demo quits after 1 hour; the earlier launches that day did end after 61 and 70 minutes, but this one ran to 2 hours and then crashed instead of quitting. The crash sits inside the demo's own message box. It says nothing about Andy's licensed copy, which has no time limit, **but the licensed BEYOND still needs its own multi-hour soak on this PC before opening night**.
+- For show control: a laser program can be up but frozen on a dialog. Watching its OSC or the preview is the only way to know it is following. The same B3-style heartbeat idea could apply if BEYOND can send OSC on a timeline event.
+
+**Audio decode was noisy while BEYOND was alive.** Shows 1 to 3 had about 1,450 decoder jumps each; shows 4 to 12 had **1 each** (the restart at 00:00:00:00). The only change at 01:53 was BEYOND stopping. BEYOND's DemoShow has its own audio track. **Most likely BEYOND was playing its demo audio into the same Windows output, mixed with MadMapper's.** I did not prove this; the logs are encrypted. **For the show: in BEYOND, set its audio output to none (or a different device) so it cannot mix into MadMapper's output to the DSP.** This also means the earlier finding that "LTC under music decodes about 90% clean" (B5) was probably BEYOND's audio, not resampling.
+
+**Pixels in show 6: repeat/skip pairs.** From 02:39:20 to 02:42:34 (1:14 to 4:28 into show 6), 45 seconds each had one frame repeated and the next frame index skipped: 39 frames in the second, **gap never over 48 ms**, the right content one frame late then back. Then, at 02:42:38, ltcplay's pixel timing against the cue stepped by 23.5 ms. The median lateness moved from -1.8 ms to -25.3 ms and stayed there for the rest of the show. For comparison, show 5 held a steady -3.2 ms.
+- CPU was normal (15 to 23%) from 02:39 to 02:41, before I took any screenshots. From 02:41:03 to 02:42:41 I was capturing the screen and searching BEYOND's files, and CPU went up to 58%. That may have made the second half worse, but it did not start it.
+- No other show did this. There were no clock changes (the time service is off) and no event log entries.
+- **For the main session:** worth a look at what makes the pixel scheduler repeat one frame and skip the next one about every 5 to 20 s, and then re-anchor 23.5 ms later. It is invisible on LEDs at this size (one frame late for 25 ms), but it is not the clean 40 fps of the other 11 shows.
+
+**Intermission clip did not loop.** Bank-2 played its 120 s LTC clip (`LTC_intermission_hour1_120s.wav`) once after each show and was then silent for the rest of the 12.5-minute gap (`B9_intermission_after_show12.png`: timeline at 3:20 and still playing, clip bar longer than the audio). This is my bench setup, not a MadMapper fault: the timeline is longer than its clip. **For Jeff's real intermission: make the Bank-2 timeline exactly as long as its content (or loop the clip itself), and check it loops once, by ear.**
+
+**Bench caveat:** at 02:41 the Bank-1 audio clip was labelled `LTC_audio_track_460s.wav` in MadMapper (`B9_show6.png`), not the music-plus-LTC file I meant to load. The timecode channel measurement stands. I cannot say from this run whether Jeff's music played on the left channel.
+
+**Earlier soaks the same day** (for the record): soak 1, 7:20 cues with 30 s gaps, 1 h 34 min clean until an accidental unplug; soak 2, 120 cues of 58 s, 2 h, timecode 19 skipped in 208,781, pixels no drift, SSD 32 to 67 °C, no stall. The two unexpected shutdowns of 09-25 (10:12 freeze, 15:30 unplug) were the only problem events.
+
+Evidence: `bench_evidence/B9_show6.png`, `B9_intermission_after_show12.png`, `B9_soak3_analysis.txt` (per-show heartbeat, drift points, pixels, memory), `B9_beyond_problem_report_head.txt`.
