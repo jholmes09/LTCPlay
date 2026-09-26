@@ -984,9 +984,10 @@ def test_pixel_pacing_never_accumulates_error():
     # sleep is deliberately dishonest: it always overshoots a little and
     # stalls hard now and then, exactly what a real OS timer does under
     # load. A pacer built on `time.sleep(period)` and a running total would
-    # inherit every one of those overshoots forever; one built on absolute
-    # deadlines (next_at += period, computed fresh from itself, never from
-    # when the last frame actually went out) cannot.
+    # inherit every one of those overshoots forever; one built on a fixed
+    # origin (`t0`, read once, every deadline computed fresh as
+    # `t0 + n_next * period`) cannot, because it never asks "when did the
+    # last frame go out", only "how far is it from where this started".
     #
     # No thread: _loop's own while loop is driven synchronously by having
     # the fake sender stop it after N frames, so this is fully deterministic
@@ -1043,22 +1044,511 @@ def test_pixel_pacing_never_accumulates_error():
     period = 0.025
     check(len(at) == N, f"expected {N} frames, got {len(at)}")
     start = at[0]
-    late = [a - (start + i * period) for i, a in enumerate(at)]
-    check(all(x >= -1e-9 for x in late),
-          f"a frame went out before its own deadline: {min(late):.6f}s early")
-    # The property under test: lateness stays bounded by roughly one
-    # iteration's own overshoot, not by how many iterations have run. A
-    # pacer that slept a fixed period and counted sleeps would have this
-    # grow with every frame; one paced on absolute deadlines cannot.
-    check(max(late) < 0.05,
-          f"lateness grew to {max(late) * 1000:.1f}ms over {N} frames -- the "
-          f"deadline is drifting instead of staying put")
-    tail = late[-20:]
-    check(max(tail) - min(tail) < 0.05,
-          f"lateness late in the run ranges {min(tail) * 1000:.2f} to "
-          f"{max(tail) * 1000:.2f}ms -- still growing rather than settled")
-    print(f"  ok ({N} frames on a simulated clock, max lateness "
-          f"{max(late) * 1000:.2f}ms, never compounding)")
+    # Every send lands close to a whole number of periods after the loop's
+    # own fixed origin (approximately `start`, its first tick) -- not "the
+    # i-th frame is therefore i periods after start", which a big overshoot
+    # (a hard stall, injected 2% of the time above) stops being true for:
+    # player.py's _loop() gives up the CONTENT of a slot it truly missed
+    # (the frame number jumps ahead) rather than sending it late, the same
+    # "skip, never burst" policy clock.py's Ticker already proved out for
+    # Art-Net timecode -- one send still goes out every period, so `at`
+    # stays exactly N long, just not evenly spaced through a stall. What
+    # must never happen is the ORIGIN itself moving: a pacer that gives up
+    # a missed slot by re-anchoring to "now" loses exactly that, and every
+    # send after it lands off phase by however late that one wake was,
+    # forever. This is the bug the Fire & Ice bench found, 2026-09-25, B9:
+    # a show's pixel timing against the cue stepped once, under load, and
+    # never came back.
+    # `phase` is a send's offset from the nearest period boundary, wrapped
+    # into (-period/2, period/2] -- by construction never more than 12.5ms
+    # either way, whatever actually happened, so a bound on its own worst
+    # value cannot fail and is not a check (removed: it read "< 60ms",
+    # which no wrap into +/-12.5ms could ever breach). Likewise a plain
+    # monotonic check on `at` (also removed): `sim.t` only ever advances,
+    # so any loop that reads it honestly sends in non-decreasing order
+    # whether its pacing is right or not. What actually distinguishes a
+    # fixed origin from one that moves is the AVERAGE phase late in the
+    # run reading the same as near the start. A pacer that re-anchors to
+    # "now" on a big overshoot would show these shifted apart by roughly
+    # that overshoot, permanently -- this is the Fire & Ice bench's B9
+    # finding (2026-09-25): a show's pixel timing against the cue stepped
+    # once, under load, and never came back for the rest of the show.
+    # Windows enough (20 samples each) that one rare big overshoot landing
+    # in a window barely moves its mean; a real, permanent step would not
+    # average out.
+    phase = [(((a - start) + period / 2) % period) - period / 2 for a in at]
+    head, tail = phase[5:25], phase[-20:]
+    head_ms = sum(head) / len(head) * 1000.0
+    tail_ms = sum(tail) / len(tail) * 1000.0
+    check(abs(tail_ms - head_ms) < 5.0,
+          f"the average phase drifted from {head_ms:.2f}ms near the start "
+          f"to {tail_ms:.2f}ms near the end of the run -- the loop's "
+          f"origin moved")
+    print(f"  ok ({len(at)} of {N} frames sent, "
+          f"phase {head_ms:.2f}ms near the start vs {tail_ms:.2f}ms near "
+          f"the end)")
+
+
+def test_pixel_scheduler_recovers_after_one_late_wake():
+    section("pixel output: one very late wake never leaves the pixel "
+            "schedule stuck off its original grid, whatever size the "
+            "stall happens to be")
+    # The Fire & Ice bench's B9 finding, isolated to one deliberate event
+    # instead of leaving it to chance, and swept across several stall
+    # sizes -- including a few chosen so the stall's remainder against one
+    # 25ms period is small (49, 70, 74, 99ms are each just under a whole
+    # number of periods). That is deliberate: at those sizes the very next
+    # slot is legitimately due again within a few ms of the late one, which
+    # is the schedule being exactly back on grid, not a burst. A single
+    # short gap like that is expected and fine; more than one, or a true
+    # 0ms back-to-back pair, is not. Runs Player._loop itself, not a copy,
+    # on a clock that moves only when told to: no thread, no wall time,
+    # fully deterministic.
+    import ltcplay.player as plmod
+    STALL_AFTER = 150
+    N = 300
+    period = 0.025
+
+    def run_stall(stall_s):
+        at = []
+
+        class Sim:
+            def __init__(self):
+                self.t = 5000.0
+
+            def monotonic(self):
+                return self.t
+
+            def perf_counter(self):
+                return self.t
+
+            def sleep(self, s):
+                over = stall_s if len(at) == STALL_AFTER else 0.0
+                self.t += s + over
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        sim = Sim()
+        tl = _timeline([])
+
+        class Sender:
+            def send_frame(self, data):
+                at.append(sim.t)
+                if len(at) >= N:
+                    p._running = False
+
+            def blackout(self):
+                pass
+
+            def close(self):
+                pass
+
+        p = Player(tl, FakeNetmap(), Sender())
+        p._idle_epoch = sim.t
+        p._running = True
+        real = plmod.time
+        plmod.time = sim
+        try:
+            p._loop(25)
+        finally:
+            plmod.time = real
+        return at
+
+    for stall_ms in (20, 24, 26, 30, 49, 51, 60, 70, 74, 99):
+        at = run_stall(stall_ms / 1000.0)
+        check(len(at) == N,
+              f"stall {stall_ms}ms: expected {N} frames, got {len(at)}")
+        start = at[0]
+        phase = [(((a - start) + period / 2) % period) - period / 2
+                for a in at]
+        before = phase[100:STALL_AFTER - 5]
+        after = phase[STALL_AFTER + 10:STALL_AFTER + 60]
+        before_ms = sum(before) / len(before) * 1000.0
+        after_ms = sum(after) / len(after) * 1000.0
+        check(abs(after_ms - before_ms) < 2.0,
+              f"stall {stall_ms}ms: the pixel schedule shifted from "
+              f"{before_ms:.2f}ms to {after_ms:.2f}ms off its own grid "
+              f"and never came back -- the Fire & Ice bench's B9 finding, "
+              f"2026-09-25: a show's pixel timing against the cue "
+              f"stepped once, under load, and stayed there for the rest "
+              f"of the show")
+
+        around = [at[i + 1] - at[i]
+                  for i in range(STALL_AFTER - 3, STALL_AFTER + 20)]
+        check(min(around) > 1e-4,
+              f"stall {stall_ms}ms: two sends landed "
+              f"{min(around) * 1000:.3f}ms apart -- a true back-to-back "
+              f"burst, not a recovered schedule")
+        short = [g for g in around if g < period * 0.5]
+        check(len(short) <= 1,
+              f"stall {stall_ms}ms: {len(short)} gaps under half a period "
+              f"around the stall ({[round(g * 1000, 2) for g in short]}ms) "
+              f"-- more than the one short gap a single stall can explain")
+    print("  ok (stall sizes 20 to 99ms: schedule always recovers, no "
+          "burst, at most one short gap each)")
+
+
+def test_a_failing_send_still_advances_the_pixel_schedule():
+    section("pixel output: a sender that keeps failing is retried at the "
+            "configured rate, not as fast as the loop can spin")
+    # If a failed tick did not still move the schedule on to the next
+    # slot, `due` would stay anchored to the same, already-past slot
+    # forever: the loop would retry after only the 10ms error backoff
+    # instead of waiting for the next real slot, turning a 40/s pixel
+    # rate into roughly 100/s of pure retry noise the moment a sender
+    # misbehaves -- worse for whatever it is retrying against, and a
+    # false read of how unhealthy the output really is.
+    import ltcplay.player as plmod
+    FAIL_START, FAIL_END = 3.0, 5.0
+
+    class Sim:
+        def __init__(self):
+            self.t = 9000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            self.t += s
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    t0 = sim.t
+    tl = _timeline([])
+    attempts = []
+
+    class Sender:
+        def send_frame(self, data):
+            attempts.append(sim.t)
+            if sim.t - t0 >= 6.0:
+                p._running = False
+            if FAIL_START <= sim.t - t0 < FAIL_END:
+                raise RuntimeError("simulated send failure")
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(25)
+    finally:
+        plmod.time = real
+
+    during = [a for a in attempts if FAIL_START <= a - t0 < FAIL_END]
+    rate = len(during) / (FAIL_END - FAIL_START)
+    check(rate < 60.0,
+          f"{rate:.0f} attempts a second while every send failed for "
+          f"{FAIL_END - FAIL_START:.0f}s -- the configured pixel rate is "
+          f"40/s; a failed tick that never advances the schedule retries "
+          f"as fast as the loop can spin instead")
+    print(f"  ok ({rate:.1f} attempts/s while the sender failed, expected "
+          f"around 40/s)")
+
+
+def test_pixel_loop_sleep_is_capped():
+    section("pixel output: a wait for a far-off deadline is broken into "
+            "short sleeps, never one long one")
+    # If the sleep argument here were not capped, a long gap before the
+    # next due slot -- a huge step_ms, or simply the wait before the first
+    # cue starts -- would block the loop in one uninterruptible sleep for
+    # however long that gap is. clock.py's Ticker caps its own wait for
+    # exactly this reason (MAX_SLEEP_S, "so stop() is noticed within a
+    # twentieth second"); player.py's loop needs the same guarantee, or a
+    # Stop pressed during a long gap would wait out the whole thing.
+    import ltcplay.player as plmod
+    slept = []
+
+    class Sim:
+        def __init__(self):
+            self.t = 1000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            slept.append(s)
+            self.t += s
+            if len(slept) >= 5:
+                p._running = False
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    tl = _timeline([])
+
+    class Sender:
+        def send_frame(self, data):
+            pass
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    # A huge step: the very first slot after this one is due 1000s away,
+    # so an uncapped wait would try to sleep that whole gap in one call.
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(1000 * 1000)
+    finally:
+        plmod.time = real
+
+    check(len(slept) >= 5,
+          f"the loop never slept enough times to stop itself, got "
+          f"{len(slept)}")
+    check(max(slept) <= 0.05 + 1e-9,
+          f"one sleep call asked for {max(slept):.3f}s -- longer than the "
+          f"cap that keeps Stop from waiting out a distant deadline")
+    print(f"  ok ({len(slept)} sleeps, longest {max(slept) * 1000:.1f}ms, "
+          f"capped)")
+
+
+def test_pixel_loop_matches_the_old_one_when_healthy():
+    section("pixel output: the new pacing sends at the same times, with "
+            "the same content, as the loop it replaces, whenever nothing "
+            "goes wrong")
+    # A differential proof, not just a bound on one run: the OLD loop
+    # (kept below, frozen, exactly as it read on main before this PR --
+    # see ltcplay/player.py's history for the real, current copy, this is
+    # a fixed reference and is never meant to change) and the NEW one
+    # (Player._loop) are driven through the identical injected clock, the
+    # identical show, and the identical schedule of LTC frames, overrides
+    # and sender misbehaviour, and every single send must land at the
+    # same simulated time with the same content. Adapted from the
+    # review's own differential harness (scratchpad/pixelstep_diff.py).
+    import heapq
+    import textwrap
+    import ltcplay.player as plmod
+
+    OLD_SRC = textwrap.dedent("""\
+        def _loop(self, step_ms):
+            period = step_ms / 1000.0
+            next_at = _now()
+            while self._running:
+                try:
+                    frame = self._tick()
+                    self.sender.send_frame(frame if frame is not None else b"")
+                    self.frames_sent += 1
+                    self._service_trigger()
+                except Exception as e:
+                    self.loop_errors += 1
+                    self.last_loop_error = f"{type(e).__name__}: {e}"
+                    if self.log:
+                        try:
+                            self.log.event("loop-error", self.last_loop_error)
+                        except Exception:
+                            pass
+                    time.sleep(0.01)
+                next_at += period
+                sleep = next_at - _now()
+                if sleep > 0:
+                    time.sleep(sleep)
+                else:
+                    next_at = _now()
+        """)
+    ns = {}
+    exec(compile(OLD_SRC, "<pre-PR#19 _loop, frozen reference>", "exec"),
+        plmod.__dict__, ns)
+    OLD_LOOP = ns["_loop"]
+    NEW_LOOP = Player._loop
+
+    class Sim:
+        """time.* stand-in whose sleep() runs any scheduled events (LTC
+        frames, operator actions) due before it returns, so they land
+        exactly where a real concurrent thread would put them."""
+
+        def __init__(self):
+            self.t = 3_000_000.0
+            self.events = []
+            self.seq = 0
+
+        def at(self, when, fn):
+            self.seq += 1
+            heapq.heappush(self.events, (when, self.seq, fn))
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def _run_until(self, target):
+            while self.events and self.events[0][0] <= target:
+                when, _, fn = heapq.heappop(self.events)
+                if when > self.t:
+                    self.t = when
+                fn()
+            if target > self.t:
+                self.t = target
+
+        def sleep(self, s):
+            self._run_until(self.t + s)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    class Recorder:
+        def __init__(self, sim, box, t_end, raise_every=0):
+            self.sim, self.box, self.t_end = sim, box, t_end
+            self.rows = []
+            self.raise_every = raise_every
+            self.n = 0
+
+        def send_frame(self, data):
+            self.n += 1
+            p = self.box[0]
+            if self.raise_every and self.n % self.raise_every == 0:
+                raise RuntimeError("simulated send failure")
+            self.rows.append((self.sim.t, bytes(data), p.current_frame,
+                             p.current_cue.name if p.current_cue else None,
+                             p.source, p.state))
+            if self.sim.t >= self.t_end:
+                p._running = False
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    def feed_ltc(sim, box, start_t, tc0, seconds, fps=30.0, ppm=0.0,
+                jitter=0.0, seed=1):
+        rnd = random.Random(seed)
+        n = int(seconds * fps)
+        for k in range(n):
+            gen_t = k / fps
+            wall = start_t + gen_t * (1 + ppm * 1e-6)
+            tc = tc0 + gen_t
+            cap = wall + (rnd.uniform(-jitter, jitter) if jitter else 0.0)
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+
+    def run(loop, scenario, step_ms=25, t_end=44.9873, raise_every=0):
+        sim = Sim()
+        real = plmod.time
+        plmod.time = sim
+        try:
+            box = [None]
+            rec = Recorder(sim, box, sim.t + t_end, raise_every=raise_every)
+            p = scenario(sim, rec, box)
+            box[0] = p
+            p._idle_epoch = sim.t - 0.0004
+            p._running = True
+            loop(p, step_ms)
+        finally:
+            plmod.time = real
+        return rec, p
+
+    def base_show(sim, rec, box, **kw):
+        A = FakeFSEQ(frames=800, step=25)     # 20s
+        B = FakeFSEQ(frames=600, step=25)     # 15s
+        idle = FakeFSEQ(frames=40, step=25)
+        tl = _timeline([("01:00:05:00", "A", A), ("01:00:30:00", "B", B)],
+                      idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), rec, freewheel_ms=250, hold_ms=2000,
+                  **kw)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        return p
+
+    def s_healthy(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:00:00", 30)
+        feed_ltc(sim, box, sim.t + 2.0137, tc0, 45.0, ppm=40.0, jitter=0.0003)
+        return p
+
+    def s_park_resume(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        rnd = random.Random(2)
+        n = int(50.0 * 30.0)
+        parked_tc = None
+        for k in range(n):
+            gen_t = k / 30.0
+            wall = sim.t + 1.0137 + gen_t
+            if 10.0 <= gen_t < 16.0:
+                if parked_tc is None:
+                    parked_tc = tc0 + gen_t
+                tc = parked_tc
+            else:
+                tc = tc0 + gen_t
+            cap = wall
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+        return p
+
+    def s_overrides(sim, rec, box):
+        p = base_show(sim, rec, box, on_end="hold")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        feed_ltc(sim, box, sim.t + 1.0137, tc0, 20.0)
+        t = sim.t
+        sim.at(t + 5.0071, lambda: setattr(box[0], "override", "blackout"))
+        sim.at(t + 7.0071, lambda: setattr(box[0], "override", "preshow"))
+        sim.at(t + 9.0071, lambda: setattr(box[0], "override", None))
+        sim.at(t + 15.0071, lambda: box[0].go(tcmod.parse_tc("01:00:28:00", 30)))
+        sim.at(t + 20.0071, lambda: box[0].nudge(-3.3))
+        sim.at(t + 25.0071, lambda: box[0].release())
+        return p
+
+    ok = True
+    for name, scen, kw in [
+        ("healthy LTC with generator drift", s_healthy, {}),
+        ("hard park then resume", s_park_resume, {}),
+        ("blackout/preshow/GO/nudge/release", s_overrides, {}),
+        ("send raises every 7th", s_healthy, {"raise_every": 7}),
+        ("step 33ms (30fps)", s_healthy, {"step_ms": 33}),
+        ("step 100ms (10fps)", s_healthy, {"step_ms": 100}),
+    ]:
+        old_rec, old_p = run(OLD_LOOP, scen, **kw)
+        new_rec, new_p = run(NEW_LOOP, scen, **kw)
+        ra, rb = old_rec.rows, new_rec.rows
+        same_len = len(ra) == len(rb)
+        # Old paces by repeated addition (next_at += period, ~1800 times
+        # over a run), new by one multiplication (t0 + n * period): not
+        # bit-identical arithmetic, so a few ULPs of float noise on the
+        # send time is expected and not a real difference. Everything
+        # else in the row (content, cue, source, state) must still match
+        # exactly.
+        diffs = [(i, x, y) for i, (x, y) in enumerate(zip(ra, rb))
+                 if abs(x[0] - y[0]) > 1e-6 or x[1:] != y[1:]]
+        good = same_len and not diffs
+        ok &= good
+        check(good,
+              f"{name}: old sent {len(ra)}, new sent {len(rb)}, "
+              f"{len(diffs)} differ" +
+              (f"; first at {diffs[0]}" if diffs else ""))
+        check(old_p.loop_errors == new_p.loop_errors,
+              f"{name}: old loop_errors={old_p.loop_errors} new="
+              f"{new_p.loop_errors}")
+    print(f"  ok ({6 if ok else 'not all'} scenarios matching the "
+          f"pre-PR#19 loop's sends)")
 
 
 def test_windows_pixel_clock_choice():
@@ -15377,6 +15867,10 @@ if __name__ == "__main__":
     test_loop_never_dies()
     test_pixel_output_frame_jitter()
     test_pixel_pacing_never_accumulates_error()
+    test_pixel_scheduler_recovers_after_one_late_wake()
+    test_a_failing_send_still_advances_the_pixel_schedule()
+    test_pixel_loop_sleep_is_capped()
+    test_pixel_loop_matches_the_old_one_when_healthy()
     test_windows_pixel_clock_choice()
     test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()

@@ -930,15 +930,12 @@ MUTATIONS = [
   "    return time.monotonic()"),
 
  ("the pixel output thread's pacing accumulates sleep error", "ltcplay/player.py",
-  "            next_at += period\n"
-  "            sleep = next_at - _now()\n"
-  "            if sleep > 0:\n"
-  "                time.sleep(sleep)\n"
-  "            else:\n"
-  "                # Fell behind: give up the missed slots rather than sprinting to\n"
-  "                # catch up, which would burst packets at the controllers.\n"
-  "                next_at = _now()",
-  "            next_at += period\n"
+  "            due = t0 + n_next * period\n"
+  "            now = _now()\n"
+  "            if now < due:\n"
+  "                time.sleep(min(due - now, 0.05))\n"
+  "                continue",
+  "            now = _now()\n"
   "            time.sleep(period)"),
 
  ("the run loop's heartbeat reads the other clock", "ltcplay/cli.py",
@@ -1572,6 +1569,40 @@ MUTATIONS = [
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
+
+ # Pixel output pacing, Fire & Ice bench B9, 2026-09-25: a show's pixel
+ # timing against the cue stepped once, under load, and never came back.
+ # The fix (this file, Player._loop()) is clock.py's Ticker's own
+ # technique -- every deadline computed fresh from one origin read once,
+ # never from a running total or from when the last frame actually went
+ # out -- so these two mutations put back the two ways that can regress.
+ ("the pixel loop's origin moves every frame instead of staying fixed",
+  'ltcplay/player.py',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1\n'
+  '            t0 = now'),
+
+ ("a stalled pixel loop never catches up to the frame that is actually "
+  "due", 'ltcplay/player.py',
+  '            n = max(int((now - t0) / period + 1e-9), n_next)',
+  '            n = n_next'),
+
+ # Opus review of PR #19, two survivors it found with its own repro
+ # scripts (scratchpad/pixelstep_failtick.py, pixelstep's sleep-cap
+ # check): a failed tick has to move the schedule on regardless, or the
+ # loop retries the same already-past slot forever; and the wait for a
+ # far-off deadline has to stay capped, or Stop would wait out the whole
+ # gap.
+ ("a failed pixel tick no longer advances the schedule", 'ltcplay/player.py',
+  '                time.sleep(0.01)\n            n_next = n + 1',
+  '                time.sleep(0.01)\n                continue\n            n_next = n + 1'),
+
+ ("the pixel loop's wait for a far-off deadline is no longer capped",
+  'ltcplay/player.py',
+  '                time.sleep(min(due - now, 0.05))',
+  '                time.sleep(due - now)'),
 
 ]
 

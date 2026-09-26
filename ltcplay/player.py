@@ -963,9 +963,49 @@ class Player:
             self._event("trigger", self.last_error)
 
     def _loop(self, step_ms):
+        # Paced the same way clock.py's Ticker paces Art-Net timecode: every
+        # deadline computed fresh from one fixed origin (`t0`, read once,
+        # never touched again), never from a running total and never from
+        # when the last frame actually went out. That distinction is not
+        # cosmetic. The previous shape kept a moving `next_at` and, on
+        # falling behind, gave up by setting `next_at = _now()` -- which
+        # sounds like the same "skip, don't burst" policy, but it throws
+        # away the ONLY thing that made the old deadlines meaningful: their
+        # distance from where the loop started. Every deadline after that
+        # is now measured from wherever "now" happened to land, not from
+        # the original schedule, so one overrun permanently shifts every
+        # frame after it, forever, by however late that one wake was. Found
+        # on the Fire & Ice bench, 2026-09-25, B9: one show's pixel timing
+        # against the cue stepped by 23.5ms during a CPU-loaded stretch and
+        # never came back for the rest of the show. Computing `n` fresh
+        # from `t0` every time, the way below does, cannot drift: a late
+        # wake still only ever skips the slots it actually missed, and
+        # every slot after it is exactly where it always was.
+        #
+        # What this does NOT fix, and is not trying to: that same bench
+        # window also had, in the minutes before the step, occasional
+        # single frames repeated then skipped -- a send landing just
+        # before a 25ms content-frame boundary reads that frame, and the
+        # next send, arriving a normal period later, reads the one after
+        # it, one frame later than the arithmetic "should" give (measured
+        # directly, scratchpad/pixelstep_b9.py: 1738 such pairs before the
+        # bench's stall, 1862 after it, on this fix). That is the pixel
+        # send schedule and the content's own 25ms frame grid sitting at a
+        # phase that does not line up -- unrelated to the origin drifting,
+        # and not solved by fixing the origin. Aligning the two grids
+        # would be a real change and belongs in its own PR, not this one.
         period = step_ms / 1000.0
-        next_at = _now()
+        t0 = _now()
+        n_next = 0
         while self._running:
+            due = t0 + n_next * period
+            now = _now()
+            if now < due:
+                time.sleep(min(due - now, 0.05))
+                continue
+            # Never below the slot that was due: see clock.py's frame_at()
+            # for why the epsilon matters at a large clock reading.
+            n = max(int((now - t0) / period + 1e-9), n_next)
             try:
                 frame = self._tick()
                 self.sender.send_frame(frame if frame is not None else b"")
@@ -988,14 +1028,7 @@ class Player:
                     except Exception:
                         pass
                 time.sleep(0.01)
-            next_at += period
-            sleep = next_at - _now()
-            if sleep > 0:
-                time.sleep(sleep)
-            else:
-                # Fell behind: give up the missed slots rather than sprinting to
-                # catch up, which would burst packets at the controllers.
-                next_at = _now()
+            n_next = n + 1
 
     def _supervise(self):
         """Restart the output thread if it ever stops.
