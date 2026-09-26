@@ -2787,6 +2787,38 @@ def test_saved_input_setting():
     print("  ok")
 
 
+def test_settings_files_accept_a_utf8_bom():
+    section("the input and prefs files read the same with a UTF-8 BOM")
+    # ltcplay_input.json and ltcplay_prefs.json are both meant to be
+    # hand-editable, so a Windows operator opening one in Notepad and saving
+    # it must not turn a working setup into "an input error at 6pm".
+    import json
+    import tempfile
+    from ltcplay import settings as st
+
+    d = tempfile.mkdtemp()
+    real_path, real_prefs_path = st.path, st.prefs_path
+    st.path = lambda: os.path.join(d, st.FILENAME)
+    st.prefs_path = lambda: os.path.join(d, st.PREFS_FILE)
+    try:
+        with open(st.path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"device": "Dante USB I/O Module", "channel": 2}, fh)
+        check(open(st.path(), "rb").read(3) == b"\xef\xbb\xbf",
+              "the test file does not actually have a BOM")
+        got = st.load()
+        check(got.get("device") == "Dante USB I/O Module"
+              and got.get("channel") == 2,
+              f"a BOM input file should load like any other: {got}")
+
+        with open(st.prefs_path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"auto_reload": True}, fh)
+        check(st.load_prefs()["auto_reload"] is True,
+              "a BOM prefs file should load like any other")
+    finally:
+        st.path, st.prefs_path = real_path, real_prefs_path
+    print("  ok")
+
+
 def test_input_precedence():
     section("which input wins, and saying which")
     from ltcplay import settings as st
@@ -4696,6 +4728,60 @@ def test_the_bundle_stands_on_its_own():
     print("  ok")
 
 
+def test_cli_show_commands_accept_a_utf8_bom():
+    section("showdir, retime and bundle all read a BOM show file")
+    import json, subprocess, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    sd = real_show_dir()
+    work = tempfile.mkdtemp()
+    render = copy_render(os.path.join(sd, "GPL 2026_Set 1_Opener.fseq"), work)
+    open(os.path.join(work, "xlights_networks.xml"), "w").write("<Networks/>")
+    tlp = os.path.join(work, "bom_timeline.json")
+    doc = {"name": "BOM Show", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00",
+                    "fseq": os.path.basename(render), "name": "Opener"}]}
+    with open(tlp, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(tlp, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "showdir", tlp],
+                       capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr
+          and work in r.stdout,
+          f"showdir must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "retime", tlp,
+                        "--start", "02:00:00:00"],
+                       capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr,
+          f"retime must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+    check(json.load(open(tlp))["cues"][0]["tc"] == "02:00:00:00",
+          "retime should have rewritten the cue it just read")
+
+    out = os.path.join(tempfile.mkdtemp(), "bundle")
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "bundle",
+                        tlp, out], capture_output=True, text=True, cwd=here)
+    check(r.returncode == 0 and "Traceback" not in r.stdout + r.stderr,
+          f"bundle must read a BOM show file cleanly:\n{r.stdout}{r.stderr}")
+    bundled = json.load(open(os.path.join(out, "bom_timeline.json")))
+    check(bundled["show_dir"] == "show",
+          "the bundled copy of a BOM show file should be rewritten normally")
+
+    # A file that is not UTF-8 at all must still fail as a plain sentence,
+    # not a stack trace, wherever main() catches it.
+    utf16 = os.path.join(work, "utf16_timeline.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "showdir", utf16],
+                       capture_output=True, text=True, cwd=here)
+    out = r.stdout + r.stderr
+    check(r.returncode != 0 and "Traceback" not in out
+          and out.strip().startswith("error:"),
+          f"a non-UTF-8 show file must refuse with a sentence, not a "
+          f"stack trace:\n{out}")
+    print("  ok")
+
+
 def test_the_credit_travels_with_it():
     section("whose tool this is")
     from ltcplay import brand as brand_mod
@@ -4753,6 +4839,31 @@ def test_the_credit_travels_with_it():
     page = open(os.path.join(here, "ltcplay", "web", "index.html")).read()
     check("/api/brand" in page and "creditcontact" in page,
           "the page never asks for the credit")
+    print("  ok")
+
+
+def test_brand_file_accepts_a_utf8_bom():
+    section("ltcplay_brand.json reads the same with a UTF-8 BOM")
+    # "Read from ltcplay_brand.json beside the launcher... so it can be
+    # changed without touching code" (brand.py's own docstring) -- that is
+    # exactly the file a Windows operator hand-edits in Notepad.
+    import json
+    import tempfile
+    from ltcplay import brand as brand_mod
+
+    work = tempfile.mkdtemp()
+    real = brand_mod.path
+    brand_mod.path = lambda: os.path.join(work, brand_mod.FILENAME)
+    try:
+        with open(brand_mod.path(), "w", encoding="utf-8-sig") as fh:
+            json.dump({"phone": "+1 555 010 1234", "url": "example.com"}, fh)
+        check(open(brand_mod.path(), "rb").read(3) == b"\xef\xbb\xbf",
+              "the test file does not actually have a BOM")
+        b = brand_mod.load()
+        check(b["phone"] == "+1 555 010 1234" and b["url"] == "example.com",
+              f"a BOM brand file was not read: {b}")
+    finally:
+        brand_mod.path = real
     print("  ok")
 
 
@@ -6621,6 +6732,58 @@ def test_a_misspelled_setting_is_refused():
     print("  ok")
 
 
+def test_timeline_load_accepts_a_utf8_bom():
+    section("a show file saved with a UTF-8 BOM reads the same as one without")
+    # Windows Notepad and PowerShell both write a UTF-8 BOM by default. The
+    # JSON itself is perfectly fine; only the first three bytes are not what
+    # a plain "utf-8" open() expects, and that used to be reported as
+    # "Unexpected UTF-8 BOM", a sentence that names a byte, not the problem.
+    import tempfile
+    work = tempfile.mkdtemp()
+    open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+    doc = {"name": "GPL", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq", "name": "Opener"}]}
+
+    plain = os.path.join(work, "plain.json")
+    json.dump(doc, open(plain, "w"))
+    bom = os.path.join(work, "bom.json")
+    with open(bom, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(bom, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    tl_plain = timeline.Timeline.load(plain)
+    tl_bom = timeline.Timeline.load(bom)
+    check(tl_bom.name == tl_plain.name and tl_bom.fps == tl_plain.fps
+          and [c.path for c in tl_bom.cues] == [c.path for c in tl_plain.cues],
+          "a show file with a BOM should load exactly like one without")
+
+    # A Notepad "Unicode" save is actually UTF-16, not UTF-8-with-a-BOM. It
+    # must be refused with a plain sentence, not crash.
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    try:
+        timeline.Timeline.load(utf16)
+        check(False, "a UTF-16 show file was accepted")
+    except ValueError as e:
+        check(bool(str(e)), f"a UTF-16 show file must refuse with a "
+                            f"sentence, not silently: {e!r}")
+
+    # Three bytes that happen to match the BOM, but sitting in the middle of
+    # the file rather than leading it, are not a BOM: they are a corrupt
+    # file, and must fail as an ordinary bad-JSON refusal.
+    mid = os.path.join(work, "mid_bom.json")
+    raw = json.dumps(doc).encode("utf-8")
+    open(mid, "wb").write(raw[:1] + b"\xef\xbb\xbf" + raw[1:])
+    try:
+        timeline.Timeline.load(mid)
+        check(False, "a file with a stray BOM in the middle was accepted")
+    except ValueError as e:
+        check(bool(str(e)), f"a corrupt file must refuse with a sentence: "
+                            f"{e!r}")
+    print("  ok")
+
+
 def test_one_sequence_at_two_timecodes():
     section("the same sequence closing both sets")
     # Jeff, 2026-09-13: the ending is the same programming in Set 1 and Set 2.
@@ -6892,6 +7055,40 @@ def test_pointing_a_show_at_a_different_folder():
           page.split("loadTimelines(andFolder)")[1],
           "the picker must be filled in at the end of loadTimelines, or it "
           "draws before a show file is selected")
+
+
+def test_web_show_reads_accept_a_utf8_bom():
+    section("the web page's own show-file reads tolerate a UTF-8 BOM")
+    import json
+    import tempfile
+    from ltcplay import web as web_mod
+
+    work = tempfile.mkdtemp()
+    open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+    open(os.path.join(work, "xlights_networks.xml"), "w").write("<Networks/>")
+    show = os.path.join(work, "gpl_timeline.json")
+    doc = {"name": "GPL", "fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq", "name": "A"}]}
+    with open(show, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(show, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    # The sniffer used to decide whether an unparsable file is still worth
+    # listing as "a show with a problem".
+    check(web_mod._looks_like_a_show(show),
+          "a BOM show file should still be recognised as a show")
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    check(not web_mod._looks_like_a_show(utf16),
+          "a file that is not UTF-8 at all must not crash the sniffer")
+
+    # show_folder() reads the file directly to report or change show_dir.
+    c = web_mod.Control(work, sd=object())
+    j = c.show_folder("gpl_timeline.json")
+    check(j["folder"] == work and j["ok"],
+          f"reading a BOM show file's folder should just work: {j}")
+    print("  ok")
 
 
 
@@ -15165,6 +15362,41 @@ def test_tctest_refusals():
     print("  ok")
 
 
+def test_tctest_show_file_accepts_a_utf8_bom():
+    section("tctest: --show reads a BOM show file's clock block")
+    import json
+    import tempfile
+    from ltcplay import tctest as TT
+
+    work = tempfile.mkdtemp()
+    doc = {"fps": 30, "show_dir": work,
+          "cues": [{"tc": "01:00:00:00", "fseq": "A.fseq"}],
+          "clock": {"source": "artnet_master",
+                    "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                        "BEYOND": "127.0.0.2"}}}}
+    plain = os.path.join(work, "plain.json")
+    json.dump(doc, open(plain, "w"))
+    bom = os.path.join(work, "bom.json")
+    with open(bom, "w", encoding="utf-8-sig") as fh:
+        json.dump(doc, fh)
+    check(open(bom, "rb").read(3) == b"\xef\xbb\xbf",
+          "the test file does not actually have a BOM")
+
+    check(TT.load_show_nodes(bom) == TT.load_show_nodes(plain),
+          "a BOM show file should name the same Art-Net nodes as one "
+          "without")
+
+    utf16 = os.path.join(work, "utf16.json")
+    open(utf16, "wb").write(json.dumps(doc).encode("utf-16"))
+    try:
+        TT.load_show_nodes(utf16)
+        check(False, "a UTF-16 show file was accepted by --show")
+    except TT.TcTestError as e:
+        check(bool(str(e)), f"a UTF-16 show file must refuse with a "
+                            f"sentence, not silently: {e!r}")
+    print("  ok")
+
+
 def test_tctest_beyond_warning():
     section("tctest: every run warns, and laser-named nodes get more")
     import io
@@ -15395,6 +15627,7 @@ if __name__ == "__main__":
     test_real_hardware_is_picked_out_of_the_noise()
     test_only_plausible_inputs_are_scanned()
     test_saved_input_setting()
+    test_settings_files_accept_a_utf8_bom()
     test_input_precedence()
     test_show_dir_survives_the_wrong_machine()
     test_web_ui()
@@ -15413,7 +15646,9 @@ if __name__ == "__main__":
     test_the_readout_tells_the_truth_in_a_free_run()
     test_go_runs_without_the_feed()
     test_the_bundle_stands_on_its_own()
+    test_cli_show_commands_accept_a_utf8_bom()
     test_the_credit_travels_with_it()
+    test_brand_file_accepts_a_utf8_bom()
     test_a_dead_controller_stops_being_hammered()
     test_broadcast_destinations_are_called_out()
     test_a_controller_ping_means_what_it_says()
@@ -15433,12 +15668,14 @@ if __name__ == "__main__":
     test_a_cue_that_will_not_open_stops_the_show()
     test_preshow_can_be_held_by_hand()
     test_a_misspelled_setting_is_refused()
+    test_timeline_load_accepts_a_utf8_bom()
     test_one_sequence_at_two_timecodes()
     test_at_command_on_the_real_show()
     test_track_numbers_are_not_identity()
     test_sequences_declare_what_they_are()
     test_verify_catches_a_mislabelled_sequence()
     test_pointing_a_show_at_a_different_folder()
+    test_web_show_reads_accept_a_utf8_bom()
     test_trigger_mode_mutes_the_advateks_and_nothing_else()
     test_a_muted_controller_is_not_reported_as_a_fault()
     test_a_cue_fires_its_scene_once_and_only_once()
@@ -15533,6 +15770,7 @@ if __name__ == "__main__":
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()
     test_tctest_refusals()
+    test_tctest_show_file_accepts_a_utf8_bom()
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()

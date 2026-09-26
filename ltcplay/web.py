@@ -53,7 +53,7 @@ def _looks_like_a_show(path):
     """A JSON file with a 'cues' list is a show; anything else is not ours
     to offer as one."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except Exception:
         return False
@@ -291,7 +291,7 @@ class Control:
         path = os.path.join(self.folder, os.path.basename(timeline or ""))
         if not os.path.exists(path):
             raise SessionError(f"No such show file: {timeline}")
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
         if folder is None:
             # Resolve it the way the LOADER does. A bundle deliberately stores

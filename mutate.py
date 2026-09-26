@@ -1573,6 +1573,36 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ # A show file, or another JSON file a person hand-edits, saved by Windows
+ # Notepad or PowerShell carries a UTF-8 BOM. "utf-8-sig" strips it if it is
+ # there and does nothing if it is not; plain "utf-8" instead reports
+ # "Unexpected UTF-8 BOM" and refuses a perfectly good show file. One
+ # mutation per loader that was changed to accept one.
+ ("a show file with a BOM is refused again", "ltcplay/timeline.py",
+  'with open(path, encoding="utf-8-sig") as fh:',
+  'with open(path, encoding="utf-8") as fh:'),
+
+ ("the page's show-folder read refuses a BOM show file again",
+  "ltcplay/web.py",
+  'with open(path, encoding="utf-8-sig") as fh:\n            doc = json.load(fh)\n        if folder is None:',
+  'with open(path, encoding="utf-8") as fh:\n            doc = json.load(fh)\n        if folder is None:'),
+
+ ("tctest --show refuses a BOM show file again", "ltcplay/tctest.py",
+  'with open(show_path, encoding="utf-8-sig") as fh:',
+  'with open(show_path, encoding="utf-8") as fh:'),
+
+ ("showdir refuses a BOM show file again", "ltcplay/cli.py",
+  'with open(tl_path, encoding="utf-8-sig") as fh:',
+  'with open(tl_path, encoding="utf-8") as fh:'),
+
+ ("a BOM input settings file is refused again", "ltcplay/settings.py",
+  'with open(p, encoding="utf-8-sig") as fh:',
+  'with open(p, encoding="utf-8") as fh:'),
+
+ ("a BOM brand file is refused again", "ltcplay/brand.py",
+  'with open(path(), encoding="utf-8-sig") as fh:',
+  'with open(path(), encoding="utf-8") as fh:'),
+
 ]
 
 
