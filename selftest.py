@@ -14150,9 +14150,10 @@ def test_journal_incident_bundle():
         check(ml and all(ml), "the machine log, every line whole")
         cfg = json.load(open(os.path.join(folder, "config.json"),
                              encoding="utf-8"))
-        check(cfg["rule"]["show_len_s"] == 440 and cfg["operators"] ==
-              ["Andy", "Jeff"] and cfg["tonight"]["date"] == "2026-11-14"
-              and "show_len_s" in (cfg["schedule_file_text"] or ""),
+        check((cfg.get("rule") or {}).get("show_len_s") == 440
+              and cfg.get("operators") == ["Andy", "Jeff"]
+              and (cfg.get("tonight") or {}).get("date") == "2026-11-14"
+              and "show_len_s" in (cfg.get("schedule_file_text") or ""),
               "the config in force: the rule, its file, the operators, "
               "tonight's list")
         ver = json.load(open(os.path.join(folder, "version.json"),
