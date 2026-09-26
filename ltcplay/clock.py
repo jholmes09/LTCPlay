@@ -1425,4 +1425,8 @@ def derive_show_length_in_folder(folder, sd=None):
 
 
 def _clean_e(e):
-    return str(e).replace("—", "-").replace("–", "-")
+    # Unicode escapes, not literal characters: this file's own source is
+    # scanned for a bare em or en dash (test_clock_settings_fail_loudly),
+    # and this is the one place clock.py has to name them in order to
+    # strip them from someone else's exception text.
+    return str(e).replace("\u2014", "-").replace("\u2013", "-")

@@ -272,17 +272,33 @@ def interlock_refusal(state):
 
 
 # ------------------------------------------------------------------ wav I/O
+# The 12 bytes every standard WAVE_FORMAT_EXTENSIBLE SubFormat GUID shares;
+# only the leading 4 bytes (little-endian) vary, and match the classic
+# format tag (1 PCM, 3 IEEE float, ...). KSDATAFORMAT_SUBTYPE_* in the
+# Windows SDK; review round 2, 2026-09-26 (should-fix 5): many DAWs,
+# Audacity among them, write 32-bit float this way.
+_EXTENSIBLE_SUBFORMAT_TAIL = bytes.fromhex("00001000800000aa00389b71")
+
+
 def _wav_format_tag(path):
     """The format tag from the WAV's own fmt chunk: 1 is PCM, 3 is IEEE
-    float, 0xFFFE is extensible with a further sub-format. Python's `wave`
-    module always assumes PCM and never looks at this, so a 32-bit float
-    file opens exactly like a 32-bit int one, and its sample bytes would be
-    reinterpreted as integers unless this module reads the tag itself and
-    decodes float samples as float (review: audit13_probe_weaker_than_open.py,
-    part b; recordings are WAV, possibly 24-bit or 32-bit float, Jeff,
-    2026-09-26). Returns None if it cannot be read, which is treated as PCM,
-    the safer reading of a file the standard library reader already
-    accepted."""
+    float. Python's `wave` module always assumes PCM and never looks at
+    this, so a 32-bit float file opens exactly like a 32-bit int one, and
+    its sample bytes would be reinterpreted as integers unless this module
+    reads the tag itself and decodes float samples as float (review:
+    audit13_probe_weaker_than_open.py, part b; recordings are WAV, possibly
+    24-bit or 32-bit float, Jeff, 2026-09-26).
+
+    WAVE_FORMAT_EXTENSIBLE (0xFFFE) is resolved to the classic tag hiding
+    in its own SubFormat GUID, so an extensible-wrapped float or PCM file
+    is treated exactly like a plain one; an extensible file wrapping
+    anything else this module does not recognize still comes back as
+    0xFFFE, which _wav_info refuses with a plain "WAV format N" sentence,
+    never `wave`'s own raw GUID text (review round 2, 2026-09-26,
+    should-fix 5: audit15_wav_edgecases.py).
+
+    Returns None if it cannot be read, which is treated as PCM, the safer
+    reading of a file the standard library reader already accepted."""
     try:
         with open(path, "rb") as fh:
             riff = fh.read(12)
@@ -295,9 +311,15 @@ def _wav_format_tag(path):
                 chunk_id = header[:4]
                 size = int.from_bytes(header[4:8], "little")
                 if chunk_id == b"fmt ":
-                    body = fh.read(2)
-                    return (int.from_bytes(body, "little")
-                            if len(body) == 2 else None)
+                    body = fh.read(size)
+                    if len(body) < 2:
+                        return None
+                    tag = int.from_bytes(body[:2], "little")
+                    if tag == 0xFFFE and len(body) >= 40:
+                        guid = body[24:40]
+                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:
+                            return int.from_bytes(guid[:4], "little")
+                    return tag
                 fh.seek(size + (size & 1), 1)
     except OSError:
         return None
@@ -355,6 +377,50 @@ def _read_float_wav(path, decode):
     return channels, rate, bits, data, data_size
 
 
+def _data_chunk_size_problem(path, size_on_disk):
+    """None if the WAV's own "data" chunk declares a plausible size: not
+    0, not the streaming placeholder 0xFFFFFFFF, and not more bytes than
+    are actually left in the file. Otherwise a plain sentence.
+
+    Checked once, by hand, ahead of BOTH the PCM path (Python's `wave`
+    module trusts the declared size exactly the same way) and the float
+    path (_read_float_wav), so the two can never disagree on this, and a
+    file that looks cut off or was still being written when it was read
+    is refused loudly instead of quietly serving silence (a declared size
+    of 0, with real audio actually sitting right after it) or a length
+    that overstates what is really playable (declared size bigger than
+    the bytes on disk) (review round 2, 2026-09-26, should-fix 6:
+    audit15_wav_floatparser.py / audit15_wav_edgecases.py)."""
+    try:
+        with open(path, "rb") as fh:
+            riff = fh.read(12)
+            if len(riff) < 12 or riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+                return None      # let the normal reader say what is wrong
+            while True:
+                header = fh.read(8)
+                if len(header) < 8:
+                    return None
+                chunk_id = header[:4]
+                size = int.from_bytes(header[4:8], "little")
+                if chunk_id == b"data":
+                    remaining = size_on_disk - fh.tell()
+                    if size == 0 or size == 0xFFFFFFFF:
+                        return (f"{_clean(path)}'s data chunk declares a "
+                               f"placeholder size ({size}); the file "
+                               f"looks cut off, or was still being "
+                               f"written when it was read.")
+                    if size > remaining:
+                        return (f"{_clean(path)}'s data chunk declares "
+                               f"{size} bytes, but only {remaining} are "
+                               f"actually in the file; it looks cut off, "
+                               f"or was still being written when it was "
+                               f"read.")
+                    return None
+                fh.seek(size + (size & 1), 1)
+    except OSError:
+        return None
+
+
 def _wav_info(path, decode=True):
     """Open, validate, and (when `decode`) fully read a WAV file:
     (pcm_or_None, channels, rate, length_s). Raises ValueError with a plain
@@ -365,7 +431,15 @@ def _wav_info(path, decode=True):
     Accepted: 16-bit, 24-bit and 32-bit PCM (integer), mono or stereo, any
     common sample rate, plus 32-bit IEEE float (Jeff, 2026-09-26: recordings
     are WAV, possibly 24-bit; float is accepted too since a field recorder
-    or a DAW may hand one over). Nothing else.
+    or a DAW may hand one over), plain or wrapped in WAVE_FORMAT_EXTENSIBLE
+    (review round 2, 2026-09-26, should-fix 5: many DAWs, Audacity among
+    them, write 32-bit float that way). Nothing else.
+
+    A data chunk that declares an impossible size -- 0, the streaming
+    placeholder 0xFFFFFFFF, or more bytes than are actually left in the
+    file -- is refused outright, for both paths, rather than read as a
+    healthy but truncated or silent file (review round 2, 2026-09-26,
+    should-fix 6: audit15_wav_floatparser.py / audit15_wav_edgecases.py).
 
     The format tag is checked BEFORE Python's own `wave` module ever opens
     the file, and a float file is never handed to `wave` at all (see
@@ -388,10 +462,13 @@ def _wav_info(path, decode=True):
                          f"announcement.")
     tag = _wav_format_tag(path)
     is_float = tag == 3
-    if tag is not None and tag not in (1, 3, 0xFFFE):
+    if tag is not None and tag not in (1, 3):
         raise ValueError(f"{_clean(path)} is WAV format {tag}, which is "
                          f"not supported. Export 16-bit, 24-bit or 32-bit "
                          f"PCM, or 32-bit float, instead.")
+    problem = _data_chunk_size_problem(path, size)
+    if problem:
+        raise ValueError(problem)
     if is_float:
         try:
             channels, rate, bits, raw, data_size = _read_float_wav(path,

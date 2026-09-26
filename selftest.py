@@ -11359,6 +11359,135 @@ def _pack_float32(values):
     return array.array("f", values).tobytes()
 
 
+def _chunk(cid, body):
+    import struct
+    out = cid + struct.pack("<I", len(body)) + body
+    if len(body) % 2:
+        out += b"\x00"
+    return out
+
+
+def _riff(body):
+    import struct
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+
+
+def _fmt_extensible(channels, rate, bits, subformat_guid):
+    import struct
+    block_align = channels * (bits // 8)
+    byte_rate = rate * block_align
+    body = struct.pack("<HHIIHH", 0xFFFE, channels, rate, byte_rate,
+                       block_align, bits)
+    body += struct.pack("<H", 22)          # cbSize
+    body += struct.pack("<H", bits)        # wValidBitsPerSample
+    body += struct.pack("<I", 0)           # dwChannelMask
+    body += subformat_guid
+    return _chunk(b"fmt ", body)
+
+
+_SUBTYPE_FLOAT = bytes.fromhex("0300000000001000800000aa00389b71")
+_SUBTYPE_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
+
+
+def test_announce_wav_extensible_float_accepted():
+    section("announcements: WAVE_FORMAT_EXTENSIBLE wrapping IEEE float is "
+            "accepted and decoded as float, not refused with a raw GUID "
+            "(review round 2, 2026-09-26, should-fix 5: many DAWs, "
+            "Audacity among them, write 32-bit float this way)")
+    A = _ann()
+    n = 50
+    data = _pack_float32([0.5] * n)
+    body = _fmt_extensible(1, 48000, 32, _SUBTYPE_FLOAT) + _chunk(b"data",
+                                                                  data)
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, "ext_float.wav")
+    with open(path, "wb") as fh:
+        fh.write(_riff(body))
+    pcm, channels, rate, length_s = A._wav_info(path, decode=True)
+    check(str(pcm.dtype) == "float32",
+          f"an extensible float file must decode as float32, not be "
+          f"reinterpreted as integers: {pcm.dtype}")
+    check(float(pcm.ravel()[0]) == 0.5,
+          f"the float value itself must round-trip: {pcm.ravel()[:1]}")
+    _, ch2, rate2, len2 = A._wav_info(path, decode=False)
+    check(ch2 == 1 and rate2 == 48000,
+          f"the probe must agree with the open: {ch2} {rate2}")
+
+    # An extensible sub-format this module does not recognize (A-law
+    # under extensible) must still be a PLAIN sentence, never a raw GUID.
+    alaw_guid = bytes.fromhex("0600000000001000800000aa00389b71")
+    body2 = _fmt_extensible(1, 8000, 8, alaw_guid) + _chunk(
+        b"data", b"\x00" * 100)
+    path2 = os.path.join(work, "ext_alaw.wav")
+    with open(path2, "wb") as fh:
+        fh.write(_riff(body2))
+    try:
+        A._wav_info(path2, decode=False)
+        check(False, "an unrecognized extensible sub-format must be "
+                     "refused, not accepted")
+    except ValueError as e:
+        msg = str(e)
+        check("8000-00aa00389b71" not in msg and "0000-0010" not in msg,
+              f"the refusal must never contain a raw GUID: {msg}")
+        _no_dashes(msg, "extensible unrecognized sub-format refusal")
+    print("  ok")
+
+
+def test_announce_wav_data_chunk_sanity():
+    section("announcements: a WAV whose data chunk declares an impossible "
+            "size is refused loudly, the same way at the probe and the "
+            "press, for BOTH the PCM and the float path (review round 2, "
+            "2026-09-26, should-fix 6: audit15_wav_floatparser.py / "
+            "audit15_wav_edgecases.py)")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_pcm16(name, real_frames, declared_size):
+        import struct
+        real = struct.pack(f"<{real_frames}h", *([1000] * real_frames))
+        fmt = _chunk(b"fmt ", struct.pack("<HHIIHH", 1, 1, 8000, 16000,
+                                          2, 16))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt + header + real))
+        return path
+
+    def write_float(name, real_frames, declared_size):
+        import struct
+        real = _pack_float32([0.25] * real_frames)
+        fmt_chunk = _chunk(b"fmt ", struct.pack("<HHIIHH", 3, 1, 48000,
+                                                48000 * 4, 4, 32))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt_chunk + header + real))
+        return path
+
+    cases = [
+        ("pcm_truncated.wav", write_pcm16, 100, 400, "cut off"),
+        ("pcm_zero.wav", write_pcm16, 100, 0, "placeholder"),
+        ("pcm_ffffffff.wav", write_pcm16, 100, 0xFFFFFFFF, "placeholder"),
+        ("float_truncated.wav", write_float, 50, 1000, "cut off"),
+        ("float_zero.wav", write_float, 50, 0, "placeholder"),
+        ("float_ffffffff.wav", write_float, 50, 0xFFFFFFFF, "placeholder"),
+    ]
+    for name, writer, frames, declared, must_say in cases:
+        path = writer(name, frames, declared)
+        for decode in (False, True):
+            try:
+                A._wav_info(path, decode=decode)
+                check(False, f"{name} (decode={decode}) must be refused, "
+                             f"not read as a healthy file")
+            except ValueError as e:
+                msg = str(e)
+                check(must_say in msg,
+                      f"{name} (decode={decode}): the refusal must say "
+                      f"why: {msg}")
+                _no_dashes(msg, f"{name} data-chunk-sanity refusal")
+    print("  ok")
+
+
 def test_announce_device_exact_match_only():
     section("announcements: the output device is matched by its EXACT "
             "name, never a substring")
@@ -16360,6 +16489,8 @@ if __name__ == "__main__":
     test_announce_probe_matches_open_for_format()
     test_announce_unsupported_wav_formats_rejected()
     test_announce_wav_decode_values()
+    test_announce_wav_extensible_float_accepted()
+    test_announce_wav_data_chunk_sanity()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()
     test_announce_show_start_stops_announcement()

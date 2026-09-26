@@ -1771,6 +1771,35 @@ MUTATIONS = [
   "ltcplay/web.py",
   "            elif warning:",
   "            elif False:"),
+
+ ("WAVE_FORMAT_EXTENSIBLE float is never resolved, it stays refused with "
+  "a raw GUID", "ltcplay/announce.py",
+  "                    if tag == 0xFFFE and len(body) >= 40:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")",
+  "                    if False:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")"),
+
+ ("the data chunk size sanity check never runs", "ltcplay/announce.py",
+  "    problem = _data_chunk_size_problem(path, size)\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)",
+  "    problem = None\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)"),
+
+ ("a placeholder data chunk size (0 or 0xFFFFFFFF) is accepted as healthy",
+  "ltcplay/announce.py",
+  "                    if size == 0 or size == 0xFFFFFFFF:",
+  "                    if False:"),
+
+ ("a data chunk bigger than the file on disk is accepted, overstating "
+  "the length", "ltcplay/announce.py",
+  "                    if size > remaining:",
+  "                    if False:"),
 ]
 
 
