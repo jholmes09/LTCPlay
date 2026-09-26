@@ -31,7 +31,7 @@ def path():
 def load():
     out = dict(DEFAULT)
     try:
-        with open(path(), encoding="utf-8") as fh:
+        with open(path(), encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except (ValueError, OSError):
         return out

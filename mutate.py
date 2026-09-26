@@ -1353,6 +1353,834 @@ MUTATIONS = [
   '           if "beyond" in name.lower() or "laser" in name.lower()]',
   '    return [name for name, _ in dests\n'
   '           if name.strip().lower() == "beyond"]'),
+ # -- the night journal (Fire & Ice logging, handoff section 9) --------
+ ("a journal event may have a blank actor", "ltcplay/journal.py",
+  '    if actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor',
+  '    if actor and actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor'),
+
+ ("an operator event may leave out who or which screen",
+  "ltcplay/journal.py",
+  '    if actor == "operator" and not (who and screen):',
+  '    if False:'),
+
+ ("a fault may be logged as just error", "ltcplay/journal.py",
+  '    if len(meaningful) < 3:',
+  '    if not words:'),
+
+ ("the journal line loses its seconds and its two spaces",
+  "ltcplay/journal.py",
+  '    line = f"{local:%H:%M:%S}  {text}"',
+  '    line = f"{local:%H:%M} {text}"'),
+
+ ("an operator line stops naming the operator", "ltcplay/journal.py",
+  '    if actor == "operator" and who.lower() not in text.lower():',
+  '    if False:'),
+
+ ("a journal line can run onto a second line", "ltcplay/journal.py",
+  '    return " ".join(text.split())',
+  '    return text'),
+
+ ("the page shows its own words, not the file's line", "ltcplay/journal.py",
+  '            out.append({"line": r["line"], "at": r.get("at"),',
+  '            out.append({"line": r["text"], "at": r.get("at"),'),
+
+ ("the page's last lines come oldest first", "ltcplay/journal.py",
+  '            rows = list(self.memory)[-n:][::-1]',
+  '            rows = list(self.memory)[-n:]'),
+
+ ("a night file is rewritten instead of appended to", "ltcplay/journal.py",
+  '    return open(path, "ab", buffering=0)',
+  '    return open(path, "wb", buffering=0)'),
+
+ ("a line cut short by a full disk is left unfinished",
+  "ltcplay/journal.py",
+  '            if cut:\n                # A full disk cut the last line short.',
+  '            if False:\n                # A full disk cut the last line short.'),
+
+ ("a record half written is written twice on the retry",
+  "ltcplay/journal.py",
+  '                e[1].add(stream)\n                self.writes += 1',
+  '                self.writes += 1'),
+
+ ("the machine log is not written", "ltcplay/journal.py",
+  '                            ("jsonl", machine_name(night), _jsonl),',
+  '                            ("jsonl", machine_name(night), lambda r: b""),'),
+
+ ("per-frame state is written to disk", "ltcplay/journal.py",
+  '            self.ring.append((at or self.clock(), dict(data)))',
+  '            self.ring.append((at or self.clock(), dict(data)))\n'
+  '        self.record(actor="system", action="sample", outcome="done",\n'
+  '                    reason="sample", text="A state sample.")'),
+
+ ("the ring buffer keeps 30 s instead of 60", "ltcplay/journal.py",
+  'RING_SIZE = RING_SECONDS * RING_HZ',
+  'RING_SIZE = RING_SECONDS * RING_HZ // 2'),
+
+ ("the state is sampled once a second", "ltcplay/schedule_service.py",
+  '    SAMPLE_S = 1.0 / journal.RING_HZ',
+  '    SAMPLE_S = 1.0'),
+
+ ("the service lets a journal failure into the scheduler",
+  "ltcplay/schedule_service.py",
+  '        try:\n            return fn(*args, **kw)\n        except Exception as e:',
+  '        if True:\n            return fn(*args, **kw)\n        try:\n            pass\n        except Exception as e:'),
+
+ ("a full disk raises no health flag", "ltcplay/journal.py",
+  '        self.stopped_why = why\n        self._retry_at',
+  '        self._retry_at'),
+
+ ("the free space floor is ignored", "ltcplay/journal.py",
+  '        if self._free_mb is not None and self._free_mb < self.free_floor_mb:',
+  '        if False:'),
+
+ ("the night files are written without their lock", "ltcplay/journal.py",
+  '            _lock(lk, LOCK_TRIES, LOCK_WAIT_S, self._sleep)\n            try:\n                nights = []',
+  '            try:\n                nights = []'),
+
+ ("a stopped disk is tried again on every line", "ltcplay/journal.py",
+  '        if self.stopped_why and not force and self._retry_at is not None \\',
+  '        if False and self._retry_at is not None \\'),
+
+ ("the lines waiting for a full disk are thrown away", "ltcplay/journal.py",
+  '        self._tails_ok.clear()\n        if first:',
+  '        self._tails_ok.clear()\n        self._pending.clear()\n        if first:'),
+
+ ("pruning keeps 89 days instead of 90", "ltcplay/journal.py",
+  '        cutoff = today - timedelta(days=self.keep_days)',
+  '        cutoff = today - timedelta(days=self.keep_days - 1)'),
+
+ ("pruning goes by the file's timestamp, not its name",
+  "ltcplay/journal.py",
+  '            if d >= cutoff or d in newest:\n                continue',
+  '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
+  '                    self.folder, name)), timezone.utc).date() >= cutoff \\\n'
+  '                    or d in newest:\n'
+  '                continue'),
+
+ ("pruning removes files it did not write", "ltcplay/journal.py",
+  '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
+  '                   r"\\.(journal\\.txt|jsonl|summary\\.md)")'),
+
+ ("a line goes to the UTC date's file, not the night's",
+  "ltcplay/journal.py",
+  '        rec = build_event(at=local, night=night or self.current_night(at),',
+  '        rec = build_event(at=local, night=night or at.astimezone(\n'
+  '                              timezone.utc).date(),'),
+
+ ("a restart reads as a first start", "ltcplay/journal.py",
+  '        if prev is None:\n            text = (f"ltcplay started ({build}).',
+  '        if True:\n            text = (f"ltcplay started ({build}).'),
+
+ ("the summary leaves out the faults", "ltcplay/journal.py",
+  '    out += _bullets(fault_rows, "None.", limit=None)',
+  '    out += _bullets([], "None.", limit=None)'),
+
+ ("the summary leaves out the announcements", "ltcplay/journal.py",
+  '    out += _bullets([r["line"] for r in anns], "None played.")',
+  '    out += _bullets([], "None played.")'),
+
+ ("End night writes no summary", "ltcplay/schedule_service.py",
+  '            self._write_summary(how)\n        # A push, not a poll:',
+  '            pass\n        # A push, not a poll:'),
+
+ ("the incident bundle leaves out the last 60 s of state",
+  "ltcplay/journal.py",
+  '        state = self.last_state(now=self.clock())',
+  '        state = []'),
+
+ ("the incident bundle claims flame frames it does not have",
+  "ltcplay/journal.py",
+  '        if self.flames is None:\n            return {"available": False,\n'
+  '                    "note": "Not available: there is no flame bus in this "',
+  '        if self.flames is None:\n            return {"available": True,\n'
+  '                    "note": "Not available: there is no flame bus in this "'),
+
+ ("the incident bundle leaves out the config", "ltcplay/journal.py",
+  '        put("config.json", js(config if config is not None else',
+  '        put("config.json", js({"note": "none"} if config is not None else'),
+
+ ("the scheduler's own lines stay in memory only, as before",
+  "ltcplay/schedule_service.py",
+  '        for le in out.log:\n            self._record_logevent(le)',
+  '        for le in out.log:\n            self.journal.append(le.to_dict())'),
+
+ ("the service never prunes", "ltcplay/schedule_service.py",
+  '            if prune:\n                self._log(self.logbook.prune, d, state=state)',
+  '            if False:\n                self._log(self.logbook.prune, d, state=state)'),
+
+ ("the GPL path loads the journal", "ltcplay/web.py",
+  'from . import brand as brand_mod\n',
+  'from . import brand as brand_mod\nfrom . import journal as _journal\n'),
+ # -- the journal, after the review of PR 14 ---------------------------
+ ("closing the journal waits for a hung disk", "ltcplay/journal.py",
+  '            if t.is_alive():\n                return False\n'
+  '        self._writer = None\n',
+  '        self._writer = None\n        return self.drain(force=True)\n'),
+
+ ("the way out stops the scheduler before the rig", "ltcplay/cli.py",
+  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n',
+  '    if httpd.schedule is not None:\n        httpd.schedule.stop()\n'
+  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n'),
+
+ ("a character UTF-8 cannot carry jams the writer", "ltcplay/journal.py",
+  '    return text.encode("utf-8", "backslashreplace")',
+  '    return text.encode("utf-8")'),
+
+ ("a record that cannot be written blocks every line behind it",
+  "ltcplay/journal.py",
+  '                data = _encode_safely(encode, e[0])',
+  '                data = encode(e[0])'),
+
+ ("a torn last line from a power cut gets the next line glued on",
+  "ltcplay/journal.py",
+  '        cut = path not in self._tails_ok and os.path.exists(path) and \\',
+  '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
+  '            and os.path.exists(path) and \\'),
+
+ ("a line cut short by a full disk is not looked for afterwards",
+  "ltcplay/journal.py",
+  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'
+  '        self._tails_ok.clear()\n',
+  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'),
+
+ ("a failing tick writes a line four times a second",
+  "ltcplay/schedule_service.py",
+  '            kinds[key] = kinds.get(key, 0) + 1\n',
+  '            kinds[key] = kinds.get(key, 0) + 1\n'
+  '            tf["since"] = now - timedelta(seconds=self.FAULT_REPEAT_S)\n'
+  '            tf["last_line"] = None\n'),
+
+ ("the journal's own lines go to the calendar day's file",
+  "ltcplay/schedule_service.py",
+  '            state=self._state_name, night=self._night)',
+  '            state=self._state_name)'),
+
+ ("a show past midnight writes its lines to the calendar day's file",
+  "ltcplay/schedule_service.py",
+  '        if self.machine is not None:\n            return self.machine.date\n'
+  '        return self.logbook.night_of(now)',
+  '        if False:\n            return self.machine.date\n'
+  '        return self.logbook.night_of(now)'),
+
+ ("a clock a year ahead prunes every night", "ltcplay/journal.py",
+  '            if d >= cutoff or d in newest:',
+  '            if d >= cutoff:'),
+
+ ("pruning trusts a clock nobody has checked",
+  "ltcplay/schedule_service.py",
+  '    def _prune_allowed(self):\n',
+  '    def _prune_allowed(self):\n        return True\n'),
+
+ ("Service.start never starts the journal writer",
+  "ltcplay/schedule_service.py",
+  '            self.logbook.start_writer()\n        self._safe_tick()',
+  '            pass\n        self._safe_tick()'),
+
+ ("the End-night summary is written inside the scheduler tick",
+  "ltcplay/schedule_service.py",
+  '        if self.logbook.threaded():\n            # Running for real',
+  '        if False:\n            # Running for real'),
+
+ ("the waiting-line cap is gone: memory grows without bound",
+  "ltcplay/journal.py",
+  '            if len(self._pending) >= PENDING_MAX:',
+  '            if False:'),
+
+ ("the resume line no longer says lines were lost", "ltcplay/journal.py",
+  '        if self._dropped:\n            a, b = self._dropped_span',
+  '        if False:\n            a, b = self._dropped_span'),
+
+ ("a clean stop is never written, so it reads as a crash",
+  "ltcplay/schedule_service.py",
+  '                self._log(self.logbook.stopping, state=self._state_name(),',
+  '                self._log(lambda **k: None, state=self._state_name(),'),
+
+ ("an engine fault is not marked as a fault", "ltcplay/schedule_service.py",
+  '            fault=le.outcome in self.FAULT_OUTCOMES)',
+  '            fault=False)'),
+
+ ("any screen name is taken", "ltcplay/schedule_service.py",
+  '        if not screen.strip():\n            return screen\n'
+  '        names = {n.lower(): n for n in self.screens}',
+  '        if True:\n            return screen\n'
+  '        names = {n.lower(): n for n in self.screens}'),
+
+ ("the summary stops listing faults after 25", "ltcplay/journal.py",
+  '    out += _bullets(fault_rows, "None.", limit=None)',
+  '    out += _bullets(fault_rows, "None.")'),
+
+ ("a summary's temp file left by a crash is never cleared",
+  "ltcplay/journal.py",
+  '                if _STALE.match(name):',
+  '                if False:'),
+ # -- the journal, round 3 of the review of PR 14 ----------------------
+ ("close() drains with no time limit", "ltcplay/journal.py",
+  '        threading.Thread(target=last, daemon=True,\n'
+  '                         name="ltcplay-journal-close").start()\n'
+  '        done.wait(wait_s * 2)\n'
+  '        return box.get("ok", False)',
+  '        last()\n'
+  '        return box.get("ok", False)'),
+
+ ("a different tick fault in the middle of a flood counted as a repeat",
+  "ltcplay/schedule_service.py",
+  '            if key not in kinds and len(kinds) < self.FAULT_KINDS_MAX:',
+  '            if not kinds:'),
+
+ ("a failing tick is told apart by its message, not where it failed",
+  "ltcplay/schedule_service.py",
+  '            self._tick_failed(self._fault_key(e), f"{type(e).__name__}: {e}")',
+  '            self._tick_failed(f"{type(e).__name__}: {e}",\n'
+  '                              f"{type(e).__name__}: {e}")'),
+
+ ("the way out lets the scheduler tick after the rig stops",
+  "ltcplay/cli.py",
+  '    halt = getattr(httpd.schedule, "halt", None)',
+  '    halt = None'),
+
+ ("housekeeping decides its work outside the lock",
+  "ltcplay/schedule_service.py",
+  '                look = not self._looked_back\n'
+  '                self._looked_back = True\n'
+  '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '                if prune:\n'
+  '                    self._pruned_for = d\n'
+  '            if look:\n'
+  '                self._look_back(d, state)\n'
+  '            if prune:\n',
+  '                look = not self._looked_back\n'
+  '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '            if look:\n'
+  '                self._look_back(d, state)\n'
+  '                self._looked_back = True\n'
+  '            if prune:\n'
+  '                self._pruned_for = d\n'),
+
+ ("a failure while writing is silent", "ltcplay/journal.py",
+  '        except Exception as e:\n'
+  '            # Nothing that goes wrong while writing is ever silent.\n'
+  '            self._stop(self.clock(), self._why(e))\n'
+  '            return False',
+  '        except Exception:\n'
+  '            return False'),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the flame safety program (handoff section 15, build step
+ # 7a). One mutation per rule in flamesafe/rules.py, plus the link, the
+ # packet, the clock and the wall. All caught by flamesafe's own suite,
+ # which selftest.py runs in a subprocess.
+ # ---------------------------------------------------------------------
+
+ # rule 1: the arm value is derived, not chosen
+ ("flamesafe: an arm value outside the G-Flame window is accepted",
+  "flamesafe/config.py",
+  "    if not (lo <= arm_value <= hi):",
+  "    if False:"),
+
+ ("flamesafe: a single-bit flip of the arm value reaching 229 is accepted",
+  "flamesafe/config.py",
+  "        neighbour = arm_value ^ (1 << bit)\n"
+  "        if neighbour >= rules.GFLAME_FIRE_AT:",
+  "        neighbour = arm_value ^ (1 << bit)\n"
+  "        if False:"),
+
+ ("flamesafe: the unsourced Showven risk needs no acknowledgement",
+  "flamesafe/config.py",
+  "    if above_unsourced and not accept_unsourced_risk:",
+  "    if False:"),
+
+ ("flamesafe: any arm value in the window is accepted, not the derived one",
+  "flamesafe/config.py",
+  "    if arm_value != derived:",
+  "    if False:"),
+
+ # rule 2: the rising edge must be clean
+ ("flamesafe: a fire slot at exactly 15 no longer blocks the rise",
+  "flamesafe/composer.py",
+  "            if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:",
+  "            if commanded[f - 1] > rules.GFLAME_EDGE_BELOW:"),
+
+ ("flamesafe: the edge gate is skipped entirely",
+  "flamesafe/composer.py",
+  "            if self._fire_is_quiet(commanded, g):",
+  "            if True:"),
+
+ # rule 3: the edge is held quiet
+ ("flamesafe: fire slots are not held quiet after the rise",
+  "flamesafe/composer.py",
+  "                self._edge_quiet[i] = rules.EDGE_QUIET_FRAMES + 1",
+  "                self._edge_quiet[i] = 0"),
+
+ ("flamesafe: the quiet window is one frame instead of three",
+  "flamesafe/rules.py",
+  "EDGE_QUIET_FRAMES = 3",
+  "EDGE_QUIET_FRAMES = 1"),
+
+ # rule 4: the re-arm dwell
+ ("flamesafe: the re-arm dwell is never applied",
+  "flamesafe/composer.py",
+  "            if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:",
+  "            if False:"),
+
+ ("flamesafe: an operator disarm does not start the dwell",
+  "flamesafe/composer.py",
+  "                if self._wanted[i]:\n"
+  "                    # The operator disarmed this group.  The dwell applies.\n"
+  "                    self._disarmed_at[i] = t",
+  "                if self._wanted[i]:\n"
+  "                    pass"),
+
+ ("flamesafe: the dwell countdown rounds down and reads 0 with time to go",
+  "flamesafe/composer.py",
+  "        return int(math.ceil(left_ms / 1000.0))",
+  "        return int(left_ms // 1000)"),
+
+ ("flamesafe: the dwell shows flashing amber, telling the operator to cycle",
+  "flamesafe/composer.py",
+  '                held.append(("re-arm dwell", "steady"))',
+  '                held.append(("re-arm dwell", "flashing"))'),
+
+ ("flamesafe: a dirty edge shows steady amber, telling the operator to wait",
+  "flamesafe/composer.py",
+  '                held.append(("dirty edge", "flashing"))',
+  '                held.append(("dirty edge", "steady"))'),
+
+ # rule 5: chatter
+ ("flamesafe: chatter is never detected",
+  "flamesafe/composer.py",
+  "                if len(rt) >= rules.CHATTER_RISES:",
+  "                if False:"),
+
+ ("flamesafe: thirty rises in two seconds are fine",
+  "flamesafe/rules.py",
+  "CHATTER_RISES = 3",
+  "CHATTER_RISES = 30"),
+
+ # rule 6: consent
+ ("flamesafe: a down edge counts as consent whether or not the input is alive",
+  "flamesafe/composer.py",
+  "        consent_ok = advanced",
+  "        consent_ok = True"),
+
+ ("flamesafe: a group latches without ever having been seen down",
+  "flamesafe/composer.py",
+  "            elif self._seen_down[i] and consent_ok:",
+  "            elif consent_ok:"),
+
+ ("flamesafe: the first assertion counts as proof of life",
+  "flamesafe/composer.py",
+  "            # synthetic all-down report a booting watcher emits.\n"
+  "            advanced = False",
+  "            # synthetic all-down report a booting watcher emits.\n"
+  "            advanced = True"),
+
+
+ ("flamesafe: the latches start out set",
+  "flamesafe/composer.py",
+  "        self._latched = [False] * self.n\n"
+  "        self._arm_seq = None",
+  "        self._latched = [True] * self.n\n"
+  "        self._arm_seq = None"),
+
+ # rule 7: interruptions clear the latches
+ ("flamesafe: the arm input never goes stale",
+  "flamesafe/composer.py",
+  "        return (self._arm_fresh_at is not None and\n"
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)",
+  "        return (self._arm_fresh_at is not None and\n"
+  "                (t - self._arm_fresh_at) * 1000.0 <= 1e9)"),
+
+ ("flamesafe: a stalled counter still counts as fresh",
+  "flamesafe/composer.py",
+  "        if advanced:\n            self._arm_fresh_at = t",
+  "        if True:\n            self._arm_fresh_at = t"),
+
+ ("flamesafe: an input that restarted keeps every latch",
+  "flamesafe/composer.py",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = False",
+  "            advanced = False"),
+
+ ("flamesafe: a stale input keeps every latch and re-arms when it returns",
+  "flamesafe/composer.py",
+  "        if not live:\n"
+  '            self._reset_latches("arm input stale")',
+  "        if not live:\n"
+  "            pass"),
+
+ ("flamesafe: an overrun is never noticed",
+  "flamesafe/composer.py",
+  "                (t - self._last_tick) * 1000.0 > self.cfg.overrun_ms:",
+  "                (t - self._last_tick) * 1000.0 > 1e9:"),
+
+ ("flamesafe: a malformed arm assertion is taken as a real one",
+  "flamesafe/composer.py",
+  "            if len(w) != self.n or any(not isinstance(x, bool) for x in w):\n"
+  '                raise ValueError("wanted")',
+  "            if False:\n"
+  '                raise ValueError("wanted")'),
+
+ # rule 8: the table
+ ("flamesafe: two groups may share a fire slot",
+  "flamesafe/config.py",
+  "            if f in fire_owner:",
+  "            if False:"),
+
+ ("flamesafe: a fire slot may be its own safety slot",
+  "flamesafe/config.py",
+  "            if f == safety:",
+  "            if False:"),
+
+ ("flamesafe: a group with no fire slots is accepted",
+  "flamesafe/config.py",
+  "        if not fire:",
+  "        if False:"),
+
+ ("flamesafe: a fire slot may be another group's safety slot",
+  "flamesafe/config.py",
+  "        if clash:",
+  "        if False:"),
+
+ ("flamesafe: two groups may share a safety slot",
+  "flamesafe/config.py",
+  "        if g.safety in seen:",
+  "        if False:"),
+
+ ("flamesafe: the link may leave this machine",
+  "flamesafe/config.py",
+  "    if loopback_only and not ip.is_loopback:",
+  "    if False:"),
+
+ ("flamesafe: an overrun limit shorter than a tick is accepted",
+  "flamesafe/config.py",
+  "    if c.overrun_ms < 2 * period_ms:",
+  "    if False:"),
+
+ # rule 9: only the writer
+ ("flamesafe: ltcplay's values on channels that belong to no group pass through",
+  "flamesafe/composer.py",
+  "        buf = bytearray(rules.UNIVERSE_SIZE)\n        sent_fire = []",
+  "        buf = bytearray(commanded if commanded is not None\n"
+  "                        else rules.UNIVERSE_SIZE)\n        sent_fire = []"),
+
+ ("flamesafe: a disarmed group passes its fire values through",
+  "flamesafe/composer.py",
+  "                if armed_now and not quiet:\n                    out = v",
+  "                if not quiet:\n                    out = v"),
+
+ ("flamesafe: fire commanded on a disarmed group is not logged as a fault",
+  "flamesafe/composer.py",
+  "            if not armed_now and any(v != 0 for v in cf):",
+  "            if False:"),
+
+ # rule 10: zero on anything uncertain
+ ("flamesafe: a frame from ltcplay never goes stale",
+  "flamesafe/composer.py",
+  "        return (self._frame_at is not None and\n"
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.frame_stale_ms)",
+  "        return (self._frame_at is not None and\n"
+  "                (t - self._frame_at) * 1000.0 <= 1e9)"),
+
+ ("flamesafe: a compose fault keeps the latches",
+  "flamesafe/composer.py",
+  '            self._reset_latches("panic")',
+  "            pass"),
+
+ ("flamesafe: the shutdown frames carry the last values instead of zeros",
+  "flamesafe/service.py",
+  "                zeros = bytes(rules.UNIVERSE_SIZE)",
+  "                zeros = (self.last_output.universe if self.last_output\n"
+  "                         else bytes(rules.UNIVERSE_SIZE))"),
+
+ # the link
+ ("flamesafe: a frame with the wrong contract version is accepted",
+  "flamesafe/link.py",
+  '    if obj.get("v") != CONTRACT_VERSION:',
+  "    if False:"),
+
+ ("flamesafe: a frame that is not 512 values is accepted",
+  "flamesafe/link.py",
+  "    if not isinstance(values, list) or len(values) != rules.UNIVERSE_SIZE:",
+  "    if not isinstance(values, list):"),
+
+ ("flamesafe: a frame for another universe is accepted",
+  "flamesafe/link.py",
+  "    if universe != expect_universe:",
+  "    if False:"),
+
+ ("flamesafe: out-of-order frames are accepted",
+  "flamesafe/composer.py",
+  "                if frame.seq <= self._frame_seq:",
+  "                if False:"),
+
+ # the packet
+ ("flamesafe: the sACN packet says priority 100",
+  "flamesafe/sacn.py",
+  "    b[108] = priority",
+  "    b[108] = 100"),
+
+ ("flamesafe: the service sends at priority 100",
+  "flamesafe/service.py",
+  "        pkt = build_packet(self.cfg.universe, values, self.sacn_seq,\n"
+  "                           terminated=terminated)",
+  "        pkt = build_packet(self.cfg.universe, values, self.sacn_seq,\n"
+  "                           priority=100, terminated=terminated)"),
+
+ ("flamesafe: the priority constant is 100",
+  "flamesafe/rules.py",
+  "SACN_PRIORITY = 200",
+  "SACN_PRIORITY = 100"),
+
+ # the clock
+ ("flamesafe: the clock is time.monotonic",
+  "flamesafe/composer.py",
+  "    return time.perf_counter()",
+  "    return time.monotonic()"),
+
+ # the wall
+ ("flamesafe imports ltcplay",
+  "flamesafe/composer.py",
+  "import math\nimport time\n",
+  "import math\nimport time\nimport ltcplay.player\n"),
+
+ ("ltcplay imports flamesafe",
+  "ltcplay/output.py",
+  "import uuid\n",
+  "import uuid\nimport flamesafe.rules\n"),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the safety review of 0bcc3c6 (draft PR #12), one mutation
+ # per finding, plus the audit's own entries that were not already here.
+ # ---------------------------------------------------------------------
+
+ # finding 1: any local process could fire an armed head with one datagram
+ ("flamesafe: a frame with the wrong key is accepted",
+  "flamesafe/link.py",
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:',
+  "    if False:"),
+
+ ("flamesafe: a second sender's frames are taken while the link is live",
+  "flamesafe/composer.py",
+  "                if sender != self._frame_sender:\n"
+  '                    raise ValueError("another sender")',
+  "                if False:\n"
+  '                    raise ValueError("another sender")'),
+
+ ("flamesafe: the status frame carries no key",
+  "flamesafe/link.py",
+  '    status["k"] = key\n',
+  ""),
+
+ # finding 2: the first assertion after an interruption counted as proof
+ ("flamesafe: the first assertion after a stale gap counts as proof of life",
+  "flamesafe/composer.py",
+  "        consent_ok = advanced and was_live",
+  "        consent_ok = advanced"),
+
+ ("flamesafe: the first assertion after an input restart counts as proof of life",
+  "flamesafe/composer.py",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = False",
+  '            self._reset_latches("arm input restarted")\n'
+  "            advanced = True"),
+
+ # finding 3: a surviving consent mutation
+ ("flamesafe: a down edge no longer clears the latch",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok\n"
+  "                self._latched[i] = False",
+  "                self._seen_down[i] = consent_ok"),
+
+ # finding 4: send failures while armed showed green
+ ("flamesafe: a failed sACN send is not a fault",
+  "flamesafe/service.py",
+  '            self.composer.note_fault(f"sACN send failed ({self.send_errors} "\n'
+  '                                     f"so far): {e}")',
+  "            pass"),
+
+ ("flamesafe: a failed status send is not a fault",
+  "flamesafe/service.py",
+  '            self.composer.note_fault(f"status frame not sent "\n'
+  '                                     f"({self.status_errors} so far): {e}")',
+  "            pass"),
+
+ # finding 5: a fire value held for frame_stale_ms after ltcplay stops
+ ("flamesafe: a fire value is held for frame_stale_ms after ltcplay stops",
+  "flamesafe/composer.py",
+  "        commanded = self._frame if fire_live else None",
+  "        commanded = self._frame if frame_fresh else None"),
+
+ # finding 6: the console could block the tick loop
+ ("flamesafe: the journal writes to the console inline",
+  "flamesafe/journal.py",
+  "            try:\n"
+  "                self._q.put_nowait(line)\n"
+  "            except queue.Full:\n"
+  "                self.dropped += 1",
+  "            print(line, file=self.stream, flush=True)"),
+
+ # finding 7: the dwell could be shorter than the spec's second
+ ("flamesafe: the dwell may be shorter than a second",
+  "flamesafe/config.py",
+  "DWELL_MS_MIN, DWELL_MS_MAX = 1000, 10000",
+  "DWELL_MS_MIN, DWELL_MS_MAX = 0, 10000"),
+
+ # minor findings
+ ("flamesafe: a chatter refusal does not start the dwell",
+  "flamesafe/composer.py",
+  "                    self._disarmed_at[i] = t\n"
+  "                    self._chatter_at[i] = t",
+  "                    self._chatter_at[i] = t"),
+
+ ("flamesafe: a chatter hold reads re-arm dwell",
+  "flamesafe/composer.py",
+  "                if self._chatter_at[i] is not None and self._chatter_at[i] == da:",
+  "                if False:"),
+
+ ("flamesafe: a compose fault has no age",
+  "flamesafe/composer.py",
+  "                self._fault_at = self._clock()\n"
+  "            except Exception:                           # noqa: BLE001\n"
+  "                self._fault_at = None",
+  "                self._fault_at = None\n"
+  "            except Exception:                           # noqa: BLE001\n"
+  "                self._fault_at = None"),
+
+ ("flamesafe: a panic status calls a live input stale",
+  "flamesafe/composer.py",
+  "                                  self._held, self._arm_is_live(t),\n"
+  "                                  self._frame_is_fresh(t), False)",
+  "                                  self._held, False, False, False)"),
+
+ ("flamesafe: group names are unbounded",
+  "flamesafe/config.py",
+  "        if len(name) > NAME_MAX:",
+  "        if False:"),
+
+ ("flamesafe: the flame universe may be sent to a link port",
+  "flamesafe/config.py",
+  "            c.destination_port in (c.link_listen_port, c.link_status_port):",
+  "            False:"),
+
+ ("flamesafe: wrong group names in an assertion are accepted",
+  "flamesafe/composer.py",
+  "                if list(names) != [g.name for g in self.groups]:",
+  "                if False:"),
+
+ ("flamesafe: a negative arm seq is taken as a real assertion",
+  "flamesafe/composer.py",
+  "            if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:",
+  "            if isinstance(seq, bool) or not isinstance(seq, int):"),
+
+ # the audit's own entries, kept
+ ("flamesafe: the quiet window is ignored on the fire pass",
+  "flamesafe/composer.py",
+  "                if armed_now and not quiet:\n                    out = v",
+  "                if armed_now:\n                    out = v"),
+
+ ("flamesafe: the arm input is live 30 ms longer than arm_stale_ms",
+  "flamesafe/composer.py",
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms)",
+  "                (t - self._arm_fresh_at) * 1000.0 <= self.cfg.arm_stale_ms + 30)"),
+
+ ("flamesafe: the edge gate reads the slot before each fire slot",
+  "flamesafe/composer.py",
+  "            if commanded[f - 1] >= rules.GFLAME_EDGE_BELOW:",
+  "            if commanded[f - 2] >= rules.GFLAME_EDGE_BELOW:"),
+
+ ("flamesafe: the safety value is written one slot high",
+  "flamesafe/composer.py",
+  "            buf[g.safety - 1] = values[i]",
+  "            buf[g.safety] = values[i]"),
+
+ ("flamesafe: the dwell ends 30 ms early",
+  "flamesafe/composer.py",
+  "            if da is not None and (t - da) * 1000.0 < self.cfg.min_arm_dwell_ms:",
+  "            if da is not None and (t - da) * 1000.0 + 30 < self.cfg.min_arm_dwell_ms:"),
+
+
+ ("flamesafe: the fire hold is 30 ms longer than fire_hold_ms",
+  "flamesafe/composer.py",
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)",
+  "                (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms + 30)"),
+
+
+ ("flamesafe: the status calls a group armed when it is wanted and latched",
+  "flamesafe/composer.py",
+  "            if values[i] != DISARM:\n                state = \"armed\"",
+  "            if self._wanted[i] and self._latched[i]:\n                state = \"armed\""),
+
+ ("flamesafe: a repeated seq is accepted while live",
+  "flamesafe/composer.py",
+  "                if frame.seq <= self._frame_seq:",
+  "                if frame.seq < self._frame_seq:"),
+
+ ("flamesafe: the service sends the previous tick's universe",
+  "flamesafe/service.py",
+  "        out = self.composer.tick()\n        self.last_output = out\n        self._send_universe(out.universe)",
+  "        prev = self.last_output\n        out = self.composer.tick()\n        self.last_output = out\n        self._send_universe(prev.universe if prev is not None else out.universe)"),
+
+
+
+ ("flamesafe: the rise is recorded even when refused for chatter",
+  "flamesafe/composer.py",
+  "                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue",
+  "                    rt.append(t)\n                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue"),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the review's second pass on ed58b35.
+ # ---------------------------------------------------------------------
+
+ # A: a stalled counter defeated the transition-based reset
+ ("flamesafe: a counter frozen past arm_stale_ms then advancing is consent",
+  "flamesafe/composer.py",
+  "        was_live = self._arm_is_live(t)\n        advanced = False",
+  "        was_live = True\n        advanced = False"),
+
+ # B: a fault never cleared
+ ("flamesafe: a fault never clears",
+  "flamesafe/composer.py",
+  "                (t - self._fault_at) >= FAULT_CLEAR_S:",
+  "                (t - self._fault_at) >= 1e9:"),
+
+ ("flamesafe: a fault clears after one clean second, not five",
+  "flamesafe/composer.py",
+  "FAULT_CLEAR_S = 5.0",
+  "FAULT_CLEAR_S = 1.0"),
+
+ # C: journal drops
+ ("flamesafe: a dropped journal line is not counted",
+  "flamesafe/journal.py",
+  "            except queue.Full:\n                self.dropped += 1",
+  "            except queue.Full:\n                pass"),
+
+ ("flamesafe: the status frame does not carry the journal drop count",
+  "flamesafe/composer.py",
+  "            \"stats\": dict(self.stats,\n"
+  "                          journal_dropped=int(getattr(self._log, \"dropped\",\n"
+  "                                                      0) or 0)),",
+  "            \"stats\": dict(self.stats, journal_dropped=0),"),
+
+ ("flamesafe: the journal never says how many lines it lost",
+  "flamesafe/journal.py",
+  "            if self._q.empty() and self.dropped > self._reported_dropped:",
+  "            if False:"),
+
+ # E: keys and config strictness
+ ("flamesafe: a confirmed config may keep the example key",
+  "flamesafe/config.py",
+  "    if c.confirmed and c.link_key == EXAMPLE_KEY:",
+  "    if False:"),
+
+ ("flamesafe: the status frame carries the example key whatever the config says",
+  "flamesafe/link.py",
+  '    status["k"] = key\n',
+  '    status["k"] = EXAMPLE_KEY\n'),
+
+ ("flamesafe: unknown config keys are ignored",
+  "flamesafe/config.py",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
  ("an announcement plays over a running or paused show", "ltcplay/announce.py",
   '    if state in BLOCKED_STATES:\n'
@@ -1481,6 +2309,7 @@ MUTATIONS = [
   '            for hook in pending:\n'
   '                self._run_hook(hook)'),
 
+ # ---------------------------------------------------------------------
  # Hold / Resume, Fire & Ice handoff section 5. The clock half only:
  # ArtNetMaster.pause()/resume() in clock.py, Session.clock_pause()/
  # clock_resume() in session.py.
@@ -1623,6 +2452,124 @@ MUTATIONS = [
   '                  and now - park_since >= self.park_s)\n'
   '        since = now - last'),
 
+ # A show file, or another JSON file a person hand-edits, saved by Windows
+ # Notepad or PowerShell carries a UTF-8 BOM. "utf-8-sig" strips it if it is
+ # there and does nothing if it is not; plain "utf-8" instead reports
+ # "Unexpected UTF-8 BOM" and refuses a perfectly good show file. One
+ # mutation per loader that was changed to accept one.
+ ("a show file with a BOM is refused again", "ltcplay/timeline.py",
+  'with open(path, encoding="utf-8-sig") as fh:',
+  'with open(path, encoding="utf-8") as fh:'),
+
+ ("the page's show-folder read refuses a BOM show file again",
+  "ltcplay/web.py",
+  'with open(path, encoding="utf-8-sig") as fh:\n            doc = json.load(fh)\n        if folder is None:',
+  'with open(path, encoding="utf-8") as fh:\n            doc = json.load(fh)\n        if folder is None:'),
+
+ ("tctest --show refuses a BOM show file again", "ltcplay/tctest.py",
+  'with open(show_path, encoding="utf-8-sig") as fh:',
+  'with open(show_path, encoding="utf-8") as fh:'),
+
+ ("showdir refuses a BOM show file again", "ltcplay/cli.py",
+  'with open(tl_path, encoding="utf-8-sig") as fh:',
+  'with open(tl_path, encoding="utf-8") as fh:'),
+
+ ("a BOM input settings file is refused again", "ltcplay/settings.py",
+  'with open(p, encoding="utf-8-sig") as fh:',
+  'with open(p, encoding="utf-8") as fh:'),
+
+ ("a BOM brand file is refused again", "ltcplay/brand.py",
+  'with open(path(), encoding="utf-8-sig") as fh:',
+  'with open(path(), encoding="utf-8") as fh:'),
+
+ # -- B11: the operator page's /api/state cache (web.py's Control.state()) --
+
+ ("the /api/state cache never actually holds for its interval",
+  "ltcplay/web.py",
+  "    STATE_CACHE_S = 0.2",
+  "    STATE_CACHE_S = 0.0"),
+
+ ("concurrent misses of the /api/state cache all rebuild it at once",
+  "ltcplay/web.py",
+  """        try:
+            cached = self._state_cache
+            now = time.monotonic()
+            if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+                return cached[0]             # built while this waited for the lock
+            fresh = self._build_state()
+            self._state_cache = (fresh, time.monotonic())
+            return fresh
+        finally:
+            self._state_building.release()""",
+  """        try:
+            fresh = self._build_state()
+            self._state_cache = (fresh, time.monotonic())
+            return fresh
+        finally:
+            self._state_building.release()"""),
+
+ ("a cached /api/state answer is the raw cache entry, not its payload",
+  "ltcplay/web.py",
+  """        now = time.monotonic()
+        cached = self._state_cache
+        if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+            return cached[0]
+        if not self._state_building.acquire(blocking=False):""",
+  """        now = time.monotonic()
+        cached = self._state_cache
+        if cached is not None and now - cached[1] < self.STATE_CACHE_S:
+            return cached
+        if not self._state_building.acquire(blocking=False):"""),
+
+ ("the terminal/GPL build id is cached at module scope, "
+  "so it stops updating for the rest of the run",
+  "ltcplay/version.py",
+  '''def build():
+    """(id, file count, newest mtime) for the program as it sits on disk."""
+    h = hashlib.sha256()
+    newest = 0.0
+    files = _files()
+    for p in files:
+        # Forward slashes whatever the OS, so the same files give the same
+        # build id on a Mac and on Windows. On a Mac this changes nothing.
+        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
+        h.update(rel.encode("utf-8", "replace"))
+        h.update(b"\\0")
+        try:
+            with open(p, "rb") as fh:
+                for b in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(b)
+            newest = max(newest, os.path.getmtime(p))
+        except OSError:
+            h.update(b"<unreadable>")
+    return h.hexdigest()[:10], len(files), newest''',
+  '''_BUILD_CACHE = None
+
+
+def build():
+    """(id, file count, newest mtime) for the program as it sits on disk."""
+    global _BUILD_CACHE
+    if _BUILD_CACHE is not None:
+        return _BUILD_CACHE
+    h = hashlib.sha256()
+    newest = 0.0
+    files = _files()
+    for p in files:
+        # Forward slashes whatever the OS, so the same files give the same
+        # build id on a Mac and on Windows. On a Mac this changes nothing.
+        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
+        h.update(rel.encode("utf-8", "replace"))
+        h.update(b"\\0")
+        try:
+            with open(p, "rb") as fh:
+                for b in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(b)
+            newest = max(newest, os.path.getmtime(p))
+        except OSError:
+            h.update(b"<unreadable>")
+    _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
+    return _BUILD_CACHE'''),
+
 ]
 
 
@@ -1631,8 +2578,24 @@ _LAST_FAILS = []
 
 
 def run_suite():
-    r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
-                       capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        # A suite that does not finish is not a green suite. Under a
+        # mutation that counts as caught (the mutation broke a test so
+        # badly it hung); with nothing mutated it is a failed baseline.
+        # Either way the sweep reports it rather than crashing the shard,
+        # which is what CI run 36206230939 did.
+        out = ((e.stdout or b"") if isinstance(e.stdout, (bytes, str))
+               else b"")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        _LAST_FAILS[:] = ["  FAIL  the suite did not finish inside 300 s "
+                          "(TimeoutExpired)"] + \
+            [l.strip() for l in out.splitlines()
+             if l.startswith("  FAIL")][:5]
+        return False
     out = (r.stdout or "") + (r.stderr or "")
     _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
                       if l.startswith("  FAIL") or "Error" in l][:6]
