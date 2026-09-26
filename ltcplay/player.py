@@ -977,13 +977,23 @@ class Player:
         # frame after it, forever, by however late that one wake was. Found
         # on the Fire & Ice bench, 2026-09-25, B9: one show's pixel timing
         # against the cue stepped by 23.5ms during a CPU-loaded stretch and
-        # never came back for the rest of the show, while lighter jitter in
-        # the minutes before it produced the occasional single frame
-        # repeated then skipped -- the same drift, smaller, landing right
-        # on a frame boundary. Computing `n` fresh from `t0` every time, the
-        # way below does, cannot drift: a late wake still only ever skips
-        # the slots it actually missed, and every slot after it is exactly
-        # where it always was.
+        # never came back for the rest of the show. Computing `n` fresh
+        # from `t0` every time, the way below does, cannot drift: a late
+        # wake still only ever skips the slots it actually missed, and
+        # every slot after it is exactly where it always was.
+        #
+        # What this does NOT fix, and is not trying to: that same bench
+        # window also had, in the minutes before the step, occasional
+        # single frames repeated then skipped -- a send landing just
+        # before a 25ms content-frame boundary reads that frame, and the
+        # next send, arriving a normal period later, reads the one after
+        # it, one frame later than the arithmetic "should" give (measured
+        # directly, scratchpad/pixelstep_b9.py: 1738 such pairs before the
+        # bench's stall, 1862 after it, on this fix). That is the pixel
+        # send schedule and the content's own 25ms frame grid sitting at a
+        # phase that does not line up -- unrelated to the origin drifting,
+        # and not solved by fixing the origin. Aligning the two grids
+        # would be a real change and belongs in its own PR, not this one.
         period = step_ms / 1000.0
         t0 = _now()
         n_next = 0

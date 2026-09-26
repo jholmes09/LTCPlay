@@ -1589,6 +1589,21 @@ MUTATIONS = [
   '            n = max(int((now - t0) / period + 1e-9), n_next)',
   '            n = n_next'),
 
+ # Opus review of PR #19, two survivors it found with its own repro
+ # scripts (scratchpad/pixelstep_failtick.py, pixelstep's sleep-cap
+ # check): a failed tick has to move the schedule on regardless, or the
+ # loop retries the same already-past slot forever; and the wait for a
+ # far-off deadline has to stay capped, or Stop would wait out the whole
+ # gap.
+ ("a failed pixel tick no longer advances the schedule", 'ltcplay/player.py',
+  '                time.sleep(0.01)\n            n_next = n + 1',
+  '                time.sleep(0.01)\n                continue\n            n_next = n + 1'),
+
+ ("the pixel loop's wait for a far-off deadline is no longer capped",
+  'ltcplay/player.py',
+  '                time.sleep(min(due - now, 0.05))',
+  '                time.sleep(due - now)'),
+
 ]
 
 
