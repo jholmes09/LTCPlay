@@ -11,8 +11,8 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B0 Machine | recorded | i3-1215U, Intel UHD only, 15.8 GB, Kingston 1 TB NVMe on the underside that overheats without airflow |
 | B1 MadMapper follows Art-Net timecode | PASSED | Locks 14 to 17 ms after the first frame; within 17 ms (one 60 fps frame) over 7:20, 0 frames off at the end; hears only the address of its selected interface |
 | B2 OSC control, port 8000 | PASSED (select, play, stop, audio level); video level FAILED (use surface opacity); no replies | Input port is a per-project setting (default 8010); bank select works by `/select`, not `active_bank` or `by_name`; each chasing bank needs its own interface; Jeff's non-chasing intermission works |
-| B3 Heartbeat | IN PROGRESS | |
-| B4 Freeze on one frame | PARTLY TESTED (via ltcplay's own Hold, PR #10); 30 s freeze: IN PROGRESS | Video and pixels hold; MadMapper audio goes silent and restarts 4 to 5 frames early |
+| B3 Heartbeat | PASSED, with a design consequence | A ramped OSC Float track sends MadMapper's position 60 times a second; silent while frozen, after the show and on other banks; suspend: last packet 6 ms before, back 51 ms after |
+| B4 Freeze on one frame | PASSED (video, fades); audio needs the fade | Picture holds the exact frame for 30 s; audio runs on 0.35 s then silent, repeats 0.17 s on resume; a 1 s audio fade hides both; opacity fade to black is smooth |
 | B5 Audio while chasing | PASSED, with a note | No drift; one 33 ms nudge per 7.4 min; listening test by Jeff outstanding |
 | B6 Six video tracks | PASSED at panel size / FAILED at 1080p H.264 | Panel-sized: 38% CPU at 4K desktop, 19.5% at 1080p, smooth 30 fps; six 1080p H.264: 100% CPU |
 | B7 ltcplay's own tests | PASSED | main 9291c35: all checks passed in 90.5 s |
@@ -131,11 +131,49 @@ Documented addresses (MadMapper 6 OSC list, docs.madmapper.com): `/timelines/Ban
 
 ## B3 Heartbeat from MadMapper
 
-IN PROGRESS.
+**Verdict: PASSED with a design consequence: the pulse is a position stream at 60/s, and it stops whenever the timeline is not moving (Hold, after the show, intermission bank).** 23:37 to 23:48, main 9291c35 tctest.
+
+**1. Settings, click by click:**
+1. OSC output destination (a per-project setting): Ctrl+, > **Project** > **OSC** > **OSC Outputs** **+**: a row "OSC Output-1", Bonjour **Custom**, IP **127.0.0.1**, Port **9001** (double-click the port cell and type). `B2_B3_osc_settings.png`.
+2. Show bank Conductor: **+** next to Tracks > **Add OSC Track** > **Float** (choices Float, Integer, String, Color, Bool, Events). It appears under DATA as "OSC - /float-1", OSC Device **OSC Output-1**, Address `/float-1`, Min 0.00, Max 1.00 (Max changed to 440 had no effect on the values sent).
+3. Keyframes: double-click on the track's lane adds one; select it and set **Time** and **Value** in the right-hand panel. Two keyframes: **0.000 s value 0**, **440.000 s value 1**, Interpolation Linear. `B3_osc_track.png`.
+
+**Behaviour found:** an OSC track sends **only when its value changes** (one keyframe = one message, `/float-1 ,f 1.0`, once). During a ramp it sends once per rendered frame. So the heartbeat is a ramp across the whole show; its value x 440 is MadMapper's own position in seconds.
+
+**2. 60 s capture while chasing** (`scratch/udp_listen.py` on 127.0.0.1:9001, tctest to both nodes): **3,717 packets in 62.2 s; interval min 0.0, mean 16.7, 99th percentile 22.0, max 258 ms**; one gap over 50 ms: **258 ms at position 60.08 s, exactly where the 60 s panel clips loop** (MadMapper stalls briefly when a clip wraps). Address `/float-1`, type tag `,f`, one float 0..1, sent **from 127.0.0.1 port 8000** (MadMapper's own OSC input port). Bytes: `2f 66 6c 6f 61 74 2d 31 00 00 00 00 2c 66 00 00 3f 80 00 00` = `/float-1 ,f 1.0`. **Value x 440 minus time since the first packet: median 2 ms** (min -244 ms at that loop stall, max 8 ms).
+
+**3. When it keeps coming:**
+- **Timecode frozen (B4 sender, 30 s on one frame): 0 packets for the whole freeze** (gap 29.84 s), 60/s again after resume, value continuing 20.45 s. Twice.
+- **After timecode stops: 0 packets** (9 s checked).
+- **Intermission bank playing (Bank-2, own clock): 0 packets** in 6 s: tracks belong to one bank; the intermission needs its own OSC track (which would then run whenever it plays, even without timecode).
+- **Consequence for the watchdog:** "no pulse for 3 s" is also the normal state during Hold and between shows. The watchdog must only count silence as a fault while ltcplay's clock is actually running, and can use the value to check MadMapper's position against the clock (stale value or a position more than, say, 0.5 s off = fault).
+
+**4. Process suspended** (`scratch/suspend.py`: NtSuspendProcess on MadMapperDemo.exe, the same as Resource Monitor's Suspend process, for 10.0 s mid-chase): **604 packets before, 0 while suspended, the last one 6 ms before the suspend call**; after resume the **first packet 51 ms later, value already 20.10 s** (the live position, not where it stopped), then normal (mean 16.6 ms, max 23 ms). So a frozen MadMapper goes silent within one frame, and the 3 s rule catches it with plenty of margin.
 
 ## B4 Freeze on one frame (the Hold button)
 
-**Tested so far with ltcplay's own Hold (PR #10, `Session.clock_pause()` / `clock_resume()`), not yet with the 30 s throwaway sender.** Run `hold1`, 22:33 to 22:55: 20 cues of the 58 s bench show, each held at 20 s for 5 s. ltcplay main 9291c35. MadMapper chasing on loopback with six montage tracks and the audio track.
+**Verdict: PASSED for video (holds the exact frame) and for fades (both smooth); audio NEEDS the fade: without it, the audio runs on 0.35 s after the freeze and repeats 0.17 s on resume.**
+
+**30 s freeze with the throwaway sender, 23:45 to 23:52.** `scratch/freeze_sender.py` imports ltcplay's own `clock.arttimecode()` (so the 19 bytes are exactly what the show sends: `Art-Net\0`, OpTimeCode 0x9700 low byte first, protocol 14, filler, stream 0, frames, seconds, minutes, hours, type 3 = 30 fps non-drop) and paces them at 30 a second on absolute `perf_counter` deadlines like ltcplay's Ticker; 20 s normal from 00:00:00:00, then frame 599 (00:00:19:29) repeated for 30 s, then 00:00:20:00 onwards for 20 s (2,100 packets), to 192.168.4.42 and 127.0.0.1. Core of it:
+
+```python
+if phase_ends[0] <= k < phase_ends[1]:
+    emit(frozen_at)                      # the same frame, 30 times a second
+else:
+    if k == phase_ends[1]:
+        n = frozen_at + 1                # carry on from the next frame
+    emit(n); n += 1
+```
+
+Recorded at the same time: MadMapper's audio decoded from its LTC track (loopback), its audio level every 50 ms, its output brightness and Conductor counter every ~50 ms, the B3 heartbeat. `scratch/b4_run.ps1`, `b4_analyze.py`.
+
+1. **Video during the freeze: holds the exact frame.** Counter image: 1 distinct image in 321 samples over 29.5 s (before: 56 distinct in 56); output brightness steady at the frozen frame's level (median 130.8, 6 to 7 distinct values from the trial watermark). Not black, not playing. Nothing changed over the 30 s.
+2. **Audio during the freeze:** carries on for **0.3 to 0.4 s** after the last new frame (level 0.48 at +0.3 s, 0.23 at +0.4 s), then **silence** for the rest of the freeze (level 0.000). No loop, no stutter, no fragment.
+3. **Resume:** video continues from the next frame (counter moving at once). **Audio is back 0.2 to 0.3 s after the first new frame, starting 5 frames early** (decoded 00:00:19:28 at +50.288 s, then 00:00:20:00 at +50.338 s): a 0.17 s repeat of what played just before the freeze, then in sync. No click measurable by level (it fades in over one 50 ms block).
+4. **Volume fade** (`/master/master_audio_level`, 31 steps over 1 s, 19.0 to 20.0 s, and back up 50.0 to 51.0 s; `scratch/b4_fade.py audio`): **smooth**, level every 0.1 s into the freeze 0.24 0.20 0.15 0.10 0.05 0.01 0.00; on resume 0.00 0.01 0.05 0.09 0.14 0.19 0.23 0.28 0.33 ... With the fade, **no audio is heard during the run-on or the resume repeat** (the first decoded frame after resume is 00:00:20:00).
+5. **Fade to black** (`/surfaces/Quad-1..6/opacity`, same timing; `b4_fade.py video`): **smooth**, output brightness every 0.1 s: 138 138 138 137 137 136 134 133 130 127 119 103 86 47 6; **5.1 while held** (black apart from the watermark); up on resume 12 67 91 115 127 131 135 (about 0.6 s). (`/master/master_video_level` did nothing in B2, so opacity per surface is the command.)
+
+**Earlier, ltcplay's own Hold (PR #10, `Session.clock_pause()` / `clock_resume()`)**, not the 30 s throwaway sender: (PR #10, `Session.clock_pause()` / `clock_resume()`), not yet with the 30 s throwaway sender.** Run `hold1`, 22:33 to 22:55: 20 cues of the 58 s bench show, each held at 20 s for 5 s. ltcplay main 9291c35. MadMapper chasing on loopback with six montage tracks and the audio track.
 
 - **Pixels (ltcplay's own output, 26,256 px to the local receiver):** froze on the frame and repeated it through each hold (about 190 repeats per 5 s hold); **0 frames skipped** during, 14 skipped in total in the 3 s after resume across 19 holds; one frame number arrived out of order around most holds (to investigate).
 - **MadMapper audio:** **silent while held** (no timecode decoded from its audio in any of the 19 holds). **On resume it restarts 4 to 5 frames (133 to 167 ms) earlier** than the last audio heard before the hold: its audio runs on briefly after the timecode freezes, then goes back to the frozen frame. Audible as the last ~0.15 s repeating, unless the music is faded out first (the Hold spec fades it).
