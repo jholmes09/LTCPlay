@@ -1437,11 +1437,10 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:\n                continue',
+  '            if d >= keep_from:\n                continue\n',
   '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                    self.folder, name)), timezone.utc).date() >= cutoff \\\n'
-  '                    or d in newest:\n'
-  '                continue'),
+  '                    root, name)), timezone.utc).date() >= keep_from:\n'
+  '                continue\n'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
@@ -1491,8 +1490,8 @@ MUTATIONS = [
   '        for le in out.log:\n            self.journal.append(le.to_dict())'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
-  '            if prune:\n                self._log(self.logbook.prune, d, state=state)',
-  '            if False:\n                self._log(self.logbook.prune, d, state=state)'),
+  '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
+  '            if False:\n                self._log(self.logbook.prune, d, state=state,'),
 
  ("the GPL path loads the journal", "ltcplay/web.py",
   'from . import brand as brand_mod\n',
@@ -1519,9 +1518,9 @@ MUTATIONS = [
 
  ("a torn last line from a power cut gets the next line glued on",
   "ltcplay/journal.py",
-  '        cut = path not in self._tails_ok and os.path.exists(path) and \\',
+  '        cut = path not in self._tails_ok and not new and \\',
   '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
-  '            and os.path.exists(path) and \\'),
+  '            and not new and \\'),
 
  ("a line cut short by a full disk is not looked for afterwards",
   "ltcplay/journal.py",
@@ -1549,8 +1548,8 @@ MUTATIONS = [
   '        return self.logbook.night_of(now)'),
 
  ("a clock a year ahead prunes every night", "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:',
-  '            if d >= cutoff:'),
+  '        if floor:\n            nights = sorted(',
+  '        if False:\n            nights = sorted('),
 
  ("pruning trusts a clock nobody has checked",
   "ltcplay/schedule_service.py",
@@ -1631,16 +1630,26 @@ MUTATIONS = [
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
   '                if prune:\n'
   '                    self._pruned_for = d\n'
+  '                # A clock the time server agreed with prunes by age alone;\n'
+  '                # one nobody could check (10 minutes of running, no time\n'
+  '                # server) also keeps the newest nights that exist.\n'
+  '                floor = (self.clock_check or {}).get("level") != "ok"\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
-  '            if prune:\n',
+  '            if prune:\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n',
   '                look = not self._looked_back\n'
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '                # A clock the time server agreed with prunes by age alone;\n'
+  '                # one nobody could check (10 minutes of running, no time\n'
+  '                # server) also keeps the newest nights that exist.\n'
+  '                floor = (self.clock_check or {}).get("level") != "ok"\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
   '                self._looked_back = True\n'
   '            if prune:\n'
-  '                self._pruned_for = d\n'),
+  '                self._pruned_for = d\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n'),
 
  ("a failure while writing is silent", "ltcplay/journal.py",
   '        except Exception as e:\n'
@@ -1883,6 +1892,49 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+
+ # -- the journal, Jeff's settings of 2026-09-26 ------------------------
+ ("a batch goes to the disk without an fsync", "ltcplay/journal.py",
+  '                self._fsync(fh.fileno())\n                if new:',
+  '                pass\n                if new:'),
+
+ ("a line can wait five seconds in memory", "ltcplay/journal.py",
+  '            self._wake.wait(MAX_LINE_WAIT_S)',
+  '            self._wake.wait(5.0)'),
+
+ ("night files are kept 90 days again", "ltcplay/journal.py",
+  'KEEP_DAYS = 120',
+  'KEEP_DAYS = 90'),
+
+ ("incident folders are never pruned", "ltcplay/journal.py",
+  '            found.append((d, name, inc_root, True))',
+  '            pass'),
+
+ ("a checked clock still keeps the newest nights",
+  "ltcplay/schedule_service.py",
+  '                floor = (self.clock_check or {}).get("level") != "ok"',
+  '                floor = True'),
+
+ ("an unchecked clock prunes by age alone", "ltcplay/schedule_service.py",
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)',
+  '                self._log(self.logbook.prune, d, state=state, floor=False)'),
+
+ ("the free space floor is 100 MB again", "ltcplay/journal.py",
+  'FREE_FLOOR_MB = 500',
+  'FREE_FLOOR_MB = 100'),
+
+ ("a start looks back only one night for a missing summary",
+  "ltcplay/schedule_service.py",
+  '            if n < d and not os.path.exists(',
+  '            if n == d - timedelta(days=1) and not os.path.exists('),
+
+ ("the journal says End night again", "ltcplay/schedule.py",
+  '            f"{_operator_name(ev)} pressed Close for the night"',
+  '            f"{_operator_name(ev)} pressed End night"'),
+
+ ("the transport panel still says End night", "ltcplay/schedule.py",
+  '    {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,',
+  '    {"id": "end_night", "label": "End night", "event": END_NIGHT,'),
 ]
 
 

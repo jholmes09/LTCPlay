@@ -9429,7 +9429,7 @@ def test_schedule_abort_end_night_and_operator_actions():
           f"End night closes: flame cues to zero, MadMapper stopped, fade, "
           f"blackout. Got {[e.kind for e in o.effects]}")
     check(all(s.status != S.PENDING for s in n.m.slots) and
-          all(s.reason == "SKIPPED (operator, End night)"
+          all(s.reason == "SKIPPED (operator, Close for the night)"
               for s in n.m.slots if s.status == S.SKIPPED and s.n > 3),
           "End night skips every show still to come, and says why")
     n.do(S.CLOSING_DONE, "system", _den(S, 19, 0, 2))
@@ -15796,9 +15796,11 @@ def test_journal_rotation_and_pruning_across_dst():
     check([l[:10] for l in j] == ["00:00:01  ", "01:30:00  ", "01:30:00  "],
           f"the journal reads the wall clock: {j}")
 
-    # Pruning, by the name's date. A night for every day from 1 Jul to
-    # 1 Nov (124 nights), two with misleading timestamps, and things this
-    # module did not write.
+    # Pruning, by the name's date: kept 120 days (Jeff, 2026-09-26). A
+    # night for every day from 1 Jun to 1 Nov, two with misleading
+    # timestamps, incident folders, and things this module did not write.
+    check(J.KEEP_DAYS == 120, f"night files are kept 120 days: {J.KEEP_DAYS}")
+
     def nights_from(first, n, folder, kinds=(J.machine_name, J.journal_name)):
         made = []
         for i in range(n):
@@ -15811,60 +15813,79 @@ def test_journal_rotation_and_pruning_across_dst():
 
     old = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(old)
-    made = nights_from(date(2026, 7, 1), 124, old)
+    made = nights_from(date(2026, 6, 1), 154, old)
     # A kept night with an ancient timestamp, a pruned one stamped today.
-    os.utime(os.path.join(old, J.machine_name("2026-08-05")), (1, 1))
-    os.utime(os.path.join(old, J.machine_name("2026-08-01")),
+    os.utime(os.path.join(old, J.machine_name("2026-07-05")), (1, 1))
+    os.utime(os.path.join(old, J.machine_name("2026-07-01")),
              (_t.time(), _t.time()))
-    strangers = ["notes.txt", "night_2026-08-01.jsonl.bak",
+    strangers = ["notes.txt", "night_2026-07-01.jsonl.bak",
                  "night_2020-01-01.jsonl.txt", "ltcplay.log"]
     for n in strangers:
         open(os.path.join(old, n), "w").write("x")
     os.makedirs(os.path.join(old, "night_2020-01-01.jsonl"))
-    os.makedirs(os.path.join(old, "incidents", "incident_2020-01-01_120000"))
+    inc = os.path.join(old, "incidents")
+    for n in ("incident_2026-07-01_120000", "incident_2026-07-02_120000_2",
+              "incident_2026-07-03_120000.partial",
+              "incident_2026-07-10_120000", "notes"):
+        os.makedirs(os.path.join(inc, n))
+        open(os.path.join(inc, n, "journal.txt"), "w").write("x\n")
+    open(os.path.join(inc, "incident_2020-01-01_120000"), "w").write("x")
     now[0] = datetime(2026, 11, 1, 18, 0, tzinfo=utc)   # the fall-back day
     p = _book(J, old, now)
     gone = p.prune(date(2026, 11, 1))
     left = set(os.listdir(old))
-    # Kept: 90 days back from 1 Nov is 3 Aug.
-    want = sorted(n for d, n in made if d < date(2026, 8, 3))
+    # Kept: 120 days back from 1 Nov is 4 Jul.
+    want = sorted([n for d, n in made if d < date(2026, 7, 4)] +
+                  ["incident_2026-07-01_120000",
+                   "incident_2026-07-02_120000_2",
+                   "incident_2026-07-03_120000.partial"])
     check(sorted(gone) == want,
-          f"nights older than 90 days are removed, by the date in their "
-          f"name: {len(gone)} {sorted(gone)[:4]}")
-    check(all(n in left for d, n in made if d >= date(2026, 8, 3)),
-          "the 90th night back and newer are kept, whatever their "
+          f"night files and incident folders older than 120 days are "
+          f"removed, by the date in their name: {len(gone)} "
+          f"{sorted(set(gone) ^ set(want))[:4]}")
+    check(all(n in left for d, n in made if d >= date(2026, 7, 4)),
+          "the 120th night back and newer are kept, whatever their "
           "timestamps say")
+    check(sorted(os.listdir(inc)) == ["incident_2020-01-01_120000",
+                                      "incident_2026-07-10_120000", "notes"],
+          f"a newer incident, and anything that is not an incident folder, "
+          f"stay: {sorted(os.listdir(inc))}")
     check(all(n in left for n in strangers)
-          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl"))
-          and os.path.isdir(os.path.join(old, "incidents")),
+          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl")),
           "nothing this module did not write is touched")
-    check(any(f"Removed {len(want)} night log file(s)" in r["text"]
-              for r in p.memory), "the journal says what was removed")
-    # A clock a year ahead calls every night old. The nights that exist
-    # are kept all the same: never fewer than the newest 90 of them.
+    check(any("Removed 66 night log file(s) and 3 incident folder(s)" in
+              r["text"] for r in p.memory),
+          "the journal says what was removed")
+    # A clock nobody could check (no time server, 10 minutes of running)
+    # prunes with a floor: the newest 120 nights that exist stay whatever
+    # the date says. A clock the time server agreed with prunes by age.
     ahead = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(ahead)
     nights_from(date(2026, 11, 14), 4, ahead)
     now[0] = datetime(2027, 11, 20, 18, 0, tzinfo=utc)
-    check(_book(J, ahead, now).prune(date(2027, 11, 20)) == []
+    check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=True) == []
           and len(os.listdir(ahead)) == 8,
-          f"a clock a year ahead removes nothing: {os.listdir(ahead)}")
+          f"an unchecked clock a year ahead removes nothing: "
+          f"{os.listdir(ahead)}")
+    check(len(_book(J, ahead, now).prune(date(2027, 11, 20))) == 8,
+          "a checked clock removes by age alone, even the last nights")
     many = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many)
-    made = nights_from(date(2026, 11, 1), 120, many, (J.machine_name,))
-    gone = _book(J, many, now).prune(date(2028, 1, 1))
+    made = nights_from(date(2026, 11, 1), 150, many, (J.machine_name,))
+    gone = _book(J, many, now).prune(date(2028, 1, 1), floor=True)
     check(sorted(gone) == [n for _d, n in made[:30]]
           and sum(os.path.exists(os.path.join(many, n))
-                  for _d, n in made) == 90,
-          f"however far ahead, the newest 90 nights stay: {len(gone)}")
-    # The spring change: 90 days back from 14 Mar 2027 is 14 Dec 2026.
+                  for _d, n in made) == 120,
+          f"however far ahead, an unchecked clock keeps the newest 120 "
+          f"nights: {len(gone)}")
+    # The spring change: 120 days back from 14 Mar 2027 is 14 Nov 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
-    made = nights_from(date(2026, 12, 1), 104, spring, (J.machine_name,))
+    made = nights_from(date(2026, 11, 1), 134, spring, (J.machine_name,))
     now[0] = datetime(2027, 3, 14, 9, 30, tzinfo=utc)     # 02:30 MST skipped
     sp = _book(J, spring, now)
     check(sorted(sp.prune(date(2027, 3, 14))) ==
-          [n for d, n in made if d < date(2026, 12, 14)],
+          [n for d, n in made if d < date(2026, 11, 14)],
           f"across the spring change too: {sorted(os.listdir(spring))[:3]}")
     check(sp.night_of() == date(2027, 3, 14), "the night is the local date")
 
@@ -15881,8 +15902,8 @@ def test_journal_rotation_and_pruning_across_dst():
     def there(d):
         return os.path.exists(os.path.join(nights, J.machine_name(d)))
 
-    check(not there("2026-07-06") and there("2026-07-07"),
-          "the service prunes when a night begins, keeping the newest 90")
+    check(not there("2026-07-16") and there("2026-07-17"),
+          "the service prunes by age when a night begins")
     now[0] = _den(S, 21, 35)
     svc._apply(_op(S, S.HOLD_ON))
     now[0] = _den(S, 23, 59, 50)
@@ -15892,25 +15913,30 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
-    check(not there("2026-07-07") and there("2026-07-08"),
+    check(not there("2026-07-17") and there("2026-07-18"),
           "and prunes again when the next night begins")
     check(there("2026-11-15"),
           "after midnight the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
-    # has run for 10 minutes.
+    # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
     nights2 = os.path.join(work2, "nights")
     os.makedirs(nights2)
-    nights_from(date(2026, 7, 1), 95, nights2, (J.machine_name,))
+    nights_from(date(2026, 6, 1), 130, nights2, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc2 = _svc(S, work2, now, ntp_query=lambda: 90000.0).start(thread=False)
-    first = os.path.join(nights2, J.machine_name("2026-07-01"))
+    first = os.path.join(nights2, J.machine_name("2026-06-01"))
     check(svc2.clock_check["level"] == "warn" and os.path.exists(first),
           "an unchecked clock prunes nothing at first")
     now[0] = _den(S, 21, 40, 1)
     svc2.tick()
-    check(not os.path.exists(first),
-          "and prunes, still keeping the newest 90, after 10 minutes")
+
+    def there2(d):
+        return os.path.exists(os.path.join(nights2, J.machine_name(d)))
+
+    check(not there2("2026-06-11") and there2("2026-06-12"),
+          "and after 10 minutes prunes, keeping the newest 120 nights even "
+          "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
     check(os.path.exists(sp14) and "written at midnight" in
           open(sp14, encoding="utf-8").read(),
@@ -15980,7 +16006,8 @@ def test_journal_nightly_summary():
     text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
     for want, why in (
             ("# Night summary: Saturday 14 November 2026", "the title"),
-            ("closed by Andy with End night", "who closed the night"),
+            ("closed by Andy with Close for the night",
+             "who closed the night"),
             ("| 1 | 18:00 | DONE |", "show 1 ran"),
             ("| 2 | 18:20 | MISSED | MISSED (late by 1m 0s)",
              "show 2 missed, with its reason"),
@@ -15988,7 +16015,7 @@ def test_journal_nightly_summary():
             ("ABORTED (operator)", "with its reason"),
             ("| 4 | 19:00 | DONE | started 19:03:00; ended 19:10:20; "
              "DELAYED START (operator hold)", "show 4's delayed start"),
-            ("SKIPPED (operator, End night)", "the rest skipped"),
+            ("SKIPPED (operator, Close for the night)", "the rest skipped"),
             ("Andy played the Delayed announcement, 18 s, finished "
              "normally.", "the announcement"),
             ("MadMapper stopped sending its heartbeat", "the fault, in its "
@@ -16042,7 +16069,7 @@ def test_journal_nightly_summary():
     c = _svc(S, work2, now).start(thread=False)
     p3 = os.path.join(work2, "nights", J.summary_name("2026-11-14"))
     t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
-    check("written the next day" in t3 and "| 3 |  | ABORTED |" in t3
+    check("written later from the journal" in t3 and "| 3 |  | ABORTED |" in t3
           and "| 2 |  | MISSED |" in t3,
           f"a night without a summary gets one the next day, from its "
           f"journal: {t3[:600]!r}")
@@ -16272,7 +16299,8 @@ def test_journal_a_full_disk_stops_the_logging_not_the_show():
     now[0] = _den(S, 18, 5)
     svc._journal_line("system", "A line with the disk nearly full.")
     h = svc.logbook.health()
-    check(not h["ok"] and "only 50 MB is free" in h["sentence"],
+    check(J.FREE_FLOOR_MB == 500 and not h["ok"] and
+          "only 50 MB is free on the disk, under the 500 MB" in h["sentence"],
           f"a nearly full disk stops the logging: {h['sentence']}")
     check(h["free_mb"] == 50 and h["free_checked_age_s"] is not None,
           "the free space carries the age of its reading")
@@ -17199,16 +17227,16 @@ def test_journal_housekeeping_runs_once():
         with svc.lock:
             svc._ensure_night(base)
         svc.clock_check = {"level": "ok"}
-        calls = {"prune": 0, "summary": 0}
+        calls = {"prune": 0, "summary": {}}
         real_prune, real_sum = svc.logbook.prune, svc.logbook.write_summary
 
         def prune(*a, **k):
             calls["prune"] += 1
             return real_prune(*a, **k)
 
-        def summary(*a, **k):
-            calls["summary"] += 1
-            return real_sum(*a, **k)
+        def summary(night, *a, **k):
+            calls["summary"][night] = calls["summary"].get(night, 0) + 1
+            return real_sum(night, *a, **k)
 
         svc.logbook.prune, svc.logbook.write_summary = prune, summary
         slow["on"] = True
@@ -17221,10 +17249,138 @@ def test_journal_housekeeping_runs_once():
         for t in ts:
             t.join(10)
         slow["on"] = False
-        if calls["prune"] > 1 or calls["summary"] > 1:
+        if calls["prune"] > 1 or any(n > 1 for n in
+                                     calls["summary"].values()):
             twice.append(dict(calls))
     check(not twice, f"housekeeping is decided under the lock, so it runs "
                      f"once: {twice}")
+    print("  ok")
+
+
+
+def test_journal_every_line_reaches_the_disk_within_a_second():
+    section("journal: every line is on the disk, flushed and synced, within "
+            "a second of happening")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import time as _t
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    syncs = {"n": 0}
+
+    def fsync(fd):
+        syncs["n"] += 1
+        return os.fsync(fd)
+
+    b = J.Logbook(work, tz=S.zone("America/Denver"), state="SHOW",
+                  fsync=fsync).start_writer()
+    jp = os.path.join(work, J.journal_name(b.current_night()))
+
+    def on_disk(text):
+        try:
+            return text in open(jp, encoding="utf-8").read()
+        except OSError:
+            return False
+
+    check(J.MAX_LINE_WAIT_S <= 1.0, f"the bound is a second at most: "
+                                    f"{J.MAX_LINE_WAIT_S}")
+    for i in range(3):
+        before = syncs["n"]
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Line {i}, which must be on the disk at once.")
+        check(wait_for(lambda: on_disk(f"Line {i},"),
+                       timeout=J.MAX_LINE_WAIT_S),
+              f"line {i} is on the disk within {J.MAX_LINE_WAIT_S:g} s")
+        check(wait_for(lambda: syncs["n"] >= before + 2, timeout=1.0),
+              f"and both files were synced to the disk: "
+              f"{syncs['n'] - before}")
+    # A wake-up that never comes: the line still goes down within the
+    # bound, because the writer looks again at least that often.
+    wake = b._wake.set
+    b._wake.set = lambda: None
+    t0 = _t.monotonic()
+    b.record(actor="system", action="note", outcome="done", reason="r",
+             text="A line whose wake-up was lost.")
+    got = wait_for(lambda: on_disk("whose wake-up was lost"), timeout=3.0)
+    took = _t.monotonic() - t0
+    check(got and took <= J.MAX_LINE_WAIT_S + 0.5,
+          f"a line waits at most about {J.MAX_LINE_WAIT_S:g} s even when "
+          f"nothing wakes the writer: {took:.2f} s")
+    b._wake.set = wake
+    # The program dies: the writer stops where it is, nothing is closed or
+    # flushed on the way out. Every line older than the bound is there.
+    for i in range(10):
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Burst line {i} before the crash.")
+    _t.sleep(J.MAX_LINE_WAIT_S + 0.2)
+    b._closing = True                 # killed: no close(), no last drain
+    text = open(jp, encoding="utf-8").read()
+    missing = [i for i in range(10) if f"Burst line {i} before" not in text]
+    check(not missing, f"after a crash every line older than "
+                       f"{J.MAX_LINE_WAIT_S:g} s is on the disk: missing "
+                       f"{missing}")
+    print("  ok")
+
+
+def test_journal_summary_is_written_however_the_night_closes():
+    section("journal: the nightly summary is written by itself, however "
+            "the night closes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import journal as J
+    # The schedule's own close, after the last show: nobody presses
+    # anything.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    for t in ((21, 40), (21, 47, 20), (21, 47, 21)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    path = os.path.join(work, "nights", J.summary_name("2026-11-14"))
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) \
+        else ""
+    check(svc.machine.state == S.OFF and "closed after the last show" in
+          text, f"the schedule's own close writes it: "
+                f"{svc.machine.state} {text[:200]!r}")
+    # Close for the night: the operator's words, never End night.
+    work2 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    b = _svc(S, work2, now).start(thread=False)
+    now[0] = _den(S, 18, 30)
+    b._apply(_op(S, S.END_NIGHT, confirmed=True))
+    t2 = open(os.path.join(work2, "nights", J.summary_name("2026-11-14")),
+              encoding="utf-8").read()
+    j2 = open(os.path.join(work2, "nights", J.journal_name("2026-11-14")),
+              encoding="utf-8").read()
+    check("closed by Andy with Close for the night" in t2
+          and "Andy pressed Close for the night on the rack screen" in j2
+          and "the night was closed" in j2,
+          "Close for the night writes it, in those words")
+    check("End night" not in t2 and "End night" not in j2
+          and "End the night" not in j2,
+          "no operator sentence says End night any more")
+    check([a["label"] for a in S.ACTIONS if a["id"] == "end_night"] ==
+          ["Close for the night"] and "Close for the night?" in
+          [a["confirm"] for a in S.ACTIONS if a["id"] == "end_night"][0],
+          "the transport panel's label and question say it too")
+    # A crash, and ltcplay not back for three days: every night it missed
+    # closing gets its summary when it starts, with no button.
+    work3 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    a = _svc(S, work3, now).start(thread=False)
+    now[0] = _den(S, 18, 0)
+    a.tick()                                       # show 1; then the crash
+    now[0] = _den(S, 17, 0, d=(2026, 11, 17))
+    _svc(S, work3, now).start(thread=False)
+    p3 = os.path.join(work3, "nights", J.summary_name("2026-11-14"))
+    t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
+    check("written later from the journal" in t3 and "| 1 |" in t3,
+          f"the night the crash cut short gets its summary three days "
+          f"later: {t3[:200]!r}")
     print("  ok")
 
 
@@ -17386,6 +17542,8 @@ if __name__ == "__main__":
     test_journal_summary_lists_every_fault()
     test_journal_leftover_temp_files_are_cleared()
     test_journal_housekeeping_runs_once()
+    test_journal_every_line_reaches_the_disk_within_a_second()
+    test_journal_summary_is_written_however_the_night_closes()
     test_announce_probe_matches_open_for_format()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()

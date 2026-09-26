@@ -40,9 +40,13 @@ The rules it keeps:
   hands a record over; writing happens on the journal's own thread. A failure
   is a health flag with a sentence; the lines wait in memory and are written,
   in order, when the disk takes them again.
-- Night files are kept 90 days. Pruning goes by the date in the file's own
-  name, never by its timestamp, so a change of clocks cannot shorten it, and
-  it touches nothing whose name it did not write.
+- Every line reaches the disk as it happens: the writer is woken by each
+  line (and wakes at least every MAX_LINE_WAIT_S anyway), writes the batch
+  and flushes and fsyncs each file before it moves on. With a disk that is
+  answering, a crash loses at most the lines of the last second.
+- Night files and incident folders are kept 120 days. Pruning goes by the
+  date in the name, never by a timestamp, so a change of clocks cannot
+  shorten it, and it touches nothing whose name it did not write.
 
 A flame provider (the flame bus, a later build) is optional. When there is
 one it has two methods, and anything either raises becomes a sentence:
@@ -77,7 +81,8 @@ WINDOWS = sys.platform == "win32"
 # imports the scheduler. The selftest checks the two lists agree.
 ACTORS = ("scheduler", "operator", "madmapper", "safety", "reader", "system")
 
-KEEP_DAYS = 90
+# Night files and incident folders are kept this long (Jeff, 2026-09-26).
+KEEP_DAYS = 120
 MEMORY_LINES = 400          # what the page can scroll back through
 PAGE_LINES = 20             # the log strip: the last 20, newest first
 RING_SECONDS = 60
@@ -87,7 +92,12 @@ FLAME_FRAMES = 20
 PENDING_MAX = 5000          # lines waiting for a disk that is not taking them
 RETRY_S = 30.0              # how often a stopped disk is tried again
 FREE_CHECK_S = 60.0         # how often free space is looked at
-FREE_FLOOR_MB = 100         # below this, logging stops to leave the room
+FREE_FLOOR_MB = 500         # below this, logging stops to leave the room
+# The longest a line waits in memory before the writer takes it to disk,
+# when the disk is answering. The writer is also woken by every line, so
+# normally it is a few milliseconds; this bounds it even if a wake-up is
+# missed. Each batch is flushed and fsynced before the writer moves on.
+MAX_LINE_WAIT_S = 1.0
 LOCK_TRIES = 5
 LOCK_WAIT_S = 0.02
 SUMMARY_LIST_MAX = 25       # one page: longer lists point at the journal
@@ -97,6 +107,9 @@ INCIDENTS = "incidents"
 LOCK_FILE = ".writing.lock"
 # A summary's temp file left by a crash mid-write; removed at start.
 _STALE = re.compile(r"^night_\d{4}-\d{2}-\d{2}\.summary\.md\.\d+\.new$")
+# An incident folder, finished or left half-written by a crash.
+_INCIDENT = re.compile(r"^incident_(\d{4})-(\d{2})-(\d{2})_\d{6}(_\d+)?"
+                       r"(\.partial)?$")
 _NAME = re.compile(r"^night_(\d{4})-(\d{2})-(\d{2})"
                    r"\.(journal\.txt|jsonl|summary\.md)$")
 
@@ -427,6 +440,24 @@ def _replace(src, dst, tries=5, sleep=_time.sleep):
             sleep(0.1 * (i + 1))
 
 
+def _sync_folder(folder):
+    """Make a new file's name as durable as its contents. On Windows NTFS
+    journals the name itself and a folder cannot be opened this way, so
+    there is nothing to do."""
+    if WINDOWS:
+        return
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _write_new(path, data):
     """A file that did not exist, written whole. Never replaces one."""
     with open(path, "xb") as fh:
@@ -468,7 +499,7 @@ class Logbook:
                  flame_provider=None, memory=MEMORY_LINES,
                  keep_days=KEEP_DAYS, opener=None, disk_usage=None,
                  sleep=None, retry_s=RETRY_S, free_floor_mb=FREE_FLOOR_MB,
-                 durable=True, state=None, night=None):
+                 durable=True, state=None, night=None, fsync=None):
         self.folder = os.path.abspath(folder or default_folder())
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._tz = tz
@@ -485,6 +516,7 @@ class Logbook:
         self.retry_s = retry_s
         self.free_floor_mb = free_floor_mb
         self.durable = durable
+        self._fsync = fsync or os.fsync
         self._lock = threading.Lock()       # memory, pending, ring
         self._io = threading.RLock()        # one writer at a time
         self._pending = deque()             # [record, streams written]
@@ -659,7 +691,7 @@ class Logbook:
 
     def _write_loop(self):
         while not self._closing:
-            self._wake.wait(1.0)
+            self._wake.wait(MAX_LINE_WAIT_S)
             self._wake.clear()
             try:
                 self.drain()
@@ -701,6 +733,16 @@ class Logbook:
     def pending(self):
         with self._lock:
             return len(self._pending)
+
+    def oldest_waiting_s(self, now=None):
+        """How long the oldest line not yet on disk has waited, or None."""
+        with self._lock:
+            first = self._pending[0][0] if self._pending else None
+        at = _parse_at(first.get("at")) if first else None
+        if at is None:
+            return None
+        now = now or self.clock()
+        return round(max(0.0, (now - at).total_seconds()), 3)
 
     def drain(self, force=False, timeout=None):
         """Write every waiting line, in order. Never raises. True when
@@ -770,7 +812,8 @@ class Logbook:
                 _unlock(lk)
 
     def _append(self, path, todo, stream, encode):
-        cut = path not in self._tails_ok and os.path.exists(path) and \
+        new = not os.path.exists(path)
+        cut = path not in self._tails_ok and not new and \
             os.path.getsize(path) > 0 and not _tail(path, 1).endswith(b"\n")
         fh = self._opener(path)
         try:
@@ -787,7 +830,12 @@ class Logbook:
                 e[1].add(stream)
                 self.writes += 1
             if self.durable:
-                os.fsync(fh.fileno())
+                # On the disk, not in the operating system's memory, before
+                # the writer moves on: a crash or a power cut after this
+                # cannot take the line back.
+                self._fsync(fh.fileno())
+                if new:
+                    _sync_folder(self.folder)
             self._tails_ok.add(path)
         finally:
             fh.close()
@@ -926,7 +974,9 @@ class Logbook:
                 "free_mb": (round(self._free_mb) if self._free_mb is not None
                             else None),
                 "free_checked_age_s": age(self._free_at),
-                "pending": pending, "dropped": self._dropped,
+                "pending": pending,
+                "oldest_waiting_s": self.oldest_waiting_s(now),
+                "dropped": self._dropped,
                 "keep_days": self.keep_days}
 
     # -- the ring buffer ------------------------------------------------------
@@ -1049,14 +1099,20 @@ class Logbook:
         return out, note, cut
 
     # -- pruning ----------------------------------------------------------
-    def prune(self, today, state="BOOT"):
-        """Remove night files older than keep_days before `today`, a date.
+    def prune(self, today, state="BOOT", floor=False):
+        """Remove night files and incident folders older than keep_days
+        before `today`, a date.
 
-        By the date in the file's own name, so a change of clocks, a file
-        copied in with an old timestamp or a clock set wrong for an hour
-        cannot remove the wrong night. Only names this module writes, only
-        plain files, only in its own folder; incident folders are never
-        touched. Returns the names removed."""
+        By the date in the name, so a change of clocks, a file copied in
+        with an old timestamp or a clock set wrong for an hour cannot remove
+        the wrong night. Only names this module writes, only plain files
+        (nights) and plain folders (incidents), only in its own folder.
+
+        `floor` is for a clock nobody has checked: the newest keep_days
+        nights that exist, and anything as new as the oldest of them, are
+        kept whatever the date says, so a clock set a year ahead removes
+        nothing it should not. With a clock the time server agreed with,
+        the age rule alone decides. Returns the names removed."""
         cutoff = today - timedelta(days=self.keep_days)
         removed, problems = [], []
         try:
@@ -1072,42 +1128,71 @@ class Logbook:
                 d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
             except ValueError:
                 continue
-            found.append((d, name))
-        # Never trust the date alone: a clock set a year ahead would call
-        # every night old. The newest keep_days nights that exist are kept
-        # whatever the date says.
-        newest = set(sorted({d for d, _n in found},
-                            reverse=True)[:self.keep_days])
-        for d, name in found:
-            if d >= cutoff or d in newest:
+            found.append((d, name, self.folder, False))
+        inc_root = os.path.join(self.folder, INCIDENTS)
+        try:
+            inc_names = sorted(os.listdir(inc_root))
+        except OSError:
+            inc_names = []
+        for name in inc_names:
+            m = _INCIDENT.match(name)
+            if not m:
                 continue
-            p = os.path.join(self.folder, name)
             try:
-                if not stat.S_ISREG(os.lstat(p).st_mode):
-                    continue
-                os.remove(p)
-                removed.append((d, name))
+                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                continue
+            found.append((d, name, inc_root, True))
+        keep_from = cutoff
+        if floor:
+            nights = sorted({d for d, _n, _r, inc in found if not inc},
+                            reverse=True)[:self.keep_days]
+            if nights:
+                keep_from = min(cutoff, nights[-1])
+        for d, name, root, incident in found:
+            if d >= keep_from:
+                continue
+            p = os.path.join(root, name)
+            try:
+                mode = os.lstat(p).st_mode
+                if incident:
+                    if not stat.S_ISDIR(mode):
+                        continue
+                    shutil.rmtree(p)
+                else:
+                    if not stat.S_ISREG(mode):
+                        continue
+                    os.remove(p)
+                removed.append((d, name, incident))
             except OSError as e:
                 problems.append(f"{name} ({e.strerror or e})")
+        nights_gone = [x for x in removed if not x[2]]
+        incidents_gone = [x for x in removed if x[2]]
         if removed:
-            first, last = removed[0][0], removed[-1][0]
+            first = min(d for d, _n, _i in removed)
+            last = max(d for d, _n, _i in removed)
+            what = []
+            if nights_gone:
+                what.append(f"{len(nights_gone)} night log file(s)")
+            if incidents_gone:
+                what.append(f"{len(incidents_gone)} incident folder(s)")
             self.record(actor="system", action="prune", outcome="removed",
                         reason=f"older than {self.keep_days} days",
-                        text=(f"Removed {len(removed)} night log file(s) "
-                              f"older than {self.keep_days} days, from "
-                              f"{first} to {last}. Nights from {cutoff} on "
-                              f"are kept."),
+                        text=(f"Removed {' and '.join(what)} older than "
+                              f"{self.keep_days} days, from {first} to "
+                              f"{last}. Everything from {keep_from} on is "
+                              f"kept."),
                         state=state, night=today,
-                        data={"removed": [n for _d, n in removed]})
+                        data={"removed": [n for _d, n, _i in removed]})
         if problems:
             self.record(actor="system", action="prune", outcome="failed",
                         reason="could not remove old files",
-                        text=(f"Could not remove {len(problems)} old night "
-                              f"log file(s): {', '.join(problems[:5])}. They "
-                              f"are left where they are and tried again "
-                              f"tomorrow."),
+                        text=(f"Could not remove {len(problems)} old log "
+                              f"file(s) or folder(s): "
+                              f"{', '.join(problems[:5])}. They are left "
+                              f"where they are and tried again tomorrow."),
                         state=state, night=today)
-        return [n for _d, n in removed]
+        return [n for _d, n, _i in removed]
 
     # -- the incident bundle --------------------------------------------------
     def save_incident(self, *, who, screen, state, night=None, config=None,
@@ -1376,7 +1461,7 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
         count[s["status"]] = count.get(s["status"], 0) + 1
     # What operators did: each press, in the operator's own line, and each
     # refusal. The lines an action writes about every show it touched
-    # (eight "will not run" lines for one End night) are in the journal.
+    # (eight "will not run" lines for one Close for the night) are in the journal.
     ops = [r for r in recs if r.get("actor") == "operator" and (
         r.get("outcome") == "refused"
         or str(r.get("who") or "").lower() in str(r.get("text")).lower())]

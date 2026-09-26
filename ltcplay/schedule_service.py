@@ -632,9 +632,10 @@ class Service:
             self._save_tonight()
         if self.machine.state == sch.OFF and before is not None and \
                 before.state != sch.OFF and self.machine.slots:
-            # The night has closed, by End night or after its last show:
+            # The night has closed, by Close for the night or after its
+            # last show:
             # the morning read goes beside the journal now.
-            how = (f"closed by {ev.who} with End night"
+            how = (f"closed by {ev.who} with Close for the night"
                    if ev.kind == sch.END_NIGHT else
                    "closed after the last show" if before.state != sch.BOOT
                    else "closed at start up, every show having passed")
@@ -703,18 +704,36 @@ class Service:
                                  "summary to write. " + self.error)
             return self._write_summary("written on request")
 
+    # How many earlier nights a start looks back over for a missing summary.
+    LOOK_BACK_NIGHTS = 14
+
     def _look_back(self, d, state):
-        """Once per run (housekeeping decides when): a night that ended
-        without its summary (the program was not running when it closed,
-        or the power went) gets one from its own journal, so the morning
-        read is always there."""
-        prev = d - timedelta(days=1)
+        """Once per run (housekeeping decides when): every earlier night
+        that ended without its summary (the program was not running when it
+        closed, or the power went, perhaps for days) gets one from its own
+        journal, so the morning read is always there. It never waits for a
+        button."""
         folder = self.logbook.folder
-        if os.path.exists(os.path.join(folder, journal.machine_name(prev))) \
-                and not os.path.exists(
-                    os.path.join(folder, journal.summary_name(prev))):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return
+        nights = []
+        for name in names:
+            m = journal._NAME.match(name)
+            if not m or m.group(4) != "jsonl":
+                continue
+            try:
+                n = datetime(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))).date()
+            except ValueError:
+                continue
+            if n < d and not os.path.exists(
+                    os.path.join(folder, journal.summary_name(n))):
+                nights.append(n)
+        for prev in sorted(nights)[-self.LOOK_BACK_NIGHTS:]:
             self._log(self.logbook.write_summary, prev, state=state,
-                      closed_by="written the next day from the journal, "
+                      closed_by="written later from the journal, "
                                 "because the night never closed while "
                                 "ltcplay was running")
 
@@ -909,10 +928,14 @@ class Service:
                 prune = self._pruned_for != d and self._prune_allowed()
                 if prune:
                     self._pruned_for = d
+                # A clock the time server agreed with prunes by age alone;
+                # one nobody could check (10 minutes of running, no time
+                # server) also keeps the newest nights that exist.
+                floor = (self.clock_check or {}).get("level") != "ok"
             if look:
                 self._look_back(d, state)
             if prune:
-                self._log(self.logbook.prune, d, state=state)
+                self._log(self.logbook.prune, d, state=state, floor=floor)
         finally:
             self._hk_busy = False
 
