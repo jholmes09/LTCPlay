@@ -1418,12 +1418,54 @@ MUTATIONS = [
   '        if False:'),
 
  ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
-  '                and self.on_show_started is not None:\n'
-  '            try:\n'
-  '                self.on_show_started(self.machine.state)',
-  '                and self.on_show_started is not None:\n'
-  '            try:\n'
-  '                pass'),
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            pass'),
+
+ ("the show-start hook tears the stream down synchronously",
+  "ltcplay/announce.py",
+  '        with self.lock:\n'
+  '            if not SHOW_START_STOPS_ANNOUNCEMENT:\n'
+  '                return\n'
+  '            if self.playing is None or self._player is None:\n'
+  '                return\n'
+  '            if self._player.stop_reason is not None:\n'
+  '                return                      # already stopping',
+  '        with self.lock:\n'
+  '            self._settle()\n'
+  '            if not SHOW_START_STOPS_ANNOUNCEMENT:\n'
+  '                return\n'
+  '            if self.playing is None or self._player is None:\n'
+  '                return\n'
+  '            if self._player.stop_reason is not None:\n'
+  '                return                      # already stopping'),
+
+ ("the announcements hook runs inside Service.lock again",
+  "ltcplay/schedule_service.py",
+  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            self.on_show_started(self.machine.state)'),
+
+ ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
+  '            if self._claim_gen != my_gen or self.playing != ann_id:',
+  '            if self.playing != ann_id:'),
+
+ ("load_operators' own sentence is not cleaned of dashes",
+  "ltcplay/announce.py",
+  '            f"The operator list {_clean(path)} could not be used: "\n'
+  '            f"{_clean(str(e)).rstrip(\'.\')}. Using "',
+  '            f"The operator list {path} could not be used: "\n'
+  '            f"{str(e).rstrip(\'.\')}. Using "'),
+
+ ("tick() waits for the show-start hook even after releasing the lock",
+  "ltcplay/schedule_service.py",
+  '            for hook in pending:\n'
+  '                threading.Thread(target=self._run_hook, args=(hook,),\n'
+  '                                 daemon=True,\n'
+  '                                 name="ltcplay-announce-hook").start()',
+  '            for hook in pending:\n'
+  '                self._run_hook(hook)'),
 
 ]
 

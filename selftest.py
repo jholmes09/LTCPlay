@@ -11349,11 +11349,18 @@ def test_announce_show_start_stops_announcement():
     svc.tick()
     check(svc.machine.state == S.SHOW,
           f"setup: the next slot fired: {svc.machine.state}")
-    check(ann._player is not None
-          and ann._player.stop_reason == "a show started",
-          "the show-started hook must put the player into a fade, "
-          "synchronously, inside svc.tick() itself: the hook is a push, "
-          "not something announce.py polled the scheduler for")
+    # The hook runs on a thread of its own now (review round 2, blocker
+    # 1a/1b: tick() itself must return in under 50 ms even if a hook is
+    # slow, so it cannot wait for the hook either) -- svc.tick() returning
+    # says only that the hook was QUEUED, not that it has run yet. This is
+    # the one place that gap is visible from the outside, and a short poll
+    # is the deterministic way to wait for it, the same as any other
+    # cross-thread handoff in this suite.
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "a show started",
+                   timeout=2.0),
+          "the show-started hook must put the player into a fade: it is "
+          "a push, not something announce.py polled the scheduler for")
     check(ann.playing == A.DELAYED,
           "the fade has not finished yet, so it is still the one playing")
 
@@ -11516,6 +11523,270 @@ def test_announce_minor_hardening():
     check(any(r["reason"] == "channels dropped" for r in svc3.journal),
           f"playing a 2-channel file on a 1-channel device must log a "
           f"note: {list(svc3.journal)}")
+
+    # The _emit() backstop: even text this module did not build from a
+    # path or an exception (a call site that forgot its own _clean(), the
+    # way load_operators() once did) must come out of the journal clean.
+    row = svc3._emit(actor="system", action="test", outcome="note",
+                     reason="a — dash", text="another – dash",
+                     state=None)
+    _no_dashes(row["reason"], "_emit's own reason backstop")
+    _no_dashes(row["text"], "_emit's own text backstop")
+    print("  ok")
+
+
+def test_announce_load_operators_dash_cleaning():
+    section("announcements: load_operators' own sentence is cleaned too")
+    A = _ann()
+    work = tempfile.mkdtemp(suffix="-Fire–Ice")   # en dash in the path
+    bad = os.path.join(work, A.OPERATORS_FILE)
+    with open(bad, "w", encoding="utf-8") as fh:
+        fh.write("not json at all")
+    names, why = A.load_operators(work)
+    check(names == A.DEFAULT_OPERATORS,
+          "a broken operator list file falls back to the defaults")
+    check(bool(why), "and says why")
+    _no_dashes(why, "load_operators' own sentence")
+    print("  ok")
+
+
+def test_announce_show_start_hook_never_touches_the_stream():
+    section("announcements: the show-start hook only flips in-memory "
+            "state, it never calls into the output stream itself")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+
+    class SlowCloseStream:
+        def start(self):
+            pass
+
+        def stop(self):
+            time.sleep(2.0)   # would hang THIS test if ever actually called
+
+        def close(self):
+            pass
+
+    class SlowSD:
+        def __init__(self):
+            self.devices = [{"name": "MOTU M4", "max_output_channels": 2,
+                            "default_samplerate": 8000}]
+
+            class _Default:
+                device = (None, None)
+            self.default = _Default()
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, **kw):
+            return SlowCloseStream()
+
+    svc = A.AnnounceService(cfg, sd=SlowSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    # Finished on its own, but unnoticed: nobody has polled status(),
+    # Play or Stop since, exactly the case that used to reach
+    # _finish() -> stream.stop() from inside the hook.
+    svc._player.frames_written = svc._player.total_frames
+    svc._player.done = True
+
+    t0 = time.time()
+    svc.on_show_started("SHOW")
+    elapsed = time.time() - t0
+    check(elapsed < 0.5,
+          f"on_show_started must never call into the output stream "
+          f"(stop() here deliberately hangs for 2 s): took {elapsed:.2f} s"
+          f" (audit13b_scheduler_stall.py)")
+    check(svc._player is not None
+          and svc._player.stop_reason == "a show started",
+          "it must still record why, for whatever settles it later")
+    check(svc.playing == A.DELAYED,
+          "the actual teardown is left to announce.py's own path (a "
+          "status poll, Play, Stop, the stall watchdog), never the hook "
+          "itself")
+    print("  ok")
+
+
+def test_schedule_hook_runs_outside_service_lock():
+    section("scheduler: on_show_started is called strictly after "
+            "Service.lock is released, never while nested inside it")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, SV.RULE_FILE)
+    # first_start 17:30, not the shared _sched_doc()'s 17:00: the slot this
+    # test fires is 17:50, and it has to actually land on a real boundary.
+    doc = {"timezone": "America/Denver",
+           "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+           "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+           "exceptions": {}, "show_len_s": 440, "guard_s": 120,
+           "late_grace_s": 0}
+    SV.save_rule(path, doc)
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=work)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: expected STANDBY, got {svc.machine.state}")
+
+    HANG_S = 1.0
+    calls = []
+
+    def slow_hook(state):
+        calls.append(state)
+        # A deliberately slow hook, standing in for ANY future hook that
+        # is not as careful as announce.py's own about never touching a
+        # stream: schedule_service.py must not trust that. It must simply
+        # never let a hook run while Service.lock is held, by anyone, at
+        # any depth (audit13b_scheduler_stall.py).
+        time.sleep(HANG_S)
+
+    svc.on_show_started = slow_hook
+    now[0] = _den(S, 17, 50, 0)
+
+    lock_wait = {}
+
+    def other_thread():
+        t0 = time.monotonic()
+        with svc.lock:
+            pass
+        lock_wait["s"] = time.monotonic() - t0
+
+    t0 = time.monotonic()
+    tick_thread = threading.Thread(target=svc.tick)
+    tick_thread.start()
+    # The hook is running on its own, well outside svc.lock, by the time
+    # it has actually been called -- if it were not, a thread wanting the
+    # same lock would simply queue up behind whichever one holds it.
+    check(wait_for(lambda: calls, timeout=2.0),
+          "setup: the hook must actually run")
+    other = threading.Thread(target=other_thread)
+    other.start()
+    tick_thread.join(timeout=HANG_S + 5)
+    tick_elapsed = time.monotonic() - t0
+    other.join(timeout=HANG_S + 5)
+
+    check(svc.machine.state == S.SHOW,
+          f"setup: expected the slot to fire into SHOW, got "
+          f"{svc.machine.state}")
+    check(calls == [S.SHOW],
+          f"the hook must fire exactly once, with the new state: {calls}")
+    check(tick_elapsed < 0.5,
+          f"tick() must not wait for the hook it queued: took "
+          f"{tick_elapsed:.2f} s (the hook itself takes {HANG_S:g} s)")
+    check(lock_wait.get("s", 999) < 0.5,
+          f"a separate thread wanting Service.lock (Abort, Hold, Start "
+          f"now, any status poll) must not wait behind a slow hook: "
+          f"waited {lock_wait.get('s')} s")
+    print("  ok")
+
+
+def test_announce_reentrant_claim_does_not_orphan_a_stream():
+    section("announcements: a stale, superseded Play attempt can never "
+            "overwrite a later one's live stream")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir(device="Sound Blaster Play! 3")
+
+    class FakeStream:
+        _n = 0
+
+        def __init__(self):
+            FakeStream._n += 1
+            self.id = FakeStream._n
+            self.started = self.stopped = self.closed = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    class _SD:
+        def __init__(self):
+            self.devices = [{"name": "Sound Blaster Play! 3",
+                            "max_output_channels": 2,
+                            "default_samplerate": 8000}]
+
+            class _Default:
+                device = (None, None)
+            self.default = _Default()
+            self.streams = []
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, device=None, channels=None,
+                         samplerate=None, blocksize=None, dtype=None,
+                         callback=None):
+            s = FakeStream()
+            self.streams.append(s)
+            return s
+
+    sd = _SD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    real_decode = svc._decode
+    release_t1 = threading.Event()
+    t1_blocked = threading.Event()
+    calls = {"n": 0}
+
+    def controlled_decode(ann_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            t1_blocked.set()
+            release_t1.wait(timeout=5)
+        return real_decode(ann_id)
+
+    svc._decode = controlled_decode
+    errors = []
+
+    def t1_play():
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+        except Exception as e:
+            errors.append(e)
+
+    t1 = threading.Thread(target=t1_play)
+    t1.start()
+    check(t1_blocked.wait(timeout=5), "setup: T1 reached its blocked decode")
+    check(svc.playing == A.DELAYED and svc._player is None,
+          "setup: T1 has claimed it, but built nothing yet")
+
+    # A legitimate Stop while T1's claim is still outstanding, exactly the
+    # interleaving the fix's own design is meant to allow.
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop clears the claim mid-decode")
+
+    # A second, independent press for the SAME id, fully synchronous.
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "a fresh press for the same id plays")
+    live_stream = svc._stream
+
+    # Now let T1's stale decode finish and race to reacquire the lock.
+    release_t1.set()
+    t1.join(timeout=5)
+    check(bool(errors),
+          "T1's stale attempt must be refused, not silently swallowed")
+    check(errors and "stopped and played again" in str(errors[0]),
+          f"and must say so, in a sentence: {errors}")
+    check(svc._stream is live_stream,
+          f"the live stream operators and the page believe is playing "
+          f"must be untouched by the stale attempt: now stream #"
+          f"{svc._stream.id if svc._stream else None}, expected #"
+          f"{live_stream.id}")
+    check(live_stream.started and not live_stream.stopped
+          and not live_stream.closed,
+          "the live stream must still be running")
+    check(len(sd.streams) == 1,
+          f"T1's stale attempt must never open a device stream at all "
+          f"once it is superseded, not open-then-close: "
+          f"{len(sd.streams)} opened (audit13b_reentrant_claim.py)")
     print("  ok")
 
 
@@ -14536,6 +14807,10 @@ if __name__ == "__main__":
     test_announce_stall_watchdog()
     test_announce_callback_status_errors()
     test_announce_minor_hardening()
+    test_announce_load_operators_dash_cleaning()
+    test_announce_show_start_hook_never_touches_the_stream()
+    test_schedule_hook_runs_outside_service_lock()
+    test_announce_reentrant_claim_does_not_orphan_a_stream()
     test_announce_interlock_matrix()
     test_announce_single_flight()
     test_announce_operator_validation()

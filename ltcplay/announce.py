@@ -153,8 +153,8 @@ def load_operators(folder=None):
             names = parse_operators(json.load(fh))
     except (OSError, ValueError) as e:
         return DEFAULT_OPERATORS, (
-            f"The operator list {path} could not be used: "
-            f"{str(e).rstrip('.')}. Using "
+            f"The operator list {_clean(path)} could not be used: "
+            f"{_clean(str(e)).rstrip('.')}. Using "
             f"{', '.join(DEFAULT_OPERATORS)} until it is fixed.")
     return names, ""
 
@@ -163,6 +163,7 @@ def load_operators(folder=None):
 def parse_config(doc, where):
     """{"device": name, "files": {"delayed": path, "cancellation": path,
     "cannot_continue": path}}. Raises ValueError with a sentence."""
+    where = _clean(where)
     if not isinstance(doc, dict) or set(doc) != {"device", "files"}:
         raise ValueError(f'{where} has to be {{"device": name, "files": '
                          f'{{...}}}} and nothing else.')
@@ -371,7 +372,14 @@ class _Player:
         self.total_frames = pcm.shape[0]
         self.frames_written = 0
         self.done = self.total_frames == 0
-        self._clock = clock or time.monotonic
+        # perf_counter, not monotonic: player.py switched to it (as _now())
+        # for the same reason this file should not disagree with it --
+        # time.monotonic() ticks in ~15.6 ms steps on Windows under
+        # Python 3.12, too coarse once any timestamp here is ever compared
+        # against one of ltcplay's own. Nothing here needs that
+        # resolution yet (STALL_S is 3 s), but there is no reason to be
+        # the one clock in the codebase that could disagree.
+        self._clock = clock or time.perf_counter
         self.last_progress_at = self._clock()
         self.callback_errors = 0
         self._fade_total = 0
@@ -443,15 +451,22 @@ class AnnounceService:
         # machine folder (data_dir()); a test points this at a tempdir so
         # it never touches, or depends on, anything really on disk.
         self.operators_folder = operators_folder
-        # Monotonic clock, injectable so the stall watchdog never needs a
-        # test to sleep for real seconds.
-        self._clock = clock or time.monotonic
+        # perf_counter, injectable so the stall watchdog never needs a
+        # test to sleep for real seconds; see the same note in _Player.
+        self._clock = clock or time.perf_counter
         self.lock = threading.RLock()
         self.journal = deque(maxlen=JOURNAL)
         self.error = ""
         self.device_name = None
         self.files = {}
         self.status_by_id = {}
+        # Bumped on every claim (a Play that gets past the interlock and
+        # the operator checks) and on every teardown (_finish). Phase B of
+        # play() compares against the value it captured at claim time, not
+        # self.playing's VALUE, so a Play that was Stopped and then played
+        # again for the SAME id cannot be mistaken for the same attempt
+        # (review round 2, should-fix 2: audit13b_reentrant_claim.py).
+        self._claim_gen = 0
         self.operators = DEFAULT_OPERATORS
         self.last_good_device = None
         self.playing = None
@@ -470,13 +485,15 @@ class AnnounceService:
                 doc = json.load(fh)
         except FileNotFoundError:
             self.error = (f"There is no announcements file at "
-                         f"{self.config_path}.")
+                         f"{_clean(self.config_path)}.")
         except OSError as e:
-            self.error = (f"The announcements file {self.config_path} "
-                         f"cannot be read: {_clean(str(e))}.")
+            self.error = (f"The announcements file "
+                         f"{_clean(self.config_path)} cannot be read: "
+                         f"{_clean(str(e))}.")
         except ValueError as e:
-            self.error = (f"The announcements file {self.config_path} is "
-                         f"not valid JSON: {_clean(str(e))}.")
+            self.error = (f"The announcements file "
+                         f"{_clean(self.config_path)} is not valid JSON: "
+                         f"{_clean(str(e))}.")
         else:
             try:
                 self.device_name, files = parse_config(doc, self.config_path)
@@ -552,11 +569,20 @@ class AnnounceService:
         """The one place a log row is produced. A logging PR is being built
         in parallel to redirect this to the two stream logger in section 9;
         until then it feeds this service's own journal, in the scheduler's
-        own shape (actor, action, outcome, reason, a plain sentence)."""
+        own shape (actor, action, outcome, reason, a plain sentence).
+
+        text and reason are run through _clean() HERE too, as a backstop:
+        every call site that builds one from a path or an exception's own
+        message is expected to clean it itself, but load_operators() once
+        did not (review round 2, minor), and a future call site could miss
+        it again. Routing every operator-facing sentence through this one
+        helper, on top of cleaning at the source, is what actually closes
+        that class of leak rather than trusting each call site to remember."""
         row = {"at": datetime.now().astimezone().isoformat(
                    timespec="seconds"),
                "actor": actor, "action": action, "outcome": outcome,
-               "reason": reason, "text": text, "who": who or None,
+               "reason": _clean(reason) if reason else reason,
+               "text": _clean(text) if text else text, "who": who or None,
                "screen": screen or None, "show_state": state,
                "announcement": ann_id,
                "file": self.files.get(ann_id) if ann_id else None}
@@ -580,6 +606,11 @@ class AnnounceService:
 
     # -- playing ------------------------------------------------------------
     def _finish(self):
+        # Every teardown ends an epoch, not just a new claim: a stale,
+        # still-decoding Play attempt for the SAME id must never mistake
+        # itself for the current claim just because self.playing happens
+        # to read the same value again by the time it reacquires the lock.
+        self._claim_gen += 1
         stream, self._stream = self._stream, None
         self._player = None
         self.playing = None
@@ -655,11 +686,24 @@ class AnnounceService:
         the moment a show starts has to be told, not merely discovered on
         the next status() poll (review, blocker 1b).
 
-        See SHOW_START_STOPS_ANNOUNCEMENT for the one place this decision
-        lives; it is not Jeff's call yet.
+        This method must return almost instantly and must NEVER touch the
+        output stream. It is called from inside schedule_service.py's own
+        _apply(), which is very possibly still nested inside
+        Service.lock at the moment it runs (schedule_service.py queues
+        the call and only invokes it after that lock is fully released,
+        see Service._locked, but this method must not depend on that for
+        its own safety either). All it does is flip in-memory state: start
+        the fade and record why. Tearing the stream down for real
+        (stream.stop()/close(), which can block on real device I/O, as
+        round 2 of review found with a synthetic 2 s hang) happens
+        strictly on this module's OWN path -- the next status() poll,
+        Play, Stop, or the stall watchdog in _settle() -- never here
+        (review round 2, blocker 1a: audit13b_scheduler_stall.py).
+
+        See SHOW_START_STOPS_ANNOUNCEMENT for the one place the decision
+        to stop at all lives; it is not Jeff's call yet.
         """
         with self.lock:
-            self._settle()
             if not SHOW_START_STOPS_ANNOUNCEMENT:
                 return
             if self.playing is None or self._player is None:
@@ -746,6 +790,14 @@ class AnnounceService:
             # read below: a second press must be refused as "already
             # playing" even while this one is still decoding, and nothing
             # may act on self.playing except while holding self.lock.
+            # _claim_gen is what makes this attempt provably MINE: a plain
+            # value comparison against self.playing further down cannot
+            # tell "still my claim" from "a LATER claim that happens to be
+            # for the same id" apart, which let a stale decode overwrite a
+            # live stream with nothing left able to stop it (review round
+            # 2, should-fix 2: audit13b_reentrant_claim.py).
+            self._claim_gen += 1
+            my_gen = self._claim_gen
             self.playing = ann_id
 
         # The file read happens WITHOUT the lock held: self.files never
@@ -757,22 +809,39 @@ class AnnounceService:
             pcm, channels, rate = self._decode(ann_id)
         except Exception as e:
             with self.lock:
-                self.playing = None
-                text = (f"{who} pressed Play on {label}{screen_txt}. It "
-                        f"failed: {_clean(str(e))}")
-                self._emit(actor="operator", action="play",
-                          outcome="failed", reason=_clean(str(e)),
-                          text=text, ann_id=ann_id, who=who, screen=screen,
-                          state=self._current_state())
+                # Only touch shared state if this is still the current
+                # claim: a Stop and a fresh Play could have already run
+                # while this decode was failing, and that fresh claim's
+                # own outcome is not this attempt's to overwrite or log
+                # over.
+                if self._claim_gen == my_gen and self.playing == ann_id:
+                    self.playing = None
+                    text = (f"{who} pressed Play on {label}{screen_txt}. "
+                            f"It failed: {_clean(str(e))}")
+                    self._emit(actor="operator", action="play",
+                              outcome="failed", reason=_clean(str(e)),
+                              text=text, ann_id=ann_id, who=who,
+                              screen=screen, state=self._current_state())
             raise ValueError(_clean(str(e)))
 
         with self.lock:
-            if self.playing != ann_id:
-                # Stop, or close(), ran while the file was being read, and
-                # already logged itself. Starting audio now would be
-                # exactly the bug this rewrite exists to close.
-                raise ValueError(f"{label} was stopped before it started "
-                                 f"playing.")
+            if self._claim_gen != my_gen or self.playing != ann_id:
+                # A LATER claim (Stop, then Play again, possibly for the
+                # same id) has already taken over while this attempt was
+                # reading its file. This attempt has built nothing yet
+                # (the stream is opened further down, after this check),
+                # so there is nothing of its own to close; it only needs
+                # to say so and get out of the way.
+                text = (f"{who} pressed Play on {label}{screen_txt}, but "
+                        f"it was stopped and played again before this "
+                        f"press finished reading its file. Nothing was "
+                        f"changed.")
+                self._emit(actor="operator", action="play",
+                          outcome="refused",
+                          reason="a later claim already started",
+                          text=text, ann_id=ann_id, who=who, screen=screen,
+                          state=self._current_state())
+                raise ValueError(text)
             # Re-check the interlock immediately before the stream actually
             # starts, INSIDE the same locked section as start(): the window
             # since the first check included a device query and the file
