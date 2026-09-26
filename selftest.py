@@ -5,9 +5,11 @@ Every check here is anchored to something real: LTC that is synthesised and then
 decoded back, packet bytes compared against the layouts in the xLights source,
 and where a real show folder is available, actual FSEQ files off disk.
 """
+import json
 import os
 import random
 import re
+import tempfile
 import threading
 import sys
 import time
@@ -1678,6 +1680,37 @@ class FakeStream:
         self.close()
 
 
+class FakeOutputStream:
+    """An output stream a test drives BY HAND: no thread, no clock, no
+    sleep. Calling .pump(n) is exactly what a real audio driver would do by
+    invoking the callback on its own thread; a test calls it directly
+    instead, so an announcement's progress is entirely under the test's
+    control and never depends on wall time."""
+
+    def __init__(self, sd, device, channels, samplerate, blocksize, callback):
+        self.sd, self.device, self.channels = sd, device, channels
+        self.rate, self.blocksize, self.callback = samplerate, blocksize, callback
+        self.started = False
+        self.stopped = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def pump(self, n=None, status=None):
+        import numpy as np
+        n = self.blocksize if n is None else n
+        outdata = np.zeros((n, self.channels), dtype=np.float32)
+        self.callback(outdata, n, None, status)
+        return outdata
+
+    def stop(self):
+        self.stopped = True
+
+    def close(self):
+        self.closed = True
+
+
 def _seq_seconds(text):
     """Read an xLights-style M:SS.mmm position back into seconds."""
     m, _, rest = text.partition(":")
@@ -1710,6 +1743,8 @@ class FakeSD:
         self.dead = False
         self.opened = []
         self.streams = []
+        self.output_opened = []
+        self.output_streams = []
         self._tone = synthesize(1, 0, 0, 0, 30.0, 48000, frames=300,
                                 amplitude=0.4)
         self._np = np
@@ -1732,6 +1767,14 @@ class FakeSD:
         self.opened.append((device, channels, samplerate))
         s = FakeStream(self, device, channels, samplerate, blocksize, callback)
         self.streams.append(s)
+        return s
+
+    def OutputStream(self, device=None, channels=None, samplerate=None,
+                     blocksize=None, dtype=None, callback=None):
+        self.output_opened.append((device, channels, samplerate))
+        s = FakeOutputStream(self, device, channels, samplerate, blocksize,
+                             callback)
+        self.output_streams.append(s)
         return s
 
     def block_for(self, device, channels, pos, n):
@@ -11076,6 +11119,1202 @@ def _tc_of(pkt):
     return pkt[17], pkt[16], pkt[15], pkt[14], pkt[18]
 
 
+# ------------------------------------------------------------ announcements
+def _ann():
+    from ltcplay import announce as A
+    return A
+
+
+def _ann_write_wav(path, seconds=1.0, rate=8000, channels=1):
+    import struct
+    import wave as _wave
+    n = int(seconds * rate)
+    with _wave.open(path, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(struct.pack(f"<{n * channels}h", *([0] * (n * channels))))
+    return n / float(rate)
+
+
+def _ann_workdir(device="MOTU M4"):
+    """A tempdir with three short, valid WAV files and a config naming them.
+    Returns (workdir, config_path, {id: length_s})."""
+    A = _ann()
+    work = tempfile.mkdtemp()
+    lengths = {}
+    for aid, secs in zip(A.IDS, (1.0, 1.5, 0.5)):
+        lengths[aid] = _ann_write_wav(os.path.join(work, aid + ".wav"),
+                                      seconds=secs)
+    cfg = {"device": device,
+           "files": {aid: aid + ".wav" for aid in A.IDS}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    return work, path, lengths
+
+
+def _ann_write_24bit(path, seconds=1.0, rate=8000):
+    """A real 24-bit PCM WAV: 3 bytes per sample, valid RIFF/WAVE, which
+    Python's `wave` opens fine (getsampwidth() == 3) -- it does not reject
+    24-bit on its own."""
+    import wave as _wave
+    n = int(seconds * rate)
+    with _wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00\x00" * n)
+
+
+def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
+    """A real 32-bit IEEE-float WAV (format tag 3), built by hand: Python's
+    `wave` module cannot write float, only PCM, and cannot read the format
+    tag back out either -- exactly what an external tool (a DAW, a field
+    recorder) would hand an operator."""
+    import array
+    import struct
+    n = int(seconds * rate)
+    data = array.array("f", [value] * n).tobytes()
+    byte_rate = rate * 4
+    fmt_chunk = struct.pack("<HHIIHH", 3, 1, rate, byte_rate, 4, 32)
+    riff = (b"RIFF" +
+           struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+           b"WAVE")
+    fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+    data_chunk = b"data" + struct.pack("<I", len(data)) + data
+    with open(path, "wb") as fh:
+        fh.write(riff + fmt + data_chunk)
+
+
+def test_announce_probe_matches_open_for_format():
+    section("announcements: the startup probe catches exactly what "
+            "playing would fail on: 24-bit and 32-bit float WAVs")
+    A = _ann()
+    work = tempfile.mkdtemp()
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=1.0)
+    _ann_write_24bit(os.path.join(work, "cancellation.wav"), seconds=1.0)
+    _ann_write_float32(os.path.join(work, "cannot_continue.wav"),
+                       seconds=1.0)
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id[A.DELAYED]["available"], "a plain 16-bit WAV is fine")
+    check(not by_id[A.CANCELLATION]["available"]
+          and "24-bit" in by_id[A.CANCELLATION]["reason"],
+          f"a 24-bit WAV must be caught AT STARTUP, not at the press: "
+          f"{by_id[A.CANCELLATION]}")
+    check(not by_id[A.CANNOT_CONTINUE]["available"]
+          and "floating point" in by_id[A.CANNOT_CONTINUE]["reason"],
+          f"a 32-bit float WAV must be caught too, never played as "
+          f"reinterpreted noise: {by_id[A.CANNOT_CONTINUE]}")
+    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+        try:
+            svc.play(aid, "Andy", "rack screen")
+            check(False, f"{aid} must never actually play")
+        except ValueError as e:
+            check("not available" in str(e), f"{e}")
+    print("  ok")
+
+
+def test_announce_device_exact_match_only():
+    section("announcements: the output device is matched by its EXACT "
+            "name, never a substring")
+    A = _ann()
+
+    class _SD:
+        def __init__(self, devices):
+            self._devices = devices
+
+            class _Default:
+                device = (0, 0)
+            self.default = _Default()
+
+        def query_devices(self):
+            return self._devices
+
+    # The configured device is gone; the only device left merely CONTAINS
+    # the configured text, and is a different physical device (here: the
+    # show's own DSP output). A substring match would silently pick it
+    # (audit13_device_wrong_match.py).
+    devices_after_unplug = [
+        {"name": "Line In (Realtek)", "max_output_channels": 0,
+         "default_samplerate": 48000},
+        {"name": "Speakers (High Definition Audio Device)",
+         "max_output_channels": 8, "default_samplerate": 48000},
+    ]
+    try:
+        A.resolve_output_device(_SD(devices_after_unplug), "Speakers")
+        check(False, "a substring match must be refused, not returned")
+    except ValueError as e:
+        check("not attached" in str(e),
+              f"a device gone with only a substring hit left must refuse "
+              f"plainly: {e}")
+
+    devices_present = devices_after_unplug + [
+        {"name": "Speakers", "max_output_channels": 2,
+         "default_samplerate": 48000}]
+    dev = A.resolve_output_device(_SD(devices_present), "Speakers")
+    check(dev["name"] == "Speakers",
+          f"the exact name must still resolve: {dev}")
+    dev2 = A.resolve_output_device(_SD(devices_present), "SPEAKERS")
+    check(dev2["name"] == "Speakers",
+          "the match is case-insensitive, just never partial")
+    print("  ok")
+
+
+def test_announce_toctou_recheck_before_start():
+    section("announcements: the interlock is rechecked immediately "
+            "before the stream actually starts")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    state_holder = {"v": "STANDBY"}
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: state_holder["v"])
+    real_decode = svc._decode
+
+    def decode_and_flip(ann_id):
+        # Stands in for real wall time elapsing during the file read: a
+        # show starting in that window is entirely realistic, since the
+        # scheduler ticks on its own thread with no lock shared with this
+        # service (audit13_toctou_race.py).
+        state_holder["v"] = "SHOW"
+        return real_decode(ann_id)
+
+    svc._decode = decode_and_flip
+    try:
+        check(A.interlock_refusal(svc._current_state()) is None,
+              "setup: the interlock legitimately allows it at the first "
+              "check")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "the recheck must catch the state that changed "
+                         "during the file read and refuse")
+        except ValueError as e:
+            check("running" in str(e), f"the refusal must say why: {e}")
+    finally:
+        svc._decode = real_decode
+    check(svc.playing is None, "a caught race must never start playing")
+    check(sd.output_opened == [],
+          "the stream must never actually be opened once the recheck "
+          "refuses")
+    print("  ok")
+
+
+def test_announce_show_start_stops_announcement():
+    section("announcements: a scheduled show stops a playing "
+            "announcement, faded, and logs it")
+    A = _ann()
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    work, cfg, _lengths = _ann_workdir()
+    # A long announcement, so it is still going when the next slot fires.
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=90.0,
+                   rate=8000)
+
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    doc = {"timezone": "America/Denver",
+           "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+           "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+           "exceptions": {}, "show_len_s": 440, "guard_s": 120,
+           "late_grace_s": 0}
+    SV.save_rule(spath, doc)
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: the scheduler is in intermission: {svc.machine.state}")
+
+    sd = FakeSD()
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    check(ann.playing == A.DELAYED, "setup: the announcement is playing "
+                                    "during intermission, fully allowed")
+    stream = sd.output_streams[-1]
+
+    now[0] = _den(S, 17, 50, 0)          # the next slot fires
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          f"setup: the next slot fired: {svc.machine.state}")
+    # The hook runs on a thread of its own now (review round 2, blocker
+    # 1a/1b: tick() itself must return in under 50 ms even if a hook is
+    # slow, so it cannot wait for the hook either) -- svc.tick() returning
+    # says only that the hook was QUEUED, not that it has run yet. This is
+    # the one place that gap is visible from the outside, and a short poll
+    # is the deterministic way to wait for it, the same as any other
+    # cross-thread handoff in this suite.
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "a show started",
+                   timeout=2.0),
+          "the show-started hook must put the player into a fade: it is "
+          "a push, not something announce.py polled the scheduler for")
+    check(ann.playing == A.DELAYED,
+          "the fade has not finished yet, so it is still the one playing")
+
+    # The real audio driver keeps calling back on its own thread in
+    # production; the test drives that explicitly, the same way the
+    # natural-completion test does.
+    stream.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status = ann.status()
+    check(status["playing"] is None,
+          "once the fade finishes, the announcement must show as stopped")
+    check(any(r["outcome"] == "stopped" and r["reason"] == "a show started"
+             for r in status["journal"]),
+          f"the stop must be journalled with why: {status['journal']}")
+    check(stream.stopped and stream.closed,
+          "the device stream must actually be closed")
+
+    # The alternative Jeff has not chosen -- flip the one constant, and a
+    # show starting must leave whatever is playing alone.
+    old = A.SHOW_START_STOPS_ANNOUNCEMENT
+    A.SHOW_START_STOPS_ANNOUNCEMENT = False
+    try:
+        # A provider of its own, deliberately not tied to the real
+        # scheduler above (which is already in SHOW by now): this checks
+        # only what the constant itself controls.
+        ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                 state_provider=lambda: "STANDBY")
+        ann2.play(A.CANCELLATION, "Andy", "rack screen")
+        ann2.on_show_started("SHOW")
+        check(ann2.playing == A.CANCELLATION,
+              "with the constant off, a show starting must not touch "
+              "what is playing")
+    finally:
+        A.SHOW_START_STOPS_ANNOUNCEMENT = old
+    print("  ok")
+
+
+def test_announce_stall_watchdog():
+    section("announcements: a device that stops answering is caught and "
+            "marked failed, not stuck forever")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    clock_box = [0.0]
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY",
+                            clock=lambda: clock_box[0])
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    stream.pump(256)          # some real audio came out
+    stream.pump(256)
+    check(svc.playing == A.DELAYED,
+          "setup: still playing after two real callbacks")
+
+    # The device dies: the backend simply stops calling back. Nothing
+    # about the fake stream itself changes -- that IS the failure mode
+    # (audit13_stuck_on_output_error.py). Time passes with no more
+    # callbacks at all.
+    clock_box[0] += A.STALL_S + 1.0
+    status = svc.status()
+    check(status["playing"] is None,
+          "a device that stopped answering must not stay 'playing' "
+          "forever")
+    check(any(r["outcome"] == "failed" for r in status["journal"]),
+          f"the stall must be journalled as a failure: {status['journal']}")
+    check(svc.playing is None, "the one-at-a-time lock must be released")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.playing == A.CANCELLATION,
+          "a different announcement must be playable again once the "
+          "stall is caught")
+    print("  ok")
+
+
+def test_announce_callback_status_errors():
+    section("announcements: repeated callback errors are also caught, "
+            "even while the device keeps answering")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    clock_box = [0.0]
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY",
+                            clock=lambda: clock_box[0])
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    for _ in range(A.CALLBACK_ERROR_LIMIT):
+        stream.pump(64, status=1)
+        clock_box[0] += 0.01          # well under STALL_S: not a stall
+    status = svc.status()
+    check(status["playing"] is None,
+          "enough reported problems in a row must also be caught, even "
+          "though the device kept calling back")
+    check(any(r["outcome"] == "failed"
+             and "reported a problem" in r["text"]
+             for r in status["journal"]),
+          f"the reason must say it was reported errors, not a stall: "
+          f"{status['journal']}")
+    print("  ok")
+
+
+def test_announce_minor_hardening():
+    section("announcements: size and duration caps, dash-free text, "
+            "channels dropped are logged")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    long_path = os.path.join(work, "long.wav")
+    _ann_write_wav(long_path, seconds=A.MAX_LENGTH_S + 1, rate=200)
+    st = A.AnnounceService._probe_file(long_path)
+    check(not st["available"] and "s long" in st["reason"],
+          f"over the length cap must be unavailable: {st}")
+
+    small_path = os.path.join(work, "small.wav")
+    _ann_write_wav(small_path, seconds=1.0, rate=8000)
+    real_cap = A.MAX_FILE_BYTES
+    A.MAX_FILE_BYTES = 100          # smaller than the file just written
+    try:
+        st2 = A.AnnounceService._probe_file(small_path)
+    finally:
+        A.MAX_FILE_BYTES = real_cap
+    check(not st2["available"] and "MB" in st2["reason"],
+          f"over the byte cap must be unavailable: {st2}")
+    ok_path = os.path.join(work, "ok.wav")
+    _ann_write_wav(ok_path, seconds=1.0)
+    st3 = A.AnnounceService._probe_file(ok_path)
+    check(st3["available"], "an ordinary file under both caps is fine")
+
+    class _BoomSD:
+        def __init__(self):
+            class _Default:
+                device = (0, 0)
+            self.default = _Default()
+
+        def query_devices(self):
+            raise RuntimeError("PortAudio failed — device busy")
+
+    work2, cfg2, _lengths2 = _ann_workdir()
+    svc2 = A.AnnounceService(cfg2, sd=_BoomSD(), operators_folder=work2,
+                             state_provider=lambda: "STANDBY")
+    try:
+        svc2.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "a broken audio system must refuse the press")
+    except ValueError as e:
+        check("—" not in str(e) and "–" not in str(e),
+              f"an em or en dash from a third-party error must be "
+              f"scrubbed: {e!r}")
+
+    work3, cfg3, _lengths3 = _ann_workdir()
+    _ann_write_wav(os.path.join(work3, "delayed.wav"), seconds=1.0,
+                   channels=2)
+
+    class _MonoSD(FakeSD):
+        def __init__(self):
+            super().__init__()
+            self.devices = [{"name": "MOTU M4", "max_input_channels": 4,
+                            "max_output_channels": 1,
+                            "default_samplerate": 48000, "hostapi": 0}]
+    svc3 = A.AnnounceService(cfg3, sd=_MonoSD(), operators_folder=work3,
+                             state_provider=lambda: "STANDBY")
+    svc3.play(A.DELAYED, "Andy", "rack screen")
+    check(any(r["reason"] == "channels dropped" for r in svc3.journal),
+          f"playing a 2-channel file on a 1-channel device must log a "
+          f"note: {list(svc3.journal)}")
+
+    # The _emit() backstop: even text this module did not build from a
+    # path or an exception (a call site that forgot its own _clean(), the
+    # way load_operators() once did) must come out of the journal clean.
+    row = svc3._emit(actor="system", action="test", outcome="note",
+                     reason="a — dash", text="another – dash",
+                     state=None)
+    _no_dashes(row["reason"], "_emit's own reason backstop")
+    _no_dashes(row["text"], "_emit's own text backstop")
+    print("  ok")
+
+
+def test_announce_load_operators_dash_cleaning():
+    section("announcements: load_operators' own sentence is cleaned too")
+    A = _ann()
+    work = tempfile.mkdtemp(suffix="-Fire–Ice")   # en dash in the path
+    bad = os.path.join(work, A.OPERATORS_FILE)
+    with open(bad, "w", encoding="utf-8") as fh:
+        fh.write("not json at all")
+    names, why = A.load_operators(work)
+    check(names == A.DEFAULT_OPERATORS,
+          "a broken operator list file falls back to the defaults")
+    check(bool(why), "and says why")
+    _no_dashes(why, "load_operators' own sentence")
+    print("  ok")
+
+
+def test_announce_show_start_hook_never_touches_the_stream():
+    section("announcements: the show-start hook only flips in-memory "
+            "state, it never calls into the output stream itself")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+
+    class SlowCloseStream:
+        def start(self):
+            pass
+
+        def stop(self):
+            time.sleep(2.0)   # would hang THIS test if ever actually called
+
+        def close(self):
+            pass
+
+    class SlowSD:
+        def __init__(self):
+            self.devices = [{"name": "MOTU M4", "max_output_channels": 2,
+                            "default_samplerate": 8000}]
+
+            class _Default:
+                device = (None, None)
+            self.default = _Default()
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, **kw):
+            return SlowCloseStream()
+
+    svc = A.AnnounceService(cfg, sd=SlowSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    # Finished on its own, but unnoticed: nobody has polled status(),
+    # Play or Stop since, exactly the case that used to reach
+    # _finish() -> stream.stop() from inside the hook.
+    svc._player.frames_written = svc._player.total_frames
+    svc._player.done = True
+
+    t0 = time.time()
+    svc.on_show_started("SHOW")
+    elapsed = time.time() - t0
+    check(elapsed < 0.5,
+          f"on_show_started must never call into the output stream "
+          f"(stop() here deliberately hangs for 2 s): took {elapsed:.2f} s"
+          f" (audit13b_scheduler_stall.py)")
+    check(svc._player is not None
+          and svc._player.stop_reason == "a show started",
+          "it must still record why, for whatever settles it later")
+    check(svc.playing == A.DELAYED,
+          "the actual teardown is left to announce.py's own path (a "
+          "status poll, Play, Stop, the stall watchdog), never the hook "
+          "itself")
+    print("  ok")
+
+
+def test_schedule_hook_runs_outside_service_lock():
+    section("scheduler: on_show_started is called strictly after "
+            "Service.lock is released, never while nested inside it")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, SV.RULE_FILE)
+    # first_start 17:30, not the shared _sched_doc()'s 17:00: the slot this
+    # test fires is 17:50, and it has to actually land on a real boundary.
+    doc = {"timezone": "America/Denver",
+           "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+           "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+           "exceptions": {}, "show_len_s": 440, "guard_s": 120,
+           "late_grace_s": 0}
+    SV.save_rule(path, doc)
+    now = [_den(S, 17, 34, 0)]
+    svc = SV.Service(path, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=work)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: expected STANDBY, got {svc.machine.state}")
+
+    HANG_S = 1.0
+    calls = []
+
+    def slow_hook(state):
+        calls.append(state)
+        # A deliberately slow hook, standing in for ANY future hook that
+        # is not as careful as announce.py's own about never touching a
+        # stream: schedule_service.py must not trust that. It must simply
+        # never let a hook run while Service.lock is held, by anyone, at
+        # any depth (audit13b_scheduler_stall.py).
+        time.sleep(HANG_S)
+
+    svc.on_show_started = slow_hook
+    now[0] = _den(S, 17, 50, 0)
+
+    lock_wait = {}
+
+    def other_thread():
+        t0 = time.monotonic()
+        with svc.lock:
+            pass
+        lock_wait["s"] = time.monotonic() - t0
+
+    t0 = time.monotonic()
+    tick_thread = threading.Thread(target=svc.tick)
+    tick_thread.start()
+    # The hook is running on its own, well outside svc.lock, by the time
+    # it has actually been called -- if it were not, a thread wanting the
+    # same lock would simply queue up behind whichever one holds it.
+    check(wait_for(lambda: calls, timeout=2.0),
+          "setup: the hook must actually run")
+    other = threading.Thread(target=other_thread)
+    other.start()
+    tick_thread.join(timeout=HANG_S + 5)
+    tick_elapsed = time.monotonic() - t0
+    other.join(timeout=HANG_S + 5)
+
+    check(svc.machine.state == S.SHOW,
+          f"setup: expected the slot to fire into SHOW, got "
+          f"{svc.machine.state}")
+    check(calls == [S.SHOW],
+          f"the hook must fire exactly once, with the new state: {calls}")
+    check(tick_elapsed < 0.5,
+          f"tick() must not wait for the hook it queued: took "
+          f"{tick_elapsed:.2f} s (the hook itself takes {HANG_S:g} s)")
+    check(lock_wait.get("s", 999) < 0.5,
+          f"a separate thread wanting Service.lock (Abort, Hold, Start "
+          f"now, any status poll) must not wait behind a slow hook: "
+          f"waited {lock_wait.get('s')} s")
+    print("  ok")
+
+
+def test_announce_reentrant_claim_does_not_orphan_a_stream():
+    section("announcements: a stale, superseded Play attempt can never "
+            "overwrite a later one's live stream")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir(device="Sound Blaster Play! 3")
+
+    class FakeStream:
+        _n = 0
+
+        def __init__(self):
+            FakeStream._n += 1
+            self.id = FakeStream._n
+            self.started = self.stopped = self.closed = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    class _SD:
+        def __init__(self):
+            self.devices = [{"name": "Sound Blaster Play! 3",
+                            "max_output_channels": 2,
+                            "default_samplerate": 8000}]
+
+            class _Default:
+                device = (None, None)
+            self.default = _Default()
+            self.streams = []
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, device=None, channels=None,
+                         samplerate=None, blocksize=None, dtype=None,
+                         callback=None):
+            s = FakeStream()
+            self.streams.append(s)
+            return s
+
+    sd = _SD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    real_decode = svc._decode
+    release_t1 = threading.Event()
+    t1_blocked = threading.Event()
+    calls = {"n": 0}
+
+    def controlled_decode(ann_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            t1_blocked.set()
+            release_t1.wait(timeout=5)
+        return real_decode(ann_id)
+
+    svc._decode = controlled_decode
+    errors = []
+
+    def t1_play():
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+        except Exception as e:
+            errors.append(e)
+
+    t1 = threading.Thread(target=t1_play)
+    t1.start()
+    check(t1_blocked.wait(timeout=5), "setup: T1 reached its blocked decode")
+    check(svc.playing == A.DELAYED and svc._player is None,
+          "setup: T1 has claimed it, but built nothing yet")
+
+    # A legitimate Stop while T1's claim is still outstanding, exactly the
+    # interleaving the fix's own design is meant to allow.
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop clears the claim mid-decode")
+
+    # A second, independent press for the SAME id, fully synchronous.
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "a fresh press for the same id plays")
+    live_stream = svc._stream
+
+    # Now let T1's stale decode finish and race to reacquire the lock.
+    release_t1.set()
+    t1.join(timeout=5)
+    check(bool(errors),
+          "T1's stale attempt must be refused, not silently swallowed")
+    check(errors and "stopped and played again" in str(errors[0]),
+          f"and must say so, in a sentence: {errors}")
+    check(svc._stream is live_stream,
+          f"the live stream operators and the page believe is playing "
+          f"must be untouched by the stale attempt: now stream #"
+          f"{svc._stream.id if svc._stream else None}, expected #"
+          f"{live_stream.id}")
+    check(live_stream.started and not live_stream.stopped
+          and not live_stream.closed,
+          "the live stream must still be running")
+    check(len(sd.streams) == 1,
+          f"T1's stale attempt must never open a device stream at all "
+          f"once it is superseded, not open-then-close: "
+          f"{len(sd.streams)} opened (audit13b_reentrant_claim.py)")
+    print("  ok")
+
+
+def test_announce_interlock_matrix():
+    section("announcements: the interlock, every scheduler state times "
+            "every button")
+    from ltcplay import schedule as sch_mod
+    A = _ann()
+    states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
+              sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
+    check(len(set(states)) == 8,
+          "the matrix must cover all 8 scheduler states")
+    blocked_states = {sch_mod.SHOW, sch_mod.PAUSED}
+    for state in states + (None,):
+        refusal = A.interlock_refusal(state)
+        if state is None:
+            check(refusal is not None and "inert" in refusal,
+                  f"no scheduler: announcements must be inert, got "
+                  f"{refusal!r}")
+        elif state in blocked_states:
+            check(refusal is not None and refusal.endswith("."),
+                  f"{state}: a show running or paused must refuse, got "
+                  f"{refusal!r}")
+        else:
+            check(refusal is None,
+                  f"{state}: announcements must be allowed, got {refusal!r}")
+        _no_dashes(refusal or "", f"interlock refusal in {state}")
+    # Abort is the only way out of SHOW or PAUSED in the real machine, and it
+    # always lands in STANDBY, so the interlock never has to remember Abort
+    # happened; it only has to ask the scheduler what is true right now.
+    check(sch_mod.ALLOWED[sch_mod.ABORT] ==
+          frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
+          "Abort must be exactly the exit from the two blocked states")
+
+    work, cfg, _lengths = _ann_workdir()
+    for state in states + (None,):
+        blocked = state is None or state in blocked_states
+        svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=(lambda s=state: s))
+        for aid in A.IDS:
+            if blocked:
+                try:
+                    svc.play(aid, "Andy", "rack screen")
+                    check(False, f"{state}: {aid} must be refused")
+                except ValueError as e:
+                    check(str(e).endswith("."),
+                          f"{state}/{aid}: refusal must end with a full "
+                          f"stop: {e!r}")
+                check(svc.playing is None,
+                      f"{state}: a refused press must not start anything")
+            else:
+                svc.play(aid, "Andy", "rack screen")
+                check(svc.playing == aid,
+                      f"{state}: {aid} must be allowed to play")
+                svc.stop("Andy", "rack screen")
+                check(svc.playing is None,
+                      "Stop must clear it for the next id")
+    print("  ok")
+
+
+def test_announce_single_flight():
+    section("announcements: one at a time, a second press is refused, "
+            "not queued")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "the first press should start playing")
+    try:
+        svc.play(A.CANCELLATION, "Andy", "rack screen")
+        check(False, "a second press while one plays must be refused")
+    except ValueError as e:
+        check("already playing" in str(e), f"the refusal must say so: {e}")
+    check(svc.playing == A.DELAYED,
+          "the second press must not queue or replace the first")
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "pressing the SAME one again while it plays must "
+                     "also be refused")
+    except ValueError as e:
+        check("already playing" in str(e), f"{e}")
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop must clear the playing announcement")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.playing == A.CANCELLATION,
+          "after Stop, a different one may play")
+    print("  ok")
+
+
+def test_announce_operator_validation():
+    section("announcements: Play and Stop both name an operator on the "
+            "list and a screen, like the scheduler")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+
+    def svc():
+        return A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                 state_provider=lambda: "IDLE")
+
+    for who, screen, must in (("", "rack screen", "who pressed it"),
+                              ("Andy", "", "which screen"),
+                              ("  ", " ", "who pressed it and which "
+                                          "screen"),
+                              ("Bob", "rack screen",
+                               "not on the operator list")):
+        s = svc()
+        try:
+            s.play(A.DELAYED, who, screen)
+            check(False, f"Play with who={who!r} screen={screen!r} must "
+                         f"be refused")
+        except ValueError as e:
+            check(must in str(e), f"Play with who={who!r} screen={screen!r} "
+                                  f"must name what is wrong: {e}")
+        check(s.playing is None, "a refused Play must not start")
+        s2 = svc()
+        s2.play(A.DELAYED, "Andy", "rack screen")
+        try:
+            s2.stop(who, screen)
+            check(False, f"Stop with who={who!r} screen={screen!r} must "
+                         f"be refused")
+        except ValueError as e:
+            check(must in str(e), f"Stop with who={who!r} screen={screen!r} "
+                                  f"must name what is wrong: {e}")
+        check(s2.playing == A.DELAYED,
+              "a refused Stop must not touch what is playing")
+    for who in ("Jeff", "andy", " Andy "):
+        s = svc()
+        s.play(A.DELAYED, who, "rack screen")
+        check(s.playing == A.DELAYED,
+              f"{who!r} is on the default operator list")
+    other = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                              state_provider=lambda: "IDLE")
+    other.operators = ("Casey",)
+    try:
+        other.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "once the list is Casey only, Andy must be refused")
+    except ValueError as e:
+        check("Casey" in str(e), f"{e}")
+    other.play(A.DELAYED, "Casey", "rack screen")
+    check(other.playing == A.DELAYED, "Casey is on this machine's list")
+    print("  ok")
+
+
+def test_announce_missing_files_at_startup():
+    section("announcements: a missing or broken file is caught at "
+            "startup, never at the press")
+    A = _ann()
+    work = tempfile.mkdtemp()
+    good = os.path.join(work, "delayed.wav")
+    _ann_write_wav(good, seconds=1.0)
+    broken = os.path.join(work, "cancellation.wav")
+    with open(broken, "wb") as fh:
+        fh.write(b"not a wav file at all")
+    # cannot_continue.wav is simply never written: missing.
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id[A.DELAYED]["available"]
+          and abs(by_id[A.DELAYED]["length_s"] - 1.0) < 1e-6,
+          f"a good file must be available with its real length: "
+          f"{by_id[A.DELAYED]}")
+    check(not by_id[A.CANCELLATION]["available"]
+          and by_id[A.CANCELLATION]["reason"],
+          f"a broken WAV must be unavailable with a reason: "
+          f"{by_id[A.CANCELLATION]}")
+    check(not by_id[A.CANNOT_CONTINUE]["available"]
+          and "does not exist" in by_id[A.CANNOT_CONTINUE]["reason"],
+          f"a missing file must say it does not exist: "
+          f"{by_id[A.CANNOT_CONTINUE]}")
+    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+        try:
+            svc.play(aid, "Andy", "rack screen")
+            check(False, f"playing an unavailable file ({aid}) must be "
+                         f"refused")
+        except ValueError as e:
+            check("not available" in str(e), f"{e}")
+    # Deleting the good file AFTER startup must not change its reported
+    # availability: discovery happens once, at startup, never at the press.
+    os.remove(good)
+    by_id2 = {i["id"]: i for i in svc.status()["announcements"]}
+    check(by_id2[A.DELAYED]["available"],
+          "availability must never be re-probed after startup")
+    print("  ok")
+
+
+def test_announce_device_missing_renamed_reappearing():
+    section("announcements: the output device by name, missing, renamed, "
+            "and back")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "IDLE")
+    st = svc.status()
+    check(st["device_available"], f"MOTU M4 should resolve: {st}")
+    removed = sd.devices.pop(1)              # "MOTU M4" is index 1
+    check(removed["name"] == "MOTU M4", "test setup: removed the right one")
+    st2 = svc.status()
+    check(not st2["device_available"]
+          and "not attached" in st2["device_reason"],
+          f"a missing device must say so plainly: {st2}")
+    try:
+        svc.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "playing on a missing device must be refused")
+    except ValueError as e:
+        check("not attached" in str(e), f"{e}")
+    check(svc.playing is None, "a refused play must not start")
+    check(sd.output_opened == [],
+          "a refused play must never open a stream on some other device: "
+          "there is no silent fallback")
+    # Plug it back in, at a DIFFERENT index, exactly like a real replug.
+    sd.devices.insert(0, removed)
+    st3 = svc.status()
+    check(st3["device_available"],
+          f"a reappeared device must be found by name again: {st3}")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.playing == A.DELAYED, "it must play now that it is back")
+    check(sd.output_opened[-1][0] == 0,
+          f"it must open at its NEW index, found by name: "
+          f"{sd.output_opened}")
+    print("  ok")
+
+
+def test_announce_progress_and_stop():
+    section("announcements: length known before playing, live progress, "
+            "Stop cuts it off")
+    A = _ann()
+    work, cfg, lengths = _ann_workdir()
+    sd = FakeSD()
+    svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    d = {i["id"]: i for i in svc.status()["announcements"]}
+    check(abs(d[A.DELAYED]["length_s"] - lengths[A.DELAYED]) < 1e-6,
+          "the length must be known before it is ever played")
+    check(svc.status()["playing"] is None, "nothing plays yet")
+    svc.play(A.DELAYED, "Andy", "rack screen")
+    stream = sd.output_streams[-1]
+    check(stream.started, "the output stream must actually be started")
+    rate = 8000
+    half = int(rate * lengths[A.DELAYED] / 2)
+    stream.pump(half)
+    st2 = svc.status()
+    check(st2["playing"]["id"] == A.DELAYED, "still playing at the halfway "
+                                             "point")
+    check(abs(st2["playing"]["elapsed_s"] - half / rate) < 1e-6,
+          f"progress must reflect exactly the frames handed to the "
+          f"device, no clock involved: {st2['playing']}")
+    remaining = int(rate * lengths[A.DELAYED]) - half + 10
+    stream.pump(remaining)
+    st3 = svc.status()
+    check(st3["playing"] is None,
+          "a finished announcement must clear itself on the next look, "
+          "with no operator action and no wall clock")
+    check(any(r["outcome"] == "finished" for r in st3["journal"]),
+          "the natural finish must be journalled")
+    svc.play(A.CANCELLATION, "Andy", "rack screen")
+    stream2 = sd.output_streams[-1]
+    stream2.pump(100)
+    svc.stop("Andy", "rack screen")
+    check(svc.playing is None, "Stop must end it immediately")
+    check(stream2.stopped and stream2.closed,
+          "Stop must actually close the device stream")
+    print("  ok")
+
+
+def test_announce_logging_fields():
+    section("announcements: every play, stop, refusal and failure is "
+            "logged, in plain English")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    svc.play(A.DELAYED, "Andy", "rack screen")                  # started
+    try:
+        svc.play(A.CANCELLATION, "Andy", "rack screen")         # refused
+    except ValueError:
+        pass
+    svc.stop("Andy", "rack screen")                             # stopped
+    svc.stop("Andy", "rack screen")                             # no-op
+    sd2 = FakeSD()
+    sd2.devices.pop(1)
+    svc2 = A.AnnounceService(cfg, sd=sd2, operators_folder=work,
+                             state_provider=lambda: "STANDBY")
+    try:
+        svc2.play(A.DELAYED, "Andy", "rack screen")             # failed
+    except ValueError:
+        pass
+    rows = list(svc.journal) + list(svc2.journal)
+    outcomes = {r["outcome"] for r in rows}
+    check({"started", "refused", "stopped", "no-op", "failed"} <= outcomes,
+          f"every category must appear in the journal: {outcomes}")
+    for r in rows:
+        check(r["actor"] in ("operator", "system"),
+              f"a log row must name an actor: {r}")
+        check(bool(r["text"]), f"a log row must have a sentence: {r}")
+        _no_dashes(r["text"], "announce journal")
+        check("at" in r and r["at"], f"a log row must carry a time: {r}")
+        check("show_state" in r, f"a log row must carry the show state "
+                                 f"at the time, without exception: {r}")
+        if r["action"] in ("play", "stop") and r["outcome"] != "refused":
+            check(r["who"], f"an operator action should carry who did "
+                            f"it: {r}")
+        if r["announcement"]:
+            check(r["file"] and r["announcement"] in A.IDS,
+                  f"a per-announcement row must carry the file and which "
+                  f"one: {r}")
+    print("  ok")
+
+
+def test_announce_routes():
+    section("announcements: routes only when configured, wired to the "
+            "scheduler when both are")
+    A = _ann()
+    import json as _json
+    import threading as _threading
+    import urllib.error
+    import urllib.request
+    from ltcplay import web as web_mod
+    work, cfg, _lengths = _ann_workdir()
+
+    def call(base, route, body=None):
+        data = _json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            base + route, data=data,
+            method=("POST" if body is not None else "GET"),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, _json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read() or b"{}")
+
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port, announce=ann)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(httpd.schedule is None and httpd.announce is ann,
+              "announcements alone, no scheduler")
+        code, st = call(base, "/api/announce/status")
+        check(code == 200 and len(st["announcements"]) == 3,
+              f"GET /api/announce/status: {code} {st}")
+        check(st["blocked"] and "inert" in st["blocked"],
+              f"with no scheduler wired, announcements report inert: {st}")
+        code, bad = call(base, "/api/announce/play",
+                         {"id": A.DELAYED, "who": "Andy",
+                          "screen": "rack screen"})
+        check(code == 400 and "inert" in bad.get("error", ""),
+              f"a play attempt with no scheduler is a 400: {code} {bad}")
+        check(A.AnnounceService.POST_ROUTES ==
+              ("/api/announce/play", "/api/announce/stop"),
+              "only play and stop can be posted")
+        code, _r = call(base, "/api/announce/status", {"id": "x"})
+        check(code == 404, "POST to the status route is not a thing")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # Both configured: the announce service reads the scheduler's own
+    # state, live, through nothing but the provider web.serve wires up.
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc())
+    now = [_den(S, 18, 4, 12)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port, schedule=svc, announce=ann2)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(wait_for(lambda: svc.machine is not None),
+              "the scheduler settles")
+        code, st = call(base, "/api/announce/status")
+        check(code == 200 and st["show_state"] == svc.machine.state,
+              f"the announce status must read the SAME state the "
+              f"scheduler is in: {st['show_state']} vs "
+              f"{svc.machine.state}")
+        now[0] = _den(S, 18, 20)
+        svc.tick()
+        check(svc.machine.state == S.SHOW,
+              f"setup: the scheduler should be running a show at 18:20: "
+              f"{svc.machine.state}")
+        code, bad = call(base, "/api/announce/play",
+                         {"id": A.DELAYED, "who": "Andy",
+                          "screen": "rack screen"})
+        check(code == 400 and "running" in bad.get("error", ""),
+              f"a show running must refuse the announcement through the "
+              f"live link: {code} {bad}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        svc.stop()
+
+    # Not configured at all: every announce route is a plain 404.
+    port = _free_port()
+    httpd = web_mod.serve(work, port=port)
+    t = _threading.Thread(target=httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        check(httpd.announce is None, "no announce config, no service")
+        code, _r = call(base, "/api/announce/status")
+        check(code == 404, f"GET without --announce is 404, got {code}")
+        code, _r = call(base, "/api/announce/play", {"id": A.DELAYED})
+        check(code == 404, f"POST without --announce is 404, got {code}")
+        code, _r = call(base, "/api/state")
+        check(code == 200, "the rest of the page is untouched")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_announcements():
+    section("announcements: the GPL path does not import them")
+    import ast
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    pkg = os.path.join(root, "ltcplay")
+    port = _free_port()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('announce')]\n"
+        "failed = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        importlib.import_module('ltcplay.' + m)\n"
+        "    except Exception as e:\n"
+        "        failed.append(m)\n"
+        "from ltcplay import web, cli\n"
+        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/announce/status',):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
+        "    'none': h.announce is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'announce' in "
+        "m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check("web" in out["mods"] and "cli" in out["mods"]
+          and "session" in out["mods"], f"the GPL modules were all "
+                                       f"imported: {out['mods']}")
+    check(out["loaded"] == [], f"the GPL path loaded announcements: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404] and out["none"],
+          f"with no announcements configured the route is 404, got "
+          f"{out['codes']}")
+
+    def top_level(node):
+        """Everything that runs at import time: not function bodies."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            yield child
+            yield from top_level(child)
+
+    for name in sorted(os.listdir(pkg)):
+        if not name.endswith(".py") or name.startswith("announce"):
+            continue
+        tree = ast.parse(open(os.path.join(pkg, name),
+                              encoding="utf-8").read())
+        for sub in top_level(tree):
+            names = []
+            if isinstance(sub, ast.Import):
+                names = [a.name for a in sub.names]
+            elif isinstance(sub, ast.ImportFrom):
+                names = [sub.module or ""] + [a.name for a in sub.names]
+            check(not any("announce" in n for n in names),
+                  f"ltcplay/{name} imports announcements at module level")
+
+    files = [os.path.join(root, n) for n in os.listdir(root)
+             if n.endswith(".command") or n == "ltc"]
+    tools = os.path.join(root, "Tools")
+    if os.path.isdir(tools):
+        files += [os.path.join(tools, n) for n in os.listdir(tools)]
+    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
+        files += [os.path.join(dirpath, n) for n in names]
+    for f in files:
+        try:
+            text = open(f, errors="replace", encoding="utf-8").read()
+        except OSError:
+            continue
+        check("--announce" not in text,
+              f"{os.path.relpath(f, root)} turns announcements on")
+    print("  ok")
+
+
 def test_arttimecode_packet_byte_for_byte():
     section("Art-Net timecode: the packet, byte for byte")
     # Art-Net 4 Protocol Release V1.4, document revision 1.4dp 23/10/2025:
@@ -12167,7 +13406,15 @@ def test_a_slave_clock_forwards_the_show_zone():
                     clk._tick(x, at)
         finally:
             st.close()
-            clk._clock, clk._mono = time.perf_counter, time.monotonic
+            # Both back to LtcAudioSlave's real default, time.perf_counter --
+            # the same clock the real audio callback stamps captured_at with
+            # (player._now()). This used to read time.monotonic for `mono`,
+            # matching the clock's pre-Windows-pixel-timing default; now that
+            # PR #8 changed that default to perf_counter too, resetting to
+            # the old pair would silently mix clocks for the real threads
+            # started just below -- invisible on a Mac, where the two agree,
+            # and wrong on Windows.
+            clk._clock, clk._mono = time.perf_counter, time.perf_counter
             clk._fly = None
         # From half a second in, the chase engine is locked on the show and
         # exactly where the LTC says: frame 01:00:00:00 began at t_start.
@@ -12919,6 +14166,689 @@ def test_a_lost_feed_still_reads_lost_without_a_master_clock():
                 pass
         plmod.Player._prepare = real_prepare
         st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+# ------------------------------------------------------- hold / resume -----
+# Fire & Ice handoff, section 5, "Hold and Start now, as Jeff decided them":
+# Hold during a show pauses it in place -- pixels, video and timecode all
+# hold the current frame, and the timecode keeps sending it so receivers
+# hold instead of timing out. Resume carries on from exactly there. This is
+# the CLOCK half only: MadMapper OSC, the music fade and laser blanking are
+# a later PR, and so is wiring the scheduler's Hold button to any of this.
+
+
+def test_the_clock_freezes_on_hold_and_resume_carries_on():
+    section("show clock: Hold freezes the frame and keeps it flowing; "
+            "Resume carries on with no jump, burst or skipped frame")
+    from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
+
+    def frame_of(pkt):
+        h, mi, s, f, _t = _tc_of(pkt)
+        return tc_to_frames(h, mi, s, f, C.MASTER_FPS)
+
+    fs = FakeFSEQ(frames=20000)          # long enough that no cue here ends
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=150,
+              freewheel_ms=150, hold_ms=2000)
+    st = _Stepped(p, step_ms=25)
+    out = _TcOut()
+    stopped = []
+    cfg, m = _master(C, out=out, sink=p.feed_timecode,
+                     clock=lambda: st.t, mono=lambda: st.t,
+                     on_stop=lambda: stopped.append(True))
+    fps = C.MASTER_FPS
+    # Driven entirely by hand, on the same clock the player's own output
+    # loop reads: no real ticker thread, so a pause here cannot spin one
+    # forever chasing wall time it will never see move, and nothing here
+    # depends on real time passing at all.
+    m.ticker.start = lambda t0=None: (
+        setattr(m.ticker, "t0", st.t if t0 is None else t0), m.ticker.t0)[1]
+    m.ticker.stop = lambda: None
+    try:
+        m.start()
+        st.t = 1000.0
+        t0 = m.play(3600.0, 60.0, "A")          # 60 s cue, 1800 frames
+
+        def art_tick(n):
+            st.t = t0 + n / fps
+            m._tick(n, st.t)
+
+        # Ten real frames, the player's own output ticking alongside.
+        for n in range(10):
+            art_tick(n)
+            st.tick()
+        check(p.state == LOCKED and p.current_cue is not None
+              and p.current_cue.name == "A",
+              f"the pixels never locked onto the clock: {p.state}")
+        check(frame_of(out.sent[-1][1]) == 9,
+              "the tenth Art-Net packet is not frame 9")
+        frame_before_pause = p.current_frame
+
+        # Refused: nothing is paused yet.
+        try:
+            m.resume()
+            check(False, "resume() worked on a clock that was never paused")
+        except ValueError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        try:
+            m.pause()
+            check(False, "a second pause() was accepted")
+        except ValueError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        frozen_pkt = out.sent[-1][1]
+        check(frame_of(frozen_pkt) == 9, "pause froze on the wrong frame")
+
+        # The ticker keeps firing at 30 a second while paused. Every packet
+        # is byte for byte the frozen frame, and the pixels are fed the
+        # exact same repeated position over and over -- proven, not
+        # assumed, by driving a real Player off it and reading its own
+        # state back.
+        for k in range(30):                     # a full second of pause
+            art_tick(10 + k)                    # n is ignored while paused
+            st.tick()
+        check(len(out.sent) == 40,
+              "the clock stopped sending during the pause; MadMapper and "
+              "BEYOND would time out")
+        check(all(pkt == frozen_pkt for _, pkt in out.sent[10:]),
+              "a packet sent during the pause is not byte for byte the "
+              "frozen frame")
+        check(p.state == PARKED,
+              f"the chase engine did not read the paused clock as PARKED, "
+              f"got {p.state}")
+        check(p.source == SHOW,
+              f"a paused clock should keep the show on the rig, not "
+              f"{p.source}")
+        check(p.current_cue is not None and p.current_cue.name == "A",
+              "the cue was dropped while the clock was merely paused")
+        check(p.current_frame == frame_before_pause,
+              "the pixels kept moving while the clock was paused")
+
+        # Resume: the very next frame is frozen + 1 -- never a repeat of
+        # the frozen frame, and never a jump past it -- and it climbs by
+        # exactly one frame at a time from there. No burst.
+        freeze_at = t0 + 9 / fps
+        resume_at = st.t
+        before_t0 = m.ticker.t0
+        m.resume()
+        check(not m.paused, "resume() left the clock marked paused")
+        t0b = m.ticker.t0
+
+        def art_tick2(n):
+            st.t = t0b + n / fps
+            m._tick(n, st.t)
+
+        got = []
+        for n in range(10, 20):
+            art_tick2(n)
+            st.tick()
+            got.append(frame_of(out.sent[-1][1]))
+        check(got == list(range(10, 20)),
+              f"frames after Resume are not strictly increasing by one "
+              f"from the frozen frame: {got}")
+        check(all(pkt != frozen_pkt for _, pkt in out.sent[40:]),
+              "a resumed packet repeated the frozen frame")
+        check(p.state == LOCKED,
+              f"the pixels did not pick the clock back up after Resume, "
+              f"got {p.state}")
+        check(p.jumps <= 1,
+              f"resuming from a pause should cost at most one jump, got "
+              f"{p.jumps}")
+        check(p.current_frame > frame_before_pause,
+              "the pixels did not move again after Resume")
+
+        # The cue's end moves later by what it spent paused, to within the
+        # one frame Resume deliberately does not repeat.
+        span = resume_at - freeze_at
+        ext = t0b - before_t0
+        check(abs(ext - (span - 1.0 / fps)) < 1e-9,
+              f"pausing for {span:.3f}s should push the cue's end back by "
+              f"about that much; it moved by {ext:.3f}s")
+
+        # Two pauses add up: the second pause starts from the already
+        # shifted zero point, not from the original one.
+        before2 = m.ticker.t0
+        m.pause()
+        st.t += 0.5
+        m.resume()
+        ext2 = m.ticker.t0 - before2
+        check(abs(m.ticker.t0 - (t0 + ext + ext2)) < 1e-6,
+              "two pauses did not add up: the clock's zero point is not "
+              "the sum of both")
+
+        # Halt while paused ends cleanly.
+        m.pause()
+        m.halt()
+        check(not m.playing and not m.paused,
+              "halt while paused did not leave the clock stopped")
+        check(stopped == [True],
+              "halting a paused clock did not hand the pixels back")
+    finally:
+        st.close()
+        try:
+            m.stop()
+        except Exception:
+            pass
+    print("  ok")
+
+
+def test_session_hold_and_resume():
+    section("Session.clock_pause / clock_resume: refused with nothing to "
+            "pause or resume, without a master clock, and twice; halt "
+            "works while paused")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=12000)       # 300 s: plenty of runway
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    sessions = []
+    try:
+        # 1. GPL: no clock block at all. Nothing here is reachable.
+        here = os.path.join(work, "gpl")
+        os.makedirs(here)
+        tlp, net = _clock_show(here, None, [("01:00:00:00", "Show.fseq",
+                                             "Show")])
+        gpl = Session(tlp, no_output=True, networks=net, no_log=True,
+                     sd=FakeSD(), device="MOTU M4", channel=2)
+        gpl.open()
+        sessions.append(gpl)
+        for meth in (gpl.clock_pause, gpl.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked with no clock block")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 2. The LTC slave: following timecode, not making it. Refused the
+        # same way as GPL.
+        here = os.path.join(work, "slave")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "ltc_audio_slave",
+                  "artnet": {"nodes": {"BEYOND": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        slave = Session(tlp, no_output=True, networks=net, no_log=True,
+                        sd=FakeSD(), device="MOTU M4", channel=2)
+        slave.open()
+        sessions.append(slave)
+        for meth in (slave.clock_pause, slave.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked on the LTC slave")
+            except SessionError as e:
+                check("timecode" in str(e).lower(),
+                      f"{meth.__name__}: unclear refusal: {e}")
+
+        # 3. The master, but idle: nothing is playing to pause or resume.
+        here = os.path.join(work, "master")
+        os.makedirs(here)
+        tlp, net = _clock_show(
+            here, {"source": "artnet_master",
+                  "artnet": {"nodes": {"MadMapper": "127.0.0.1"}}},
+            [("01:00:00:00", "Show.fseq", "Show")])
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD(), device="MOTU M4", channel=2)
+        sess.open()
+        sessions.append(sess)
+        out = _TcOut()
+        sess.clock.out = out
+        sess.start()
+        try:
+            sess.clock_pause()
+            check(False, "clock_pause worked with nothing playing")
+        except SessionError as e:
+            check("pause" in str(e).lower() or "playing" in str(e).lower(),
+                  f"unclear refusal: {e}")
+        try:
+            sess.clock_resume()
+            check(False, "clock_resume worked with nothing playing")
+        except SessionError as e:
+            check("paused" in str(e).lower() or "resume" in str(e).lower(),
+                  f"unclear refusal: {e}")
+
+        # 4. Play, pause, and watch the pixels hold; the page agrees.
+        sess.clock_play("Show")
+        check(wait_for(lambda: sess.player.current_cue is not None,
+                       timeout=3.0), "the cue never reached the pixels")
+        sess.clock_pause()
+        # The chase engine only calls a repeating position PARKED once it
+        # has repeated for park_ms: right up to that debounce, the reading
+        # can still say LOCKED for a frame here and there. Let it settle
+        # past that window before trusting the readout, the same margin
+        # test_park_and_pause gives it.
+        check(wait_for(lambda: sess.player._park_since is not None,
+                       timeout=3.0),
+              "the chase engine never noticed the repeated position")
+        # A fixed margin, not sess.player.park_s: feed_timecode() itself
+        # sets state=PARKED optimistically the moment a repeat is seen,
+        # racing the output thread's own debounced computation, so reading
+        # state right away can catch that early, unsettled flip. Waiting a
+        # fixed amount comfortably past the DEFAULT 200ms park window
+        # settles it, the same margin test_park_and_pause gives its
+        # simulated clock, without tying this test's own running time to a
+        # Player setting that could be anything (0 from a show file typo,
+        # or a mutation elsewhere in the suite run).
+        time.sleep(0.5)
+        check(sess.player.state == PARKED,
+              f"the pixels never parked after Hold, got "
+              f"{sess.player.state}")
+        check(sess.clock.paused and sess.snapshot()["clock"]["paused"],
+              "the page does not say the clock is paused")
+        frame = sess.player.current_frame
+        mark = len(out.sent)
+        time.sleep(0.3)
+        check(sess.player.current_frame == frame,
+              "the pixels moved while the show was on Hold")
+        check(len(out.sent) > mark,
+              "Art-Net timecode stopped going out during Hold; MadMapper "
+              "and BEYOND would time out")
+
+        # Refused: already paused.
+        try:
+            sess.clock_pause()
+            check(False, "a second Hold was accepted")
+        except SessionError as e:
+            check("already paused" in str(e), f"unclear refusal: {e}")
+
+        # 5. Resume: the show carries on, and a second Resume is refused.
+        sess.clock_resume()
+        check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
+              "the show did not carry on after Resume")
+        check(not sess.clock.paused, "the clock still reads paused")
+        check(wait_for(lambda: sess.player.current_frame > frame,
+                       timeout=3.0),
+              "the pixels never moved again after Resume")
+        try:
+            sess.clock_resume()
+            check(False, "a second Resume was accepted")
+        except SessionError as e:
+            check("not paused" in str(e), f"unclear refusal: {e}")
+
+        # 6. Halt while paused ends cleanly.
+        sess.clock_pause()
+        check(wait_for(lambda: sess.player.state == PARKED, timeout=3.0),
+              "the pixels never parked for the halt-while-paused check")
+        sess.clock_halt()
+        check(wait_for(lambda: sess.player.current_cue is None, timeout=3.0),
+              "halt while paused did not hand the pixels back")
+        check(not sess.clock.playing and not sess.clock.paused,
+              "halt while paused left the clock playing or paused")
+        for meth in (sess.clock_pause, sess.clock_resume):
+            try:
+                meth()
+                check(False, f"{meth.__name__} worked after a halt")
+            except SessionError:
+                pass
+    finally:
+        for sess in sessions:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+class _TickGate:
+    """Lets a test hold a REAL ticker thread just before it runs one
+    specific tick, so a race with pause()/resume() running concurrently on
+    another thread lands exactly where it matters instead of on luck.
+
+    Wrap this onto ticker.tick (the same swappable slot the drift and
+    fault tests already use to observe ticks). Every call passes straight
+    through to the real tick until arm() is called; the next call after
+    that blocks on release() and signals wait_started() the moment it
+    starts blocking, so the caller knows the ticker thread is parked right
+    there, mid tick, holding whatever frame number it had already computed
+    from real elapsed time."""
+
+    def __init__(self, real_tick):
+        self._real = real_tick
+        self._armed = threading.Event()
+        self._started = threading.Event()
+        self._go = threading.Event()
+        self.last_n = None
+
+    def arm(self):
+        self._started.clear()
+        self._go.clear()
+        self._armed.set()
+
+    def wait_started(self, timeout=3.0):
+        return self._started.wait(timeout)
+
+    def release(self):
+        self._go.set()
+
+    def __call__(self, n, now):
+        if self._armed.is_set():
+            self._armed.clear()
+            self.last_n = n
+            self._started.set()
+            self._go.wait(3.0)
+        return self._real(n, now)
+
+
+def test_pause_does_not_race_its_own_ticker():
+    section("show clock: pause() cannot drop a tick to its own still-live "
+            "ticker thread")
+    # Adversarial review of PR #10, the SHOULD FIX: pause() never stops
+    # the ticker (the same thread has to keep ticking through the pause so
+    # the frozen frame keeps going out), and _tick() never takes the lock
+    # pause() holds, so nothing stops a real tick running while pause() is
+    # part way through. The fix orders pause()'s writes so everything the
+    # paused branch reads is in place before the flag that makes _tick()
+    # read it is set. m._sync_point is a no-op in every real run; here it
+    # holds pause() at the exact instant that ordering is meant to make
+    # safe, and lets the real, still-ticking ticker thread try a tick
+    # right then, rather than hoping one happens to land there.
+    from ltcplay import clock as C
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    held, go = threading.Event(), threading.Event()
+
+    def hook(tag):
+        if tag == "pause":
+            held.set()
+            go.wait(2.0)
+
+    m._sync_point = hook
+    m.start()
+    try:
+        m.play(0.0, 3600.0, "A")
+        check(wait_for(lambda: len(out.sent) >= 3, timeout=3.0),
+              "the clock never started sending")
+        sent_before = len(out.sent)
+
+        done = []
+
+        def do_pause():
+            try:
+                m.pause()
+            finally:
+                done.append(True)
+
+        t = threading.Thread(target=do_pause, name="pause-race")
+        t.start()
+        check(held.wait(3.0),
+              "pause() never reached the point this test holds it at")
+        # pause() is holding right there. The real ticker thread is still
+        # running underneath the whole time -- give it a real chance to
+        # tick before letting pause() finish.
+        time.sleep(0.15)
+        go.set()
+        t.join(3.0)
+        check(not t.is_alive() and done, "pause() never returned")
+
+        check(m.ticker.errors == 0,
+              f"a tick raced pause() and errored, dropping that frame: "
+              f"{m.ticker.last_error!r}")
+        # Generous and condition-based, not a snapshot at one instant: see
+        # the note in test_resume_does_not_race_its_own_ticker on why a
+        # starved runner answering slowly is not the same as pause()
+        # having actually stopped the stream.
+        check(wait_for(lambda: len(out.sent) > sent_before, timeout=30.0),
+              "the clock stopped sending while pause() was resolving")
+    finally:
+        m._sync_point = lambda tag: None
+        m.stop()
+    print("  ok")
+
+
+def test_resume_does_not_race_its_own_ticker():
+    section("show clock: Resume cannot lose the cue to its own still-live "
+            "ticker thread")
+    # Adversarial review of PR #10: pause() never stops the ticker (that
+    # is the feature -- the same thread has to keep ticking through the
+    # pause so the frozen frame keeps going out), which means its own
+    # frame count keeps climbing the whole time regardless, often well
+    # past where a correct resume would continue from. If resume() ever
+    # cleared _paused/_frozen before it actually stopped that thread, a
+    # tick still in flight in that gap would take the UNPAUSED branch
+    # with that stale count -- ending the cue outright if it happens to
+    # exceed the cue's length, or sending a stray frame far ahead of the
+    # frozen one if it does not -- all before resume() itself returned,
+    # silently, with no exception. This forces a real tick into exactly
+    # that gap with a synchronization hook rather than a sleep and a
+    # prayer, so it reproduces on every run, on every OS, or not at all.
+    #
+    # The cue is a full minute, not a handful of frames: a real show cue
+    # is minutes long, and a test cue short enough that ordinary thread
+    # scheduling could exhaust its remaining length on its own -- with no
+    # bug anywhere -- proves nothing except that CI was briefly slow.
+    # (Found the hard way: a 0.15s cue here read as "the show is dead" on
+    # a starved macOS runner even with the fix in place, because resuming
+    # from a couple of frames in left only a few tens of milliseconds of
+    # real, legitimate runway. With a minute of runway, only an actual
+    # bug can end it.) What proves the fix now is not merely "a packet
+    # arrived" but that the timecode never falls backward after resume.
+    from ltcplay import clock as C
+    from ltcplay.tc import tc_to_frames
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    gate = _TickGate(m.ticker.tick)
+    m.ticker.tick = gate
+    m.start()
+    try:
+        m.play(0.0, 60.0, "A")           # 60s: ample legitimate runway
+        check(wait_for(lambda: len(out.sent) >= 2, timeout=3.0),
+              "the clock never started sending")
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        n_frozen = m._frozen_n
+        sent_before = len(out.sent)
+        # Let the live ticker keep ticking, unattended, well past the
+        # frame it froze on -- exactly what it does for real during any
+        # pause of real length.
+        time.sleep(0.5)
+        check(len(out.sent) > sent_before,
+              "the clock stopped sending during the pause")
+
+        # Arm the gate: the ticker thread's NEXT tick will block, carrying
+        # whatever frame number real elapsed time has given it by then.
+        gate.arm()
+        check(gate.wait_started(timeout=3.0),
+              "the ticker thread never reached the next tick to hold")
+        check(gate.last_n > n_frozen + 5,
+              f"the held tick's frame {gate.last_n} never grew meaningfully "
+              f"past the frozen frame {n_frozen}; this run cannot prove "
+              f"anything, widen the sleep above")
+
+        done = []
+
+        def do_resume():
+            try:
+                m.resume()
+            finally:
+                done.append(True)
+
+        t = threading.Thread(target=do_resume, name="resume-race")
+        t.start()
+        # resume() should now be blocked inside ticker.stop()'s join,
+        # waiting for the tick this test is holding. Give it a moment to
+        # get there, then release the tick: if resume() had already
+        # cleared _paused/_frozen before stopping the ticker, the held
+        # tick reads the unpaused branch with its stale n the instant it
+        # is released, before resume() itself has done anything else.
+        time.sleep(0.1)
+        check(t.is_alive(),
+              "resume() returned before the held tick was even released, "
+              "so this run proves nothing; it should still be waiting on "
+              "ticker.stop()'s join")
+        gate.release()
+        t.join(3.0)
+        check(not t.is_alive(), "resume() never returned")
+        check(done, "resume() did not complete")
+
+        # The state, checked directly and strictly: this is "is the show
+        # dead", and nothing about a slow CI runner may weaken it.
+        check(m.playing and m._cue is not None,
+              "the cue was ended by its own ticker racing resume()")
+        check(not m.paused, "resume() left the clock marked paused")
+        check(m.ticker.errors == 0,
+              f"the held tick raised: {m.ticker.last_error!r}")
+        # Whether a packet actually WENT OUT is a different question, and a
+        # starved runner answers it slowly, on purpose: player.py's output
+        # loop gives up a missed slot rather than bursting to catch up, so
+        # a stalled process sends nothing for as long as it is stalled and
+        # then carries on from wherever real time has moved to. A tight
+        # deadline here measures the runner, not resume(); a starved macOS
+        # CI runner (confirmed independently the same run: "sent 19 of 30
+        # frames in a second") failed exactly this line with the state
+        # above intact. Generous and condition-based: only a thread that
+        # is actually stuck, not just slow, can still fail it. With a full
+        # minute of cue left, this cannot time out for any reason except
+        # an actually stuck thread.
+        mark = len(out.sent)
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
+              "no Art-Net timecode went out after resume(); the show is "
+              "dead")
+        # And what arrived is a clean resumed sequence, never a stale
+        # detour. Checked as a monotonicity invariant across the whole
+        # pause-to-resume span, not by matching gate.last_n's specific
+        # frame number byte for byte: on a runner slow enough, the
+        # correctly resumed ticker's own, legitimate count can itself
+        # climb high enough by the time this line runs to pass through
+        # that same frame number too (found the hard way: a single freeze
+        # landing late enough made an otherwise-correct run flag its own,
+        # legitimate frame 18 as "the stale one", because the held tick
+        # had also carried frame 18 -- same number, unrelated cause).
+        # What the old bug actually produces that a correct resume never
+        # can is a frame number that FALLS: the stale tick's far-ahead
+        # count, sent once, followed immediately by the correctly
+        # resumed ticker starting over from n_frozen + 1, which is
+        # necessarily smaller. A held or resumed timecode may repeat
+        # (parked) or climb (playing); it may never drop.
+        seq = []
+        for _, p in out.sent[sent_before:]:
+            h, mnt, s, f, _typ = _tc_of(p)
+            seq.append(tc_to_frames(h, mnt, s, f, C.MASTER_FPS))
+        drops = [(a, b) for a, b in zip(seq, seq[1:]) if b < a]
+        check(not drops,
+              f"the timecode fell backward after resume ({drops[:3]}): a "
+              f"stale, far-ahead frame reached the wire before the "
+              f"correctly resumed sequence")
+    finally:
+        m.stop()
+    print("  ok")
+
+
+def test_pause_resume_survive_a_real_ticker_under_pressure():
+    section("show clock: many rapid Hold/Resume cycles on a real ticker "
+            "never drop a tick, never kill the cue")
+    # Adversarial review of PR #10, the SHOULD FIX: pause() writes
+    # _frozen/_frozen_n/_frozen_pos/last_sent and only then _paused, but
+    # _tick() runs on the still-live ticker thread and never takes the
+    # lock, so nothing stops it running in whatever gap exists between
+    # those writes. The fix (this file, ArtNetMaster.pause()) sets every
+    # field the paused branch reads before the flag that makes _tick()
+    # read them, relying on the GIL's own guarantee that one thread's
+    # writes are seen by another in the order they were issued -- but
+    # that guarantee is only as good as the code actually honouring it,
+    # so this hammers it: a real ticker thread, ticking for real, paused
+    # and resumed as fast as this process can manage, with the GIL's
+    # switch interval turned right down so it hands control between
+    # threads far more often than it would by default. If the field order
+    # in pause() or resume() ever regresses, this is built to notice --
+    # a dropped tick shows up as a tick error, and a killed cue shows up
+    # as playing turning False mid-run, either one checked after every
+    # single cycle, not just at the end.
+    from ltcplay import clock as C
+    cfg = C.ClockConfig.parse({"source": "artnet_master",
+                               "artnet": {"nodes": {"t": "127.0.0.1"}}})
+    out = _TcOut()
+    fed = []
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    m.start()
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+        m.play(0.0, 30.0, "A")            # 30s = 900 frames: plenty of room
+        check(wait_for(lambda: len(out.sent) >= 2, timeout=3.0),
+              "the clock never started sending")
+        cycles = 300
+        dead = []
+        for i in range(cycles):
+            m.pause()
+            if not m.playing or m._cue is None:
+                dead.append(("pause", i))
+                break
+            if m.ticker.errors:
+                break
+            m.resume()
+            if not m.playing or m._cue is None:
+                dead.append(("resume", i))
+                break
+            if m.ticker.errors:
+                break
+        check(not dead, f"the cue died mid stress: {dead}")
+        check(m.ticker.errors == 0,
+              f"{m.ticker.errors} tick(s) errored under pressure "
+              f"({cycles} pause/resume cycles): {m.ticker.last_error!r}")
+        check(m.playing and m._cue is not None,
+              "the cue is not alive after the stress cycles")
+        check(not m.paused, "the clock was left paused after the cycles")
+        # And it still actually works afterward: one more full cycle,
+        # given time to settle, must still hold and carry on cleanly.
+        mark = len(out.sent)
+        m.pause()
+        # Wait for several ticks confirmed to be from after the pause (the
+        # packet at index "mark" itself may still be the last pre-pause
+        # one, sent a moment before pause() flipped the flag). Generous
+        # and condition-based, not a snapshot at one instant: see the note
+        # in test_resume_does_not_race_its_own_ticker on why a starved
+        # runner answering slowly is not a dead or broken clock.
+        check(wait_for(lambda: len(out.sent) >= mark + 6, timeout=30.0),
+              "the clock stopped sending right after the settle-down pause")
+        time.sleep(0.1)
+        # Sample only packets confirmed to be from after the pause: index
+        # "mark" itself is excluded (it may be the pre-pause one), and
+        # out.sent[-5:] would be wrong here too, because on a slow runner
+        # few enough packets may have accumulated since "mark" that a
+        # last-5-of-everything window still reaches back across the pause
+        # boundary into normal, non-frozen packets -- failing this check
+        # for a reason that has nothing to do with pause() itself. The
+        # wait above guarantees at least 5 packets past that boundary.
+        since_pause = out.sent[mark + 1:]
+        check(len({p for _, p in since_pause[-5:]}) == 1,
+              "packets after the stress run are not holding on one frozen "
+              "frame")
+        mark = len(out.sent)
+        m.resume()
+        check(wait_for(lambda: len(out.sent) > mark, timeout=30.0),
+              "the clock never resumed sending after the stress run")
+        check(m.ticker.errors == 0,
+              f"a tick errored on the settle-down resume: "
+              f"{m.ticker.last_error!r}")
+    finally:
+        sys.setswitchinterval(old_interval)
+        m.stop()
     print("  ok")
 
 
@@ -15456,6 +17386,26 @@ if __name__ == "__main__":
     test_journal_summary_lists_every_fault()
     test_journal_leftover_temp_files_are_cleared()
     test_journal_housekeeping_runs_once()
+    test_announce_probe_matches_open_for_format()
+    test_announce_device_exact_match_only()
+    test_announce_toctou_recheck_before_start()
+    test_announce_show_start_stops_announcement()
+    test_announce_stall_watchdog()
+    test_announce_callback_status_errors()
+    test_announce_minor_hardening()
+    test_announce_load_operators_dash_cleaning()
+    test_announce_show_start_hook_never_touches_the_stream()
+    test_schedule_hook_runs_outside_service_lock()
+    test_announce_reentrant_claim_does_not_orphan_a_stream()
+    test_announce_interlock_matrix()
+    test_announce_single_flight()
+    test_announce_operator_validation()
+    test_announce_missing_files_at_startup()
+    test_announce_device_missing_renamed_reappearing()
+    test_announce_progress_and_stop()
+    test_announce_logging_fields()
+    test_announce_routes()
+    test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
@@ -15469,6 +17419,11 @@ if __name__ == "__main__":
     test_forwarded_timecode_steps_by_one()
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
+    test_the_clock_freezes_on_hold_and_resume_carries_on()
+    test_session_hold_and_resume()
+    test_pause_does_not_race_its_own_ticker()
+    test_resume_does_not_race_its_own_ticker()
+    test_pause_resume_survive_a_real_ticker_under_pressure()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()

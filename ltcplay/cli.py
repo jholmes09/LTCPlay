@@ -1225,9 +1225,18 @@ def cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    announce = None
+    if getattr(args, "announce", None) is not None:
+        # Same rule as the scheduler: only here, and only when asked for,
+        # are the announcements loaded. The GPL launchers never pass
+        # --announce.
+        from . import announce as announce_mod
+        announce = os.path.abspath(os.path.expanduser(
+            args.announce or announce_mod.default_config_path()))
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
-                              token=args.token, schedule=schedule)
+                              token=args.token, schedule=schedule,
+                              announce=announce)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1249,6 +1258,10 @@ def cmd_serve(args):
         print(f"Schedule: {sv.path}")
         print("  " + (sv.error or "Loaded. It decides but does not act: no "
                       "show is started by it in this build."))
+    if httpd.announce is not None:
+        av = httpd.announce
+        print(f"Announcements: {av.config_path}")
+        print("  " + (av.error or f"Loaded, on {av.device_name}."))
     if token:
         print(f"\nServing on the network, so the page needs the token in that "
               f"link.\nAnyone who can reach {host}:{args.port} and has it can "
@@ -1288,8 +1301,8 @@ def cmd_serve(args):
 
 def _shutdown(httpd):
     """The way out, in the order that keeps the rig safe: the show's own
-    stop (the blackout) first, then the scheduler and its journal, which
-    may be waiting on a disk, then the page. Nothing that writes a log may
+    stop (the blackout) first, then the announcements, then the scheduler
+    and its journal, which may be waiting on a disk, then the page. Nothing that writes a log may
     stand between Ctrl-C and the blackout. The scheduler's ticking is
     halted before the rig stops, so no tick can start anything after it."""
     halt = getattr(httpd.schedule, "halt", None)
@@ -1299,6 +1312,12 @@ def _shutdown(httpd):
         except Exception as e:
             print(f"The scheduler did not halt cleanly: {e}")
     httpd.control.stop()
+    announce = getattr(httpd, "announce", None)
+    if announce is not None:
+        try:
+            announce.close()
+        except Exception as e:
+            print(f"The announcements did not stop cleanly: {e}")
     if httpd.schedule is not None:
         try:
             httpd.schedule.stop()
@@ -1787,6 +1806,13 @@ def main(argv=None):
                          "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay on "
                          "Windows). It decides and does not act yet. "
                          "Leave it off and there is no scheduler at all")
+    sv.add_argument("--announce", nargs="?", const="", default=None,
+                    metavar="FILE",
+                    help="play operator announcements from this config "
+                         "file (default: ltcplay_announce.json beside the "
+                         "launcher on a Mac, in %%LOCALAPPDATA%%\\ltcplay "
+                         "on Windows). Leave it off and there are no "
+                         "announcements at all")
     sv.set_defaults(func=cmd_serve)
 
     sdp = sub.add_parser("showdir", help="see or change the folder a show "
