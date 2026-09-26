@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B10 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B11 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -19,6 +19,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B8 BEYOND | PASSED with required settings | Follows on 127.0.0.2 while MadMapper takes 127.0.0.1, both within a frame over 60 s; blank by OSC brightness 0; turn off "Keep running" or it plays through Hold; OSC port must not be 8000; demo stops after 1 to 2 h (crashed at 2 h overnight, B9) |
 | B10 Flame safety program (flamesafe-core d5b398f) | PASSED | Suites pass on Windows; 40.0 packets/s at priority 200, all zero, no sequence breaks, idle and under show load (p99 interval 25.5 ms, 0.84% of a thread); survives a dead destination; clean stop sends zeros then stream-terminated; hard kill stops at once with no zeros (as documented); bad configs refuse with exit 2 |
 | B9 Long soak | PASSED (ltcplay, MadMapper, pixels); BEYOND demo FAILED at its 2 h limit | 12 shows of 7:24 every 20 min, 3 h 47 min on main fa5274a: 0 timecode frames skipped, MadMapper 1 to 28 ms behind with no drift, heartbeat never silent over 75 ms, ltcplay 22.1 MB flat, SSD 61 to 64 °C with the box lifted. BEYOND demo crashed on its time-limit box at 2 h and sat frozen but "running". Findings: pixel repeat/skip pairs for 3 min in show 6; BEYOND's own audio probably mixed into MadMapper's output; intermission clip did not loop (bench setup) |
+| B11 Web page under show load | PASSED with one viewer / FAILED with several | One open page: no effect on the pixels. Two viewers: 181 repeat/skip pairs and a 79 ms gap. Five: about 7% of frames dropped. Ten: 12 to 14 fps all show. The page also has no Play for the master clock (GO runs pixels only, no timecode) |
 
 ## B0 The machine
 
@@ -350,3 +351,29 @@ From then on BEYOND showed "An error occurred in the application" (continue / re
 **Earlier soaks the same day** (for the record): soak 1, 7:20 cues with 30 s gaps, 1 h 34 min clean until an accidental unplug; soak 2, 120 cues of 58 s, 2 h, timecode 19 skipped in 208,781, pixels no drift, SSD 32 to 67 °C, no stall. The two unexpected shutdowns of 09-25 (10:12 freeze, 15:30 unplug) were the only problem events.
 
 Evidence: `bench_evidence/B9_show6.png`, `B9_intermission_after_show12.png`, `B9_soak3_analysis.txt` (per-show heartbeat, drift points, pixels, memory), `B9_beyond_problem_report_head.txt`.
+
+## B11 ltcplay's web page under show load
+
+**Verdict: PASSED with one page open; FAILED with several viewers. Each extra viewer of the page costs the pixels frames: two viewers cause occasional repeat/skip pairs and one 79 ms gap, five drop about 7% of frames (31 fps in the first minute), and ten flat out drop the pixels to 12 to 14 fps for the whole show.** Also: **on main the page has no control that starts the master clock.** 2026-09-26 05:01 to 05:49, main **`fa5274a`**, `python -m ltcplay.cli serve --folder bench_show --no-browser` (the ltcplay venv), bound to 127.0.0.1:7878. Show `bench444_timeline.json` (26,256 pixels, 155 universes, 40 fps). MadMapper was playing its six panel tracks (not chasing: see the next paragraph). BEYOND was not running (crashed, B9). Ethernet unplugged. Every run was 7:24 of pixels, recorded by the same pixel sink as B9.
+
+**The page cannot start the show clock.** With `"clock": {"source": "artnet_master"}` the page validates the show ("Show clock: artnet_master, Art-Net timecode to MadMapper 192.168.4.42, BEYOND 127.0.0.2"). It starts it with **Run, and send to the rig** (state STANDBY, output black) and shows the clock's status. But the only way to start playing from the page is **GO** ("Run on this Mac's clock"). GO calls `player.go()`, a free run of the pixels, and **sends no Art-Net timecode**, so MadMapper and BEYOND do not move. `Session.clock_play()` has no route in `web.py`. So every run below is a GO free run of the pixels, started with the page's own `/api/go` (`{"at": "Bench"}`), without timecode to MadMapper. **For the main session:** the operator needs a Play (and Hold/Resume) for the master clock on the page, or the show can only be started from code.
+
+The page itself polls `/api/state` about 4 times a second, and `/api/log?n=40` about every 2.5 s. The in-app browser, measured over 10 s: 42 requests.
+
+| Run | Viewers | Pixels over 7:24 | Longest gap | Page requests | CPU (whole PC) |
+|---|---|---|---|---|---|
+| 1 | **one real page** (Chromium, visible) | 40 fps; **2 skips, 2 repeats** | 49 ms | ~4/s; each `/api/state` **61 ms average** during the show (2.6 ms idle), max 85 ms | 17.1% |
+| 2 | **none** (page closed, GO by `curl`) | 40 fps; 2 skips, 2 repeats | 46 ms | none | 11.1% |
+| 6 | **two** page-like clients (`scratch/web_hammer.py 2 420 … 0.25`) | 40 fps in most minutes; **181 skips, 178 repeats**; 43 seconds under 39 fps | **79 ms** | 8/s, median 88 ms, max 218 ms | 25.4% |
+| 5 | **five** page-like clients | **1,185 skips** (about 7% of frames); **31 fps in the first minute**, then 36 to 39 fps | 58 ms | 19/s (could not keep 4 Hz each), median 166 ms, max 535 ms | 61.0% |
+| 4 | **ten** clients polling as fast as they can | **12 to 14 fps for the whole show**; **11,160 skips**; every second under 39 fps | **133 ms** | 21/s, median 492 ms, max 921 ms | 68.2% |
+
+- **Timing held; the frame rate did not.** In every run the frames that were sent stayed on the cue's time (lateness median -12 to +12 ms, worst 30 ms): the engine drops frames to stay on time rather than drifting. On LEDs that is a stutter, not a slip.
+- **One viewer costs nothing measurable** (run 1 vs run 2: the same 2 skips and 2 repeats, the gap 49 vs 46 ms). The 6% extra CPU is the browser drawing the page.
+- Each `/api/state` answer took 2.6 ms with nothing playing and 61 ms during the show. Ten clients got only 21 answers a second in total. The server is a `ThreadingHTTPServer`, and `state()` takes no lock, so this looks like **the web threads and the pixel loop competing for Python's interpreter lock in one process**. That is a guess from the numbers; I did not profile it.
+- The engine survived everything. There were 0 failed requests, and `serve.err` shows only 5 `ConnectionResetError` tracebacks, from clients hanging up at the end. `/api/stop` blacked out and stopped cleanly. The engine used 3,634 CPU seconds in 48 minutes, more than one core on average, mostly during runs 4 and 5.
+- `sounddevice is not installed or could not load PortAudio` shows in the INPUT panel. That is expected: this venv was built without it and the master clock needs no input.
+
+**What this means for the show:** until the main session changes this, **only one device should have the ltcplay page open during a show** (the operator's). Crew phones and iPads should not keep it open. Worth fixing before opening night: the rig will be run from a page, and a second tablet left open on a shelf is realistic. Ideas for the main session, in plain words: answer `/api/state` from a snapshot the engine refreshes a few times a second, rather than building it per request; poll less often; or serve the page from a separate process.
+
+Evidence: `B11_web_runs.txt` (the per-run summaries above, from `scratch/web_px.py` and `scratch/web_hammer.py`).

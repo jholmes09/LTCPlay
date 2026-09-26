@@ -1,0 +1,15 @@
+# B11 web page under load, main fa5274a, 2026-09-26
+run 1 web1: one real page open in the in-app browser (Chromium), ~4 requests/s
+web1/pixels.csv: 443 s 05:02:52-05:10:14; fps median 40, seconds under 39 fps 0; skipped 2, repeats 2, incomplete 0; max gap 49.2 ms; p99 dev median 1.65 ms; late vs cue median 1.1 ms, worst 8.2 ms
+run 2 web2: page closed, GO by curl
+web2/pixels.csv: 443 s 05:11:09-05:18:31; fps median 40, seconds under 39 fps 0; skipped 2, repeats 2, incomplete 0; max gap 45.6 ms; p99 dev median 1.70 ms; late vs cue median -2.4 ms, worst 2.7 ms
+run 4 web4: ten clients as fast as they can
+web4/pixels.csv: 439 s 05:26:42-05:34:00; fps median 14, seconds under 39 fps 421; skipped 11160, repeats 1, incomplete 0; max gap 132.9 ms; p99 dev median 61.15 ms; late vs cue median 11.7 ms, worst 29.8 ms
+  clients: 8806 requests in 420 s = 21/s from 10 threads; errors 0; median 491.8 ms, p95 671.9, p99 718.9, max 920.9
+  (run 3 web3 lost its pixel recording: port still held by run 2's sink; its clients: 9069 requests in 420 s = 22/s from 10 threads; errors 0; median 489.9 ms, p95 623.4, p99 671.2, max 742.0)
+run 5 web5: five clients at 0.25 s each
+web5/pixels.csv: 415 s 05:34:16-05:41:10; fps median 39, seconds under 39 fps 183; skipped 1185, repeats 33, incomplete 0; max gap 57.6 ms; p99 dev median 7.08 ms; late vs cue median -9.5 ms, worst 8.1 ms
+  clients: 7934 requests in 420 s = 19/s from 5 threads; errors 0; median 166.2 ms, p95 350.7, p99 390.7, max 535.0
+run 6 web6: two clients at 0.25 s each
+web6/pixels.csv: 417 s 05:41:44-05:48:40; fps median 40, seconds under 39 fps 43; skipped 181, repeats 178, incomplete 0; max gap 79.1 ms; p99 dev median 1.68 ms; late vs cue median -11.8 ms, worst -0.5 ms
+  clients: 3356 requests in 420 s = 8/s from 2 threads; errors 0; median 87.7 ms, p95 105.1, p99 132.5, max 217.6
