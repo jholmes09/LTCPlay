@@ -1489,13 +1489,40 @@ MUTATIONS = [
   '            refusal = interlock_refusal(state)\n'
   '            if False:\n'),
 
- ("a 32-bit float announcement file is played as noise", "ltcplay/announce.py",
-  '    if tag == 3:\n'
-  '        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "\n'
-  '                         f"which is not supported. Export 16-bit or "\n'
-  '                         f"32-bit PCM (integer), not float, instead.")',
+ ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
+  '    if is_float:\n'
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted',
   '    if False:\n'
-  '        pass'),
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted'),
+
+ ("a 24-bit announcement file is shifted the wrong way, changing its "
+  "level 256x", "ltcplay/announce.py",
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, 1:] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)',
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, :3] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)'),
+
+ ("24-bit PCM falls through to the wrong dtype lookup", "ltcplay/announce.py",
+  '    elif sampwidth == 3:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.',
+  '    elif False:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.'),
+
+ ("an unsupported WAV format tag is accepted", "ltcplay/announce.py",
+  '    is_float = tag == 3\n'
+  '    if tag is not None and tag not in (1, 3, 0xFFFE):',
+  '    is_float = tag == 3\n'
+  '    if False:'),
+
+ ("a non-32-bit floating point WAV is accepted as float", "ltcplay/announce.py",
+  '        if bits != 32:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "',
+  '        if False:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "'),
 
  ("an announcement device that stopped answering is never noticed",
   "ltcplay/announce.py",

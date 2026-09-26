@@ -102,6 +102,9 @@ CALLBACK_ERROR_LIMIT = 20      # the device answers, but every time with a
                                # reported problem: also treated as a failure
 
 _DTYPE_BY_SAMPWIDTH = {1: "uint8", 2: "int16", 4: "int32"}
+# 3 (24-bit) is accepted too, decoded by hand in _wav_info: neither numpy
+# nor sounddevice has a 3-byte dtype, so it is never a key in the map above.
+_PCM_SAMPWIDTHS = frozenset(_DTYPE_BY_SAMPWIDTH) | {3}
 _DASHES = ("—", "–")          # em dash, en dash
 
 
@@ -274,10 +277,12 @@ def _wav_format_tag(path):
     float, 0xFFFE is extensible with a further sub-format. Python's `wave`
     module always assumes PCM and never looks at this, so a 32-bit float
     file opens exactly like a 32-bit int one, and its sample bytes would be
-    reinterpreted as integers: loud noise, with no error anywhere (review:
-    audit13_probe_weaker_than_open.py, part b). Returns None if it cannot be
-    read, which is treated as PCM, the safer reading of a file the standard
-    library reader already accepted."""
+    reinterpreted as integers unless this module reads the tag itself and
+    decodes float samples as float (review: audit13_probe_weaker_than_open.py,
+    part b; recordings are WAV, possibly 24-bit or 32-bit float, Jeff,
+    2026-09-26). Returns None if it cannot be read, which is treated as PCM,
+    the safer reading of a file the standard library reader already
+    accepted."""
     try:
         with open(path, "rb") as fh:
             riff = fh.read(12)
@@ -298,6 +303,58 @@ def _wav_format_tag(path):
         return None
 
 
+def _read_float_wav(path, decode):
+    """A minimal RIFF/WAVE reader for the one case Python's own `wave`
+    module cannot be trusted to open at all: a 32-bit IEEE float file
+    (format tag 3). Some Python builds refuse it outright ("unknown
+    format: 3") rather than merely mis-decoding it as integers, so relying
+    on `wave.open` for this case would make this module's own behaviour
+    depend on which Python it happens to run under -- exactly the kind of
+    probe/play disagreement this module exists to rule out (review:
+    audit13_probe_weaker_than_open.py, part b). Reads only what play()
+    needs off the fmt and data chunks: (channels, rate, bits, raw bytes or
+    b"" when not decoding, data chunk size in bytes). Raises ValueError
+    with a plain sentence."""
+    with open(path, "rb") as fh:
+        riff = fh.read(12)
+        if len(riff) < 12 or riff[:4] != b"RIFF" or riff[8:12] != b"WAVE":
+            raise ValueError(f"{_clean(path)} is not a WAV file.")
+        channels = rate = bits = None
+        data, data_size = b"", 0
+        while True:
+            header = fh.read(8)
+            if len(header) < 8:
+                break
+            chunk_id = header[:4]
+            size = int.from_bytes(header[4:8], "little")
+            if chunk_id == b"fmt ":
+                body = fh.read(size)
+                if len(body) < 16:
+                    raise ValueError(f"{_clean(path)}'s fmt chunk is too "
+                                     f"short to read.")
+                channels = int.from_bytes(body[2:4], "little")
+                rate = int.from_bytes(body[4:8], "little")
+                bits = int.from_bytes(body[14:16], "little")
+                if size & 1:
+                    fh.read(1)
+            elif chunk_id == b"data":
+                data_size = size
+                if decode:
+                    data = fh.read(size)
+                else:
+                    fh.seek(size, 1)
+                if size & 1:
+                    fh.read(1)
+            else:
+                fh.seek(size + (size & 1), 1)
+    if channels is None or rate is None or bits is None:
+        raise ValueError(f"{_clean(path)} has no fmt chunk to read.")
+    if not channels or not rate:
+        raise ValueError(f"{_clean(path)}'s fmt chunk names no channels "
+                         f"or no sample rate.")
+    return channels, rate, bits, data, data_size
+
+
 def _wav_info(path, decode=True):
     """Open, validate, and (when `decode`) fully read a WAV file:
     (pcm_or_None, channels, rate, length_s). Raises ValueError with a plain
@@ -305,14 +362,21 @@ def _wav_info(path, decode=True):
     probe (`decode=False`) and a real Play press (`decode=True`) can never
     disagree: they are the same function.
 
+    Accepted: 16-bit, 24-bit and 32-bit PCM (integer), mono or stereo, any
+    common sample rate, plus 32-bit IEEE float (Jeff, 2026-09-26: recordings
+    are WAV, possibly 24-bit; float is accepted too since a field recorder
+    or a DAW may hand one over). Nothing else.
+
     The format tag is checked BEFORE Python's own `wave` module ever opens
-    the file. `wave` rejects a non-PCM file on its own on a modern Python,
-    but with its own message ("unknown format: 3"), which is not a
-    sentence an operator should have to read, and tying this module's
-    wording to whatever a given Python version's `wave` module happens to
-    check would be exactly the kind of disagreement between the probe and
-    a real Play press that this function exists to rule out (review:
-    audit13_probe_weaker_than_open.py, part b)."""
+    the file, and a float file is never handed to `wave` at all (see
+    _read_float_wav): `wave` rejects a non-PCM file on its own on a modern
+    Python, but with its own message ("unknown format: 3"), and on some
+    Python builds it refuses to open the file at all rather than merely
+    mis-decode it, which is not a sentence an operator should have to read,
+    and not a way of failing this module can offer consistently across
+    Python versions (review: audit13_probe_weaker_than_open.py, part b).
+    Without checking the tag here, a float file `wave` DID accept would
+    have its samples silently reinterpreted as integers."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -323,28 +387,41 @@ def _wav_info(path, decode=True):
                          f"the {MAX_FILE_BYTES / 1e6:.0f} MB limit for an "
                          f"announcement.")
     tag = _wav_format_tag(path)
-    if tag == 3:
-        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "
-                         f"which is not supported. Export 16-bit or "
-                         f"32-bit PCM (integer), not float, instead.")
-    if tag is not None and tag not in (1, 0xFFFE):
+    is_float = tag == 3
+    if tag is not None and tag not in (1, 3, 0xFFFE):
         raise ValueError(f"{_clean(path)} is WAV format {tag}, which is "
-                         f"not supported. Export 16-bit or 32-bit PCM "
-                         f"instead.")
-    try:
-        with wave.open(path, "rb") as w:
-            n = w.getnframes()
-            rate = w.getframerate()
-            channels = w.getnchannels()
-            sampwidth = w.getsampwidth()
-            raw = w.readframes(n) if decode else b""
-    except (OSError, EOFError, wave.Error) as e:
-        raise ValueError(f"{_clean(path)} could not be read as a WAV "
-                         f"file: {_clean(str(e))}.")
-    if sampwidth not in _DTYPE_BY_SAMPWIDTH:
-        raise ValueError(f"{_clean(path)} is a {sampwidth * 8}-bit WAV, "
-                         f"which is not supported. Export 16-bit or "
-                         f"32-bit PCM instead.")
+                         f"not supported. Export 16-bit, 24-bit or 32-bit "
+                         f"PCM, or 32-bit float, instead.")
+    if is_float:
+        try:
+            channels, rate, bits, raw, data_size = _read_float_wav(path,
+                                                                    decode)
+        except OSError as e:
+            raise ValueError(f"{_clean(path)} could not be read as a WAV "
+                             f"file: {_clean(str(e))}.")
+        if bits != 32:
+            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "
+                             f"point WAV, which is not supported. 32-bit "
+                             f"float is the only floating point WAV this "
+                             f"reads.")
+        sampwidth = 4
+        n = data_size // (channels * sampwidth)
+    else:
+        try:
+            with wave.open(path, "rb") as w:
+                n = w.getnframes()
+                rate = w.getframerate()
+                channels = w.getnchannels()
+                sampwidth = w.getsampwidth()
+                raw = w.readframes(n) if decode else b""
+        except (OSError, EOFError, wave.Error) as e:
+            raise ValueError(f"{_clean(path)} could not be read as a WAV "
+                             f"file: {_clean(str(e))}.")
+        if sampwidth not in _PCM_SAMPWIDTHS:
+            raise ValueError(f"{_clean(path)} is a {sampwidth * 8}-bit "
+                             f"WAV, which is not supported. Export 16-bit, "
+                             f"24-bit or 32-bit PCM, or 32-bit float, "
+                             f"instead.")
     length_s = n / float(rate) if rate else 0.0
     if length_s > MAX_LENGTH_S:
         raise ValueError(f"{_clean(path)} is {length_s:.0f} s long, over "
@@ -353,9 +430,27 @@ def _wav_info(path, decode=True):
     if not decode:
         return None, channels, rate, length_s
     import numpy as np
-    np_dtype = {"uint8": np.uint8, "int16": np.int16,
-               "int32": np.int32}[_DTYPE_BY_SAMPWIDTH[sampwidth]]
-    pcm = np.frombuffer(raw, dtype=np_dtype)
+    if is_float:
+        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted
+        # as int32 (what this module did before this decision: loud noise,
+        # no error anywhere; review, audit13_probe_weaker_than_open.py,
+        # part b).
+        pcm = np.frombuffer(raw, dtype=np.float32).copy()
+    elif sampwidth == 3:
+        # 24-bit PCM: 3 bytes per sample, little-endian. Neither numpy nor
+        # sounddevice's OutputStream has a 3-byte dtype, so each sample is
+        # left-justified into an int32 (padded with a zero LOW byte): the
+        # same value, shifted up 8 bits, at full 32-bit scale, with the
+        # original sign bit landing exactly on int32's own sign bit.
+        n_samples = len(raw) // 3
+        padded = np.zeros((n_samples, 4), dtype=np.uint8)
+        padded[:, 1:] = np.frombuffer(raw, dtype=np.uint8)[
+            :n_samples * 3].reshape(-1, 3)
+        pcm = padded.view(np.int32).reshape(-1)
+    else:
+        np_dtype = {"uint8": np.uint8, "int16": np.int16,
+                   "int32": np.int32}[_DTYPE_BY_SAMPWIDTH[sampwidth]]
+        pcm = np.frombuffer(raw, dtype=np_dtype)
     pcm = pcm.reshape(-1, channels) if channels > 1 else pcm.reshape(-1, 1)
     return pcm, channels, rate, length_s
 

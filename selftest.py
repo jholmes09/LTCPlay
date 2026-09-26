@@ -11186,8 +11186,9 @@ def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
 
 
 def test_announce_probe_matches_open_for_format():
-    section("announcements: the startup probe catches exactly what "
-            "playing would fail on: 24-bit and 32-bit float WAVs")
+    section("announcements: 16-bit, 24-bit and 32-bit float WAVs are all "
+            "accepted (Jeff, 2026-09-26), and the startup probe agrees "
+            "with the press-time open on exactly what will play")
     A = _ann()
     work = tempfile.mkdtemp()
     _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=1.0)
@@ -11205,21 +11206,157 @@ def test_announce_probe_matches_open_for_format():
                             state_provider=lambda: "STANDBY")
     by_id = {i["id"]: i for i in svc.status()["announcements"]}
     check(by_id[A.DELAYED]["available"], "a plain 16-bit WAV is fine")
-    check(not by_id[A.CANCELLATION]["available"]
-          and "24-bit" in by_id[A.CANCELLATION]["reason"],
-          f"a 24-bit WAV must be caught AT STARTUP, not at the press: "
+    check(by_id[A.CANCELLATION]["available"],
+          f"a 24-bit WAV must be accepted, at startup: "
           f"{by_id[A.CANCELLATION]}")
-    check(not by_id[A.CANNOT_CONTINUE]["available"]
-          and "floating point" in by_id[A.CANNOT_CONTINUE]["reason"],
-          f"a 32-bit float WAV must be caught too, never played as "
-          f"reinterpreted noise: {by_id[A.CANNOT_CONTINUE]}")
-    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+    check(by_id[A.CANNOT_CONTINUE]["available"],
+          f"a 32-bit float WAV must be accepted too, at startup: "
+          f"{by_id[A.CANNOT_CONTINUE]}")
+    for aid in A.IDS:
+        r = svc.play(aid, "Andy", "rack screen")
+        check(r["playing"]["id"] == aid,
+              f"{aid} must actually play, agreeing with the probe, not "
+              f"just look clean and then fail at the press: {r}")
+        svc.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_unsupported_wav_formats_rejected():
+    section("announcements: a WAV format this module cannot play safely "
+            "is still refused, the same way at startup and at the press")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_alaw(path, seconds=1.0, rate=8000):
+        import struct
+        n = int(seconds * rate)
+        data = b"\x00" * n
+        fmt_chunk = struct.pack("<HHIIHH", 6, 1, rate, rate, 1, 8)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    def write_float64(path, seconds=1.0, rate=8000):
+        import array
+        import struct
+        n = int(seconds * rate)
+        data = array.array("d", [0.1] * n).tobytes()
+        byte_rate = rate * 8
+        fmt_chunk = struct.pack("<HHIIHH", 3, 1, rate, byte_rate, 8, 64)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    write_alaw(os.path.join(work, "delayed.wav"))
+    write_float64(os.path.join(work, "cancellation.wav"))
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(not by_id[A.DELAYED]["available"]
+          and "format 6" in by_id[A.DELAYED]["reason"],
+          f"A-law (a non-PCM, non-float tag) must still be caught at "
+          f"startup: {by_id[A.DELAYED]}")
+    check(not by_id[A.CANCELLATION]["available"]
+          and "64-bit" in by_id[A.CANCELLATION]["reason"],
+          f"64-bit float must still be caught at startup, never silently "
+          f"truncated to 32-bit: {by_id[A.CANCELLATION]}")
+    check(by_id[A.CANNOT_CONTINUE]["available"], "the plain WAV is fine")
+    for aid in (A.DELAYED, A.CANCELLATION):
         try:
             svc.play(aid, "Andy", "rack screen")
             check(False, f"{aid} must never actually play")
         except ValueError as e:
             check("not available" in str(e), f"{e}")
     print("  ok")
+
+
+def test_announce_wav_decode_values():
+    section("announcements: 24-bit PCM and 32-bit float samples decode "
+            "to the right values, not just the right length")
+    import struct
+    import wave
+    import numpy as np
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    # 24-bit: known samples, left-justified (shifted up 8 bits) into
+    # int32 is the only conversion that keeps both the sign and the full
+    # scale right.
+    path24 = os.path.join(work, "a24.wav")
+    samples = (0, 1, -1, 8388607, -8388608, 12345)
+    raw = b"".join(int(s & 0xFFFFFF).to_bytes(3, "little")
+                  for s in samples)
+    with wave.open(path24, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(8000)
+        w.writeframes(raw)
+    pcm, channels, rate, _length = A._wav_info(path24, decode=True)
+    check(pcm.dtype == np.int32, f"24-bit PCM must decode to int32: "
+                                 f"{pcm.dtype}")
+    got = pcm.reshape(-1).astype(np.int64).tolist()
+    want = [s * 256 for s in samples]
+    check(got == want,
+          f"24-bit samples must be shifted up 8 bits, sign and all, not "
+          f"reinterpreted some other way: want {want}, got {got}")
+
+    # 32-bit float: the wav module cannot write this format, so it is
+    # built by hand, the same way a DAW or field recorder would hand one
+    # over (Jeff, 2026-09-26: recordings may be float).
+    path32 = os.path.join(work, "a32f.wav")
+    values = (0.5, -0.5, 0.999, -1.0)
+    data = _pack_float32(values)
+    byte_rate = 8000 * 4
+    fmt_chunk = struct.pack("<HHIIHH", 3, 1, 8000, byte_rate, 4, 32)
+    riff = (b"RIFF" +
+           struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+           b"WAVE")
+    fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+    data_chunk = b"data" + struct.pack("<I", len(data)) + data
+    with open(path32, "wb") as fh:
+        fh.write(riff + fmt + data_chunk)
+    pcm2, channels2, rate2, length2 = A._wav_info(path32, decode=True)
+    check(pcm2.dtype == np.float32,
+          f"32-bit float must decode to float32, not be reinterpreted as "
+          f"int32 (loud noise, no error anywhere): {pcm2.dtype}")
+    got2 = [round(float(v), 3) for v in pcm2.reshape(-1)]
+    check(got2 == list(values),
+          f"the float samples themselves must round-trip: want "
+          f"{list(values)}, got {got2}")
+    check(rate2 == 8000 and channels2 == 1 and abs(length2 - 0.0005) < 1e-6,
+          f"channels, rate and length must all be read off the float "
+          f"file's own fmt chunk: {channels2} {rate2} {length2}")
+
+    # The probe (decode=False) must agree with the open on both.
+    _, ch3, rate3, len3 = A._wav_info(path24, decode=False)
+    check(ch3 == 1 and rate3 == 8000, f"probe must read the same header "
+                                      f"a real open would: {ch3} {rate3}")
+    _, ch4, rate4, len4 = A._wav_info(path32, decode=False)
+    check(ch4 == 1 and rate4 == 8000 and abs(len4 - 0.0005) < 1e-6,
+          f"the probe must agree with the open on the float file too: "
+          f"{ch4} {rate4} {len4}")
+    print("  ok")
+
+
+def _pack_float32(values):
+    import array
+    return array.array("f", values).tobytes()
 
 
 def test_announce_device_exact_match_only():
@@ -15697,6 +15834,8 @@ if __name__ == "__main__":
     test_schedule_a_paused_show_is_never_overlapped()
     test_schedule_a_clock_step_during_a_pause()
     test_announce_probe_matches_open_for_format()
+    test_announce_unsupported_wav_formats_rejected()
+    test_announce_wav_decode_values()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()
     test_announce_show_start_stops_announcement()
