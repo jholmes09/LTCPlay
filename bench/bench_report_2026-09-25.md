@@ -257,7 +257,7 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 
 **B8.4 Changing source port:** tctest sends from an ephemeral port (a new one every run); BEYOND accepted every run (message counter and timeline). PASSED.
 
-**B8.5 Show vs intermission:** NOT TESTED. Both start at 00:00:00:00. Candidates from Pangolin's OSC list: `/beyond/general/StartCue` / `SelectCue` (string) to select a different timeline show before the clock starts, or an hour offset per show in File > Show properties > Time code input. Needs Andy's show files.
+**B8.5 Show vs intermission:** NOT TESTED. Both start at 00:00:00:00. Candidates from Pangolin's OSC list: `/beyond/general/StartCue` / `SelectCue` (string) to select a different timeline show before the clock starts, or an hour offset per show in File > Show properties > Time code input. Needs Andy's show files. **What is already known (2026-09-26):** in the layout the soak used, ltcplay sends no timecode between shows and MadMapper's intermission bank does not chase. So with "Keep running" off, BEYOND stops and goes black about 1 s after each show's timecode ends (B8.2). With no second BEYOND show, **the lasers are dark for the whole intermission**, which may be exactly what is wanted. A laser look during intermission needs either a second BEYOND show selected by OSC, or its own timecode range. That is a question for Jeff and Andy before it is a test.
 
 ## B10 The flame safety program on Windows
 
@@ -377,3 +377,10 @@ The page itself polls `/api/state` about 4 times a second, and `/api/log?n=40` a
 **What this means for the show:** until the main session changes this, **only one device should have the ltcplay page open during a show** (the operator's). Crew phones and iPads should not keep it open. Worth fixing before opening night: the rig will be run from a page, and a second tablet left open on a shelf is realistic. Ideas for the main session, in plain words: answer `/api/state` from a snapshot the engine refreshes a few times a second, rather than building it per request; poll less often; or serve the page from a separate process.
 
 Evidence: `B11_web_runs.txt` (the per-run summaries above, from `scratch/web_px.py` and `scratch/web_hammer.py`).
+
+## Not tested yet
+
+- **ASIO audio.** The Pico has no Focusrite ASIO driver: the Scarlett Solo runs on Windows' own USB audio driver. The ASIO drivers installed are all PreSonus and Behringer (AudioBox, Quantum, Studio, StudioLive, X-USB and others). The show's real interface (USB to the DSP) and its driver are needed for this test. I did not download or install a driver.
+- **Broadcast destination for Art-Net timecode** (B8.0 table): waits for Jeff's yes.
+- **Rack network** (two Ethernet ports, real controllers): needs the rack.
+- **Licensed BEYOND, multi-hour** (B9): needs Andy's licence on this PC.
