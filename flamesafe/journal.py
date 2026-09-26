@@ -34,7 +34,8 @@ class Journal:
             except OSError:
                 self.path = None
         self.lines = []
-        self.dropped = 0
+        self.dropped = 0            # lines lost to a full queue, cumulative
+        self._reported_dropped = 0  # of those, how many have been written up
         self._q = queue.Queue(maxsize=QUEUE_MAX)
         self._thread = threading.Thread(target=self._writer, daemon=True,
                                         name="flamesafe-journal")
@@ -55,22 +56,33 @@ class Journal:
         except Exception:                               # noqa: BLE001
             pass
 
+    def _write(self, line):
+        try:
+            print(line, file=self.stream, flush=True)
+        except Exception:                               # noqa: BLE001
+            pass
+        if self.path is not None:
+            try:
+                with open(self.path, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except Exception:                           # noqa: BLE001
+                pass
+
     def _writer(self):
         while True:
             try:
                 line = self._q.get()
             except Exception:                           # noqa: BLE001
                 continue
-            try:
-                print(line, file=self.stream, flush=True)
-            except Exception:                           # noqa: BLE001
-                pass
-            if self.path is not None:
-                try:
-                    with open(self.path, "a", encoding="utf-8") as fh:
-                        fh.write(line + "\n")
-                except Exception:                       # noqa: BLE001
-                    pass
+            self._write(line)
+            # Once the backlog has drained, say how much was lost while the
+            # console was blocked, so the morning-after read knows there is
+            # a hole and how big it is.
+            if self._q.empty() and self.dropped > self._reported_dropped:
+                n = self.dropped - self._reported_dropped
+                self._reported_dropped = self.dropped
+                self._write(f"{n} journal lines were dropped while the "
+                            f"console was blocked")
 
     def flush(self, timeout=2.0):
         """For tests and a clean stop: wait until the queue has drained or

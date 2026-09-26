@@ -1649,8 +1649,8 @@ MUTATIONS = [
  # finding 2: the first assertion after an interruption counted as proof
  ("flamesafe: the first assertion after a stale gap counts as proof of life",
   "flamesafe/composer.py",
-  "                self._arm_seq = None\n        self._arm_live = live",
-  "                pass\n        self._arm_live = live"),
+  "        consent_ok = advanced and was_live",
+  "        consent_ok = advanced"),
 
  ("flamesafe: the first assertion after an input restart counts as proof of life",
   "flamesafe/composer.py",
@@ -1805,6 +1805,61 @@ MUTATIONS = [
   "flamesafe/composer.py",
   "                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue",
   "                    rt.append(t)\n                    values.append(DISARM)\n                    held.append((\"chatter\", \"steady\"))\n                    continue"),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: the review's second pass on ed58b35.
+ # ---------------------------------------------------------------------
+
+ # A: a stalled counter defeated the transition-based reset
+ ("flamesafe: a counter frozen past arm_stale_ms then advancing is consent",
+  "flamesafe/composer.py",
+  "        was_live = self._arm_is_live(t)\n        advanced = False",
+  "        was_live = True\n        advanced = False"),
+
+ # B: a fault never cleared
+ ("flamesafe: a fault never clears",
+  "flamesafe/composer.py",
+  "                (t - self._fault_at) >= FAULT_CLEAR_S:",
+  "                (t - self._fault_at) >= 1e9:"),
+
+ ("flamesafe: a fault clears after one clean second, not five",
+  "flamesafe/composer.py",
+  "FAULT_CLEAR_S = 5.0",
+  "FAULT_CLEAR_S = 1.0"),
+
+ # C: journal drops
+ ("flamesafe: a dropped journal line is not counted",
+  "flamesafe/journal.py",
+  "            except queue.Full:\n                self.dropped += 1",
+  "            except queue.Full:\n                pass"),
+
+ ("flamesafe: the status frame does not carry the journal drop count",
+  "flamesafe/composer.py",
+  "            \"stats\": dict(self.stats,\n"
+  "                          journal_dropped=int(getattr(self._log, \"dropped\",\n"
+  "                                                      0) or 0)),",
+  "            \"stats\": dict(self.stats, journal_dropped=0),"),
+
+ ("flamesafe: the journal never says how many lines it lost",
+  "flamesafe/journal.py",
+  "            if self._q.empty() and self.dropped > self._reported_dropped:",
+  "            if False:"),
+
+ # E: keys and config strictness
+ ("flamesafe: a confirmed config may keep the example key",
+  "flamesafe/config.py",
+  "    if c.confirmed and c.link_key == EXAMPLE_KEY:",
+  "    if False:"),
+
+ ("flamesafe: the status frame carries the example key whatever the config says",
+  "flamesafe/link.py",
+  '    status["k"] = key\n',
+  '    status["k"] = EXAMPLE_KEY\n'),
+
+ ("flamesafe: unknown config keys are ignored",
+  "flamesafe/config.py",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
+  "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
 ]
 

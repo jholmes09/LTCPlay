@@ -11,9 +11,30 @@ import json
 from pathlib import Path
 
 from . import rules
-from .link import KEY_MAX, KEY_MIN, valid_key
+from .link import EXAMPLE_KEY, KEY_MAX, KEY_MIN, valid_key
 
 CONFIG_FORMAT = 1
+
+# Every key a config may carry.  An unknown key is refused: a misspelt
+# optional key (listen_ip, log_dir, a group's arm_value) would otherwise be
+# ignored in silence and the program would run on a default the operator
+# thought they had changed.
+TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
+            "destination", "link", "gflame_range", "arm_value",
+            "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
+            "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
+            "log_dir", "groups"}
+DESTINATION_KEYS = {"ip", "port"}
+LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key"}
+GROUP_KEYS = {"name", "safety", "fire", "arm_value"}
+
+
+def _only_known(d, allowed, where):
+    unknown = sorted(k for k in d if k not in allowed)
+    if unknown:
+        raise ConfigError(f"{where} has a key this program does not know: "
+                          f"{', '.join(unknown)}. Check the spelling against "
+                          f"flamesafe.example.json.")
 
 # Bounds on the timing knobs.  The lower bounds stop a config from making the
 # program deaf to its own liveness; the upper bounds stop one from letting a
@@ -187,11 +208,13 @@ def from_dict(d, source="config"):
         raise ConfigError(f"{source}: flamesafe_config must be "
                           f"{CONFIG_FORMAT}, found {fmt!r}.")
 
+    _only_known(d, TOP_KEYS, "the config")
     c = Config()
     c.universe = _int(d, "universe", 1, 63999)
     dest = d.get("destination")
     if not isinstance(dest, dict):
         raise ConfigError("destination must be an object with ip and port.")
+    _only_known(dest, DESTINATION_KEYS, "destination")
     c.destination_ip = _ip(dest.get("ip"), "destination ip")
     c.destination_port = _int(dest, "port", PORT_MIN, PORT_MAX,
                               "destination port")
@@ -200,6 +223,7 @@ def from_dict(d, source="config"):
     if not isinstance(link, dict):
         raise ConfigError("link must be an object with listen_port and "
                           "status_port.")
+    _only_known(link, LINK_KEYS, "link")
     c.link_listen_ip = _ip(link.get("listen_ip", "127.0.0.1"),
                            "link listen_ip", loopback_only=True)
     c.link_listen_port = _int(link, "listen_port", PORT_MIN, PORT_MAX,
@@ -257,6 +281,11 @@ def from_dict(d, source="config"):
         raise ConfigError(f"fire_hold_ms {c.fire_hold_ms} is not below "
                           f"frame_stale_ms {c.frame_stale_ms}.")
     c.confirmed = _bool(d, "confirmed", False)
+    if c.confirmed and c.link_key == EXAMPLE_KEY:
+        raise ConfigError("the config is marked confirmed but link.key is "
+                          "still the example key from the repo; set a key "
+                          "of your own and put the same one in ltcplay's "
+                          "config.")
     c.note = str(d.get("note", ""))
     log_dir = d.get("log_dir")
     c.log_dir = str(log_dir) if log_dir else None
@@ -268,6 +297,7 @@ def from_dict(d, source="config"):
     for i, g in enumerate(groups):
         if not isinstance(g, dict):
             raise ConfigError(f"group {i + 1} is not an object.")
+        _only_known(g, GROUP_KEYS, f"group {i + 1}")
         name = g.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ConfigError(f"group {i + 1} has no name.")

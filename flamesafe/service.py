@@ -19,6 +19,7 @@ stop event.
 from __future__ import annotations
 
 import socket
+import sys
 import time
 
 from . import rules
@@ -33,18 +34,42 @@ SHUTDOWN_ZERO_FRAMES = 3
 SHUTDOWN_TERMINATE_FRAMES = 3
 
 
+SIO_UDP_CONNRESET = 0x9800000C      # _WSAIOW(IOC_VENDOR, 12), winsock2
+
+
 def _no_connreset(sock):
     """Windows: a UDP socket that has sent to a closed port gets an ICMP
     port-unreachable back and then raises ConnectionResetError on its NEXT
     operation, including a send to somewhere else.  SIO_UDP_CONNRESET off
-    stops that.  A no-op elsewhere."""
-    flag = getattr(socket, "SIO_UDP_CONNRESET", None)
-    if flag is None or not hasattr(sock, "ioctl"):
-        return
+    stops that.  CPython's socket module exposes no constant for it, so
+    this goes straight to WSAIoctl through ctypes, as asyncio does.
+
+    Returns True when the ioctl succeeded, False when it failed (with the
+    Winsock error journaled by the caller), None on any other platform."""
+    if sys.platform != "win32":
+        return None
     try:
-        sock.ioctl(flag, False)
-    except (OSError, ValueError):
-        pass
+        import ctypes
+        ws2 = ctypes.WinDLL("ws2_32", use_last_error=True)
+        wsaioctl = ws2.WSAIoctl
+        wsaioctl.argtypes = [ctypes.c_size_t,          # SOCKET
+                             ctypes.c_ulong,           # DWORD dwIoControlCode
+                             ctypes.c_void_p,          # LPVOID lpvInBuffer
+                             ctypes.c_ulong,           # DWORD cbInBuffer
+                             ctypes.c_void_p,          # LPVOID lpvOutBuffer
+                             ctypes.c_ulong,           # DWORD cbOutBuffer
+                             ctypes.POINTER(ctypes.c_ulong),  # LPDWORD
+                             ctypes.c_void_p,          # LPWSAOVERLAPPED
+                             ctypes.c_void_p]          # completion routine
+        wsaioctl.restype = ctypes.c_int
+        off = ctypes.c_ulong(0)                        # BOOL FALSE
+        returned = ctypes.c_ulong(0)
+        rc = wsaioctl(sock.fileno(), SIO_UDP_CONNRESET, ctypes.byref(off),
+                      ctypes.sizeof(off), None, 0, ctypes.byref(returned),
+                      None, None)
+        return rc == 0
+    except Exception:                                   # noqa: BLE001
+        return False
 
 
 class Service:
@@ -76,12 +101,16 @@ class Service:
             rx.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         rx.bind((self.cfg.link_listen_ip, self.cfg.link_listen_port))
         rx.setblocking(False)
-        _no_connreset(rx)
         self._rx = rx
         self._tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _no_connreset(self._tx)
         self._status_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _no_connreset(self._status_tx)
+        for name, s in (("frames", rx), ("sACN", self._tx),
+                        ("status", self._status_tx)):
+            if _no_connreset(s) is False:
+                self._event("socket", f"SIO_UDP_CONNRESET could not be "
+                                      f"switched off on the {name} socket; "
+                                      f"an ICMP port-unreachable may raise "
+                                      f"on it")
         self._event("start", f"flame universe {self.cfg.universe} to "
                              f"{self.cfg.destination_ip}:"
                              f"{self.cfg.destination_port} at sACN priority "

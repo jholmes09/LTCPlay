@@ -34,6 +34,19 @@ files on one machine. Together they mean that firing a head from this
 machine needs the key and the socket ltcplay already holds, not one
 datagram.
 
+What ltcplay must do for the lock to mean anything:
+
+- **Send from ONE socket for its whole lifetime.** The lock is on
+  (ip, port); a new socket per frame would be "another sender" every time.
+- **Alarm when the lock is not its own.** The status frame's `frames.seq`
+  is the seq of the last accepted frame. If it is not ltcplay's own seq for
+  more than 1 s while ltcplay is sending, something else holds the lock:
+  show red for the safety program and write it to the journal. The rogue
+  is being fed the right key by something; that is a person's problem, not
+  a program's.
+- A config marked `confirmed` is refused while `link.key` is still the
+  example key from the repo.
+
 ## Ports and addresses
 
 From the flamesafe config (`flamesafe.example.json`):
@@ -129,12 +142,13 @@ Top level:
 | `tick_ms` | the tick period |
 | `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200 |
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
-| `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault, or a rising `sacn.errors`, is red for ltcplay**: an armed group is not "fine" while the wire is not being written |
+| `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`) |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
-| `sacn.sent`, `sacn.errors` | packets sent to the node, and sends that failed. Errors rising means red |
+| `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
+| `stats.journal_dropped` | journal lines lost while the console was blocked, cumulative. When the backlog drains the journal writes how many were lost |
 
 Per group, the two lamps of section 8 panel 5:
 
@@ -169,10 +183,16 @@ its rules belong here because they are what the consent rule rests on:
   assertion carries the group `names` in the same order; the composer
   rejects an assertion whose names do not match its config exactly.
 - `seq` is a plain int, starts at 0 on every connect and reconnect, and
-  goes up by one per assertion. A counter that jumps UP on a restart looks
-  like nothing happened; a counter that restarts at 0 is how the composer
-  knows. After a stale gap the composer forgets the counter anyway, so the
-  first assertion after a gap proves nothing whatever its value.
+  goes up by one per assertion. A counter that restarts at 0 is how the
+  composer knows the input restarted. Consent (a down edge that lets a
+  group arm) needs the counter to have advanced now AND to have been fresh
+  before this assertion, so the first assertion after a boot, a restart, a
+  gap, or a counter frozen for longer than `arm_stale_ms` proves nothing
+  whatever its value. **The one case that rule cannot close:** a counter
+  that jumps UP across a reboot with no gap longer than `arm_stale_ms`,
+  which to the composer looks like an input that never stopped. That is
+  why the driver restarts at 0, and why it must never use a time-based
+  counter.
 - Assert at 10 Hz or faster (`arm_stale_ms` default 500 ms).
 - On Windows only Ctrl-C and Ctrl-Break reach the stop handler, so the
   deck must offer an in-band stop that sets the service's stop event.
@@ -220,6 +240,10 @@ other computers are on the network, the flame node is keyed off.
 | `frame_stale_ms` | 500 | no accepted flame frame for this long: the link is stale, the sender lock is released, any seq is accepted |
 | `overrun_ms` | 250 | a tick later than this: that tick is all zeros, every group needs a cycle |
 | `min_arm_dwell_ms` | 1000 | after a disarm, the group is not raised again for this long. The file loader floors it at 1000 |
+
+The config refuses any key it does not know (top level, `destination`,
+`link`, and each group), so a misspelt optional key cannot be ignored in
+silence.
 
 ## Versioning
 

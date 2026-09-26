@@ -65,6 +65,9 @@ def main(argv=None):
         svc.run_forever(stop)
     finally:
         svc.close()
+        # Let the journal's writer thread drain what the stop wrote (it is
+        # a daemon thread and would otherwise die with the queue unwritten).
+        journal.flush()
     return 0
 
 

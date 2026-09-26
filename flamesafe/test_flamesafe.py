@@ -128,9 +128,10 @@ class Rig:
         return self.c.ingest_frame(f, sender=sender)
 
     def prove_alive(self):
-        """Two ticks with everything down: the counter is seen advancing
-        and a down edge has been seen while alive."""
-        self.step(n=2)
+        """Three ticks with everything down: the counter is seen
+        advancing (tick 2), and then a down edge arrives on a counter that
+        was already live (tick 3), which is consent."""
+        self.step(n=3)
 
     def group(self, i=0):
         return self.out.status["groups"][i]
@@ -1312,9 +1313,11 @@ def test_service_over_loopback():
               and s["frames"]["last_reject"] == "another sender",
               f"wrong key and another sender rejected: {s['frames']}")
         rogue.close()
-        # arm group 0 with consent, clean edge
+        # arm group 0 with consent, clean edge: the counter must be seen
+        # advancing, then a down edge on a live counter, then the request
         tick()
         send(2, {})
+        tick()
         tick()
         inp.set(0)
         send(3, {})
@@ -1558,6 +1561,7 @@ def test_review_send_failures_are_faults():
 
         tick()
         tick()
+        tick()
         inp.set(0)
         tick()
         check(svc.last_output.universe[400] == 78, "armed")
@@ -1667,6 +1671,241 @@ def test_review_panic_status_is_honest():
           f"and it grows: {r.out.status['fault_age_ms']}")
 
 
+def test_review2_frozen_counter_then_synthetic_down():
+    section("review 2: a counter frozen past arm_stale_ms with reports "
+            "flowing, then all-down, then arm: no consent")
+    # The second review's verified re-arm: freeze 550 ms, thaw, a synthetic
+    # all-down, then the persisted arm state; 1.25 s later the slot read 78.
+    r = armed_rig()
+    r.inp.freeze()
+    r.wait(0.55)
+    check(r.safety(0) == 0, "frozen past the window: disarmed")
+    r.inp.thaw()
+    r.inp.set_all(False)
+    r.step()
+    r.inp.set(0)
+    r.step()
+    r.wait(1.25)
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
+          f"the first advancing assertion after a frozen spell is not "
+          f"consent: {r.safety(0)}, {r.group(0)['reason']!r}")
+    # A real cycle, with the counter live before the down edge, arms it.
+    r.inp.set(0, on=False)
+    r.step()
+    r.inp.set(0)
+    r.wait(1.25)
+    check(r.safety(0) == ARM, "a real cycle afterwards arms it")
+    # And the same through every interruption OF THE INPUT, in one place:
+    # for each, the first assertion back carries all-down, the second asks
+    # for arm, and nothing may arm without a further cycle.  (An overrun is
+    # an interruption of this program, not of the input: the input stayed
+    # live, so a down edge from it after the overrun IS a cycle; that case
+    # is in test_rule7.)
+    for how in ("silent", "frozen", "reboot"):
+        r = armed_rig()
+        if how == "silent":
+            r.inp.silent = True
+            r.wait(0.55)
+            r.inp.silent = False
+            r.inp.seq += 5000
+        elif how == "frozen":
+            r.inp.freeze()
+            r.wait(0.55)
+            r.inp.thaw()
+        else:
+            r.inp.reboot()
+        r.inp.set_all(False)
+        r.step()
+        r.inp.set(0)
+        r.step()
+        r.wait(1.25)
+        check(r.safety(0) == 0,
+              f"{how}: all-down then arm on the first assertions back does "
+              f"not arm")
+
+
+def test_review2_a_fault_clears_after_five_clean_seconds():
+    section("review 2: a fault is red for 5 s of clean ticks and sends, "
+            "then clears; the counts stay")
+    r = armed_rig()
+    r.c.note_fault("sACN send failed (1 so far): test")
+    r.step()
+    check(r.out.status["fault"].startswith("sACN send failed")
+          and r.c.stats["faults_noted"] == 1, "the fault is up")
+    r.wait(4.9)
+    check(r.out.status["fault"] != "", "still red at 4.9 s")
+    r.wait(0.2)
+    check(r.out.status["fault"] == "" and r.out.status["fault_age_ms"] is None,
+          f"clear after 5 s: {r.out.status['fault']!r}")
+    check(r.c.stats["faults_cleared"] == 1
+          and r.out.status["stats"]["faults_noted"] == 1,
+          "the counts stay in the stats")
+    check("fault-cleared" in r.log.kinds() and "fault" in r.log.kinds(),
+          "the journal has the fault and its clearing")
+    check(r.safety(0) == ARM, "the group stayed armed throughout")
+    # A fault that keeps being refreshed never clears.
+    r.c.note_fault("sACN send failed (2 so far): test")
+    for _ in range(int(6 / r.period)):
+        r.step()
+        if r.c.heartbeat % 40 == 0:
+            r.c.note_fault("sACN send failed (n so far): test")
+    check(r.out.status["fault"] != "", "a fault refreshed every second stays")
+    # An overrun's fault clears the same way.
+    r = armed_rig()
+    r.step(dt=0.3)
+    check(r.out.status["fault"].startswith("safety program overran"), "overran")
+    r.wait(5.1)
+    check(r.out.status["fault"] == "", "the overrun fault cleared after 5 s")
+
+
+def test_review2_journal_drops_are_counted_and_written_up():
+    section("review 2: dropped journal lines are counted in the status, "
+            "and written up once the console drains")
+    from flamesafe.journal import Journal, QUEUE_MAX
+
+    class Gate:
+        """A stream that blocks every write until released."""
+        def __init__(self):
+            self.open = threading.Event()
+            self.writes = []
+
+        def write(self, s):
+            self.open.wait(5.0)
+            self.writes.append(s)
+
+        def flush(self):
+            pass
+
+    stream = Gate()
+    j = Journal(stream=stream)
+    for i in range(QUEUE_MAX + 250):
+        j.event("test", f"line {i}")
+    check(j.dropped >= 200, f"lines beyond the queue are dropped and "
+                            f"counted: {j.dropped}")
+    r = Rig()
+    r.c._log = j
+    r.step()
+    check(r.out.status["stats"]["journal_dropped"] == j.dropped,
+          f"the status frame carries the drop count: "
+          f"{r.out.status['stats']['journal_dropped']}")
+    stream.open.set()
+    j.flush(timeout=10.0)
+    time.sleep(0.2)
+    joined = "".join(stream.writes)
+    check(f"{j.dropped} journal lines were dropped while the console was "
+          f"blocked" in joined,
+          "after draining, the journal says how many lines were lost")
+    check(joined.count("were dropped") == 1, "and says it once")
+    src = open(os.path.join(HERE, "__main__.py"), encoding="utf-8").read()
+    check("journal.flush()" in src, "__main__ flushes the journal on stop")
+
+
+def test_review2_udp_connreset_is_really_switched_off():
+    section("review 2: SIO_UDP_CONNRESET is switched off through WSAIoctl "
+            "on Windows, and a no-op elsewhere")
+    from flamesafe.service import _no_connreset, SIO_UDP_CONNRESET
+    check(SIO_UDP_CONNRESET == 0x9800000C, "the winsock control code")
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        rc = _no_connreset(s)
+        if sys.platform == "win32":
+            check(rc is True, f"WSAIoctl(SIO_UDP_CONNRESET, FALSE) returned "
+                              f"success on Windows: {rc!r}")
+            # And it took: a send to a closed port, then a recv, must not
+            # raise ConnectionResetError any more.
+            closed = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            closed.bind(("127.0.0.1", 0))
+            port = closed.getsockname()[1]
+            closed.close()
+            s.settimeout(0.2)
+            for _ in range(3):
+                s.sendto(b"x", ("127.0.0.1", port))
+            time.sleep(0.1)
+            try:
+                s.recvfrom(64)
+                check(True, "")
+            except (socket.timeout, TimeoutError):
+                check(True, "")
+            except ConnectionResetError:
+                check(False, "ConnectionResetError still raised after "
+                             "SIO_UDP_CONNRESET off")
+        else:
+            check(rc is None, f"not Windows: no-op, {rc!r}")
+    finally:
+        s.close()
+
+
+def test_review2_keys():
+    section("review 2: the example key is refused once confirmed, and a "
+            "key of your own travels in both directions")
+    d = example_dict()
+    d["confirmed"] = True
+    try:
+        config.from_dict(d)
+        check(False, "a confirmed config with the example key was accepted")
+    except config.ConfigError as e:
+        check("example key" in str(e), f"refused: {e}")
+    own = "tp-2026-north-field-7f3a9c"
+    d["link"]["key"] = own
+    check(config.from_dict(d).link_key == own,
+          "a confirmed config with its own key loads")
+    # unknown keys are refused, at every level
+    for where, mutate in (("top", lambda d: d.__setitem__("fire_hold", 100)),
+                          ("link", lambda d: d["link"].__setitem__("listen", 1)),
+                          ("destination",
+                           lambda d: d["destination"].__setitem__("host", "x")),
+                          ("group",
+                           lambda d: d["groups"][0].__setitem__("fires", []))):
+        d = example_dict()
+        mutate(d)
+        try:
+            config.from_dict(d)
+            check(False, f"an unknown {where} key was accepted")
+        except config.ConfigError as e:
+            check("does not know" in str(e), f"unknown {where} key: {e}")
+    # a second, non-example key on the wire in both directions
+    node = _udp()
+    ltc_status = _udp()
+    listen = _udp()
+    lp = listen.getsockname()[1]
+    listen.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": own})
+    t = [0.0]
+    svc = Service(cfg, arminput.NullArmInput(), clock=lambda: t[0])
+    svc.open()
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        tx.sendto(link.encode_flame(1, None, 0.0, 1, [0] * 512, KEY),
+                  ("127.0.0.1", lp))
+        tx.sendto(link.encode_flame(2, None, 0.0, 1, [0] * 512, own),
+                  ("127.0.0.1", lp))
+        time.sleep(0.02)
+        t[0] += cfg.tick_period_s
+        svc.run_once()
+        st = _drain(ltc_status)[-1]
+        s = link.decode_status(st, own)
+        check(s["k"] == own, "the status frame carries the config's key")
+        try:
+            link.decode_status(st, KEY)
+            check(False, "the status frame carried the example key")
+        except link.LinkError:
+            check(True, "")
+        check(s["frames"]["rejected"] == 1 and s["frames"]["accepted"] == 1
+              and s["frames"]["last_reject"] == "wrong key",
+              f"the example-key frame was rejected, the own-key frame "
+              f"accepted: {s['frames']}")
+    finally:
+        svc.close()
+        for s_ in (node, ltc_status, tx):
+            s_.close()
+
+
 def test_the_wall_from_this_side():
     section("the wall: nothing in flamesafe imports ltcplay")
     loaded = sorted(m for m in sys.modules if m.split(".")[0] == "ltcplay")
@@ -1719,6 +1958,11 @@ if __name__ == "__main__":
     test_review_send_failures_are_faults()
     test_review_journal_never_blocks_the_tick()
     test_review_panic_status_is_honest()
+    test_review2_frozen_counter_then_synthetic_down()
+    test_review2_a_fault_clears_after_five_clean_seconds()
+    test_review2_journal_drops_are_counted_and_written_up()
+    test_review2_udp_connreset_is_really_switched_off()
+    test_review2_keys()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

@@ -27,6 +27,10 @@ from . import rules
 CONTRACT_VERSION = 2
 MAX_DATAGRAM = 16384
 KEY_MIN, KEY_MAX = 16, 128
+# The key in flamesafe.example.json.  Fine on a bench; a config marked
+# confirmed must not still carry it, because everyone who has read the
+# repo knows it.
+EXAMPLE_KEY = "fire-and-ice-2026-replace-this-key"
 _TC = re.compile(r"^\d{2}:\d{2}:\d{2}[:;]\d{2}$")
 _KEY = re.compile(r"^[\x21-\x7e]+$")     # printable ASCII, no spaces
 

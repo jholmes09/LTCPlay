@@ -23,6 +23,7 @@ from . import rules
 from .link import FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
+FAULT_CLEAR_S = 5.0
 
 
 def now():
@@ -87,7 +88,8 @@ class Composer:
             "ticks", "ticks_armed", "frames_accepted", "frames_rejected",
             "arm_assertions", "arm_rejected", "overruns", "compose_faults",
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
-            "fire_slots_quieted", "fire_refused", "arm_input_stale")}
+            "fire_slots_quieted", "fire_refused", "arm_input_stale",
+            "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
 
@@ -119,6 +121,16 @@ class Composer:
             return False
 
         t = self._clock()
+        # Was the input live BEFORE this assertion?  Consent needs both: a
+        # counter that advanced now, and one that was already fresh.  The
+        # first assertion after any interruption (a boot, a restart, a gap,
+        # a counter frozen for longer than arm_stale_ms with reports still
+        # flowing) fails the second test, whatever its counter says.  The
+        # second review found the frozen-counter case re-arming through a
+        # transition-based reset; this rule closes every case but one, a
+        # counter that jumps UP across a reboot with no gap longer than
+        # arm_stale_ms, which is why the 7b driver restarts its counter at 0.
+        was_live = self._arm_is_live(t)
         advanced = False
         if self._arm_seq is None:
             # The first assertion proves nothing: a counter is alive only
@@ -140,9 +152,10 @@ class Composer:
         self.stats["arm_assertions"] += 1
 
         # A down edge only counts as consent when the input is PROVEN alive:
-        # this very assertion advanced the counter.  An input that boots up
-        # already asking for arm has not asked this program for anything.
-        consent_ok = advanced
+        # this very assertion advanced the counter, and the counter was
+        # already fresh before it.  An input that boots up already asking
+        # for arm has not asked this program for anything.
+        consent_ok = advanced and was_live
         for i in range(self.n):
             if not w[i]:
                 if self._wanted[i]:
@@ -215,6 +228,7 @@ class Composer:
         an armed group as fine while the wire is not being written."""
         self._fault = str(sentence)
         self._fault_at = self._clock()
+        self.stats["faults_noted"] += 1
         self._event("fault", self._fault)
 
     def _frame_is_fresh(self, t):
@@ -268,11 +282,10 @@ class Composer:
         self._last_tick = t
 
         # 2. Arm input liveness.  Fresh means the counter advanced inside
-        # arm_stale_ms.  Not fresh means disarmed, and the latches go too,
-        # and the counter is forgotten: the next assertion is a FIRST one
-        # again and proves nothing, however high its counter is.  Without
-        # that, an input resuming after a gap re-armed with nobody touching
-        # a key (found in review).
+        # arm_stale_ms.  Not fresh means disarmed, and the latches go too.
+        # Consent after the gap is assert_arm's business: it needs the
+        # counter to have been fresh BEFORE the assertion that carries the
+        # down edge, so the first one back proves nothing.
         live = self._arm_is_live(t)
         if not live and self._arm_live:
             self.stats["arm_input_stale"] += 1
@@ -280,15 +293,19 @@ class Composer:
                                      f"for {self.cfg.arm_stale_ms} ms")
         if not live:
             self._reset_latches("arm input stale")
-            seen_ms = (None if self._arm_seen_at is None
-                       else (t - self._arm_seen_at) * 1000.0)
-            if self._arm_live or (seen_ms is not None
-                                  and seen_ms > self.cfg.arm_stale_ms):
-                # Going stale, or silent for the whole window: forget the
-                # counter.  Not on every not-live tick, or a booting input
-                # could never be seen to advance at all.
-                self._arm_seq = None
         self._arm_live = live
+
+        # A fault clears itself after FAULT_CLEAR_S of clean ticks and clean
+        # sends (every fault, including a failed send, refreshes _fault_at).
+        # One failed send must not be red all night; the counts stay in the
+        # stats and the status frame, and the journal records the clearing.
+        if self._fault and self._fault_at is not None and \
+                (t - self._fault_at) >= FAULT_CLEAR_S:
+            self.stats["faults_cleared"] += 1
+            self._event("fault-cleared", f"after {FAULT_CLEAR_S:.0f} s "
+                                         f"clean: {self._fault}")
+            self._fault = ""
+            self._fault_at = None
 
         # 3. ltcplay's frame.  A fire value is kept on the wire for at most
         # fire_hold_ms after the last accepted frame; after that we know
@@ -546,7 +563,9 @@ class Composer:
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
             },
-            "stats": dict(self.stats),
+            "stats": dict(self.stats,
+                          journal_dropped=int(getattr(self._log, "dropped",
+                                                      0) or 0)),
             "groups": groups,
         }
 
