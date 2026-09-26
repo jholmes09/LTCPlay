@@ -1573,6 +1573,173 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ # -- madmapper.py: OSC transport, heartbeat watchdog, Hold/Abort fades --
+
+ ("Hold freezes the clock before fading the music out", "ltcplay/madmapper.py",
+  "        self.fade_audio(1.0, 0.0, wait=True)\n"
+  "        if clock is not None:\n"
+  "            clock.pause()",
+  "        if clock is not None:\n"
+  "            clock.pause()\n"
+  "        self.fade_audio(1.0, 0.0, wait=True)"),
+
+ ("Resume fades the music up before restarting the clock",
+  "ltcplay/madmapper.py",
+  "        if clock is not None:\n"
+  "            clock.resume()\n"
+  "        if self.beyond is not None:\n"
+  "            self.beyond.unblank(show)\n"
+  "        self.fade_audio(0.0, 1.0, wait=True)",
+  "        self.fade_audio(0.0, 1.0, wait=True)\n"
+  "        if clock is not None:\n"
+  "            clock.resume()\n"
+  "        if self.beyond is not None:\n"
+  "            self.beyond.unblank(show)"),
+
+ ("Abort's video fade is dropped, only the audio fades", "ltcplay/madmapper.py",
+  "        addrs = [AUDIO_ADDR] + self._surface_addrs()",
+  "        addrs = [AUDIO_ADDR]"),
+
+ ("Abort stops the conductor before the fade finishes", "ltcplay/madmapper.py",
+  "        self.fade_out(wait=True)\n"
+  "        self.stop_bank(self.cfg.show_bank)",
+  "        self.stop_bank(self.cfg.show_bank)\n"
+  "        self.fade_out(wait=True)"),
+
+ ("a failed start is treated as a normal show end again, and the "
+  "intermission comes back", "ltcplay/madmapper.py",
+  '_ABORT_LIKE = frozenset(("ABORT", "SHOW_FAILED"))',
+  '_ABORT_LIKE = frozenset(("ABORT",))'),
+
+ ("the watchdog alarms on silence even while disarmed", "ltcplay/madmapper.py",
+  "            if not self.armed or self._last_packet_at is None \\\n"
+  "                    or self._alarmed:",
+  "            if self._last_packet_at is None or self._alarmed:"),
+
+ ("the drift flag never clears once raised", "ltcplay/madmapper.py",
+  "                flagged = abs(drift_ms) > self.cfg.drift_ms",
+  "                flagged = self.drift_flagged or "
+  "abs(drift_ms) > self.cfg.drift_ms"),
+
+ ("the drift threshold is ignored, everything is flagged",
+  "ltcplay/madmapper.py",
+  "                flagged = abs(drift_ms) > self.cfg.drift_ms",
+  "                flagged = True"),
+
+ ("recovery is logged on every packet, not only the first back",
+  "ltcplay/madmapper.py",
+  "            if self._alarmed:\n"
+  "                self._alarmed = False\n"
+  "                recovered = True",
+  "            if self._alarmed:\n"
+  "                recovered = True"),
+
+ ("a bool OSC argument carries a data byte, breaking the bench's bytes",
+  "ltcplay/madmapper.py",
+  '            tags += "T" if a else "F"',
+  '            tags += "T" if a else "F"\n'
+  '            data += struct.pack(">i", 1 if a else 0)'),
+
+ ("an OSC string is never null-padded to a 4-byte boundary",
+  "ltcplay/madmapper.py",
+  '    b = b + b"\\x00"\n'
+  '    while len(b) % 4:\n'
+  '        b += b"\\x00"\n'
+  '    return b',
+  '    return b + b"\\x00"'),
+
+ ("surfaces can be configured empty, so Abort never fades video",
+  "ltcplay/madmapper.py",
+  '        if not isinstance(surfaces, list) or not surfaces or \\',
+  '        if not isinstance(surfaces, list) or \\'),
+
+ ("the show bank and the intermission bank can be configured the same",
+  "ltcplay/madmapper.py",
+  "        if intermission_bank == show_bank:",
+  "        if False:"),
+
+ ("the heartbeat's show_len_s is no longer required", "ltcplay/madmapper.py",
+  "        if show_len_s is None:\n"
+  "            raise MadMapperConfigError(",
+  "        if False:\n"
+  "            raise MadMapperConfigError("),
+
+ # -- beyond.py: the laser blank/unblank half, and its ordering --
+
+ ("Hold's laser blank waits until after the music fade",
+  "ltcplay/madmapper.py",
+  "        if self.beyond is not None:\n"
+  "            self.beyond.blank(show)\n"
+  "        self.fade_audio(1.0, 0.0, wait=True)",
+  "        self.fade_audio(1.0, 0.0, wait=True)\n"
+  "        if self.beyond is not None:\n"
+  "            self.beyond.blank(show)"),
+
+ ("Resume unblanks the lasers before the clock restarts",
+  "ltcplay/madmapper.py",
+  "        if clock is not None:\n"
+  "            clock.resume()\n"
+  "        if self.beyond is not None:\n"
+  "            self.beyond.unblank(show)",
+  "        if self.beyond is not None:\n"
+  "            self.beyond.unblank(show)\n"
+  "        if clock is not None:\n"
+  "            clock.resume()"),
+
+ ("Abort no longer blanks the lasers", "ltcplay/madmapper.py",
+  "        if self.beyond is not None:\n"
+  "            self.beyond.blank(show)\n"
+  "        self.fade_out(wait=True)\n"
+  "        self.stop_bank(self.cfg.show_bank)",
+  "        self.fade_out(wait=True)\n"
+  "        self.stop_bank(self.cfg.show_bank)"),
+
+ ("Closing no longer blanks the lasers", "ltcplay/madmapper.py",
+  "        if self.beyond is not None:\n"
+  "            self.beyond.blank()\n"
+  "        self.fade_out(wait=True)\n"
+  "        for name in (self.cfg.show_bank, self.cfg.intermission_bank):",
+  "        self.fade_out(wait=True)\n"
+  "        for name in (self.cfg.show_bank, self.cfg.intermission_bank):"),
+
+ ("blank() sends BlackOut instead of brightness", "ltcplay/beyond.py",
+  '        self._send(BRIGHTNESS_ADDR, BLANK_VALUE)',
+  '        self._send("/beyond/general/BlackOut", BLANK_VALUE)'),
+
+ ("unblank() sends MasterPause instead of brightness",
+  "ltcplay/beyond.py",
+  '        self._send(BRIGHTNESS_ADDR, UNBLANK_VALUE)',
+  '        self._send("/beyond/general/MasterPause", UNBLANK_VALUE)'),
+
+ ("the forbidden-address guard is removed, so BlackOut and MasterPause "
+  "could be sent", "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES:\n"
+  "            raise BeyondConfigError(\n"
+  '                f"beyond.py refuses to send {address!r}: see the module "\n'
+  '                f"docstring for why (BlackOut restarts BEYOND\'s own core "\n'
+  '                f"and needs a manual recovery; MasterPause freezes the "\n'
+  '                f"beams, a static-beam hazard).")\n'
+  "        return self._osc.send(address, value)",
+  "        return self._osc.send(address, value)"),
+
+ ("BEYOND's port can be configured the same as MadMapper's, 8000",
+  "ltcplay/beyond.py",
+  "        if port == 8000:",
+  "        if False:"),
+
+ ("blank and unblank send the same brightness value", "ltcplay/beyond.py",
+  "BLANK_VALUE = 0.0\nUNBLANK_VALUE = 100.0",
+  "BLANK_VALUE = 0.0\nUNBLANK_VALUE = 0.0"),
+
+ ("a lone heartbeat packet while disarmed is no longer ignored",
+  "ltcplay/madmapper.py",
+  "        with self._lock:\n"
+  "            if not self.armed:\n"
+  "                return\n"
+  "            self.packets_in += 1",
+  "        with self._lock:\n"
+  "            self.packets_in += 1"),
+
 ]
 
 
