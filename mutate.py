@@ -1966,8 +1966,24 @@ _LAST_FAILS = []
 
 
 def run_suite():
-    r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
-                       capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        # A suite that does not finish is not a green suite. Under a
+        # mutation that counts as caught (the mutation broke a test so
+        # badly it hung); with nothing mutated it is a failed baseline.
+        # Either way the sweep reports it rather than crashing the shard,
+        # which is what CI run 36206230939 did.
+        out = ((e.stdout or b"") if isinstance(e.stdout, (bytes, str))
+               else b"")
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        _LAST_FAILS[:] = ["  FAIL  the suite did not finish inside 300 s "
+                          "(TimeoutExpired)"] + \
+            [l.strip() for l in out.splitlines()
+             if l.startswith("  FAIL")][:5]
+        return False
     out = (r.stdout or "") + (r.stderr or "")
     _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
                       if l.startswith("  FAIL") or "Error" in l][:6]
