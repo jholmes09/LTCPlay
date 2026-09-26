@@ -13254,6 +13254,79 @@ def test_timecode_zones_for_fallback_3():
     print("  ok")
 
 
+def test_clock_show_length_follows_the_music():
+    section("clock: show length follows the show's own media (Jeff, "
+            "2026-09-26), and a configured length shorter than it is "
+            "refused rather than cutting the show short")
+    import math
+    import types
+    from ltcplay import clock as C
+
+    def cue(tc, end):
+        return types.SimpleNamespace(tc_seconds=tc, end_seconds=end)
+
+    class _FakeTimeline:
+        def __init__(self, cues):
+            self.cues = cues
+            self.fps = 30.0
+            self.drop = False
+            self.count = 30
+
+    # The show zone is hour 1 (3600 to 7200 s). The cue that opens FURTHEST
+    # in ends LATEST, at 3600 + 444.42, matching the handoff's own example:
+    # the music (IgniteTheNight_Music_Unmixed_092526.wav) runs 444.42 s, and
+    # the handoff's own show_len_s of 440 is 4.42 s short of it. It is
+    # listed FIRST here on purpose: the derivation has to take the latest
+    # end across every cue in the hour, not whichever cue happens to come
+    # last in the list.
+    tl = _FakeTimeline([cue(3610.0, 3600.0 + 444.42),
+                       cue(3600.0, 3600.0 + 200.0)])
+    got = C._show_length(tl, 1)
+    check(abs(got - 444.42) < 1e-9,
+          f"the derived length must be the LATEST cue end in that hour, "
+          f"not the first one, the last one in the list, or a shorter "
+          f"one: {got}")
+
+    artnet = {"nodes": {"MadMapper": "127.0.0.1"}}
+    cfg_derived = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"]}})
+    clk = C.build(cfg_derived, tl, sink=None, no_output=True)
+    check(abs(clk.reader.show_len_frames / 30.0 - 444.42) < 0.05,
+          f"with no show_len_s configured, the length must come from the "
+          f"show's own media, not a fixed number: "
+          f"{clk.reader.show_len_frames / 30.0}")
+
+    # A configured length that meets or exceeds the media is fine.
+    cfg_ok = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 445}})
+    clk2 = C.build(cfg_ok, tl, sink=None, no_output=True)
+    check(clk2.reader.show_len_frames == math.ceil(445 * 30.0 - 1e-9),
+          "a configured length at least as long as the media is used "
+          "as given")
+
+    # The handoff's own example: 440 s configured against 444.42 s of
+    # music must be refused when the show file loads, not silently cut
+    # the last 4.4 s off the show.
+    cfg_short = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 440}})
+    try:
+        C.build(cfg_short, tl, sink=None, no_output=True)
+        check(False, "440 s configured against 444.42 s of music must be "
+                     "refused, not silently cut the show short")
+    except C.ClockConfigError as e:
+        msg = str(e)
+        check("444.42" in msg and "440" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "show length refusal")
+    print("  ok")
+
+
 def test_clock_settings_fail_loudly():
     section("the clock block of a show file: typos and refusals")
     import json, tempfile
@@ -15864,6 +15937,7 @@ if __name__ == "__main__":
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
     test_timecode_zones_for_fallback_3()
+    test_clock_show_length_follows_the_music()
     test_clock_settings_fail_loudly()
     test_the_gpl_path_never_loads_the_clock()
     test_a_master_clock_runs_the_show()

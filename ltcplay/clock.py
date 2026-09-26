@@ -1290,9 +1290,24 @@ def build(cfg, timeline, sink, log=None, no_output=False, out=None,
         return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop)
     if cfg.source == "ltc_audio_slave":
         show_len = cfg.zones.show_len_s
-        if show_len is None and "show" in cfg.zones.forward \
-                and cfg.artnet is not None:
-            show_len = _show_length(timeline, cfg.zones.show)
+        derived = None
+        if "show" in cfg.zones.forward and cfg.artnet is not None:
+            derived = _show_length(timeline, cfg.zones.show)
+        if show_len is None:
+            # Show length follows the show's own media (Jeff, 2026-09-26):
+            # read from the renders, never typed in a second place, so a
+            # config that names no length cannot drift from the show.
+            show_len = derived
+        elif derived is not None and show_len < derived:
+            # A configured length shorter than the show's own media would
+            # cut it off mid-cue (the handoff's own example: 440 configured
+            # against a 444.42 s music track). Refuse rather than free run
+            # to a made-up end that is short by the difference.
+            raise ClockConfigError(
+                f"'clock.zones.show_len_s' is {show_len:g} s, shorter than "
+                f"the show's own media, which runs {derived:g} s. Set "
+                f"'clock.zones.show_len_s' to at least {derived:g}, or "
+                f"leave it out so the length is read from the show.")
         return LtcAudioSlave(cfg, count=timeline.count, drop=timeline.drop,
                              fps=timeline.fps, show_len_s=show_len, out=out,
                              log=log)
@@ -1305,7 +1320,11 @@ def _show_length(timeline, hour):
     """How long the show zone runs: to the end of its last cue.
 
     Free running to the end of the show needs to know where the end is.
-    Read from the renders rather than typed in a second place."""
+    Read from the renders rather than typed in a second place. This is also
+    what "show length follows the music track" (Jeff, 2026-09-26) means in
+    practice: the show's cues cover its own music, so the last cue's own end
+    is the music's own length, without opening the audio file a second time
+    to ask again."""
     start = hour * 3600.0
     end = None
     for c in timeline.cues:

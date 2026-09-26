@@ -1685,6 +1685,23 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+
+ ("show length no longer follows the show's own media when nothing is "
+  "configured", "ltcplay/clock.py",
+  "        if show_len is None:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):",
+  "        if False:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):"),
+
+ ("a configured show length shorter than the music is no longer refused",
+  "ltcplay/clock.py",
+  "        elif derived is not None and show_len < derived:",
+  "        elif False:"),
+
+ ("the derived show length takes whichever cue comes first, not the "
+  "latest end", "ltcplay/clock.py",
+  "        end = max(end or 0.0, c.end_seconds)",
+  "        end = c.end_seconds"),
 ]
 
 
