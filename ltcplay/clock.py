@@ -1075,6 +1075,7 @@ class ArtNetMaster(Clock):
             n_frozen = self._frozen_n
             self._set_paused(False)
             self._frozen = None
+            self._frozen_n = None
             self._frozen_pos = None
             t0 = self._clock() - (n_frozen + 1) / MASTER_FPS
             self._mono_t0 = self._mono() - (self._clock() - t0)

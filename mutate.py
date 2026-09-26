@@ -1562,12 +1562,14 @@ MUTATIONS = [
   '            n_frozen = self._frozen_n\n'
   '            self._set_paused(False)\n'
   '            self._frozen = None\n'
+  '            self._frozen_n = None\n'
   '            self._frozen_pos = None\n'
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
   '            label = self._cue[2]\n'
   '            n_frozen = self._frozen_n\n'
   '            self._set_paused(False)\n'
   '            self._frozen = None\n'
+  '            self._frozen_n = None\n'
   '            self._frozen_pos = None\n'
   '            self.ticker.stop()\n'
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS'),
@@ -1603,6 +1605,22 @@ MUTATIONS = [
   '        parked = (park_since is not None\n'
   '                  and now - park_since >= self.park_s)\n'
   '\n'
+  '        since = now - last'),
+
+ # The same bypass, the same debounce, but read by _state_from_feed()
+ # instead of _tick(): the override path (Freerun, Blackout, Preshow)
+ # keeps the feed's OWN readout honest through _state_from_feed(), a
+ # second, separate copy of the same parked computation -- so a
+ # machine-generated Hold has to reach this one too, or the display lies
+ # about being parked for up to park_s while any override is engaged.
+ ("under Freerun, Blackout or Preshow, a machine-generated pause waits "
+  "for the same debounce a real LTC deck's noise needs",
+  'ltcplay/player.py',
+  '        parked = hard_parked or (park_since is not None\n'
+  '                                 and now - park_since >= self.park_s)\n'
+  '        since = now - last',
+  '        parked = (park_since is not None\n'
+  '                  and now - park_since >= self.park_s)\n'
   '        since = now - last'),
 
 ]

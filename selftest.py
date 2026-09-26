@@ -14548,6 +14548,77 @@ def test_hold_freezes_the_pixels_at_once_and_resume_never_reorders():
     print("  ok")
 
 
+def test_hard_park_is_seen_at_once_under_every_override():
+    section("Hold: Freerun, Blackout and Preshow all read a machine-"
+            "generated pause as PARKED at once, not after the debounce "
+            "window")
+    # player.py has two copies of the "parked" computation: _tick()'s own,
+    # used for the ordinary show path, and _state_from_feed()'s, used only
+    # while an override (Freerun, Blackout, Preshow) is engaged, to keep
+    # the feed's own readout honest underneath it. The fix for the
+    # out-of-order pixel frame (set_hard_park(), wired from
+    # ArtNetMaster.pause()/resume()) has to reach both, or the display
+    # still waits out the park_s debounce whenever an override happens to
+    # be up during a Hold.
+    from ltcplay.player import FREERUN
+    fs = FakeFSEQ(frames=20000)
+    idle = FakeFSEQ(frames=40)
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=200,
+              freewheel_ms=250, hold_ms=2000)
+    p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
+    p.idle_cue.fseq = idle
+    p.idle_cue._spans = [(0, 0, 64)]
+    clk = _Stepped(p, step_ms=25)
+    try:
+        base = tcmod.parse_tc("01:00:30:00", 30)
+        clk.run(0.5, tc_from=base)
+        check(p.state == LOCKED, f"expected LOCKED before Hold, got {p.state}")
+
+        # Exactly what ArtNetMaster.pause() does via set_hard_park(): told
+        # immediately, no repeated frame needed, no waiting for park_s
+        # (200ms here). A single tick, right after, is well inside that
+        # window.
+        p.set_hard_park(True)
+
+        # Freerun beats the feed for the SHOW's own state (FREERUN, so the
+        # rig keeps running the free run and does not yank sideways), but
+        # the feed's own honest reading -- what the operator sees the LTC
+        # line doing underneath it -- lives in feed_state.
+        p.go(base + 0.5)
+        clk.tick()
+        check(p.state == FREERUN, f"expected FREERUN, got {p.state}")
+        check(p.feed_state == PARKED,
+              f"Freerun did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.feed_state}")
+        p.release()
+
+        # Blackout
+        p.override = "blackout"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Blackout did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        # Preshow
+        p.override = "preshow"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Preshow did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        p.set_hard_park(False)
+        clk.tick()
+        check(p.state != PARKED,
+              "releasing the hard park left the state stuck on PARKED")
+    finally:
+        clk.close()
+        p.stop()
+    print("  ok")
+
+
 def test_session_hold_and_resume():
     section("Session.clock_pause / clock_resume: refused with nothing to "
             "pause or resume, without a master clock, and twice; halt "
@@ -15778,6 +15849,7 @@ if __name__ == "__main__":
     test_the_clock_freezes_on_hold_and_resume_carries_on()
     test_resume_backdating_a_ticker_is_not_a_skip()
     test_hold_freezes_the_pixels_at_once_and_resume_never_reorders()
+    test_hard_park_is_seen_at_once_under_every_override()
     test_session_hold_and_resume()
     test_pause_does_not_race_its_own_ticker()
     test_resume_does_not_race_its_own_ticker()
