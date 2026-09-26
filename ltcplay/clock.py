@@ -344,16 +344,28 @@ class Ticker:
         self.errors = 0
         self.last_error = ""
 
-    def run(self, t0, stop=None):
+    def run(self, t0, stop=None, n0=0):
         """The loop itself. Runs on the caller's thread; start() runs it on
         its own. Returns when tick() returns False or stop() is called.
 
         The stop flag is this run's own, so a thread that outlives a join
-        still sees the stop meant for it, not the next run's fresh flag."""
+        still sees the stop meant for it, not the next run's fresh flag.
+
+        `n0` is the frame number this run already considers itself to be
+        at, before the first tick. Play() begins a cue at 0, the default.
+        Resume() begins one already in progress: it moves `t0` back by the
+        frozen frame's own length so the very first frame computed from it
+        lands on frame_frozen + 1, and n0 is what tells that apart from a
+        clock that is simply, legitimately late. Without it the first
+        iteration below sees `n_next` still at 0 and `n` already at
+        frame_frozen + 1, and counts the whole paused span as skipped --
+        a real bug, found on the Fire & Ice bench 2026-09-25: 600-ish
+        skipped frames appearing out of nowhere on every Hold/Resume, none
+        of them real, because the receiver saw nothing skipped at all."""
         self.t0 = t0
         stop = self._stop if stop is None else stop
         fps = self.fps
-        n_next = 0
+        n_next = n0
         clock, sleep = self._clock, self._sleep
         while not stop.is_set():
             due = t0 + n_next / fps
@@ -387,12 +399,12 @@ class Ticker:
                 return
             n_next = n + 1
 
-    def start(self, t0=None):
+    def start(self, t0=None, n0=0):
         self.stop()
         t0 = self._clock() if t0 is None else t0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self.run,
-                                        args=(t0, self._stop),
+                                        args=(t0, self._stop, n0),
                                         name=self.name, daemon=True)
         self._thread.start()
         return t0
@@ -886,10 +898,16 @@ class ArtNetMaster(Clock):
 
     def __init__(self, cfg, sink=None, out=None, clock=time.perf_counter,
                  sleep=time.sleep, mono=time.perf_counter, log=None,
-                 on_stop=None):
+                 on_stop=None, on_pause=None, on_resume=None):
         self.cfg = cfg
         self.sink = sink
         self.on_stop = on_stop
+        # Told apart from on_stop: a Hold is not the clock stopping, it is
+        # the clock telling the chase engine, in so many words, "this is a
+        # real pause, not a hiccup" -- see _set_paused() below for why that
+        # needs saying at all.
+        self.on_pause = on_pause
+        self.on_resume = on_resume
         self.out = out
         self._clock = clock
         self._mono = mono
@@ -949,7 +967,7 @@ class ArtNetMaster(Clock):
             self.ticker.stop()
             frames = int(math.ceil(float(length_s) * MASTER_FPS - 1e-9))
             self._cue = (float(position_s), frames, label)
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
             self._frozen_n = None
             self._frozen_pos = None
@@ -974,7 +992,7 @@ class ArtNetMaster(Clock):
             was = self._cue
             self.ticker.stop()
             self._cue = None
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
             self._frozen_n = None
             self._frozen_pos = None
@@ -1017,7 +1035,7 @@ class ArtNetMaster(Clock):
             self._frozen_n = n
             self._frozen_pos = position_s + n / MASTER_FPS
             self.last_sent = (h, m, s, f)
-            self._paused = True
+            self._set_paused(True)
             self._sync_point("pause")
             self._event(f"paused at {h:02d}:{m:02d}:{s:02d}:{f:02d} for "
                         f"{label or 'the cue'}")
@@ -1055,17 +1073,53 @@ class ArtNetMaster(Clock):
             self.ticker.stop()
             label = self._cue[2]
             n_frozen = self._frozen_n
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
             self._frozen_pos = None
             t0 = self._clock() - (n_frozen + 1) / MASTER_FPS
             self._mono_t0 = self._mono() - (self._clock() - t0)
             self._event(f"resumed for {label or 'the cue'}")
-            return self.ticker.start(t0)
+            # n0 tells the ticker it is already at frame_frozen + 1, not
+            # starting fresh at 0: see Ticker.run()'s docstring. Without it
+            # the backdated t0 above reads as the ticker having fallen
+            # frame_frozen + 1 frames behind on its very first iteration,
+            # and counts the whole hold as skipped -- see the bug this
+            # fixes, named in Ticker.run()'s docstring.
+            return self.ticker.start(t0, n0=n_frozen + 1)
 
     @property
     def paused(self):
         return self._paused
+
+    def _set_paused(self, active):
+        """Flip _paused and tell the player, the one place both happen, so
+        the two can never drift apart. pause(), resume(), a fresh play()
+        starting over an old pause, and halt() while paused all go through
+        here.
+
+        Why the player needs telling at all: Player.feed_timecode() already
+        reads a repeated position as PARKED, immediately -- but the output
+        thread only trusts that reading once the same value has held for
+        `park_s` (its debounce against a real LTC deck's decode noise,
+        never a machine-generated clock's concern). For up to that long
+        after every Hold, the pixels kept computing their position from the
+        old, running clock instead of the frozen one, drifted forward, and
+        then snapped back the moment the debounce caught up -- one pixel
+        frame sent out of order on nearly every Hold, on the Fire & Ice
+        bench 2026-09-25. This tells the player, without ambiguity and
+        without waiting, that this is a real pause; the debounce itself is
+        untouched, so a real LTC deck (GPL/Dollywood) is unaffected."""
+        if self._paused == active:
+            return
+        self._paused = active
+        cb = self.on_pause if active else self.on_resume
+        if cb is not None:
+            try:
+                cb()
+            except Exception as e:
+                self._event(f"telling the pixels the clock "
+                            f"{'paused' if active else 'resumed'} failed: "
+                            f"{e}")
 
     def _stopped(self):
         if self.on_stop is not None:
@@ -1280,14 +1334,15 @@ class LtcAudioMaster(Clock):
 
 
 def build(cfg, timeline, sink, log=None, no_output=False, out=None,
-          bind_ip=None, on_stop=None):
+          bind_ip=None, on_stop=None, on_pause=None, on_resume=None):
     """The clock a show file asks for, wired to the position stream."""
     if out is None and not no_output and cfg.artnet is not None:
         out = TimecodeOut(cfg.artnet.dests,
                           broadcast=bool(cfg.artnet.broadcast), log=log,
                           bind_ip=bind_ip)
     if cfg.source == "artnet_master":
-        return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop)
+        return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop,
+                            on_pause=on_pause, on_resume=on_resume)
     if cfg.source == "ltc_audio_slave":
         show_len = cfg.zones.show_len_s
         if show_len is None and "show" in cfg.zones.forward \
