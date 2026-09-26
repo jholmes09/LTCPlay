@@ -19,6 +19,7 @@ import struct
 import threading
 import time as _time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -338,6 +339,18 @@ class Service:
         self.clock_limit_s = clock_limit_s
         self.persist_error = ""
         self.lock = threading.RLock()
+        # Depth of this thread's own nesting of _locked() (tonight_view()
+        # and state_view() both call tick() while already holding the
+        # lock, so a plain "did the innermost `with` exit" test is not
+        # enough to know the RLock has actually been released). Only ever
+        # touched while self.lock is held, so a plain int is safe: no two
+        # threads can be adjusting it at once by construction of the lock
+        # itself. See _locked().
+        self._lock_depth = 0
+        # Calls queued by _apply() (on_show_started, so far) to run once
+        # self.lock is TRULY free, never while any caller on this thread
+        # still holds it at any depth. See _locked().
+        self._pending_hooks = []
         self.rule = None
         self.error = ""
         self.machine = None
@@ -346,17 +359,83 @@ class Service:
         self.operators, why = load_operators(self.state_dir)
         if why:
             self._journal_line("system", why, action="operators")
+        # A plain callable, or None: set by web.py when an announcements
+        # service is ALSO configured (serve()'s own job, see its module
+        # docstring). Called the instant a show starts, so a playing
+        # announcement can be told to stop without waiting on its own
+        # next status() poll. schedule_service.py never imports announce.py
+        # to make this call; it only ever calls whatever was set here.
+        self.on_show_started = None
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
         self._started = False
         self.reload()
 
+    @contextmanager
+    def _locked(self):
+        """Exactly like `with self.lock:`, except anything _apply() queued
+        onto self._pending_hooks (on_show_started, so far) runs strictly
+        AFTER self.lock is truly free -- not after some inner, reentrant
+        `with` exits while an OUTER one (tonight_view() and state_view()
+        both call tick() while already holding the lock) still holds it.
+        _lock_depth is what tells the two apart: it only reaches zero, and
+        only then is the pending list drained, on the outermost exit.
+
+        This exists because a hook can do real work (announce.py's
+        on_show_started starts a fade; even that is meant to be
+        instantaneous, but nothing here should have to trust every future
+        hook to be). self.lock gates tick() itself and every operator
+        action -- Abort, Hold, Start now, every status poll -- so ANY hook
+        run while it is held stalls all of them for as long as the hook
+        takes. Round 2 of review measured this directly: a synthetic 2 s
+        stream.stop() inside on_show_started, called the old way (in-line,
+        inside _apply()), stalled Service.lock for the full 2 s
+        (audit13b_scheduler_stall.py). The hook itself was also fixed to
+        never do that work in the first place; this is the second,
+        independent half of the fix, so a future hook cannot reopen the
+        same hole.
+
+        Each pending hook is started on a thread of its own, not called
+        in-line even here: releasing the lock is not enough on its own to
+        make tick() itself "return in under 50 ms" (the review's own
+        phrasing) if it then sits waiting for the hook to finish anyway.
+        The lock and tick()'s own return are both freed from the hook's
+        timing; only the hook's OWN thread ever waits on it.
+        """
+        self.lock.acquire()
+        self._lock_depth += 1
+        try:
+            yield
+        finally:
+            self._lock_depth -= 1
+            outermost = self._lock_depth == 0
+            pending = []
+            if outermost:
+                pending, self._pending_hooks = self._pending_hooks, []
+            self.lock.release()
+            # Reviewer note: each hook gets its own unpooled daemon thread,
+            # so a hook must never block -- nothing here caps how many run
+            # at once or reaps them when they finish.
+            for hook in pending:
+                threading.Thread(target=self._run_hook, args=(hook,),
+                                 daemon=True,
+                                 name="ltcplay-announce-hook").start()
+
+    def _run_hook(self, hook):
+        try:
+            hook()
+        except Exception as e:
+            with self._locked():
+                self._journal_line(
+                    "system", f"The announcements hook failed: {e}.",
+                    action="announce hook", outcome="error")
+
     # -- the rule -------------------------------------------------------
     def reload(self):
         """Read the rule file. A bad file leaves the scheduler with no night
         and the reason on the page; it never takes the server down with it."""
-        with self.lock:
+        with self._locked():
             try:
                 self.rule = load_rule(self.path)
                 self.error = ""
@@ -409,6 +488,29 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # A push, not a poll: an announcement playing must be told the
+        # instant a show starts, not found out about on its own next
+        # status() look, which could be seconds behind. See on_show_started
+        # in __init__ and web.py's serve(), which is the only place this
+        # attribute is ever set.
+        #
+        # Queued, not called here: _apply() always runs with self.lock
+        # held, quite possibly nested several levels deep (tonight_view()
+        # and state_view() both call tick() while already holding it), and
+        # a hook must never run while ANY caller on this thread still
+        # holds the lock, at any depth -- self.lock gates tick() itself
+        # and every operator action (Abort, Hold, Start now, every status
+        # poll). _locked() is the only place this list is ever drained,
+        # strictly after the lock is truly released (review round 2,
+        # blocker 1b: audit13b_scheduler_stall.py, where a slow
+        # stream.stop() reached in-line from here stalled Service.lock for
+        # its full duration).
+        if before is not None and before.state != sch.SHOW \
+                and self.machine is not None \
+                and self.machine.state == sch.SHOW \
+                and self.on_show_started is not None:
+            state_now, hook = self.machine.state, self.on_show_started
+            self._pending_hooks.append(lambda: hook(state_now))
         return out
 
     # -- tonight on disk --------------------------------------------------
@@ -517,7 +619,7 @@ class Service:
         return True
 
     def tick(self):
-        with self.lock:
+        with self._locked():
             now = self.clock()
             if not self._ensure_night(now):
                 return None
@@ -535,7 +637,7 @@ class Service:
     def check_clock(self):
         level, text, offset = check_clock(self.ntp_query,
                                           limit_s=self.clock_limit_s)
-        with self.lock:
+        with self._locked():
             self.clock_check = {"level": level, "text": text,
                                 "offset_s": offset}
             self._journal_line("system", text, action="clock check",
@@ -568,7 +670,7 @@ class Service:
         try:
             self.check_clock()
         except Exception as e:
-            with self.lock:
+            with self._locked():
                 self._journal_line("system", f"The clock check failed: {e}.",
                                    outcome="error")
 
@@ -576,7 +678,7 @@ class Service:
         try:
             self.tick()
         except Exception as e:                     # never kill the ticker
-            with self.lock:
+            with self._locked():
                 self._journal_line(
                     "system", f"The scheduler hit a problem and carried "
                     f"on: {type(e).__name__}: {e}.", outcome="error")
@@ -594,7 +696,7 @@ class Service:
 
     # -- views ----------------------------------------------------------
     def rule_view(self):
-        with self.lock:
+        with self._locked():
             prev = previous_path(self.path)
             return {"ok": self.rule is not None, "error": self.error or None,
                     "path": self.path,
@@ -602,7 +704,7 @@ class Service:
                     "rule": sch.rule_to_doc(self.rule) if self.rule else None}
 
     def tonight_view(self):
-        with self.lock:
+        with self._locked():
             self.tick()
             now = self.clock()
             if self.machine is None:
@@ -617,7 +719,7 @@ class Service:
                             "written to the schedule file."}
 
     def state_view(self, journal=40):
-        with self.lock:
+        with self._locked():
             self.tick()
             now = self.clock()
             out = {"ok": self.machine is not None,
@@ -653,7 +755,7 @@ class Service:
                        at=str(body.get("at") or body.get("to") or ""),
                        screen=str(body.get("screen") or ""),
                        who=str(body.get("who") or ""))
-        with self.lock:
+        with self._locked():
             self.tick()
             if self.machine is None:
                 raise ValueError("There is no schedule loaded, so there is "

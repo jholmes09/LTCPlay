@@ -32,6 +32,7 @@ ltcplay_schedule.json
 ltcplay_schedule.previous.json
 ltcplay_tonight_*.json
 ltcplay_operators.json
+ltcplay_announce.json
 
 # Written by Cut a release.command at packaging time
 VERSION
