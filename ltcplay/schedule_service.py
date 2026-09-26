@@ -34,6 +34,10 @@ RULE_FILE = "ltcplay_schedule.json"
 PREVIOUS_SUFFIX = ".previous.json"
 TONIGHT_PREFIX = "ltcplay_tonight_"
 OPERATORS_FILE = "ltcplay_operators.json"
+# Which screens an operator can press things from. Beside the operator list,
+# and checked the same way, so the journal never names a screen nobody has.
+SCREENS_FILE = "ltcplay_screens.json"
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.
@@ -96,6 +100,54 @@ def parse_operators(doc):
         seen.add(n.strip().lower())
         out.append(n.strip())
     return tuple(out)
+
+
+def screens_path(folder=None):
+    return os.path.join(folder or data_dir(), SCREENS_FILE)
+
+
+def parse_screens(doc):
+    """The screen list from its file: {"screens": ["Rack screen", ...]}.
+    Raises ValueError with a sentence."""
+    if not isinstance(doc, dict) or set(doc) != {"screens"}:
+        raise ValueError('It has to be {"screens": [names]} and nothing '
+                         'else.')
+    names = doc["screens"]
+    if not isinstance(names, list) or not names:
+        raise ValueError("screens has to be a list of at least one name.")
+    out, seen = [], set()
+    for n in names:
+        if not isinstance(n, str) or not n.strip():
+            raise ValueError(f"{n!r} is not a screen name.")
+        if n.strip().lower() in seen:
+            raise ValueError(f"{n.strip()!r} is on the list twice.")
+        seen.add(n.strip().lower())
+        out.append(n.strip())
+    return tuple(out)
+
+
+def load_screens(folder=None):
+    """(names, sentence). The screens things may be pressed from. A missing
+    file is written with the defaults; a broken one leaves the defaults in
+    force and says why."""
+    path = screens_path(folder)
+    default = ", ".join(DEFAULT_SCREENS)
+    if not os.path.exists(path):
+        try:
+            write_json_atomic(path, {"screens": list(DEFAULT_SCREENS)})
+            why = f"The screen list was written to {path} with {default}."
+        except OSError as e:
+            why = (f"The screen list could not be written to {path}: {e}. "
+                   f"Using {default}.")
+        return DEFAULT_SCREENS, why
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            names = parse_screens(json.load(fh))
+    except (OSError, ValueError) as e:
+        return DEFAULT_SCREENS, (
+            f"The screen list {path} could not be used: "
+            f"{str(e).rstrip('.')}. Using {default} until it is fixed.")
+    return names, ""
 
 
 def load_operators(folder=None):
@@ -357,12 +409,17 @@ class Service:
         self.logbook = logbook or journal.Logbook(
             log_dir, clock=self.clock, tz=self._tz,
             flame_provider=flame_provider, memory=self.JOURNAL,
-            state=self._state_name)
+            state=self._state_name, night=self._night)
         # The page's lines ARE the journal's records: one deque, not a copy.
         self.journal = self.logbook.memory
         self._summarised = set()
         self._looked_back = False
+        self._pruned_for = None
+        self._hk_busy = False
+        self._tick_fault = None
+        self._born = self.clock()
         self.operators, why = load_operators(self.state_dir)
+        self.screens, why_screens = load_screens(self.state_dir)
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -375,6 +432,8 @@ class Service:
             self._journal_rule_error()
         if why:
             self._journal_line("system", why, action="operators")
+        if why_screens:
+            self._journal_line("system", why_screens, action="screens")
 
     # -- the rule -------------------------------------------------------
     def reload(self):
@@ -659,14 +718,10 @@ class Service:
                     self.machine.slots:
                 self._write_summary("written at midnight; the night was "
                                     "never closed", self.machine)
+            # Yesterday's summary was just seen to; no looking back needed.
             self._looked_back = True
             self.machine = None
-            self._log(self.logbook.prune, d, state=self._state_name())
         if self.machine is None:
-            first = not self._looked_back
-            self._look_back(d)
-            if first:
-                self._log(self.logbook.prune, d, state=self._state_name())
             self.machine = replace(self._load_tonight(d, now),
                                    operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
@@ -686,7 +741,9 @@ class Service:
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            return self.machine
+            m = self.machine
+        self._after_tick()
+        return m
 
     def check_clock(self):
         level, text, offset = check_clock(self.ntp_query,
@@ -696,7 +753,55 @@ class Service:
                                 "offset_s": offset}
             self._journal_line("system", text, action="clock check",
                                outcome=level)
+        self._after_tick()
         return self.clock_check
+
+    # -- housekeeping: disk work that is not a scheduling decision ----------
+    # Pruning waits for a clock this machine can trust: the time server said
+    # it is right, or it has been running this long. A clock a year ahead
+    # would otherwise call every night old on the first tick.
+    PRUNE_AFTER_S = 600
+
+    def _prune_allowed(self):
+        if (self.clock_check or {}).get("level") == "ok":
+            return True
+        return (self.clock() - self._born).total_seconds() >= \
+            self.PRUNE_AFTER_S
+
+    def _housekeeping_due(self):
+        m = self.machine
+        if m is None or self._hk_busy:
+            return False
+        return not self._looked_back or (
+            self._pruned_for != m.date and self._prune_allowed())
+
+    def _after_tick(self):
+        """Pruning and a missing summary, outside the scheduler's lock, and
+        on a thread of their own when running for real, so reading and
+        deleting files never holds up a tick."""
+        if not self._housekeeping_due():
+            return
+        self._hk_busy = True
+        if self.logbook.threaded():
+            threading.Thread(target=self._housekeeping, daemon=True,
+                             name="ltcplay-housekeeping").start()
+        else:
+            self._housekeeping()
+
+    def _housekeeping(self):
+        try:
+            with self.lock:
+                m = self.machine
+                if m is None:
+                    return
+                d, state = m.date, m.state
+                prune = self._pruned_for != d and self._prune_allowed()
+            self._look_back(d)
+            if prune:
+                self._pruned_for = d
+                self._log(self.logbook.prune, d, state=state)
+        finally:
+            self._hk_busy = False
 
     # -- running --------------------------------------------------------
     def start(self, thread=True):
@@ -707,13 +812,15 @@ class Service:
         if self._started:
             return self
         self._started = True
+        if thread:
+            # Before the first tick: from here the journal writes on its own
+            # thread, so a slow or full disk never holds up a tick, the
+            # first one included.
+            self.logbook.start_writer()
         self._safe_tick()
         if not thread:
             self.check_clock()
             return self
-        # From here the journal writes on its own thread, so a slow or full
-        # disk never holds up a tick.
-        self.logbook.start_writer()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="ltcplay-scheduler")
         self._thread.start()
@@ -737,16 +844,53 @@ class Service:
                     f"machine's clock, unchecked.", action="clock check",
                     outcome="failed", fault=True)
 
+    # A tick that keeps failing the same way is written once, then once a
+    # minute with its count, not four times a second.
+    FAULT_REPEAT_S = 60
+
     def _safe_tick(self):
         try:
             self.tick()
         except Exception as e:                     # never kill the ticker
-            with self.lock:
-                self._journal_line(
-                    "system", f"The scheduler hit a problem and carried "
-                    f"on ({type(e).__name__}: {e}). It tries again on the "
-                    f"next tick, a quarter of a second later.",
-                    action="tick", outcome="failed", fault=True)
+            self._tick_failed(f"{type(e).__name__}: {e}")
+        else:
+            if self._tick_fault is not None:
+                with self.lock:
+                    tf, self._tick_fault = self._tick_fault, None
+                    self._journal_repeats(tf)
+                    self._journal_line(
+                        "system", f"The scheduler's problem ({tf['key']}) "
+                        f"has stopped; ticks are working again.",
+                        action="tick", outcome="recovered")
+
+    def _tick_failed(self, key):
+        with self.lock:
+            now = self.clock()
+            tf = self._tick_fault
+            if tf is not None and tf["key"] == key:
+                tf["count"] += 1
+                if (now - tf["at"]).total_seconds() >= self.FAULT_REPEAT_S:
+                    self._journal_repeats(tf)
+                    tf["at"], tf["count"] = now, 0
+                return
+            if tf is not None:
+                self._journal_repeats(tf)
+            self._tick_fault = {"key": key, "at": now, "count": 0}
+            self._journal_line(
+                "system", f"The scheduler hit a problem and carried on "
+                f"({key}). It tries again on the next tick, a quarter of a "
+                f"second later.", action="tick", outcome="failed",
+                fault=True)
+
+    def _journal_repeats(self, tf):
+        if tf and tf["count"]:
+            self._journal_line(
+                "system", f"The same scheduler problem happened "
+                f"{tf['count']} more time(s) since "
+                f"{self.logbook.local(tf['at']):%H:%M:%S} ({tf['key']}). It "
+                f"is tried again every tick.", action="tick",
+                outcome="failed again", fault=True,
+                repeats=tf["count"])
 
     def _run(self):
         while not self._stop.is_set():
@@ -754,13 +898,19 @@ class Service:
             self._stop.wait(self.TICK_S)
 
     def stop(self):
+        """Stop ticking and close the journal. Returns within a couple of
+        seconds whatever the disk is doing: a disk that has stopped
+        answering must never hold up the rest of the program's stop."""
         self._stop.set()
         for t in (self._thread, self._sample_thread):
             if t is not None:
-                t.join(timeout=2)
-        with self.lock:
-            self._log(self.logbook.stopping, state=self._state_name(),
-                      night=self._night())
+                t.join(timeout=1)
+        if self.lock.acquire(timeout=1):
+            try:
+                self._log(self.logbook.stopping, state=self._state_name(),
+                          night=self._night())
+            finally:
+                self.lock.release()
         self.logbook.close()
 
     # -- the ring buffer ----------------------------------------------------
@@ -855,10 +1005,14 @@ class Service:
         except (TypeError, ValueError):
             raise ValueError(f"show has to be a show number, not "
                              f"{body.get('show')!r}.")
+        what = {"move": "move of a show", "add": "added show",
+                "remove": "removal of a show"}[op]
+        screen = self._check_screen(str(body.get("screen") or ""),
+                                    str(body.get("who") or ""), kinds[op],
+                                    what)
         ev = sch.Event(kinds[op], "operator", show=show,
                        at=str(body.get("at") or body.get("to") or ""),
-                       screen=str(body.get("screen") or ""),
-                       who=str(body.get("who") or ""))
+                       screen=screen, who=str(body.get("who") or ""))
         with self.lock:
             self.tick()
             if self.machine is None:
@@ -880,13 +1034,39 @@ class Service:
     def logging_view(self):
         return self.logbook.health()
 
-    def _config_in_force(self):
-        text = None
+    def _check_screen(self, screen, who, action, what):
+        """The screen's name as the list spells it. A blank one is left for
+        the engine to refuse with its own sentence; one not on the list is
+        refused here, in the journal and to the page."""
+        if not screen.strip():
+            return screen
+        names = {n.lower(): n for n in self.screens}
+        got = names.get(screen.strip().lower())
+        if got is not None:
+            return got
+        sentence = (f"{screen.strip()!r} is not on the screen list "
+                    f"({', '.join(self.screens)}). Pick a screen from the "
+                    f"list. Nothing was changed.")
+        with self.lock:
+            self._log(self.logbook.record, actor="operator", action=action,
+                      outcome="refused", reason=sentence,
+                      text=f"{who.strip() or 'An unnamed operator'}'s "
+                           f"{what} was refused. {sentence}",
+                      state=self._state_name(), night=self._night(),
+                      who=who.strip() or "unnamed operator",
+                      screen=screen.strip())
+        raise ValueError(sentence)
+
+    def _read_rule_text(self):
         try:
             with open(self.path, encoding="utf-8-sig") as fh:
-                text = fh.read(1 << 20)
+                return fh.read(1 << 20)
         except OSError as e:
-            text = f"(could not be read: {e.strerror or e})"
+            return f"(could not be read: {e.strerror or e})"
+
+    def _config_in_force(self, text=None):
+        """Everything in force, from memory; `text` is the rule file as read
+        from disk, which the caller reads outside the scheduler's lock."""
         m = self.machine
         return {"schedule_file": self.path, "schedule_file_text": text,
                 "rule": sch.rule_to_doc(self.rule) if self.rule else None,
@@ -896,6 +1076,7 @@ class Service:
                 "tonight_file": (tonight_path(m.date, self.state_dir)
                                  if m else None),
                 "dry_run": DRY_RUN, "state_dir": self.state_dir,
+                "screens": list(self.screens),
                 "log_folder": self.logbook.folder,
                 "clock_check": self.clock_check}
 
@@ -915,8 +1096,11 @@ class Service:
             raise ValueError(f"{who!r} is not on the operator list "
                              f"({', '.join(self.operators)}). Pick a name "
                              f"from the list. Nothing was saved.")
+        screen = self._check_screen(screen, who, "save incident",
+                                    "Save the last incident")
+        text = self._read_rule_text()
         with self.lock:
-            config = self._config_in_force()
+            config = self._config_in_force(text)
             state, night = self._state_name(), self._night()
         # The copy happens outside the scheduler's lock: saving a folder of
         # files must never hold up a tick.

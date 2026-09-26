@@ -13866,16 +13866,22 @@ def test_journal_rotation_and_pruning_across_dst():
     check([l[:10] for l in j] == ["00:00:01  ", "01:30:00  ", "01:30:00  "],
           f"the journal reads the wall clock: {j}")
 
-    # Pruning, by the name's date. Files for 1 Aug to 5 Aug, some with
-    # misleading timestamps, and things this module did not write.
+    # Pruning, by the name's date. A night for every day from 1 Jul to
+    # 1 Nov (124 nights), two with misleading timestamps, and things this
+    # module did not write.
+    def nights_from(first, n, folder, kinds=(J.machine_name, J.journal_name)):
+        made = []
+        for i in range(n):
+            d = first + timedelta(days=i)
+            for kind in kinds:
+                name = kind(d.isoformat())
+                open(os.path.join(folder, name), "w").write("x\n")
+                made.append((d, name))
+        return made
+
     old = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(old)
-    made = []
-    for d in range(1, 6):
-        for kind in (J.machine_name, J.journal_name, J.summary_name):
-            p = os.path.join(old, kind(f"2026-08-0{d}"))
-            open(p, "w").write("x\n")
-            made.append(p)
+    made = nights_from(date(2026, 7, 1), 124, old)
     # A kept night with an ancient timestamp, a pruned one stamped today.
     os.utime(os.path.join(old, J.machine_name("2026-08-05")), (1, 1))
     os.utime(os.path.join(old, J.machine_name("2026-08-01")),
@@ -13891,43 +13897,62 @@ def test_journal_rotation_and_pruning_across_dst():
     gone = p.prune(date(2026, 11, 1))
     left = set(os.listdir(old))
     # Kept: 90 days back from 1 Nov is 3 Aug.
-    check(sorted(gone) == sorted(os.path.basename(x) for x in made
-                                 if "08-01" in x or "08-02" in x),
+    want = sorted(n for d, n in made if d < date(2026, 8, 3))
+    check(sorted(gone) == want,
           f"nights older than 90 days are removed, by the date in their "
-          f"name: {sorted(gone)}")
-    check(all(os.path.basename(x) in left for x in made
-              if "08-03" in x or "08-04" in x or "08-05" in x),
+          f"name: {len(gone)} {sorted(gone)[:4]}")
+    check(all(n in left for d, n in made if d >= date(2026, 8, 3)),
           "the 90th night back and newer are kept, whatever their "
           "timestamps say")
     check(all(n in left for n in strangers)
           and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl"))
           and os.path.isdir(os.path.join(old, "incidents")),
           "nothing this module did not write is touched")
-    check(any("Removed 6 night log file(s)" in r["text"] for r in p.memory),
-          "the journal says what was removed")
+    check(any(f"Removed {len(want)} night log file(s)" in r["text"]
+              for r in p.memory), "the journal says what was removed")
+    # A clock a year ahead calls every night old. The nights that exist
+    # are kept all the same: never fewer than the newest 90 of them.
+    ahead = os.path.join(tempfile.mkdtemp(), "nights")
+    os.makedirs(ahead)
+    nights_from(date(2026, 11, 14), 4, ahead)
+    now[0] = datetime(2027, 11, 20, 18, 0, tzinfo=utc)
+    check(_book(J, ahead, now).prune(date(2027, 11, 20)) == []
+          and len(os.listdir(ahead)) == 8,
+          f"a clock a year ahead removes nothing: {os.listdir(ahead)}")
+    many = os.path.join(tempfile.mkdtemp(), "nights")
+    os.makedirs(many)
+    made = nights_from(date(2026, 11, 1), 120, many, (J.machine_name,))
+    gone = _book(J, many, now).prune(date(2028, 1, 1))
+    check(sorted(gone) == [n for _d, n in made[:30]]
+          and sum(os.path.exists(os.path.join(many, n))
+                  for _d, n in made) == 90,
+          f"however far ahead, the newest 90 nights stay: {len(gone)}")
     # The spring change: 90 days back from 14 Mar 2027 is 14 Dec 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
-    for d in ("2026-12-13", "2026-12-14", "2027-03-14"):
-        open(os.path.join(spring, J.machine_name(d)), "w").write("x\n")
+    made = nights_from(date(2026, 12, 1), 104, spring, (J.machine_name,))
     now[0] = datetime(2027, 3, 14, 9, 30, tzinfo=utc)     # 02:30 MST skipped
     sp = _book(J, spring, now)
-    check(sp.prune(date(2027, 3, 14)) == [J.machine_name("2026-12-13")],
-          f"across the spring change too: {sorted(os.listdir(spring))}")
+    check(sorted(sp.prune(date(2027, 3, 14))) ==
+          [n for d, n in made if d < date(2026, 12, 14)],
+          f"across the spring change too: {sorted(os.listdir(spring))[:3]}")
     check(sp.night_of() == date(2027, 3, 14), "the night is the local date")
 
-    # The service moves to a new night file at midnight and prunes then. A
-    # night held past its last show never closes, so its summary is
-    # written at midnight.
+    # The service prunes once the time server has agreed with the clock,
+    # at start and again when each night begins. A night held past its
+    # last show never closes, so its summary is written at midnight.
     work = tempfile.mkdtemp()
     nights = os.path.join(work, "nights")
     os.makedirs(nights)
-    open(os.path.join(nights, J.machine_name("2026-08-01")), "w").write("x\n")
+    nights_from(date(2026, 7, 1), 95, nights, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc = _svc(S, work, now).start(thread=False)
-    check(not os.path.exists(os.path.join(nights,
-                                          J.machine_name("2026-08-01"))),
-          "the service prunes when a night begins")
+
+    def there(d):
+        return os.path.exists(os.path.join(nights, J.machine_name(d)))
+
+    check(not there("2026-07-06") and there("2026-07-07"),
+          "the service prunes when a night begins, keeping the newest 90")
     now[0] = _den(S, 21, 35)
     svc._apply(_op(S, S.HOLD_ON))
     now[0] = _den(S, 23, 59, 50)
@@ -13935,14 +13960,27 @@ def test_journal_rotation_and_pruning_across_dst():
     check(not os.path.exists(os.path.join(nights,
                                           J.summary_name("2026-11-14"))),
           "a night on hold has not closed")
-    open(os.path.join(nights, J.machine_name("2026-08-16")), "w").write("x\n")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
-    check(not os.path.exists(os.path.join(nights,
-                                          J.machine_name("2026-08-16"))),
+    check(not there("2026-07-07") and there("2026-07-08"),
           "and prunes again when the next night begins")
-    check(os.path.exists(os.path.join(nights, J.machine_name("2026-11-15"))),
+    check(there("2026-11-15"),
           "after midnight the lines go to the new night's file")
+    # A clock the time server disagrees with: nothing is pruned until it
+    # has run for 10 minutes.
+    work2 = tempfile.mkdtemp()
+    nights2 = os.path.join(work2, "nights")
+    os.makedirs(nights2)
+    nights_from(date(2026, 7, 1), 95, nights2, (J.machine_name,))
+    now[0] = _den(S, 21, 30)
+    svc2 = _svc(S, work2, now, ntp_query=lambda: 90000.0).start(thread=False)
+    first = os.path.join(nights2, J.machine_name("2026-07-01"))
+    check(svc2.clock_check["level"] == "warn" and os.path.exists(first),
+          "an unchecked clock prunes nothing at first")
+    now[0] = _den(S, 21, 40, 1)
+    svc2.tick()
+    check(not os.path.exists(first),
+          "and prunes, still keeping the newest 90, after 10 minutes")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
     check(os.path.exists(sp14) and "written at midnight" in
           open(sp14, encoding="utf-8").read(),
@@ -14143,7 +14181,7 @@ def test_journal_incident_bundle():
         jt = open(os.path.join(folder, "journal.txt"),
                   encoding="utf-8").read()
         check("Show 1 started on schedule at 18:00" in jt and
-              "Andy pressed Save the last incident on the rack screen (lights"
+              "Andy pressed Save the last incident on the Rack screen (lights"
               " dropped in song 3)." in jt,
               "the journal so far, including who asked for the bundle")
         ml = _jsonl_rows(os.path.join(folder, "machine_log.jsonl"))
@@ -14176,7 +14214,9 @@ def test_journal_incident_bundle():
               "the last 20 flame frames, commanded against sent")
         readme = open(os.path.join(folder, "README.txt"),
                       encoding="utf-8").read()
-        check("Andy on the rack screen" in readme, "README says who saved it")
+        check("Andy on the Rack screen" in readme,
+              "README says who saved it, and the screen as the list spells "
+              "it")
         _no_dashes(readme, "incident README")
     check(not [n for n in os.listdir(os.path.dirname(folder))
                if n.endswith(".partial")], "no half-written folder is left")
@@ -14374,9 +14414,16 @@ def test_journal_cold_read():
     a.tick()
     now[0] = _den(S, 18, 20)
     a.tick()                                              # show 2 starts
-    # Bench test 2: the power is cut 4 s into show 2.
+    # Bench test 2: the power is cut 4 s into show 2, mid-write: the last
+    # line of each file is torn in half.
     now[0] = _den(S, 18, 20, 4)
     a.tick()
+    nights = os.path.join(work, "nights")
+    for name in (J.machine_name("2026-11-14"), J.journal_name("2026-11-14")):
+        path = os.path.join(nights, name)
+        data = open(path, "rb").read()
+        last = data.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+        os.truncate(path, len(data) - 1 - len(last) // 2)
     now[0] = _den(S, 18, 22, 30)
     b = _svc(S, work, now).start(thread=False)
     now[0] = _den(S, 18, 30)
@@ -14395,6 +14442,8 @@ def test_journal_cold_read():
                             "once, still nothing"))
     now[0] = _den(S, 19, 1)
     b._apply(_op(S, S.START_NOW, who="", screen="rack screen"))  # refused
+    now[0] = _den(S, 19, 5)
+    b._apply(_op(S, S.END_NIGHT, confirmed=True))
     # Only the journal, as a person would open it the next morning.
     text = open(os.path.join(work, "nights",
                              J.journal_name("2026-11-14")),
@@ -14430,7 +14479,9 @@ def test_journal_cold_read():
             (("Andy pressed Abort on the rack screen during show 3",),
              "Andy aborted show 3"),
             (("Start now was refused", "does not say who pressed it"),
-             "a press nobody owned up to")):
+             "a press nobody owned up to"),
+            (("Show 5 will not run", "By Andy on the rack screen."),
+             "who ended the night, on a line that did not name them")):
         check(said(*words), f"the journal says {why}: {words}")
     # Every operator line names who and which screen; every fault line is a
     # sentence.
@@ -14447,6 +14498,12 @@ def test_journal_cold_read():
     check(not [r for r in rows if r["actor"] == "operator"
                and r["line"] not in lines],
           "every operator line in the machine log is in the journal")
+    summary = open(os.path.join(nights, J.summary_name("2026-11-14")),
+                   encoding="utf-8").read()
+    check("- Restarts: 1 (18:22:30)." in summary,
+          "the summary counts the restart after the torn line")
+    check("- Logging: 1 line(s) in the machine log were cut short" in
+          summary, "and says a line was cut short")
     print("  ok")
 
 
@@ -14591,6 +14648,485 @@ def test_the_gpl_path_never_loads_the_journal():
     check(digest == SHOWLOG_SHA256,
           f"showlog.py changed ({digest}); the GPL show log must stay "
           f"exactly as it is")
+    print("  ok")
+
+
+
+def test_journal_the_way_out_never_waits_on_the_disk():
+    section("journal: a hung disk never stands between Ctrl-C and the "
+            "blackout")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    import time as _t
+    from ltcplay import cli
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start()          # running for real
+    gate = threading.Event()
+    try:
+        check(svc.logbook.threaded(), "Service.start starts the journal's "
+                                      "own writer")
+
+        def hung(path):
+            gate.wait(30)                     # a write that never returns
+            return J._open_append(path)
+
+        svc.logbook._opener = hung
+        t0 = _t.monotonic()
+        for i in range(20):
+            svc._journal_line("system", f"Line {i} while the disk hangs.")
+        took = _t.monotonic() - t0
+        check(took < 0.5, f"lines are handed over, never written in the "
+                          f"scheduler's own time: {took:.2f} s for 20")
+        # End night with the disk hung: the summary is written beside the
+        # scheduler, never inside the step that closed the night.
+        done = threading.Event()
+
+        def end():
+            svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+            done.set()
+
+        threading.Thread(target=end, daemon=True).start()
+        check(done.wait(1.0), "End night returns at once with the disk hung")
+
+        # Ctrl-C: the show's own stop comes first, and the whole way out
+        # returns even though the journal's writer is stuck.
+        class Control:
+            stopped_at = None
+
+            def stop(self):
+                self.stopped_at = _t.monotonic()
+
+        class Server:
+            control = Control()
+            schedule = svc
+            closed = False
+
+            def server_close(self):
+                self.closed = True
+
+        h = Server()
+        out = threading.Event()
+        t0 = _t.monotonic()
+        threading.Thread(target=lambda: (cli._shutdown(h), out.set()),
+                         daemon=True).start()
+        finished = out.wait(5)
+        check(h.control.stopped_at is not None
+              and h.control.stopped_at - t0 < 0.3,
+              f"the rig's stop is reached first, at once: "
+              f"{None if h.control.stopped_at is None else round(h.control.stopped_at - t0, 2)}")
+        check(finished and _t.monotonic() - t0 < 3 and h.closed,
+              f"and the way out finishes with the disk still hung: "
+              f"{_t.monotonic() - t0:.1f} s")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "cli.py"),
+                   encoding="utf-8").read()
+        check("_shutdown(httpd)" in src, "ltcplay serve leaves through "
+                                         "_shutdown")
+    finally:
+        gate.set()
+    print("  ok")
+
+
+class _Unprintable:
+    def __str__(self):
+        raise RuntimeError("this object cannot be printed")
+
+    __repr__ = __str__
+
+
+def test_journal_a_line_the_disk_cannot_take():
+    section("journal: no line can jam the rest, and any failure is said "
+            "out loud")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    mp = os.path.join(work, "nights", J.machine_name("2026-11-14"))
+    # A lone surrogate from the page's JSON, in the screen and in 'why'.
+    body = json.loads('{"op": "remove", "show": 5, "who": "Andy", '
+                      '"screen": "rack \\ud800screen"}')
+    try:
+        svc.post("/api/schedule/tonight", body)
+        check(False, "a screen not on the list was accepted")
+    except ValueError as e:
+        check("screen list" in str(e), f"refused with a sentence: {e}")
+    code, out = svc.post("/api/schedule/incident", json.loads(
+        '{"who": "Andy", "screen": "Rack screen", "why": "x\\udc80"}'))
+    check(code == 200 and out["ok"], f"the incident is saved: {out}")
+    r = svc.logbook.record(actor="system", action="note", outcome="done",
+                           reason="r", text="A file with an odd name.",
+                           data={"file": "a\udc80.wav"})
+    for i in range(3):
+        now[0] = _den(S, 17, 31, i)
+        svc._journal_line("system", f"Ordinary line {i} after the odd ones.")
+    rows = [x for x in _jsonl_rows(mp) if x]
+    texts = [x["text"] for x in rows]
+    check(any("\\ud800" in t for t in texts),
+          "the refused screen is written, spelled out")
+    got = [x for x in rows if x["id"] == r["id"]]
+    check(got and got[0]["data"]["file"] == "a\udc80.wav",
+          f"a record whose data UTF-8 cannot carry is written whole: {got}")
+    check(texts[-1] == "Ordinary line 2 after the odd ones."
+          and svc.logbook.health()["ok"] and svc.logbook.pending() == 0,
+          "every line after them is written and the flag is green")
+    # A record that cannot be turned into bytes at all: a stand-in says so,
+    # and the lines after it are written.
+    bad = svc.logbook.record(actor="system", action="note", outcome="done",
+                             reason="r", text="A record with bad data.",
+                             data={"x": _Unprintable()})
+    now[0] = _den(S, 17, 32)
+    svc._journal_line("system", "The line after the bad record.")
+    rows = [x for x in _jsonl_rows(mp) if x]
+    stand = [x for x in rows if x["id"] == bad["id"]]
+    check(stand and "could not be written as it was made" in stand[0]["text"]
+          and stand[0]["fault"], f"a stand-in line takes its place: {stand}")
+    check(rows[-1]["text"] == "The line after the bad record."
+          and svc.logbook.health()["ok"],
+          "and never blocks the lines behind it")
+    # A failure that is not a disk error still stops the logging out loud.
+    def broken(path):
+        raise RuntimeError("the opener broke")
+
+    svc.logbook._opener = broken
+    now[0] = _den(S, 17, 33)
+    svc._journal_line("system", "A line while the opener is broken.")
+    h = svc.logbook.health()
+    check(not h["ok"] and "bug in ltcplay" in h["sentence"]
+          and "RuntimeError" in h["sentence"],
+          f"any failure sets the flag with a sentence: {h['sentence']}")
+    svc.logbook._opener = J._open_append
+    now[0] = _den(S, 17, 34)
+    svc.logbook.drain()
+    check(svc.logbook.health()["ok"] and
+          [x for x in _jsonl_rows(mp) if x][-1]["action"] ==
+          "logging resumed", "and resumes once it can write")
+    # Running for real: the same, through the writer thread.
+    work2 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    live = _svc(S, work2, now).start()
+    try:
+        try:
+            live.post("/api/schedule/tonight", body)
+        except ValueError:
+            pass
+        now[0] = _den(S, 17, 31)
+        live._journal_line("system", "A later line, through the writer.")
+        mp2 = os.path.join(work2, "nights", J.machine_name("2026-11-14"))
+        check(wait_for(lambda: os.path.exists(mp2) and any(
+            x and x["text"] == "A later line, through the writer."
+            for x in _jsonl_rows(mp2))) and live.logbook.health()["ok"],
+              "the writer thread writes past the odd line too")
+    finally:
+        live.stop()
+    print("  ok")
+
+
+def test_journal_a_torn_last_line_after_a_power_cut():
+    section("journal: after a power cut the next line starts on its own "
+            "line")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    a = _book(J, work, now)
+    a.record(actor="system", action="note", outcome="done", reason="r",
+             text="The last whole line before the power went.")
+    mp = os.path.join(work, J.machine_name("2026-11-14"))
+    jp = os.path.join(work, J.journal_name("2026-11-14"))
+    rec = J.build_event(at=_den(S, 18, 3), night="2026-11-14", state="SHOW",
+                        actor="scheduler", action="fire", outcome="fired",
+                        reason="FIRED", text="Show 2 started on schedule.")
+    with open(mp, "ab") as fh:                 # torn mid-line
+        fh.write(J._jsonl(rec)[:60])
+    with open(jp, "ab") as fh:                 # and NULs where NTFS left
+        fh.write(J._jline(rec)[:15] + b"\0" * 24)   # the rest unwritten
+    now[0] = _den(S, 18, 10)
+    b = _book(J, work, now)
+    b.started(state="STANDBY")
+    rows = _jsonl_rows(mp)
+    check(rows.count(None) == 1 and rows[-1] is not None
+          and rows[-1]["action"] == "program start"
+          and rows[-1]["data"]["restart"],
+          f"the restart line is whole, after the torn one: "
+          f"{[r and r['action'] for r in rows]}")
+    j = _lines(jp)
+    check(j[-1].startswith("18:10:00  ltcplay started again")
+          and "\0" in j[-2],
+          f"the journal's restart line is on its own line: {j[-2:]!r}")
+    now[0] = _den(S, 18, 20)
+    c = _book(J, work, now)
+    third = c.started(state="STANDBY")
+    check("18:10:00" in third["text"], f"the next run still reads the last "
+                                       f"line: {third['text']}")
+    path = c.write_summary("2026-11-14", state="OFF")
+    text = open(path, encoding="utf-8").read()
+    check("- Restarts: 2 (18:10:00, 18:20:00)." in text,
+          f"both restarts are counted: {text[:500]}")
+    check("- Logging: 1 line(s) in the machine log were cut short" in text,
+          "and the summary says a line was cut short")
+    print("  ok")
+
+
+def test_journal_a_repeating_fault_does_not_flood():
+    section("journal: a tick that fails every time is written once a "
+            "minute, not four times a second")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    svc = _svc(S, work, now).start(thread=False)
+    before = len(svc.journal)
+    real = SV.sch.step
+
+    def broken(*a, **k):
+        raise KeyError("slot")
+
+    SV.sch.step = broken
+    try:
+        for i in range(4 * 90):                    # 90 s of ticks
+            now[0] = _den(S, 18, 1) + timedelta(seconds=i / 4)
+            svc._safe_tick()
+    finally:
+        SV.sch.step = real
+    rows = list(svc.journal)[before:]
+    faults = [r for r in rows if r["fault"]]
+    check(len(faults) == 2, f"one line, then one with the count a minute "
+                            f"later: {[r['line'] for r in faults]}")
+    check(faults and "KeyError" in faults[0]["text"]
+          and len(faults) > 1 and "happened 240 more time(s)" in
+          faults[1]["text"], f"the count is said: "
+                             f"{[r['text'][:80] for r in faults]}")
+    now[0] = _den(S, 18, 3)
+    svc._safe_tick()
+    tail = [r["text"] for r in list(svc.journal)[-2:]]
+    check("119 more time(s)" in tail[0] and "has stopped" in tail[1],
+          f"when it stops, the rest are counted and the end is said: {tail}")
+    print("  ok")
+
+
+def test_journal_a_show_past_midnight_keeps_its_night():
+    section("journal: every line of a show past midnight goes to its own "
+            "night's file")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 23, 50)]
+    svc = _svc(S, work, now).start(thread=False)
+    now[0] = _den(S, 23, 57)
+    svc._apply(_op(S, S.START_NOW))
+    real = svc.logbook._opener
+
+    def full(path):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    now[0] = _den(S, 0, 1, d=(2026, 11, 15))
+    svc.logbook._opener = full
+    svc.tick()
+    svc._journal_line("system", "A line during the show, after midnight.")
+    now[0] = _den(S, 0, 1, 40, d=(2026, 11, 15))
+    svc.logbook._opener = real
+    svc._journal_line("system", "Another line during the show.")
+    nights = os.path.join(work, "nights")
+    rows = [r for r in _jsonl_rows(os.path.join(
+        nights, J.machine_name("2026-11-14"))) if r]
+    acts = [r["action"] for r in rows if r["at"].startswith("2026-11-15")]
+    check("logging stopped" in acts and "logging resumed" in acts
+          and "note" in acts,
+          f"the show's lines after midnight, the journal's own included, "
+          f"are on the night the show belongs to: {acts}")
+    check(not os.path.exists(os.path.join(nights,
+                                          J.machine_name("2026-11-15"))),
+          "nothing went to the calendar day's file while the show ran")
+    now[0] = _den(S, 0, 4, 30, d=(2026, 11, 15))
+    svc.tick()                                  # the show ends
+    now[0] = _den(S, 0, 4, 31, d=(2026, 11, 15))
+    svc.tick()
+    check(os.path.exists(os.path.join(nights, J.machine_name("2026-11-15"))),
+          "once the show is over, the new night gets its own file")
+    print("  ok")
+
+
+def test_journal_waiting_lines_are_capped_and_counted():
+    section("journal: lines waiting for a full disk are capped, and the "
+            "ones let go are counted")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    b = _book(J, work, now)
+
+    def full(path):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    b._opener = full
+    cap = J.PENDING_MAX
+    J.PENDING_MAX = 20
+    try:
+        for i in range(30):
+            now[0] = _den(S, 18, 0) + timedelta(seconds=i)
+            b.record(actor="scheduler", action="note", outcome="done",
+                     reason="r", text=f"Line {i} while the disk is full.")
+        check(b.pending() == 20, f"the waiting lines stop at the cap: "
+                                 f"{b.pending()}")
+        h = b.health()
+        check(h["dropped"] == 11 and "could not be kept" in h["sentence"],
+              f"and the ones let go are counted: {h['dropped']} "
+              f"{h['sentence']}")
+    finally:
+        J.PENDING_MAX = cap
+    b._opener = J._open_append
+    now[0] += timedelta(seconds=31)
+    b.drain()
+    rows = [r for r in _jsonl_rows(os.path.join(
+        work, J.machine_name("2026-11-14"))) if r]
+    resumed = [r["text"] for r in rows if r["action"] == "logging resumed"]
+    check(resumed and "11 line(s) from 18:00:00 to 18:00:09 were not "
+                      "written" in resumed[0],
+          f"the resume line says which lines were lost: {resumed}")
+    print("  ok")
+
+
+def test_journal_a_clean_stop_reads_as_one():
+    section("journal: a clean stop is written, so the next start can tell "
+            "it from a crash")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    a = _svc(S, work, now).start(thread=False)
+    now[0] = _den(S, 17, 40)
+    a.stop()
+    now[0] = _den(S, 17, 45)
+    b = _svc(S, work, now).start(thread=False)
+    first = [r for r in b.journal if r["action"] == "program start"]
+    check(first and "stopped cleanly at 17:40:00" in first[0]["text"],
+          f"the restart after a clean stop says so: "
+          f"{first and first[0]['text']}")
+    print("  ok")
+
+
+def test_journal_screens_come_from_a_list():
+    section("journal: screens come from a list, like operators")
+    S = _sched()
+    if S is None:
+        return
+    import json
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    check(svc.screens == ("Rack screen", "Stream Deck", "Phone")
+          and json.load(open(SV.screens_path(work), encoding="utf-8")) ==
+          {"screens": ["Rack screen", "Stream Deck", "Phone"]},
+          f"the default list is written beside the operators: "
+          f"{svc.screens}")
+    try:
+        svc.post("/api/schedule/tonight", {"op": "remove", "show": 5,
+                                           "who": "Andy", "screen": "Laptop"})
+        check(False, "a screen not on the list was accepted")
+    except ValueError as e:
+        check("'Laptop' is not on the screen list (Rack screen, Stream Deck, "
+              "Phone)" in str(e), f"refused with a sentence: {e}")
+    check(any(r["outcome"] == "refused" and r["screen"] == "Laptop"
+              and "Andy" in r["line"] for r in svc.journal),
+          "and the refusal is in the journal, with who tried")
+    try:
+        svc.post("/api/schedule/incident", {"who": "Andy",
+                                            "screen": "Laptop"})
+        check(False, "an incident from an unknown screen was saved")
+    except ValueError as e:
+        check("screen list" in str(e), f"the incident too: {e}")
+    svc.post("/api/schedule/tonight", {"op": "remove", "show": 5,
+                                       "who": "Andy", "screen": "stream deck"})
+    check(svc.machine.slot(5).status == S.SKIPPED and any(
+        "on the Stream Deck" in r["line"] for r in svc.journal),
+          "a known screen is taken, spelled as the list spells it")
+    # A broken list: the defaults stay, and the journal says why.
+    open(SV.screens_path(work), "w", encoding="utf-8").write('{"screens": []}')
+    b = _svc(S, work, now).start(thread=False)
+    check(b.screens == SV.DEFAULT_SCREENS and any(
+        "screen list" in r["text"] and "could not be used" in r["text"]
+        for r in b.journal), "a broken list falls back to the defaults, "
+                             "and says so")
+    print("  ok")
+
+
+def test_journal_summary_lists_every_fault():
+    section("journal: the summary lists every fault sentence, repeats "
+            "counted, never cut off")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    b = _book(J, work, now)
+    for i in range(30):
+        now[0] = _den(S, 18, 0) + timedelta(seconds=i)
+        b.fault("system", f"Fault number {i} happened to the test rig.",
+                action="test")
+    for i in range(50):
+        now[0] = _den(S, 18, 5) + timedelta(seconds=i)
+        b.fault("madmapper", "MadMapper stopped answering on port 8000.",
+                action="test")
+    text = open(b.write_summary("2026-11-14", state="OFF"),
+                encoding="utf-8").read()
+    part = text.split("## Faults, in their own words\n", 1)[-1].split(
+        "\n## ", 1)[0]
+    check(all(f"Fault number {i} happened" in part for i in range(30)),
+          "every different fault is listed")
+    check(part.count("MadMapper stopped answering") == 1 and
+          "(and 49 more time(s), the last at 18:05:49)" in part,
+          "a repeat is one line with its count")
+    check("Faults: 80 (31 different)" in text, "and the count says so")
+    print("  ok")
+
+
+def test_journal_leftover_temp_files_are_cleared():
+    section("journal: a summary's temp file left by a crash is cleared at "
+            "start")
+    import tempfile
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    stale = os.path.join(work, "night_2026-11-14.summary.md.4242.new")
+    other = os.path.join(work, "something.4242.new")
+    for p in (stale, other):
+        open(p, "w").write("x")
+    J.Logbook(work)
+    check(not os.path.exists(stale) and os.path.exists(other),
+          "only the summary's own temp files are removed")
     print("  ok")
 
 
@@ -14741,6 +15277,16 @@ if __name__ == "__main__":
     test_journal_cold_read()
     test_journal_faults_write_sentences()
     test_the_gpl_path_never_loads_the_journal()
+    test_journal_the_way_out_never_waits_on_the_disk()
+    test_journal_a_line_the_disk_cannot_take()
+    test_journal_a_torn_last_line_after_a_power_cut()
+    test_journal_a_repeating_fault_does_not_flood()
+    test_journal_a_show_past_midnight_keeps_its_night()
+    test_journal_waiting_lines_are_capped_and_counted()
+    test_journal_a_clean_stop_reads_as_one()
+    test_journal_screens_come_from_a_list()
+    test_journal_summary_lists_every_fault()
+    test_journal_leftover_temp_files_are_cleared()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()

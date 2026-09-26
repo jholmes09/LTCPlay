@@ -22,7 +22,9 @@ The rules it keeps:
 
 - ONE record per event. The journal line is rendered once, stored in the
   record, written to the file and served to the page as the same string, so
-  the screen and the file cannot say different things.
+  the screen and the file cannot say different things. A page shows the
+  record's `line`, never its `text`: `line` is what the file says, with the
+  time and, for an operator, the name.
 - Every event carries local time with its offset, the state, the actor (one
   of ACTORS, never blank), the action, the outcome and the reason. An
   operator event also carries the operator's name and the screen. Anything
@@ -93,6 +95,8 @@ SUMMARY_LIST_MAX = 25       # one page: longer lists point at the journal
 FOLDER = "nights"
 INCIDENTS = "incidents"
 LOCK_FILE = ".writing.lock"
+# A summary's temp file left by a crash mid-write; removed at start.
+_STALE = re.compile(r"^night_\d{4}-\d{2}-\d{2}\.summary\.md\.\d+\.new$")
 _NAME = re.compile(r"^night_(\d{4})-(\d{2})-(\d{2})"
                    r"\.(journal\.txt|jsonl|summary\.md)$")
 
@@ -186,6 +190,9 @@ def one_line(text):
     become one space, and an em or en dash becomes a plain hyphen, because
     operator text never carries either."""
     text = str(text).replace("\u2014", "-").replace("\u2013", "-")
+    # A character UTF-8 cannot carry (a lone surrogate from a page's free
+    # text) is spelled out, so it can never stop a line reaching the disk.
+    text = text.encode("utf-8", "backslashreplace").decode("utf-8")
     return " ".join(text.split())
 
 
@@ -280,13 +287,44 @@ def build_event(*, at, night, state, actor, action, outcome, reason, text,
     return rec
 
 
+def _utf8(text):
+    """UTF-8 bytes of anything: a character UTF-8 cannot carry is spelled
+    out (backslash form) rather than refused, so no line can jam the
+    queue."""
+    return text.encode("utf-8", "backslashreplace")
+
+
 def _jsonl(rec):
-    return (json.dumps(rec, ensure_ascii=False, separators=(",", ":"),
-                       default=str) + "\n").encode("utf-8")
+    return _utf8(json.dumps(rec, ensure_ascii=False, separators=(",", ":"),
+                            default=str) + "\n")
 
 
 def _jline(rec):
-    return (rec["line"] + "\n").encode("utf-8")
+    return _utf8(rec["line"] + "\n")
+
+
+def _encode_safely(encode, rec):
+    """A record's bytes, or, if it cannot be turned into bytes at all, a
+    stand-in line saying so. A record that cannot be written is never left
+    blocking every line behind it."""
+    try:
+        return encode(rec)
+    except Exception as e:
+        text = (f"A line could not be written as it was made "
+                f"({type(e).__name__}), so it is left out of this file. "
+                f"That is a bug in ltcplay; the lines after it are whole.")
+        at = str(rec.get("at", "")) if isinstance(rec, dict) else ""
+        stand_in = {"id": str(rec.get("id", "")) if isinstance(rec, dict)
+                    else "", "at": at,
+                    "night": str(rec.get("night", "")) if isinstance(
+                        rec, dict) else "",
+                    "state": "UNKNOWN", "to_state": "UNKNOWN",
+                    "actor": "system", "action": "journal",
+                    "outcome": "skipped", "reason": type(e).__name__,
+                    "show": None, "screen": None, "who": None,
+                    "fault": True, "text": text,
+                    "line": f"{_hms(at)}  {text}"}
+        return encode(stand_in)
 
 
 def _parse_at(text):
@@ -298,7 +336,7 @@ def _parse_at(text):
 
 def _hms(at):
     d = _parse_at(at) if isinstance(at, str) else at
-    return d.strftime("%H:%M:%S") if d is not None else "--:--:--"
+    return d.strftime("%H:%M:%S") if isinstance(d, datetime) else "--:--:--"
 
 
 def version_info():
@@ -430,11 +468,12 @@ class Logbook:
                  flame_provider=None, memory=MEMORY_LINES,
                  keep_days=KEEP_DAYS, opener=None, disk_usage=None,
                  sleep=None, retry_s=RETRY_S, free_floor_mb=FREE_FLOOR_MB,
-                 durable=True, state=None):
+                 durable=True, state=None, night=None):
         self.folder = os.path.abspath(folder or default_folder())
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._tz = tz
         self._state = state
+        self._night = night
         self.flames = flame_provider
         self.memory = deque(maxlen=memory)
         self.earlier = []           # the last lines from before this run
@@ -456,7 +495,11 @@ class Logbook:
         self.stopped_why = ""               # set while disk logging is off
         self.stopped_at = None
         self._retry_at = None
-        self._check_tails = False
+        # A power cut can leave the last line torn (or padded with NULs on
+        # NTFS), and so can a disk that filled mid-line. A file's tail is
+        # suspect until this run has written to it cleanly, so the first
+        # line goes after a newline, never glued on.
+        self._tails_ok = set()
         self._dropped = 0
         self._dropped_span = None
         self.last_write_at = None
@@ -475,6 +518,12 @@ class Logbook:
             os.makedirs(self.folder, exist_ok=True)
         except OSError:
             pass            # the first write says what is wrong, as a flag
+        try:
+            for name in os.listdir(self.folder):
+                if _STALE.match(name):
+                    os.remove(os.path.join(self.folder, name))
+        except OSError:
+            pass
 
     # -- time -----------------------------------------------------------
     def tz(self):
@@ -495,7 +544,21 @@ class Logbook:
         return st or "UNKNOWN"
 
     def night_of(self, at=None):
+        """The calendar date, locally."""
         return self.local(at).date()
+
+    def current_night(self, at=None):
+        """Which night a line belongs to: the scheduler's night when it
+        says (a show that runs past midnight stays on its own night), else
+        the local date."""
+        if callable(self._night):
+            try:
+                n = self._night()
+                if n:
+                    return n
+            except Exception:
+                pass
+        return self.night_of(at)
 
     # -- recording --------------------------------------------------------
     def record(self, *, actor, action, outcome, reason, text, state=None,
@@ -506,7 +569,7 @@ class Logbook:
         missing: that is a bug where the event was made."""
         at = at or self.clock()
         local = self.local(at)
-        rec = build_event(at=local, night=night or local.date(),
+        rec = build_event(at=local, night=night or self.current_night(at),
                           state=state or self.current_state(),
                           actor=actor, action=action,
                           outcome=outcome, reason=reason, text=text,
@@ -596,52 +659,67 @@ class Logbook:
             except Exception:        # drain says its own problems; belt
                 pass                 # and braces for the thread's sake
 
-    def close(self):
-        """Stop the writer and write what is left, if the disk will take
-        it."""
+    def close(self, wait_s=0.5):
+        """Stop the writer and write what is left, if the disk will take it
+        quickly. Never blocks for longer than about twice `wait_s`: this runs
+        on the way out, and nothing here may stand between Ctrl-C and the
+        rest of the program stopping. A writer stuck in a write the disk
+        never answered is left behind (it is a daemon thread); its lines stay
+        in memory, and nothing further is written."""
         self._closing = True
         self._wake.set()
         t = self._writer
         if t is not None:
-            t.join(timeout=2)
+            t.join(timeout=wait_s)
+            if t.is_alive():
+                return False
         self._writer = None
-        self.drain(force=True)
+        return self.drain(force=True, timeout=wait_s)
 
     def pending(self):
         with self._lock:
             return len(self._pending)
 
-    def drain(self, force=False):
+    def drain(self, force=False, timeout=None):
         """Write every waiting line, in order. Never raises. True when
         nothing is left waiting. While the disk is stopped it is tried again
-        only every retry_s, unless `force`."""
-        with self._io:
-            now = self.clock()
-            if self.stopped_why and not force and self._retry_at is not None \
-                    and now < self._retry_at:
+        only every retry_s, unless `force`. With `timeout`, gives up (False)
+        when another writer holds the disk for longer than that."""
+        if not self._io.acquire(timeout=-1 if timeout is None else timeout):
+            return False
+        try:
+            return self._drain(force)
+        finally:
+            self._io.release()
+
+    def _drain(self, force):
+        now = self.clock()
+        if self.stopped_why and not force and self._retry_at is not None \
+                and now < self._retry_at:
+            return False
+        why = self._low_space(now)
+        if why:
+            self._stop(now, why)
+            return False
+        while True:
+            with self._lock:
+                batch = list(self._pending)
+            if not batch:
+                return True
+            try:
+                self._write(batch)
+            except Exception as e:
+                # ANY failure stops the logging out loud, with a flag
+                # and a sentence, never silently.
+                self._stop(now, self._why(e))
                 return False
-            why = self._low_space(now)
-            if why:
-                self._stop(now, why)
-                return False
-            while True:
-                with self._lock:
-                    batch = list(self._pending)
-                if not batch:
-                    return True
-                try:
-                    self._write(batch)
-                except OSError as e:
-                    self._stop(now, self._why(e))
-                    return False
-                done = {id(e) for e in batch}
-                with self._lock:
-                    while self._pending and id(self._pending[0]) in done:
-                        self._pending.popleft()
-                self.last_write_at = now
-                self._check_tails = False
-                if self.stopped_why:
-                    self._resumed(now)
+            done = {id(e) for e in batch}
+            with self._lock:
+                while self._pending and id(self._pending[0]) in done:
+                    self._pending.popleft()
+            self.last_write_at = now
+            if self.stopped_why:
+                self._resumed(now)
 
     def _write(self, batch):
         os.makedirs(self.folder, exist_ok=True)
@@ -669,8 +747,8 @@ class Logbook:
                 _unlock(lk)
 
     def _append(self, path, todo, stream, encode):
-        cut = self._check_tails and not _tail(path, 1).endswith(b"\n") \
-            and os.path.exists(path) and os.path.getsize(path) > 0
+        cut = path not in self._tails_ok and os.path.exists(path) and \
+            os.path.getsize(path) > 0 and not _tail(path, 1).endswith(b"\n")
         fh = self._opener(path)
         try:
             if cut:
@@ -678,7 +756,7 @@ class Logbook:
                 # truncate it.
                 fh.write(b"\n")
             for e in todo:
-                data = encode(e[0])
+                data = _encode_safely(encode, e[0])
                 n = fh.write(data)
                 if n is not None and n < len(data):
                     raise OSError(errno.ENOSPC, "the disk took only part of "
@@ -687,10 +765,14 @@ class Logbook:
                 self.writes += 1
             if self.durable:
                 os.fsync(fh.fileno())
+            self._tails_ok.add(path)
         finally:
             fh.close()
 
     def _why(self, e):
+        if not isinstance(e, OSError):
+            return (f"ltcplay could not write a line ({type(e).__name__}: "
+                    f"{e}); that is a bug in ltcplay")
         if isinstance(e, _Locked):
             return (f"another program is holding the log files (the lock "
                     f"{os.path.join(self.folder, LOCK_FILE)})")
@@ -722,13 +804,14 @@ class Logbook:
             self.stopped_at = now
         self.stopped_why = why
         self._retry_at = now + timedelta(seconds=self.retry_s)
-        self._check_tails = True
+        self._tails_ok.clear()
         if first:
             # On the page at once; in the files, in its place, once the disk
             # takes lines again.
             local = self.local(now)
             self._queue(build_event(
-                at=local, night=local.date(), state=self.current_state(),
+                at=local, night=self.current_night(now),
+                state=self.current_state(),
                 actor="system", action="logging stopped", outcome="stopped",
                 reason=why, fault=True,
                 text=(f"Logging to disk stopped at {local:%H:%M:%S} because "
@@ -752,7 +835,8 @@ class Logbook:
             self._dropped_span = None
         local = self.local(now)
         rec = build_event(
-            at=local, night=local.date(), state=self.current_state(),
+            at=local, night=self.current_night(now),
+            state=self.current_state(),
             actor="system", action="logging resumed", outcome="resumed",
             reason=was,
             text=(f"Logging to disk resumed at {local:%H:%M:%S}. It had "
@@ -847,7 +931,7 @@ class Logbook:
         """The first line of a run. When tonight's log already has lines,
         this run is a restart, and the line says when the last one was and
         whether the program said it was stopping."""
-        night = night or self.night_of()
+        night = night or self.current_night()
         build = build or version_info()["status"]
         prev, lines = self._previous(night)
         self.earlier = lines
@@ -902,15 +986,23 @@ class Logbook:
     def night_records(self, night):
         """Every record for one night: the machine log on disk, plus any
         still waiting for the disk. (records, sentence or "")."""
+        out, note, _cut = self._read_night(night)
+        return out, note
+
+    def _read_night(self, night):
+        """(records, sentence or "", how many lines were cut short)."""
         night = str(night)
-        out, seen, note = [], set(), ""
+        out, seen, note, cut = [], set(), "", 0
         path = os.path.join(self.folder, machine_name(night))
         try:
             with open(path, "rb") as fh:
                 for raw in fh:
+                    if not raw.strip(b"\r\n"):
+                        continue
                     try:
                         r = json.loads(raw.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
+                        cut += 1        # torn by a power cut, or NULs
                         continue
                     if isinstance(r, dict) and r.get("id") not in seen:
                         seen.add(r.get("id"))
@@ -931,7 +1023,7 @@ class Logbook:
                 if r["night"] == night and r["id"] not in seen:
                     seen.add(r["id"])
                     out.append(r)
-        return out, note
+        return out, note, cut
 
     # -- pruning ----------------------------------------------------------
     def prune(self, today, state="BOOT"):
@@ -948,6 +1040,7 @@ class Logbook:
             names = sorted(os.listdir(self.folder))
         except OSError:
             return []
+        found = []
         for name in names:
             m = _NAME.match(name)
             if not m:
@@ -956,7 +1049,14 @@ class Logbook:
                 d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
             except ValueError:
                 continue
-            if d >= cutoff:
+            found.append((d, name))
+        # Never trust the date alone: a clock set a year ahead would call
+        # every night old. The newest keep_days nights that exist are kept
+        # whatever the date says.
+        newest = set(sorted({d for d, _n in found},
+                            reverse=True)[:self.keep_days])
+        for d, name in found:
+            if d >= cutoff or d in newest:
                 continue
             p = os.path.join(self.folder, name)
             try:
@@ -994,7 +1094,7 @@ class Logbook:
         force, the version and build id, the last 60 s of state and the last
         20 flame frames. Returns {"ok", "folder", "files", "sentence"}; a
         failure is a sentence and a fault line, never an exception."""
-        night = str(night or self.night_of())
+        night = str(night or self.current_night())
         local = self.local()
         name = f"incident_{local:%Y-%m-%d_%H%M%S}"
         asked = f" ({one_line(why)})" if why and why.strip() else ""
@@ -1077,7 +1177,7 @@ class Logbook:
 
         def put(fname, data):
             if isinstance(data, str):
-                data = data.encode("utf-8")
+                data = _utf8(data)
             _write_new(os.path.join(part, fname), data)
             files.append(fname)
 
@@ -1133,18 +1233,19 @@ class Logbook:
         after closing) replaces it whole, in one step."""
         night = str(night)
         self.drain(force=True)
-        recs, note = self.night_records(night)
+        recs, note, cut = self._read_night(night)
         mism, mnote = self._mismatches(night)
         text = summary_text(night, recs, slots=slots, mismatches=mism,
                             mismatch_note=mnote, health=self.health(),
                             written=self.local(), build=version_info(),
-                            read_note=note, closed_by=closed_by)
+                            read_note=note, closed_by=closed_by,
+                            cut_lines=cut)
         path = os.path.join(self.folder, summary_name(night))
         tmp = f"{path}.{os.getpid()}.new"
         try:
             os.makedirs(self.folder, exist_ok=True)
             with open(tmp, "wb") as fh:
-                fh.write(text.encode("utf-8"))
+                fh.write(_utf8(text))
                 fh.flush()
                 os.fsync(fh.fileno())
             _replace(tmp, path, sleep=self._sleep)
@@ -1225,6 +1326,8 @@ def _shows_from_records(recs):
 def _bullets(rows, empty, limit=SUMMARY_LIST_MAX):
     if not rows:
         return [f"- {empty}"]
+    if limit is None:
+        return [f"- {r}" for r in rows]
     out = [f"- {r}" for r in rows[:limit]]
     if len(rows) > limit:
         out.append(f"- and {len(rows) - limit} more in the journal.")
@@ -1237,7 +1340,7 @@ def _md(text):
 
 def summary_text(night, recs, *, slots=None, mismatches=(),
                  mismatch_note="", health=None, written=None, build=None,
-                 read_note="", closed_by=""):
+                 read_note="", closed_by="", cut_lines=0):
     """The nightly summary, one page of Markdown, from a night's records.
 
     `slots` is tonight's list as the scheduler holds it, each a dict with
@@ -1274,6 +1377,19 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
             how_started[r["show"]] = reason
     drop_s = sum(float((r.get("data") or {}).get("duration_s") or 0)
                  for r in drops)
+    fault_rows, seen = [], {}
+    for r in faults:
+        key = r.get("text")
+        if key in seen:
+            seen[key][1] += 1
+            seen[key][2] = r.get("at")
+        else:
+            seen[key] = [r, 1, r.get("at")]
+            fault_rows.append(key)
+    fault_rows = [seen[k][0]["line"]
+                  + (f" (and {seen[k][1] - 1} more time(s), the last at "
+                     f"{_hms(seen[k][2])})" if seen[k][1] > 1 else "")
+                  for k in fault_rows]
 
     def n(k):
         return count.get(k, 0)
@@ -1302,6 +1418,12 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
                     f"Logging below.")
     else:
         log_line = "complete, every line written."
+    if cut_lines:
+        also = log_line if log_gaps or (health and not health.get("ok")) \
+            else ""
+        log_line = (f"{cut_lines} line(s) in the machine log were cut short, "
+                    f"most likely by a power cut or a crash; the lines after "
+                    f"them are whole." + (f" {also}" if also else ""))
     when = written.strftime("%H:%M:%S (%z)") if written else "--"
     status = (build or {}).get("status", "version unknown")
     out = [f"# Night summary: {long_date(night)}", "",
@@ -1321,7 +1443,9 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
             + (" (" + ", ".join(_hms(r['at']) for r in restarts[:5]) + ")"
                if restarts else "") + ".",
             f"- Operator actions: {len(ops)}. Announcements: {len(anns)}. "
-            f"Faults: {len(faults)}.",
+            f"Faults: {len(faults)}"
+            + (f" ({len(fault_rows)} different)"
+               if len(fault_rows) != len(faults) else "") + ".",
             f"- Timecode dropouts: {len(drops)}"
             + (f", {drop_s:.1f} s in total" if drops else "") + ".",
             f"- Flame mismatches: {flame_line}",
@@ -1353,7 +1477,9 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
     out += ["", "## Announcements", ""]
     out += _bullets([r["line"] for r in anns], "None played.")
     out += ["", "## Faults, in their own words", ""]
-    out += _bullets([r["line"] for r in faults], "None.")
+    # Every fault sentence, never cut off: a repeat is one line with its
+    # count, so a fault that fired all night cannot hide the others.
+    out += _bullets(fault_rows, "None.", limit=None)
     out += ["", "## Timecode dropouts", ""]
     out += _bullets([r["line"] for r in drops], "None recorded.")
     out += ["", "## Flame mismatches, commanded against sent", ""]

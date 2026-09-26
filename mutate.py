@@ -1407,8 +1407,8 @@ MUTATIONS = [
   '    SAMPLE_S = 1.0'),
 
  ("a write failure is not caught by the journal", "ltcplay/journal.py",
-  '                except OSError as e:\n                    self._stop(now, self._why(e))',
-  '                except KeyError as e:\n                    self._stop(now, self._why(e))'),
+  '            except Exception as e:\n                # ANY failure stops',
+  '            except KeyError as e:\n                # ANY failure stops'),
 
  ("the service lets a journal failure into the scheduler",
   "ltcplay/schedule_service.py",
@@ -1428,12 +1428,12 @@ MUTATIONS = [
   '            try:\n                nights = []'),
 
  ("a stopped disk is tried again on every line", "ltcplay/journal.py",
-  '            if self.stopped_why and not force and self._retry_at is not None \\',
-  '            if False and self._retry_at is not None \\'),
+  '        if self.stopped_why and not force and self._retry_at is not None \\',
+  '        if False and self._retry_at is not None \\'),
 
  ("the lines waiting for a full disk are thrown away", "ltcplay/journal.py",
-  '        self._check_tails = True\n        if first:',
-  '        self._check_tails = True\n        self._pending.clear()\n        if first:'),
+  '        self._tails_ok.clear()\n        if first:',
+  '        self._tails_ok.clear()\n        self._pending.clear()\n        if first:'),
 
  ("pruning keeps 89 days instead of 90", "ltcplay/journal.py",
   '        cutoff = today - timedelta(days=self.keep_days)',
@@ -1441,9 +1441,10 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '            if d >= cutoff:\n                continue',
+  '            if d >= cutoff or d in newest:\n                continue',
   '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                    self.folder, name)), timezone.utc).date() >= cutoff:\n'
+  '                    self.folder, name)), timezone.utc).date() >= cutoff \\\n'
+  '                    or d in newest:\n'
   '                continue'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
@@ -1452,7 +1453,7 @@ MUTATIONS = [
 
  ("a line goes to the UTC date's file, not the night's",
   "ltcplay/journal.py",
-  '        rec = build_event(at=local, night=night or local.date(),',
+  '        rec = build_event(at=local, night=night or self.current_night(at),',
   '        rec = build_event(at=local, night=night or at.astimezone(\n'
   '                              timezone.utc).date(),'),
 
@@ -1461,8 +1462,8 @@ MUTATIONS = [
   '        if True:\n            text = (f"ltcplay started ({build}).'),
 
  ("the summary leaves out the faults", "ltcplay/journal.py",
-  '    out += _bullets([r["line"] for r in faults], "None.")',
-  '    out += _bullets([], "None.")'),
+  '    out += _bullets(fault_rows, "None.", limit=None)',
+  '    out += _bullets([], "None.", limit=None)'),
 
  ("the summary leaves out the announcements", "ltcplay/journal.py",
   '    out += _bullets([r["line"] for r in anns], "None played.")',
@@ -1494,12 +1495,122 @@ MUTATIONS = [
   '        for le in out.log:\n            self.journal.append(le.to_dict())'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
-  '            if first:\n                self._log(self.logbook.prune, d, state=self._state_name())',
-  '            if False:\n                self._log(self.logbook.prune, d, state=self._state_name())'),
+  '            if prune:\n                self._pruned_for = d',
+  '            if False:\n                self._pruned_for = d'),
 
  ("the GPL path loads the journal", "ltcplay/web.py",
   'from . import brand as brand_mod\n',
   'from . import brand as brand_mod\nfrom . import journal as _journal\n'),
+ # -- the journal, after the review of PR 14 ---------------------------
+ ("closing the journal waits for a hung disk", "ltcplay/journal.py",
+  '            if t.is_alive():\n                return False\n'
+  '        self._writer = None\n'
+  '        return self.drain(force=True, timeout=wait_s)',
+  '        self._writer = None\n'
+  '        return self.drain(force=True)'),
+
+ ("the way out stops the scheduler before the rig", "ltcplay/cli.py",
+  '    httpd.control.stop()\n    if httpd.schedule is not None:\n'
+  '        try:\n            httpd.schedule.stop()\n'
+  '        except Exception as e:\n'
+  '            print(f"The scheduler did not stop cleanly: {e}")\n'
+  '    httpd.server_close()',
+  '    if httpd.schedule is not None:\n        httpd.schedule.stop()\n'
+  '    httpd.control.stop()\n    httpd.server_close()'),
+
+ ("a character UTF-8 cannot carry jams the writer", "ltcplay/journal.py",
+  '    return text.encode("utf-8", "backslashreplace")',
+  '    return text.encode("utf-8")'),
+
+ ("only a disk error stops the logging out loud", "ltcplay/journal.py",
+  '            except Exception as e:\n                # ANY failure stops',
+  '            except OSError as e:\n                # ANY failure stops'),
+
+ ("a record that cannot be written blocks every line behind it",
+  "ltcplay/journal.py",
+  '                data = _encode_safely(encode, e[0])',
+  '                data = encode(e[0])'),
+
+ ("a torn last line from a power cut gets the next line glued on",
+  "ltcplay/journal.py",
+  '        cut = path not in self._tails_ok and os.path.exists(path) and \\',
+  '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
+  '            and os.path.exists(path) and \\'),
+
+ ("a line cut short by a full disk is not looked for afterwards",
+  "ltcplay/journal.py",
+  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'
+  '        self._tails_ok.clear()\n',
+  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'),
+
+ ("a failing tick writes a line four times a second",
+  "ltcplay/schedule_service.py",
+  '            if tf is not None and tf["key"] == key:',
+  '            if False:'),
+
+ ("the journal's own lines go to the calendar day's file",
+  "ltcplay/schedule_service.py",
+  '            state=self._state_name, night=self._night)',
+  '            state=self._state_name)'),
+
+ ("a show past midnight writes its lines to the calendar day's file",
+  "ltcplay/schedule_service.py",
+  '        if self.machine is not None:\n            return self.machine.date\n'
+  '        return self.logbook.night_of(now)',
+  '        if False:\n            return self.machine.date\n'
+  '        return self.logbook.night_of(now)'),
+
+ ("a clock a year ahead prunes every night", "ltcplay/journal.py",
+  '            if d >= cutoff or d in newest:',
+  '            if d >= cutoff:'),
+
+ ("pruning trusts a clock nobody has checked",
+  "ltcplay/schedule_service.py",
+  '    def _prune_allowed(self):\n',
+  '    def _prune_allowed(self):\n        return True\n'),
+
+ ("Service.start never starts the journal writer",
+  "ltcplay/schedule_service.py",
+  '            self.logbook.start_writer()\n        self._safe_tick()',
+  '            pass\n        self._safe_tick()'),
+
+ ("the End-night summary is written inside the scheduler tick",
+  "ltcplay/schedule_service.py",
+  '        if self.logbook.threaded():\n            # Running for real',
+  '        if False:\n            # Running for real'),
+
+ ("the waiting-line cap is gone: memory grows without bound",
+  "ltcplay/journal.py",
+  '            if len(self._pending) >= PENDING_MAX:',
+  '            if False:'),
+
+ ("the resume line no longer says lines were lost", "ltcplay/journal.py",
+  '        if self._dropped:\n            a, b = self._dropped_span',
+  '        if False:\n            a, b = self._dropped_span'),
+
+ ("a clean stop is never written, so it reads as a crash",
+  "ltcplay/schedule_service.py",
+  '                self._log(self.logbook.stopping, state=self._state_name(),',
+  '                self._log(lambda **k: None, state=self._state_name(),'),
+
+ ("an engine fault is not marked as a fault", "ltcplay/schedule_service.py",
+  '            fault=le.outcome in self.FAULT_OUTCOMES)',
+  '            fault=False)'),
+
+ ("any screen name is taken", "ltcplay/schedule_service.py",
+  '        if not screen.strip():\n            return screen\n'
+  '        names = {n.lower(): n for n in self.screens}',
+  '        if True:\n            return screen\n'
+  '        names = {n.lower(): n for n in self.screens}'),
+
+ ("the summary stops listing faults after 25", "ltcplay/journal.py",
+  '    out += _bullets(fault_rows, "None.", limit=None)',
+  '    out += _bullets(fault_rows, "None.")'),
+
+ ("a summary's temp file left by a crash is never cleared",
+  "ltcplay/journal.py",
+  '                if _STALE.match(name):',
+  '                if False:'),
 
 ]
 
