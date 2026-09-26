@@ -14,9 +14,9 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B3 Heartbeat | PASSED, with a design consequence | A ramped OSC Float track sends MadMapper's position 60 times a second; silent while frozen, after the show and on other banks; suspend: last packet 6 ms before, back 51 ms after |
 | B4 Freeze on one frame | PASSED (video, fades); audio needs the fade | Picture holds the exact frame for 30 s; audio runs on 0.35 s then silent, repeats 0.17 s on resume; a 1 s audio fade hides both; opacity fade to black is smooth |
 | B5 Audio while chasing | PASSED, with a note | No drift; one 33 ms nudge per 7.4 min; listening test by Jeff outstanding |
-| B6 Six video tracks | PASSED at panel size / FAILED at 1080p H.264 | Panel-sized: 38% CPU at 4K desktop, 19.5% at 1080p, smooth 30 fps; six 1080p H.264: 100% CPU |
+| B6 Six video tracks | PASSED at panel size / FAILED at 1080p H.264 | Panel-sized: 38% CPU at 4K desktop, 19.5% at 1080p, 28% with BEYOND too, smooth 30 fps; six 1080p H.264: 100% CPU |
 | B7 ltcplay's own tests | PASSED | main 9291c35: all checks passed in 90.5 s |
-| B8 BEYOND | IN PROGRESS (now activated) | |
+| B8 BEYOND | PASSED with required settings | Follows on 127.0.0.2 while MadMapper takes 127.0.0.1, both within a frame over 60 s; blank by OSC brightness 0; turn off "Keep running" or it plays through Hold; OSC port must not be 8000; demo quits after 1 h |
 | B9 Long soak | PASSED on the desk with airflow (1 h 34 min + 2 h); 4 h with intermission gaps: NOT YET RUN | Heat is the limit: the SSD stalled up to 20 s and froze the PC when the box sat flat on a desk |
 
 ## B0 The machine
@@ -202,7 +202,8 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 - **Desktop resolution matters:** same load at 4K desktop vs 1080p: CPU 37.8% vs 19.5%, MadMapper 1.5 vs 0.6 threads, GPU 43% vs 20%. Run the show screen at 1080p.
 - **Masks** (black overlays from the canvas handoff polygons): no measurable load (12.8% vs 14.0% CPU, within noise).
 - **Temperatures:** Windows exposes no real CPU/GPU temperature (the ACPI zone reads a fixed 27.9 C). SSD 63 to 67 C under show load with airflow.
-- BEYOND in the same load: IN PROGRESS (B6 extra).
+- **With BEYOND as well (B6 extra), 2026-09-26 00:32 to 00:35, main 9291c35, 1080p desktop:** three 58 s cues of the full show layout (ltcplay 26,256 pixels + Art-Net timecode to MadMapper on 192.168.4.42 and BEYOND on 127.0.0.2 from `bench58_both_timeline.json`; MadMapper six montage tracks + audio to the Scarlett; BEYOND's DemoShow timeline with its stock beam effects, preview on screen). **CPU 28.1% average, 61.8% peak; GPU 21.7% average, 25.8% peak;** clock 226% of base. The same without BEYOND (res_1080, 22:09): CPU 19.5%, GPU 19.9%. **So BEYOND adds about 9 points of CPU (about 0.7 of a thread) and about 2 points of GPU.** Pixels unaffected: median 40 fps, 3 frames skipped in 3 minutes, 99% within 2.1 ms (median second), longest gap 43 ms. Memory: BEYOND 584 MB, MadMapper 2.14 GB.
+- **ltcplay rejects a show file with a UTF-8 BOM** ("Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1"). Windows PowerShell and Notepad often write one. For the main session: read show files with `utf-8-sig`, or say so in the error.
 
 ## B7 ltcplay's own tests
 
@@ -212,7 +213,49 @@ Recorded at the same time: MadMapper's audio decoded from its LTC track (loopbac
 
 ## B8 BEYOND
 
-IN PROGRESS (activated by Jeff about 23:00). Correction noted: BEYOND runs on the Pico with Andy's licence. Pangolin's comparison table (read 2026-09-25): BEYOND Essentials and above receive Art-Net timecode, OSC, Art-Net and sACN; QuickShow does not.
+**Verdict: PASSED for following Art-Net timecode on the same PC as MadMapper (with a split of loopback addresses) and for a blank command; the default "Keep running" setting FAILS Hold (the lasers keep playing through a freeze) and must be turned off.** BEYOND 5.5 **Essentials Demo** (activated by Jeff about 23:00; **the demo quits after 1 hour per launch** and has to be restarted, which bounds any soak that includes BEYOND). No laser hardware connected (checked: no Pangolin device in Windows, both Ethernet ports unplugged); BEYOND drew only to its on-screen preview. BEYOND runs on the Pico with Andy's licence (Jeff, 2026-09-25; handoff section 2 is out of date). 2026-09-26 00:00 to 00:35, tctest from main 9291c35.
+
+**Settings, click by click** (BEYOND keeps these between launches, unlike the MadMapper trial):
+1. First launch: language box (English), then "Welcome to BEYOND" > **Go BEYOND...**, then "Select BEYOND version" > **BEYOND Essentials**. It then opens a Pangolin promo video in VLC (close it) and, after an unclean exit, a "Problem encountered during the last session" box (**Cancel**, then **No** to deleting the logs). My screen capture could not see some of these boxes; they are ordinary Windows dialogs and I pressed their buttons by name.
+2. **Settings > Configuration > Timecode In:** Timecode routing **Always to Time line**; Timecode types: **Enable Art Net timecode** on, Enable MIDI timecode off, SNTC off; Time smooth filter: **Keep running even though timecode stops OFF** (default ON, see B8.2); Enable time smooth filter on; Timecode timeout 1.0 s. **OK.** `B8_timecode_in_set.png`, `B8_timecode_in_nokeeprunning.png`.
+3. Settings > Configuration > **Network:** ArtNet adapter "Automatic (default connection)" (left as is; BEYOND then binds 0.0.0.0:6454). `B8_network.png`.
+4. Timeline view (**Timeline** button). The Essentials demo opens its own "DemoShow" (audio, video and scanner tracks with stock beam effects), used as the test content.
+5. **File > Show properties > Time code input: Enable incoming timecode** on (offset 0, Add). Without it, BEYOND shows a pop-up that the show does not have timecode enabled (Jeff saw it; my capture did not). `B8_show_tc_input.png`.
+6. Toolbar **TC-IN** on. **It switches itself off** after BlackOut, after a Configuration OK and after some OSC commands (below); when it is off, timecode is counted ("ArtNet TC IN ... messages") but the timeline does not move. Check it before every show.
+7. **Settings > OSC > OSC Settings:** Enable receiving OSC messages **on** (default off), Incoming port **8100** (default **8000, the same as MadMapper's**: on one PC they must differ). `B8_osc_settings.png`. Settings > OSC > **OSC Monitor** lists every message received (used as evidence below).
+
+**B8.0 Both at once, one PC.** Who holds UDP 6454 with both running: MadMapper binds **127.0.0.1:6454 and 192.168.4.42:6454** (specific addresses); BEYOND binds **0.0.0.0:6454** (every address). Neither complained. Windows gives a packet to the most specific binding, so:
+
+| tctest destination | MadMapper | BEYOND |
+|---|---|---|
+| 127.0.0.1 | follows | not received (timeline still; message count unchanged) |
+| 192.168.4.42 (Pico's own Wi-Fi address) | follows | not received |
+| **127.0.0.2** (any other loopback address) | not received | **received and follows** (240 of 240 messages counted in 8 s) |
+| broadcast | not tested (Jeff asleep; nothing laser-related is connected, but broadcast was listed as ask-first) | |
+
+**So: MadMapper on 127.0.0.1 (or the card's address), BEYOND on 127.0.0.2, and ltcplay sends each packet to both nodes.** One tctest to both (`--node MadMapper=192.168.4.42 --node BEYOND=127.0.0.2 --seconds 60`, `scratch/b8_both.ps1`): at +5, 15, 30, 45 and 59 s, BEYOND's display read 00:04:52, 00:14:52, 00:29:48, 00:44:52, 00:58:52 (s:1/60) and MadMapper's heartbeat position 4.850, 14.850, 29.832, 44.848, 58.848 s: **both within one 60 fps frame of each other at every check, over 60 s.** `B8_0_both_beyond.png`. On the rack network the same rule will apply to the card's address: whichever program binds the specific address gets the packets, so BEYOND should listen on its own address (a second Ethernet port, or 127.0.0.2 if ltcplay is on the same PC).
+
+**B8.1 Lock time** (`scratch/b8_lock.ps1`, BEYOND's time display polled): counter first changed **149 ms** after the first packet (first run, from a stopped timeline), later runs changed before the first printed line (it was still moving from the previous run), and **33 ms** after a clean restart at 00:31. At +2.85 s after the first packet BEYOND read 00:02:49 or :50 (1/60 s units) = 2.82 s, i.e. about 30 ms behind the stream. `B8_lock_summary.png`.
+
+**B8.2 Frozen timecode** (`scratch/freeze_sender.py` to 127.0.0.2: 20 s normal, 15 s on frame 00:00:19:29, then on; `B8_2_summary_keeprunning_on.png` and `_off.png`):
+- **"Keep running even though timecode stops" ON (the default): BEYOND ignores the freeze and keeps playing** (display 00:21:56 at +22 s, 00:33:56 at +34 s, preview full of moving beams), then jumps back to 20:54 when timecode moves again. **Unsafe for Hold: the lasers keep running.** It also kept playing after timecode ended altogether.
+- **OFF:** BEYOND runs on about 1 s after the last new frame (to 00:20:59, the 1.0 s timeout), then **stops and the preview goes black** for the rest of the freeze; on resume it jumps to the current time (20:54) and follows. After timecode ends it stops about 1 s later. So with this setting a frozen or lost timecode blanks the lasers within about 1 s. That is not a static beam, but it is 1 s of run-on, so Hold should still send a real blank first.
+
+**B8.3 Blank commands by OSC** (to 127.0.0.1:8100, while BEYOND chased tctest; `scratch/b8_blank.ps1`, `b8_unblank.ps1`, `b8_bright.ps1`; every message confirmed in BEYOND's OSC Monitor, `B8_3_summary.png`, `B8_3b_summary.png`, `B8_3c_summary.png`). Addresses from Pangolin's OSC list (wiki.pangolin.com, beyond:osc_commands).
+
+| Message (type) | What BEYOND did |
+|---|---|
+| `/beyond/general/BlackOut` (no args) | **Output stops at once; preview black.** The toolbar goes from "Stop output" to "Show it now". But BEYOND's Blackout also resets live controls and **restarts the application core** (Configuration > Blackout page, `B8_blackout_settings.png`), and afterwards **TC-IN was off**. Output comes back only by pressing "Show it now"; a second BlackOut does not undo it. |
+| `/beyond/general/EnableLaserOutput` | Did **not** bring output back after BlackOut (preview stayed black). |
+| `/beyond/general/DisableLaserOutput` | Accepted (in the monitor); no visible change in the preview (the laser-output enable only matters with hardware attached). |
+| `/beyond/master/livecontrol/brightness` `,f` 0 then 100 | **Preview black at 0, back at 100, timeline keeps running and TC-IN stays on.** The cleanest blank/un-blank for Hold. |
+| `/beyond/general/MasterPause` `,i` 1 then 0 | Pause button lit; beams frozen (a static frame = a static beam, the unsafe case); `,i 0` released it. |
+
+**Recommendation for Hold:** brightness to 0 (the blank), with "Keep running" off as the backstop, and brightness 100 on Resume. Avoid BlackOut for Hold (it needs a button press to recover and turns TC-IN off) and never MasterPause. Brightness is a *preview* result: with Andy's hardware, check that brightness 0 truly blanks the laser output (not just dims it).
+
+**B8.4 Changing source port:** tctest sends from an ephemeral port (a new one every run); BEYOND accepted every run (message counter and timeline). PASSED.
+
+**B8.5 Show vs intermission:** NOT TESTED. Both start at 00:00:00:00. Candidates from Pangolin's OSC list: `/beyond/general/StartCue` / `SelectCue` (string) to select a different timeline show before the clock starts, or an hour offset per show in File > Show properties > Time code input. Needs Andy's show files.
 
 ## B9 Long soak
 
