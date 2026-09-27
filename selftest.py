@@ -18105,11 +18105,16 @@ def _am_clock_doc(show_stems, intermission_stems=None, **audio):
             "audio": a}
 
 
-def _am_show(work, seconds=6.0, clock_doc=None, **audio):
+def _am_show(work, seconds=6.0, clock_doc=None, silences=(), **audio):
     """A show folder with a show and an intermission, each with its audio,
-    and the timeline loaded from it."""
-    _am_write_wav(os.path.join(work, "music.wav"), _am_tone(seconds, 2))
-    _am_write_wav(os.path.join(work, "sub.wav"), _am_tone(seconds, 1, 0.3))
+    and the timeline loaded from it. `silences` are (start, end) seconds of
+    digital silence (exact zeros) in every show stem."""
+    music, sub = _am_tone(seconds, 2), _am_tone(seconds, 1, 0.3)
+    for a, b in silences:
+        music[int(a * 48000):int(b * 48000)] = 0.0
+        sub[int(a * 48000):int(b * 48000)] = 0.0
+    _am_write_wav(os.path.join(work, "music.wav"), music)
+    _am_write_wav(os.path.join(work, "sub.wav"), sub)
     _am_write_wav(os.path.join(work, "loop.wav"), _am_tone(2.0, 2, 0.2))
     doc = clock_doc or _am_clock_doc(
         [{"file": "music.wav", "gain_db": 0, "channels": [1, 2]},
@@ -18310,13 +18315,13 @@ class _AmSim:
 
 
 def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
-            devices=None, reported_latency=None, **audio):
+            devices=None, reported_latency=None, silences=(), **audio):
     """A deterministic audio_master: the show, the clock, a local audio
     engine, and a recorder for everything the clock tells the world."""
     import tempfile
     from ltcplay import clock as clock_mod, showaudio as sa
     work = work or tempfile.mkdtemp()
-    tl, _tlp, _net = _am_show(work, seconds, **audio)
+    tl, _tlp, _net = _am_show(work, seconds, silences=silences, **audio)
     checked = sa.check_show(tl.clock.audio, tl)
     # The fake interface is a CoreAudio one, so this is a Mac's rule for
     # picking the output, on every OS the suite runs on.
@@ -18405,6 +18410,10 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
     refusal(with_audio(rate=96000), "48000")
     refusal(with_audio(device=""), "names the show's audio interface")
     refusal(with_audio(channels=0), "'clock.audio.channels'")
+    refusal(with_audio(channels=9), "1 to 8")
+    refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
+        {"file": f"s{i}.wav", "channels": [1]} for i in range(9)]}}),
+        "lists 9 stems", "at most 8")
     refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
         {"file": "music.wav", "channels": [9]}]}}), "output 9",
         "'clock.audio.channels' is 8")
@@ -19015,23 +19024,26 @@ def test_audio_master_the_audio_ending_ends_the_cue():
     heard_end = _am_true_pos(r, end)
     check(heard_end is not None and 1.0 - 1e-6 <= heard_end < 1.0 + 1 / 30.0,
           f"the cue ended at {heard_end}, not when its audio did")
-    # With no interface at all, the cue runs on this computer's clock and
-    # still ends on time.
+    # With no interface a show does not start at all (Jeff, 2026-09-27):
+    # a sentence on the page, in the log, and nothing sent.
+    from ltcplay import clock as clock_mod
     r2 = _am_rig(seconds=1.0)
     r2["eng"].sd.control("unplug")
     r2["sim"].run(r2["vc"]() + 1.0)
-    t0 = r2["vc"]()
-    r2["am"].play(3600.0, None, "Show")
-    r2["sim"].run(t0 + 1.5)
-    check(len(r2["calls"]["stop"]) == 1 and
-          abs(r2["calls"]["stop"][0] - (t0 + 1.0)) < 0.002,
-          f"a cue with no interface did not end on time: "
-          f"{r2['calls']['stop']}")
-    check("not attached" in " ".join(r2["am"].health_warnings()) or
-          "dropped out" in " ".join(r2["am"].health_warnings()) or
-          r2["am"]._fault, "no interface, and health did not say so")
+    try:
+        r2["am"].play(3600.0, None, "Show")
+        check(False, "a show started with its audio interface missing")
+    except clock_mod.ClockConfigError as e:
+        check("will not start" in str(e) and "Show DSP" in str(e)
+              and str(e).endswith("."), f"the refusal: {e}")
+        check(any("will not start" in m for k, m in r2["log"].lines),
+              "the refusal is not in the show log")
+    r2["sim"].run(r2["vc"]() + 1.0)
+    check(not r2["out"].sent and not r2["am"].playing
+          and not r2["calls"]["stop"],
+          "something was sent for a show that did not start")
+    check(r2["am"].health_warnings(), "no interface, and health is clear")
     # A cue with no audio cannot play under audio_master.
-    from ltcplay import clock as clock_mod
     try:
         r["am"].play(0.0, 10.0, "Preshow")
         check(False, "a cue with no audio played under audio_master")
@@ -19211,6 +19223,7 @@ def test_audio_master_runs_in_its_own_process():
                           fake={"devices": [{"name": "Show DSP",
                                              "hostapi": 0,
                                              "max_output_channels": 8}]})
+    spec["lock"] = os.path.join(work, "audio.lock")
     eng = sa.AudioEngine(spec)
     eng.RESPAWN_S = (0.2, 0.2, 0.2)
     seen = []
@@ -19659,6 +19672,29 @@ def test_audio_master_review_rules():
           f"its fade was heard at {max(heard) - ta:.2f} s")
     am.stop()
 
+    # The show's music has silences longer than half a second. Losing the
+    # audio means the stream stopped moving, never that it went quiet: a
+    # cue with 5 s of exact zeros at its start, in its middle and at its
+    # end plays through with no loss, no stall, no fault, health clear.
+    r = _am_rig(seconds=20.0, silences=((0.0, 5.0), (7.0, 12.0),
+                                        (15.0, 20.0)))
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    t0 = vc()
+    am.play(3600.0, None, "Show")
+    warned = []
+    while vc() < t0 + 21.0:
+        sim.run(vc() + 0.5)
+        warned += am.health_warnings()
+    quiet = [t for t, p, b in eng.log if p.playing and not np.any(b != 0)]
+    check(len(quiet) > 1400, "the silent stretches were not silent")
+    check(am.losses == 0 and eng.proc.opens == 1 and not warned
+          and not r["journal"].faults and am.last_ended == "Show finished"
+          and not _am_consecutive(r["out"].frames(since=t0)),
+          f"digital silence was taken for a lost interface: losses "
+          f"{am.losses}, opens {eng.proc.opens}, faults "
+          f"{r['journal'].faults}, health {warned[:1]}")
+    am.stop()
+
     # WAV files whose data size cannot be true are refused, not played.
     import struct, tempfile
     work = tempfile.mkdtemp()
@@ -19697,13 +19733,16 @@ def test_audio_master_review_rules():
 
 def test_audio_master_stop_during_a_respawn():
     section("audio_master: Stop while the audio process is being replaced, "
-            "then Run, leaves one process and one watch thread")
+            "then Run, leaves one process and one watch thread; a second "
+            "audio process is refused")
     import multiprocessing
     import signal
     from ltcplay import showaudio as sa
+    import tempfile
     spec = {"device": "Fake Interface", "channels": 2, "rate": 48000,
             "allow_shared": False, "cues": {}, "platform": "darwin",
-            "fake": {"threaded": True}}
+            "fake": {"threaded": True},
+            "lock": os.path.join(tempfile.mkdtemp(), "audio.lock")}
 
     def ours():
         return [p for p in multiprocessing.active_children()
@@ -19747,6 +19786,36 @@ def test_audio_master_stop_during_a_respawn():
         eng.close()
     check(wait_for(lambda: not ours(), 3.0),
           f"{len(ours())} audio process(es) outlived the last close")
+
+    # One audio process per user, by an operating-system lock: a second
+    # one refuses with a sentence and exits, and the engine says so.
+    from ltcplay import onlyone
+    check(os.path.dirname(sa.lock_path()) == os.path.dirname(onlyone.path())
+          and sa.lock_path().endswith(sa.LOCK_FILE),
+          f"the audio lock is not beside ltcplay's own: {sa.lock_path()}")
+    a = sa.AudioEngine(dict(spec))
+    b = sa.AudioEngine(dict(spec, lock_wait_s=0.3))
+    try:
+        check((a.start() or ("",))[0] == "opened",
+              "the first audio process did not open")
+        got = b.start()
+        check(got is not None and got[0] == "refused"
+              and "Another show audio process is already running" in got[1]
+              and got[1].endswith("."),
+              f"a second audio process was not refused: {got}")
+        check(wait_for(lambda: len(ours()) == 1, 3.0) and not b.alive,
+              f"{len(ours())} audio processes are running at once")
+        a.close()
+        check(wait_for(lambda: not ours(), 3.0),
+              "the first audio process did not go")
+        got = b.start()
+        check(got is not None and got[0] == "opened",
+              f"the lock was not released when its process went: {got}")
+    finally:
+        a.close()
+        b.close()
+    check(wait_for(lambda: not ours(), 3.0),
+          "an audio process outlived the lock test")
     print("  ok")
 
 
@@ -19766,6 +19835,7 @@ def test_audio_master_never_reruns_an_unguarded_main():
         "from ltcplay import showaudio as sa\n"
         "eng = sa.AudioEngine({'device': 'Fake Interface', 'channels': 2,\n"
         "    'rate': 48000, 'allow_shared': False, 'cues': {},\n"
+        f"    'lock': {os.path.join(work, 'audio.lock')!r},\n"
         "    'platform': 'darwin', 'fake': {'threaded': True}})\n"
         "eng.HELLO_S = 10.0\n"
         "first = eng.start(wait_s=5)\n"

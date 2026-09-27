@@ -183,7 +183,8 @@ never loads any of this.
   no default and no guessing: nothing else is ever used in its place.
 - `rate` must be 48000. Every stem must be a 48 kHz WAV (16-bit, 24-bit or
   32-bit PCM, or 32-bit float). A stem at another rate is refused.
-- `channels` is how many of the interface's outputs the show uses. Each stem
+- `channels` is how many of the interface's outputs the show uses, at most 8.
+  A cue has at most 8 stems. Each stem
   lists the outputs its channels play on, counting from 1: a stereo file
   lists two, a mono file one or more. Stems on the same output are added
   together; anything over full scale is held at full scale and shown on the
@@ -202,8 +203,12 @@ never loads any of this.
 How it runs:
 
 - The audio plays in its own process, so the web page and the pixels can
-  never starve it. It opens the interface when Run is pressed; nothing plays
-  until a cue is started.
+  never starve it, and only one such process runs on the computer at a time
+  (a second one refuses with a sentence). It opens the interface when Run is
+  pressed; nothing plays until a cue is started. A show will not start if the
+  interface is not there: the page and the log say so.
+- Silence in the music is never mistaken for the interface dropping out: that
+  is judged only by whether the audio keeps moving, never by how loud it is.
 - On Windows the audio never goes through Windows' shared audio engine (the
   one that broke up 3 to 6 times a show on the bench). It uses the
   interface's ASIO driver when it has one, otherwise WASAPI exclusive mode,

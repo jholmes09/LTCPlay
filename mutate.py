@@ -2851,6 +2851,35 @@ def build():
   '\nif __name__ == "__main__":\n    # --selfcheck is used',
   '\nif True:\n    # --selfcheck is used'),
 
+
+ # -- audio_master, Jeff's answers (2026-09-27): no show without its
+ # interface, at most 8 outputs and 8 stems, one audio process per user,
+ # and liveness from the stream's progress, never from its level.
+ ('audio_master: a show starts without its audio interface',
+  'ltcplay/clock.py',
+  '            if not self._device_ok:\n                # Jeff, 2026-09-27: a show never starts',
+  '            if False:\n                # Jeff, 2026-09-27: a show never starts'),
+
+ ('audio_master: a cue may have more than 8 stems',
+  'ltcplay/showaudio.py',
+  '        if len(stems) > MAX_STEMS:\n',
+  '        if False:\n'),
+
+ ('audio_master: the show may use more than 8 outputs',
+  'ltcplay/showaudio.py',
+  'MAX_OUTPUTS = 8              # Jeff',
+  'MAX_OUTPUTS = 64             # Jeff'),
+
+ ('audio_master: a second audio process plays alongside the first',
+  'ltcplay/showaudio.py',
+  '            held = take_lock(spec)\n',
+  '            held = type("NoLock", (), {"release": lambda self: None})()\n'),
+
+ ('audio_master: silence in the music is taken for a lost interface',
+  'ltcplay/showaudio.py',
+  '        try:\n            outdata[:] = m.render(frames)\n        except Exception:\n            self.render_errors += 1\n',
+  '        try:\n            outdata[:] = m.render(frames)\n            if outdata.any():\n                self._loud_at = now\n            self.last_cb = getattr(self, "_loud_at", self.last_cb)\n        except Exception:\n            self.render_errors += 1\n'),
+
 ]
 
 
