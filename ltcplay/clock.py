@@ -1321,7 +1321,12 @@ class AudioMaster(Clock):
     master = True
     ticker = None
 
-    STALL_S = 0.3          # no callback for this long while playing: lost
+    # No callback for this long while playing: lost. A little longer than
+    # the audio process's own limit (showaudio.AudioProcess.STALL_S), so the
+    # audio process, which can see why, is the one that says so; this is
+    # the backstop for one that cannot. A shorter hiccup is not a loss: the
+    # clock keeps following, and catches up with the audio when it moves.
+    STALL_S = 0.6
     START_S = 1.0          # play or resume sent, nothing heard: lost
     FOLLOW_SLEW = 0.1      # share of each callback's correction taken
     RETURN_RATE = 0.05     # handover slew: at most 5% off real time
@@ -1332,7 +1337,10 @@ class AudioMaster(Clock):
     MAX_SLEEP_S = 0.05
     LEAD_S = 0.005         # a command's trip to the audio process
     STOP_FADE_MS = 50      # Stop (not Abort): just enough not to click
-    FIRST_LATE_FRAMES = 3  # see _emit
+    OUTLIER_S = 0.05       # a reading this far off the clock is ignored,
+    OUTLIER_RUN = 6        # unless this many in a row (a fifth of a
+                           # second) agree with it: then the clock goes
+                           # straight to it
     RECENT_S = 10.0
 
     def __init__(self, cfg, sink=None, out=None, engine=None, cues=None,
@@ -1374,6 +1382,14 @@ class AudioMaster(Clock):
         self._device_desc = ""
         self._latency = 0.0          # what the driver says
         self._cb_latency = None      # what the stream's callbacks show
+        self._outliers = 0           # callbacks ignored in a row
+        self._resync = False         # the audio really moved: follow it in
+        self.outliers = 0
+        self._loss_open = False      # a loss the journal has not closed
+        self._loss_fault = None
+        self._stall_loss = False     # lost because callbacks went quiet
+        self.render_errors = 0
+        self._render_err_at = None
         self._shared = False
         self._loaded = set()
         self._load_failed = {}
@@ -1539,7 +1555,7 @@ class AudioMaster(Clock):
             self._halting = True
             # Until the fade has been heard, not just sent.
             self._halt_end = now + fade / float(self.rate) + \
-                self._latency + 0.05
+                self._heard_latency() + 0.05
             self._pause_req = False
             self._resume_after = False
             self._kick()
@@ -1615,6 +1631,12 @@ class AudioMaster(Clock):
             self._send(("level", 1.0, 0))
             self._level_down = False
 
+    def _heard_latency(self):
+        """How long after a callback its sound is heard: what the stream's
+        callbacks show, or what the driver says before there are any."""
+        return self._latency if self._cb_latency is None else \
+            self._cb_latency
+
     def _reset_cue(self):
         self._mode = None
         self._epoch = None
@@ -1672,6 +1694,11 @@ class AudioMaster(Clock):
         cue = self._cue
         start = int(round(self._frozen_sec * self.rate))
         fade = self._sa.fade_frames(self.audio.hold_fade_ms)
+        if start >= cue["frames"]:
+            # Held on the very end of the audio: there is nothing left to
+            # resume, so the cue ends here, the normal way.
+            self._end("finished", now)
+            return
         if self._mode != "freerun" and self._device_ok \
                 and cue["role"] in self._loaded:
             if self._child == (self._token, self._sa.PAUSED) and \
@@ -1785,6 +1812,7 @@ class AudioMaster(Clock):
                 self._fault = None
         elif kind in ("lost", "refused", "unavailable", "crashed"):
             self._device_ok = False
+            self._stall_loss = False
             if kind == "crashed":
                 self._loaded.clear()
             if self._cue is not None and self._mode in ("wait", "follow",
@@ -1817,20 +1845,49 @@ class AudioMaster(Clock):
         if r.clipped > self.clipped:
             self.clipped = r.clipped
             self._clip_at = now
+        if r.errors > self.render_errors:
+            self.render_errors = r.errors
+            self._render_err_at = now
         if self._cue is None or r.token != self._token:
-            return
+            return                       # another cue's, or an older play's
         if r.stop_frame >= 0 and self._pause_req:
             self._stop_frame = r.stop_frame
         if not r.playing:
+            if self._mode == "follow" and not self._paused \
+                    and not self._pause_req and not self._halting:
+                self._stopped_playing(r, now)
             return
         e = r.perf + r.latency - r.frame / float(self.rate)
+        if self._mode == "freerun" and self._stall_loss and \
+                not self._paused:
+            # The same stream playing the same cue again after going quiet:
+            # follow it again rather than stop it, and let the timecode
+            # wait for the audio to catch up.
+            self._mode = "follow"
+            self._stall_loss = False
+            self._recovered(now)
+            self._resync = True
         if self._mode == "wait":
             self._epoch = e
             self._mode = "follow"
+            self._outliers = 0
+            self._resync = False
             if self._resuming:
                 self._resuming = False
                 self._set_paused(False)
+            self._recovered(now)
         elif self._mode == "follow":
+            if self._outlier(e, self._epoch):
+                return
+            if self._resync:
+                # The audio really moved (an underrun, a stream catching its
+                # breath): go straight to it. The timecode never runs
+                # backwards (_emit holds the last frame until the audio
+                # reaches it), so this is the clock waiting for the sound,
+                # exactly as long as the sound stopped.
+                self._epoch = e
+                self._resync = False
+                return
             self._epoch += (e - self._epoch) * self.FOLLOW_SLEW
         elif self._mode == "return":
             if self._target is None and abs(e - self._epoch) > self.RESEEK_S:
@@ -1838,8 +1895,60 @@ class AudioMaster(Clock):
                                 f"{abs(e - self._epoch):.2f} s away from the "
                                 f"show.")
                 return
+            if self._target is not None and self._outlier(e, self._target):
+                return
             self._target = e if self._target is None else \
                 self._target + (e - self._target) * self.FOLLOW_SLEW
+
+    def _outlier(self, e, ref):
+        """True for one callback far off the clock: a driver's latency
+        report spiking, not the audio moving, so it is ignored. When
+        OUTLIER_RUN in a row agree, the audio really has moved (an underrun,
+        a stream catching its breath) and the clock follows it in until it
+        is close again."""
+        if abs(e - ref) <= self.OUTLIER_S:
+            self._outliers = 0
+            self._resync = False
+            return False
+        if self._resync:
+            return False
+        self._outliers += 1
+        self.outliers += 1
+        if self._outliers >= self.OUTLIER_RUN:
+            self._resync = True
+        return True
+
+    def _stopped_playing(self, r, now):
+        """The audio process says it is not playing this cue although the
+        clock is following it. At the end of the audio that is the end of
+        the cue, which _emit ends; anywhere else the sound has stopped,
+        and that is a loss, never something to carry on quietly past."""
+        cue = self._cue
+        if r.state == self._sa.ENDED and \
+                r.frame >= cue["frames"] - self.rate // MASTER_FPS:
+            return
+        self._lost(now, f"The show audio stopped playing at "
+                        f"{self._sa.fmt_len(r.frame)} of "
+                        f"{self._sa.fmt_len(cue['frames'])} with nothing "
+                        f"asking it to.")
+
+    def _recovered(self, now):
+        """The clock follows the audio again after a loss: clear the red and
+        close the loss in the journal. Every way back comes through here."""
+        if not self._loss_open:
+            return
+        self._loss_open = False
+        self.returns += 1
+        self._retry_n = 0
+        gone = now - (self._lost_at or now)
+        pos = self._pos(now)
+        at = self._tc_text(frame_at(pos, MASTER_FPS)) if pos is not None \
+            and pos >= 0 else "the frozen frame"
+        if self._fault == self._loss_fault:
+            self._fault = None
+        self._loss_fault = None
+        self._journal(f"The show audio is back after {gone:.1f} s and the "
+                      f"show clock follows it again, from {at}.", False)
 
     def _check(self, now):
         cue = self._cue
@@ -1857,9 +1966,9 @@ class AudioMaster(Clock):
                 and self._last_cb is not None and \
                 now - self._last_cb > self.STALL_S:
             self._lost(now, f"{name} stopped playing: nothing from it for "
-                            f"{now - self._last_cb:.1f} s.")
+                            f"{now - self._last_cb:.1f} s.", stall=True)
 
-    def _lost(self, now, why):
+    def _lost(self, now, why, stall=False):
         """The audio stopped mid-cue. Carry on on perf_counter from exactly
         where the clock was: the epoch simply stops being corrected."""
         cue = self._cue
@@ -1871,7 +1980,12 @@ class AudioMaster(Clock):
                 self._epoch = now
         self._mode = "freerun"
         self._target = None
-        self._send(("stop", 0, None))
+        # A stall seen only from here may be the stream catching its breath:
+        # leave its sound alone. The audio process stops it itself if it
+        # really has died, and says so.
+        self._stall_loss = stall
+        if not stall:
+            self._send(("stop", 0, None))
         if self._pause_req:
             self._stop_frame = None
             self._freeze(now)
@@ -1886,17 +2000,21 @@ class AudioMaster(Clock):
                 min(self._retry_n, len(self.RETRY_S) - 1)]
             self._event(f"the show audio did not come back: {why}")
             return
+        if self._loss_open:
+            return
         self.losses += 1
         self._lost_at = now
         self._retry_n = 0
         self._next_return = now + self.RETRY_S[0]
         pos = self._pos(now) or 0.0
         at = self._tc_text(frame_at(pos, MASTER_FPS))
-        self._set_fault(
+        self._loss_open = True
+        self._loss_fault = (
             f"The show audio dropped out at {at} in "
             f"{cue['label'] or 'the cue'}. {_strip_stop(why)} The rest of "
             f"the show carries on on this computer's own clock, and "
-            f"ltcplay keeps trying to reopen the interface.", now)
+            f"ltcplay keeps trying to reopen the interface.")
+        self._set_fault(self._loss_fault, now)
 
     def _maybe_return(self, now):
         cue = self._cue
@@ -1908,15 +2026,16 @@ class AudioMaster(Clock):
         if now < self._next_return:
             return
         fade = self._sa.fade_frames(self.audio.return_fade_ms)
-        lat = self._latency if self._cb_latency is None else \
-            self._cb_latency
-        start = now - self._epoch + self.LEAD_S + lat
+        start = now - self._epoch + self.LEAD_S + self._heard_latency()
         first = int(round(start * self.rate))
         if first + fade >= cue["frames"]:
             return               # too near the end to be worth it
         self._token += 1
         self._restore_level()
         self._send(("play", cue["role"], first, fade, self._token))
+        self._stall_loss = False
+        self._resync = False
+        self._outliers = 0
         self._mode = "return"
         self._target = None
         self._wait_since = now
@@ -1936,14 +2055,7 @@ class AudioMaster(Clock):
         self._epoch += max(-lim, min(lim, d))
         if abs(self._target - self._epoch) <= self.RETURN_DONE_S:
             self._mode = "follow"
-            self.returns += 1
-            self._retry_n = 0
-            gone = now - (self._lost_at or now)
-            at = self._tc_text(frame_at(now - self._epoch, MASTER_FPS))
-            self._fault = None
-            self._journal(f"The show audio is back after {gone:.1f} s and "
-                          f"the show clock follows it again, from {at}.",
-                          False)
+            self._recovered(now)
 
     # -- the timecode ------------------------------------------------------
     def step(self, now):
@@ -1991,11 +2103,11 @@ class AudioMaster(Clock):
             self._end("finished", now)
             return now + self.MAX_SLEEP_S
         last = self._last_frame
-        if last is None and frame <= self.FIRST_LATE_FRAMES:
+        if last is None:
             # Every cue's timecode starts at 00:00:00:00 (handoff section
-            # 4), even when this thread got to it a frame or two late on a
-            # busy machine. Stamped with the moment frame 0 began, so the
-            # pixels read the same epoch either way.
+            # 4), however late this thread got to it on a busy machine:
+            # frame 0 first, stamped with the moment it began, then straight
+            # on to the frame the audio is in.
             frame = 0
         if last is None or frame > last:
             if last is not None and frame > last + 1:
@@ -2067,6 +2179,11 @@ class AudioMaster(Clock):
             out.append(f"The audio interface ran short of audio "
                        f"{self.underflows} time(s) so far; each is a click "
                        f"in the sound.")
+        if self._render_err_at is not None and \
+                now - self._render_err_at < self.RECENT_S:
+            out.append(f"The show audio process hit {self.render_errors} "
+                       f"error(s) making the sound and played silence "
+                       f"instead. The show log has the details.")
         if self.errors:
             out.append(f"The show clock hit {self.errors} error(s) and "
                        f"kept going. Last: {self.last_error}")
@@ -2099,6 +2216,8 @@ class AudioMaster(Clock):
                             "returns": self.returns,
                             "clipped": self.clipped,
                             "underflows": self.underflows,
+                            "render_errors": self.render_errors,
+                            "outliers": self.outliers,
                             "respawns": getattr(self.engine, "respawns", 0),
                             "loaded": sorted(self._loaded)}})
         d.update(_out_snapshot(self.out, self))
