@@ -33,6 +33,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B22 Audio breaks after USB selective suspend off | BETTER, NOT SOLVED | Straight to the Scarlett: 0 breaks (was 3). Full show with MadMapper playing the audio: still 3 breaks. With ltcplay playing the audio (B23): 0 in two shows. Points at MadMapper's audio path under load |
 | B23 audio_master (PR #26, 0f87a82) | PARTIAL: real Scarlett done, unplug test waits for Jeff | Audio against timecode 0.4 ms apart across 9 starts (MadMapper: 46 to 78 ms), no drift, no jumps; Hold, Resume and Abort exact. **Finding: the PR refuses the Scarlett even with allow_shared_mode (it stops at WASAPI exclusive, which cannot do 48 kHz); the test ran on DirectSound through a bench-only override.** ASIO: no driver presents a device; WDM-KS takes 48 kHz but was busy |
 | B25 audio_master API search (fa1f3bb) | PARTIAL | Strict mode refuses the Scarlett with every attempt listed (WASAPI exclusive: 44.1 only; WDM-KS: endpoint busy); shared mode picks DirectSound and says so; short starts 0.4 ms apart; the full show had 23 recorder breaks (inconclusive); a second ltcplay is refused. Re-run on the Focusrite ASIO driver next |
+| B26 audio_master on Focusrite ASIO (fa1f3bb, strict) | PASSED (ltcplay alone) | Opens "Focusrite USB ASIO" at 48 kHz by itself; audio ready 0.25 s; 0 timecode jumps in 10 short starts + 2 full shows; Hold exact. No loopback cable, so no measured audio offset; MadMapper and BEYOND were not running. Full stack is B27, on hold for the final PR #26 commit |
 
 ## B0 The machine
 
@@ -812,8 +813,45 @@ The simulated device's timing is exact by construction, so this says nothing abo
 
 Next: Jeff is installing Focusrite's own Scarlett driver (ASIO at 48 kHz), then B25 is re-run strict.
 
+## B26 audio_master on the Focusrite ASIO driver (PR #26 at fa1f3bb, strict)
+
+**Verdict: clean on everything that could be measured.** The strict show file opens the Scarlett through ASIO by itself, with no shared-mode flag and no override. Timecode never jumped in 12 starts. The audio against timecode offset could not be measured (see the method notes).
+
+**Setup:**
+- Jeff asked me to download Focusrite Control 3.27.0 (Focusrite's own download server, 60.97 MB, Authenticode signature valid, signer Focusrite Audio Engineering Ltd). He ran the installer and rebooted.
+- The driver now lists **"Focusrite USB ASIO"** (2 outputs, 44.1 and 48 kHz both accepted). WASAPI now accepts 48 kHz and refuses 44.1 kHz.
+- Show file `bench444_am_asio_timeline.json`: device "Focusrite USB ASIO", `allow_shared_mode` false. Otherwise the same as B25: music stem on output 1, LTC stem on output 2.
+- Run 2026-09-27 12:01 to 12:21: 10 short starts (20 s each, then Abort), then 2 full shows (the first with a 5 s Hold at 60 s). Driver `scratch/b26_asio.py` (B23 schedule).
+- MadMapper and BEYOND were not running: the reboot closed them. **This was ltcplay alone (audio, timecode, pixels) plus the idle Stream Deck demo, not the full stack.** B27 will be the full stack.
+
+**Results:**
+- **Open:** Run 1.57 s; audio ready 0.25 s after the first play attempt (B23 on DirectSound: 0.9 s). The page line reads "show audio on Focusrite USB ASIO, 2 outputs at 48000 Hz".
+- **Art-Net timecode** (Recorder node 127.0.0.3, `artnet_tc_listen.py`):
+  - **0 jumps in all 12 starts.**
+  - Shorts: 631 to 632 frames each.
+  - Full 1: 13,333 frames; full 2: 13,208 frames.
+  - Largest gap between packets: 0.104 s (full 1, at the Hold); otherwise 36 to 60 ms.
+- **Show lengths:** 449.27 s (444.42 s + the 5 s Hold) and 444.54 s.
+- **Health:** `health_warnings()` was "(none)" after each full show. That only covers the last `RECENT_S` seconds, so it is not a whole-run underflow count. The next run logs `clock.snapshot()["audio"]["underflows"]` every second.
+
+**Method notes:**
+- ASIO bypasses Windows' audio engine, so the WASAPI loopback recorder used since B18 now records **silence** (checked: peak 0).
+- There is no cable to loop the Scarlett's output back into its input (Jeff has none), so the heard-against-sent offset from B23 cannot be measured on ASIO.
+- A short RCA or TRS loopback cable would restore it. The main session calls it nice to have, not a blocker.
+- A WASAPI recorder on the Scarlett's inputs logged 362 "data discontinuity" events in 44 s while ltcplay held ASIO. That is the recorder sharing the driver, not the output: the inputs had no signal.
+- Jeff heard the LTC stem faintly in his left ear. The stems are routed correctly (music only on output 1, LTC only on output 2, and no LTC decodes from the music file). It is analogue bleed in the Solo's headphone output from a loud LTC square wave. From B27 on, the show is **music only**.
+
 ## Not tested yet
 
-- **ASIO audio.** The Pico has no Focusrite ASIO driver: the Scarlett Solo runs on Windows' own USB audio driver. The ASIO drivers installed are all PreSonus and Behringer (AudioBox, Quantum, Studio, StudioLive, X-USB and others). The show's real interface (USB to the DSP) and its driver are needed for this test: **on site** (Jeff, 2026-09-26). I did not download or install a driver.
+- **ASIO on the show's real interface.** B26 ran ASIO on the bench Scarlett (Focusrite's driver). The show's USB-to-DSP interface and its driver are still **on site** (Jeff, 2026-09-26).
+- **B27, the full stack on ASIO:**
+  - ltcplay audio_master, music only;
+  - MadMapper with six video tracks chasing Art-Net timecode;
+  - BEYOND chasing on unicast, lasers blanked;
+  - pixels;
+  - the web page open;
+  - the Stream Deck showing real state with the approved "can't run" words.
+
+  On hold at Jeff's word until the main session sends the final reviewed PR #26 commit. The MadMapper demo cannot save a project, so the reboot lost the six-track setup, and it must be rebuilt by hand before B27.
 - **Rack network** (two Ethernet ports, real controllers): needs the rack.
 - **Licensed BEYOND, longer than 2 hours** (B9, B17): the demo cannot go past 2 hours per launch; needs Andy's licence, on site.

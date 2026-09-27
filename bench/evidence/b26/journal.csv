@@ -1,0 +1,33 @@
+epoch,event
+1790532111.327,Run (Session.start) took 1.57 s
+1790532111.327,health: (none)
+1790532111.578,audio ready 0.25 s after the first play attempt (Run + 1.82 s)
+1790532114.579,short 1 play
+1790532134.583,short 1 abort
+1790532139.743,short 2 play
+1790532159.744,short 2 abort
+1790532164.906,short 3 play
+1790532184.916,short 3 abort
+1790532190.027,short 4 play
+1790532210.033,short 4 abort
+1790532215.193,short 5 play
+1790532235.196,short 5 abort
+1790532240.357,short 6 play
+1790532260.366,short 6 abort
+1790532265.526,short 7 play
+1790532285.526,short 7 abort
+1790532290.687,short 8 play
+1790532310.688,short 8 abort
+1790532315.847,short 9 play
+1790532335.853,short 9 abort
+1790532341.015,short 10 play
+1790532361.020,short 10 abort
+1790532366.177,full 1 play
+1790532426.185,HOLD
+1790532431.186,RESUME
+1790532815.447,full 1 ended after 449.27 s
+1790532815.447,health: (none)
+1790532820.447,full 2 play
+1790533264.992,full 2 ended after 444.54 s
+1790533264.992,health: (none)
+1790533270.683,Session stopped
