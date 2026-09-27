@@ -2648,8 +2648,8 @@ def build():
 
  ('audio_master: a dead audio process is never replaced',
   'ltcplay/showaudio.py',
-  '                why = self._spawn()\n                if why is None:\n                    self.respawns += 1',
-  '                why = "not replaced"\n                if why is None:\n                    self.respawns += 1'),
+  '                np_, nc, why = self._spawn(stop)\n                if why is None:',
+  '                np_, nc, why = None, None, "not replaced"\n                if why is None:'),
 
  ('audio_master: PortAudio is re-initialised under a working stream',
   'ltcplay/showaudio.py',
@@ -2693,13 +2693,13 @@ def build():
 
  ('audio_master: losing the audio jumps the timecode',
   'ltcplay/clock.py',
-  '        self._mode = "freerun"\n        self._target = None\n        self._send(("stop", 0, None))\n',
-  '        self._epoch = (self._epoch or now) - 0.2\n        self._mode = "freerun"\n        self._target = None\n        self._send(("stop", 0, None))\n'),
+  '        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here',
+  '        self._epoch = (self._epoch or now) - 0.2\n        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here'),
 
  ('audio_master: a dropout says nothing on the page or in the journal',
   'ltcplay/clock.py',
-  '        self._set_fault(\n            f"The show audio dropped out at {at} in "',
-  '        (lambda *a: None)(\n            f"The show audio dropped out at {at} in "'),
+  '        self._set_fault(self._loss_fault, now)\n',
+  '        pass\n'),
 
  ('audio_master: the audio never comes back when the interface does',
   'ltcplay/clock.py',
@@ -2708,8 +2708,8 @@ def build():
 
  ('audio_master: the audio comes back where it dropped out, not where the show is',
   'ltcplay/clock.py',
-  '        start = now - self._epoch + self.LEAD_S + lat\n',
-  '        start = (self._lost_at or now) - self._epoch + self.LEAD_S + lat\n'),
+  '        start = now - self._epoch + self.LEAD_S + self._heard_latency()\n',
+  '        start = (self._lost_at or now) - self._epoch + self.LEAD_S + self._heard_latency()\n'),
 
  ('audio_master: the handover jumps instead of slewing',
   'ltcplay/clock.py',
@@ -2745,6 +2745,111 @@ def build():
   'ltcplay/clock.py',
   '            if self._target is None and abs(e - self._epoch) > self.RESEEK_S:\n',
   '            if False:\n'),
+
+
+ # -- audio_master, review of PR 26 (2026-09-27): late starts, stale and
+ # torn readings, the frozen frame floor, Abort's latency, Hold during a
+ # loss, bad WAV sizes, latency spikes, hiccups, the engine's generations,
+ # and a main script with no guard.
+ ('audio_master: a late cue does not start at 00:00:00:00',
+  'ltcplay/clock.py',
+  "        if last is None:\n            # Every cue's timecode starts at 00:00:00:00",
+  "        if False:\n            # Every cue's timecode starts at 00:00:00:00"),
+
+ ('audio_master: a reading from an older play moves the clock',
+  'ltcplay/clock.py',
+  "        if self._cue is None or r.token != self._token:\n            return                       # another cue's",
+  "        if self._cue is None:\n            return                       # another cue's"),
+
+ ('audio_master: the frozen frame can fall below the last frame sent',
+  'ltcplay/clock.py',
+  '            frame = max(frame, self._last_frame)\n',
+  '            pass\n'),
+
+ ('audio_master: a torn shared-memory read is believed',
+  'ltcplay/showaudio.py',
+  '            continue                     # a callback wrote meanwhile\n',
+  '            pass\n'),
+
+ ('audio_master: Abort stops before its fade has been heard',
+  'ltcplay/clock.py',
+  '                self._heard_latency() + 0.05\n',
+  '                0.0\n'),
+
+ ('audio_master: Hold does nothing while the audio is lost',
+  'ltcplay/clock.py',
+  '                self._send(("pause", 0, self._token))\n            self._freeze(now)\n',
+  '                self._send(("pause", 0, self._token))\n            return\n'),
+
+ ('audio_master: a WAV with a placeholder data size plays',
+  'ltcplay/showaudio.py',
+  '                if size == 0 or size == 0xFFFFFFFF:\n',
+  '                if False:\n'),
+
+ ('audio_master: a WAV cut off short plays',
+  'ltcplay/showaudio.py',
+  '                if size > left:\n',
+  '                if False:\n'),
+
+ ("audio_master: a driver's latency spike moves the clock",
+  'ltcplay/clock.py',
+  '        if abs(e - ref) <= self.OUTLIER_S:\n',
+  '        if True:\n'),
+
+ ('audio_master: a short hiccup is taken for a lost interface',
+  'ltcplay/clock.py',
+  '    STALL_S = 0.6\n',
+  '    STALL_S = 0.3\n'),
+
+ ('audio_master: the same stream playing on is stopped instead of followed',
+  'ltcplay/clock.py',
+  '        if self._mode == "freerun" and self._stall_loss and \\\n',
+  '        if False and self._stall_loss and \\\n'),
+
+ ('audio_master: a stall stops the music straight away',
+  'ltcplay/clock.py',
+  '        if not stall:\n            self._send(("stop", 0, None))\n',
+  '        self._send(("stop", 0, None))\n'),
+
+ ('audio_master: the audio moving for real is never followed',
+  'ltcplay/clock.py',
+  '        if self._outliers >= self.OUTLIER_RUN:\n            self._resync = True\n',
+  '        pass\n'),
+
+ ('audio_master: health stays red after a Resume brings the audio back',
+  'ltcplay/clock.py',
+  '                self._set_paused(False)\n            self._recovered(now)\n',
+  '                self._set_paused(False)\n'),
+
+ ('audio_master: sound that stops by itself is followed quietly',
+  'ltcplay/clock.py',
+  '                self._stopped_playing(r, now)\n',
+  '                pass\n'),
+
+ ('audio_master: errors making the sound never reach the page',
+  'ltcplay/clock.py',
+  '        if self._render_err_at is not None and \\\n',
+  '        if False and \\\n'),
+
+ ('audio_master: Resume at the very end of the audio reads as a dropout',
+  'ltcplay/clock.py',
+  '        if start >= cue["frames"]:\n',
+  '        if False:\n'),
+
+ ("audio_master: Stop waits on the audio's watch thread",
+  'ltcplay/showaudio.py',
+  '        self._reap(p, c, self.CLOSE_S)\n        self._watch = None\n',
+  '        self._reap(p, c, self.CLOSE_S)\n        if self._watch is not None:\n            self._watch.join(2.0)\n        self._watch = None\n'),
+
+ ("audio_master: the audio process re-runs the program's main script",
+  'ltcplay/showaudio.py',
+  '                main.__dict__.pop("__file__", None)\n                main.__dict__["__spec__"] = None\n',
+  '                pass\n'),
+
+ ("the Mac app's boot.py runs the engine without a __main__ guard",
+  'Build LTC Player app.command',
+  '\nif __name__ == "__main__":\n    # --selfcheck is used',
+  '\nif True:\n    # --selfcheck is used'),
 
 ]
 

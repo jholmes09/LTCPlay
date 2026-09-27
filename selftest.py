@@ -19334,6 +19334,462 @@ print(json.dumps(res))
     print("  ok")
 
 
+class _AmJitterEngine(_AmLocalEngine):
+    """A driver that enters its callback a few ms late at random, and can
+    report a latency spike on chosen callbacks, while the sound is really
+    heard a steady `latency` after each callback (review of PR 26)."""
+
+    jitter = (0.0, 0.003)
+    spikes = {}
+
+    def __init__(self, *a, **k):
+        import random
+        self.rng = random.Random(7)
+        self.n = 0
+        super().__init__(*a, **k)
+
+    def run_at(self, t):
+        if self.crashed:
+            return
+        if self._next is not None and t >= self._next - 1e-12 \
+                and self.proc.stream is self._stream:
+            from ltcplay import showaudio as sa
+            import numpy as np
+            j = self.rng.uniform(*self.jitter)
+            extra = self.spikes.get(self.n, 0.0)
+            self.n += 1
+            real = self.proc._clock
+            self.proc._clock = lambda: t + j
+            s = self._stream
+            out = np.zeros((s.sd.block, s.channels), dtype=np.float32)
+            if s.running and not s.closed and s.dev["present"]:
+                s.callback(out, s.sd.block,
+                           sa._TimeInfo(t + j + s.sd.latency + extra, t + j),
+                           sa._Flags(False))
+                p = self.read()
+                self.log.append((t + j, p._replace(latency=s.sd.latency),
+                                 out))
+            self.proc._clock = real
+            self._next += self.period
+        if t >= self._next_step - 1e-12:
+            self.proc.step(t)
+            self._next_step = t + 0.02
+
+
+def _am_jitter_rig(drift=0.0, seconds=20.0, spikes=None):
+    """_am_rig with the jittery driver, and the clock thread itself woken
+    0 to 4 ms late, and now and then 25 ms late."""
+    import random
+    global _AmLocalEngine
+    real = _AmLocalEngine
+    _AmJitterEngine.spikes = spikes or {}
+    _AmLocalEngine = _AmJitterEngine
+    try:
+        r = _am_rig(seconds=seconds, drift_ppm=drift)
+    finally:
+        _AmLocalEngine = real
+    rng = random.Random(11)
+    sim = r["sim"]
+
+    def run(until):
+        vc = sim.vc
+        if sim.am.kicked:
+            sim.am.kicked = False
+            sim.next_am = vc()
+        while True:
+            t = min(sim.next_am, sim.eng.next_time())
+            if t > until:
+                vc.t = until
+                return
+            vc.t = t
+            sim.eng.run_at(t)
+            if t >= sim.next_am - 1e-12:
+                due = sim.am.step(t)
+                sim.trace.append((t, sim.am._epoch, sim.am._mode))
+                late = rng.uniform(0.0, 0.004)
+                if rng.random() < 0.002:
+                    late += 0.025
+                sim.next_am = max(due, t + 1e-6) + late
+    sim.run = run
+    return r
+
+
+def _am_errors(r, since):
+    fr = r["out"].frames(since=since)
+    n = [x for _, x in fr]
+    back = [(a, b) for a, b in zip(n, n[1:]) if b <= a]
+    skip = [(a, b) for a, b in zip(n, n[1:]) if b > a + 1]
+    errs = [(_am_true_pos(r, t) - x / 30.0, t) for t, x in fr
+            if _am_true_pos(r, t) is not None]
+    return fr, back, skip, errs
+
+
+def test_audio_master_review_rules():
+    section("audio_master: the review's rules (late start, stale readings, "
+            "frozen frame floor, spikes, stalls, Hold in odd places)")
+    import numpy as np
+    from ltcplay import showaudio as sa
+
+    # A clock thread 250 ms late to a new cue still starts it at
+    # 00:00:00:00, then goes straight to where the audio is.
+    r = _am_rig(seconds=6.0)
+    am, sim, vc = r["am"], r["sim"], r["vc"]
+    t0 = vc()
+    am.play(3600.0, None, "Show")
+    am.kicked = False
+    sim.next_am = t0 + 0.25
+    sim.run(t0 + 1.0)
+    n = [x for _, x in r["out"].frames(since=t0)]
+    check(n[:1] == [0] and 6 <= n[1] <= 8 and not _am_consecutive(
+        [(0, x) for x in n[1:]]),
+          f"a cue reached 250 ms late did not start at 00:00:00:00 and "
+          f"then follow the audio: {n[:5]}")
+    # A reading from an older play or another cue moves nothing.
+    ep, mode = am._epoch, am._mode
+    pos = sa.read_position(r["eng"].arr)
+    am._on_reading(pos._replace(seq=pos.seq + 1001, token=am._token - 1,
+                                frame=pos.frame - 960), vc())
+    check(am._epoch == ep and am._mode == mode,
+          "a reading from an older play moved the clock")
+    # The frozen frame is never below the last frame sent.
+    with am._lock:
+        am._stop_frame = 24000              # frame 14
+        last = am._last_frame
+        am._pause_req = True
+        am._freeze(vc())
+    check(am._frozen_frame == last and last > 14,
+          f"the clock froze on frame {am._frozen_frame}, below the "
+          f"{last} it had already sent")
+    am.stop()
+
+    # The seqlock: a read that sees a write in progress, or a write
+    # between its two looks, reads again.
+    class Torn(list):
+        def __init__(self, passes):
+            super().__init__([0.0] * sa.SLOTS)
+            self.passes, self.looks = passes, 0
+
+        def __getitem__(self, k):
+            if k == sa.SEQ:
+                v = self.passes[min(self.looks, len(self.passes) - 1)]
+                self.looks += 1
+                return v
+            if isinstance(k, slice):
+                body = [7.0 if self.looks < 4 else 8.0] * (
+                    sa.ERRORS - sa.TOKEN + 1)
+                return body
+            return super().__getitem__(k)
+
+    got = sa.read_position(Torn([3.0, 4.0, 6.0, 6.0, 6.0, 6.0]))
+    check(got is not None and got.seq == 6 and got.token == 8,
+          f"a torn read was returned instead of read again: {got}")
+
+    # A driver whose latency report spikes (0.88 s, then 0.48 s) moves
+    # nothing; nor does a PC clock 100 ppm either way, with the callbacks
+    # and the clock thread both jittering.
+    for drift, spikes in ((100.0, {}), (-100.0, {}),
+                          (0.0, {500: 0.88, 900: 0.48})):
+        r = _am_jitter_rig(drift, 20.0, spikes)
+        t0 = r["vc"]()
+        r["am"].play(3600.0, None, "Show")
+        r["sim"].run(t0 + 16.0)
+        fr, back, skip, errs = _am_errors(r, t0)
+        late = max(abs(e) for e, t in errs if t > t0 + 1.0)
+        tail = max(abs(e) for e, t in errs if t > t0 + 10.0)
+        check(len(fr) > 450 and not back and not skip,
+              f"drift {drift}, spikes {spikes}: frames backwards {back[:3]} "
+              f"or skipped {skip[:3]}")
+        check(tail < 0.008 and late < 0.035,
+              f"drift {drift}, spikes {spikes}: the timecode strayed "
+              f"{late * 1000:.1f} ms (last 6 s {tail * 1000:.1f} ms) from "
+              f"the audio")
+        if spikes:
+            check(r["am"].outliers >= 2,
+                  "the latency spikes were not recognised as spikes")
+        r["am"].stop()
+
+    # A 350 ms hiccup in the driver (callbacks pause, the stream stays
+    # open) is not a loss: the music is not stopped and reopened, the
+    # clock just waits for the audio.
+    r = _am_rig(seconds=10.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    dev = eng.proc.stream.dev
+    th = vc()
+    dev["present"] = False
+    sim.run(vc() + 0.35)
+    dev["present"] = True
+    sim.run(vc() + 3.0)
+    silent = [t for t, p, b in eng.log if t > th and not np.any(b != 0)]
+    fr, back, skip, _e = _am_errors(r, 0)
+    check(am.losses == 0 and eng.proc.opens == 1 and not silent
+          and not r["journal"].faults and not back,
+          f"a 0.35 s hiccup became a loss: losses {am.losses}, opens "
+          f"{eng.proc.opens}, silent callbacks {len(silent)}")
+    worst = max(abs(_am_true_pos(r, t) - x / 30.0)
+                for t, x in fr if t > th + 1.0)
+    check(worst < 0.002, f"after a hiccup the timecode is "
+                         f"{worst * 1000:.1f} ms off the audio")
+    # Longer than the clock's own limit, but the audio process has not
+    # given up on the stream (a hung child, say): when the same stream
+    # plays on, the clock follows it again, and the music was never
+    # stopped.
+    eng.proc.STALL_S = 5.0
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+    th = vc()
+    dev["present"] = False
+    sim.run(vc() + 0.8)
+    check(am.losses == 1 and am._mode == "freerun",
+          "0.8 s with no audio was not treated as a loss")
+    dev["present"] = True
+    sim.run(vc() + 2.0)
+    eng.send = real_send
+    check(am._mode == "follow" and not am._fault and am.returns == 1
+          and not [m for m in sent if m[0] in ("stop", "play")]
+          and eng.proc.opens == 1,
+          f"the same stream playing on was not followed again: mode "
+          f"{am._mode}, sent {sent}")
+    check(not _am_errors(r, 0)[1], "the timecode went backwards")
+    # The audio process stopping the sound with nothing asking it to is a
+    # loss, not something to follow quietly.
+    eng.send(("stop", 0, None))
+    sim.run(vc() + 0.3)
+    check(am.losses == 2 and am._fault and "stopped playing" in am._fault,
+          f"sound that stopped by itself was not a loss: {am._fault}")
+    ok = sim.until(lambda: am._mode == "follow", 8.0)
+    check(ok and not am._fault, "the audio did not come back after that")
+    # Errors making the sound reach the page.
+    real_render = eng.proc.mixer.render
+    boom = [1]
+
+    def render(n):
+        if boom:
+            boom.pop()
+            raise RuntimeError("test")
+        return real_render(n)
+
+    eng.proc.mixer.render = render
+    sim.run(vc() + 0.2)
+    check(any("error(s) making the sound" in w
+              for w in am.health_warnings()),
+          f"an error in the audio process did not reach the page: "
+          f"{am.health_warnings()}")
+    am.stop()
+
+    # Hold during a loss: freezes at once, repeats the frame; Resume
+    # carries on on this computer's clock; the audio comes back after.
+    r = _am_rig(seconds=30.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    eng.sd.control("unplug")
+    sim.run(vc() + 1.0)
+    th = vc()
+    am.pause()
+    check(am._paused and len(r["calls"]["pause"]) == 1,
+          "Hold during a loss did not freeze at once")
+    sim.run(vc() + 1.0)
+    held = r["out"].frames(since=th + 0.05)
+    check(len(held) >= 28 and len({x for _, x in held}) == 1,
+          "Hold during a loss did not keep repeating the frozen frame")
+    frozen = held[0][1]
+    tr = vc()
+    am.resume()
+    sim.run(vc() + 0.5)
+    moving = [x for _, x in r["out"].frames(since=tr)]
+    check(moving and moving[0] in (frozen, frozen + 1) and moving[-1] > frozen
+          + 10 and am._fault,
+          "Resume during a loss did not carry on from the frozen frame")
+    eng.sd.control("plug")
+    ok = sim.until(lambda: am._mode == "follow", 12.0)
+    check(ok and not am._fault and not _am_consecutive(
+        [(0, x) for x in moving[1:]]), "the audio did not come back")
+    am.stop()
+
+    # Hold during the handover slew, then Resume: the red clears.
+    r = _am_rig(seconds=30.0, block=2400, reported_latency=0.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    eng.sd.control("unplug")
+    sim.run(vc() + 3.0)
+    eng.sd.control("plug")
+    sim.until(lambda: am._mode == "return" and am._target is not None, 10.0)
+    am.pause()
+    sim.run(vc() + 1.0)
+    am.resume()
+    sim.run(vc() + 2.0)
+    check(am._mode == "follow" and not am._fault and not
+          am.health_warnings() and r["journal"].records,
+          f"Hold during the handover left health red: {am._fault}")
+    am.stop()
+
+    # Hold inside the last fade, then Resume: the cue simply ends.
+    r = _am_rig(seconds=3.0)
+    am, sim, vc = r["am"], r["sim"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.93)
+    am.pause()
+    sim.run(vc() + 1.0)
+    am.resume()
+    sim.run(vc() + 2.0)
+    check(not r["journal"].faults and am.losses == 0
+          and am.last_ended == "Show finished"
+          and len(r["calls"]["stop"]) == 1,
+          f"Resume at the very end gave {r['journal'].faults} "
+          f"{am.last_ended!r}")
+    am.stop()
+
+    # Abort waits until its fade has been HEARD, not just sent.
+    r = _am_rig(seconds=6.0, latency=0.1)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    ta = vc()
+    am.halt()
+    sim.run(vc() + 2.0)
+    stop = r["calls"]["stop"][0]
+    heard = [t + p.latency for t, p, b in eng.log
+             if t > ta and np.any(b != 0)]
+    check(stop - ta >= 1.1 and heard and max(heard) <= stop,
+          f"Abort stopped the cue {stop - ta:.2f} s in, before the last of "
+          f"its fade was heard at {max(heard) - ta:.2f} s")
+    am.stop()
+
+    # WAV files whose data size cannot be true are refused, not played.
+    import struct, tempfile
+    work = tempfile.mkdtemp()
+    good = os.path.join(work, "good.wav")
+    _am_write_wav(good, _am_tone(0.2, 1))
+    raw = open(good, "rb").read()
+    at = raw.index(b"data") + 4
+    for size, want in ((0, "placeholder"), (0xFFFFFFFF, "placeholder"),
+                       (len(raw), "cut off")):
+        p = os.path.join(work, f"bad{size}.wav")
+        open(p, "wb").write(raw[:at] + struct.pack("<I", size) +
+                            raw[at + 4:])
+        try:
+            sa.wav_info(p)
+            check(False, f"a WAV claiming {size} bytes of audio was taken")
+        except sa.AudioConfigError as e:
+            check(want in str(e) and str(e).endswith("."),
+                  f"the size refusal is not a plain sentence: {e}")
+    # Decoded a chunk at a time, the samples are the same.
+    x = _am_tone(0.05, 3, 0.6)
+    for fmt in ("pcm16", "pcm24", "float32"):
+        p = os.path.join(work, f"c_{fmt}.wav")
+        _am_write_wav(p, x, fmt=fmt)
+        whole = sa.read_wav(p)
+        real = sa.READ_CHUNK_FRAMES
+        sa.READ_CHUNK_FRAMES = 7
+        try:
+            parts = sa.read_wav(p)
+        finally:
+            sa.READ_CHUNK_FRAMES = real
+        check(parts.shape == whole.shape and np.array_equal(parts, whole)
+              and np.max(np.abs(whole - x)) < 1e-4,
+              f"decoding {fmt} in chunks changed the samples")
+    print("  ok")
+
+
+def test_audio_master_stop_during_a_respawn():
+    section("audio_master: Stop while the audio process is being replaced, "
+            "then Run, leaves one process and one watch thread")
+    import multiprocessing
+    import signal
+    from ltcplay import showaudio as sa
+    spec = {"device": "Fake Interface", "channels": 2, "rate": 48000,
+            "allow_shared": False, "cues": {}, "platform": "darwin",
+            "fake": {"threaded": True}}
+
+    def ours():
+        return [p for p in multiprocessing.active_children()
+                if p.name == "ltcplay-show-audio"]
+
+    def watches():
+        return sum(t.name == "ltcplay-audio-watch" and t.is_alive()
+                   for t in threading.enumerate())
+
+    eng = sa.AudioEngine(spec)
+    eng.RESPAWN_S = (0.1, 0.1, 0.1)
+    try:
+        first = eng.start()
+        check(first is not None and first[0] == "opened",
+              f"the audio process did not start: {first}")
+        real = eng._hello
+
+        def slow(p, conn, stop):
+            time.sleep(2.0)            # numpy's import on a slow PC
+            return real(p, conn, stop)
+
+        eng._hello = slow
+        os.kill(eng.pid, signal.SIGKILL) if hasattr(signal, "SIGKILL") \
+            else eng._proc.kill()
+        time.sleep(0.5)                # noticed; the new one is starting
+        t = time.perf_counter()
+        eng.close()
+        took = time.perf_counter() - t
+        check(took < 1.0, f"Stop waited {took:.1f} s for the audio process")
+        eng._hello = real
+        first = eng.start()
+        check(first is not None and first[0] == "opened",
+              f"Run after that did not start the audio: {first}")
+        time.sleep(1.0)
+        check(len(ours()) == 1 and watches() == 1,
+              f"after Stop then Run: {len(ours())} audio processes, "
+              f"{watches()} watch threads")
+        check(eng.alive and eng.pid == ours()[0].pid if ours() else False,
+              "the engine is not talking to the process that is running")
+    finally:
+        eng.close()
+    check(wait_for(lambda: not ours(), 3.0),
+          f"{len(ours())} audio process(es) outlived the last close")
+    print("  ok")
+
+
+def test_audio_master_never_reruns_an_unguarded_main():
+    section("audio_master: the audio process never re-runs a main script "
+            "that has no __main__ guard")
+    import subprocess as _sp, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    log = os.path.join(work, "ran.log")
+    script = os.path.join(work, "boot.py")
+    # The shape the Mac app's boot.py had: everything at the top level.
+    open(script, "w").write(
+        "import os, sys\n"
+        f"sys.path.insert(0, {here!r})\n"
+        f"open({log!r}, 'a').write(str(os.getpid()) + '\\n')\n"
+        "from ltcplay import showaudio as sa\n"
+        "eng = sa.AudioEngine({'device': 'Fake Interface', 'channels': 2,\n"
+        "    'rate': 48000, 'allow_shared': False, 'cues': {},\n"
+        "    'platform': 'darwin', 'fake': {'threaded': True}})\n"
+        "eng.HELLO_S = 10.0\n"
+        "first = eng.start(wait_s=5)\n"
+        "print('FIRST', first and first[0])\n"
+        "eng.close()\n")
+    r = _sp.run([sys.executable, script], capture_output=True, text=True,
+                timeout=60, cwd=work)
+    ran = open(log).read().split() if os.path.exists(log) else []
+    check("FIRST opened" in r.stdout,
+          f"the audio did not start under an unguarded main: "
+          f"{r.stdout[-300:]} {r.stderr[-500:]}")
+    check(len(ran) == 1, f"the main script ran {len(ran)} times; the audio "
+                         f"process ran it again")
+    b = _builder_text()
+    if b is not None:
+        boot = _between(b, "<<'BOOT'\n", "\nBOOT\n")
+        check('\nif __name__ == "__main__":\n' in boot
+              and boot.index('if __name__ == "__main__":')
+              < boot.index("from ltcplay.cli import main"),
+              "the Mac app's boot.py runs the engine without a __main__ "
+              "guard")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -19551,6 +20007,9 @@ if __name__ == "__main__":
     test_audio_master_session_hold_resume_abort()
     test_audio_master_runs_in_its_own_process()
     test_the_gpl_path_never_loads_the_show_audio()
+    test_audio_master_review_rules()
+    test_audio_master_stop_during_a_respawn()
+    test_audio_master_never_reruns_an_unguarded_main()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()
