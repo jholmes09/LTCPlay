@@ -270,8 +270,10 @@ def from_dict(d, source="config"):
                           f"at {c.tick_hz} Hz; every tick would count as an "
                           f"overrun.")
     # How long a fire value from ltcplay's last frame is kept on the wire
-    # after ltcplay stops sending.  Shorter than frame_stale_ms, which only
-    # governs when a restarted ltcplay's sequence is accepted.
+    # after ltcplay stops sending.  Shorter than frame_stale_ms, after which
+    # the link itself is lost: every group is disarmed and needs a fresh
+    # cycle once ltcplay is back (Jeff, 2026-09-26), the sender lock is
+    # released and a restarted ltcplay's sequence is accepted.
     c.fire_hold_ms = _int(d, "fire_hold_ms", 1, FIRE_HOLD_MS_MAX)
     if c.fire_hold_ms < 2 * period_ms:
         raise ConfigError(f"fire_hold_ms {c.fire_hold_ms} is less than two "

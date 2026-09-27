@@ -2175,8 +2175,14 @@ MUTATIONS = [
 
  ("flamesafe: losing the show program keeps the latches, so it re-arms when back",
   "flamesafe/composer.py",
-  '        if not link_live:\n            self._reset_latches("show program link lost")',
-  "        if not link_live:\n            pass"),
+  '            self._reset_latches("show program link lost",\n'
+  '                                journal=self._link_live)',
+  "            pass"),
+
+ ("flamesafe: a lost show program is journaled and counted on every stale tick, 40 lines a second",
+  "flamesafe/composer.py",
+  "                                journal=self._link_live)",
+  "                                journal=True)"),
 
  ("flamesafe: a group may arm before the show program has ever answered",
   "flamesafe/composer.py",

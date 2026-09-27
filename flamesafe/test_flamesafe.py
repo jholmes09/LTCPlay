@@ -16,6 +16,7 @@ import copy
 import json
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -2161,6 +2162,77 @@ def test_link_loss_disarms_every_group():
           "a cycle with the show program answering arms every group asked")
 
 
+def test_review3_link_loss_is_one_line_and_the_return_is_one_line():
+    section("review 3: a lost show program is one journal line and one count "
+            "however long the outage, and its return is one line with the "
+            "length")
+    # The deck keeps re-reporting its OFF keys while the link is down, so
+    # the per-tick reset always finds a down edge to forget.  Clearing on
+    # every stale tick is right (a cycle made while the link is down must
+    # not count); journaling and counting it on every tick, 40 lines a
+    # second for the whole outage, is not.
+    def resets(r):
+        return [m for k, m in r.log.events if k == "latch-reset"]
+
+    def links(r):
+        return [m for k, m in r.log.events if k == "link"]
+
+    r = armed_rig()
+    r.run(20, {411: 0})
+    n_resets, n_links = len(resets(r)), len(links(r))
+    counted = r.c.stats["latch_resets"]
+    r.link_alive = False
+    t0 = r.t
+    t_lost = None
+    while r.t - t0 < 2.0:
+        r.step()
+        if t_lost is None and r.safety(0) == 0:
+            t_lost = r.t
+    check(t_lost is not None and r.safety(0) == 0, "lost, and still lost")
+    new = resets(r)[n_resets:]
+    check(len(new) == 1 and "show program link lost" in new[0],
+          f"exactly one latch-reset line over a 2 s outage, not one per "
+          f"tick: {len(new)}")
+    check(r.c.stats["latch_resets"] == counted + 1,
+          f"and latch_resets moved by one: {r.c.stats['latch_resets']}")
+    check(len(links(r)) == n_links + 1, "one link line while it is down")
+    check(not any(r.c._seen_down) and not any(r.c._latched),
+          "the down edges the deck keeps reporting are still forgotten on "
+          "every stale tick")
+    # The return: one line, with the outage length, and the groups still
+    # need a cycle.
+    r.link_alive = True
+    r.frame({}, seq=0)
+    r.step()
+    back = links(r)[n_links + 1:]
+    check(len(back) == 1 and "answering again" in back[0],
+          f"one link line on the return: {back}")
+    m = re.search(r"after ([0-9.]+) s", back[0] if back else "")
+    check(m is not None and abs(float(m.group(1)) - (r.t - t_lost)) <= 0.06,
+          f"and it carries the outage length: {back}")
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
+          "still disarmed after the return")
+    r.wait(2.0)
+    check(len(links(r)) == n_links + 2 and len(resets(r)) == n_resets + 1,
+          "and nothing more is journaled while it stays back")
+    # Startup, before the first frame ever: the deck's OFF keys are
+    # forgotten every tick just the same, but there is no outage to
+    # journal or count, and the first frame is not a return.
+    r = Rig()
+    r.link_alive = False
+    r.prove_alive()
+    r.inp.set_all(True)
+    r.wait(1.0)
+    check(not resets(r) and r.c.stats["latch_resets"] == 0
+          and not links(r),
+          "startup before the first frame: no latch-reset line, count 0, "
+          "no link line")
+    r.link_alive = True
+    r.wait(0.5)
+    check(not links(r) and r.out.status["frames"]["state"] == "fresh",
+          "the first frame ever closes no outage: no link line")
+
+
 def test_the_wall_from_this_side():
     section("the wall: nothing in flamesafe imports ltcplay")
     loaded = sorted(m for m in sys.modules if m.split(".")[0] == "ltcplay")
@@ -2219,6 +2291,7 @@ if __name__ == "__main__":
     test_review2_udp_connreset_is_really_switched_off()
     test_review2_keys()
     test_link_loss_disarms_every_group()
+    test_review3_link_loss_is_one_line_and_the_return_is_one_line()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

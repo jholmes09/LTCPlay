@@ -66,6 +66,13 @@ One per output frame, at ltcplay's frame rate, whether or not a show is
 running. When ltcplay is idle it still sends frames (all zeros), because a
 missing frame means "unknown" to flamesafe, and unknown is zero.
 
+**Send-rate floor: 20 Hz or faster, idle included.** ltcplay must never
+let more than 50 ms pass between link frames, whatever it is doing, so
+that `frame_stale_ms` (500 ms) means ten or more missed frames in a row
+before the link is declared lost and every group disarms, never one late
+frame. A sender that idles slower than this will disarm the show for no
+reason.
+
 ```json
 {"v": 2, "k": "<link.key>", "t": "flame", "seq": 1234, "tc": "00:01:02:03",
  "mono": 812.4471, "universe": 1, "values": [0, 0, 0, ...]}
@@ -108,7 +115,10 @@ every safety slot, the journal gets one sentence, and the ARMED lamp reads
 steady amber with "Show program stopped answering: disarmed. Cycle the arm
 to re-arm once it is back." When ltcplay comes back nothing re-arms by
 itself; the operator cycles the arm (the lamp then reads "cycle the arm",
-flashing). A cycle made while the link is still down does not count. At
+flashing). The journal gets one more sentence when the link is back, with
+the length of the outage, and nothing in between: the latches are cleared
+on every stale tick, but only the first one is written and counted. A
+cycle made while the link is still down does not count. At
 startup, before ltcplay has answered at all, no group can arm: the lamp
 reads "Show program has not answered yet: disarmed. Cycle the arm once it
 is running." This replaces the earlier design in which the arm value stayed

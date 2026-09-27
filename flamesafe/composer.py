@@ -69,6 +69,7 @@ class Composer:
         self._arm_seen_at = None        # our clock, last assertion of any kind
         self._arm_live = False
         self._link_live = False         # ltcplay's frames fresh last tick
+        self._link_lost_at = None       # tick clock when the link went stale
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -177,10 +178,13 @@ class Composer:
             self._wanted[i] = w[i]
         return True
 
-    def _reset_latches(self, why):
+    def _reset_latches(self, why, journal=True):
+        # journal=False clears just the same but neither counts nor writes
+        # a line: for a reset that repeats every tick while a link is down.
         if any(self._latched) or any(self._seen_down):
-            self.stats["latch_resets"] += 1
-            self._event("latch-reset", why)
+            if journal:
+                self.stats["latch_resets"] += 1
+                self._event("latch-reset", why)
         self._latched = [False] * self.n
         self._seen_down = [False] * self.n
 
@@ -330,11 +334,25 @@ class Composer:
         link_live = frame_fresh
         if not link_live and self._link_live:
             self.stats["link_lost"] += 1
+            self._link_lost_at = t
             self._event("link", "show program stopped answering: every group "
                                 "disarmed; cycle the arm to re-arm once it "
                                 "is back")
+        if link_live and not self._link_live and \
+                self._link_lost_at is not None:
+            # The other end of the outage, so its length is readable in the
+            # journal the next morning.  Startup has no outage to close.
+            self._event("link", "show program answering again after "
+                                f"{t - self._link_lost_at:.1f} s; every "
+                                "group stays disarmed until a cycle")
+            self._link_lost_at = None
         if not link_live:
-            self._reset_latches("show program link lost")
+            # Every stale tick clears, but only the first one is journaled
+            # and counted: the deck re-reports its OFF keys every tick, so
+            # there is always a down edge to forget, and one line per tick
+            # is a flood (safety review of PR #23).
+            self._reset_latches("show program link lost",
+                                journal=self._link_live)
         self._link_live = link_live
 
         # 4. The safety slots.
