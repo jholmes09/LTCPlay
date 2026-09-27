@@ -16348,24 +16348,31 @@ def test_journal_rotation_and_pruning_across_dst():
           "into the by-date removal")
     check("incident_2026-07-03_120000.partial" not in
           set(os.listdir(inc)), "the stale .partial is gone")
-    # A clock nobody could check (no time server, 10 minutes of running),
-    # or one the time server DID agree with: either way the newest 120
-    # nights that exist stay whatever the date says. `floor` no longer
-    # makes a difference here (round 1 review, blocker: it used to, and a
-    # clock that jumped after passing its one boot-time check relied on
-    # exactly that gap).
+    # A clock nobody could check yet (floor=True): the newest 120 nights
+    # that exist stay, whatever the date says, and NOTHING is removed by
+    # age at all -- so a year-ahead date with only 4 nights on disk (a
+    # seasonal show early in its life) removes nothing. A clock the time
+    # server DOES agree with (floor=False) is the opposite: purely by
+    # age, with no floor to protect anything -- so the same year-ahead
+    # date, if this machine's clock can actually be trusted to say so,
+    # removes every one of those 4, having nothing left to protect them
+    # with (round 2 review of PR 25: floor is conditional again, but on
+    # trust Service keeps genuinely current, not a boot-time snapshot).
     ahead = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(ahead)
-    nights_from(date(2026, 11, 14), 4, ahead)
+    made_ahead = nights_from(date(2026, 11, 14), 4, ahead)
     now[0] = datetime(2027, 11, 20, 18, 0, tzinfo=utc)
     check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=True) == []
           and len(os.listdir(ahead)) == 8,
-          f"an unchecked clock a year ahead removes nothing: "
-          f"{os.listdir(ahead)}")
-    check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=False) == []
-          and len(os.listdir(ahead)) == 8,
-          "a checked clock a year ahead ALSO removes nothing: the newest "
-          "120 nights are always kept, floor=False included")
+          f"an untrusted clock a year ahead removes nothing at all, by "
+          f"count alone: {os.listdir(ahead)}")
+    gone_ahead = _book(J, ahead, now).prune(date(2027, 11, 20), floor=False)
+    check(sorted(gone_ahead) == sorted(n for _d, n in made_ahead)
+          and not any(os.path.exists(os.path.join(ahead, n))
+                      for _d, n in made_ahead),
+          f"a TRUSTED clock a year ahead removes everything by age alone, "
+          f"with no floor to protect the last few nights that exist: "
+          f"{gone_ahead}")
     many = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many)
     made = nights_from(date(2026, 11, 1), 150, many, (J.machine_name,))
@@ -16373,18 +16380,18 @@ def test_journal_rotation_and_pruning_across_dst():
     check(sorted(gone) == [n for _d, n in made[:30]]
           and sum(os.path.exists(os.path.join(many, n))
                   for _d, n in made) == 120,
-          f"however far ahead, an unchecked clock keeps the newest 120 "
-          f"nights: {len(gone)}")
+          f"however far ahead, an untrusted clock keeps the newest 120 "
+          f"nights, by count alone: {len(gone)}")
     many2 = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many2)
     made2 = nights_from(date(2026, 11, 1), 150, many2, (J.machine_name,))
     gone2 = _book(J, many2, now).prune(date(2028, 1, 1))       # floor=False
-    check(sorted(gone2) == [n for _d, n in made2[:30]]
-          and sum(os.path.exists(os.path.join(many2, n))
-                  for _d, n in made2) == 120,
-          f"and the same however far ahead with floor left at its "
-          f"default: the newest 120 nights are kept either way: "
-          f"{len(gone2)}")
+    check(sorted(gone2) == sorted(n for _d, n in made2)
+          and not any(os.path.exists(os.path.join(many2, n))
+                      for _d, n in made2),
+          f"and a TRUSTED clock removes every one of them by age alone: "
+          f"every seeded night is more than 120 days before 2028-01-01, "
+          f"and there is no floor to keep any of them: {len(gone2)}")
     # The spring change: 120 days back from 14 Mar 2027 is 14 Nov 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
@@ -16521,16 +16528,12 @@ def test_journal_prune_takes_the_incident_lock():
     folder = tempfile.mkdtemp()
     now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
     b = _book(J, folder, now)
-    # 121 nights, one more than keep_days: the floor (always applied, see
-    # prune()'s docstring) protects the newest 120 of them, so exactly the
-    # single oldest is ever due for removal -- a lone night file would
-    # otherwise BE the newest 120 trivially and never age out at all.
-    from datetime import timedelta
-    for i in range(121, 0, -1):
-        d = date(2026, 11, 1) - timedelta(days=i)
-        open(os.path.join(b.folder, J.machine_name(d.isoformat())), "w") \
-            .write("x\n")
-    old_name = J.machine_name("2026-07-03")
+    # prune() defaults to floor=False (a trustworthy clock, the ordinary
+    # case): purely by age, no newest-N floor at all, so a single old
+    # night file is removed on its own, whatever else does or does not
+    # exist alongside it.
+    old_name = J.machine_name("2020-01-01")
+    open(os.path.join(b.folder, old_name), "w").write("x\n")
 
     order = []
     holding = threading.Event()
@@ -16609,7 +16612,18 @@ def test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled():
 
     now = [boot]
     perf = [0.0]
-    svc = _svc(S, work, now, ntp_query=lambda: 0.01,
+
+    def real_ntp_query():
+        # A real time server measures against the true elapsed time,
+        # which perf_counter tracks (it cannot be stepped by whatever
+        # stepped `now`): this is the offset an actual server would
+        # report, so a recheck after the jump below genuinely still
+        # catches the wrong clock, rather than a fixed "it's fine"
+        # answer that could never have noticed anything either way.
+        true_now = boot + timedelta(seconds=perf[0])
+        return (now[0] - true_now).total_seconds()
+
+    svc = _svc(S, work, now, ntp_query=real_ntp_query,
               perf_counter=lambda: perf[0])
     svc.start(thread=False)                     # a good clock at boot
     check(svc.clock_check["level"] == "ok", "the boot-time check passed")
@@ -16627,10 +16641,159 @@ def test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled():
 
     check(any(r.get("outcome") == "jumped" for r in svc.journal),
           "the jump itself is noticed and journaled")
+    check(svc.clock_check["level"] != "ok",
+          "the recheck the jump triggers genuinely still catches the "
+          "wrong clock (a real time server would), so trust is not "
+          "wrongly restored")
     check(len(unique_dates()) >= 120,
           f"and nothing beyond the newest 120 nights is ever removed, "
           f"however this tick's own housekeeping used the wrong date: "
           f"{len(unique_dates())}")
+    print("  ok")
+
+
+def test_journal_prune_trusted_clock_deletes_purely_by_age():
+    section("journal: prune() with a trusted clock (floor=False) deletes "
+            "purely by age, even a handful of nights spread over years "
+            "(a seasonal show), with no newest-N floor to protect any of "
+            "them (round 2 review of PR 25: an unconditional floor had "
+            "overcorrected the round 1 fix, and a seasonal show could "
+            "then never age files out at all)")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    # The reviewer's own case: 10 nights over the last two years, none of
+    # them recent, all genuinely more than 120 days old.
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    lb = J.Logbook(folder=tmp, clock=lambda: datetime.now(utc))
+    removed = lb.prune(today, state="BOOT", floor=False)
+    check(sorted(removed) == sorted(names),
+          f"a trusted clock removes every one of these 10 nights: "
+          f"{removed}")
+    check(not any(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "and none of them are left on disk")
+    print("  ok")
+
+
+def test_journal_prune_untrusted_clock_keeps_them_all():
+    section("journal: prune() with an untrusted clock (floor=True) "
+            "removes nothing by age at all; with only a handful of "
+            "nights on disk, every one of them IS 'the newest 120'")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    now = [datetime(2026, 9, 27, 12, 0, tzinfo=utc)]
+    lb = J.Logbook(folder=tmp, clock=lambda: now[0])
+    removed = lb.prune(today, state="BOOT", floor=True)
+    check(removed == [],
+          f"an untrusted clock removes nothing: {removed}")
+    check(all(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "every one of the 10 nights is still there")
+    print("  ok")
+
+
+def test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning():
+    section("scheduler: sleeping for days and waking again looks like a "
+            "jump too (the wall clock moves, perf_counter barely does), "
+            "but a genuinely correct clock is re-confirmed at once, not "
+            "left distrusted, and pruning resumes normally")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    now = [boot]
+    perf = [0.0]
+    # A genuinely correct clock throughout: unlike a bad jump, a real time
+    # server agrees with it before AND after the sleep.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+
+    # The machine sleeps for three days over a long weekend; perf_counter
+    # (suspend time is not counted) barely advances, but the wall clock
+    # genuinely did move three real days.
+    now[0] = boot + timedelta(days=3)
+    perf[0] = 0.3
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "sleep and wake is itself noticed and journaled, the same as "
+          "any other jump")
+    check(svc.clock_check["level"] == "ok",
+          "but the recheck it triggers finds a genuinely correct clock, "
+          "so trust is restored, not left lost")
+    check(svc._clock_trusted(), "and the service agrees it is trusted")
+
+    # An old night added after waking is removed by age, proving pruning
+    # is not stuck refusing to trust the clock just because a jump was
+    # noticed once.
+    old = now[0].date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+    gone = svc.logbook.prune(now[0].date(), state="BOOT",
+                             floor=not svc._clock_trusted())
+    check(gone == [old_name],
+          f"and age-based pruning resumes normally after waking: {gone}")
+    print("  ok")
+
+
+def test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping():
+    section("scheduler: Service's own housekeeping, not just Logbook.prune() "
+            "called directly, computes floor from LIVE trust: a trusted "
+            "clock deletes an old night by age even with only one night "
+            "on disk, far fewer than the newest-120 floor would ever let "
+            "age alone touch")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    old = boot.date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+
+    now = [boot]
+    # A trusted clock from the start: no jump, no ambiguity.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0)
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the clock is trusted")
+    check(not os.path.exists(os.path.join(nights, old_name)),
+          "and Service's own housekeeping removed the 200-day-old night "
+          "by age alone, through its normal start-up tick, not because "
+          "this test called Logbook.prune() itself")
     print("  ok")
 
 
@@ -18227,6 +18390,10 @@ if __name__ == "__main__":
     test_journal_prune_never_removes_a_partial_by_its_name_date()
     test_journal_prune_takes_the_incident_lock()
     test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled()
+    test_journal_prune_trusted_clock_deletes_purely_by_age()
+    test_journal_prune_untrusted_clock_keeps_them_all()
+    test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning()
+    test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping()
     test_journal_nightly_summary()
     test_journal_incident_bundle()
     test_journal_a_full_disk_stops_the_logging_not_the_show()

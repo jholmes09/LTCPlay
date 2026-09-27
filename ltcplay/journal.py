@@ -1103,35 +1103,47 @@ class Logbook:
 
     # -- pruning ----------------------------------------------------------
     def prune(self, today, state="BOOT", floor=False):
-        """Remove night files and incident folders older than keep_days
-        before `today`, a date.
+        """Remove night files and incident folders, on one of two rules
+        chosen by `floor`, never both at once.
+
+        `floor=False` says the clock can be trusted (the time server just
+        agreed with it, or has agreed with it since, with no jump noticed
+        in between -- Service computes this fresh every time it asks, from
+        its live state, never a snapshot taken once at start): everything
+        older than keep_days before `today` is removed, by the date in the
+        name, and nothing else is; there is no floor at all, so a
+        seasonal show that logs only a handful of nights a year still gets
+        its year-old files cleaned up.
+
+        `floor=True` says the clock cannot be trusted right now: nothing
+        is removed by age at all, whatever `today` says. Instead the
+        newest keep_days nights that exist, and the newest keep_days
+        incident folders that exist, are kept and everything older than
+        those is removed -- so a clock nobody has checked yet, or one that
+        looked fine at boot and then jumped later (an NTP step, an RTC
+        glitch, someone setting it by hand), can never call good history
+        old, while a machine that runs for years still is not left to
+        grow its logs without any bound at all (round 1 and round 2
+        review of PR 25: this floor was unconditional, then made
+        conditional on `floor` in a way a later clock jump could defeat,
+        then made unconditional again in a way that stopped a normal
+        seasonal show from ever aging files out; it is conditional once
+        more, but now on trust Service keeps genuinely current).
 
         By the date in the name, so a change of clocks, a file copied in
-        with an old timestamp or a clock set wrong for an hour cannot remove
-        the wrong night. Only names this module writes, only plain files
-        (nights) and plain folders (incidents), only in its own folder.
-
-        The newest keep_days nights that exist, and anything as new as the
-        oldest of them (incidents included), are ALWAYS kept, whatever the
-        date says and whatever the caller passes for `floor`: a clock
-        nobody has checked, or one that looked fine at boot and then
-        jumped, must never be trusted enough to remove nearly everything
-        (round 1 review of PR 25, blocker: this floor used to be
-        unconditional, the PR made it depend on `floor`, and a clock that
-        passed the one-shot check at start and then jumped later kept
-        pruning as if it were still trusted). `floor` is still accepted,
-        for a caller that wants to say the clock is unchecked, but it no
-        longer weakens this protection either way. Returns the names
-        removed.
+        with an old timestamp or a clock set wrong for an hour cannot
+        remove the wrong night. Only names this module writes, only plain
+        files (nights) and plain folders (incidents), only in its own
+        folder. Returns the names removed.
 
         A `.partial` incident folder -- one save_incident() is still
         writing, or one a crash left mid-write -- is never removed by the
-        date in its name: that date is the night the incident is FOR, not
-        when it was written, so an old night's incident, or a wrong clock,
-        must never make this delete work in progress. A separate rule
-        below removes a `.partial` only once it has sat unfinished for
-        more than PARTIAL_STALE_DAYS, which can only mean whatever was
-        writing it is gone.
+        date in its name, under either rule: that date is the night the
+        incident is FOR, not when it was written, so an old night's
+        incident, or a wrong clock, must never make this delete work in
+        progress. A separate rule below removes a `.partial` only once it
+        has sat unfinished for more than PARTIAL_STALE_DAYS, which can
+        only mean whatever was writing it is gone.
 
         Takes the same lock save_incident() uses, so the two can never
         interleave: this cannot delete a folder save_incident() is still
@@ -1175,15 +1187,18 @@ class Logbook:
                 except ValueError:
                     continue
                 found.append((d, name, inc_root, True))
-            # Unconditional: see the docstring. `floor` is accepted above
-            # for callers that still pass it, but it plays no part here.
-            keep_from = cutoff
-            nights = sorted({d for d, _n, _r, inc in found if not inc},
-                            reverse=True)[:self.keep_days]
-            if nights:
-                keep_from = min(cutoff, nights[-1])
+            # Exactly one rule applies, never a mix of both: see the
+            # docstring. `keep_from` of None means "keep everything found
+            # by the date rule" (an untrusted clock, fewer than keep_days
+            # nights on disk yet -- a seasonal show early in its life).
+            if floor:
+                nights = sorted({d for d, _n, _r, inc in found if not inc},
+                                reverse=True)[:self.keep_days]
+                keep_from = nights[-1] if nights else None
+            else:
+                keep_from = cutoff
             for d, name, root, incident in found:
-                if d >= keep_from:
+                if keep_from is None or d >= keep_from:
                     continue
                 p = os.path.join(root, name)
                 try:
@@ -1224,13 +1239,21 @@ class Logbook:
                 what.append(f"{len(nights_gone)} night log file(s)")
             if incidents_gone:
                 what.append(f"{len(incidents_gone)} incident folder(s)")
+            if floor:
+                reason = f"not among the newest {self.keep_days}"
+                text = (f"Removed {' and '.join(what)} kept beyond the "
+                        f"newest {self.keep_days} of each kind, from "
+                        f"{first} to {last}, because this machine's clock "
+                        f"cannot be trusted right now: nothing was removed "
+                        f"by age. Everything from {keep_from} on is kept.")
+            else:
+                reason = f"older than {self.keep_days} days"
+                text = (f"Removed {' and '.join(what)} older than "
+                        f"{self.keep_days} days, from {first} to "
+                        f"{last}. Everything from {keep_from} on is "
+                        f"kept.")
             self.record(actor="system", action="prune", outcome="removed",
-                        reason=f"older than {self.keep_days} days",
-                        text=(f"Removed {' and '.join(what)} older than "
-                              f"{self.keep_days} days, from {first} to "
-                              f"{last}. Everything from {keep_from} on is "
-                              f"kept."),
-                        state=state, night=today,
+                        reason=reason, text=text, state=state, night=today,
                         data={"removed": [n for _d, n, _i in removed]})
         if stale:
             self.record(actor="system", action="prune",

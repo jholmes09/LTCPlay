@@ -1437,9 +1437,11 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '                if d >= keep_from:\n                    continue\n',
-  '                if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                        root, name)), timezone.utc).date() >= keep_from:\n'
+  '                if keep_from is None or d >= keep_from:\n'
+  '                    continue\n',
+  '                if keep_from is None or datetime.fromtimestamp(\n'
+  '                        os.path.getmtime(os.path.join(root, name)),\n'
+  '                        timezone.utc).date() >= keep_from:\n'
   '                    continue\n'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
@@ -1547,19 +1549,18 @@ MUTATIONS = [
   '        if False:\n            return self.machine.date\n'
   '        return self.logbook.night_of(now)'),
 
- ("the floor is conditional again", "ltcplay/journal.py",
-  '            keep_from = cutoff\n'
-  '            nights = sorted({d for d, _n, _r, inc in found if not inc},\n'
-  '                            reverse=True)[:self.keep_days]\n'
-  '            if nights:\n'
-  '                keep_from = min(cutoff, nights[-1])\n',
-  '            keep_from = cutoff\n'
+ ("a trusted clock still applies the newest-120 floor",
+  "ltcplay/journal.py",
   '            if floor:\n'
-  '                nights = sorted(\n'
-  '                    {d for d, _n, _r, inc in found if not inc},\n'
-  '                    reverse=True)[:self.keep_days]\n'
-  '                if nights:\n'
-  '                    keep_from = min(cutoff, nights[-1])\n'),
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if True:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
+
+ ("an untrusted clock prunes by age", "ltcplay/journal.py",
+  '            if floor:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if False:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
 
  ("pruning trusts a clock nobody has checked",
   "ltcplay/schedule_service.py",
@@ -1640,20 +1641,28 @@ MUTATIONS = [
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
   '                if prune:\n'
   '                    self._pruned_for = d\n'
-  '                # A clock the time server agreed with prunes by age alone;\n'
-  '                # one nobody could check (10 minutes of running, no time\n'
-  '                # server) also keeps the newest nights that exist.\n'
-  '                floor = (self.clock_check or {}).get("level") != "ok"\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
   '            if prune:\n'
   '                self._log(self.logbook.prune, d, state=state, floor=floor)\n',
   '                look = not self._looked_back\n'
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
-  '                # A clock the time server agreed with prunes by age alone;\n'
-  '                # one nobody could check (10 minutes of running, no time\n'
-  '                # server) also keeps the newest nights that exist.\n'
-  '                floor = (self.clock_check or {}).get("level") != "ok"\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
   '                self._looked_back = True\n'
@@ -2441,7 +2450,7 @@ MUTATIONS = [
 
  ("a checked clock still keeps the newest nights",
   "ltcplay/schedule_service.py",
-  '                floor = (self.clock_check or {}).get("level") != "ok"',
+  '                floor = not self._clock_trusted()',
   '                floor = True'),
 
  ("an unchecked clock prunes by age alone", "ltcplay/schedule_service.py",

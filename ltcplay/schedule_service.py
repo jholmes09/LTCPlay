@@ -951,11 +951,22 @@ class Service:
     # would otherwise call every night old on the first tick.
     PRUNE_AFTER_S = 600
 
+    def _clock_trusted(self):
+        """Live, not cached: computed fresh from the current state every
+        time it is asked, never from a snapshot taken once at start or
+        once at the last check (round 2 review of PR 25). True only when
+        the time server agreed with this clock AND nothing has moved it
+        out from under that agreement since (_watch_clock's own jump
+        detection resets this the instant it notices one, and restores it
+        the instant the clock is re-checked -- see check_clock())."""
+        return not self._clock_trust_lost and \
+            (self.clock_check or {}).get("level") == "ok"
+
     def _prune_allowed(self):
+        if self._clock_trusted():
+            return True
         if self._clock_trust_lost:
             return False
-        if (self.clock_check or {}).get("level") == "ok":
-            return True
         return (self.clock() - self._born).total_seconds() >= \
             self.PRUNE_AFTER_S
 
@@ -998,10 +1009,14 @@ class Service:
                 prune = self._pruned_for != d and self._prune_allowed()
                 if prune:
                     self._pruned_for = d
-                # A clock the time server agreed with prunes by age alone;
-                # one nobody could check (10 minutes of running, no time
-                # server) also keeps the newest nights that exist.
-                floor = (self.clock_check or {}).get("level") != "ok"
+                # Computed fresh, right here, never from a snapshot taken
+                # earlier (round 2 review of PR 25): a trusted clock (the
+                # time server agreed, and _watch_clock has noticed no jump
+                # since) prunes by age alone; anything else keeps the
+                # newest nights and incident folders that exist and
+                # removes nothing by age, so a wrong clock can never call
+                # good history old.
+                floor = not self._clock_trusted()
             if look:
                 self._look_back(d, state)
             if prune:
