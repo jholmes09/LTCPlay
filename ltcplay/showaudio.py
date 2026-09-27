@@ -39,6 +39,10 @@ import time
 from collections import deque, namedtuple
 
 RATE = 48000                 # 48 kHz end to end (handoff section 4a)
+MAX_OUTPUTS = 8              # Jeff, 2026-09-27: at most 8 outputs,
+MAX_STEMS = 8                # and at most 8 stems a cue
+LOCK_FILE = "ltcplay_show_audio.lock"
+LOCK_WAIT_S = 3.0            # a closing audio process gets this long to go
 ROLES = ("show", "intermission")
 
 # Mixer and shared memory state codes.
@@ -184,6 +188,10 @@ class AudioCue:
         if not isinstance(stems, list) or not stems:
             raise AudioConfigError(f"{where}: {what} has no 'stems'. List "
                                    f"the WAV files it plays.")
+        if len(stems) > MAX_STEMS:
+            raise AudioConfigError(
+                f"{where}: {what} lists {len(stems)} stems. A cue plays at "
+                f"most {MAX_STEMS}: mix some of them together first.")
         adl = doc.get("allow_different_lengths", False)
         if not isinstance(adl, bool):
             raise AudioConfigError(f"{where}: {what}.allow_different_lengths"
@@ -242,10 +250,10 @@ class AudioConfig:
                 f"every stem must be exported at 48 kHz.")
         ch = doc.get("channels")
         if not isinstance(ch, int) or isinstance(ch, bool) \
-                or not 1 <= ch <= 64:
+                or not 1 <= ch <= MAX_OUTPUTS:
             raise AudioConfigError(
                 f"{where}: 'clock.audio.channels' is how many outputs of "
-                f"the interface the show uses, 1 to 64.")
+                f"the interface the show uses, 1 to {MAX_OUTPUTS}.")
         fades = {}
         for key, default, top in (("hold_fade_ms", 250, 2000),
                                   ("abort_fade_ms", 1000, 5000),
@@ -1131,11 +1139,50 @@ def make_sd(spec):
     return import_sounddevice(spec.get("platform"))
 
 
+def lock_path(spec=None):
+    """One show audio process per user on this computer: the lock sits
+    beside ltcplay's own "one sender on the rig" lock (onlyone.path())."""
+    if spec and spec.get("lock"):
+        return spec["lock"]
+    from . import onlyone
+    return os.path.join(os.path.dirname(onlyone.path()), LOCK_FILE)
+
+
+def take_lock(spec, clock=time.monotonic, sleep=time.sleep):
+    """The audio process's own single-instance lock, the same kind as
+    onlyone.OutputLock (a flock, or a byte-range lock on Windows), so the
+    operating system drops it the moment the process holding it dies.
+    Waits LOCK_WAIT_S for one that is closing. Returns the held lock, or
+    raises onlyone.AlreadyRunning."""
+    from . import onlyone
+    lock = onlyone.OutputLock(where=lock_path(spec),
+                              note=f"show audio on {spec.get('device')}")
+    end = clock() + float(spec.get("lock_wait_s", LOCK_WAIT_S))
+    while True:
+        try:
+            return lock.acquire()
+        except onlyone.AlreadyRunning:
+            if clock() >= end:
+                raise
+            sleep(0.05)
+
+
 def child_main(conn, arr, spec):
     """The audio process. Runs until told to close, or until the main
     program goes away (its end of the pipe closes), so the sound never
-    outlives the program that started it."""
+    outlives the program that started it. Only one runs at a time on this
+    computer: a second refuses, says so, and exits."""
     try:
+        from . import onlyone
+        try:
+            held = take_lock(spec)
+        except onlyone.AlreadyRunning as e:
+            who = f" ({_clean(e.holder)})" if e.holder else ""
+            conn.send(("refused", f"Another show audio process is already "
+                                  f"running on this computer{who}. Only one "
+                                  f"may play the show audio at a time: stop "
+                                  f"the other ltcplay first."))
+            return
         sd = make_sd(spec)
         import numpy  # noqa: F401
     except Exception as e:
@@ -1161,6 +1208,7 @@ def child_main(conn, arr, spec):
         pass
     finally:
         proc.close()
+        held.release()
 
 
 class AudioEngine:

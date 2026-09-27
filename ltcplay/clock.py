@@ -1501,10 +1501,19 @@ class AudioMaster(Clock):
             now = self._clock()
             if not self._live:
                 raise ClockConfigError("Nothing is running. Press Run first.")
-            device = self._device_ok
-            if device and role in self._load_failed:
+            if not self._device_ok:
+                # Jeff, 2026-09-27: a show never starts without its sound.
+                # Losing the interface once a show is running is different:
+                # that carries on and recovers (see _lost).
+                why = self._fault or "It has not opened yet."
+                msg = (f"The show will not start: the show audio interface "
+                       f"{self.audio.device} is not available. "
+                       f"{_strip_stop(why)}")
+                self._event(msg)
+                raise ClockConfigError(msg)
+            if role in self._load_failed:
                 raise ClockConfigError(self._load_failed[role])
-            if device and role not in self._loaded:
+            if role not in self._loaded:
                 raise ClockConfigError(
                     f"The {role} audio is still loading. Try again in a few "
                     f"seconds.")
@@ -1518,24 +1527,11 @@ class AudioMaster(Clock):
             self.cues_played += 1
             self._set_paused(False)
             self._restore_level()
-            if device:
-                self._send(("play", role, 0, 0, self._token))
-                self._mode = "wait"
-                self._wait_since = now
-                self._kick()
-                self._event(f"timecode from 00:00:00:00 for "
-                            f"{label or 'a cue'}, following its audio")
-            else:
-                # No interface: start on this computer's clock and let the
-                # audio join when it comes back, as for a loss mid-show.
-                self._mode = "freerun"
-                self._epoch = now
-                self._next_return = now
-                self._lost_at = now
-                self._event(f"timecode from 00:00:00:00 for "
-                            f"{label or 'a cue'} on this computer's own "
-                            f"clock: the show audio interface is not "
-                            f"available")
+            self._send(("play", role, 0, 0, self._token))
+            self._mode = "wait"
+            self._wait_since = now
+            self._event(f"timecode from 00:00:00:00 for "
+                        f"{label or 'a cue'}, following its audio")
             self._kick()
             return now
 
