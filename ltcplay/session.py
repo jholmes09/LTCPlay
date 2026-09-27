@@ -313,6 +313,8 @@ class Session:
                 self.clock = clock_mod.build(
                     self.tl.clock, self.tl, self.player.feed_timecode,
                     log=self.log, no_output=self.no_output,
+                    on_pause=lambda: self._hard_park(True),
+                    on_resume=lambda: self._hard_park(False),
                     bind_ip=self.bind, on_stop=self.player.drop_clock)
             except clock_mod.ClockConfigError as e:
                 raise SessionError(str(e))
@@ -345,8 +347,11 @@ class Session:
                 self.dev = None
                 self.channel = 1
                 self.rate = 48000
-                self.input_summary = ("none, this machine is the show clock "
-                                      "(Art-Net timecode)")
+                self.input_summary = (
+                    "none, this machine is the show clock "
+                    + ("(the show audio)"
+                       if self.clock.source == "audio_master"
+                       else "(Art-Net timecode)"))
                 self.dec = LTCDecoder(self.rate)
                 return self
 
@@ -474,7 +479,13 @@ class Session:
         self._running = True
         if self.clock is not None:
             # Run pressed. A master still sends nothing until a cue plays.
-            self.clock.start()
+            # audio_master opens its audio interface here, and one that is
+            # there but cannot run the show refuses Run with a sentence.
+            try:
+                self.clock.start()
+            except ValueError as e:
+                self.stop()
+                raise SessionError(str(e))
         # The show file may ask for this mode to be armed from the start. Off
         # unless it says so: a backup that arms itself is not a backup.
         if self.tl.trigger is not None and self.tl.trigger.enabled:
@@ -787,6 +798,15 @@ class Session:
             # refusal here, not the clock's own exception.
             raise SessionError(str(e))
         return pick
+
+    def _hard_park(self, active):
+        """audio_master's Hold, told to the pixels straight away. Uses the
+        player's set_hard_park (PR 20) when this build has it; without it,
+        the repeated frozen frame parks the pixels as it does for
+        ArtNetMaster today."""
+        park = getattr(self.player, "set_hard_park", None)
+        if park is not None:
+            park(active)
 
     def clock_halt(self):
         """Stop the show clock now. Nothing is sent until the next cue."""
