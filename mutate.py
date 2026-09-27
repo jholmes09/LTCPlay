@@ -2510,6 +2510,13 @@ MUTATIONS = [
   "            if False:\n"
   "                self.hold_epoch += 1"),
 
+ ("midnight sweeping a held night never bumps the hold epoch",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state == sch.HOLD:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
  ("the second check re-Holds instead of only reading the state",
   "ltcplay/announce.py",
   "            if self.hold_requester is not None \\\n"

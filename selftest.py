@@ -18520,6 +18520,41 @@ def test_journal_a_show_past_midnight_keeps_its_night():
     print("  ok")
 
 
+def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
+    section("scheduler: the hold epoch bumps when midnight sweeps away a "
+            "night left on Hold, not only when an operator's own Hold or "
+            "Resume crosses that line during the night (merge with #14, "
+            "2026-09-26: _ensure_night's own end-of-night write_summary "
+            "touches the same crossing hold_for_announcement's epoch "
+            "depends on, and that crossing happens by direct assignment, "
+            "not through _apply's own before/after check)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 10)]
+    svc = _svc(S, work, now)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: between shows, not mid-show: {svc.machine.state}")
+    out = svc._apply(_op(S, S.HOLD_ON))
+    check(out.accepted and svc.machine.state == S.HOLD,
+          f"setup: the night is on Hold: {svc.machine.state} {out.refused}")
+    epoch_before = svc.hold_epoch
+    check(epoch_before > 0, "setup: Hold already bumped the epoch once")
+    now[0] = _den(S, 3, 0, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.state != S.HOLD,
+          f"setup: midnight replaced the held night: {svc.machine.state}")
+    check(svc.hold_epoch != epoch_before,
+          f"the epoch must bump on this crossing too: an announcement's "
+          f"Hold claim from last night must never still look current after "
+          f"midnight swept the night it was claimed on. Stayed at "
+          f"{svc.hold_epoch}")
+    print("  ok")
+
+
 def test_journal_waiting_lines_are_capped_and_counted():
     section("journal: lines waiting for a full disk are capped, and the "
             "ones let go are counted")
@@ -18912,6 +18947,7 @@ if __name__ == "__main__":
     test_journal_a_torn_last_line_after_a_power_cut()
     test_journal_a_repeating_fault_does_not_flood()
     test_journal_a_show_past_midnight_keeps_its_night()
+    test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night()
     test_journal_waiting_lines_are_capped_and_counted()
     test_journal_a_clean_stop_reads_as_one()
     test_journal_screens_come_from_a_list()
