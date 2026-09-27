@@ -2603,13 +2603,13 @@ def build():
 
  ('audio_master: Windows falls back to the shared mixer on its own',
   'ltcplay/showaudio.py',
-  '        if allow_shared:\n            order += [',
-  '        if True:\n            order += ['),
+  '        order = list(WINDOWS_APIS) + (list(WINDOWS_SHARED_APIS)\n                                      if allow_shared else [])',
+  '        order = list(WINDOWS_APIS) + list(WINDOWS_SHARED_APIS)'),
 
  ("audio_master: WASAPI is preferred over the interface's ASIO driver",
   'ltcplay/showaudio.py',
-  '        order = [("ASIO", False), ("Windows WASAPI", True)]',
-  '        order = [("Windows WASAPI", True), ("ASIO", False)]'),
+  '    ("ASIO", False, "ASIO", True),\n    ("Windows WASAPI", True, "WASAPI exclusive", True),\n',
+  '    ("Windows WASAPI", True, "WASAPI exclusive", True),\n    ("ASIO", False, "ASIO", True),\n'),
 
  ('audio_master: WASAPI is opened in shared mode',
   'ltcplay/showaudio.py',
@@ -2879,6 +2879,29 @@ def build():
   'ltcplay/showaudio.py',
   '        try:\n            outdata[:] = m.render(frames)\n        except Exception:\n            self.render_errors += 1\n',
   '        try:\n            outdata[:] = m.render(frames)\n            if outdata.any():\n                self._loud_at = now\n            self.last_cb = getattr(self, "_loud_at", self.last_cb)\n        except Exception:\n            self.render_errors += 1\n'),
+
+
+ # -- audio_master, Windows bench B23 (the Scarlett): every allowed host
+ # API is tried in order until one takes 48 kHz.
+ ('audio_master: one host API refusing 48 kHz ends the search (B23)',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it will not play {channels} output(s) "',
+  '            raise Refusal(str(e))\n            tried.append((label, f"it will not play {channels} output(s) "'),
+
+ ('audio_master: WDM-KS is never tried',
+  'ltcplay/showaudio.py',
+  '    ("Windows WDM-KS", False, "WDM-KS", True),\n',
+  ''),
+
+ ('audio_master: an endpoint someone else holds ends the search',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it would not open ({_clean(e)})"))\n            continue\n',
+  '            raise Unavailable(str(e))\n'),
+
+ ('audio_master: the refusal does not say what was tried and why',
+  'ltcplay/showaudio.py',
+  '    said = "; ".join(f"{label}: {why}" for label, why in tried)\n',
+  '    said = "nothing worked"\n'),
 
 ]
 

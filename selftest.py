@@ -18521,7 +18521,8 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
         return {"name": name, "hostapi": api, "max_output_channels": outs}
 
     cb = lambda *a: None
-    win = ("MME", "Windows DirectSound", "Windows WASAPI", "ASIO")
+    win = ("MME", "Windows DirectSound", "Windows WASAPI", "ASIO",
+           "Windows WDM-KS")
     all4 = [dev("Show DSP", i) for i in range(4)]
     s, desc, shared = sa.open_output_stream(sd(win, all4), "show dsp", 8,
                                             48000, cb, platform="win32")
@@ -18548,13 +18549,57 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
     check(shared and "DirectSound" in desc,
           f"allow_shared_mode did not open shared, or did not say so: "
           f"{desc}")
+    # Every allowed API is tried in order until one takes 48 kHz (bench
+    # B23, the Scarlett: WASAPI refused 48 kHz; WDM-KS, DirectSound and MME
+    # took it). Order: ASIO, WASAPI exclusive, WDM-KS, then only with
+    # allow_shared_mode WASAPI shared, DirectSound, MME.
+    def scarlett(**over):
+        d = [dict(dev("Scarlett Solo USB", i, 2), rates=[48000])
+             for i in range(5) if i != 3]           # no ASIO driver
+        for x in d:
+            if x["hostapi"] == 2:                   # WASAPI: 44.1 kHz only
+                x["rates"] = [44100]
+            if x["hostapi"] == 4 and over.get("ks_busy"):
+                x["busy"] = True
+        return sd(win, d)
+
+    def opened(*a, **k):
+        try:
+            return sa.open_output_stream(*a, **k)
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}", None
+
+    s, desc, shared = opened(scarlett(), "Scarlett Solo USB", 2, 48000, cb,
+                             platform="win32")
+    check(s is not None and s.dev["hostapi"] == 4
+          and "WDM-KS, mixer-free" in desc and not shared,
+          f"WASAPI refusing 48 kHz did not move on to WDM-KS: {desc}")
+    try:
+        sa.open_output_stream(scarlett(ks_busy=True), "Scarlett Solo USB",
+                              2, 48000, cb, platform="win32")
+        check(False, "the Scarlett opened through the shared engine unasked")
+    except (sa.Refusal, sa.Unavailable) as e:
+        msg = str(e)
+        check(isinstance(e, sa.Refusal)
+              and "WASAPI exclusive: it will not play 2 output(s) at 48000"
+              in msg and "WDM-KS: it would not open" in msg
+              and "allow_shared_mode" in msg and msg.endswith(".")
+              and "\u2014" not in msg,
+              f"the refusal does not say what was tried and why: {msg}")
+    s, desc, shared = opened(scarlett(ks_busy=True), "Scarlett Solo USB",
+                             2, 48000, cb, allow_shared=True,
+                             platform="win32")
+    check(s is not None and s.dev["hostapi"] == 1 and shared
+          and "DirectSound" in desc
+          and "shared audio engine" in desc,
+          f"with allow_shared_mode the next that works was not used: {desc}")
     s, desc, shared = sa.open_output_stream(
         sd(("Core Audio",), [dev("Show DSP", 0)]), "Show DSP", 8, 48000, cb,
         platform="darwin")
     check("CoreAudio" in desc and not shared,
           f"macOS did not open CoreAudio: {desc}")
     for devs, want, kind in (
-            ([dev("Show DSP", 0, 2)], "has 2 output(s), but the show uses 8",
+            ([dev("Show DSP", 0, 2)], "has 2 output(s), and the show uses 8",
              sa.Refusal),
             ([dev("Show DSP 2", 0)], "is not attached", sa.Unavailable),
             ([dev("Show DSP", 0), dev("show dsp", 0)], "not specific enough",
@@ -18572,7 +18617,9 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
                               platform="darwin")
         check(False, "a device that cannot run at 48 kHz opened")
     except sa.Refusal as e:
-        check("will not play at 48000 Hz" in str(e), f"the rate refusal: {e}")
+        check("will not play 8 output(s) at 48000 Hz" in str(e)
+              and "set the interface to 48 kHz" in str(e),
+              f"the rate refusal: {e}")
     # SD_ENABLE_ASIO has to be in the environment BEFORE sounddevice is
     # imported, and only on Windows.
     import inspect

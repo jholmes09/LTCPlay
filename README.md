@@ -210,11 +210,15 @@ How it runs:
 - Silence in the music is never mistaken for the interface dropping out: that
   is judged only by whether the audio keeps moving, never by how loud it is.
 - On Windows the audio never goes through Windows' shared audio engine (the
-  one that broke up 3 to 6 times a show on the bench). It uses the
-  interface's ASIO driver when it has one, otherwise WASAPI exclusive mode,
-  and otherwise refuses with a sentence. `"allow_shared_mode": true` lets it
-  play through the shared engine anyway: for a bench test only, and the page
-  says so in red. On a Mac it uses CoreAudio.
+  one that broke up 3 to 6 times a show on the bench). It tries, in order,
+  the interface's ASIO driver, WASAPI exclusive mode and WDM-KS, and uses the
+  first that plays the show's outputs at 48 kHz (on the bench the Scarlett
+  refused 48 kHz through WASAPI and took it through WDM-KS). WDM-KS only
+  opens when nothing else is using the interface. If none works it refuses
+  with a sentence naming each one it tried and why. `"allow_shared_mode":
+  true` then also tries WASAPI shared, DirectSound and MME: for a bench test
+  only, and the page says so in red. The page shows which way was chosen and
+  whether it is mixer-free. On a Mac it uses CoreAudio.
 - Hold fades the music out over `hold_fade_ms` and freezes the timecode on the
   frame the audio stopped on, still sending it so MadMapper and BEYOND hold.
   Resume fades the music back in from that exact point and the timecode
