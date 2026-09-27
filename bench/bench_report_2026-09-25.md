@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B17 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B18 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -26,6 +26,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B15 MadMapper offset over 10 Holds in one show | No ratchet, no recovery | -10 ms before any Hold; -42 after Hold 1, -57 after Hold 2, then creeping back about 2 ms per Hold to -43 over the last 60 s; flat within seconds of each resume; worst -64 ms, inside the 100 ms allowance; every freeze lands exactly on the held frame |
 | B16 Timecode by broadcast (Jeff's yes) | FAILED for MadMapper / PASSED for BEYOND | Broadcast to 192.168.7.255 and 255.255.255.255 reached BEYOND (listening on 0.0.0.0) but not MadMapper (listening on 192.168.4.42 and 127.0.0.1 only); the show must send to each program's own address |
 | B17 BEYOND long run on the demo | PASSED for the 2 h the demo allows | 6 shows: BEYOND followed each identically (beams 0.23 to 0.32 s after start, dark after each show), memory flat at 1.3 GB, no effect on ltcplay (0 frames skipped) or MadMapper (1 to 34 ms). The demo shows its 1 h limit box but keeps running, then crashes at exactly 2 h (3 times now) |
+| B18 Audio start lock and Windows audio glitches | NEEDS A DECISION | MadMapper's audio locks 46 to 78 ms apart from show to show (buffer size does not fix it); this evening Windows' shared audio engine broke 3 to 6 times per show (heard by Jeff), even with MadMapper out of the loop. Proposal to make audio the master clock sent to the main session; the audio path must bypass the Windows mixer either way |
 
 ## B0 The machine
 
@@ -352,7 +353,7 @@ From then on BEYOND showed "An error occurred in the application" (continue / re
 
 **Intermission clip did not loop.** Bank-2 played its 120 s LTC clip (`LTC_intermission_hour1_120s.wav`) once after each show and was then silent for the rest of the 12.5-minute gap (`B9_intermission_after_show12.png`: timeline at 3:20 and still playing, clip bar longer than the audio). This is my bench setup, not a MadMapper fault: the timeline is longer than its clip. **For Jeff's real intermission: make the Bank-2 timeline exactly as long as its content (or loop the clip itself), and check it loops once, by ear.**
 
-**Bench caveat:** at 02:41 the Bank-1 audio clip was labelled `LTC_audio_track_460s.wav` in MadMapper (`B9_show6.png`), not the music-plus-LTC file I meant to load. The timecode channel measurement stands. I cannot say from this run whether Jeff's music played on the left channel.
+**Correction (B18):** the Bank-1 clip label read `LTC_audio_track_460s.wav`, but that label is stale. MadMapper's clip inspector shows the file was the music-plus-LTC file, so Jeff's music did play on the left.
 
 **Earlier soaks the same day** (for the record): soak 1, 7:20 cues with 30 s gaps, 1 h 34 min clean until an accidental unplug; soak 2, 120 cues of 58 s, 2 h, timecode 19 skipped in 208,781, pixels no drift, SSD 32 to 67 °C, no stall. The two unexpected shutdowns of 09-25 (10:12 freeze, 15:30 unplug) were the only problem events.
 
@@ -534,6 +535,65 @@ Who held UDP 6454 during the test: MadMapper on **192.168.4.42** and **127.0.0.1
 - Cost of watching: this run's heartbeat gaps (up to 104 ms, against 75 ms in B9) came with BEYOND in front and a screen probe plus screenshots running. Nothing was dropped.
 
 Evidence: `B17_beyond_2h_crash.png`, `B17_beyond_following_behind_limit_box.png`, `B17_beyond_problem_report_head.txt` (machine and user names removed), `B17_long_run.txt` (per-show numbers).
+
+
+## B18 Audio: where it locks at each start, and glitches in Windows' audio
+
+**Verdict: two separate problems.**
+- (1) **MadMapper's audio locks at a different point every show start:** a 46 to 78 ms spread (1.4 to 2.3 frames) against ltcplay's timecode, while its video varies only about 15 ms. Its buffer setting does not fix this.
+- (2) **Windows' shared audio engine breaks the stream 3 to 6 times per 7:24 show this evening.** Each break is a 2 to 6 frame jump, and Jeff heard one at the exact moment one was logged. It happens with MadMapper out of the loop, and ltcplay's clock skipped 1 to 20 frames per show at the same time.
+
+This led to the proposal to make audio the master clock, sent to the main session. Run on 2026-09-26 from 20:00 to 21:40 on main `fa5274a`, loopback only. Jeff listened on the Scarlett.
+
+**Method.**
+- `scratch/b18.py`: 15 show starts per setting, each 20 s of Art-Net timecode from 00:00:00:00 to MadMapper, sent from a throwaway sender on `arttimecode()`. Where the audio locked comes from the LTC in the music-plus-LTC file (decoded from the Scarlett loopback). Where the video locked comes from the heartbeat.
+- `scratch/rec_wav.py`: records the whole show's output to a WAV and logs every "data discontinuity" Windows reports.
+- `scratch/listen_wav.py`: decodes the LTC from that recording; any jump in the decoded timecode means the audio skipped.
+- The absolute audio figures include the recorder's own delay, so only the spread and changes between runs mean anything.
+
+**1. Start lock** (15 starts each, one continuous recording, no recorder restarts unless noted):
+
+| MadMapper audio setting | Audio lock spread (standard deviation) | Video spread | Audio behind timecode (includes recorder delay) |
+|---|---|---|---|
+| DirectSound 44.1 kHz, 2048 samples, 4K desktop | **78 ms** (22.8) | 15 ms | -206 to -284 ms |
+| the same at 1080p (1 recorder restart) | **46 ms** (14.9) | 16 ms | -226 to -272 ms |
+| 48 kHz, 512 samples, 1080p | **56 ms** (16.1) | 15 ms | **-99 to -155 ms** |
+
+- The audio lock point steps about 17 ms from one start to the next and wraps every 3 or 4 starts. MadMapper appears to pick a lock point anywhere in a window 2 to 3 frames wide and not correct it afterwards (B9: it then holds that offset for the whole show).
+- A smaller buffer brought the audio about 110 ms closer, but did not shrink the spread.
+- For comparison, B9's 12 shows had an audio-minus-video spread of 56 ms.
+
+**2. Glitches in Windows' audio this evening** (full 7:24 shows, ltcplay as the clock, pixels on):
+
+| Setup | Stream breaks during the show | ltcplay timecode frames skipped |
+|---|---|---|
+| 48 kHz, 512, one file (music left, LTC right) | 2 caught (the recorder was also disturbed by my own tests) | 7 |
+| 48 kHz, 2048, two tracks: Jeff's original music routed left + an LTC file routed right at 10% (MadMapper Audio Routing) | at 0:08, 1:11 and **1:39 (Jeff heard it)**, 3:33, 4:35 (Jeff opening Sound settings) | **20** |
+| 44.1 kHz, 2048, two tracks | 3 (0:12 with a 30 ms dropout, 0:17, 2:17) | 2 |
+| 44.1 kHz, 2048, one file | 4 (0:04, 0:11, 0:23, 1:50) | 1 |
+| no MadMapper: a Python player straight to the Scarlett, 3 min | **3, almost exactly 30 s apart** | not running |
+| the same with BEYOND open | 0 | not running |
+| 44.1 kHz, one file, **BEYOND following** | 1 (3:51) | **0** |
+| 44.1 kHz, two tracks, BEYOND following | 6 (2:06, 3:11, 3:23, **4:00: Jeff heard it**, 4:48, 5:04) | 6 |
+
+- Each break shows in the recording as the timecode jumping 2 to 6 frames (67 to 200 ms). Jeff heard glitches at two of the logged moments.
+- **What it is not:**
+  - Not load: CPU averaged 17%.
+  - Not drivers hogging the processor: DPC time peaked under 1% (one-second samples).
+  - Not the power plan: High performance, minimum processor state 100%.
+  - Not the system timer: already at 1 ms without BEYOND.
+  - Not MadMapper: the direct player glitched too.
+  - Not the "clicks" my script flags on the music channel: they are at the same moments in every recording, within about 0.02 s, so they are sharp moments in the music itself.
+- **What is different:** overnight (B9), the same detector logged about 7 breaks in 4 hours, and ltcplay skipped 0 frames in 12 shows. The cause of the change this evening was not found. Things that did change during the evening: the display fell back to 4K while Jeff was away (reset to 1080p), BEYOND was closed and reopened, and a second copy of the drive watchdog is running.
+- **Also found:**
+  - **USB selective suspend is enabled** in the power plan. That is a common cause of USB audio dropouts, and a Windows setting for Jeff to decide.
+  - Windows runs the Scarlett at **44.1 kHz only**: its built-in driver offers no other rate. With MadMapper at 48 kHz, Windows converts every sample.
+  - Switching the monitor off or on removes or adds its HDMI "Display Audio" device, and Windows rebuilds its audio setup; a burst of breaks followed at 21:34:31 and 21:34:43.
+- **Correction to B9:** Bank-1's audio clip in the overnight soak **was** the music-plus-LTC file (MadMapper's timeline label was stale; its clip inspector shows the file). Jeff's music did play on the left.
+
+**What this means:**
+- **(1)** is a design point, not a setting. With audio chasing timecode, each start lands up to about 2 frames apart. The main session has the proposal to make audio the master clock: either ltcplay plays the audio and derives timecode from it, or a dedicated player plays the music plus an LTC track and ltcplay chases that LTC as it already does at Dollywood.
+- **(2)** has to be fixed in the audio path whatever the design: an output that bypasses the Windows mixer (ASIO or WASAPI exclusive) on the show's own interface, tested on site, with USB selective suspend off and a monitor or dummy plug that never disconnects.
 
 ## Not tested yet
 
