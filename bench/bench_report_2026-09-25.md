@@ -30,7 +30,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B19 Hold no longer counts as skipped (PR #20, 8488845) | PASSED | 20 held cues: ltcplay's skipped count 8 in total (was about 600 per Hold); 0 out-of-order pixel frames; 0 or 1 frames lost per resume in 19 of 20 Holds |
 | B20 Pixel pacing after a CPU burst (PR #19, 3f8b0a2) | PASSED | After a burst on every core the branch returns exactly to its earlier timing (-2.9 ms); main steps to -8.9 ms and stays there. A 2-core burst disturbs neither; no 0 ms pairs anywhere |
 | B21 Flame link loss disarms (PR #23, 30dcab5) | PASSED, 1 finding | Suites pass on Windows; an armed group disarms 0.51 s after the link stops, with the contract's sentence and a steady amber; the link coming back does not re-arm it ('cycle the arm', flashing); a cycle re-arms it. Finding: 'latch-reset: show program link lost' is journalled every tick (about 40 lines a second) while the link is down |
-| B22 Audio breaks after USB selective suspend off | NOT TESTED | USB selective suspend still enabled (read 2026-09-26 23:34); waits for Jeff |
+| B22 Audio breaks after USB selective suspend off | BETTER, NOT SOLVED | Straight to the Scarlett: 0 breaks (was 3). Full show with MadMapper playing the audio: still 3 breaks. With ltcplay playing the audio (B23): 0 in two shows. Points at MadMapper's audio path under load |
 | B23 audio_master (PR #26, 0f87a82) | PARTIAL: real Scarlett done, unplug test waits for Jeff | Audio against timecode 0.4 ms apart across 9 starts (MadMapper: 46 to 78 ms), no drift, no jumps; Hold, Resume and Abort exact. **Finding: the PR refuses the Scarlett even with allow_shared_mode (it stops at WASAPI exclusive, which cannot do 48 kHz); the test ran on DirectSound through a bench-only override.** ASIO: no driver presents a device; WDM-KS takes 48 kHz but was busy |
 
 ## B0 The machine
@@ -686,6 +686,25 @@ Output over the whole run: 2,088 packets at 40.10 a second, priority 200, univer
 
 Evidence: `B21_flamesafe_link.txt` (the event, wire and status timelines, both runs' summaries, and a sample of the journal).
 
+
+
+## B22 Audio breaks after USB selective suspend was turned off
+
+**Verdict: better, not solved.**
+- **Playing straight to the Scarlett (no MadMapper), the breaks are gone:** 0 in 3 minutes, against 3 in B18.
+- **A full show with MadMapper playing the music still broke 3 times**, as in B18.
+- Together with B23, where ltcplay played the music through the same Windows path with no breaks in two full shows, the remaining breaks look tied to MadMapper playing audio under show load.
+
+Run on 2026-09-27 from 11:04 to 11:18. Jeff switched USB selective suspend off (power plan, on mains: index 0, checked). The Stream Deck was plugged in during these runs (Elgato, USB `0FD9:0063`; no Stream Deck app running; nothing drives it yet). BEYOND was closed. Method and scripts as in B18 (`rec_wav.py`, `listen_wav.py`, `play_wav.py`).
+
+| Test | B18 (26 Sep, suspend on) | B22 (27 Sep, suspend off) |
+|---|---|---|
+| Python player straight to the Scarlett, 3 min, BEYOND closed | 3 breaks, about 30 s apart | **0 breaks** (the one +2 frame blip at 4 s is the player starting, as before) |
+| Full 7:24 show: ltcplay main `fa5274a` as the clock, pixels on; MadMapper playing Jeff's music (left) and the LTC (right, 10%) on two routed tracks, DirectSound at 44.1 kHz with a 2048 buffer | 3 breaks; ltcplay skipped 2 timecode frames | **3 breaks** (at 0:04, 0:13, 7:04 into the show); ltcplay skipped **6**; pixels 18 skipped, one 124 ms gap |
+| For comparison, B23: **ltcplay** playing the music (audio_master through DirectSound, MadMapper silent), two full shows, suspend still on | | **0 breaks, 0 jumps** in both |
+
+- After this run MadMapper's audio output was set back to **None** (video only), as the audio_master design has it.
+- The display had fallen back to 4K again around the time the Stream Deck was plugged in. Set back to 1080p; Jeff has since set 1080p in Windows' display settings, so it should now survive a reset.
 
 ## B23 audio_master on the Pico (PR #26): partial, with a simulated sound device
 
