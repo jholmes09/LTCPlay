@@ -19907,6 +19907,126 @@ def test_audio_master_never_reruns_an_unguarded_main():
     print("  ok")
 
 
+def test_audio_master_loads_all_or_nothing():
+    section("audio_master: a cue is loaded whole and checked, or not at all")
+    import builtins
+    import numpy as np
+    from ltcplay import clock as clock_mod, showaudio as sa
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    stems = eng.spec["cues"]["show"]
+    music = stems[0][0]
+    check(all(len(st) == 4 and st[3] == 192000 for st in stems),
+          f"the audio process is not told how long each stem must be: "
+          f"{[st[3:] for st in stems]}")
+    ready = am.snapshot()["audio"]["ready"]
+    check(ready == {"show": "ready", "intermission": "ready"},
+          f"the page does not say both cues are ready: {ready}")
+
+    def reload_and_play():
+        eng.proc.command(("load", "show", stems, True))
+        sim.run(vc() + 0.1)
+        try:
+            am.play(3600.0, None, "Show")
+            return None
+        except clock_mod.ClockConfigError as e:
+            return str(e)
+
+    # 1. A read that stops halfway (a disk error, a placeholder file).
+    real_open = builtins.open
+
+    class Half:
+        def __init__(self, fh, limit):
+            self.fh, self.left = fh, limit
+
+        def read(self, n=-1):
+            if self.left <= 0:
+                return b""
+            b = self.fh.read(min(n, self.left) if n >= 0 else self.left)
+            self.left -= len(b)
+            return b
+
+        def __getattr__(self, k):
+            return getattr(self.fh, k)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.fh.close()
+
+    def half_open(path, mode="r", *a, **k):
+        fh = real_open(path, mode, *a, **k)
+        if path == music and "b" in mode:
+            return Half(fh, os.path.getsize(path) // 2)
+        return fh
+
+    sa.open = half_open
+    try:
+        try:
+            sa.read_wav(music)
+            check(False, "a read that stopped halfway gave a shorter clip")
+        except sa.AudioConfigError as e:
+            check("could only be read to" in str(e) and "of 0:04.000" in
+                  str(e) and str(e).endswith("."),
+                  f"the short read refusal: {e}")
+        why = reload_and_play()
+    finally:
+        del sa.open
+    check(why is not None and "failed to load" in why
+          and "could only be read to" in why and not am.playing,
+          f"a cue read only halfway could still be started: {why}")
+    check(am.snapshot()["audio"]["ready"]["show"] == "failed",
+          "the page shows a half-read cue as ready")
+    check(any("could only be read to" in f[1] for f in r["journal"].faults)
+          or "could only be read to" in (am._fault or ""),
+          "a half-read cue is not reported")
+
+    # 2. The file cut short after the show was checked.
+    raw = real_open(music, "rb").read()
+    real_open(music, "wb").write(raw[:len(raw) // 2])
+    why = reload_and_play()
+    check(why is not None and "failed to load" in why and not am.playing,
+          f"a cue cut short after checking could still be started: {why}")
+    # Every stem swapped for a whole, consistent, but shorter file after
+    # the show was checked: still refused, on the lengths it was checked at.
+    sub = stems[1][0]
+    raw_sub = real_open(sub, "rb").read()
+    _am_write_wav(music, _am_tone(3.0, 2))
+    _am_write_wav(sub, _am_tone(3.0, 1, 0.3))
+    why = reload_and_play()
+    check(why is not None and "when the show was checked" in why
+          and not am.playing,
+          f"stems changed since the show was checked could be started: "
+          f"{why}")
+    real_open(sub, "wb").write(raw_sub)
+    real_open(music, "wb").write(raw)
+    why = reload_and_play()
+    check(why is None and am.playing,
+          f"the cue did not load again once the file was whole: {why}")
+    am.stop()
+
+    # 3. Stems that decode to different lengths.
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    stems = [tuple(st[:3]) for st in eng.spec["cues"]["show"]]
+    _am_write_wav(stems[1][0], _am_tone(3.0, 1, 0.3))
+    eng.proc.command(("load", "show", stems, True))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a cue whose stems differ in length was started")
+    except clock_mod.ClockConfigError as e:
+        check("not all the same length" in str(e) and "sub.wav is 0:03.000"
+              in str(e), f"the length refusal: {e}")
+    eng.proc.command(("load", "show", stems, False))
+    sim.run(vc() + 0.1)
+    check(am.snapshot()["audio"]["ready"]["show"] == "ready",
+          "stems allowed to differ in length were not loaded")
+    am.stop()
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -20127,6 +20247,7 @@ if __name__ == "__main__":
     test_audio_master_review_rules()
     test_audio_master_stop_during_a_respawn()
     test_audio_master_never_reruns_an_unguarded_main()
+    test_audio_master_loads_all_or_nothing()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()

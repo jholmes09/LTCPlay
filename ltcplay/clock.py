@@ -1512,7 +1512,9 @@ class AudioMaster(Clock):
                 self._event(msg)
                 raise ClockConfigError(msg)
             if role in self._load_failed:
-                raise ClockConfigError(self._load_failed[role])
+                raise ClockConfigError(
+                    f"The show will not start: the {role} audio failed to "
+                    f"load. {_strip_stop(self._load_failed[role])}")
             if role not in self._loaded:
                 raise ClockConfigError(
                     f"The {role} audio is still loading. Try again in a few "
@@ -2217,7 +2219,14 @@ class AudioMaster(Clock):
                             "render_errors": self.render_errors,
                             "outliers": self.outliers,
                             "respawns": getattr(self.engine, "respawns", 0),
-                            "loaded": sorted(self._loaded)}})
+                            "loaded": sorted(self._loaded),
+                            # A cue is ready only once every stem of it is
+                            # wholly in memory and checked.
+                            "ready": {
+                                role: ("failed" if role in self._load_failed
+                                       else "ready" if role in self._loaded
+                                       else "loading")
+                                for role, _f in self.cues.values()}}})
         d.update(_out_snapshot(self.out, self))
         return d
 

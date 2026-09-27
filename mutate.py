@@ -2903,6 +2903,23 @@ def build():
   '    said = "; ".join(f"{label}: {why}" for label, why in tried)\n',
   '    said = "nothing worked"\n'),
 
+
+ # -- audio_master: loading is all or nothing (Jeff, 2026-09-27).
+ ('audio_master: a short read returns a shorter clip',
+  'ltcplay/showaudio.py',
+  '    if done != info.frames:\n',
+  '    if False:\n'),
+
+ ('audio_master: a stem length mismatch is accepted',
+  'ltcplay/showaudio.py',
+  '                if same_length and len(lengths) > 1:\n',
+  '                if False:\n'),
+
+ ('audio_master: a stem shorter than it was when checked is accepted',
+  'ltcplay/showaudio.py',
+  '                    if want is not None and pcm.shape[0] != want:\n',
+  '                    if False:\n'),
+
 ]
 
 

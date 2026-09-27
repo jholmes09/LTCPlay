@@ -207,6 +207,10 @@ How it runs:
   (a second one refuses with a sentence). It opens the interface when Run is
   pressed; nothing plays until a cue is started. A show will not start if the
   interface is not there: the page and the log say so.
+- All the show audio is decoded into memory, whole and checked, before a show
+  may start: a file that cannot be read to its end, or whose stems no longer
+  match what was checked, refuses Start with a sentence ("failed to load").
+  Nothing is read from disk during a show.
 - Silence in the music is never mistaken for the interface dropping out: that
   is judged only by whether the audio keeps moving, never by how loud it is.
 - On Windows the audio never goes through Windows' shared audio engine (the

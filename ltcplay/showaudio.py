@@ -413,7 +413,14 @@ def read_wav(path):
             flat[done * info.channels:(done + n) * info.channels] = \
                 _decode(raw[:n * align], info)
             done += n
-    return out[:done]
+    if done != info.frames:
+        # All or nothing: a clip that is only partly there would look
+        # loaded and then end the music early, mid-show.
+        raise AudioConfigError(
+            f"{os.path.basename(path)} could only be read to "
+            f"{fmt_len(done)} of {fmt_len(info.frames)}; the file or the "
+            f"disk has a problem. Copy the file again.")
+    return out
 
 
 def _find_cue(timeline, want):
@@ -463,7 +470,8 @@ def check_show(acfg, timeline):
                     f"'channels' lists {len(st.channels)} output(s). List "
                     f"one output for each channel, or use a mono file.")
             lengths.append((info.frames, st.file))
-            stems.append((path, st.gain, [c - 1 for c in st.channels]))
+            stems.append((path, st.gain, [c - 1 for c in st.channels],
+                          info.frames))
         frames = [n for n, _ in lengths]
         if len(set(frames)) > 1 and not cue.allow_different_lengths:
             which = ", ".join(f"{f} is {fmt_len(n)}" for n, f in lengths)
@@ -475,7 +483,8 @@ def check_show(acfg, timeline):
         if max(frames) <= 0:
             raise AudioConfigError(f"The {role} audio has no samples in it.")
         out[role] = {"label": hits[0].name, "frames": max(frames),
-                     "stems": stems}
+                     "stems": stems,
+                     "same_length": not cue.allow_different_lengths}
     return out
 
 
@@ -967,7 +976,7 @@ class AudioProcess:
         if kind == "ping":
             self.send(("pong", msg[1], self._clock()))
         elif kind == "load":
-            self._load(msg[1], msg[2])
+            self._load(msg[1], msg[2], msg[3] if len(msg) > 3 else True)
         elif kind == "fake":
             ctl = getattr(self.sd, "control", None)
             if ctl is not None:
@@ -978,19 +987,44 @@ class AudioProcess:
             else:
                 apply_command(self.mixer, msg)
 
-    def _load(self, role, stems):
-        """Decode a cue's stems. One cue at a time, one stem at a time, on
-        one thread: the show and the intermission are never both being
-        decoded at once, so the most memory it needs is what is loaded
-        plus one stem's chunk."""
-        def work(role, stems):
+    def _load(self, role, stems, same_length=True):
+        """Decode a cue's stems, all or nothing. One cue at a time, one stem
+        at a time, on one thread: the show and the intermission are never
+        both being decoded at once, so the most memory it needs is what is
+        loaded plus one stem's chunk.
+
+        A cue is loaded only when every stem is wholly in memory, each is
+        exactly as long as its file said when the show was checked, and
+        (unless the show file allows otherwise) all are the same length.
+        Anything else is load_failed with a sentence, and the cue is never
+        marked loaded. Nothing is read from disk once it is."""
+        def work(role, stems, same_length):
             try:
-                dec = [(read_wav(p), float(g), list(o)) for p, g, o in stems]
+                dec = []
+                for st in stems:
+                    p, g, o = st[0], st[1], st[2]
+                    pcm = read_wav(p)
+                    want = st[3] if len(st) > 3 else None
+                    if want is not None and pcm.shape[0] != want:
+                        raise AudioConfigError(
+                            f"{os.path.basename(p)} decoded to "
+                            f"{fmt_len(pcm.shape[0])}, but it was "
+                            f"{fmt_len(want)} when the show was checked; the "
+                            f"file changed or the disk has a problem.")
+                    dec.append((pcm, float(g), list(o)))
+                lengths = {pcm.shape[0] for pcm, _g, _o in dec}
+                if same_length and len(lengths) > 1:
+                    which = ", ".join(
+                        f"{os.path.basename(st[0])} is "
+                        f"{fmt_len(pcm.shape[0])}"
+                        for st, (pcm, _g, _o) in zip(stems, dec))
+                    raise AudioConfigError(
+                        f"its stems are not all the same length ({which}).")
                 self._loads.append((role, dec, None))
             except Exception as e:
                 self._loads.append((role, None, _clean(e)))
         if self.sync_load:
-            work(role, stems)
+            work(role, stems, same_length)
             return
         if self._loader is None:
             import queue
@@ -1004,7 +1038,7 @@ class AudioProcess:
                                             daemon=True,
                                             name="ltcplay-audio-load")
             self._loader.start()
-        self._load_q.put((role, stems))
+        self._load_q.put((role, stems, same_length))
 
     def _finish_loads(self):
         while self._loads:
@@ -1329,8 +1363,9 @@ class AudioEngine:
                     pass
                 return None, None, why
             self.pid = pid
+            same = self.spec.get("same_length", {})
             for role, stems in self.spec["cues"].items():
-                mine.send(("load", role, stems))
+                mine.send(("load", role, stems, same.get(role, True)))
             return p, mine, None
 
     def _hello(self, p, mine, stop):
@@ -1568,7 +1603,9 @@ def engine_spec(acfg, checked, fake=None, platform=None):
     """What the audio process needs, as plain data it can be sent."""
     spec = {"device": acfg.device, "channels": acfg.channels,
             "rate": acfg.rate, "allow_shared": acfg.allow_shared_mode,
-            "cues": {role: c["stems"] for role, c in checked.items()}}
+            "cues": {role: c["stems"] for role, c in checked.items()},
+            "same_length": {role: c.get("same_length", True)
+                            for role, c in checked.items()}}
     if fake is not None:
         spec["fake"] = fake
     if platform is not None:
