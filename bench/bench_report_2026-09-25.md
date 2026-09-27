@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B23 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B25 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -32,6 +32,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B21 Flame link loss disarms (PR #23, 30dcab5) | PASSED, 1 finding | Suites pass on Windows; an armed group disarms 0.51 s after the link stops, with the contract's sentence and a steady amber; the link coming back does not re-arm it ('cycle the arm', flashing); a cycle re-arms it. Finding: 'latch-reset: show program link lost' is journalled every tick (about 40 lines a second) while the link is down |
 | B22 Audio breaks after USB selective suspend off | BETTER, NOT SOLVED | Straight to the Scarlett: 0 breaks (was 3). Full show with MadMapper playing the audio: still 3 breaks. With ltcplay playing the audio (B23): 0 in two shows. Points at MadMapper's audio path under load |
 | B23 audio_master (PR #26, 0f87a82) | PARTIAL: real Scarlett done, unplug test waits for Jeff | Audio against timecode 0.4 ms apart across 9 starts (MadMapper: 46 to 78 ms), no drift, no jumps; Hold, Resume and Abort exact. **Finding: the PR refuses the Scarlett even with allow_shared_mode (it stops at WASAPI exclusive, which cannot do 48 kHz); the test ran on DirectSound through a bench-only override.** ASIO: no driver presents a device; WDM-KS takes 48 kHz but was busy |
+| B25 audio_master API search (fa1f3bb) | PARTIAL | Strict mode refuses the Scarlett with every attempt listed (WASAPI exclusive: 44.1 only; WDM-KS: endpoint busy); shared mode picks DirectSound and says so; short starts 0.4 ms apart; the full show had 23 recorder breaks (inconclusive); a second ltcplay is refused. Re-run on the Focusrite ASIO driver next |
 
 ## B0 The machine
 
@@ -791,6 +792,25 @@ The simulated device's timing is exact by construction, so this says nothing abo
 | **Callback time info (item 5)** | **Real, never zeros**, on every API tried. MME: 174 to 182 ms ahead (stated latency 182 ms). WASAPI at 44.1 kHz: 0 to 10 ms (stated 22 ms). DirectSound: 0 to 64 ms with uneven blocks (288/386/450 frames), against a stated 240 ms. DirectSound's figures are not trustworthy, yet the clock held 0.4 ms across starts |
 
 **Still needs Jeff:** item 4, unplugging the Scarlett mid-show and plugging it back, and switching the monitor off and on mid-show.
+
+
+## B25 audio_master after the host API fix (PR #26 at fa1f3bb)
+
+**Verdict: the API search works as specified. On this Scarlett it cannot reach a mixer-free path, so the offset test ran on DirectSound again, now chosen by the code itself.** Branch `audio-master` at **`fa1f3bb`** (not on current main `9dfea4b`), worktree `wt-am2`, with **no bench override**. Run on 2026-09-27 from 11:20 to 11:35. BEYOND closed; MadMapper audio output None; USB selective suspend off; Stream Deck plugged in.
+
+1. **API choice.**
+   - Strict show file (`allow_shared_mode` false): **refused, with every attempt listed**: "Speakers (Scarlett Solo USB) cannot play the show audio: every way to it was tried and refused. WASAPI exclusive: it will not play 2 output(s) at 48000 Hz (Invalid sample rate…); WDM-KS: it would not open (…Invalid device…). It is also offered to Windows' shared audio engine, which the show does not use unless 'allow_shared_mode' is on…"
+   - WDM-KS still would not open, because Windows' engine holds the endpoint (another app uses it; the Windows default device was not changed).
+   - With `allow_shared_mode`, the log reports **"show audio on Speakers (Scarlett Solo USB), DirectSound, through Windows' shared audio engine, 2 outputs at 48000 Hz"**, and the page shows the red shared-mode sentence.
+2. **Offsets** (B23 method, 5 short starts + 1 full show):
+   - Shorts 3 to 5: **194.4 to 194.8 ms (0.4 ms spread)**, no drift, 0 jumps. Short 1 read 202.6 and short 2 194.4, with the recorder losing audio (4 capture breaks) in between.
+   - **Full show: 23 capture breaks and 18 decoded jumps**; the offset moved 208 to 306 ms across the show. On the shared path, recorder breaks and real output breaks cannot be told apart. B23's two full shows on the same DirectSound path had 0. **Not a clean result: repeat on a mixer-free path (the Focusrite ASIO driver) before drawing conclusions.**
+   - Hold, Resume and full-show length (449.26 s) as in B23.
+3. **Starting with the Scarlett unplugged:** not done (needs Jeff).
+4. **Unplug and replug mid-show, monitor toggle:** not done (needs Jeff).
+5. **Second ltcplay:** refused at once with "Another ltcplay on this computer is already sending to the rig. It says: pid …: bench444_am_scarlett_timeline.json (terminal) … Stop that one first". That is the existing one-player output lock; it fires before the new audio-process lock could be reached.
+
+Next: Jeff is installing Focusrite's own Scarlett driver (ASIO at 48 kHz), then B25 is re-run strict.
 
 ## Not tested yet
 
