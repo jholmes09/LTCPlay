@@ -331,6 +331,21 @@ def wav_info(path):
                 if fmt is None:
                     raise AudioConfigError(f"{name} has its samples before "
                                            f"its header.")
+                # A size of 0 or 0xFFFFFFFF is a placeholder a recorder
+                # writes while it is still recording; one bigger than the
+                # file is a file cut off. Either would play silence, or run
+                # the cue on past its sound. PR 15's rule for announcements.
+                left = os.fstat(fh.fileno()).st_size - fh.tell()
+                if size == 0 or size == 0xFFFFFFFF:
+                    raise AudioConfigError(
+                        f"{name} says its audio is {size} bytes long, which "
+                        f"is a placeholder: the file looks cut off, or was "
+                        f"still being written. Export it again.")
+                if size > left:
+                    raise AudioConfigError(
+                        f"{name} says its audio is {size} bytes long, but "
+                        f"only {left} are in the file: it looks cut off, or "
+                        f"was still being written. Export it again.")
                 tag, ch, rate, bits = fmt
                 if tag not in (1, 3) or (tag == 1 and bits not in
                                          (16, 24, 32)) or \
@@ -349,28 +364,48 @@ def wav_info(path):
     raise AudioConfigError(f"{name} has no audio in it.")
 
 
+READ_CHUNK_FRAMES = 1 << 18
+
+
+def _decode(raw, info):
+    import numpy as np
+    if info.tag == 3:
+        return np.frombuffer(raw, dtype="<f4")
+    if info.bits == 16:
+        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    if info.bits == 32:
+        return (np.frombuffer(raw, dtype="<i4").astype(np.float64)
+                / 2147483648.0).astype(np.float32)
+    b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+    v = b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) \
+        | (b[:, 2].astype(np.int8).astype(np.int32) << 16)   # signed top
+    return v.astype(np.float32) / 8388608.0
+
+
 def read_wav(path):
-    """The whole file as float32, shape (frames, channels), -1.0 to 1.0."""
+    """The whole file as float32, shape (frames, channels), -1.0 to 1.0.
+
+    Read and converted a chunk at a time into the one array it returns, so
+    the most memory it ever needs is that array plus one chunk: about 4
+    bytes a sample, whatever the file's format."""
     import numpy as np
     info = wav_info(path)
+    align = info.channels * info.bits // 8
+    out = np.empty((info.frames, info.channels), dtype=np.float32)
+    flat = out.reshape(-1)
     with open(path, "rb") as fh:
         fh.seek(info.offset)
-        raw = fh.read(info.size)
-    raw = raw[:len(raw) - len(raw) % (info.channels * info.bits // 8)]
-    if info.tag == 3:
-        pcm = np.frombuffer(raw, dtype="<f4").astype(np.float32)
-    elif info.bits == 16:
-        pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    elif info.bits == 32:
-        pcm = (np.frombuffer(raw, dtype="<i4").astype(np.float64)
-               / 2147483648.0).astype(np.float32)
-    else:
-        b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
-        v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
-        v = (v << 8) >> 8                      # sign-extend the 24 bits
-        pcm = v.astype(np.float32) / 8388608.0
-    return np.ascontiguousarray(pcm.reshape(-1, info.channels),
-                                dtype=np.float32)
+        done = 0
+        while done < info.frames:
+            n = min(READ_CHUNK_FRAMES, info.frames - done)
+            raw = fh.read(n * align)
+            n = len(raw) // align
+            if n <= 0:
+                break
+            flat[done * info.channels:(done + n) * info.channels] = \
+                _decode(raw[:n * align], info)
+            done += n
+    return out[:done]
 
 
 def _find_cue(timeline, want):
@@ -648,13 +683,13 @@ def apply_command(m, msg):
 
 # ----------------------------------------------------------- shared memory --
 SEQ, TOKEN, STATE, PLAYING_AT, FRAME, STOP, CUE_FRAMES, PERF, LATENCY, \
-    LEVEL, CALLBACKS, UNDERFLOWS, CLIPPED = range(13)
+    LEVEL, CALLBACKS, UNDERFLOWS, CLIPPED, ERRORS = range(14)
 HEARTBEAT, DEVSTATE, OPENS = 16, 17, 18
 SLOTS = 20
 
 Position = namedtuple("Position", "seq token state playing frame stop_frame "
                                   "cue_frames perf latency level callbacks "
-                                  "underflows clipped")
+                                  "underflows clipped errors")
 
 
 class Publisher:
@@ -664,7 +699,8 @@ class Publisher:
         self.arr = arr
 
     def publish(self, token, state, playing, frame, stop_frame, cue_frames,
-                perf, latency, level, callbacks, underflows, clipped):
+                perf, latency, level, callbacks, underflows, clipped,
+                errors=0):
         a = self.arr
         s = a[SEQ]
         a[SEQ] = s + 1.0                 # odd: a write is in progress
@@ -680,6 +716,7 @@ class Publisher:
         a[CALLBACKS] = callbacks
         a[UNDERFLOWS] = underflows
         a[CLIPPED] = clipped
+        a[ERRORS] = errors
         a[SEQ] = s + 2.0                 # even: done
 
     def heartbeat(self, now, devstate, opens):
@@ -698,12 +735,13 @@ def read_position(arr, offset=0.0, tries=100):
             return None
         if int(s1) & 1:
             continue
-        v = arr[TOKEN:CLIPPED + 1]
+        v = arr[TOKEN:ERRORS + 1]
         if arr[SEQ] != s1:
-            continue
+            continue                     # a callback wrote meanwhile
         return Position(int(s1), int(v[0]), int(v[1]), bool(v[2]),
                         int(v[3]), int(v[4]), int(v[5]), v[6] - offset,
-                        v[7], v[8], int(v[9]), int(v[10]), int(v[11]))
+                        v[7], v[8], int(v[9]), int(v[10]), int(v[11]),
+                        int(v[12]))
     return None
 
 
@@ -720,9 +758,6 @@ def import_sounddevice(platform=None):
         os.environ["SD_ENABLE_ASIO"] = "1"
     import sounddevice
     return sounddevice
-
-
-SHARED_APIS = ("MME", "Windows DirectSound", "Windows WASAPI")
 
 
 def open_output_stream(sd, name, channels, rate, callback, allow_shared=False,
@@ -874,6 +909,8 @@ class AudioProcess:
         self.devstate = DEV_CLOSED
         self._said = None
         self._loads = []
+        self._load_q = None
+        self._loader = None
         self._reinit = False
         self._fallback_latency = 0.0
 
@@ -895,17 +932,32 @@ class AudioProcess:
                 apply_command(self.mixer, msg)
 
     def _load(self, role, stems):
-        def work():
+        """Decode a cue's stems. One cue at a time, one stem at a time, on
+        one thread: the show and the intermission are never both being
+        decoded at once, so the most memory it needs is what is loaded
+        plus one stem's chunk."""
+        def work(role, stems):
             try:
                 dec = [(read_wav(p), float(g), list(o)) for p, g, o in stems]
                 self._loads.append((role, dec, None))
             except Exception as e:
                 self._loads.append((role, None, _clean(e)))
         if self.sync_load:
-            work()
-        else:
-            threading.Thread(target=work, name="ltcplay-audio-load",
-                             daemon=True).start()
+            work(role, stems)
+            return
+        if self._loader is None:
+            import queue
+            self._load_q = queue.Queue()
+
+            def drain(q):
+                while True:
+                    work(*q.get())
+            self._loader = threading.Thread(target=drain,
+                                            args=(self._load_q,),
+                                            daemon=True,
+                                            name="ltcplay-audio-load")
+            self._loader.start()
+        self._load_q.put((role, stems))
 
     def _finish_loads(self):
         while self._loads:
@@ -952,7 +1004,8 @@ class AudioProcess:
             pass
         self.pub.publish(m.token, m.state, playing, start, m.stop_frame,
                          m.cue_frames, now, lat, m.level * m.env,
-                         self.callbacks, self.underflows, m.clipped)
+                         self.callbacks, self.underflows, m.clipped,
+                         self.render_errors)
 
     # -- the device, on the main thread
     def _say(self, kind, text):
@@ -1119,12 +1172,19 @@ class AudioEngine:
     then drains what it says into events(), and notices if it dies or hangs:
     that is reported as ("crashed", sentence) and it is started again, after
     1 s, then 2, then every 3. read() is the last callback's report, on this
-    process's perf_counter."""
+    process's perf_counter.
+
+    Each start() is a generation with its own stop flag, handed to its own
+    watch thread, and only one process is ever being spawned at a time. A
+    watch thread whose generation was closed while it was spawning kills
+    what it spawned and says nothing, so Stop then Run can never leave two
+    audio processes or two watch threads behind."""
 
     HELLO_S = 30.0
     HANG_S = 5.0
     RESPAWN_S = (1.0, 2.0, 3.0)
     WATCH_S = 0.05
+    CLOSE_S = 0.5
     VERDICTS = ("opened", "refused", "unavailable")
 
     def __init__(self, spec, log=None, clock=time.perf_counter):
@@ -1133,6 +1193,8 @@ class AudioEngine:
         self._clock = clock
         self._events = deque()
         self._send_lock = threading.Lock()
+        self._spawn_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._ctx = None
         self._arr = None
         self._proc = None
@@ -1147,41 +1209,55 @@ class AudioEngine:
         self.crashes = 0
         self.pid = None
 
-    def _take(self, msg):
+    def _take(self, msg, stop):
+        if stop.is_set():
+            return
         if msg and msg[0] in self.VERDICTS and self._first is None:
             self._first = msg
             self._first_evt.set()
         self._events.append(msg)
 
-    def _spawn(self):
-        """Start the process and wait for it to answer. Returns None, or a
-        sentence saying why it did not start."""
-        ctx = self._ctx
-        arr = self._arr
-        for i in range(len(arr)):
-            arr[i] = 0.0
-        mine, theirs = ctx.Pipe()
-        p = ctx.Process(target=child_main, args=(theirs, arr, self.spec),
-                        name="ltcplay-show-audio", daemon=True)
-        p.start()
-        theirs.close()
-        self.spawns += 1
+    def _spawn(self, stop):
+        """Start a process and wait for it to answer. Returns
+        (process, connection, None), or (None, None, sentence)."""
+        with self._spawn_lock:
+            if stop.is_set():
+                return None, None, "stopped"
+            ctx = self._ctx
+            arr = self._arr
+            for i in range(len(arr)):
+                arr[i] = 0.0
+            mine, theirs = ctx.Pipe()
+            p = ctx.Process(target=child_main, args=(theirs, arr, self.spec),
+                            name="ltcplay-show-audio", daemon=True)
+            _start_without_main(p)
+            theirs.close()
+            self.spawns += 1
+            why, pid = self._hello(p, mine, stop)
+            if why is not None:
+                self._kill(p)
+                try:
+                    mine.close()
+                except Exception:
+                    pass
+                return None, None, why
+            self.pid = pid
+            for role, stems in self.spec["cues"].items():
+                mine.send(("load", role, stems))
+            return p, mine, None
+
+    def _hello(self, p, mine, stop):
         if not mine.poll(self.HELLO_S):
-            self._kill(p)
-            mine.close()
             return (f"The show audio process did not answer within "
-                    f"{self.HELLO_S:.0f} s.")
+                    f"{self.HELLO_S:.0f} s.", None)
         try:
             msg = mine.recv()
         except (EOFError, OSError):
-            self._kill(p)
-            return "The show audio process stopped as it started."
+            return "The show audio process stopped as it started.", None
         if msg[0] != "hello":
-            self._take(msg)
-            self._kill(p)
-            mine.close()
-            return msg[1] if len(msg) > 1 else "The show audio did not start."
-        self.pid = msg[1]
+            self._take(msg, stop)
+            return (msg[1] if len(msg) > 1 else
+                    "The show audio did not start."), None
         # Where its perf_counter sits against ours: on every OS this ships on
         # both are the same system-wide counter, and then this measures
         # zero within a round trip, which is taken as exactly zero.
@@ -1189,14 +1265,13 @@ class AudioEngine:
         for _ in range(5):
             t0 = self._clock()
             mine.send(("ping", t0))
-            deadline = t0 + 2.0
             got = None
-            while self._clock() < deadline and mine.poll(0.5):
+            while self._clock() < t0 + 2.0 and mine.poll(0.5):
                 m = mine.recv()
                 if m[0] == "pong" and m[1] == t0:
                     got = m
                     break
-                self._take(m)
+                self._take(m, stop)
             if got is None:
                 continue
             t1 = self._clock()
@@ -1206,26 +1281,40 @@ class AudioEngine:
                 best = (rtt, off)
         if best is not None:
             self.offset = 0.0 if abs(best[1]) <= best[0] else best[1]
-        self._proc, self._conn = p, mine
-        for role, stems in self.spec["cues"].items():
-            mine.send(("load", role, stems))
-        return None
+        return None, msg[1]
+
+    def _install(self, p, conn, stop):
+        """Make a freshly spawned process the current one, unless its
+        generation has been closed meanwhile."""
+        with self._state_lock:
+            if stop.is_set():
+                orphan = True
+            else:
+                orphan = False
+                self._proc, self._conn = p, conn
+        if orphan:
+            self._reap(p, conn)
+            return False
+        return True
 
     def start(self, wait_s=5.0):
         """Spawn the process and return its first word on the device:
         ("opened", ...), ("refused", sentence) or ("unavailable", sentence),
-        or ("unavailable", sentence) when it did not start at all."""
+        or ("refused", sentence) when it did not start at all."""
         import multiprocessing
         self._ctx = multiprocessing.get_context("spawn")
         if self._arr is None:
             self._arr = self._ctx.RawArray("d", SLOTS)
-        self._stop = threading.Event()
+        stop = threading.Event()
+        self._stop = stop
         self._first, self._first_evt = None, threading.Event()
-        why = self._spawn()
+        p, conn, why = self._spawn(stop)
         if why is not None:
-            first = self._first or ("refused", why)
-            return first
+            return self._first or ("refused", why)
+        if not self._install(p, conn, stop):
+            return None
         self._watch = threading.Thread(target=self._watch_loop,
+                                       args=(stop,),
                                        name="ltcplay-audio-watch",
                                        daemon=True)
         self._watch.start()
@@ -1243,15 +1332,43 @@ class AudioEngine:
         except Exception:
             pass
 
-    def _watch_loop(self):
+    def _reap(self, p, conn, wait_s=0.0):
+        """Tell a process to close and make sure it goes, off the caller's
+        thread unless it goes at once."""
+        if conn is not None:
+            try:
+                conn.send(("close",))
+            except Exception:
+                pass
+        if p is not None:
+            p.join(wait_s)
+        if p is not None and p.is_alive():
+            def finish():
+                p.join(1.0)
+                if p.is_alive():
+                    self._kill(p)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            threading.Thread(target=finish, daemon=True,
+                             name="ltcplay-audio-reap").start()
+        elif conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _watch_loop(self, stop):
         backoff = 0
-        while not self._stop.is_set():
-            conn, p = self._conn, self._proc
+        while not stop.is_set():
+            with self._state_lock:
+                conn, p = self._conn, self._proc
             dead = None
             if conn is not None:
                 try:
                     while conn.poll(0):
-                        self._take(conn.recv())
+                        self._take(conn.recv(), stop)
                 except (EOFError, OSError):
                     dead = "its connection closed"
             if dead is None and p is not None and not p.is_alive():
@@ -1263,31 +1380,30 @@ class AudioEngine:
                             f"{self.HANG_S:.0f} s")
             if dead is None:
                 backoff = 0
-                self._stop.wait(self.WATCH_S)
+                stop.wait(self.WATCH_S)
                 continue
+            if stop.is_set():
+                return
             self.crashes += 1
-            self._events.append(("crashed", f"The show audio process "
-                                            f"stopped: {dead}. It is being "
-                                            f"started again."))
-            if p is not None:
-                self._kill(p)
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-            self._proc = self._conn = None
-            while not self._stop.is_set():
+            self._take(("crashed", f"The show audio process stopped: {dead}. "
+                                   f"It is being started again."), stop)
+            with self._state_lock:
+                if self._proc is p:
+                    self._proc = self._conn = None
+            self._reap(p, conn)
+            while not stop.is_set():
                 wait = self.RESPAWN_S[min(backoff, len(self.RESPAWN_S) - 1)]
                 backoff += 1
-                if self._stop.wait(wait):
+                if stop.wait(wait):
                     return
-                why = self._spawn()
+                np_, nc, why = self._spawn(stop)
                 if why is None:
+                    if not self._install(np_, nc, stop):
+                        return
                     self.respawns += 1
-                    self._events.append(("respawned", self.pid))
+                    self._take(("respawned", self.pid), stop)
                     break
-                self._events.append(("unavailable", why))
+                self._take(("unavailable", why), stop)
 
     def send(self, msg):
         with self._send_lock:
@@ -1318,28 +1434,47 @@ class AudioEngine:
         return bool(p is not None and p.is_alive())
 
     def close(self):
+        """Stop this generation now. The process is told to close and given
+        CLOSE_S to go; anything slower is finished off in the background,
+        so Stop is never held up by it."""
         self._stop.set()
-        w = self._watch
-        if w is not None and w is not threading.current_thread():
-            w.join(2.0)
+        with self._state_lock:
+            p, c = self._proc, self._conn
+            self._proc = self._conn = None
+        self._reap(p, c, self.CLOSE_S)
         self._watch = None
-        p, c = self._proc, self._conn
-        if c is not None:
-            with self._send_lock:
-                try:
-                    c.send(("close",))
-                except Exception:
-                    pass
-        if p is not None:
-            p.join(2.0)
-            if p.is_alive():
-                self._kill(p)
-        if c is not None:
-            try:
-                c.close()
-            except Exception:
-                pass
-        self._proc = self._conn = None
+
+
+_MAIN_LOCK = threading.Lock()
+
+
+def _start_without_main(p):
+    """Start a spawned process WITHOUT it re-running this program's main
+    script.
+
+    spawn normally re-imports the parent's __main__ in the child, as
+    "__mp_main__", so that the target function can be found. The audio
+    process's target lives in this module, so it has no need of it, and a
+    main script without an `if __name__ == "__main__":` guard (the Mac
+    app's boot.py was one) would run all over again inside the audio
+    process: a second web server, a second dialog. So for the moment the
+    process starts, __main__ says nothing about where it came from, and
+    the child is left with nothing to re-import."""
+    main = sys.modules.get("__main__")
+    with _MAIN_LOCK:
+        saved = {}
+        for attr in ("__file__", "__spec__"):
+            if main is not None and attr in main.__dict__:
+                saved[attr] = main.__dict__[attr]
+        try:
+            if main is not None:
+                main.__dict__.pop("__file__", None)
+                main.__dict__["__spec__"] = None
+            p.start()
+        finally:
+            if main is not None:
+                main.__dict__.pop("__spec__", None)
+                main.__dict__.update(saved)
 
 
 def engine_spec(acfg, checked, fake=None, platform=None):
