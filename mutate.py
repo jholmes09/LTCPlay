@@ -2520,6 +2520,182 @@ def build():
     _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
     return _BUILD_CACHE'''),
 
+
+ # -- audio_master (handoff section 4a, Jeff 2026-09-27): ltcplay plays the
+ # show's multi-track audio and the timecode is read off the audio device.
+ # One per rule: the refusals, no Windows shared mixer, the audio's own
+ # process, the mix, following the audio, Hold/Resume/Abort, the interface
+ # lost and back, the end of the cue, and the wall around GPL.
+ ('audio_master: a stem at another sample rate plays',
+  'ltcplay/showaudio.py',
+  '            if info.rate != RATE:\n',
+  '            if False:\n'),
+
+ ('audio_master: stems of different lengths play',
+  'ltcplay/showaudio.py',
+  '        if len(set(frames)) > 1 and not cue.allow_different_lengths:\n',
+  '        if False:\n'),
+
+ ('audio_master: a missing stem is not named as missing',
+  'ltcplay/showaudio.py',
+  '            if not os.path.exists(path):\n                raise AudioConfigError(\n                    f"The {role} audio file',
+  '            if False:\n                raise AudioConfigError(\n                    f"The {role} audio file'),
+
+ ('audio_master: the show file may ask for a rate other than 48000',
+  'ltcplay/showaudio.py',
+  '        if rate != RATE or isinstance(rate, bool):\n',
+  '        if isinstance(rate, bool):\n'),
+
+ ('audio_master: an interface with too few outputs is opened',
+  'ltcplay/showaudio.py',
+  '    if channels > have:\n',
+  '    if False:\n'),
+
+ ('audio_master: Windows falls back to the shared mixer on its own',
+  'ltcplay/showaudio.py',
+  '        if allow_shared:\n            order += [',
+  '        if True:\n            order += ['),
+
+ ("audio_master: WASAPI is preferred over the interface's ASIO driver",
+  'ltcplay/showaudio.py',
+  '        order = [("ASIO", False), ("Windows WASAPI", True)]',
+  '        order = [("Windows WASAPI", True), ("ASIO", False)]'),
+
+ ('audio_master: WASAPI is opened in shared mode',
+  'ltcplay/showaudio.py',
+  '        extra = sd.WasapiSettings(exclusive=True)',
+  '        extra = sd.WasapiSettings(exclusive=False)'),
+
+ ('audio_master: sounddevice never sees ASIO',
+  'ltcplay/showaudio.py',
+  '        os.environ["SD_ENABLE_ASIO"] = "1"\n',
+  '        pass\n'),
+
+ ("audio_master: a stem's gain is ignored",
+  'ltcplay/showaudio.py',
+  '                col = seg[:, 0] * np.float32(gain)\n',
+  '                col = seg[:, 0]\n'),
+
+ ('audio_master: stems on one output replace each other',
+  'ltcplay/showaudio.py',
+  '                    out[:k, o] += seg[:, i] * np.float32(gain)\n',
+  '                    out[:k, o] = seg[:, i] * np.float32(gain)\n'),
+
+ ("audio_master: a stem's channels go to the wrong outputs",
+  'ltcplay/showaudio.py',
+  '                for i, o in enumerate(outs):\n                    out[:k, o]',
+  '                for i, o in enumerate(outs[::-1]):\n                    out[:k, o]'),
+
+ ('audio_master: the mix goes over full scale',
+  'ltcplay/showaudio.py',
+  '            np.clip(out, -1.0, 1.0, out=out)\n',
+  '            pass\n'),
+
+ ('audio_master: the audio process is forked, not spawned',
+  'ltcplay/showaudio.py',
+  '        self._ctx = multiprocessing.get_context("spawn")',
+  '        self._ctx = multiprocessing.get_context("fork")'),
+
+ ('audio_master: a dead audio process is never replaced',
+  'ltcplay/showaudio.py',
+  '                why = self._spawn()\n                if why is None:\n                    self.respawns += 1',
+  '                why = "not replaced"\n                if why is None:\n                    self.respawns += 1'),
+
+ ('audio_master: PortAudio is re-initialised under a working stream',
+  'ltcplay/showaudio.py',
+  '            if why is None:\n                return\n            self._drop()',
+  '            if why is None:\n                self.sd._initialize()\n                return\n            self._drop()'),
+
+ ('audio_master: reopening the interface never backs off',
+  'ltcplay/showaudio.py',
+  '        self.next_try = now + self.RETRY_S[min(self.fails - 1,\n',
+  '        self.next_try = now + self.RETRY_S[min(0,\n'),
+
+ ('audio_master: the clock stops following the audio after the first callback',
+  'ltcplay/clock.py',
+  '            self._epoch += (e - self._epoch) * self.FOLLOW_SLEW\n',
+  '            pass\n'),
+
+ ('audio_master: a frame goes out late instead of when the audio reaches it',
+  'ltcplay/clock.py',
+  '        return min(self._epoch + (last + 1) / MASTER_FPS,\n                   now + self.MAX_SLEEP_S)',
+  '        return now + self.MAX_SLEEP_S'),
+
+ ('audio_master: Hold freezes the timecode before the audio has stopped',
+  'ltcplay/clock.py',
+  '                self._stop_frame = None\n                self._pause_req = True\n',
+  '                self._stop_frame = None\n                self._pause_req = True\n                self._freeze(now)\n'),
+
+ ('audio_master: Hold stops repeating the frozen frame',
+  'ltcplay/clock.py',
+  '                self._send_frame(self._frozen_frame, now, frozen=True)\n',
+  '                self._last_send_at = now\n'),
+
+ ('audio_master: Resume restarts the audio away from where it stopped',
+  'ltcplay/clock.py',
+  '        start = int(round(self._frozen_sec * self.rate))\n        fade = ',
+  '        start = int(round(self._frozen_sec * self.rate)) + 480\n        fade = '),
+
+ ('audio_master: Abort cuts the audio instead of fading it',
+  'ltcplay/clock.py',
+  '            self._send(("level", 0.0, fade))\n            self._level_down = True\n',
+  '            self._end("stopped", now)\n            return\n'),
+
+ ('audio_master: losing the audio jumps the timecode',
+  'ltcplay/clock.py',
+  '        self._mode = "freerun"\n        self._target = None\n        self._send(("stop", 0, None))\n',
+  '        self._epoch = (self._epoch or now) - 0.2\n        self._mode = "freerun"\n        self._target = None\n        self._send(("stop", 0, None))\n'),
+
+ ('audio_master: a dropout says nothing on the page or in the journal',
+  'ltcplay/clock.py',
+  '        self._set_fault(\n            f"The show audio dropped out at {at} in "',
+  '        (lambda *a: None)(\n            f"The show audio dropped out at {at} in "'),
+
+ ('audio_master: the audio never comes back when the interface does',
+  'ltcplay/clock.py',
+  '        if now < self._next_return:\n            return\n',
+  '        if True:\n            return\n'),
+
+ ('audio_master: the audio comes back where it dropped out, not where the show is',
+  'ltcplay/clock.py',
+  '        start = now - self._epoch + self.LEAD_S + lat\n',
+  '        start = (self._lost_at or now) - self._epoch + self.LEAD_S + lat\n'),
+
+ ('audio_master: the handover jumps instead of slewing',
+  'ltcplay/clock.py',
+  '        self._epoch += max(-lim, min(lim, d))\n',
+  '        self._epoch += d\n'),
+
+ ('audio_master: the audio ending does not end the cue',
+  'ltcplay/clock.py',
+  '        if frame >= cue["tc_frames"]:\n            self._end("finished", now)',
+  '        if False:\n            self._end("finished", now)'),
+
+ ('audio_master: an interface that cannot run the show does not stop Run',
+  'ltcplay/session.py',
+  '            except ValueError as e:\n                self.stop()\n                raise SessionError(str(e))',
+  '            except ValueError as e:\n                pass'),
+
+ ('audio_master: the show audio is loaded by every clock',
+  'ltcplay/clock.py',
+  'from .tc import frames_to_tc, tc_to_frames\n',
+  'from .tc import frames_to_tc, tc_to_frames\nfrom . import showaudio as _eager_showaudio  # noqa\n'),
+
+ ('audio_master: artnet_master accepts an audio block',
+  'ltcplay/clock.py',
+  '        keys = cls.KEYS | {"audio"} if doc.get("source") == "audio_master" \\\n            else cls.KEYS\n',
+  '        keys = cls.KEYS | {"audio"}\n'),
+
+ ("audio_master: the page never shows the show audio's faults",
+  'ltcplay/display.py',
+  '        out.extend(more())\n',
+  '        pass\n'),
+
+ ('audio_master: audio that comes back far off the show is slewed for minutes',
+  'ltcplay/clock.py',
+  '            if self._target is None and abs(e - self._epoch) > self.RESEEK_S:\n',
+  '            if False:\n'),
+
 ]
 
 
