@@ -1513,8 +1513,8 @@ class AudioMaster(Clock):
                 raise ClockConfigError(msg)
             if role in self._load_failed:
                 raise ClockConfigError(
-                    f"The show will not start: the {role} audio failed to "
-                    f"load. {_strip_stop(self._load_failed[role])}")
+                    f"{_strip_stop(self._load_failed[role])} Replace the "
+                    f"file, then press Stop and Run again.")
             if role not in self._loaded:
                 raise ClockConfigError(
                     f"The {role} audio is still loading. Try again in a few "

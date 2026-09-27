@@ -434,10 +434,11 @@ def check_show(acfg, timeline):
     """Check every file the audio block names, against the show folder.
 
     Returns {role: {"label": timeline cue name, "frames": length,
-    "stems": [(path, gain, [0-based outputs])]}}. Raises AudioConfigError
-    with a sentence for a missing file, a stem at the wrong rate, stems of
-    different lengths (unless the cue allows it), a stem whose channels do
-    not match its outputs, or a cue that is not in the show."""
+    "stems": [(path, gain, [0-based outputs], checked length in
+    frames)]}}. Raises AudioConfigError with a sentence for a missing
+    file, a stem at the wrong rate, stems of different lengths (unless
+    the cue allows it), a stem whose channels do not match its outputs,
+    or a cue that is not in the show."""
     show_dir = getattr(timeline, "show_dir", "") or ""
     out = {}
     for role, cue in acfg.cues.items():
@@ -976,7 +977,12 @@ class AudioProcess:
         if kind == "ping":
             self.send(("pong", msg[1], self._clock()))
         elif kind == "load":
-            self._load(msg[1], msg[2], msg[3] if len(msg) > 3 else True)
+            if len(msg) <= 3:
+                self._loads.append((msg[1], None,
+                    "no same-length flag was sent: the show was not "
+                    "checked before it was loaded."))
+            else:
+                self._load(msg[1], msg[2], msg[3])
         elif kind == "fake":
             ctl = getattr(self.sd, "control", None)
             if ctl is not None:
@@ -1003,9 +1009,14 @@ class AudioProcess:
                 dec = []
                 for st in stems:
                     p, g, o = st[0], st[1], st[2]
+                    if len(st) <= 3:
+                        raise AudioConfigError(
+                            f"{os.path.basename(p)} has no checked length: "
+                            f"the show was not checked before this cue was "
+                            f"loaded.")
+                    want = st[3]
                     pcm = read_wav(p)
-                    want = st[3] if len(st) > 3 else None
-                    if want is not None and pcm.shape[0] != want:
+                    if pcm.shape[0] != want:
                         raise AudioConfigError(
                             f"{os.path.basename(p)} decoded to "
                             f"{fmt_len(pcm.shape[0])}, but it was "

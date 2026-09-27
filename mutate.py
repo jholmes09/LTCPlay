@@ -2917,7 +2917,12 @@ def build():
 
  ('audio_master: a stem shorter than it was when checked is accepted',
   'ltcplay/showaudio.py',
-  '                    if want is not None and pcm.shape[0] != want:\n',
+  '                    if pcm.shape[0] != want:\n',
+  '                    if False:\n'),
+
+ ('audio_master: a stem with no checked length is accepted',
+  'ltcplay/showaudio.py',
+  '                    if len(st) <= 3:\n',
   '                    if False:\n'),
 
 ]

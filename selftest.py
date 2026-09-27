@@ -18211,8 +18211,9 @@ class _AmLocalEngine:
 
     def start(self, wait_s=0):
         self.proc.step(self.vc())
+        same = self.spec.get("same_length", {})
         for role, stems in self.spec["cues"].items():
-            self.proc.command(("load", role, stems))
+            self.proc.command(("load", role, stems, same.get(role, True)))
         self.proc.step(self.vc())
         for m in self._msgs:
             if m[0] in ("opened", "refused", "unavailable"):
@@ -19152,8 +19153,10 @@ def test_audio_master_session_hold_resume_abort():
 
             def start(self, wait_s=0):
                 proc.step(time.perf_counter())
+                same = spec.get("same_length", {})
                 for role, stems in spec["cues"].items():
-                    proc.command(("load", role, stems))
+                    proc.command(("load", role, stems,
+                                  same.get(role, True)))
 
                 def loop():
                     while not stop_proc.is_set():
@@ -19973,8 +19976,9 @@ def test_audio_master_loads_all_or_nothing():
         why = reload_and_play()
     finally:
         del sa.open
-    check(why is not None and "failed to load" in why
-          and "could only be read to" in why and not am.playing,
+    check(why is not None and "could not be loaded" in why
+          and "could only be read to" in why
+          and "press Stop and Run again" in why and not am.playing,
           f"a cue read only halfway could still be started: {why}")
     check(am.snapshot()["audio"]["ready"]["show"] == "failed",
           "the page shows a half-read cue as ready")
@@ -19986,7 +19990,8 @@ def test_audio_master_loads_all_or_nothing():
     raw = real_open(music, "rb").read()
     real_open(music, "wb").write(raw[:len(raw) // 2])
     why = reload_and_play()
-    check(why is not None and "failed to load" in why and not am.playing,
+    check(why is not None and "could not be loaded" in why
+          and "press Stop and Run again" in why and not am.playing,
           f"a cue cut short after checking could still be started: {why}")
     # Every stem swapped for a whole, consistent, but shorter file after
     # the show was checked: still refused, on the lengths it was checked at.
@@ -20006,11 +20011,15 @@ def test_audio_master_loads_all_or_nothing():
           f"the cue did not load again once the file was whole: {why}")
     am.stop()
 
-    # 3. Stems that decode to different lengths.
+    # 3. Stems that decode to different lengths, each still exactly as long
+    # as it was checked (so the length-mismatch defense is exercised on its
+    # own, not stacked behind the per-stem checked-length refusal).
     r = _am_rig(seconds=4.0)
     am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
-    stems = [tuple(st[:3]) for st in eng.spec["cues"]["show"]]
-    _am_write_wav(stems[1][0], _am_tone(3.0, 1, 0.3))
+    stems = list(eng.spec["cues"]["show"])
+    sub = stems[1][0]
+    _am_write_wav(sub, _am_tone(3.0, 1, 0.3))
+    stems[1] = (stems[1][0], stems[1][1], stems[1][2], int(3.0 * 48000))
     eng.proc.command(("load", "show", stems, True))
     sim.run(vc() + 0.1)
     try:
@@ -20024,6 +20033,37 @@ def test_audio_master_loads_all_or_nothing():
     check(am.snapshot()["audio"]["ready"]["show"] == "ready",
           "stems allowed to differ in length were not loaded")
     am.stop()
+
+    # 4. Stems sent without their checked length (a caller bug, since
+    # production always sends it from check_show): a loud refusal, never a
+    # silent skip of the length check.
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    short_stems = [tuple(st[:3]) for st in eng.spec["cues"]["show"]]
+    eng.proc.command(("load", "show", short_stems, True))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a cue with no checked length was started")
+    except clock_mod.ClockConfigError as e:
+        check("has no checked length" in str(e)
+              and "not checked before" in str(e), f"the refusal: {e}")
+    check(am.snapshot()["audio"]["ready"]["show"] == "failed",
+          "the page shows a cue with no checked length as ready")
+
+    # 5. A load command with no same-length flag at all: the same loud
+    # refusal, not a silent default.
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    eng.proc.command(("load", "show", eng.spec["cues"]["show"]))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a load command with no same-length flag was accepted")
+    except clock_mod.ClockConfigError as e:
+        check("no same-length flag" in str(e)
+              and "not checked before" in str(e),
+              f"the missing same-length refusal: {e}")
     print("  ok")
 
 
