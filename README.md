@@ -115,7 +115,8 @@ says who owns the clock:
       "zones": {"show": 1, "intermission": 2, "forward": ["show"]}
     }
 
-`source` is `artnet_master` or `ltc_audio_slave`. `show_audio` is `madmapper`.
+`source` is `artnet_master`, `ltc_audio_slave` or `audio_master` (below).
+`show_audio` is `madmapper`.
 `artnet` names each receiver under `nodes`, or gives one `"broadcast":
 "10.0.0.255"` instead of `nodes`, never both. Timecode goes out from an
 ephemeral source port on the `--bind` interface; on the bench, confirm BEYOND
@@ -137,9 +138,93 @@ Art-Net timecode runs on to the end of the show (the end of the last cue in
 that hour, or `zones.show_len_s`) and then stops.
 
 `ltc_audio_master` (fallback 1, LTC audio out) and `"show_audio": "ltcplay"`
-(fallback 2) are refused when the show file loads: they are not built yet. A
+with any other source (fallback 2) are refused when the show file loads: they
+are not built. `audio_master` is how ltcplay plays the show audio. A
 misspelled key anywhere in the block is refused and named, like every other
 setting.
+
+### audio_master: ltcplay plays the show audio (Fire & Ice)
+
+Jeff's decision of 2026-09-27 (handoff section 4a). ltcplay plays the show's
+multi-track audio itself, on the show's audio interface, and the timecode is
+read off that interface's own playback position. Art-Net timecode goes to
+MadMapper (video only now) and BEYOND by name, and the pixels follow the same
+timecode, exactly as with `artnet_master`. The GPL show has no clock block and
+never loads any of this.
+
+    "clock": {
+      "source": "audio_master",
+      "artnet": {"nodes": {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2"}},
+      "audio": {
+        "device": "Show DSP",
+        "rate": 48000,
+        "channels": 8,
+        "hold_fade_ms": 250,
+        "abort_fade_ms": 1000,
+        "return_fade_ms": 1000,
+        "cues": {
+          "show": {
+            "cue": "Show",
+            "stems": [
+              {"file": "audio/music.wav", "gain_db": 0, "channels": [1, 2]},
+              {"file": "audio/fx.wav", "gain_db": -3, "channels": [3, 4]},
+              {"file": "audio/sub.wav", "gain_db": -6, "channels": [5]}
+            ]
+          },
+          "intermission": {
+            "cue": "Intermission",
+            "stems": [{"file": "audio/loop.wav", "channels": [1, 2]}]
+          }
+        }
+      }
+    }
+
+- `device` is the interface's name exactly as this computer lists it. There is
+  no default and no guessing: nothing else is ever used in its place.
+- `rate` must be 48000. Every stem must be a 48 kHz WAV (16-bit, 24-bit or
+  32-bit PCM, or 32-bit float). A stem at another rate is refused.
+- `channels` is how many of the interface's outputs the show uses. Each stem
+  lists the outputs its channels play on, counting from 1: a stereo file
+  lists two, a mono file one or more. Stems on the same output are added
+  together; anything over full scale is held at full scale and shown on the
+  page.
+- `gain_db` is -60 to +12 (0 plays the file as it is).
+- `cue` is the cue in this show file the audio goes with (its name, file or
+  timecode). The cue's length is its audio's, and the audio ending ends the
+  cue.
+- The stems of one cue must all be the same length, or the show file says
+  `"allow_different_lengths": true` for that cue.
+- A missing file, a stem at the wrong rate, stems of different lengths, an
+  output past `channels`, or an interface with fewer outputs than `channels`
+  are each refused with a sentence, when the show file loads or when Run is
+  pressed, never at showtime.
+
+How it runs:
+
+- The audio plays in its own process, so the web page and the pixels can
+  never starve it. It opens the interface when Run is pressed; nothing plays
+  until a cue is started.
+- On Windows the audio never goes through Windows' shared audio engine (the
+  one that broke up 3 to 6 times a show on the bench). It uses the
+  interface's ASIO driver when it has one, otherwise WASAPI exclusive mode,
+  and otherwise refuses with a sentence. `"allow_shared_mode": true` lets it
+  play through the shared engine anyway: for a bench test only, and the page
+  says so in red. On a Mac it uses CoreAudio.
+- Hold fades the music out over `hold_fade_ms` and freezes the timecode on the
+  frame the audio stopped on, still sending it so MadMapper and BEYOND hold.
+  Resume fades the music back in from that exact point and the timecode
+  carries on. Abort fades the music out over `abort_fade_ms`, then stops the
+  cue.
+- If the interface drops out mid-show, the rest of the show carries on:
+  timecode, pixels, video and lasers run on this computer's own clock from
+  where the audio was, with no jump. The page goes red with a sentence and the
+  journal gets a line. ltcplay keeps trying to reopen the interface (every
+  second at first, then every 3 seconds). When it is back, the music restarts
+  at the show's current point, fades in over `return_fade_ms`, and the clock
+  goes back to following it; any small difference is taken out gradually,
+  never as a jump. A monitor's HDMI audio coming and going does not disturb an
+  interface that is working. If the audio process itself dies, that counts as
+  the interface dropping out, and a new one is started.
 
 ## The input
 
