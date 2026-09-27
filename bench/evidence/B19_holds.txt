@@ -1,0 +1,69 @@
+# B19 hold-skip-count 8488845: analyze_holds.py hold2
+
+hold 22:01:35 for 5.0s: pixels during: 5 s rows, repeats 183, skipped 0; after resume: skipped 1; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:02:40 for 5.0s: pixels during: 5 s rows, repeats 183, skipped 0; after resume: skipped 7; out of order 0; audio: jump -4 frames @00:00:20:01; capture_gap the recorder itself lost audio here @; jump +588 frames @00:00:40:07; jump -583 frames @00:00:20:24; timecode heard while held: 0 rows
+hold 22:03:45 for 5.0s: pixels during: 5 s rows, repeats 177, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:04:51 for 5.0s: pixels during: 5 s rows, repeats 188, skipped 1; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:05:56 for 5.0s: pixels during: 5 s rows, repeats 193, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:07:01 for 5.0s: pixels during: 5 s rows, repeats 198, skipped 1; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:08:06 for 5.0s: pixels during: 5 s rows, repeats 199, skipped 0; after resume: skipped 1; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:09:11 for 5.0s: pixels during: 5 s rows, repeats 194, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:10:16 for 5.0s: pixels during: 5 s rows, repeats 191, skipped 0; after resume: skipped 1; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:11:21 for 5.0s: pixels during: 5 s rows, repeats 186, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:12:26 for 5.0s: pixels during: 5 s rows, repeats 185, skipped 3; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:13:31 for 5.0s: pixels during: 5 s rows, repeats 179, skipped 0; after resume: skipped 1; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:14:37 for 5.0s: pixels during: 5 s rows, repeats 186, skipped 1; after resume: skipped 0; out of order 0; audio: jump -5 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:15:42 for 5.0s: pixels during: 5 s rows, repeats 190, skipped 0; after resume: skipped 0; out of order 0; audio: jump -5 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:16:47 for 5.0s: pixels during: 5 s rows, repeats 194, skipped 0; after resume: skipped 0; out of order 0; audio: jump -6 frames @00:00:20:00; timecode heard while held: 0 rows
+hold 22:17:52 for 5.0s: pixels during: 5 s rows, repeats 198, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:18:57 for 5.0s: pixels during: 5 s rows, repeats 198, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:20:02 for 5.0s: pixels during: 5 s rows, repeats 194, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:21:07 for 5.0s: pixels during: 5 s rows, repeats 190, skipped 0; after resume: skipped 0; out of order 0; audio: jump -4 frames @00:00:20:01; timecode heard while held: 0 rows
+hold 22:22:12 for 5.0s: pixels during: 5 s rows, repeats 186, skipped 0; after resume: skipped 0; out of order 0; audio: jump -6 frames @00:00:20:00; timecode heard while held: 0 rows
+SUMMARY {'holds': 20, 'px_skipped_during': 6, 'px_skipped_after': 11, 'px_back': 0, 'audio_resume_jumps': 22, 'audio_gaps': 0, 'audio_played_while_held': 0}
+
+== cycles.csv (tc_skipped is cumulative)
+cycle,t0_epoch,start,end,seconds,tc_packets,tc_send_errors,tc_skipped,pix_packets,pix_send_errors,rss_mb
+1,1790481675.825,22:01:15,22:02:18,63.00,1884,0,6,389825,0,0.0
+2,1790481740.850,22:02:20,22:03:23,63.13,3772,0,8,793383,0,0.0
+3,1790481805.989,22:03:25,22:04:29,63.10,5662,0,8,1197065,0,0.0
+4,1790481871.095,22:04:31,22:05:34,63.13,7552,0,8,1600871,0,0.0
+5,1790481936.238,22:05:36,22:06:39,63.10,9442,0,8,2004615,0,0.0
+6,1790482001.347,22:06:41,22:07:44,63.10,11332,0,8,2408235,0,0.0
+7,1790482066.448,22:07:46,22:08:49,63.10,13222,0,8,2811855,0,0.0
+8,1790482131.553,22:08:51,22:09:54,63.09,15112,0,8,3215475,0,0.0
+9,1790482196.651,22:09:56,22:10:59,63.10,17002,0,8,3619095,0,0.0
+10,1790482261.754,22:11:01,22:12:04,63.09,18892,0,8,4022715,0,0.0
+11,1790482326.852,22:12:06,22:13:09,63.10,20782,0,8,4426335,0,0.0
+12,1790482391.951,22:13:11,22:14:15,63.10,22672,0,8,4829955,0,0.0
+13,1790482457.051,22:14:17,22:15:20,63.10,24562,0,8,5233611,0,0.0
+14,1790482522.158,22:15:22,22:16:25,63.10,26452,0,8,5637321,0,0.0
+15,1790482587.262,22:16:27,22:17:30,63.09,28342,0,8,6040660,0,0.0
+16,1790482652.359,22:17:32,22:18:35,63.10,30232,0,8,6444318,0,0.0
+17,1790482717.464,22:18:37,22:19:40,63.09,32122,0,8,6847900,0,0.0
+18,1790482782.563,22:19:42,22:20:45,63.10,34012,0,8,7251530,0,0.0
+19,1790482847.663,22:20:47,22:21:50,63.10,35902,0,8,7655194,0,0.0
+20,1790482912.766,22:21:52,22:22:55,63.10,37792,0,8,8058845,0,0.0
+
+== hold1 (main 9291c35, 2026-09-25) for comparison
+cycle,t0_epoch,start,end,seconds,tc_packets,tc_send_errors,tc_skipped,pix_packets,pix_send_errors,rss_mb
+1,1790397228.056,22:33:48,22:34:51,63.14,1890,0,601,391530,0,0.0
+2,1790397293.210,22:34:53,22:35:56,63.10,3779,0,1203,795150,0,0.0
+3,1790397358.314,22:35:58,22:37:01,63.09,5669,0,1804,1198770,0,0.0
+4,1790397423.416,22:37:03,22:38:06,63.10,7559,0,2405,1602395,0,0.0
+5,1790397488.526,22:38:08,22:39:11,63.10,9449,0,3006,2006165,0,0.0
+6,1790397553.629,22:39:13,22:40:16,63.11,11339,0,3607,2409785,0,0.0
+7,1790397618.740,22:40:18,22:41:21,63.12,13229,0,4208,2813405,0,0.0
+8,1790397683.861,22:41:23,22:42:26,63.11,15119,0,4809,3217025,0,0.0
+9,1790397748.977,22:42:28,22:43:32,63.10,17009,0,5410,3620645,0,0.0
+10,1790397814.076,22:43:34,22:44:37,63.09,18899,0,6011,4024110,0,0.0
+11,1790397879.166,22:44:39,22:45:42,63.09,20789,0,6612,4427586,0,0.0
+12,1790397944.262,22:45:44,22:46:47,63.09,22679,0,7213,4831195,0,0.0
+13,1790398009.357,22:46:49,22:47:52,63.14,24569,0,7814,5235039,0,0.0
+14,1790398074.498,22:47:54,22:48:57,63.10,26459,0,8415,5638590,0,0.0
+15,1790398139.605,22:48:59,22:50:02,63.09,28349,0,9016,6042210,0,0.0
+16,1790398204.697,22:50:04,22:51:07,63.06,30240,0,9616,6445520,0,0.0
+17,1790398269.757,22:51:09,22:52:12,63.09,32130,0,10217,6849140,0,0.0
+18,1790398334.855,22:52:14,22:53:17,63.09,34020,0,10818,7252659,0,0.0
+19,1790398399.947,22:53:19,22:54:23,63.15,35905,0,11424,7656070,0,0.0
+20,1790398465.104,22:54:25,22:55:28,63.10,37790,0,12030,8058760,0,0.0

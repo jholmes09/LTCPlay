@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B18 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B19 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -27,6 +27,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B16 Timecode by broadcast (Jeff's yes) | FAILED for MadMapper / PASSED for BEYOND | Broadcast to 192.168.7.255 and 255.255.255.255 reached BEYOND (listening on 0.0.0.0) but not MadMapper (listening on 192.168.4.42 and 127.0.0.1 only); the show must send to each program's own address |
 | B17 BEYOND long run on the demo | PASSED for the 2 h the demo allows | 6 shows: BEYOND followed each identically (beams 0.23 to 0.32 s after start, dark after each show), memory flat at 1.3 GB, no effect on ltcplay (0 frames skipped) or MadMapper (1 to 34 ms). The demo shows its 1 h limit box but keeps running, then crashes at exactly 2 h (3 times now) |
 | B18 Audio start lock and Windows audio glitches | NEEDS A DECISION | MadMapper's audio locks 46 to 78 ms apart from show to show (buffer size does not fix it); this evening Windows' shared audio engine broke 3 to 6 times per show (heard by Jeff), even with MadMapper out of the loop. Proposal to make audio the master clock sent to the main session; the audio path must bypass the Windows mixer either way |
+| B19 Hold no longer counts as skipped (PR #20, 8488845) | PASSED | 20 held cues: ltcplay's skipped count 8 in total (was about 600 per Hold); 0 out-of-order pixel frames; 0 or 1 frames lost per resume in 19 of 20 Holds |
 
 ## B0 The machine
 
@@ -594,6 +595,30 @@ This led to the proposal to make audio the master clock, sent to the main sessio
 **What this means:**
 - **(1)** is a design point, not a setting. With audio chasing timecode, each start lands up to about 2 frames apart. The main session has the proposal to make audio the master clock: either ltcplay plays the audio and derives timecode from it, or a dedicated player plays the music plus an LTC track and ltcplay chases that LTC as it already does at Dollywood.
 - **(2)** has to be fixed in the audio path whatever the design: an output that bypasses the Windows mixer (ASIO or WASAPI exclusive) on the show's own interface, tested on site, with USB selective suspend off and a monitor or dummy plug that never disconnects.
+
+
+## B19 Hold no longer counts as skipped frames (PR #20)
+
+**Verdict: PASSED.** Branch `hold-skip-count` at **`8488845`** (PR #20, contains main `bba05f7`), in worktree `wt-holdskip`, with no code changed. Run on 2026-09-26 from 22:01 to 22:23. It repeats B4's `hold1` run exactly:
+- 20 cues of the 58 s bench show (`bench58_mm42_timeline.json`: 26,256 pixels to the local pixel sink, Art-Net timecode to MadMapper at 192.168.4.42);
+- each cue held at 20 s for 5 s by `Session.clock_pause()` / `clock_resume()` (`drive_show.py`, `BENCH_HOLD=20,5`), 2 s between cues;
+- MadMapper chasing on Bank-1 with its six panel tracks and audio.
+
+Loopback plus the Pico's own address; Ethernet unplugged.
+
+| | hold1: main `9291c35`, 2026-09-25 | hold2: this branch |
+|---|---|---|
+| ltcplay's skipped counter (cumulative) | 601, 1,203, 1,804 … **12,030 after 20 cues** (about 600 per 5 s Hold) | **6 after cue 1, 8 after cue 2, then 8 for the rest (cues 3 to 20 added 0)** |
+| pixel frames out of order around a Hold | one around most Holds | **0 in all 20** |
+| pixel frames skipped during a Hold | 0 | 0 in 16 Holds, 1 in 3, 3 in 1 (6 in total) |
+| pixel frames skipped in the 3 s after resume | 14 over 19 Holds | **0 in 12 Holds, 1 in 7, 7 in one** (11 in total). The 7 came at 22:02:40, the same second the audio recorder logged a break in Windows' audio stream (B18) |
+| pixels while held | the frozen frame repeated | the frozen frame repeated, 177 to 199 repeats per 5 s |
+| MadMapper audio | silent while held; back 4 to 5 frames on resume | the same: silent in all 20; back 4 frames (17 Holds), 5 (2) or 6 (2) |
+
+- The expected 0 to 2 frames lost per resume holds for 19 of 20 Holds. The one with 7 lines up with a logged Windows audio break (B18), so the whole PC was briefly stalled then, not the Hold.
+- The counter is cumulative, so it cannot say whether the 6 and 2 skips in cues 1 and 2 came from those cues' Holds or from the rest of the cue. The other 18 Holds added none.
+
+Evidence: `B19_holds.txt` (per-Hold lines from `analyze_holds.py`, and both runs' cycle tables).
 
 ## Not tested yet
 
