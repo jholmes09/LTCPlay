@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B21 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B23 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -30,6 +30,8 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B19 Hold no longer counts as skipped (PR #20, 8488845) | PASSED | 20 held cues: ltcplay's skipped count 8 in total (was about 600 per Hold); 0 out-of-order pixel frames; 0 or 1 frames lost per resume in 19 of 20 Holds |
 | B20 Pixel pacing after a CPU burst (PR #19, 3f8b0a2) | PASSED | After a burst on every core the branch returns exactly to its earlier timing (-2.9 ms); main steps to -8.9 ms and stays there. A 2-core burst disturbs neither; no 0 ms pairs anywhere |
 | B21 Flame link loss disarms (PR #23, 30dcab5) | PASSED, 1 finding | Suites pass on Windows; an armed group disarms 0.51 s after the link stops, with the contract's sentence and a steady amber; the link coming back does not re-arm it ('cycle the arm', flashing); a cycle re-arms it. Finding: 'latch-reset: show program link lost' is journalled every tick (about 40 lines a second) while the link is down |
+| B22 Audio breaks after USB selective suspend off | NOT TESTED | USB selective suspend still enabled (read 2026-09-26 23:34); waits for Jeff |
+| B23 audio_master (PR #26, 0f87a82) | PARTIAL | selftest passes on Windows; a dry run through Session with a simulated device: Run 0.20 s, audio process 189 MB and about 2% of a core, MadMapper and pixels follow, Hold freezes and Resume continues, Abort 1.085 s. Real-device items wait for the `sounddevice` install (Jeff's OK) and Jeff's hands |
 
 ## B0 The machine
 
@@ -683,6 +685,51 @@ Output over the whole run: 2,088 packets at 40.10 a second, priority 200, univer
 - Suggest writing it once per transition, as the link line is written.
 
 Evidence: `B21_flamesafe_link.txt` (the event, wire and status timelines, both runs' summaries, and a sample of the journal).
+
+
+## B23 audio_master on the Pico (PR #26): partial, with a simulated sound device
+
+**Verdict: PARTIAL.**
+- **Passes on Windows:** the selftest, and a full dry run through `Session` with showaudio's simulated device (no sound card).
+- **Blocked, needs Jeff:**
+  - The Pico has no `sounddevice` (PortAudio) in any Python. Installing it is a download from PyPI; Jeff's OK is needed, asked 2026-09-27.
+  - The unplug and monitor tests need hands on the hardware.
+
+Branch `audio-master` at **`0f87a82`** (draft PR #26, contains main `bba05f7`), in worktree `wt-audiomaster`, with no code changed. Run on 2026-09-27 from 04:20 to 04:43. Loopback plus the Pico's own address; nothing to the amps.
+
+**Stems:** `bench_media/stems/music_L_mono.wav` (the music) and `ltc_R_mono.wav` (LTC from 00:00:00:00). Both are 48 kHz, 16-bit mono, 444.42 s, split from B5's music-plus-LTC file. Stem 1 plays on output 1 and stem 2 on output 2, so the B5/B18 LTC-decode method will measure the audio position once a real device can be used. Show files: `bench444_am_fake_timeline.json` (dry run) and `bench444_am_scarlett_timeline.json` (Scarlett, `allow_shared_mode: true`, for when `sounddevice` is installed).
+
+**1. selftest on Windows:** **"all checks passed in 138.3s"**, 0 FAIL, including all eight audio_master checks. One of them spawns the real audio process against the simulated device.
+
+**2. Dry run through Session** (`scratch/b23_dry.py`, throwaway):
+- It wraps `showaudio.engine_spec` to add the `fake` entry (an ASIO-type device "Fake Interface", 2 outputs); no show file can set that.
+- It then drives `Session` as a show would: Run, `clock_play`, a Hold at 60 s for 5 s, Resume, the end of the cue; then a second show aborted at 100 s.
+- Art-Net timecode went to MadMapper (192.168.4.42, video chasing) and BEYOND (127.0.0.2). Pixels went to the local sink.
+- The driver needs an `if __name__ == "__main__":` guard, because the spawned audio process re-imports it (as the PR notes say).
+
+| Item | Result |
+|---|---|
+| Run (`Session.start`, which spawns the audio process and loads the stems) | **0.20 s** |
+| Audio process memory | **188 to 189 MB**, flat over the run (two 7:24 mono stems as 32-bit float is about 170 MB, as the PR predicts) |
+| Audio process CPU | 11.5 CPU-seconds over 9.5 minutes, about **2% of one core** (with the simulated device) |
+| Timecode to MadMapper | MadMapper chasing from **0.047 s** after play, with 26,681 heartbeats in show 1 |
+| Pixels | 40 fps median, 2 skipped; 62 repeats, which are the frozen frame during the Hold; longest gap 39 ms |
+| Hold at 60.01 s | The timecode ran on through the 0.25 s music fade and froze where the music stopped. MadMapper's heartbeat reached 60.414 s (its own run-on, B4), then settled on the frozen frame at **60.233 s**, silent for 4.6 s |
+| Resume | MadMapper carried on from **60.250 s**, 0.07 s after Resume; no jump |
+| End of show 1 | 449.3 s after play: 444.42 s of audio plus the 5 s Hold |
+| Abort (`clock_halt`) at 100 s in show 2 | Stopped **1.085 s** after Abort: the 1 s fade, then stop |
+
+The simulated device's timing is exact by construction, so this says nothing about the real interface's offset, drift or callback times: those are items 2 and 5 below.
+
+**Still to do:**
+
+| Item | Needs |
+|---|---|
+| 2. Audio against timecode over two shows, and spread across starts (compare B18's 46 to 78 ms) | `sounddevice` installed; then the Scarlett through shared mode (`allow_shared_mode`, which the page shows red), since Windows only offers the Scarlett at 44.1 kHz and exclusive mode at 48 kHz will be refused |
+| 3. Hold, Resume and Abort on a real device (no run-on in the sound, frozen on the exact frame) | `sounddevice` |
+| 4. Unplugging the Scarlett mid-show and plugging it back; the monitor's HDMI audio off and on mid-show | Jeff's hands |
+| 5. Callback time info: real or zeros on this driver | `sounddevice` |
+| 6. Whether any installed ASIO driver (PreSonus, Behringer) opens at 48 kHz with no device | `sounddevice` (its ASIO-enabled PortAudio) |
 
 ## Not tested yet
 

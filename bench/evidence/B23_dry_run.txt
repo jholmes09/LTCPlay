@@ -1,0 +1,29 @@
+# B23 dry run, audio-master 0f87a82, simulated device
+04:33:17 Run (Session.start) took 0.20 s
+04:33:17 audio process: 6680 189 0.31 11560
+896 80 0.42 11560
+04:33:17 show 1 play
+04:34:17 HOLD at 60.01 s
+04:34:22 RESUME
+04:34:53 audio process: 6680 189 2.16 11560
+5408 80 0.42 11560
+04:40:46 show 1 ended after 449.32 s
+04:40:47 audio process: 6680 189 9.19 11560
+13200 80 0.41 11560
+04:40:52 show 2 play
+04:42:32 ABORT (clock_halt)
+04:42:33 stopped 1.085 s after Abort
+04:42:36 audio process: 6680 188 11.47 11560
+12880 80 0.42 11560
+04:42:37 Session stopped
+
+== selftest
+all checks passed in 138.3s
+== audio_master: settings, stems and devices refused in sentences
+== audio_master: gain, routing, summing, clipping, fades
+== audio_master: the timecode follows the audio device
+== audio_master: Hold freezes on the audio's last frame, Resume carries on, Abort fades then stops
+== audio_master: the interface lost mid-show, the show carries on, the audio comes back and the clock follows it again
+== audio_master: the end of the audio is the end of the cue
+== audio_master through the session: Run, play, Hold, Resume, Abort
+== audio_master: the audio plays in its own process, and a new one takes over if it dies
