@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B20 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B21 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -29,6 +29,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B18 Audio start lock and Windows audio glitches | NEEDS A DECISION | MadMapper's audio locks 46 to 78 ms apart from show to show (buffer size does not fix it); this evening Windows' shared audio engine broke 3 to 6 times per show (heard by Jeff), even with MadMapper out of the loop. Proposal to make audio the master clock sent to the main session; the audio path must bypass the Windows mixer either way |
 | B19 Hold no longer counts as skipped (PR #20, 8488845) | PASSED | 20 held cues: ltcplay's skipped count 8 in total (was about 600 per Hold); 0 out-of-order pixel frames; 0 or 1 frames lost per resume in 19 of 20 Holds |
 | B20 Pixel pacing after a CPU burst (PR #19, 3f8b0a2) | PASSED | After a burst on every core the branch returns exactly to its earlier timing (-2.9 ms); main steps to -8.9 ms and stays there. A 2-core burst disturbs neither; no 0 ms pairs anywhere |
+| B21 Flame link loss disarms (PR #23, 30dcab5) | PASSED, 1 finding | Suites pass on Windows; an armed group disarms 0.51 s after the link stops, with the contract's sentence and a steady amber; the link coming back does not re-arm it ('cycle the arm', flashing); a cycle re-arms it. Finding: 'latch-reset: show program link lost' is journalled every tick (about 40 lines a second) while the link is down |
 
 ## B0 The machine
 
@@ -647,6 +648,41 @@ Evidence: `B19_holds.txt` (per-Hold lines from `analyze_holds.py`, and both runs
 - Main's pre-burst roughness in its second 2-core show (20 skips, one 118 ms gap) came before the burst. It is most likely the same system-wide stalls as B18, which were also around this evening.
 
 Evidence: `B20_pacing.txt` (per-show before, during and after figures for all four runs, and the burst times).
+
+
+## B21 Losing the ltcplay link disarms every flame group (PR #23)
+
+**Verdict: PASSED, with one finding: the journal writes "latch-reset: show program link lost" on every tick (about 40 lines a second) for as long as the link is down.** Branch `flamesafe-link-loss-disarms` at **`30dcab5`** (PR #23, contains main `bba05f7`), in worktree `wt-flamelink`, with no code changed. Run on 2026-09-26 from 23:26 to 23:33, under Jeff's standing permission for flame-safety testing (B10). **No flame units in the building; Ethernet unplugged; everything on 127.0.0.1.**
+- Config: `scratch/flamesafe_b21.json`, the example config with only the sACN destination (127.0.0.1:5578, a throwaway listener), `log_dir` and the link key changed.
+- The ltcplay side of the link was played by `scratch/b21_link.py`, following CONTRACT.md v2: all-zero flame frames at 40 Hz on 5571, and every status frame logged from 5572. It never asked for fire.
+
+**1. Suites on Windows:** `python -m flamesafe.test_flamesafe`: **"flamesafe: all checks passed in 12.8s"**, 0 FAIL. It includes "liveness: ltcplay going quiet zeros the fire slots inside fire_hold_ms and disarms every group at frame_stale_ms". ltcplay's `selftest.py` on this branch: **"all checks passed in 129.8s"**, 0 FAIL.
+
+**2a. `python -m flamesafe` as shipped (no arm input; the Stream Deck, build step 7b, does not exist).** Link on for 15 s, off for 8, on for 12:
+- `frames.state` went stale 0.49 s after the link stopped and fresh at once when it came back.
+- The journal logged "link: show program stopped answering: every group disarmed; cycle the arm to re-arm once it is back."
+- Output: 1,592 packets at 40.00 a second, priority 200, **every one all zero**, 0 sequence breaks.
+- With no arm input no group ever asks to arm, so every group simply reads "disarmed".
+
+**2b. The real `Service`, in-process, with the test harness's `ScriptedArmInput`** (`scratch/b21_armed.py`). Front row only; its safety slot is 401, arm value 78. Everything below is from the status frames and the wire:
+
+| Time | What happened | front row's status | Safety slot 401 on the wire |
+|---|---|---|---|
+| 0.0 s | link on | disarmed | 0 |
+| 1.0 s / 3.0 s | arm: want off, then want on | **armed** at 3.03 s | **78** |
+| **20.00 s** | **link stops** | at **20.51 s**: `frames` stale, **held**, reason **"Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back."**, amber **steady** | **0** from 20.51 s |
+| **28.00 s** | **link back** (the arm still asking to be on) | frames fresh; **still held**: reason **"cycle the arm"**, amber **flashing** | **0: not re-armed** |
+| 37.0 s / 38.5 s | arm cycled: off, then on | disarmed, then **armed** at 38.53 s | 78 |
+| 51.04 s | clean stop | | zeros, then 3 stream-terminated packets |
+
+Output over the whole run: 2,088 packets at 40.10 a second, priority 200, universe 1, 0 sequence breaks. **Non-zero packets exactly while front row was armed** (1,200, about 30 s).
+
+**Finding for the main session (journal noise):**
+- The journal wrote **"latch-reset: show program link lost" once per tick** while the link was stale: about 320 lines in the 8 s outage, and about 40 at startup before the first frame.
+- The one-time "link: show program stopped answering" line is right. The per-tick latch-reset lines would bury a real event on a show night where the link drops for a minute.
+- Suggest writing it once per transition, as the link line is written.
+
+Evidence: `B21_flamesafe_link.txt` (the event, wire and status timelines, both runs' summaries, and a sample of the journal).
 
 ## Not tested yet
 

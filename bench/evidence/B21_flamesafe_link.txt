@@ -1,0 +1,56 @@
+# B21 flamesafe-link-loss-disarms 30dcab5, 2026-09-26 (loopback only, no flame units)
+== suite
+flamesafe: all checks passed in 12.8s
+== selftest
+all checks passed in 129.8s
+
+== 2a python -m flamesafe (no arm input)
+2026-09-26 23:30:43  config: UNCONFIRMED numbers: the universe, the group map and the arm value in this config have not been confirmed by Andy. UNCONFIRMED. This is the rev 6 fixture table from the flame panel spec (2026-09-18). Andy Win has not confirmed the flame universe number, the group map, the safety and fire slots, or the arm value (open since rev 9). The destination is loopback on purpose: set it to the PixLite Aux port only when Andy has confirmed every number above. Replace link.key with a value of your own and put the same value in ltcplay's config.
+2026-09-26 23:30:43  config: no arm input in this build: every group stays disarmed and the flame universe is all zeros
+2026-09-26 23:30:43  start: flame universe 1 to 127.0.0.1:5578 at sACN priority 200, 40 Hz; frames in on 127.0.0.1:5571, status out to 127.0.0.1:5572
+2026-09-26 23:31:00  link: show program stopped answering: every group disarmed; cycle the arm to re-arm once it is back
+2026-09-26 23:31:20  link: show program stopped answering: every group disarmed; cycle the arm to re-arm once it is back
+1592 packets over 39.77 s = 40.00/s
+interval ms: min 14.56, mean 25.00, p99 26.16, max 38.68
+priorities [200], universes [1], sequence breaks 0, non-zero packets 0, stream-terminated packets 0
+
+== 2b in-process Service + ScriptedArmInput
+EVENTS
+     0.000s link ON
+     1.016s want off
+     3.017s want ON (front row)
+    20.002s link OFF
+    28.002s link ON
+    37.008s CYCLE: want off
+    38.508s CYCLE: want ON
+    51.040s stopping (clean stop: zeros + stream-terminated)
+    51.068s stopped
+    52.003s end
+WIRE
+    -0.993s nonzero: - max 0
+     3.032s nonzero: 401 max 78
+    20.507s nonzero: - max 0
+    38.532s nonzero: 401 max 78
+    51.057s nonzero: - max 0
+STATUS front row
+     0.007s fresh disarmed | - | - | sent 0
+     3.032s fresh armed | - | - | sent 78
+    20.507s stale held | Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back. | steady | sent 0
+    28.007s fresh held | cycle the arm | flashing | sent 0
+    37.032s fresh disarmed | - | - | sent 0
+    38.533s fresh armed | - | - | sent 78
+2088 packets over 52.05 s = 40.10/s
+interval ms: min 0.00, mean 24.94, p99 26.15, max 45.54
+priorities [200], universes [1], sequence breaks 0, non-zero packets 1200, stream-terminated packets 3
+
+== journal: latch-reset lines counted, the rest shown
+338
+2026-09-26 23:32:00  start: flame universe 1 to 127.0.0.1:5578 at sACN priority 200, 40 Hz; frames in on 127.0.0.1:5571, status out to 127.0.0.1:5572
+23:32:02 want off
+23:32:04 want ON (front row)
+2026-09-26 23:32:22  link: show program stopped answering: every group disarmed; cycle the arm to re-arm once it is back
+23:32:38 CYCLE: want off
+23:32:40 CYCLE: want ON
+23:32:52 stopping (clean stop: zeros + stream-terminated)
+2026-09-26 23:32:52  stop: flame universe zeroed and the stream terminated
+23:32:52 stopped
