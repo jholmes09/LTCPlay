@@ -16306,6 +16306,14 @@ def test_journal_rotation_and_pruning_across_dst():
         os.makedirs(os.path.join(inc, n))
         open(os.path.join(inc, n, "journal.txt"), "w").write("x\n")
     open(os.path.join(inc, "incident_2020-01-01_120000"), "w").write("x")
+    # The .partial is a crash leftover, not work in progress: old enough
+    # (over a day, by its mtime) that the stale rule removes it. Its NAME's
+    # date (2026-07-03, also older than 120 days) must play no part: that
+    # would be pruning a `.partial` by the date rule, which round 1 of the
+    # review said never to do again.
+    stale_partial = os.path.join(inc, "incident_2026-07-03_120000.partial")
+    stale_ts = datetime(2026, 7, 3, tzinfo=utc).timestamp()
+    os.utime(stale_partial, (stale_ts, stale_ts))
     now[0] = datetime(2026, 11, 1, 18, 0, tzinfo=utc)   # the fall-back day
     p = _book(J, old, now)
     gone = p.prune(date(2026, 11, 1))
@@ -16329,12 +16337,23 @@ def test_journal_rotation_and_pruning_across_dst():
     check(all(n in left for n in strangers)
           and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl")),
           "nothing this module did not write is touched")
-    check(any("Removed 66 night log file(s) and 3 incident folder(s)" in
+    check(any("Removed 66 night log file(s) and 2 incident folder(s)" in
               r["text"] for r in p.memory),
-          "the journal says what was removed")
-    # A clock nobody could check (no time server, 10 minutes of running)
-    # prunes with a floor: the newest 120 nights that exist stay whatever
-    # the date says. A clock the time server agreed with prunes by age.
+          "the journal says what was removed by the date rule (the "
+          "stale .partial is reported separately, below)")
+    check(any("Removed 1 incident folder(s) left unfinished (.partial)" in
+              r["text"] and "incident_2026-07-03_120000.partial" in r["text"]
+              for r in p.memory),
+          "and a stale .partial is reported for what it is, not folded "
+          "into the by-date removal")
+    check("incident_2026-07-03_120000.partial" not in
+          set(os.listdir(inc)), "the stale .partial is gone")
+    # A clock nobody could check (no time server, 10 minutes of running),
+    # or one the time server DID agree with: either way the newest 120
+    # nights that exist stay whatever the date says. `floor` no longer
+    # makes a difference here (round 1 review, blocker: it used to, and a
+    # clock that jumped after passing its one boot-time check relied on
+    # exactly that gap).
     ahead = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(ahead)
     nights_from(date(2026, 11, 14), 4, ahead)
@@ -16343,8 +16362,10 @@ def test_journal_rotation_and_pruning_across_dst():
           and len(os.listdir(ahead)) == 8,
           f"an unchecked clock a year ahead removes nothing: "
           f"{os.listdir(ahead)}")
-    check(len(_book(J, ahead, now).prune(date(2027, 11, 20))) == 8,
-          "a checked clock removes by age alone, even the last nights")
+    check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=False) == []
+          and len(os.listdir(ahead)) == 8,
+          "a checked clock a year ahead ALSO removes nothing: the newest "
+          "120 nights are always kept, floor=False included")
     many = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many)
     made = nights_from(date(2026, 11, 1), 150, many, (J.machine_name,))
@@ -16354,6 +16375,16 @@ def test_journal_rotation_and_pruning_across_dst():
                   for _d, n in made) == 120,
           f"however far ahead, an unchecked clock keeps the newest 120 "
           f"nights: {len(gone)}")
+    many2 = os.path.join(tempfile.mkdtemp(), "nights")
+    os.makedirs(many2)
+    made2 = nights_from(date(2026, 11, 1), 150, many2, (J.machine_name,))
+    gone2 = _book(J, many2, now).prune(date(2028, 1, 1))       # floor=False
+    check(sorted(gone2) == [n for _d, n in made2[:30]]
+          and sum(os.path.exists(os.path.join(many2, n))
+                  for _d, n in made2) == 120,
+          f"and the same however far ahead with floor left at its "
+          f"default: the newest 120 nights are kept either way: "
+          f"{len(gone2)}")
     # The spring change: 120 days back from 14 Mar 2027 is 14 Nov 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
@@ -16371,7 +16402,10 @@ def test_journal_rotation_and_pruning_across_dst():
     work = tempfile.mkdtemp()
     nights = os.path.join(work, "nights")
     os.makedirs(nights)
-    nights_from(date(2026, 7, 1), 95, nights, (J.machine_name,))
+    # More than 120 nights, and running right up to yesterday, so the age
+    # rule (not the newest-120 floor, always applied now regardless -- see
+    # journal.Logbook.prune()) is what is actually under test here.
+    nights_from(date(2026, 6, 1), 165, nights, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc = _svc(S, work, now).start(thread=False)
 
@@ -16417,6 +16451,186 @@ def test_journal_rotation_and_pruning_across_dst():
     check(os.path.exists(sp14) and "written at midnight" in
           open(sp14, encoding="utf-8").read(),
           "and the night that never closed gets its summary at midnight")
+    print("  ok")
+
+
+def test_journal_prune_never_removes_a_partial_by_its_name_date():
+    section("journal: a .partial incident is never removed by the date in "
+            "its name; only a stale one, by how long it has sat "
+            "unfinished, ever goes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    # A .partial dated long ago (a wrong clock, or simply an old crash,
+    # could leave one so named), but written moments ago by this run's own
+    # clock: save_incident() could still be filling it. prune() must leave
+    # it alone even with `today` set far enough ahead that the date-based
+    # rule would remove a FINISHED incident with the same name's date
+    # (round 1 review of PR 25, should-fix).
+    folder = tempfile.mkdtemp()
+    inc = os.path.join(folder, J.INCIDENTS)
+    os.makedirs(inc)
+    partial = os.path.join(inc, "incident_2020-01-01_000000.partial")
+    os.makedirs(partial)
+    open(os.path.join(partial, "journal.txt"), "w").write("still open\n")
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    # Its mtime is real wall-clock time (whenever this test happens to
+    # run), which has nothing to do with the mocked clock above: set it to
+    # match `now[0]`, so "freshly written" is judged against the same
+    # clock prune() itself uses.
+    fresh_ts = now[0].timestamp()
+    os.utime(partial, (fresh_ts, fresh_ts))
+    b = _book(J, folder, now)
+    gone = b.prune(date(2026, 11, 1))       # far more than 120 days past 2020
+    check(gone == [] and os.path.isdir(partial),
+          f"a freshly-written .partial survives, whatever its name's date "
+          f"says: {gone}")
+
+    # The same folder, now old enough (mtime over a day) that whatever was
+    # writing it is gone: a separate, simple rule removes it, and only
+    # that rule.
+    old_ts = (now[0] - timedelta(days=2)).timestamp()
+    os.utime(partial, (old_ts, old_ts))
+    gone2 = b.prune(date(2026, 11, 1))
+    check(gone2 == ["incident_2020-01-01_000000.partial"]
+          and not os.path.exists(partial),
+          f"a .partial unfinished for more than a day is removed, as a "
+          f"stale crash leftover: {gone2}")
+    check(any("left unfinished (.partial)" in r["text"] for r in b.memory),
+          "and the journal says so, distinctly from a by-date removal")
+    print("  ok")
+
+
+def test_journal_prune_takes_the_incident_lock():
+    section("journal: prune() takes the same lock save_incident() uses, "
+            "so the two can never interleave")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    from datetime import date, datetime, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    folder = tempfile.mkdtemp()
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    b = _book(J, folder, now)
+    # 121 nights, one more than keep_days: the floor (always applied, see
+    # prune()'s docstring) protects the newest 120 of them, so exactly the
+    # single oldest is ever due for removal -- a lone night file would
+    # otherwise BE the newest 120 trivially and never age out at all.
+    from datetime import timedelta
+    for i in range(121, 0, -1):
+        d = date(2026, 11, 1) - timedelta(days=i)
+        open(os.path.join(b.folder, J.machine_name(d.isoformat())), "w") \
+            .write("x\n")
+    old_name = J.machine_name("2026-07-03")
+
+    order = []
+    holding = threading.Event()
+    released = threading.Event()
+
+    def hold_and_release():
+        with b._io:
+            order.append("held")
+            holding.set()
+            released.wait(2)
+        order.append("released")
+
+    holder = threading.Thread(target=hold_and_release, daemon=True)
+    holder.start()
+    check(holding.wait(2), "the other holder took the lock")
+
+    result = {}
+
+    def run_prune():
+        result["gone"] = b.prune(date(2026, 11, 1))
+        order.append("pruned")
+
+    pruner = threading.Thread(target=run_prune, daemon=True)
+    pruner.start()
+    pruner.join(timeout=0.3)
+    check(pruner.is_alive()
+          and os.path.exists(os.path.join(b.folder, old_name)),
+          "prune() waits for the lock, rather than running through it "
+          "while save_incident() (or anything else) holds it")
+    released.set()
+    pruner.join(timeout=2)
+    holder.join(timeout=2)
+    check(not pruner.is_alive() and result.get("gone") == [old_name],
+          "and runs, and removes the old file, once the lock is free")
+    check(order == ["held", "released", "pruned"],
+          f"the two never interleave: {order}")
+    print("  ok")
+
+
+def test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled():
+    section("scheduler: a clock that jumps mid-run, after passing its own "
+            "one-shot check at start, never breaks the 120-night floor, "
+            "and is itself noticed and journaled")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 12, 0, tzinfo=utc)
+    base = boot.date() - timedelta(days=1)
+    made = []
+    for i in range(130):
+        d = base - timedelta(days=i)
+        open(os.path.join(nights, J.machine_name(d.isoformat())), "w") \
+            .write("x\n")
+        made.append(d)
+
+    def unique_dates():
+        # Every distinct night date still on disk, this test's own 130
+        # seeded ones and any the service itself wrote for "tonight"
+        # alike: the floor protects whatever the newest 120 actually are,
+        # not just the ones this test happened to seed.
+        out = set()
+        for name in os.listdir(nights):
+            m = J._NAME.match(name)
+            if m:
+                out.add(date(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))))
+        return out
+
+    now = [boot]
+    perf = [0.0]
+    svc = _svc(S, work, now, ntp_query=lambda: 0.01,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)                     # a good clock at boot
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+    check(len(unique_dates()) >= 120,
+          f"the boot-time prune never keeps fewer than the newest 120: "
+          f"{len(unique_dates())}")
+
+    # The clock steps forward 200 days between two ticks that, by
+    # perf_counter, were a quarter of a second apart: an NTP step, an RTC
+    # glitch, or someone setting it by hand -- none of which this process
+    # would otherwise ever notice again after its one boot-time check.
+    now[0] = boot + timedelta(days=200)
+    perf[0] = 0.25
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "the jump itself is noticed and journaled")
+    check(len(unique_dates()) >= 120,
+          f"and nothing beyond the newest 120 nights is ever removed, "
+          f"however this tick's own housekeeping used the wrong date: "
+          f"{len(unique_dates())}")
     print("  ok")
 
 
@@ -18010,6 +18224,9 @@ if __name__ == "__main__":
     test_journal_line_format_is_the_spec()
     test_journal_is_append_only()
     test_journal_rotation_and_pruning_across_dst()
+    test_journal_prune_never_removes_a_partial_by_its_name_date()
+    test_journal_prune_takes_the_incident_lock()
+    test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled()
     test_journal_nightly_summary()
     test_journal_incident_bundle()
     test_journal_a_full_disk_stops_the_logging_not_the_show()

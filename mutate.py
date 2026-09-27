@@ -1437,10 +1437,10 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '            if d >= keep_from:\n                continue\n',
-  '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                    root, name)), timezone.utc).date() >= keep_from:\n'
-  '                continue\n'),
+  '                if d >= keep_from:\n                    continue\n',
+  '                if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
+  '                        root, name)), timezone.utc).date() >= keep_from:\n'
+  '                    continue\n'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
@@ -1547,9 +1547,19 @@ MUTATIONS = [
   '        if False:\n            return self.machine.date\n'
   '        return self.logbook.night_of(now)'),
 
- ("a clock a year ahead prunes every night", "ltcplay/journal.py",
-  '        if floor:\n            nights = sorted(',
-  '        if False:\n            nights = sorted('),
+ ("the floor is conditional again", "ltcplay/journal.py",
+  '            keep_from = cutoff\n'
+  '            nights = sorted({d for d, _n, _r, inc in found if not inc},\n'
+  '                            reverse=True)[:self.keep_days]\n'
+  '            if nights:\n'
+  '                keep_from = min(cutoff, nights[-1])\n',
+  '            keep_from = cutoff\n'
+  '            if floor:\n'
+  '                nights = sorted(\n'
+  '                    {d for d, _n, _r, inc in found if not inc},\n'
+  '                    reverse=True)[:self.keep_days]\n'
+  '                if nights:\n'
+  '                    keep_from = min(cutoff, nights[-1])\n'),
 
  ("pruning trusts a clock nobody has checked",
   "ltcplay/schedule_service.py",
@@ -2572,6 +2582,21 @@ def build():
             h.update(b"<unreadable>")
     _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
     return _BUILD_CACHE'''),
+
+ # -- round 1 review of PR 25 -------------------------------------------
+ ("a clock jump is not noticed", "ltcplay/schedule_service.py",
+  '            if abs(wall_elapsed - perf_elapsed) > CLOCK_JUMP_LIMIT_S:\n',
+  '            if False:\n'),
+
+ ("a stale .partial is judged by the date in its name",
+  "ltcplay/journal.py",
+  '                if name.endswith(".partial"):\n',
+  '                if False:\n'),
+
+ ("prune() no longer shares save_incident()'s lock", "ltcplay/journal.py",
+  '        removed, problems, stale = [], [], []\n        with self._io:\n',
+  '        removed, problems, stale = [], [], []\n'
+  '        with threading.Lock():\n'),
 
 ]
 

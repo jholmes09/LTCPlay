@@ -83,6 +83,9 @@ ACTORS = ("scheduler", "operator", "madmapper", "safety", "reader", "system")
 
 # Night files and incident folders are kept this long (Jeff, 2026-09-26).
 KEEP_DAYS = 120
+# A .partial incident folder unfinished this long is a crash leftover, not
+# work in progress (round 1 review, PR 25 should-fix).
+PARTIAL_STALE_DAYS = 1
 MEMORY_LINES = 400          # what the page can scroll back through
 PAGE_LINES = 20             # the log strip: the last 20, newest first
 RING_SECONDS = 60
@@ -1108,64 +1111,109 @@ class Logbook:
         the wrong night. Only names this module writes, only plain files
         (nights) and plain folders (incidents), only in its own folder.
 
-        `floor` is for a clock nobody has checked: the newest keep_days
-        nights that exist, and anything as new as the oldest of them, are
-        kept whatever the date says, so a clock set a year ahead removes
-        nothing it should not. With a clock the time server agreed with,
-        the age rule alone decides. Returns the names removed."""
+        The newest keep_days nights that exist, and anything as new as the
+        oldest of them (incidents included), are ALWAYS kept, whatever the
+        date says and whatever the caller passes for `floor`: a clock
+        nobody has checked, or one that looked fine at boot and then
+        jumped, must never be trusted enough to remove nearly everything
+        (round 1 review of PR 25, blocker: this floor used to be
+        unconditional, the PR made it depend on `floor`, and a clock that
+        passed the one-shot check at start and then jumped later kept
+        pruning as if it were still trusted). `floor` is still accepted,
+        for a caller that wants to say the clock is unchecked, but it no
+        longer weakens this protection either way. Returns the names
+        removed.
+
+        A `.partial` incident folder -- one save_incident() is still
+        writing, or one a crash left mid-write -- is never removed by the
+        date in its name: that date is the night the incident is FOR, not
+        when it was written, so an old night's incident, or a wrong clock,
+        must never make this delete work in progress. A separate rule
+        below removes a `.partial` only once it has sat unfinished for
+        more than PARTIAL_STALE_DAYS, which can only mean whatever was
+        writing it is gone.
+
+        Takes the same lock save_incident() uses, so the two can never
+        interleave: this cannot delete a folder save_incident() is still
+        building, and save_incident() cannot be read out of a directory
+        listing this is still in the middle of changing."""
         cutoff = today - timedelta(days=self.keep_days)
-        removed, problems = [], []
-        try:
-            names = sorted(os.listdir(self.folder))
-        except OSError:
-            return []
-        found = []
-        for name in names:
-            m = _NAME.match(name)
-            if not m:
-                continue
+        removed, problems, stale = [], [], []
+        with self._io:
             try:
-                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-            except ValueError:
-                continue
-            found.append((d, name, self.folder, False))
-        inc_root = os.path.join(self.folder, INCIDENTS)
-        try:
-            inc_names = sorted(os.listdir(inc_root))
-        except OSError:
-            inc_names = []
-        for name in inc_names:
-            m = _INCIDENT.match(name)
-            if not m:
-                continue
+                names = sorted(os.listdir(self.folder))
+            except OSError:
+                return []
+            found = []
+            for name in names:
+                m = _NAME.match(name)
+                if not m:
+                    continue
+                try:
+                    d = date(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3)))
+                except ValueError:
+                    continue
+                found.append((d, name, self.folder, False))
+            inc_root = os.path.join(self.folder, INCIDENTS)
             try:
-                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-            except ValueError:
-                continue
-            found.append((d, name, inc_root, True))
-        keep_from = cutoff
-        if floor:
+                inc_names = sorted(os.listdir(inc_root))
+            except OSError:
+                inc_names = []
+            partials = []
+            for name in inc_names:
+                if name.endswith(".partial"):
+                    # Set aside, never matched against the date rule below.
+                    partials.append(name)
+                    continue
+                m = _INCIDENT.match(name)
+                if not m:
+                    continue
+                try:
+                    d = date(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3)))
+                except ValueError:
+                    continue
+                found.append((d, name, inc_root, True))
+            # Unconditional: see the docstring. `floor` is accepted above
+            # for callers that still pass it, but it plays no part here.
+            keep_from = cutoff
             nights = sorted({d for d, _n, _r, inc in found if not inc},
                             reverse=True)[:self.keep_days]
             if nights:
                 keep_from = min(cutoff, nights[-1])
-        for d, name, root, incident in found:
-            if d >= keep_from:
-                continue
-            p = os.path.join(root, name)
-            try:
-                mode = os.lstat(p).st_mode
-                if incident:
-                    if not stat.S_ISDIR(mode):
+            for d, name, root, incident in found:
+                if d >= keep_from:
+                    continue
+                p = os.path.join(root, name)
+                try:
+                    mode = os.lstat(p).st_mode
+                    if incident:
+                        if not stat.S_ISDIR(mode):
+                            continue
+                        shutil.rmtree(p)
+                    else:
+                        if not stat.S_ISREG(mode):
+                            continue
+                        os.remove(p)
+                    removed.append((d, name, incident))
+                except OSError as e:
+                    problems.append(f"{name} ({e.strerror or e})")
+            now = self.clock()
+            stale_limit = PARTIAL_STALE_DAYS * 86400
+            for name in partials:
+                p = os.path.join(inc_root, name)
+                try:
+                    st = os.lstat(p)
+                    if not stat.S_ISDIR(st.st_mode):
                         continue
+                    mtime = datetime.fromtimestamp(st.st_mtime, timezone.utc)
+                    if (now - mtime).total_seconds() <= stale_limit:
+                        continue      # recent enough to still be in progress
                     shutil.rmtree(p)
-                else:
-                    if not stat.S_ISREG(mode):
-                        continue
-                    os.remove(p)
-                removed.append((d, name, incident))
-            except OSError as e:
-                problems.append(f"{name} ({e.strerror or e})")
+                    stale.append(name)
+                except OSError as e:
+                    problems.append(f"{name} ({e.strerror or e})")
         nights_gone = [x for x in removed if not x[2]]
         incidents_gone = [x for x in removed if x[2]]
         if removed:
@@ -1184,6 +1232,18 @@ class Logbook:
                               f"kept."),
                         state=state, night=today,
                         data={"removed": [n for _d, n, _i in removed]})
+        if stale:
+            self.record(actor="system", action="prune",
+                        outcome="removed stale partial",
+                        reason=f"unfinished for more than "
+                               f"{PARTIAL_STALE_DAYS} day(s)",
+                        text=(f"Removed {len(stale)} incident folder(s) "
+                              f"left unfinished (.partial) for more than "
+                              f"{PARTIAL_STALE_DAYS} day(s): "
+                              f"{', '.join(stale[:5])}. Whatever was "
+                              f"saving them is gone; the night journal "
+                              f"itself is untouched."),
+                        state=state, night=today, data={"removed": stale})
         if problems:
             self.record(actor="system", action="prune", outcome="failed",
                         reason="could not remove old files",
@@ -1192,7 +1252,7 @@ class Logbook:
                               f"{', '.join(problems[:5])}. They are left "
                               f"where they are and tried again tomorrow."),
                         state=state, night=today)
-        return [n for _d, n, _i in removed]
+        return [n for _d, n, _i in removed] + stale
 
     # -- the incident bundle --------------------------------------------------
     def save_incident(self, *, who, screen, state, night=None, config=None,
