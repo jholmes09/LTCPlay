@@ -313,9 +313,9 @@ class Session:
                 self.clock = clock_mod.build(
                     self.tl.clock, self.tl, self.player.feed_timecode,
                     log=self.log, no_output=self.no_output,
-                    on_pause=lambda: self._hard_park(True),
-                    on_resume=lambda: self._hard_park(False),
-                    bind_ip=self.bind, on_stop=self.player.drop_clock)
+                    bind_ip=self.bind, on_stop=self.player.drop_clock,
+                    on_pause=lambda: self.player.set_hard_park(True),
+                    on_resume=lambda: self.player.set_hard_park(False))
             except clock_mod.ClockConfigError as e:
                 raise SessionError(str(e))
             # The display reads the clock's health from the player, the way
@@ -798,15 +798,6 @@ class Session:
             # refusal here, not the clock's own exception.
             raise SessionError(str(e))
         return pick
-
-    def _hard_park(self, active):
-        """audio_master's Hold, told to the pixels straight away. Uses the
-        player's set_hard_park (PR 20) when this build has it; without it,
-        the repeated frozen frame parks the pixels as it does for
-        ArtNetMaster today."""
-        park = getattr(self.player, "set_hard_park", None)
-        if park is not None:
-            park(active)
 
     def clock_halt(self):
         """Stop the show clock now. Nothing is sent until the next cue."""
