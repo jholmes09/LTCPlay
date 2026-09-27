@@ -17996,7 +17996,9 @@ def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
     work = work or tempfile.mkdtemp()
     tl, _tlp, _net = _am_show(work, seconds, **audio)
     checked = sa.check_show(tl.clock.audio, tl)
-    spec = sa.engine_spec(tl.clock.audio, checked)
+    # The fake interface is a CoreAudio one, so this is a Mac's rule for
+    # picking the output, on every OS the suite runs on.
+    spec = sa.engine_spec(tl.clock.audio, checked, platform="darwin")
     vc = _AmClock()
     eng = _AmLocalEngine(spec, vc, block=block, latency=latency,
                          drift_ppm=drift_ppm, devices=devices,
@@ -18247,7 +18249,12 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
     check(src.index('os.environ["SD_ENABLE_ASIO"] = "1"')
           < src.index("import sounddevice"),
           "SD_ENABLE_ASIO is set after sounddevice is imported")
+    # Proven with a stand-in module, so this needs no sounddevice (CI does
+    # not install it).
+    import types
     old = os.environ.pop("SD_ENABLE_ASIO", None)
+    had = sys.modules.get("sounddevice")
+    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
     try:
         sa.import_sounddevice("darwin")
         check("SD_ENABLE_ASIO" not in os.environ,
@@ -18261,6 +18268,10 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
         os.environ.pop("SD_ENABLE_ASIO", None)
         if old is not None:
             os.environ["SD_ENABLE_ASIO"] = old
+        if had is None:
+            sys.modules.pop("sounddevice", None)
+        else:
+            sys.modules["sounddevice"] = had
     print("  ok")
 
 
@@ -18746,7 +18757,7 @@ def test_audio_master_session_hold_resume_abort():
         # The real engine would start a process; this one runs the audio
         # process's loop on a thread here, with a fake interface in real
         # time.
-        spec = clk.engine.spec
+        spec = dict(clk.engine.spec, platform="darwin")
         arr = [0.0] * sa.SLOTS
         msgs = []
         fsd = sa.FakeSoundDevice(threaded=True, keep=False,
@@ -18801,12 +18812,11 @@ def test_audio_master_session_hold_resume_abort():
         sess.clock_pause()
         check(wait_for(lambda: clk._paused, 2.0),
               "Hold through the session did not freeze the clock")
-        time.sleep(0.3)
         n0 = len(out.sent)
-        time.sleep(0.3)
+        check(wait_for(lambda: len(out.sent) - n0 >= 6, 3.0),
+              "the frozen frame is not being repeated")
         held = {_tc_of(p)[:4] for _, p in out.sent[n0:]}
-        check(len(held) == 1 and len(out.sent) - n0 >= 6,
-              f"held: {held}, {len(out.sent) - n0} packets in 0.3 s")
+        check(len(held) == 1, f"the timecode moved while held: {held}")
         check(sess.snapshot()["clock"]["paused"] is True,
               "the page does not say the clock is paused")
         try:
@@ -18815,13 +18825,13 @@ def test_audio_master_session_hold_resume_abort():
         except SessionError:
             pass
         sess.clock_resume()
-        check(wait_for(lambda: not clk._paused, 2.0),
+        check(wait_for(lambda: not clk._paused, 3.0),
               "Resume through the session did not unfreeze the clock")
-        time.sleep(0.2)
         n1 = len(out.sent)
-        time.sleep(0.2)
-        check(len({_tc_of(p)[:4] for _, p in out.sent[n1:]}) >= 4,
-              "the timecode did not move after Resume")
+        check(wait_for(lambda: len({_tc_of(p)[:4]
+                                    for _, p in out.sent[n1:]}) >= 4, 3.0),
+              f"the timecode did not move after Resume: "
+              f"{[_tc_of(p)[:4] for _, p in out.sent[n1:n1 + 5]]}")
         sess.clock_halt()
         check(clk.playing, "Abort through the session did not fade first")
         check(wait_for(lambda: not clk.playing, 2.5),
@@ -18875,7 +18885,7 @@ def test_audio_master_runs_in_its_own_process():
     work = tempfile.mkdtemp()
     tl, _t, _n = _am_show(work, 3.0)
     checked = sa.check_show(tl.clock.audio, tl)
-    spec = sa.engine_spec(tl.clock.audio, checked,
+    spec = sa.engine_spec(tl.clock.audio, checked, platform="darwin",
                           fake={"devices": [{"name": "Show DSP",
                                              "hostapi": 0,
                                              "max_output_channels": 8}]})
