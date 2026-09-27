@@ -1277,6 +1277,7 @@ class AudioMaster(Clock):
     MAX_SLEEP_S = 0.05
     LEAD_S = 0.005         # a command's trip to the audio process
     STOP_FADE_MS = 50      # Stop (not Abort): just enough not to click
+    FIRST_LATE_FRAMES = 3  # see _emit
     RECENT_S = 10.0
 
     def __init__(self, cfg, sink=None, out=None, engine=None, cues=None,
@@ -1935,6 +1936,12 @@ class AudioMaster(Clock):
             self._end("finished", now)
             return now + self.MAX_SLEEP_S
         last = self._last_frame
+        if last is None and frame <= self.FIRST_LATE_FRAMES:
+            # Every cue's timecode starts at 00:00:00:00 (handoff section
+            # 4), even when this thread got to it a frame or two late on a
+            # busy machine. Stamped with the moment frame 0 began, so the
+            # pixels read the same epoch either way.
+            frame = 0
         if last is None or frame > last:
             if last is not None and frame > last + 1:
                 self.skipped += frame - last - 1
