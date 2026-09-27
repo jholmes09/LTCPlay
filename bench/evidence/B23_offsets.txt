@@ -1,0 +1,14 @@
+recording 1287.0 s, 32941 LTC frames decoded, Windows capture breaks logged: 32
+short 1 play   frames   629  offset median   209.5 ms  p5..p95   207.9..  210.9  first/second half   209.3/  209.6  jumps 0  capture breaks 0
+short 2 play   frames   627  offset median   201.6 ms  p5..p95   199.9..  210.5  first/second half   201.6/  201.5  jumps 1  capture breaks 1
+short 3 play   frames   618  offset median   203.1 ms  p5..p95   200.3..  280.5  first/second half   201.5/  279.1  jumps 2  capture breaks 6
+short 4 play   frames   628  offset median   279.5 ms  p5..p95   277.8..  280.9  first/second half   279.2/  279.7  jumps 0  capture breaks 0
+short 5 play   frames   626  offset median   279.7 ms  p5..p95   278.0..  281.2  first/second half   279.9/  279.5  jumps 0  capture breaks 0
+short 6 play   frames   627  offset median   279.4 ms  p5..p95   277.7..  280.9  first/second half   279.5/  279.2  jumps 0  capture breaks 0
+short 7 play   frames   628  offset median   279.5 ms  p5..p95   277.9..  281.0  first/second half   279.5/  279.6  jumps 0  capture breaks 0
+short 8 play   frames   628  offset median   279.6 ms  p5..p95   277.7..  281.0  first/second half   279.5/  279.8  jumps 0  capture breaks 0
+short 9 play   frames   627  offset median   279.5 ms  p5..p95   277.8..  280.9  first/second half   279.4/  279.6  jumps 0  capture breaks 0
+short 10 play  frames   628  offset median   279.3 ms  p5..p95   277.7..  280.9  first/second half   279.4/  279.3  jumps 0  capture breaks 0
+full 1 play    frames 13330  offset median   279.5 ms  p5..p95   277.8..  280.9  first/second half   279.5/  279.4  jumps 0  capture breaks 0
+full 2 play    frames 13143  offset median   279.3 ms  p5..p95   277.7..  280.7  first/second half   279.3/  279.3  jumps 0  capture breaks 0
+ACROSS STARTS: n=12 median 279.4 ms, spread (max-min) 78.2 ms, stdev 32.4 ms

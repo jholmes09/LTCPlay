@@ -31,7 +31,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B20 Pixel pacing after a CPU burst (PR #19, 3f8b0a2) | PASSED | After a burst on every core the branch returns exactly to its earlier timing (-2.9 ms); main steps to -8.9 ms and stays there. A 2-core burst disturbs neither; no 0 ms pairs anywhere |
 | B21 Flame link loss disarms (PR #23, 30dcab5) | PASSED, 1 finding | Suites pass on Windows; an armed group disarms 0.51 s after the link stops, with the contract's sentence and a steady amber; the link coming back does not re-arm it ('cycle the arm', flashing); a cycle re-arms it. Finding: 'latch-reset: show program link lost' is journalled every tick (about 40 lines a second) while the link is down |
 | B22 Audio breaks after USB selective suspend off | NOT TESTED | USB selective suspend still enabled (read 2026-09-26 23:34); waits for Jeff |
-| B23 audio_master (PR #26, 0f87a82) | PARTIAL | selftest passes on Windows; a dry run through Session with a simulated device: Run 0.20 s, audio process 189 MB and about 2% of a core, MadMapper and pixels follow, Hold freezes and Resume continues, Abort 1.085 s. Real-device items wait for the `sounddevice` install (Jeff's OK) and Jeff's hands |
+| B23 audio_master (PR #26, 0f87a82) | PARTIAL: real Scarlett done, unplug test waits for Jeff | Audio against timecode 0.4 ms apart across 9 starts (MadMapper: 46 to 78 ms), no drift, no jumps; Hold, Resume and Abort exact. **Finding: the PR refuses the Scarlett even with allow_shared_mode (it stops at WASAPI exclusive, which cannot do 48 kHz); the test ran on DirectSound through a bench-only override.** ASIO: no driver presents a device; WDM-KS takes 48 kHz but was busy |
 
 ## B0 The machine
 
@@ -730,6 +730,48 @@ The simulated device's timing is exact by construction, so this says nothing abo
 | 4. Unplugging the Scarlett mid-show and plugging it back; the monitor's HDMI audio off and on mid-show | Jeff's hands |
 | 5. Callback time info: real or zeros on this driver | `sounddevice` |
 | 6. Whether any installed ASIO driver (PreSonus, Behringer) opens at 48 kHz with no device | `sounddevice` (its ASIO-enabled PortAudio) |
+
+**B23 continued, 2026-09-27 09:40 to 10:10, real Scarlett.** Jeff OK'd `sounddevice` 0.5.6 (PyPI, with cffi and pycparser), installed into the **ltcplay venv only**. For this test:
+- MadMapper's audio output is set to **None** in its Preferences, and its master audio is at 0: it is video only in this design.
+- The crashed BEYOND demo was closed, so BEYOND received no timecode.
+- A third Art-Net node, "Recorder" on 127.0.0.3, records exactly what ltcplay sends (`scratch/artnet_tc_listen.py`).
+- The Scarlett's output is recorded to WAV (`scratch/rec_wav.py`).
+- `scratch/b23_an.py` pairs each LTC frame heard on output 2 with the moment ltcplay sent that frame.
+
+**Findings for the main session first:**
+- **The PR refuses the Scarlett outright, even with `allow_shared_mode`:** "Speakers (Scarlett Solo USB) will not play at 48000 Hz (Invalid sample rate…)".
+  - `open_output_stream` picks the first host API where the name exists (WASAPI exclusive), then `check_output_settings` fails at 48 kHz, and it never tries the next API.
+  - What each of the Scarlett's host APIs accepts (`check_output_settings`, 2 channels, float32):
+
+| Host API | 48 kHz | 44.1 kHz |
+|---|---|---|
+| MME | OK | OK |
+| DirectSound | OK | OK |
+| WASAPI shared | refused | OK |
+| WASAPI exclusive | refused | OK |
+| **WDM-KS** (bypasses the mixer) | **OK** | OK |
+
+  - Suggest: try each allowed API in order until one passes the check.
+  - WDM-KS is a candidate mixer-free path for class-driver interfaces. It is not in the PR's list, and here it would not open (`Invalid device`) while Windows' own engine had the endpoint in use, even with MadMapper's audio off and BEYOND closed. It needs a device nothing else touches.
+- **ASIO (item 6):** the ASIO host API is present (`SD_ENABLE_ASIO` 0 or 1), but none of the installed PreSonus or Behringer ASIO drivers lists a device with no hardware attached. Nothing to open.
+- For the rest of the test the output was forced onto **DirectSound at 48 kHz** by a **bench-only override** in the throwaway driver. `scratch/b23_real.py` replaces `showaudio.open_output_stream` at import, so the spawned audio process gets it too; `B23_API` selects the API. This is the Windows shared mixer, so the page showed the red sentence "The show audio is going through Windows' shared audio engine because 'allow_shared_mode' is on…" as designed.
+
+**Results** (10 short starts of 20 s, each ended by Abort; then 2 full shows, the first with a 5 s Hold at 60 s):
+
+| Item | Result |
+|---|---|
+| Run to audio ready | `Session.start` 0.63 to 0.65 s; audio ready to play **0.9 s after Run** (the first play before that is refused with "The show audio is still loading. Try again in a few seconds.", correctly) |
+| **Audio against timecode, across starts** | Over the 9 starts in one continuous stretch of the recording (shorts 4 to 10, fulls 1 and 2): medians **279.3 to 279.7 ms: a spread of 0.4 ms** (B18's MadMapper audio: 46 to 78 ms). The 279 ms includes the recorder's own capture delay. Shorts 1 to 3 read 202 to 210 ms because the recorder lost audio during short 3 (6 logged capture breaks), which moves its timeline for everything after. The recorder, not ltcplay. |
+| Within each show | 5th to 95th percentile **±1.6 ms**; first-half and second-half medians **identical** (279.5/279.4 and 279.3/279.3); **0 jumps** in the decoded audio in either full show |
+| Show lengths | Full 1: 449.28 s (444.42 s + the 5 s Hold); full 2: 444.49 s |
+| **Hold** | Music faded over 0.25 s and was silent from then on; the last frame heard was 1806. Timecode **froze on 1807**, sent 129 times (30 a second). No run-on |
+| **Resume** | First frame heard **1808**: straight on, no repeat, no skip |
+| **Abort** | The music level fell evenly to 0 over 1.0 s; the last LTC heard was 1.19 s and the last timecode packet 1.28 s after Abort: the picture, lasers and pixels follow through the fade, as the PR describes |
+| MadMapper (video only) | 26,657 to 26,679 heartbeats per show. Position against the timecode ltcplay sent: **-16 ms** (show 2), -54 ms after the Hold in show 1 (B15's after-Hold shift) |
+| Pixels | 40 fps; skipped 1 and 0; the 21 repeats are the Hold |
+| **Callback time info (item 5)** | **Real, never zeros**, on every API tried. MME: 174 to 182 ms ahead (stated latency 182 ms). WASAPI at 44.1 kHz: 0 to 10 ms (stated 22 ms). DirectSound: 0 to 64 ms with uneven blocks (288/386/450 frames), against a stated 240 ms. DirectSound's figures are not trustworthy, yet the clock held 0.4 ms across starts |
+
+**Still needs Jeff:** item 4, unplugging the Scarlett mid-show and plugging it back, and switching the monitor off and on mid-show.
 
 ## Not tested yet
 
