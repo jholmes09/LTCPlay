@@ -1,0 +1,47 @@
+# B20 pixel-scheduler-reanchor 3f8b0a2 vs main bba05f7, 2026-09-26. scratch/b20_run.ps1 + b20_an.py
+
+== b20_reanchor2
+show 1 22:55:39-23:03:03  tc_skipped(cum) 0  burst 200-260 s
+   before (20 s to burst)         180 s  lateness median   -3.4 ms (1st-99th -3.4..-3.3)  fps med 40.0  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 36.8 ms
+   during burst                    61 s  lateness median   -3.3 ms (1st-99th -3.4..-3.2)  fps med 40  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 30.3 ms
+   after (burst+5 s to end-5 s)   174 s  lateness median   -3.4 ms (1st-99th -3.4..-3.3)  fps med 40.0  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 29.0 ms
+show 2 23:03:39-23:11:03  tc_skipped(cum) 1  burst 200-260 s
+   before (20 s to burst)         180 s  lateness median   -2.9 ms (1st-99th -3.0..-2.8)  fps med 40.0  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 29.1 ms
+   during burst                    61 s  lateness median   -2.9 ms (1st-99th -2.9..-2.8)  fps med 40  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 38.4 ms
+   after (burst+5 s to end-5 s)   174 s  lateness median   -2.9 ms (1st-99th -3.0..-2.8)  fps med 40.0  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 29.0 ms
+﻿hog 2 cores from 1790485139.457 to 1790485199.457
+hog done 1790485199.469
+hog 2 cores from 1790485619.438 to 1790485679.438
+hog done 1790485679.450
+
+== b20_main
+show 1 22:39:43-22:47:07  tc_skipped(cum) 3  burst 200-260 s
+   before (20 s to burst)         179 s  lateness median   -1.6 ms (1st-99th -1.7..-1.5)  fps med 40  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 37.4 ms
+   during burst                    61 s  lateness median   -1.6 ms (1st-99th -1.7..-1.5)  fps med 40  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 32.5 ms
+   after (burst+5 s to end-5 s)   175 s  lateness median   -1.6 ms (1st-99th -6.8..+12.6)  fps med 40  skipped 3  repeats 1  0ms-pairs(s) 0  max gap 64.8 ms
+show 2 22:47:43-22:55:07  tc_skipped(cum) 13  burst 200-260 s
+   before (20 s to burst)         179 s  lateness median   -4.7 ms (1st-99th -6.3..-2.2)  fps med 40  skipped 20  repeats 9  0ms-pairs(s) 0  max gap 118.3 ms
+   during burst                    61 s  lateness median   -4.4 ms (1st-99th -4.5..-4.3)  fps med 40  skipped 2  repeats 2  0ms-pairs(s) 0  max gap 36.0 ms
+   after (burst+5 s to end-5 s)   175 s  lateness median   -4.4 ms (1st-99th -4.5..-4.3)  fps med 40  skipped 1  repeats 1  0ms-pairs(s) 0  max gap 37.8 ms
+﻿hog 2 cores from 1790484182.814 to 1790484242.814
+hog done 1790484242.827
+hog 2 cores from 1790484662.928 to 1790484722.928
+hog done 1790484722.939
+
+== b20_reanchor_8c
+show 1 23:11:27-23:18:52  tc_skipped(cum) 602  burst 200-260 s
+   before (20 s to burst)         180 s  lateness median   -2.9 ms (1st-99th -3.0..-2.9)  fps med 40.0  skipped 1  repeats 1  0ms-pairs(s) 0  max gap 34.3 ms
+   during burst                    61 s  lateness median   -3.1 ms (1st-99th -9.6..-2.7)  fps med 18  skipped 1299  repeats 266  0ms-pairs(s) 0  max gap 187.7 ms
+   after (burst+5 s to end-5 s)   175 s  lateness median   -2.9 ms (1st-99th -3.0..-2.9)  fps med 40  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 28.4 ms
+﻿hog 8 cores from 1790486087.644 to 1790486147.644
+hog done 1790486147.679
+
+== b20_main_8c
+show 1 23:19:13-23:26:37  tc_skipped(cum) 551  burst 200-260 s
+   before (20 s to burst)         180 s  lateness median   -2.2 ms (1st-99th -2.3..-2.1)  fps med 40.0  skipped 0  repeats 0  0ms-pairs(s) 0  max gap 28.7 ms
+   during burst                    61 s  lateness median   -4.1 ms (1st-99th -11.3..+0.5)  fps med 18  skipped 1303  repeats 530  0ms-pairs(s) 0  max gap 235.2 ms
+   after (burst+5 s to end-5 s)   174 s  lateness median   -8.9 ms (1st-99th -16.9..-1.0)  fps med 40.0  skipped 1  repeats 0  0ms-pairs(s) 0  max gap 31.8 ms
+﻿hog 8 cores from 1790486553.305 to 1790486613.305
+hog done 1790486613.341
+
+note: b20_reanchor (first branch run) recorded no pixels: the port was still held by B19's recorder.

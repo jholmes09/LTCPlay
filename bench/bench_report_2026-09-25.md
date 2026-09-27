@@ -1,6 +1,6 @@
 # Fire & Ice 2026: Pico bench report, 2026-09-25
 
-Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B19 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
+Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the main development session. Headings B0 to B20 follow the main session's request; the full running log of the day, with every intermediate number, is `bench_evidence/daylog_2026-09-25.md`. Throwaway scripts are in `C:\Users\VIOSO\Desktop\Show\scratch` (not in the repo). Screenshots and captures are in `bench_evidence/`.
 
 **Safety throughout:** no flames (no flame hardware in the building; the flamesafe code was run only in B10, on Jeff's permission once the main session said it was ready, and only to a loopback listener). Both Ethernet ports unplugged for every test (checked before each run by `start_run.ps1`, which refuses otherwise); all show traffic went to 127.0.0.1 or 127.0.0.2. Audio went to Jeff's headphones or a Focusrite Scarlett Solo with nothing connected to the amps.
 
@@ -28,6 +28,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B17 BEYOND long run on the demo | PASSED for the 2 h the demo allows | 6 shows: BEYOND followed each identically (beams 0.23 to 0.32 s after start, dark after each show), memory flat at 1.3 GB, no effect on ltcplay (0 frames skipped) or MadMapper (1 to 34 ms). The demo shows its 1 h limit box but keeps running, then crashes at exactly 2 h (3 times now) |
 | B18 Audio start lock and Windows audio glitches | NEEDS A DECISION | MadMapper's audio locks 46 to 78 ms apart from show to show (buffer size does not fix it); this evening Windows' shared audio engine broke 3 to 6 times per show (heard by Jeff), even with MadMapper out of the loop. Proposal to make audio the master clock sent to the main session; the audio path must bypass the Windows mixer either way |
 | B19 Hold no longer counts as skipped (PR #20, 8488845) | PASSED | 20 held cues: ltcplay's skipped count 8 in total (was about 600 per Hold); 0 out-of-order pixel frames; 0 or 1 frames lost per resume in 19 of 20 Holds |
+| B20 Pixel pacing after a CPU burst (PR #19, 3f8b0a2) | PASSED | After a burst on every core the branch returns exactly to its earlier timing (-2.9 ms); main steps to -8.9 ms and stays there. A 2-core burst disturbs neither; no 0 ms pairs anywhere |
 
 ## B0 The machine
 
@@ -619,6 +620,33 @@ Loopback plus the Pico's own address; Ethernet unplugged.
 - The counter is cumulative, so it cannot say whether the 6 and 2 skips in cues 1 and 2 came from those cues' Holds or from the rest of the cue. The other 18 Holds added none.
 
 Evidence: `B19_holds.txt` (per-Hold lines from `analyze_holds.py`, and both runs' cycle tables).
+
+
+## B20 Pixel pacing after a CPU burst (PR #19)
+
+**Verdict: PASSED. After a burst that uses every core, the branch's pixel timing goes back exactly to where it was; main's steps 6.7 ms late and stays there. A 2-core burst disturbs neither.** Branch `pixel-scheduler-reanchor` at **`3f8b0a2`** (PR #19, contains main `bba05f7`), in worktree `wt-reanchor`, against main `bba05f7` in worktree `wt-main-bba`. No code changed. Run on 2026-09-26 from 22:23 to 23:27.
+- The B9 layout: `drive_soak.py`, the bench444 show (26,256 pixels, 444.5 s), Art-Net timecode to MadMapper chasing on Bank-1, the intermission bank between shows, and the pixel sink.
+- A throwaway CPU burst (`scratch/cpu_hog.py`) from 200 to 260 s into each show: 2 cores in two shows per tree, then all 8 threads in one show per tree.
+- "Lateness" is the pixel sink's median of each frame's arrival against its cue time, per second. A permanent timing step shows as a lasting change in it.
+- A 0 ms pair is a second containing two frames with no gap between them.
+- Loopback plus the Pico's own address. The first branch run recorded no pixels (the port was still held by B19's recorder) and was run again.
+
+| Run | Lateness median before the burst | During the burst | After the burst (to the show's end) | Skipped / repeated during | 0 ms pairs | ltcplay timecode skipped |
+|---|---|---|---|---|---|---|
+| branch, 2 cores, show 1 | -3.4 ms | -3.3 | **-3.4** | 0 / 0 | 0 | 0 |
+| branch, 2 cores, show 2 | -2.9 | -2.9 | **-2.9** | 0 / 0 | 0 | 1 (both shows) |
+| main, 2 cores, show 1 | -1.6 | -1.6 | -1.6 (but 1st to 99th percentile -6.8 to +12.6 afterwards) | 0 / 0 | 0 | 3 |
+| main, 2 cores, show 2 | -4.7 (20 skipped and a 118 ms gap **before** the burst) | -4.4 | -4.4 | 2 / 2 | 0 | 13 (both shows) |
+| **branch, 8 threads** | **-2.9** | -3.1; about 18 fps, gaps up to 188 ms | **-2.9 (1st to 99th -3.0 to -2.9)** | 1,299 / 266 | 0 | 602 |
+| **main, 8 threads** | **-2.2** | -4.1; about 18 fps, gaps up to 235 ms | **-8.9 (1st to 99th -16.9 to -1.0) for the rest of the show** | 1,303 / 530 | 0 | 551 |
+
+- With every core busy for 60 s, both versions drop to about 18 fps and skip about 1,300 pixel frames and about 550 to 600 timecode frames. Nothing can avoid that on a fully loaded PC.
+- Afterwards the **branch comes back to its exact pre-burst timing**, while **main carries a 6.7 ms step and three times the spread** for the rest of the show: the kind of permanent shift B9's show 6 showed.
+- During the burst main also repeated twice as many frames (530 against 266).
+- 0 ms pairs: none in any run, on either version.
+- Main's pre-burst roughness in its second 2-core show (20 skips, one 118 ms gap) came before the burst. It is most likely the same system-wide stalls as B18, which were also around this evening.
+
+Evidence: `B20_pacing.txt` (per-show before, during and after figures for all four runs, and the burst times).
 
 ## Not tested yet
 
