@@ -2203,6 +2203,8 @@ class AudioMaster(Clock):
                   "audio": {"device": self.audio.device,
                             "connected": self._device_ok,
                             "via": self._device_desc,
+                            "mixer_free": (not self._shared
+                                           if self._device_desc else None),
                             "mode": self._mode or "idle",
                             "following": self._mode == "follow",
                             "stopping": self._halting,

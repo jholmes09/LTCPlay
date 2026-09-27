@@ -768,27 +768,51 @@ def import_sounddevice(platform=None):
     return sounddevice
 
 
+# The order the Windows host APIs are tried in: (PortAudio's name for it,
+# WASAPI exclusive?, what it is called on the page, mixer-free?). The first
+# three never go through Windows' shared audio engine. The last three do,
+# and are tried only when the show file sets allow_shared_mode.
+WINDOWS_APIS = (
+    ("ASIO", False, "ASIO", True),
+    ("Windows WASAPI", True, "WASAPI exclusive", True),
+    # Kernel streaming: mixer-free, and what a class-driver interface with
+    # no ASIO driver often takes at 48 kHz when WASAPI will not (bench B23,
+    # the Scarlett). It only opens when nothing else holds the endpoint.
+    ("Windows WDM-KS", False, "WDM-KS", True),
+)
+WINDOWS_SHARED_APIS = (
+    ("Windows WASAPI", False, "WASAPI shared", False),
+    ("Windows DirectSound", False, "DirectSound", False),
+    ("MME", False, "MME", False),
+)
+
+
 def open_output_stream(sd, name, channels, rate, callback, allow_shared=False,
                        platform=None, finished_callback=None):
     """Open the show's audio output, never through the Windows shared mixer.
 
     The one place this rule lives:
 
-      Windows  ASIO when the device offers it (see import_sounddevice for
-               how python-sounddevice is made to see ASIO at all), else
-               WASAPI in exclusive mode (sd.WasapiSettings(exclusive=True)).
-               Never MME, DirectSound or shared WASAPI: those go through
-               Windows' shared audio engine, which broke up 3 to 6 times a
-               show on the bench (B18). If neither ASIO nor WASAPI can reach
-               the device, this REFUSES with a sentence. It falls back to
-               shared mode only when the show file sets allow_shared_mode,
-               for a bench test, and says so in what it returns.
+      Windows  Every host API the device appears under is tried in order
+               until one takes `channels` outputs at `rate` Hz and opens:
+               ASIO (see import_sounddevice for how python-sounddevice is
+               made to see ASIO at all), then WASAPI exclusive
+               (sd.WasapiSettings(exclusive=True)), then WDM-KS. Never
+               WASAPI shared, DirectSound or MME, which go through Windows'
+               shared audio engine, the one that broke up 3 to 6 times a
+               show on the bench (B18), unless the show file sets
+               allow_shared_mode for a bench test; then those are tried
+               last, in that order, and what comes back says so.
       macOS    CoreAudio, the only host API there.
       other    whatever PortAudio offers (Linux CI).
 
+    A device one API refuses (WASAPI would not run the bench Scarlett at
+    48 kHz, WDM-KS and DirectSound would: B23) is not the end: the next is
+    tried. When every one refuses, the sentence names each one tried and
+    why.
+
     The device is found by its EXACT name, case-insensitive, never by index
     and never by a substring: announce.py's rule, for the reason it gives.
-    It must take `channels` outputs at `rate` Hz.
 
     Returns (stream, description, shared). The stream is not started.
     Raises Refusal for a device that is there but cannot run this show, and
@@ -812,68 +836,83 @@ def open_output_stream(sd, name, channels, rate, callback, allow_shared=False,
         return apis[h] if 0 <= h < len(apis) else ""
 
     if plat == "win32":
-        order = [("ASIO", False), ("Windows WASAPI", True)]
-        if allow_shared:
-            order += [("Windows WASAPI", False), ("Windows DirectSound", False),
-                      ("MME", False)]
+        order = list(WINDOWS_APIS) + (list(WINDOWS_SHARED_APIS)
+                                      if allow_shared else [])
     else:
-        order = [(None, False)]
-    pick = None
-    for want_api, exclusive in order:
+        order = [(None, False, "CoreAudio" if plat == "darwin"
+                  else "PortAudio", True)]
+    tried = []                       # (what it is called, why it refused)
+    refused = False                  # a real "cannot", not just "busy"
+    advice = []
+    for want_api, exclusive, label, mixer_free in order:
         hits = [(i, d) for i, d in named
                 if want_api is None or api(d) == want_api]
+        if not hits:
+            continue
         if len(hits) > 1:
-            raise Refusal(f"{_clean(name)!r} is the exact name of "
-                          f"{len(hits)} outputs"
-                          + (f" in {want_api}" if want_api else "")
-                          + ", so it is not specific enough.")
-        if hits:
-            pick = (hits[0][0], hits[0][1], want_api, exclusive)
-            break
-    if pick is None:
+            tried.append((label, f"{len(hits)} outputs have that exact "
+                                 f"name, so it is not specific enough"))
+            refused = True
+            continue
+        index, dev = hits[0]
+        have = int(dev.get("max_output_channels", 0))
+        if channels > have:
+            tried.append((label, f"it has {have} output(s), and the show "
+                                 f"uses {channels}"))
+            refused = True
+            advice.append("Use an interface with enough outputs, or route "
+                          "the stems to fewer.")
+            continue
+        extra = sd.WasapiSettings(exclusive=True) if exclusive else None
+        try:
+            sd.check_output_settings(device=index, channels=channels,
+                                     samplerate=rate, dtype="float32",
+                                     extra_settings=extra)
+        except Exception as e:
+            tried.append((label, f"it will not play {channels} output(s) "
+                                 f"at {rate} Hz ({_clean(e)})"))
+            refused = True
+            advice.append(f"The show audio runs at {rate} Hz: set the "
+                          f"interface to 48 kHz in its own control panel.")
+            continue
+        kw = dict(device=index, channels=channels, samplerate=rate,
+                  dtype="float32", latency="high", callback=callback)
+        if extra is not None:
+            kw["extra_settings"] = extra
+        if finished_callback is not None:
+            kw["finished_callback"] = finished_callback
+        try:
+            stream = sd.OutputStream(**kw)
+        except Exception as e:
+            tried.append((label, f"it would not open ({_clean(e)})"))
+            continue
+        how = label + (", mixer-free" if mixer_free and plat == "win32"
+                       else "" if plat != "win32"
+                       else ", through Windows' shared audio engine")
+        desc = (f"{dev.get('name')}, {how}, {channels} outputs at "
+                f"{rate} Hz")
+        return stream, desc, not mixer_free
+    dev_name = _clean(named[0][1].get("name"))
+    if not tried:
         via = ", ".join(sorted({api(d) for _, d in named}))
         raise Refusal(
             f"{_clean(name)!r} can only be reached through Windows' shared "
             f"audio engine ({via}) on this computer, which broke up 3 to 6 "
             f"times a show on the bench. Install the interface's ASIO "
-            f"driver, or make sure it is offered to WASAPI. For a bench "
-            f"test only, 'allow_shared_mode' lets it play anyway.")
-    index, dev, via, exclusive = pick
-    shared = plat == "win32" and via != "ASIO" and not exclusive
-    have = int(dev.get("max_output_channels", 0))
-    if channels > have:
-        raise Refusal(f"{_clean(dev.get('name'))} has {have} output(s), but "
-                      f"the show uses {channels} ('clock.audio.channels'). "
-                      f"Use an interface with enough outputs, or route the "
-                      f"stems to fewer.")
-    extra = None
-    if via == "Windows WASAPI" and exclusive:
-        extra = sd.WasapiSettings(exclusive=True)
-    try:
-        sd.check_output_settings(device=index, channels=channels,
-                                 samplerate=rate, dtype="float32",
-                                 extra_settings=extra)
-    except Exception as e:
-        raise Refusal(f"{_clean(dev.get('name'))} will not play at {rate} "
-                      f"Hz ({_clean(e)}). The show audio runs at 48 kHz end "
-                      f"to end: set the interface to 48 kHz in its own "
-                      f"control panel.")
-    kw = dict(device=index, channels=channels, samplerate=rate,
-              dtype="float32", latency="high", callback=callback)
-    if extra is not None:
-        kw["extra_settings"] = extra
-    if finished_callback is not None:
-        kw["finished_callback"] = finished_callback
-    try:
-        stream = sd.OutputStream(**kw)
-    except Exception as e:
-        raise Unavailable(f"{_clean(dev.get('name'))} would not open: "
-                          f"{_clean(e)}.")
-    how = via or ("CoreAudio" if plat == "darwin" else "PortAudio")
-    if via == "Windows WASAPI":
-        how = "WASAPI exclusive" if exclusive else "WASAPI shared"
-    desc = f"{dev.get('name')}, {how}, {channels} outputs at {rate} Hz"
-    return stream, desc, shared
+            f"driver, or make sure it is offered to WASAPI or WDM-KS. For "
+            f"a bench test only, 'allow_shared_mode' lets it play anyway.")
+    said = "; ".join(f"{label}: {why}" for label, why in tried)
+    shared_left = plat == "win32" and not allow_shared and any(
+        api(d) in {a[0] for a in WINDOWS_SHARED_APIS} for _, d in named)
+    more = (" It is also offered to Windows' shared audio engine, which the "
+            "show does not use unless 'allow_shared_mode' is on, for a bench "
+            "test only." if shared_left else "")
+    if refused:
+        tips = " ".join(dict.fromkeys(advice))
+        raise Refusal(f"{dev_name} cannot play the show audio: every way "
+                      f"to it was tried and refused. {said}.{more}"
+                      + (f" {tips}" if tips else ""))
+    raise Unavailable(f"{dev_name} would not open. {said}.{more}")
 
 
 # ------------------------------------------------------- the audio process --
@@ -1598,7 +1637,8 @@ class FakeSoundDevice:
         return tuple({"name": n} for n in self.hostapis)
 
     def query_devices(self):
-        return [{k: v for k, v in d.items() if k not in ("rates", "present")}
+        return [{k: v for k, v in d.items()
+                 if k not in ("rates", "present", "busy")}
                 for d in self._listed]
 
     def _dev(self, index):
@@ -1622,6 +1662,9 @@ class FakeSoundDevice:
         d = self._dev(device)
         if not d["present"]:
             raise RuntimeError("Device unavailable [PaErrorCode -9985]")
+        if d.get("busy"):
+            raise RuntimeError("Unanticipated host error [PaErrorCode "
+                               "-9999]: the endpoint is in use")
         s = _FakeStream(self, d, channels, samplerate, callback,
                         extra_settings)
         self.streams.append(s)
