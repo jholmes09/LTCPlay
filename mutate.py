@@ -2232,6 +2232,45 @@ MUTATIONS = [
   '        httpd.announce.hold_requester = sched.hold_for_announcement',
   '        pass'),
 
+ # ---------------------------------------------------------------------
+ # flamesafe/: Jeff, 2026-09-26: losing the show program disarms.
+ # ---------------------------------------------------------------------
+
+
+ ("flamesafe: losing the show program keeps the latches, so it re-arms when back",
+  "flamesafe/composer.py",
+  '            self._reset_latches("show program link lost",\n'
+  '                                journal=self._link_live)',
+  "            pass"),
+
+ ("flamesafe: a lost show program is journaled and counted on every stale tick, 40 lines a second",
+  "flamesafe/composer.py",
+  "                                journal=self._link_live)",
+  "                                journal=True)"),
+
+ ("flamesafe: a group may arm before the show program has ever answered",
+  "flamesafe/composer.py",
+  "        link_live = frame_fresh\n",
+  "        link_live = frame_fresh or self._frame_at is None\n"),
+
+ ("flamesafe: losing the show program is not journaled",
+  "flamesafe/composer.py",
+  '            self._event("link", "show program stopped answering: every group "\n'
+  '                                "disarmed; cycle the arm to re-arm once it "\n'
+  '                                "is back")',
+  "            pass"),
+
+ ("flamesafe: a lost show program shows flashing amber, telling the operator to cycle now",
+  "flamesafe/composer.py",
+  "            return (LINK_LOST, \"steady\")",
+  "            return (LINK_LOST, \"flashing\")"),
+
+ ("an announcement plays over a running or paused show", "ltcplay/announce.py",
+  '    if state in BLOCKED_STATES:\n'
+  '        how = "paused" if state == "PAUSED" else "running"',
+  '    if False:\n'
+  '        how = "paused" if state == "PAUSED" else "running"'),
+
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",
   '            if self.playing is not None:\n'
