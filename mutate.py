@@ -2265,11 +2265,29 @@ MUTATIONS = [
   "            return (LINK_LOST, \"steady\")",
   "            return (LINK_LOST, \"flashing\")"),
 
- ("an announcement plays over a running or paused show", "ltcplay/announce.py",
-  '    if state in BLOCKED_STATES:\n'
-  '        how = "paused" if state == "PAUSED" else "running"',
-  '    if False:\n'
-  '        how = "paused" if state == "PAUSED" else "running"'),
+ # "an announcement plays over a running or paused show" (origin/main,
+ # PR #23) retargeted here (Jeff, 2026-09-26): its old anchor,
+ # BLOCKED_STATES in interlock_refusal, is gone -- superseded by the
+ # Hold-first feature on this branch (an announcement Holds the show
+ # instead of refusing outright). The bypass PR #23's mutation checked
+ # for -- skipping the Hold block entirely -- is already exactly
+ # "an announcement never holds the show first" above, so this keeps
+ # the same protection (Hold before play) but breaks a different part
+ # of it: the paused case of the SECOND claim in hold_for_announcement.
+ # An already-paused show must count as already claimed, with no new
+ # Hold event and no journal noise (test:
+ # test_announce_hold_for_announcement_no_noise_when_already_held);
+ # dropping PAUSED from the recognized set here makes that second claim
+ # try to re-Hold a show that cannot take a HOLD_ON from PAUSED (see
+ # schedule.py's transition table), so it wrongly refuses instead of
+ # succeeding.
+ ("hold_for_announcement's second claim no longer recognizes an "
+  "already-paused show, only an already-held one",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if self.machine.state in (sch.HOLD,):\n"
+  "                return None, self.hold_epoch"),
 
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",
