@@ -2207,6 +2207,56 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
+ ("an announcement never holds the show first", "ltcplay/announce.py",
+  '            claim_epoch = None\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
+  '                if hold_refusal:',
+  '            claim_epoch = None\n'
+  '            if False:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
+  '                if hold_refusal:'),
+
+ # Deliberately no mutation here disabling the FIRST checkpoint's own
+ # "if hold_refusal:" alone (only the "if self.hold_requester is not
+ # None:" gate above it, and the SECOND checkpoint's own check): the
+ # second checkpoint re-checks (now read-only: _check_still_held)
+ # immediately before the stream starts, on purpose (the TOCTOU
+ # recheck), so disabling only the first check's own refusal changes
+ # nothing a test can observe -- the second one still refuses. Confirmed
+ # equivalent by hand (mutate.py run, 2026-09-26): NOT CAUGHT, correctly.
+ # The second checkpoint's own gate is covered instead by "the second
+ # check re-Holds instead of only reading the state" (review round 2).
+
+ ("the Hold request does not carry the Play press's own operator and "
+  "screen", "ltcplay/announce.py",
+  '        try:\n'
+  '            return self.hold_requester(who, screen, detail=detail)\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e)), None',
+  '        try:\n'
+  '            return self.hold_requester("", "", detail=detail)\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e)), None'),
+
+ ("Service.hold_for_announcement never refuses, even when Hold itself "
+  "was refused", "ltcplay/schedule_service.py",
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return out.refused or None, self.hold_epoch',
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return None, self.hold_epoch'),
+
+ ("announcements never Hold the scheduler in production, web.py never "
+  "wires it", "ltcplay/web.py",
+  '        httpd.announce.hold_requester = sched.hold_for_announcement',
+  '        pass'),
+
  # ---------------------------------------------------------------------
  # flamesafe/: Jeff, 2026-09-26: losing the show program disarms.
  # ---------------------------------------------------------------------
@@ -2240,11 +2290,29 @@ MUTATIONS = [
   "            return (LINK_LOST, \"steady\")",
   "            return (LINK_LOST, \"flashing\")"),
 
- ("an announcement plays over a running or paused show", "ltcplay/announce.py",
-  '    if state in BLOCKED_STATES:\n'
-  '        how = "paused" if state == "PAUSED" else "running"',
-  '    if False:\n'
-  '        how = "paused" if state == "PAUSED" else "running"'),
+ # "an announcement plays over a running or paused show" (origin/main,
+ # PR #23) retargeted here (Jeff, 2026-09-26): its old anchor,
+ # BLOCKED_STATES in interlock_refusal, is gone -- superseded by the
+ # Hold-first feature on this branch (an announcement Holds the show
+ # instead of refusing outright). The bypass PR #23's mutation checked
+ # for -- skipping the Hold block entirely -- is already exactly
+ # "an announcement never holds the show first" above, so this keeps
+ # the same protection (Hold before play) but breaks a different part
+ # of it: the paused case of the SECOND claim in hold_for_announcement.
+ # An already-paused show must count as already claimed, with no new
+ # Hold event and no journal noise (test:
+ # test_announce_hold_for_announcement_no_noise_when_already_held);
+ # dropping PAUSED from the recognized set here makes that second claim
+ # try to re-Hold a show that cannot take a HOLD_ON from PAUSED (see
+ # schedule.py's transition table), so it wrongly refuses instead of
+ # succeeding.
+ ("hold_for_announcement's second claim no longer recognizes an "
+  "already-paused show, only an already-held one",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if self.machine.state in (sch.HOLD,):\n"
+  "                return None, self.hold_epoch"),
 
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",
@@ -2304,13 +2372,40 @@ MUTATIONS = [
   '            refusal = interlock_refusal(state)\n'
   '            if False:\n'),
 
- ("a 32-bit float announcement file is played as noise", "ltcplay/announce.py",
-  '    if tag == 3:\n'
-  '        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "\n'
-  '                         f"which is not supported. Export 16-bit or "\n'
-  '                         f"32-bit PCM (integer), not float, instead.")',
+ ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
+  '    if is_float:\n'
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted',
   '    if False:\n'
-  '        pass'),
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted'),
+
+ ("a 24-bit announcement file is shifted the wrong way, changing its "
+  "level 256x", "ltcplay/announce.py",
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, 1:] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)',
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, :3] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)'),
+
+ ("24-bit PCM falls through to the wrong dtype lookup", "ltcplay/announce.py",
+  '    elif sampwidth == 3:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.',
+  '    elif False:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.'),
+
+ ("an unsupported WAV format tag is accepted", "ltcplay/announce.py",
+  '    is_float = tag == 3\n'
+  '    if tag is not None and tag not in (1, 3):',
+  '    is_float = tag == 3\n'
+  '    if False:'),
+
+ ("a non-32-bit floating point WAV is accepted as float", "ltcplay/announce.py",
+  '        if bits != 32:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "',
+  '        if False:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "'),
 
  ("an announcement device that stopped answering is never noticed",
   "ltcplay/announce.py",
@@ -2318,9 +2413,9 @@ MUTATIONS = [
   '        if False:'),
 
  ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
   '            pass'),
 
  ("the show-start hook tears the stream down synchronously",
@@ -2343,8 +2438,8 @@ MUTATIONS = [
 
  ("the announcements hook runs inside Service.lock again",
   "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
   '            self.on_show_started(self.machine.state)'),
 
  ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
@@ -2476,6 +2571,148 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ ("show length no longer follows the show's own media when nothing is "
+  "configured", "ltcplay/clock.py",
+  "        if show_len is None:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):",
+  "        if False:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):"),
+
+ ("a configured show length shorter than the music is no longer refused",
+  "ltcplay/clock.py",
+  "        elif derived is not None and show_len < derived:",
+  "        elif False:"),
+
+ ("the derived show length takes whichever cue comes first, not the "
+  "latest end", "ltcplay/clock.py",
+  "        end = max(end or 0.0, c.end_seconds)",
+  "        end = c.end_seconds"),
+
+ ("the scheduler's show_len_s is never checked against the show's media",
+  "ltcplay/web.py",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if configured < derived:",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if False:"),
+
+ ("the show length derivation for the scheduler check always finds "
+  "nothing", "ltcplay/clock.py",
+  "        if s.tl is None or s.tl.clock is None:",
+  "        if True:"),
+
+ ("the hold epoch never bumps, so a stale claim looks still good",
+  "ltcplay/schedule_service.py",
+  "            if was_held != is_held:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
+ ("midnight sweeping a held night never bumps the hold epoch",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state == sch.HOLD:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
+ ("the second check re-Holds instead of only reading the state",
+  "ltcplay/announce.py",
+  "            if self.hold_requester is not None \\\n"
+  "                    and not self._check_still_held(claim_epoch):",
+  "            if False:"),
+
+ ("hold_still_claimed ignores the epoch, only the state",
+  "ltcplay/schedule_service.py",
+  "            return (self.hold_epoch == claim_epoch\n"
+  "                    and self.machine.state in (sch.HOLD, sch.PAUSED))",
+  "            return self.machine.state in (sch.HOLD, sch.PAUSED)"),
+
+ ("on_show_started always says a show started, never that it resumed",
+  "ltcplay/announce.py",
+  "            self._player.stop_reason = (\"the show resumed\"\n"
+  "                                        if reason == \"resume\" else\n"
+  "                                        \"a show started\")",
+  "            self._player.stop_reason = \"a show started\""),
+
+ ("the resume reason is never computed, on_show_started never learns why",
+  "ltcplay/schedule_service.py",
+  "            reason = \"resume\" if ev.kind == sch.RESUME else \"new\"",
+  "            reason = \"new\""),
+
+ ("hold_for_announcement issues HOLD_ON even when already held or paused",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if False:\n"
+  "                return None, self.hold_epoch"),
+
+ ("an announcement's Hold claim never names the announcement in the "
+  "journal", "ltcplay/announce.py",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen,\n"
+  "                    detail=f\"played the {label} announcement{screen_txt}\")",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen)"),
+
+ ("schedule.py never uses the announcement's own claim wording, during a "
+  "show", "ltcplay/schedule.py",
+  "        if ev.detail:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")",
+  "        if False:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")"),
+
+ ("schedule.py never uses the announcement's own claim wording, between "
+  "shows", "ltcplay/schedule.py",
+  "    if ev.detail:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")",
+  "    if False:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")"),
+
+ ("more than one candidate show file is not treated as ambiguous",
+  "ltcplay/clock.py",
+  "    if len(candidates) > 1:",
+  "    if False:"),
+
+ ("a folder with no derivable show length never warns, it silently skips",
+  "ltcplay/web.py",
+  "            elif warning:",
+  "            elif False:"),
+
+ ("WAVE_FORMAT_EXTENSIBLE float is never resolved, it stays refused with "
+  "a raw GUID", "ltcplay/announce.py",
+  "                    if tag == 0xFFFE and len(body) >= 40:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")",
+  "                    if False:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")"),
+
+ ("the data chunk size sanity check never runs", "ltcplay/announce.py",
+  "    problem = _data_chunk_size_problem(path, size)\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)",
+  "    problem = None\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)"),
+
+ ("a placeholder data chunk size (0 or 0xFFFFFFFF) is accepted as healthy",
+  "ltcplay/announce.py",
+  "                    if size == 0 or size == 0xFFFFFFFF:",
+  "                    if False:"),
+
+ ("a data chunk bigger than the file on disk is accepted, overstating "
+  "the length", "ltcplay/announce.py",
+  "                    if size > remaining:",
+  "                    if False:"),
  # -- the journal, Jeff's settings of 2026-09-26 ------------------------
  ("a batch goes to the disk without an fsync", "ltcplay/journal.py",
   '                self._fsync(fh.fileno())\n                if new:',

@@ -1241,6 +1241,11 @@ def cmd_serve(args):
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
                     f"--port 7879.")
+    except ValueError as e:
+        # The schedule's own show_len_s checked against the show's media
+        # and found shorter (Jeff, 2026-09-26): nothing was bound or
+        # started. See web.serve and clock.derive_show_length_in_folder.
+        return _err(str(e))
     token = httpd.token
     host = "127.0.0.1" if args.bind in web_mod.LOOPBACK else args.bind
     if host in ("0.0.0.0", "::"):

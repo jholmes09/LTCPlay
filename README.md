@@ -134,7 +134,10 @@ hours from `zones`, anything else is idle), and the zones listed in `forward`
 go out as Art-Net timecode rebased to hour zero, so BEYOND sees the same
 numbers whichever machine is master. If timecode is lost during the show, the
 Art-Net timecode runs on to the end of the show (the end of the last cue in
-that hour, or `zones.show_len_s`) and then stops.
+that hour) and then stops. `zones.show_len_s` can name a length instead of
+reading it from the last cue, but never a shorter one: a configured length
+shorter than the show's own media is refused when the show file loads,
+rather than cutting the show off early.
 
 `ltc_audio_master` (fallback 1, LTC audio out) and `"show_audio": "ltcplay"`
 (fallback 2) are refused when the show file loads: they are not built yet. A

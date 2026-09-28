@@ -1323,24 +1323,40 @@ def _start_now(m, ev, now):
 
 
 def _hold(m, ev, now):
+    # ev.detail, when set, is an announcement's own claim wording (see
+    # schedule_service.hold_for_announcement), so the journal reads as
+    # held FOR the announcement -- naming it, the operator and the screen
+    # -- rather than as an indistinguishable operator Hold press (review
+    # round 2, 2026-09-26: audit15_journal_noise2.py). Empty (the default,
+    # every operator's own Hold press) keeps the original wording exactly.
     tx = _Tx(m, ev, now)
     if m.state == SHOW:
         # Hold during a show pauses it where it is (Jeff, 2026-09-23).
         n = m.running
         tx.m = replace(tx.m, paused_at=now)
         _enter(tx, PAUSED, show=n)
-        tx.note(HOLD_ON, "paused", "PAUSED (operator hold)",
-                f"{_operator_name(ev)} pressed Hold{_screen(ev)} during show "
-                f"{n}. The show is paused at its current frame: flame cues "
-                f"zeroed, lasers blanked, music fading out. Resume carries "
-                f"on from there.", show=n)
+        if ev.detail:
+            text = (f"{_operator_name(ev)} {ev.detail}. Show {n} is held "
+                    f"for it: flame cues zeroed, lasers blanked, music "
+                    f"fading out. Resume carries on from there.")
+        else:
+            text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)} during "
+                    f"show {n}. The show is paused at its current frame: "
+                    f"flame cues zeroed, lasers blanked, music fading out. "
+                    f"Resume carries on from there.")
+        tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
     tx.m = replace(tx.m, held_from=m.state)
     _enter(tx, HOLD)
-    tx.note(HOLD_ON, "done", "schedule on hold",
-            f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show starts "
-            f"by itself until Resume; a show whose time passes meanwhile is "
-            f"delayed and waits for Start now.")
+    if ev.detail:
+        text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
+                f"itself until Resume; a show whose time passes meanwhile "
+                f"is delayed and waits for Start now.")
+    else:
+        text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show "
+                f"starts by itself until Resume; a show whose time passes "
+                f"meanwhile is delayed and waits for Start now.")
+    tx.note(HOLD_ON, "done", "schedule on hold", text)
     return tx.done()
 
 
