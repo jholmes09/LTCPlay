@@ -3099,6 +3099,8 @@ def _run():
         print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
               "so a restore did not land. Fix that before trusting any line "
               "above.")
+        for w in _LAST_FAILS:
+            print(f"      {w}")
         return 2
     print("tree restored and green")
     if not expected_file:
