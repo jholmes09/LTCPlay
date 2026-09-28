@@ -877,7 +877,7 @@ def _verb(ev):
         HOLD_ON: "Hold", RESUME: "Resume", SKIP_NEXT: "Skip next",
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
-        ABORT: "Abort show", END_NIGHT: "End night",
+        ABORT: "Abort show", END_NIGHT: "Close for the night",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
     }[ev.kind]
@@ -1525,15 +1525,18 @@ def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
     for s in m.pending() + ([m.delayed()] if m.delayed() else []):
-        tx.set_slot(s.n, status=SKIPPED, reason="SKIPPED (operator, End night)")
+        tx.set_slot(s.n, status=SKIPPED,
+                    reason="SKIPPED (operator, Close for the night)")
         skipped.append(s.n)
     tx.m = replace(tx.m, held_from="")
     _enter(tx, CLOSING)
     for n in skipped:
-        tx.note(END_NIGHT, "skipped", "SKIPPED (operator, End night)",
-                f"Show {n} will not run: the night was ended.", show=n)
-    tx.note(END_NIGHT, "done", "night ended by the operator",
-            f"{_operator_name(ev)} pressed End night{_screen(ev)}. "
+        tx.note(END_NIGHT, "skipped",
+                "SKIPPED (operator, Close for the night)",
+                f"Show {n} will not run: the night was closed.", show=n)
+    tx.note(END_NIGHT, "done", "night closed by the operator",
+            f"{_operator_name(ev)} pressed Close for the night"
+            f"{_screen(ev)}. "
             f"{len(skipped)} show(s) skipped. Closing: flame cues to zero, "
             f"MadMapper stopped, pixels faded, blackout.")
     return tx.done()
@@ -1680,9 +1683,9 @@ def _why_not(m, ev):
     if k == END_NIGHT:
         if st in (SHOW, PAUSED):
             how = "paused" if st == PAUSED else "running"
-            return (f"Show {m.running} is {how}. Abort it first, then End "
-                    f"night.")
-        return "The night has already been ended."
+            return (f"Show {m.running} is {how}. Abort it first, then "
+                    f"Close for the night.")
+        return "The night has already been closed."
     if k in (SKIP_NEXT, DELAY_NEXT, DELAY_REST, EDIT_MOVE, EDIT_ADD,
              EDIT_REMOVE):
         return ("The night is over. Tonight's list can no longer change; "
@@ -2022,9 +2025,9 @@ ACTIONS = (
                  "black and every flame cue goes to zero. This does not "
                  "disarm the flames; the E-stop and the Stream Deck do "
                  "that.")},
-    {"id": "end_night", "label": "End night", "event": END_NIGHT,
+    {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,
      "minutes": 0,
-     "confirm": ("End the night? Every show still to come tonight is "
+     "confirm": ("Close for the night? Every show still to come tonight is "
                  "skipped, and the rig fades out and goes dark.")},
 )
 
