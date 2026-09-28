@@ -984,9 +984,10 @@ def test_pixel_pacing_never_accumulates_error():
     # sleep is deliberately dishonest: it always overshoots a little and
     # stalls hard now and then, exactly what a real OS timer does under
     # load. A pacer built on `time.sleep(period)` and a running total would
-    # inherit every one of those overshoots forever; one built on absolute
-    # deadlines (next_at += period, computed fresh from itself, never from
-    # when the last frame actually went out) cannot.
+    # inherit every one of those overshoots forever; one built on a fixed
+    # origin (`t0`, read once, every deadline computed fresh as
+    # `t0 + n_next * period`) cannot, because it never asks "when did the
+    # last frame go out", only "how far is it from where this started".
     #
     # No thread: _loop's own while loop is driven synchronously by having
     # the fake sender stop it after N frames, so this is fully deterministic
@@ -1043,22 +1044,511 @@ def test_pixel_pacing_never_accumulates_error():
     period = 0.025
     check(len(at) == N, f"expected {N} frames, got {len(at)}")
     start = at[0]
-    late = [a - (start + i * period) for i, a in enumerate(at)]
-    check(all(x >= -1e-9 for x in late),
-          f"a frame went out before its own deadline: {min(late):.6f}s early")
-    # The property under test: lateness stays bounded by roughly one
-    # iteration's own overshoot, not by how many iterations have run. A
-    # pacer that slept a fixed period and counted sleeps would have this
-    # grow with every frame; one paced on absolute deadlines cannot.
-    check(max(late) < 0.05,
-          f"lateness grew to {max(late) * 1000:.1f}ms over {N} frames -- the "
-          f"deadline is drifting instead of staying put")
-    tail = late[-20:]
-    check(max(tail) - min(tail) < 0.05,
-          f"lateness late in the run ranges {min(tail) * 1000:.2f} to "
-          f"{max(tail) * 1000:.2f}ms -- still growing rather than settled")
-    print(f"  ok ({N} frames on a simulated clock, max lateness "
-          f"{max(late) * 1000:.2f}ms, never compounding)")
+    # Every send lands close to a whole number of periods after the loop's
+    # own fixed origin (approximately `start`, its first tick) -- not "the
+    # i-th frame is therefore i periods after start", which a big overshoot
+    # (a hard stall, injected 2% of the time above) stops being true for:
+    # player.py's _loop() gives up the CONTENT of a slot it truly missed
+    # (the frame number jumps ahead) rather than sending it late, the same
+    # "skip, never burst" policy clock.py's Ticker already proved out for
+    # Art-Net timecode -- one send still goes out every period, so `at`
+    # stays exactly N long, just not evenly spaced through a stall. What
+    # must never happen is the ORIGIN itself moving: a pacer that gives up
+    # a missed slot by re-anchoring to "now" loses exactly that, and every
+    # send after it lands off phase by however late that one wake was,
+    # forever. This is the bug the Fire & Ice bench found, 2026-09-25, B9:
+    # a show's pixel timing against the cue stepped once, under load, and
+    # never came back.
+    # `phase` is a send's offset from the nearest period boundary, wrapped
+    # into (-period/2, period/2] -- by construction never more than 12.5ms
+    # either way, whatever actually happened, so a bound on its own worst
+    # value cannot fail and is not a check (removed: it read "< 60ms",
+    # which no wrap into +/-12.5ms could ever breach). Likewise a plain
+    # monotonic check on `at` (also removed): `sim.t` only ever advances,
+    # so any loop that reads it honestly sends in non-decreasing order
+    # whether its pacing is right or not. What actually distinguishes a
+    # fixed origin from one that moves is the AVERAGE phase late in the
+    # run reading the same as near the start. A pacer that re-anchors to
+    # "now" on a big overshoot would show these shifted apart by roughly
+    # that overshoot, permanently -- this is the Fire & Ice bench's B9
+    # finding (2026-09-25): a show's pixel timing against the cue stepped
+    # once, under load, and never came back for the rest of the show.
+    # Windows enough (20 samples each) that one rare big overshoot landing
+    # in a window barely moves its mean; a real, permanent step would not
+    # average out.
+    phase = [(((a - start) + period / 2) % period) - period / 2 for a in at]
+    head, tail = phase[5:25], phase[-20:]
+    head_ms = sum(head) / len(head) * 1000.0
+    tail_ms = sum(tail) / len(tail) * 1000.0
+    check(abs(tail_ms - head_ms) < 5.0,
+          f"the average phase drifted from {head_ms:.2f}ms near the start "
+          f"to {tail_ms:.2f}ms near the end of the run -- the loop's "
+          f"origin moved")
+    print(f"  ok ({len(at)} of {N} frames sent, "
+          f"phase {head_ms:.2f}ms near the start vs {tail_ms:.2f}ms near "
+          f"the end)")
+
+
+def test_pixel_scheduler_recovers_after_one_late_wake():
+    section("pixel output: one very late wake never leaves the pixel "
+            "schedule stuck off its original grid, whatever size the "
+            "stall happens to be")
+    # The Fire & Ice bench's B9 finding, isolated to one deliberate event
+    # instead of leaving it to chance, and swept across several stall
+    # sizes -- including a few chosen so the stall's remainder against one
+    # 25ms period is small (49, 70, 74, 99ms are each just under a whole
+    # number of periods). That is deliberate: at those sizes the very next
+    # slot is legitimately due again within a few ms of the late one, which
+    # is the schedule being exactly back on grid, not a burst. A single
+    # short gap like that is expected and fine; more than one, or a true
+    # 0ms back-to-back pair, is not. Runs Player._loop itself, not a copy,
+    # on a clock that moves only when told to: no thread, no wall time,
+    # fully deterministic.
+    import ltcplay.player as plmod
+    STALL_AFTER = 150
+    N = 300
+    period = 0.025
+
+    def run_stall(stall_s):
+        at = []
+
+        class Sim:
+            def __init__(self):
+                self.t = 5000.0
+
+            def monotonic(self):
+                return self.t
+
+            def perf_counter(self):
+                return self.t
+
+            def sleep(self, s):
+                over = stall_s if len(at) == STALL_AFTER else 0.0
+                self.t += s + over
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        sim = Sim()
+        tl = _timeline([])
+
+        class Sender:
+            def send_frame(self, data):
+                at.append(sim.t)
+                if len(at) >= N:
+                    p._running = False
+
+            def blackout(self):
+                pass
+
+            def close(self):
+                pass
+
+        p = Player(tl, FakeNetmap(), Sender())
+        p._idle_epoch = sim.t
+        p._running = True
+        real = plmod.time
+        plmod.time = sim
+        try:
+            p._loop(25)
+        finally:
+            plmod.time = real
+        return at
+
+    for stall_ms in (20, 24, 26, 30, 49, 51, 60, 70, 74, 99):
+        at = run_stall(stall_ms / 1000.0)
+        check(len(at) == N,
+              f"stall {stall_ms}ms: expected {N} frames, got {len(at)}")
+        start = at[0]
+        phase = [(((a - start) + period / 2) % period) - period / 2
+                for a in at]
+        before = phase[100:STALL_AFTER - 5]
+        after = phase[STALL_AFTER + 10:STALL_AFTER + 60]
+        before_ms = sum(before) / len(before) * 1000.0
+        after_ms = sum(after) / len(after) * 1000.0
+        check(abs(after_ms - before_ms) < 2.0,
+              f"stall {stall_ms}ms: the pixel schedule shifted from "
+              f"{before_ms:.2f}ms to {after_ms:.2f}ms off its own grid "
+              f"and never came back -- the Fire & Ice bench's B9 finding, "
+              f"2026-09-25: a show's pixel timing against the cue "
+              f"stepped once, under load, and stayed there for the rest "
+              f"of the show")
+
+        around = [at[i + 1] - at[i]
+                  for i in range(STALL_AFTER - 3, STALL_AFTER + 20)]
+        check(min(around) > 1e-4,
+              f"stall {stall_ms}ms: two sends landed "
+              f"{min(around) * 1000:.3f}ms apart -- a true back-to-back "
+              f"burst, not a recovered schedule")
+        short = [g for g in around if g < period * 0.5]
+        check(len(short) <= 1,
+              f"stall {stall_ms}ms: {len(short)} gaps under half a period "
+              f"around the stall ({[round(g * 1000, 2) for g in short]}ms) "
+              f"-- more than the one short gap a single stall can explain")
+    print("  ok (stall sizes 20 to 99ms: schedule always recovers, no "
+          "burst, at most one short gap each)")
+
+
+def test_a_failing_send_still_advances_the_pixel_schedule():
+    section("pixel output: a sender that keeps failing is retried at the "
+            "configured rate, not as fast as the loop can spin")
+    # If a failed tick did not still move the schedule on to the next
+    # slot, `due` would stay anchored to the same, already-past slot
+    # forever: the loop would retry after only the 10ms error backoff
+    # instead of waiting for the next real slot, turning a 40/s pixel
+    # rate into roughly 100/s of pure retry noise the moment a sender
+    # misbehaves -- worse for whatever it is retrying against, and a
+    # false read of how unhealthy the output really is.
+    import ltcplay.player as plmod
+    FAIL_START, FAIL_END = 3.0, 5.0
+
+    class Sim:
+        def __init__(self):
+            self.t = 9000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            self.t += s
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    t0 = sim.t
+    tl = _timeline([])
+    attempts = []
+
+    class Sender:
+        def send_frame(self, data):
+            attempts.append(sim.t)
+            if sim.t - t0 >= 6.0:
+                p._running = False
+            if FAIL_START <= sim.t - t0 < FAIL_END:
+                raise RuntimeError("simulated send failure")
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(25)
+    finally:
+        plmod.time = real
+
+    during = [a for a in attempts if FAIL_START <= a - t0 < FAIL_END]
+    rate = len(during) / (FAIL_END - FAIL_START)
+    check(rate < 60.0,
+          f"{rate:.0f} attempts a second while every send failed for "
+          f"{FAIL_END - FAIL_START:.0f}s -- the configured pixel rate is "
+          f"40/s; a failed tick that never advances the schedule retries "
+          f"as fast as the loop can spin instead")
+    print(f"  ok ({rate:.1f} attempts/s while the sender failed, expected "
+          f"around 40/s)")
+
+
+def test_pixel_loop_sleep_is_capped():
+    section("pixel output: a wait for a far-off deadline is broken into "
+            "short sleeps, never one long one")
+    # If the sleep argument here were not capped, a long gap before the
+    # next due slot -- a huge step_ms, or simply the wait before the first
+    # cue starts -- would block the loop in one uninterruptible sleep for
+    # however long that gap is. clock.py's Ticker caps its own wait for
+    # exactly this reason (MAX_SLEEP_S, "so stop() is noticed within a
+    # twentieth second"); player.py's loop needs the same guarantee, or a
+    # Stop pressed during a long gap would wait out the whole thing.
+    import ltcplay.player as plmod
+    slept = []
+
+    class Sim:
+        def __init__(self):
+            self.t = 1000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            slept.append(s)
+            self.t += s
+            if len(slept) >= 5:
+                p._running = False
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    tl = _timeline([])
+
+    class Sender:
+        def send_frame(self, data):
+            pass
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    # A huge step: the very first slot after this one is due 1000s away,
+    # so an uncapped wait would try to sleep that whole gap in one call.
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(1000 * 1000)
+    finally:
+        plmod.time = real
+
+    check(len(slept) >= 5,
+          f"the loop never slept enough times to stop itself, got "
+          f"{len(slept)}")
+    check(max(slept) <= 0.05 + 1e-9,
+          f"one sleep call asked for {max(slept):.3f}s -- longer than the "
+          f"cap that keeps Stop from waiting out a distant deadline")
+    print(f"  ok ({len(slept)} sleeps, longest {max(slept) * 1000:.1f}ms, "
+          f"capped)")
+
+
+def test_pixel_loop_matches_the_old_one_when_healthy():
+    section("pixel output: the new pacing sends at the same times, with "
+            "the same content, as the loop it replaces, whenever nothing "
+            "goes wrong")
+    # A differential proof, not just a bound on one run: the OLD loop
+    # (kept below, frozen, exactly as it read on main before this PR --
+    # see ltcplay/player.py's history for the real, current copy, this is
+    # a fixed reference and is never meant to change) and the NEW one
+    # (Player._loop) are driven through the identical injected clock, the
+    # identical show, and the identical schedule of LTC frames, overrides
+    # and sender misbehaviour, and every single send must land at the
+    # same simulated time with the same content. Adapted from the
+    # review's own differential harness (scratchpad/pixelstep_diff.py).
+    import heapq
+    import textwrap
+    import ltcplay.player as plmod
+
+    OLD_SRC = textwrap.dedent("""\
+        def _loop(self, step_ms):
+            period = step_ms / 1000.0
+            next_at = _now()
+            while self._running:
+                try:
+                    frame = self._tick()
+                    self.sender.send_frame(frame if frame is not None else b"")
+                    self.frames_sent += 1
+                    self._service_trigger()
+                except Exception as e:
+                    self.loop_errors += 1
+                    self.last_loop_error = f"{type(e).__name__}: {e}"
+                    if self.log:
+                        try:
+                            self.log.event("loop-error", self.last_loop_error)
+                        except Exception:
+                            pass
+                    time.sleep(0.01)
+                next_at += period
+                sleep = next_at - _now()
+                if sleep > 0:
+                    time.sleep(sleep)
+                else:
+                    next_at = _now()
+        """)
+    ns = {}
+    exec(compile(OLD_SRC, "<pre-PR#19 _loop, frozen reference>", "exec"),
+        plmod.__dict__, ns)
+    OLD_LOOP = ns["_loop"]
+    NEW_LOOP = Player._loop
+
+    class Sim:
+        """time.* stand-in whose sleep() runs any scheduled events (LTC
+        frames, operator actions) due before it returns, so they land
+        exactly where a real concurrent thread would put them."""
+
+        def __init__(self):
+            self.t = 3_000_000.0
+            self.events = []
+            self.seq = 0
+
+        def at(self, when, fn):
+            self.seq += 1
+            heapq.heappush(self.events, (when, self.seq, fn))
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def _run_until(self, target):
+            while self.events and self.events[0][0] <= target:
+                when, _, fn = heapq.heappop(self.events)
+                if when > self.t:
+                    self.t = when
+                fn()
+            if target > self.t:
+                self.t = target
+
+        def sleep(self, s):
+            self._run_until(self.t + s)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    class Recorder:
+        def __init__(self, sim, box, t_end, raise_every=0):
+            self.sim, self.box, self.t_end = sim, box, t_end
+            self.rows = []
+            self.raise_every = raise_every
+            self.n = 0
+
+        def send_frame(self, data):
+            self.n += 1
+            p = self.box[0]
+            if self.raise_every and self.n % self.raise_every == 0:
+                raise RuntimeError("simulated send failure")
+            self.rows.append((self.sim.t, bytes(data), p.current_frame,
+                             p.current_cue.name if p.current_cue else None,
+                             p.source, p.state))
+            if self.sim.t >= self.t_end:
+                p._running = False
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    def feed_ltc(sim, box, start_t, tc0, seconds, fps=30.0, ppm=0.0,
+                jitter=0.0, seed=1):
+        rnd = random.Random(seed)
+        n = int(seconds * fps)
+        for k in range(n):
+            gen_t = k / fps
+            wall = start_t + gen_t * (1 + ppm * 1e-6)
+            tc = tc0 + gen_t
+            cap = wall + (rnd.uniform(-jitter, jitter) if jitter else 0.0)
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+
+    def run(loop, scenario, step_ms=25, t_end=44.9873, raise_every=0):
+        sim = Sim()
+        real = plmod.time
+        plmod.time = sim
+        try:
+            box = [None]
+            rec = Recorder(sim, box, sim.t + t_end, raise_every=raise_every)
+            p = scenario(sim, rec, box)
+            box[0] = p
+            p._idle_epoch = sim.t - 0.0004
+            p._running = True
+            loop(p, step_ms)
+        finally:
+            plmod.time = real
+        return rec, p
+
+    def base_show(sim, rec, box, **kw):
+        A = FakeFSEQ(frames=800, step=25)     # 20s
+        B = FakeFSEQ(frames=600, step=25)     # 15s
+        idle = FakeFSEQ(frames=40, step=25)
+        tl = _timeline([("01:00:05:00", "A", A), ("01:00:30:00", "B", B)],
+                      idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), rec, freewheel_ms=250, hold_ms=2000,
+                  **kw)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        return p
+
+    def s_healthy(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:00:00", 30)
+        feed_ltc(sim, box, sim.t + 2.0137, tc0, 45.0, ppm=40.0, jitter=0.0003)
+        return p
+
+    def s_park_resume(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        rnd = random.Random(2)
+        n = int(50.0 * 30.0)
+        parked_tc = None
+        for k in range(n):
+            gen_t = k / 30.0
+            wall = sim.t + 1.0137 + gen_t
+            if 10.0 <= gen_t < 16.0:
+                if parked_tc is None:
+                    parked_tc = tc0 + gen_t
+                tc = parked_tc
+            else:
+                tc = tc0 + gen_t
+            cap = wall
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+        return p
+
+    def s_overrides(sim, rec, box):
+        p = base_show(sim, rec, box, on_end="hold")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        feed_ltc(sim, box, sim.t + 1.0137, tc0, 20.0)
+        t = sim.t
+        sim.at(t + 5.0071, lambda: setattr(box[0], "override", "blackout"))
+        sim.at(t + 7.0071, lambda: setattr(box[0], "override", "preshow"))
+        sim.at(t + 9.0071, lambda: setattr(box[0], "override", None))
+        sim.at(t + 15.0071, lambda: box[0].go(tcmod.parse_tc("01:00:28:00", 30)))
+        sim.at(t + 20.0071, lambda: box[0].nudge(-3.3))
+        sim.at(t + 25.0071, lambda: box[0].release())
+        return p
+
+    ok = True
+    for name, scen, kw in [
+        ("healthy LTC with generator drift", s_healthy, {}),
+        ("hard park then resume", s_park_resume, {}),
+        ("blackout/preshow/GO/nudge/release", s_overrides, {}),
+        ("send raises every 7th", s_healthy, {"raise_every": 7}),
+        ("step 33ms (30fps)", s_healthy, {"step_ms": 33}),
+        ("step 100ms (10fps)", s_healthy, {"step_ms": 100}),
+    ]:
+        old_rec, old_p = run(OLD_LOOP, scen, **kw)
+        new_rec, new_p = run(NEW_LOOP, scen, **kw)
+        ra, rb = old_rec.rows, new_rec.rows
+        same_len = len(ra) == len(rb)
+        # Old paces by repeated addition (next_at += period, ~1800 times
+        # over a run), new by one multiplication (t0 + n * period): not
+        # bit-identical arithmetic, so a few ULPs of float noise on the
+        # send time is expected and not a real difference. Everything
+        # else in the row (content, cue, source, state) must still match
+        # exactly.
+        diffs = [(i, x, y) for i, (x, y) in enumerate(zip(ra, rb))
+                 if abs(x[0] - y[0]) > 1e-6 or x[1:] != y[1:]]
+        good = same_len and not diffs
+        ok &= good
+        check(good,
+              f"{name}: old sent {len(ra)}, new sent {len(rb)}, "
+              f"{len(diffs)} differ" +
+              (f"; first at {diffs[0]}" if diffs else ""))
+        check(old_p.loop_errors == new_p.loop_errors,
+              f"{name}: old loop_errors={old_p.loop_errors} new="
+              f"{new_p.loop_errors}")
+    print(f"  ok ({6 if ok else 'not all'} scenarios matching the "
+          f"pre-PR#19 loop's sends)")
 
 
 def test_windows_pixel_clock_choice():
@@ -9768,7 +10258,7 @@ def test_schedule_abort_end_night_and_operator_actions():
           f"End night closes: flame cues to zero, MadMapper stopped, fade, "
           f"blackout. Got {[e.kind for e in o.effects]}")
     check(all(s.status != S.PENDING for s in n.m.slots) and
-          all(s.reason == "SKIPPED (operator, End night)"
+          all(s.reason == "SKIPPED (operator, Close for the night)"
               for s in n.m.slots if s.status == S.SKIPPED and s.n > 3),
           "End night skips every show still to come, and says why")
     n.do(S.CLOSING_DONE, "system", _den(S, 19, 0, 2))
@@ -16594,9 +17084,11 @@ def test_journal_rotation_and_pruning_across_dst():
     check([l[:10] for l in j] == ["00:00:01  ", "01:30:00  ", "01:30:00  "],
           f"the journal reads the wall clock: {j}")
 
-    # Pruning, by the name's date. A night for every day from 1 Jul to
-    # 1 Nov (124 nights), two with misleading timestamps, and things this
-    # module did not write.
+    # Pruning, by the name's date: kept 120 days (Jeff, 2026-09-26). A
+    # night for every day from 1 Jun to 1 Nov, two with misleading
+    # timestamps, incident folders, and things this module did not write.
+    check(J.KEEP_DAYS == 120, f"night files are kept 120 days: {J.KEEP_DAYS}")
+
     def nights_from(first, n, folder, kinds=(J.machine_name, J.journal_name)):
         made = []
         for i in range(n):
@@ -16609,60 +17101,117 @@ def test_journal_rotation_and_pruning_across_dst():
 
     old = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(old)
-    made = nights_from(date(2026, 7, 1), 124, old)
+    made = nights_from(date(2026, 6, 1), 154, old)
     # A kept night with an ancient timestamp, a pruned one stamped today.
-    os.utime(os.path.join(old, J.machine_name("2026-08-05")), (1, 1))
-    os.utime(os.path.join(old, J.machine_name("2026-08-01")),
+    os.utime(os.path.join(old, J.machine_name("2026-07-05")), (1, 1))
+    os.utime(os.path.join(old, J.machine_name("2026-07-01")),
              (_t.time(), _t.time()))
-    strangers = ["notes.txt", "night_2026-08-01.jsonl.bak",
+    strangers = ["notes.txt", "night_2026-07-01.jsonl.bak",
                  "night_2020-01-01.jsonl.txt", "ltcplay.log"]
     for n in strangers:
         open(os.path.join(old, n), "w").write("x")
     os.makedirs(os.path.join(old, "night_2020-01-01.jsonl"))
-    os.makedirs(os.path.join(old, "incidents", "incident_2020-01-01_120000"))
+    inc = os.path.join(old, "incidents")
+    for n in ("incident_2026-07-01_120000", "incident_2026-07-02_120000_2",
+              "incident_2026-07-03_120000.partial",
+              "incident_2026-07-10_120000", "notes"):
+        os.makedirs(os.path.join(inc, n))
+        open(os.path.join(inc, n, "journal.txt"), "w").write("x\n")
+    open(os.path.join(inc, "incident_2020-01-01_120000"), "w").write("x")
+    # The .partial is a crash leftover, not work in progress: old enough
+    # (over a day, by its mtime) that the stale rule removes it. Its NAME's
+    # date (2026-07-03, also older than 120 days) must play no part: that
+    # would be pruning a `.partial` by the date rule, which round 1 of the
+    # review said never to do again.
+    stale_partial = os.path.join(inc, "incident_2026-07-03_120000.partial")
+    stale_ts = datetime(2026, 7, 3, tzinfo=utc).timestamp()
+    os.utime(stale_partial, (stale_ts, stale_ts))
     now[0] = datetime(2026, 11, 1, 18, 0, tzinfo=utc)   # the fall-back day
     p = _book(J, old, now)
     gone = p.prune(date(2026, 11, 1))
     left = set(os.listdir(old))
-    # Kept: 90 days back from 1 Nov is 3 Aug.
-    want = sorted(n for d, n in made if d < date(2026, 8, 3))
+    # Kept: 120 days back from 1 Nov is 4 Jul.
+    want = sorted([n for d, n in made if d < date(2026, 7, 4)] +
+                  ["incident_2026-07-01_120000",
+                   "incident_2026-07-02_120000_2",
+                   "incident_2026-07-03_120000.partial"])
     check(sorted(gone) == want,
-          f"nights older than 90 days are removed, by the date in their "
-          f"name: {len(gone)} {sorted(gone)[:4]}")
-    check(all(n in left for d, n in made if d >= date(2026, 8, 3)),
-          "the 90th night back and newer are kept, whatever their "
+          f"night files and incident folders older than 120 days are "
+          f"removed, by the date in their name: {len(gone)} "
+          f"{sorted(set(gone) ^ set(want))[:4]}")
+    check(all(n in left for d, n in made if d >= date(2026, 7, 4)),
+          "the 120th night back and newer are kept, whatever their "
           "timestamps say")
+    check(sorted(os.listdir(inc)) == ["incident_2020-01-01_120000",
+                                      "incident_2026-07-10_120000", "notes"],
+          f"a newer incident, and anything that is not an incident folder, "
+          f"stay: {sorted(os.listdir(inc))}")
     check(all(n in left for n in strangers)
-          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl"))
-          and os.path.isdir(os.path.join(old, "incidents")),
+          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl")),
           "nothing this module did not write is touched")
-    check(any(f"Removed {len(want)} night log file(s)" in r["text"]
-              for r in p.memory), "the journal says what was removed")
-    # A clock a year ahead calls every night old. The nights that exist
-    # are kept all the same: never fewer than the newest 90 of them.
+    check(any("Removed 66 night log file(s) and 2 incident folder(s)" in
+              r["text"] for r in p.memory),
+          "the journal says what was removed by the date rule (the "
+          "stale .partial is reported separately, below)")
+    check(any("Removed 1 incident folder(s) left unfinished (.partial)" in
+              r["text"] and "incident_2026-07-03_120000.partial" in r["text"]
+              for r in p.memory),
+          "and a stale .partial is reported for what it is, not folded "
+          "into the by-date removal")
+    check("incident_2026-07-03_120000.partial" not in
+          set(os.listdir(inc)), "the stale .partial is gone")
+    # A clock nobody could check yet (floor=True): the newest 120 nights
+    # that exist stay, whatever the date says, and NOTHING is removed by
+    # age at all -- so a year-ahead date with only 4 nights on disk (a
+    # seasonal show early in its life) removes nothing. A clock the time
+    # server DOES agree with (floor=False) is the opposite: purely by
+    # age, with no floor to protect anything -- so the same year-ahead
+    # date, if this machine's clock can actually be trusted to say so,
+    # removes every one of those 4, having nothing left to protect them
+    # with (round 2 review of PR 25: floor is conditional again, but on
+    # trust Service keeps genuinely current, not a boot-time snapshot).
     ahead = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(ahead)
-    nights_from(date(2026, 11, 14), 4, ahead)
+    made_ahead = nights_from(date(2026, 11, 14), 4, ahead)
     now[0] = datetime(2027, 11, 20, 18, 0, tzinfo=utc)
-    check(_book(J, ahead, now).prune(date(2027, 11, 20)) == []
+    check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=True) == []
           and len(os.listdir(ahead)) == 8,
-          f"a clock a year ahead removes nothing: {os.listdir(ahead)}")
+          f"an untrusted clock a year ahead removes nothing at all, by "
+          f"count alone: {os.listdir(ahead)}")
+    gone_ahead = _book(J, ahead, now).prune(date(2027, 11, 20), floor=False)
+    check(sorted(gone_ahead) == sorted(n for _d, n in made_ahead)
+          and not any(os.path.exists(os.path.join(ahead, n))
+                      for _d, n in made_ahead),
+          f"a TRUSTED clock a year ahead removes everything by age alone, "
+          f"with no floor to protect the last few nights that exist: "
+          f"{gone_ahead}")
     many = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many)
-    made = nights_from(date(2026, 11, 1), 120, many, (J.machine_name,))
-    gone = _book(J, many, now).prune(date(2028, 1, 1))
+    made = nights_from(date(2026, 11, 1), 150, many, (J.machine_name,))
+    gone = _book(J, many, now).prune(date(2028, 1, 1), floor=True)
     check(sorted(gone) == [n for _d, n in made[:30]]
           and sum(os.path.exists(os.path.join(many, n))
-                  for _d, n in made) == 90,
-          f"however far ahead, the newest 90 nights stay: {len(gone)}")
-    # The spring change: 90 days back from 14 Mar 2027 is 14 Dec 2026.
+                  for _d, n in made) == 120,
+          f"however far ahead, an untrusted clock keeps the newest 120 "
+          f"nights, by count alone: {len(gone)}")
+    many2 = os.path.join(tempfile.mkdtemp(), "nights")
+    os.makedirs(many2)
+    made2 = nights_from(date(2026, 11, 1), 150, many2, (J.machine_name,))
+    gone2 = _book(J, many2, now).prune(date(2028, 1, 1))       # floor=False
+    check(sorted(gone2) == sorted(n for _d, n in made2)
+          and not any(os.path.exists(os.path.join(many2, n))
+                      for _d, n in made2),
+          f"and a TRUSTED clock removes every one of them by age alone: "
+          f"every seeded night is more than 120 days before 2028-01-01, "
+          f"and there is no floor to keep any of them: {len(gone2)}")
+    # The spring change: 120 days back from 14 Mar 2027 is 14 Nov 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
-    made = nights_from(date(2026, 12, 1), 104, spring, (J.machine_name,))
+    made = nights_from(date(2026, 11, 1), 134, spring, (J.machine_name,))
     now[0] = datetime(2027, 3, 14, 9, 30, tzinfo=utc)     # 02:30 MST skipped
     sp = _book(J, spring, now)
     check(sorted(sp.prune(date(2027, 3, 14))) ==
-          [n for d, n in made if d < date(2026, 12, 14)],
+          [n for d, n in made if d < date(2026, 11, 14)],
           f"across the spring change too: {sorted(os.listdir(spring))[:3]}")
     check(sp.night_of() == date(2027, 3, 14), "the night is the local date")
 
@@ -16672,15 +17221,18 @@ def test_journal_rotation_and_pruning_across_dst():
     work = tempfile.mkdtemp()
     nights = os.path.join(work, "nights")
     os.makedirs(nights)
-    nights_from(date(2026, 7, 1), 95, nights, (J.machine_name,))
+    # More than 120 nights, and running right up to yesterday, so the age
+    # rule (not the newest-120 floor, always applied now regardless -- see
+    # journal.Logbook.prune()) is what is actually under test here.
+    nights_from(date(2026, 6, 1), 165, nights, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc = _svc(S, work, now).start(thread=False)
 
     def there(d):
         return os.path.exists(os.path.join(nights, J.machine_name(d)))
 
-    check(not there("2026-07-06") and there("2026-07-07"),
-          "the service prunes when a night begins, keeping the newest 90")
+    check(not there("2026-07-16") and there("2026-07-17"),
+          "the service prunes by age when a night begins")
     now[0] = _den(S, 21, 35)
     svc._apply(_op(S, S.HOLD_ON))
     now[0] = _den(S, 23, 59, 50)
@@ -16690,29 +17242,370 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
-    check(not there("2026-07-07") and there("2026-07-08"),
+    check(not there("2026-07-17") and there("2026-07-18"),
           "and prunes again when the next night begins")
     check(there("2026-11-15"),
           "after midnight the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
-    # has run for 10 minutes.
+    # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
     nights2 = os.path.join(work2, "nights")
     os.makedirs(nights2)
-    nights_from(date(2026, 7, 1), 95, nights2, (J.machine_name,))
+    nights_from(date(2026, 6, 1), 130, nights2, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc2 = _svc(S, work2, now, ntp_query=lambda: 90000.0).start(thread=False)
-    first = os.path.join(nights2, J.machine_name("2026-07-01"))
+    first = os.path.join(nights2, J.machine_name("2026-06-01"))
     check(svc2.clock_check["level"] == "warn" and os.path.exists(first),
           "an unchecked clock prunes nothing at first")
     now[0] = _den(S, 21, 40, 1)
     svc2.tick()
-    check(not os.path.exists(first),
-          "and prunes, still keeping the newest 90, after 10 minutes")
+
+    def there2(d):
+        return os.path.exists(os.path.join(nights2, J.machine_name(d)))
+
+    check(not there2("2026-06-11") and there2("2026-06-12"),
+          "and after 10 minutes prunes, keeping the newest 120 nights even "
+          "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
     check(os.path.exists(sp14) and "written at midnight" in
           open(sp14, encoding="utf-8").read(),
           "and the night that never closed gets its summary at midnight")
+    print("  ok")
+
+
+def test_journal_prune_never_removes_a_partial_by_its_name_date():
+    section("journal: a .partial incident is never removed by the date in "
+            "its name; only a stale one, by how long it has sat "
+            "unfinished, ever goes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    # A .partial dated long ago (a wrong clock, or simply an old crash,
+    # could leave one so named), but written moments ago by this run's own
+    # clock: save_incident() could still be filling it. prune() must leave
+    # it alone even with `today` set far enough ahead that the date-based
+    # rule would remove a FINISHED incident with the same name's date
+    # (round 1 review of PR 25, should-fix).
+    folder = tempfile.mkdtemp()
+    inc = os.path.join(folder, J.INCIDENTS)
+    os.makedirs(inc)
+    partial = os.path.join(inc, "incident_2020-01-01_000000.partial")
+    os.makedirs(partial)
+    open(os.path.join(partial, "journal.txt"), "w").write("still open\n")
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    # Its mtime is real wall-clock time (whenever this test happens to
+    # run), which has nothing to do with the mocked clock above: set it to
+    # match `now[0]`, so "freshly written" is judged against the same
+    # clock prune() itself uses.
+    fresh_ts = now[0].timestamp()
+    os.utime(partial, (fresh_ts, fresh_ts))
+    b = _book(J, folder, now)
+    gone = b.prune(date(2026, 11, 1))       # far more than 120 days past 2020
+    check(gone == [] and os.path.isdir(partial),
+          f"a freshly-written .partial survives, whatever its name's date "
+          f"says: {gone}")
+
+    # The same folder, now old enough (mtime over a day) that whatever was
+    # writing it is gone: a separate, simple rule removes it, and only
+    # that rule.
+    old_ts = (now[0] - timedelta(days=2)).timestamp()
+    os.utime(partial, (old_ts, old_ts))
+    gone2 = b.prune(date(2026, 11, 1))
+    check(gone2 == ["incident_2020-01-01_000000.partial"]
+          and not os.path.exists(partial),
+          f"a .partial unfinished for more than a day is removed, as a "
+          f"stale crash leftover: {gone2}")
+    check(any("left unfinished (.partial)" in r["text"] for r in b.memory),
+          "and the journal says so, distinctly from a by-date removal")
+    print("  ok")
+
+
+def test_journal_prune_takes_the_incident_lock():
+    section("journal: prune() takes the same lock save_incident() uses, "
+            "so the two can never interleave")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    from datetime import date, datetime, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    folder = tempfile.mkdtemp()
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    b = _book(J, folder, now)
+    # prune() defaults to floor=False (a trustworthy clock, the ordinary
+    # case): purely by age, no newest-N floor at all, so a single old
+    # night file is removed on its own, whatever else does or does not
+    # exist alongside it.
+    old_name = J.machine_name("2020-01-01")
+    open(os.path.join(b.folder, old_name), "w").write("x\n")
+
+    order = []
+    holding = threading.Event()
+    released = threading.Event()
+
+    def hold_and_release():
+        with b._io:
+            order.append("held")
+            holding.set()
+            released.wait(2)
+        order.append("released")
+
+    holder = threading.Thread(target=hold_and_release, daemon=True)
+    holder.start()
+    check(holding.wait(2), "the other holder took the lock")
+
+    result = {}
+
+    def run_prune():
+        result["gone"] = b.prune(date(2026, 11, 1))
+        order.append("pruned")
+
+    pruner = threading.Thread(target=run_prune, daemon=True)
+    pruner.start()
+    pruner.join(timeout=0.3)
+    check(pruner.is_alive()
+          and os.path.exists(os.path.join(b.folder, old_name)),
+          "prune() waits for the lock, rather than running through it "
+          "while save_incident() (or anything else) holds it")
+    released.set()
+    pruner.join(timeout=2)
+    holder.join(timeout=2)
+    check(not pruner.is_alive() and result.get("gone") == [old_name],
+          "and runs, and removes the old file, once the lock is free")
+    check(order == ["held", "released", "pruned"],
+          f"the two never interleave: {order}")
+    print("  ok")
+
+
+def test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled():
+    section("scheduler: a clock that jumps mid-run, after passing its own "
+            "one-shot check at start, never breaks the 120-night floor, "
+            "and is itself noticed and journaled")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 12, 0, tzinfo=utc)
+    base = boot.date() - timedelta(days=1)
+    made = []
+    for i in range(130):
+        d = base - timedelta(days=i)
+        open(os.path.join(nights, J.machine_name(d.isoformat())), "w") \
+            .write("x\n")
+        made.append(d)
+
+    def unique_dates():
+        # Every distinct night date still on disk, this test's own 130
+        # seeded ones and any the service itself wrote for "tonight"
+        # alike: the floor protects whatever the newest 120 actually are,
+        # not just the ones this test happened to seed.
+        out = set()
+        for name in os.listdir(nights):
+            m = J._NAME.match(name)
+            if m:
+                out.add(date(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))))
+        return out
+
+    now = [boot]
+    perf = [0.0]
+
+    def real_ntp_query():
+        # A real time server measures against the true elapsed time,
+        # which perf_counter tracks (it cannot be stepped by whatever
+        # stepped `now`): this is the offset an actual server would
+        # report, so a recheck after the jump below genuinely still
+        # catches the wrong clock, rather than a fixed "it's fine"
+        # answer that could never have noticed anything either way.
+        true_now = boot + timedelta(seconds=perf[0])
+        return (now[0] - true_now).total_seconds()
+
+    svc = _svc(S, work, now, ntp_query=real_ntp_query,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)                     # a good clock at boot
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+    check(len(unique_dates()) >= 120,
+          f"the boot-time prune never keeps fewer than the newest 120: "
+          f"{len(unique_dates())}")
+
+    # The clock steps forward 200 days between two ticks that, by
+    # perf_counter, were a quarter of a second apart: an NTP step, an RTC
+    # glitch, or someone setting it by hand -- none of which this process
+    # would otherwise ever notice again after its one boot-time check.
+    now[0] = boot + timedelta(days=200)
+    perf[0] = 0.25
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "the jump itself is noticed and journaled")
+    check(svc.clock_check["level"] != "ok",
+          "the recheck the jump triggers genuinely still catches the "
+          "wrong clock (a real time server would), so trust is not "
+          "wrongly restored")
+    check(len(unique_dates()) >= 120,
+          f"and nothing beyond the newest 120 nights is ever removed, "
+          f"however this tick's own housekeeping used the wrong date: "
+          f"{len(unique_dates())}")
+    print("  ok")
+
+
+def test_journal_prune_trusted_clock_deletes_purely_by_age():
+    section("journal: prune() with a trusted clock (floor=False) deletes "
+            "purely by age, even a handful of nights spread over years "
+            "(a seasonal show), with no newest-N floor to protect any of "
+            "them (round 2 review of PR 25: an unconditional floor had "
+            "overcorrected the round 1 fix, and a seasonal show could "
+            "then never age files out at all)")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    # The reviewer's own case: 10 nights over the last two years, none of
+    # them recent, all genuinely more than 120 days old.
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    lb = J.Logbook(folder=tmp, clock=lambda: datetime.now(utc))
+    removed = lb.prune(today, state="BOOT", floor=False)
+    check(sorted(removed) == sorted(names),
+          f"a trusted clock removes every one of these 10 nights: "
+          f"{removed}")
+    check(not any(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "and none of them are left on disk")
+    print("  ok")
+
+
+def test_journal_prune_untrusted_clock_keeps_them_all():
+    section("journal: prune() with an untrusted clock (floor=True) "
+            "removes nothing by age at all; with only a handful of "
+            "nights on disk, every one of them IS 'the newest 120'")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    now = [datetime(2026, 9, 27, 12, 0, tzinfo=utc)]
+    lb = J.Logbook(folder=tmp, clock=lambda: now[0])
+    removed = lb.prune(today, state="BOOT", floor=True)
+    check(removed == [],
+          f"an untrusted clock removes nothing: {removed}")
+    check(all(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "every one of the 10 nights is still there")
+    print("  ok")
+
+
+def test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning():
+    section("scheduler: sleeping for days and waking again looks like a "
+            "jump too (the wall clock moves, perf_counter barely does), "
+            "but a genuinely correct clock is re-confirmed at once, not "
+            "left distrusted, and pruning resumes normally")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    now = [boot]
+    perf = [0.0]
+    # A genuinely correct clock throughout: unlike a bad jump, a real time
+    # server agrees with it before AND after the sleep.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+
+    # The machine sleeps for three days over a long weekend; perf_counter
+    # (suspend time is not counted) barely advances, but the wall clock
+    # genuinely did move three real days.
+    now[0] = boot + timedelta(days=3)
+    perf[0] = 0.3
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "sleep and wake is itself noticed and journaled, the same as "
+          "any other jump")
+    check(svc.clock_check["level"] == "ok",
+          "but the recheck it triggers finds a genuinely correct clock, "
+          "so trust is restored, not left lost")
+    check(svc._clock_trusted(), "and the service agrees it is trusted")
+
+    # An old night added after waking is removed by age, proving pruning
+    # is not stuck refusing to trust the clock just because a jump was
+    # noticed once.
+    old = now[0].date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+    gone = svc.logbook.prune(now[0].date(), state="BOOT",
+                             floor=not svc._clock_trusted())
+    check(gone == [old_name],
+          f"and age-based pruning resumes normally after waking: {gone}")
+    print("  ok")
+
+
+def test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping():
+    section("scheduler: Service's own housekeeping, not just Logbook.prune() "
+            "called directly, computes floor from LIVE trust: a trusted "
+            "clock deletes an old night by age even with only one night "
+            "on disk, far fewer than the newest-120 floor would ever let "
+            "age alone touch")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    old = boot.date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+
+    now = [boot]
+    # A trusted clock from the start: no jump, no ambiguity.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0)
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the clock is trusted")
+    check(not os.path.exists(os.path.join(nights, old_name)),
+          "and Service's own housekeeping removed the 200-day-old night "
+          "by age alone, through its normal start-up tick, not because "
+          "this test called Logbook.prune() itself")
     print("  ok")
 
 
@@ -16778,7 +17671,8 @@ def test_journal_nightly_summary():
     text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
     for want, why in (
             ("# Night summary: Saturday 14 November 2026", "the title"),
-            ("closed by Andy with End night", "who closed the night"),
+            ("closed by Andy with Close for the night",
+             "who closed the night"),
             ("| 1 | 18:00 | DONE |", "show 1 ran"),
             ("| 2 | 18:20 | MISSED | MISSED (late by 1m 0s)",
              "show 2 missed, with its reason"),
@@ -16786,7 +17680,7 @@ def test_journal_nightly_summary():
             ("ABORTED (operator)", "with its reason"),
             ("| 4 | 19:00 | DONE | started 19:03:00; ended 19:10:20; "
              "DELAYED START (operator hold)", "show 4's delayed start"),
-            ("SKIPPED (operator, End night)", "the rest skipped"),
+            ("SKIPPED (operator, Close for the night)", "the rest skipped"),
             ("Andy played the Delayed announcement, 18 s, finished "
              "normally.", "the announcement"),
             ("MadMapper stopped sending its heartbeat", "the fault, in its "
@@ -16840,7 +17734,7 @@ def test_journal_nightly_summary():
     c = _svc(S, work2, now).start(thread=False)
     p3 = os.path.join(work2, "nights", J.summary_name("2026-11-14"))
     t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
-    check("written the next day" in t3 and "| 3 |  | ABORTED |" in t3
+    check("written later from the journal" in t3 and "| 3 |  | ABORTED |" in t3
           and "| 2 |  | MISSED |" in t3,
           f"a night without a summary gets one the next day, from its "
           f"journal: {t3[:600]!r}")
@@ -17070,7 +17964,8 @@ def test_journal_a_full_disk_stops_the_logging_not_the_show():
     now[0] = _den(S, 18, 5)
     svc._journal_line("system", "A line with the disk nearly full.")
     h = svc.logbook.health()
-    check(not h["ok"] and "only 50 MB is free" in h["sentence"],
+    check(J.FREE_FLOOR_MB == 500 and not h["ok"] and
+          "only 50 MB is free on the disk, under the 500 MB" in h["sentence"],
           f"a nearly full disk stops the logging: {h['sentence']}")
     check(h["free_mb"] == 50 and h["free_checked_age_s"] is not None,
           "the free space carries the age of its reading")
@@ -17997,16 +18892,16 @@ def test_journal_housekeeping_runs_once():
         with svc.lock:
             svc._ensure_night(base)
         svc.clock_check = {"level": "ok"}
-        calls = {"prune": 0, "summary": 0}
+        calls = {"prune": 0, "summary": {}}
         real_prune, real_sum = svc.logbook.prune, svc.logbook.write_summary
 
         def prune(*a, **k):
             calls["prune"] += 1
             return real_prune(*a, **k)
 
-        def summary(*a, **k):
-            calls["summary"] += 1
-            return real_sum(*a, **k)
+        def summary(night, *a, **k):
+            calls["summary"][night] = calls["summary"].get(night, 0) + 1
+            return real_sum(night, *a, **k)
 
         svc.logbook.prune, svc.logbook.write_summary = prune, summary
         slow["on"] = True
@@ -18019,7 +18914,8 @@ def test_journal_housekeeping_runs_once():
         for t in ts:
             t.join(10)
         slow["on"] = False
-        if calls["prune"] > 1 or calls["summary"] > 1:
+        if calls["prune"] > 1 or any(n > 1 for n in
+                                     calls["summary"].values()):
             twice.append(dict(calls))
     check(not twice, f"housekeeping is decided under the lock, so it runs "
                      f"once: {twice}")
@@ -20067,6 +20963,132 @@ def test_audio_master_loads_all_or_nothing():
     print("  ok")
 
 
+def test_journal_every_line_reaches_the_disk_within_a_second():
+    section("journal: every line is on the disk, flushed and synced, within "
+            "a second of happening")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import time as _t
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    syncs = {"n": 0}
+
+    def fsync(fd):
+        syncs["n"] += 1
+        return os.fsync(fd)
+
+    b = J.Logbook(work, tz=S.zone("America/Denver"), state="SHOW",
+                  fsync=fsync).start_writer()
+    jp = os.path.join(work, J.journal_name(b.current_night()))
+
+    def on_disk(text):
+        try:
+            return text in open(jp, encoding="utf-8").read()
+        except OSError:
+            return False
+
+    check(J.MAX_LINE_WAIT_S <= 1.0, f"the bound is a second at most: "
+                                    f"{J.MAX_LINE_WAIT_S}")
+    for i in range(3):
+        before = syncs["n"]
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Line {i}, which must be on the disk at once.")
+        check(wait_for(lambda: on_disk(f"Line {i},"),
+                       timeout=J.MAX_LINE_WAIT_S),
+              f"line {i} is on the disk within {J.MAX_LINE_WAIT_S:g} s")
+        check(wait_for(lambda: syncs["n"] >= before + 2, timeout=1.0),
+              f"and both files were synced to the disk: "
+              f"{syncs['n'] - before}")
+    # A wake-up that never comes: the line still goes down within the
+    # bound, because the writer looks again at least that often.
+    wake = b._wake.set
+    b._wake.set = lambda: None
+    t0 = _t.monotonic()
+    b.record(actor="system", action="note", outcome="done", reason="r",
+             text="A line whose wake-up was lost.")
+    got = wait_for(lambda: on_disk("whose wake-up was lost"), timeout=3.0)
+    took = _t.monotonic() - t0
+    check(got and took <= J.MAX_LINE_WAIT_S + 0.5,
+          f"a line waits at most about {J.MAX_LINE_WAIT_S:g} s even when "
+          f"nothing wakes the writer: {took:.2f} s")
+    b._wake.set = wake
+    # The program dies: the writer stops where it is, nothing is closed or
+    # flushed on the way out. Every line older than the bound is there.
+    for i in range(10):
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Burst line {i} before the crash.")
+    _t.sleep(J.MAX_LINE_WAIT_S + 0.2)
+    b._closing = True                 # killed: no close(), no last drain
+    text = open(jp, encoding="utf-8").read()
+    missing = [i for i in range(10) if f"Burst line {i} before" not in text]
+    check(not missing, f"after a crash every line older than "
+                       f"{J.MAX_LINE_WAIT_S:g} s is on the disk: missing "
+                       f"{missing}")
+    print("  ok")
+
+
+def test_journal_summary_is_written_however_the_night_closes():
+    section("journal: the nightly summary is written by itself, however "
+            "the night closes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import journal as J
+    # The schedule's own close, after the last show: nobody presses
+    # anything.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    for t in ((21, 40), (21, 47, 20), (21, 47, 21)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    path = os.path.join(work, "nights", J.summary_name("2026-11-14"))
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) \
+        else ""
+    check(svc.machine.state == S.OFF and "closed after the last show" in
+          text, f"the schedule's own close writes it: "
+                f"{svc.machine.state} {text[:200]!r}")
+    # Close for the night: the operator's words, never End night.
+    work2 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    b = _svc(S, work2, now).start(thread=False)
+    now[0] = _den(S, 18, 30)
+    b._apply(_op(S, S.END_NIGHT, confirmed=True))
+    t2 = open(os.path.join(work2, "nights", J.summary_name("2026-11-14")),
+              encoding="utf-8").read()
+    j2 = open(os.path.join(work2, "nights", J.journal_name("2026-11-14")),
+              encoding="utf-8").read()
+    check("closed by Andy with Close for the night" in t2
+          and "Andy pressed Close for the night on the rack screen" in j2
+          and "the night was closed" in j2,
+          "Close for the night writes it, in those words")
+    check("End night" not in t2 and "End night" not in j2
+          and "End the night" not in j2,
+          "no operator sentence says End night any more")
+    check([a["label"] for a in S.ACTIONS if a["id"] == "end_night"] ==
+          ["Close for the night"] and "Close for the night?" in
+          [a["confirm"] for a in S.ACTIONS if a["id"] == "end_night"][0],
+          "the transport panel's label and question say it too")
+    # A crash, and ltcplay not back for three days: every night it missed
+    # closing gets its summary when it starts, with no button.
+    work3 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    a = _svc(S, work3, now).start(thread=False)
+    now[0] = _den(S, 18, 0)
+    a.tick()                                       # show 1; then the crash
+    now[0] = _den(S, 17, 0, d=(2026, 11, 17))
+    _svc(S, work3, now).start(thread=False)
+    p3 = os.path.join(work3, "nights", J.summary_name("2026-11-14"))
+    t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
+    check("written later from the journal" in t3 and "| 1 |" in t3,
+          f"the night the crash cut short gets its summary three days "
+          f"later: {t3[:200]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _show_root = real_show_dir()
@@ -20090,6 +21112,10 @@ if __name__ == "__main__":
     test_loop_never_dies()
     test_pixel_output_frame_jitter()
     test_pixel_pacing_never_accumulates_error()
+    test_pixel_scheduler_recovers_after_one_late_wake()
+    test_a_failing_send_still_advances_the_pixel_schedule()
+    test_pixel_loop_sleep_is_capped()
+    test_pixel_loop_matches_the_old_one_when_healthy()
     test_windows_pixel_clock_choice()
     test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()
@@ -20217,6 +21243,13 @@ if __name__ == "__main__":
     test_journal_line_format_is_the_spec()
     test_journal_is_append_only()
     test_journal_rotation_and_pruning_across_dst()
+    test_journal_prune_never_removes_a_partial_by_its_name_date()
+    test_journal_prune_takes_the_incident_lock()
+    test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled()
+    test_journal_prune_trusted_clock_deletes_purely_by_age()
+    test_journal_prune_untrusted_clock_keeps_them_all()
+    test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning()
+    test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping()
     test_journal_nightly_summary()
     test_journal_incident_bundle()
     test_journal_a_full_disk_stops_the_logging_not_the_show()
@@ -20234,6 +21267,8 @@ if __name__ == "__main__":
     test_journal_summary_lists_every_fault()
     test_journal_leftover_temp_files_are_cleared()
     test_journal_housekeeping_runs_once()
+    test_journal_every_line_reaches_the_disk_within_a_second()
+    test_journal_summary_is_written_however_the_night_closes()
     test_announce_probe_matches_open_for_format()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()

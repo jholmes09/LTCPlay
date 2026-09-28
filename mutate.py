@@ -930,15 +930,12 @@ MUTATIONS = [
   "    return time.monotonic()"),
 
  ("the pixel output thread's pacing accumulates sleep error", "ltcplay/player.py",
-  "            next_at += period\n"
-  "            sleep = next_at - _now()\n"
-  "            if sleep > 0:\n"
-  "                time.sleep(sleep)\n"
-  "            else:\n"
-  "                # Fell behind: give up the missed slots rather than sprinting to\n"
-  "                # catch up, which would burst packets at the controllers.\n"
-  "                next_at = _now()",
-  "            next_at += period\n"
+  "            due = t0 + n_next * period\n"
+  "            now = _now()\n"
+  "            if now < due:\n"
+  "                time.sleep(min(due - now, 0.05))\n"
+  "                continue",
+  "            now = _now()\n"
   "            time.sleep(period)"),
 
  ("the run loop's heartbeat reads the other clock", "ltcplay/cli.py",
@@ -1451,11 +1448,12 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:\n                continue',
-  '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                    self.folder, name)), timezone.utc).date() >= cutoff \\\n'
-  '                    or d in newest:\n'
-  '                continue'),
+  '                if keep_from is None or d >= keep_from:\n'
+  '                    continue\n',
+  '                if keep_from is None or datetime.fromtimestamp(\n'
+  '                        os.path.getmtime(os.path.join(root, name)),\n'
+  '                        timezone.utc).date() >= keep_from:\n'
+  '                    continue\n'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
@@ -1505,8 +1503,8 @@ MUTATIONS = [
   '        for le in out.log:\n            self.journal.append(le.to_dict())'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
-  '            if prune:\n                self._log(self.logbook.prune, d, state=state)',
-  '            if False:\n                self._log(self.logbook.prune, d, state=state)'),
+  '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
+  '            if False:\n                self._log(self.logbook.prune, d, state=state,'),
 
  ("the GPL path loads the journal", "ltcplay/web.py",
   'from . import brand as brand_mod\n',
@@ -1533,9 +1531,9 @@ MUTATIONS = [
 
  ("a torn last line from a power cut gets the next line glued on",
   "ltcplay/journal.py",
-  '        cut = path not in self._tails_ok and os.path.exists(path) and \\',
+  '        cut = path not in self._tails_ok and not new and \\',
   '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
-  '            and os.path.exists(path) and \\'),
+  '            and not new and \\'),
 
  ("a line cut short by a full disk is not looked for afterwards",
   "ltcplay/journal.py",
@@ -1562,9 +1560,18 @@ MUTATIONS = [
   '        if False:\n            return self.machine.date\n'
   '        return self.logbook.night_of(now)'),
 
- ("a clock a year ahead prunes every night", "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:',
-  '            if d >= cutoff:'),
+ ("a trusted clock still applies the newest-120 floor",
+  "ltcplay/journal.py",
+  '            if floor:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if True:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
+
+ ("an untrusted clock prunes by age", "ltcplay/journal.py",
+  '            if floor:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if False:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
 
  ("pruning trusts a clock nobody has checked",
   "ltcplay/schedule_service.py",
@@ -1645,16 +1652,34 @@ MUTATIONS = [
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
   '                if prune:\n'
   '                    self._pruned_for = d\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
-  '            if prune:\n',
+  '            if prune:\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n',
   '                look = not self._looked_back\n'
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
   '                self._looked_back = True\n'
   '            if prune:\n'
-  '                self._pruned_for = d\n'),
+  '                self._pruned_for = d\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n'),
 
  ("a failure while writing is silent", "ltcplay/journal.py",
   '        except Exception as e:\n'
@@ -2182,6 +2207,39 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
+ # ---------------------------------------------------------------------
+ # flamesafe/: Jeff, 2026-09-26: losing the show program disarms.
+ # ---------------------------------------------------------------------
+
+
+ ("flamesafe: losing the show program keeps the latches, so it re-arms when back",
+  "flamesafe/composer.py",
+  '            self._reset_latches("show program link lost",\n'
+  '                                journal=self._link_live)',
+  "            pass"),
+
+ ("flamesafe: a lost show program is journaled and counted on every stale tick, 40 lines a second",
+  "flamesafe/composer.py",
+  "                                journal=self._link_live)",
+  "                                journal=True)"),
+
+ ("flamesafe: a group may arm before the show program has ever answered",
+  "flamesafe/composer.py",
+  "        link_live = frame_fresh\n",
+  "        link_live = frame_fresh or self._frame_at is None\n"),
+
+ ("flamesafe: losing the show program is not journaled",
+  "flamesafe/composer.py",
+  '            self._event("link", "show program stopped answering: every group "\n'
+  '                                "disarmed; cycle the arm to re-arm once it "\n'
+  '                                "is back")',
+  "            pass"),
+
+ ("flamesafe: a lost show program shows flashing amber, telling the operator to cycle now",
+  "flamesafe/composer.py",
+  "            return (LINK_LOST, \"steady\")",
+  "            return (LINK_LOST, \"flashing\")"),
+
  ("an announcement plays over a running or paused show", "ltcplay/announce.py",
   '    if state in BLOCKED_STATES:\n'
   '        how = "paused" if state == "PAUSED" else "running"',
@@ -2417,6 +2475,82 @@ MUTATIONS = [
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
+
+ # -- the journal, Jeff's settings of 2026-09-26 ------------------------
+ ("a batch goes to the disk without an fsync", "ltcplay/journal.py",
+  '                self._fsync(fh.fileno())\n                if new:',
+  '                pass\n                if new:'),
+
+ ("a line can wait five seconds in memory", "ltcplay/journal.py",
+  '            self._wake.wait(MAX_LINE_WAIT_S)',
+  '            self._wake.wait(5.0)'),
+
+ ("night files are kept 90 days again", "ltcplay/journal.py",
+  'KEEP_DAYS = 120',
+  'KEEP_DAYS = 90'),
+
+ ("incident folders are never pruned", "ltcplay/journal.py",
+  '            found.append((d, name, inc_root, True))',
+  '            pass'),
+
+ ("a checked clock still keeps the newest nights",
+  "ltcplay/schedule_service.py",
+  '                floor = not self._clock_trusted()',
+  '                floor = True'),
+
+ ("an unchecked clock prunes by age alone", "ltcplay/schedule_service.py",
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)',
+  '                self._log(self.logbook.prune, d, state=state, floor=False)'),
+
+ ("the free space floor is 100 MB again", "ltcplay/journal.py",
+  'FREE_FLOOR_MB = 500',
+  'FREE_FLOOR_MB = 100'),
+
+ ("a start looks back only one night for a missing summary",
+  "ltcplay/schedule_service.py",
+  '            if n < d and not os.path.exists(',
+  '            if n == d - timedelta(days=1) and not os.path.exists('),
+
+ ("the journal says End night again", "ltcplay/schedule.py",
+  '            f"{_operator_name(ev)} pressed Close for the night"',
+  '            f"{_operator_name(ev)} pressed End night"'),
+
+ ("the transport panel still says End night", "ltcplay/schedule.py",
+  '    {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,',
+  '    {"id": "end_night", "label": "End night", "event": END_NIGHT,'),
+ # Pixel output pacing, Fire & Ice bench B9, 2026-09-25: a show's pixel
+ # timing against the cue stepped once, under load, and never came back.
+ # The fix (this file, Player._loop()) is clock.py's Ticker's own
+ # technique -- every deadline computed fresh from one origin read once,
+ # never from a running total or from when the last frame actually went
+ # out -- so these two mutations put back the two ways that can regress.
+ ("the pixel loop's origin moves every frame instead of staying fixed",
+  'ltcplay/player.py',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1\n'
+  '            t0 = now'),
+
+ ("a stalled pixel loop never catches up to the frame that is actually "
+  "due", 'ltcplay/player.py',
+  '            n = max(int((now - t0) / period + 1e-9), n_next)',
+  '            n = n_next'),
+
+ # Opus review of PR #19, two survivors it found with its own repro
+ # scripts (scratchpad/pixelstep_failtick.py, pixelstep's sleep-cap
+ # check): a failed tick has to move the schedule on regardless, or the
+ # loop retries the same already-past slot forever; and the wait for a
+ # far-off deadline has to stay capped, or Stop would wait out the whole
+ # gap.
+ ("a failed pixel tick no longer advances the schedule", 'ltcplay/player.py',
+  '                time.sleep(0.01)\n            n_next = n + 1',
+  '                time.sleep(0.01)\n                continue\n            n_next = n + 1'),
+
+ ("the pixel loop's wait for a far-off deadline is no longer capped",
+  'ltcplay/player.py',
+  '                time.sleep(min(due - now, 0.05))',
+  '                time.sleep(due - now)'),
 
  # This fix, 2026-09-26: bench evidence, Fire & Ice, run hold1 (B4). Two
  # findings, two mutations.
@@ -2924,6 +3058,20 @@ def build():
   'ltcplay/showaudio.py',
   '                    if len(st) <= 3:\n',
   '                    if False:\n'),
+ # -- round 1 review of PR 25 -------------------------------------------
+ ("a clock jump is not noticed", "ltcplay/schedule_service.py",
+  '            if abs(wall_elapsed - perf_elapsed) > CLOCK_JUMP_LIMIT_S:\n',
+  '            if False:\n'),
+
+ ("a stale .partial is judged by the date in its name",
+  "ltcplay/journal.py",
+  '                if name.endswith(".partial"):\n',
+  '                if False:\n'),
+
+ ("prune() no longer shares save_incident()'s lock", "ltcplay/journal.py",
+  '        removed, problems, stale = [], [], []\n        with self._io:\n',
+  '        removed, problems, stale = [], [], []\n'
+  '        with threading.Lock():\n'),
 
 ]
 
