@@ -3310,6 +3310,236 @@ def build():
   '        removed, problems, stale = [], [], []\n'
   '        with threading.Lock():\n'),
 
+ # -- the show conductor (ltcplay/conductor.py). Every name starts with
+ # "conductor:" so `mutate.py conductor:` runs just these.
+ ("conductor: a step no longer checks it is still the current generation",
+  "ltcplay/conductor.py",
+  "        with self._lock:\n            self._check(gen)\n"
+  "            now = self._applied[output]",
+  "        with self._lock:\n            now = self._applied[output]"),
+
+ ("conductor: a wait no longer wakes for a newer press",
+  "ltcplay/conductor.py",
+  "            while True:\n                self._check(gen)\n"
+  "                left = end - self._clock()",
+  "            while True:\n                left = end - self._clock()"),
+
+ ("conductor: an announcement plays without checking it was superseded",
+  "ltcplay/conductor.py",
+  "            self._check(gen)\n            self._announcing = None\n",
+  "            self._announcing = None\n"),
+
+ ("conductor: Abort's flame cut waits for the executor",
+  "ltcplay/conductor.py",
+  "            self._flames_cut()\n            self._accept(\"Abort\"",
+  "            self._accept(\"Abort\""),
+
+ ("conductor: Abort no longer disarms the flames at once",
+  "ltcplay/conductor.py",
+  "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
+  "        self._disarm()",
+  "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN"),
+
+ ("conductor: a failed disarm is never sent again",
+  "ltcplay/conductor.py",
+  "            if not self._applied[\"disarmed\"]:\n                self._disarm()",
+  "            if False:\n                self._disarm()"),
+
+ ("conductor: a second Abort starts a second fade",
+  "ltcplay/conductor.py",
+  "            if self._latched:\n                # Idempotent:",
+  "            if False:\n                # Idempotent:"),
+
+ ("conductor: the Abort latch no longer refuses other presses",
+  "ltcplay/conductor.py",
+  "        if self._latched:\n            return self._refused(what,",
+  "        if False:\n            return self._refused(what,"),
+
+ ("conductor: Reset is taken while the Abort is still fading",
+  "ltcplay/conductor.py",
+  "                    and self._done_gen != self._gen:\n",
+  "                    and False:\n"),
+
+ ("conductor: Abort is taken with nothing playing",
+  "ltcplay/conductor.py",
+  "            if not self._playing():\n                return self._refused(\"Abort\",",
+  "            if False:\n                return self._refused(\"Abort\","),
+
+ ("conductor: Abort blanks the lasers instead of ramping them",
+  "ltcplay/conductor.py",
+  "\"lasers faded\", progress,\n                            self.devices.lasers_fade_out, fade)",
+  "\"lasers faded\", progress,\n                            self.devices.lasers_blank)"),
+
+ ("conductor: Abort never stops the video",
+  "ltcplay/conductor.py",
+  "        self._step(gen, \"video\", STOPPED, \"video stopped\", progress,\n"
+  "                   self.devices.video_stop)",
+  "        pass"),
+
+ ("conductor: the Abort fade is not 1 s",
+  "ltcplay/conductor.py",
+  "ABORT_FADE_S = 1.0 ",
+  "ABORT_FADE_S = 0.5 "),
+
+ ("conductor: the production Hold fade is not 0.25 s",
+  "ltcplay/conductor.py",
+  "HOLD_FADE_S = 0.25 ",
+  "HOLD_FADE_S = 1.0 "),
+
+ ("conductor: an announcement waits no time in the dark",
+  "ltcplay/conductor.py",
+  "            self._pause(gen, ANNOUNCE_DARK_S)",
+  "            self._pause(gen, 0.0)"),
+
+ ("conductor: rehearsal Hold still fades",
+  "ltcplay/conductor.py",
+  "        return 0.0 if self._mode == REHEARSAL else production_s",
+  "        return production_s"),
+
+ ("conductor: a production Hold fades the lasers instead of blanking them",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:",
+  "        if fade > 0:"),
+
+ ("conductor: a production Hold fades the video and pixels out",
+  "ltcplay/conductor.py",
+  "        if look == DARK:\n            faded |=",
+  "        if True:\n            faded |="),
+
+ ("conductor: an announcement during a Hold leaves the video and pixels up",
+  "ltcplay/conductor.py",
+  "        if look == DARK:\n            faded |=",
+  "        if False:\n            faded |="),
+
+ ("conductor: Hold does not wait for the clock to freeze",
+  "ltcplay/conductor.py",
+  "lambda: self.show.music_frozen() is True,",
+  "lambda: True,"),
+
+ ("conductor: Resume releases lasers and flames before the timecode moves",
+  "ltcplay/conductor.py",
+  "lambda: self.show.music_frozen() is False,",
+  "lambda: True,"),
+
+ ("conductor: a Resume that never sees the timecode move lights the rig "
+  "anyway",
+  "ltcplay/conductor.py",
+  "                return\n            progress.append(\"timecode moving\")",
+  "                pass\n            progress.append(\"timecode moving\")"),
+
+ ("conductor: a clock that never freezes is not a fault",
+  "ltcplay/conductor.py",
+  "timecode may still be moving.\", fault=True,",
+  "timecode may still be moving.\", fault=False,"),
+
+ ("conductor: the laser gate is ignored",
+  "ltcplay/conductor.py",
+  "        if why is not None:\n            self._note(f\"The lasers stay dark",
+  "        if False:\n            self._note(f\"The lasers stay dark"),
+
+ ("conductor: a laser gate that raises lets the lasers light",
+  "ltcplay/conductor.py",
+  "            why = f\"the laser gate failed ({type(e).__name__}: {e})\"",
+  "            why = None"),
+
+ ("conductor: an unknown show state lets the lasers light",
+  "ltcplay/conductor.py",
+  "        if state in LASER_STATES:\n            return None",
+  "        if state in LASER_STATES or not state:\n            return None"),
+
+ ("conductor: a show state that cannot be read lets the lasers light",
+  "ltcplay/conductor.py",
+  "            return (f\"the show state could not be read",
+  "            return None\n            return (f\"the show state could not be read"),
+
+ ("conductor: an output that raises stops the effect",
+  "ltcplay/conductor.py",
+  "        try:\n            r = fn(*args)\n        except Exception as e:\n"
+  "            r = failed(f\"{label}: {type(e).__name__}: {e}\")",
+  "        r = fn(*args)"),
+
+ ("conductor: an output that returns nothing counts as done",
+  "ltcplay/conductor.py",
+  "        if not isinstance(r, Result):\n",
+  "        if not isinstance(r, Result) and r is not None:\n"
+  "            pass\n        elif r is None:\n            r = done()\n"
+  "        if False:\n"),
+
+ ("conductor: a failed command is recorded as done",
+  "ltcplay/conductor.py",
+  "            self._applied[output] = value if r.ok else UNKNOWN",
+  "            self._applied[output] = value"),
+
+ ("conductor: a slow output call is not reported",
+  "ltcplay/conductor.py",
+  "        if took > SLOW_CALL_S:",
+  "        if False:"),
+
+ ("conductor: a press does not cancel an announcement that has not started",
+  "ltcplay/conductor.py",
+  "            self._announcing = None\n        self._gen += 1",
+  "        self._gen += 1"),
+
+ ("conductor: a second Hold starts a new effect",
+  "ltcplay/conductor.py",
+  "            if self._look in HOLDING_LOOKS:\n                return done(",
+  "            if False:\n                return done("),
+
+ ("conductor: Resume is taken when nothing is held",
+  "ltcplay/conductor.py",
+  "            if self._look not in HOLDING_LOOKS:\n",
+  "            if False:\n"),
+
+ ("conductor: a show start does not mark the music as playing",
+  "ltcplay/conductor.py",
+  "            self._applied[\"music\"] = MUSIC_PLAYING\n",
+  ""),
+
+ ("conductor: a broken journal stops the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n            self._journal(text, fault=fault, **fields)\n"
+  "        except Exception:\n            self.journal_errors += 1",
+  "        self._journal(text, fault=fault, **fields)"),
+
+ ("conductor: the stand-in device layer does not say it is one",
+  "ltcplay/conductor.py",
+  "        if not self.wired:\n",
+  "        if False:\n"),
+
+ ("conductor: the flame cues are released before the lasers",
+  "ltcplay/conductor.py",
+  "        self._restore_lasers(gen, progress)\n"
+  "        self._step(gen, \"flames\", LIVE, \"flame cues released\", progress,\n"
+  "                   self.show.flames_release)",
+  "        self._step(gen, \"flames\", LIVE, \"flame cues released\", progress,\n"
+  "                   self.show.flames_release)\n"
+  "        self._restore_lasers(gen, progress)"),
+
+ ("conductor: a Hold never zeroes the flame cues",
+  "ltcplay/conductor.py",
+  "        a = self._applied\n        self._step(gen, \"flames\", ZERO, \"flame cues zeroed\", progress,\n"
+  "                   self.show.flames_zero)\n",
+  "        a = self._applied\n"),
+
+ ("conductor: a laser gate that says no leaves lit lasers lit",
+  "ltcplay/conductor.py",
+  "                       outcome=\"refused\")\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n",
+  "                       outcome=\"refused\")\n"),
+
+ ("conductor: leaving the show does not blank the lasers",
+  "ltcplay/conductor.py",
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked for intermission\",\n"
+  "                   progress, self.devices.lasers_blank)\n",
+  ""),
+
+ ("conductor: intermission cuts an Abort's fade short",
+  "ltcplay/conductor.py",
+  "            if self._latched:\n                return done(\"The show is aborted, so",
+  "            if False:\n                return done(\"The show is aborted, so"),
+
+
 ]
 
 
