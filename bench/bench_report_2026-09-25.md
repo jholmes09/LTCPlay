@@ -34,6 +34,7 @@ Written by Claude Code on the show PC (VIOSO AnyStation Pico) for Jeff and the m
 | B23 audio_master (PR #26, 0f87a82) | PARTIAL: real Scarlett done, unplug test waits for Jeff | Audio against timecode 0.4 ms apart across 9 starts (MadMapper: 46 to 78 ms), no drift, no jumps; Hold, Resume and Abort exact. **Finding: the PR refuses the Scarlett even with allow_shared_mode (it stops at WASAPI exclusive, which cannot do 48 kHz); the test ran on DirectSound through a bench-only override.** ASIO: no driver presents a device; WDM-KS takes 48 kHz but was busy |
 | B25 audio_master API search (fa1f3bb) | PARTIAL | Strict mode refuses the Scarlett with every attempt listed (WASAPI exclusive: 44.1 only; WDM-KS: endpoint busy); shared mode picks DirectSound and says so; short starts 0.4 ms apart; the full show had 23 recorder breaks (inconclusive); a second ltcplay is refused. Re-run on the Focusrite ASIO driver next |
 | B26 audio_master on Focusrite ASIO (fa1f3bb, strict) | PASSED (ltcplay alone) | Opens "Focusrite USB ASIO" at 48 kHz by itself; audio ready 0.25 s; 0 timecode jumps in 10 short starts + 2 full shows; Hold exact. No loopback cable, so no measured audio offset; MadMapper and BEYOND were not running. Full stack is B27, on hold for the final PR #26 commit |
+| B28 merged main cdbc0a8 re-check | PASSED | Matches B26: ASIO mixer-free, 0 jumps in 4 starts, full show 13,333 frames, 0 underflows over the whole run |
 
 ## B0 The machine
 
@@ -829,7 +830,7 @@ Next: Jeff is installing Focusrite's own Scarlett driver (ASIO at 48 kHz), then 
 - **Art-Net timecode** (Recorder node 127.0.0.3, `artnet_tc_listen.py`):
   - **0 jumps in all 12 starts.**
   - Shorts: 631 to 632 frames each.
-  - Full 1: 13,333 frames; full 2: 13,208 frames.
+  - Full 1 and full 2: 13,333 frames each, the last frame (13,332) sent 0.09 s before the show ended. A first count of 13,208 for full 2 was a read of the recorder's file before it had flushed; corrected 2026-09-29.
   - Largest gap between packets: 0.104 s (full 1, at the Hold); otherwise 36 to 60 ms.
 - **Show lengths:** 449.27 s (444.42 s + the 5 s Hold) and 444.54 s.
 - **Health:** `health_warnings()` was "(none)" after each full show. That only covers the last `RECENT_S` seconds, so it is not a whole-run underflow count. The next run logs `clock.snapshot()["audio"]["underflows"]` every second.
@@ -840,6 +841,19 @@ Next: Jeff is installing Focusrite's own Scarlett driver (ASIO at 48 kHz), then 
 - A short RCA or TRS loopback cable would restore it. The main session calls it nice to have, not a blocker.
 - A WASAPI recorder on the Scarlett's inputs logged 362 "data discontinuity" events in 44 s while ltcplay held ASIO. That is the recorder sharing the driver, not the output: the inputs had no signal.
 - Jeff heard the LTC stem faintly in his left ear. The stems are routed correctly (music only on output 1, LTC only on output 2, and no LTC decodes from the music file). It is analogue bleed in the Solo's headphone output from a loud LTC square wave. From B27 on, the show is **music only**.
+
+## B28 sanity re-check of merged main (cdbc0a8)
+
+**Verdict: PASS, and it matches B26.** At the main session's request, 2026-09-29: PR #26 is merged to main as `cdbc0a8`, with #27 (CI) and #15 also on main. This was a fresh worktree at `origin/main`, with the same ASIO music-only show file, driver and recorder as B26: 3 short starts and 1 full show with a 5 s Hold.
+
+| Item | B26 (fa1f3bb) | B28 (main cdbc0a8) |
+|---|---|---|
+| Output | Focusrite USB ASIO, 48 kHz | Same; the audio status reads "ASIO, mixer-free" |
+| Run / audio ready | 1.57 s / 0.25 s | 1.44 s / 0.25 s |
+| Timecode jumps | 0 in 12 starts | 0 in 4 starts |
+| Full show with Hold | 449.27 s, 13,333 frames | 449.37 s, 13,333 frames |
+| Largest packet gap | 0.104 s | 0.078 s |
+| Whole-run underflows, outliers, losses, render errors, respawns (1 s samples) | not sampled | **all 0** |
 
 ## Not tested yet
 

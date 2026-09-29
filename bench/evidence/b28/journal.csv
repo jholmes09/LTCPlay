@@ -1,0 +1,16 @@
+epoch,event
+1790664994.500,Run (Session.start) took 1.44 s
+1790664994.500,health: (none)
+1790664994.750,audio ready 0.25 s after the first play attempt (Run + 1.69 s)
+1790664997.751,short 1 play
+1790665017.755,short 1 abort
+1790665022.864,short 2 play
+1790665042.873,short 2 abort
+1790665048.034,short 3 play
+1790665068.038,short 3 abort
+1790665073.152,full 1 play
+1790665133.158,HOLD
+1790665138.158,RESUME
+1790665522.526,full 1 ended after 449.37 s
+1790665522.526,health: (none)
+1790665528.040,Session stopped
