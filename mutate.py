@@ -2941,6 +2941,360 @@ def build():
     _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
     return _BUILD_CACHE'''),
 
+
+ # -- audio_master (handoff section 4a, Jeff 2026-09-27): ltcplay plays the
+ # show's multi-track audio and the timecode is read off the audio device.
+ # One per rule: the refusals, no Windows shared mixer, the audio's own
+ # process, the mix, following the audio, Hold/Resume/Abort, the interface
+ # lost and back, the end of the cue, and the wall around GPL.
+ ('audio_master: a stem at another sample rate plays',
+  'ltcplay/showaudio.py',
+  '            if info.rate != RATE:\n',
+  '            if False:\n'),
+
+ ('audio_master: stems of different lengths play',
+  'ltcplay/showaudio.py',
+  '        if len(set(frames)) > 1 and not cue.allow_different_lengths:\n',
+  '        if False:\n'),
+
+ ('audio_master: a missing stem is not named as missing',
+  'ltcplay/showaudio.py',
+  '            if not os.path.exists(path):\n                raise AudioConfigError(\n                    f"The {role} audio file',
+  '            if False:\n                raise AudioConfigError(\n                    f"The {role} audio file'),
+
+ ('audio_master: the show file may ask for a rate other than 48000',
+  'ltcplay/showaudio.py',
+  '        if rate != RATE or isinstance(rate, bool):\n',
+  '        if isinstance(rate, bool):\n'),
+
+ ('audio_master: an interface with too few outputs is opened',
+  'ltcplay/showaudio.py',
+  '    if channels > have:\n',
+  '    if False:\n'),
+
+ ('audio_master: Windows falls back to the shared mixer on its own',
+  'ltcplay/showaudio.py',
+  '        order = list(WINDOWS_APIS) + (list(WINDOWS_SHARED_APIS)\n                                      if allow_shared else [])',
+  '        order = list(WINDOWS_APIS) + list(WINDOWS_SHARED_APIS)'),
+
+ ("audio_master: WASAPI is preferred over the interface's ASIO driver",
+  'ltcplay/showaudio.py',
+  '    ("ASIO", False, "ASIO", True),\n    ("Windows WASAPI", True, "WASAPI exclusive", True),\n',
+  '    ("Windows WASAPI", True, "WASAPI exclusive", True),\n    ("ASIO", False, "ASIO", True),\n'),
+
+ ('audio_master: WASAPI is opened in shared mode',
+  'ltcplay/showaudio.py',
+  '        extra = sd.WasapiSettings(exclusive=True)',
+  '        extra = sd.WasapiSettings(exclusive=False)'),
+
+ ('audio_master: sounddevice never sees ASIO',
+  'ltcplay/showaudio.py',
+  '        os.environ["SD_ENABLE_ASIO"] = "1"\n',
+  '        pass\n'),
+
+ ("audio_master: a stem's gain is ignored",
+  'ltcplay/showaudio.py',
+  '                col = seg[:, 0] * np.float32(gain)\n',
+  '                col = seg[:, 0]\n'),
+
+ ('audio_master: stems on one output replace each other',
+  'ltcplay/showaudio.py',
+  '                    out[:k, o] += seg[:, i] * np.float32(gain)\n',
+  '                    out[:k, o] = seg[:, i] * np.float32(gain)\n'),
+
+ ("audio_master: a stem's channels go to the wrong outputs",
+  'ltcplay/showaudio.py',
+  '                for i, o in enumerate(outs):\n                    out[:k, o]',
+  '                for i, o in enumerate(outs[::-1]):\n                    out[:k, o]'),
+
+ ('audio_master: the mix goes over full scale',
+  'ltcplay/showaudio.py',
+  '            np.clip(out, -1.0, 1.0, out=out)\n',
+  '            pass\n'),
+
+ ('audio_master: the audio process is forked, not spawned',
+  'ltcplay/showaudio.py',
+  '        self._ctx = multiprocessing.get_context("spawn")',
+  '        self._ctx = multiprocessing.get_context("fork")'),
+
+ ('audio_master: a dead audio process is never replaced',
+  'ltcplay/showaudio.py',
+  '                np_, nc, why = self._spawn(stop)\n                if why is None:',
+  '                np_, nc, why = None, None, "not replaced"\n                if why is None:'),
+
+ ('audio_master: PortAudio is re-initialised under a working stream',
+  'ltcplay/showaudio.py',
+  '            if why is None:\n                return\n            self._drop()',
+  '            if why is None:\n                self.sd._initialize()\n                return\n            self._drop()'),
+
+ ('audio_master: reopening the interface never backs off',
+  'ltcplay/showaudio.py',
+  '        self.next_try = now + self.RETRY_S[min(self.fails - 1,\n',
+  '        self.next_try = now + self.RETRY_S[min(0,\n'),
+
+ ('audio_master: the clock stops following the audio after the first callback',
+  'ltcplay/clock.py',
+  '            self._epoch += (e - self._epoch) * self.FOLLOW_SLEW\n',
+  '            pass\n'),
+
+ ('audio_master: a frame goes out late instead of when the audio reaches it',
+  'ltcplay/clock.py',
+  '        return min(self._epoch + (last + 1) / MASTER_FPS,\n                   now + self.MAX_SLEEP_S)',
+  '        return now + self.MAX_SLEEP_S'),
+
+ ('audio_master: Hold freezes the timecode before the audio has stopped',
+  'ltcplay/clock.py',
+  '                self._stop_frame = None\n                self._pause_req = True\n',
+  '                self._stop_frame = None\n                self._pause_req = True\n                self._freeze(now)\n'),
+
+ ('audio_master: Hold stops repeating the frozen frame',
+  'ltcplay/clock.py',
+  '                self._send_frame(self._frozen_frame, now, frozen=True)\n',
+  '                self._last_send_at = now\n'),
+
+ ('audio_master: Resume restarts the audio away from where it stopped',
+  'ltcplay/clock.py',
+  '        start = int(round(self._frozen_sec * self.rate))\n        fade = ',
+  '        start = int(round(self._frozen_sec * self.rate)) + 480\n        fade = '),
+
+ ('audio_master: Abort cuts the audio instead of fading it',
+  'ltcplay/clock.py',
+  '            self._send(("level", 0.0, fade))\n            self._level_down = True\n',
+  '            self._end("stopped", now)\n            return\n'),
+
+ ('audio_master: losing the audio jumps the timecode',
+  'ltcplay/clock.py',
+  '        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here',
+  '        self._epoch = (self._epoch or now) - 0.2\n        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here'),
+
+ ('audio_master: a dropout says nothing on the page or in the journal',
+  'ltcplay/clock.py',
+  '        self._set_fault(self._loss_fault, now)\n',
+  '        pass\n'),
+
+ ('audio_master: the audio never comes back when the interface does',
+  'ltcplay/clock.py',
+  '        if now < self._next_return:\n            return\n',
+  '        if True:\n            return\n'),
+
+ ('audio_master: the audio comes back where it dropped out, not where the show is',
+  'ltcplay/clock.py',
+  '        start = now - self._epoch + self.LEAD_S + self._heard_latency()\n',
+  '        start = (self._lost_at or now) - self._epoch + self.LEAD_S + self._heard_latency()\n'),
+
+ ('audio_master: the handover jumps instead of slewing',
+  'ltcplay/clock.py',
+  '        self._epoch += max(-lim, min(lim, d))\n',
+  '        self._epoch += d\n'),
+
+ ('audio_master: the audio ending does not end the cue',
+  'ltcplay/clock.py',
+  '        if frame >= cue["tc_frames"]:\n            self._end("finished", now)',
+  '        if False:\n            self._end("finished", now)'),
+
+ ('audio_master: an interface that cannot run the show does not stop Run',
+  'ltcplay/session.py',
+  '            except ValueError as e:\n                self.stop()\n                raise SessionError(str(e))',
+  '            except ValueError as e:\n                pass'),
+
+ ('audio_master: the show audio is loaded by every clock',
+  'ltcplay/clock.py',
+  'from .tc import frames_to_tc, tc_to_frames\n',
+  'from .tc import frames_to_tc, tc_to_frames\nfrom . import showaudio as _eager_showaudio  # noqa\n'),
+
+ ('audio_master: artnet_master accepts an audio block',
+  'ltcplay/clock.py',
+  '        keys = cls.KEYS | {"audio"} if doc.get("source") == "audio_master" \\\n            else cls.KEYS\n',
+  '        keys = cls.KEYS | {"audio"}\n'),
+
+ ("audio_master: the page never shows the show audio's faults",
+  'ltcplay/display.py',
+  '        out.extend(more())\n',
+  '        pass\n'),
+
+ ('audio_master: audio that comes back far off the show is slewed for minutes',
+  'ltcplay/clock.py',
+  '            if self._target is None and abs(e - self._epoch) > self.RESEEK_S:\n',
+  '            if False:\n'),
+
+
+ # -- audio_master, review of PR 26 (2026-09-27): late starts, stale and
+ # torn readings, the frozen frame floor, Abort's latency, Hold during a
+ # loss, bad WAV sizes, latency spikes, hiccups, the engine's generations,
+ # and a main script with no guard.
+ ('audio_master: a late cue does not start at 00:00:00:00',
+  'ltcplay/clock.py',
+  "        if last is None:\n            # Every cue's timecode starts at 00:00:00:00",
+  "        if False:\n            # Every cue's timecode starts at 00:00:00:00"),
+
+ ('audio_master: a reading from an older play moves the clock',
+  'ltcplay/clock.py',
+  "        if self._cue is None or r.token != self._token:\n            return                       # another cue's",
+  "        if self._cue is None:\n            return                       # another cue's"),
+
+ ('audio_master: the frozen frame can fall below the last frame sent',
+  'ltcplay/clock.py',
+  '            frame = max(frame, self._last_frame)\n',
+  '            pass\n'),
+
+ ('audio_master: a torn shared-memory read is believed',
+  'ltcplay/showaudio.py',
+  '            continue                     # a callback wrote meanwhile\n',
+  '            pass\n'),
+
+ ('audio_master: Abort stops before its fade has been heard',
+  'ltcplay/clock.py',
+  '                self._heard_latency() + 0.05\n',
+  '                0.0\n'),
+
+ ('audio_master: Hold does nothing while the audio is lost',
+  'ltcplay/clock.py',
+  '                self._send(("pause", 0, self._token))\n            self._freeze(now)\n',
+  '                self._send(("pause", 0, self._token))\n            return\n'),
+
+ ('audio_master: a WAV with a placeholder data size plays',
+  'ltcplay/showaudio.py',
+  '                if size == 0 or size == 0xFFFFFFFF:\n',
+  '                if False:\n'),
+
+ ('audio_master: a WAV cut off short plays',
+  'ltcplay/showaudio.py',
+  '                if size > left:\n',
+  '                if False:\n'),
+
+ ("audio_master: a driver's latency spike moves the clock",
+  'ltcplay/clock.py',
+  '        if abs(e - ref) <= self.OUTLIER_S:\n',
+  '        if True:\n'),
+
+ ('audio_master: a short hiccup is taken for a lost interface',
+  'ltcplay/clock.py',
+  '    STALL_S = 0.6\n',
+  '    STALL_S = 0.3\n'),
+
+ ('audio_master: the same stream playing on is stopped instead of followed',
+  'ltcplay/clock.py',
+  '        if self._mode == "freerun" and self._stall_loss and \\\n',
+  '        if False and self._stall_loss and \\\n'),
+
+ ('audio_master: a stall stops the music straight away',
+  'ltcplay/clock.py',
+  '        if not stall:\n            self._send(("stop", 0, None))\n',
+  '        self._send(("stop", 0, None))\n'),
+
+ ('audio_master: the audio moving for real is never followed',
+  'ltcplay/clock.py',
+  '        if self._outliers >= self.OUTLIER_RUN:\n            self._resync = True\n',
+  '        pass\n'),
+
+ ('audio_master: health stays red after a Resume brings the audio back',
+  'ltcplay/clock.py',
+  '                self._set_paused(False)\n            self._recovered(now)\n',
+  '                self._set_paused(False)\n'),
+
+ ('audio_master: sound that stops by itself is followed quietly',
+  'ltcplay/clock.py',
+  '                self._stopped_playing(r, now)\n',
+  '                pass\n'),
+
+ ('audio_master: errors making the sound never reach the page',
+  'ltcplay/clock.py',
+  '        if self._render_err_at is not None and \\\n',
+  '        if False and \\\n'),
+
+ ('audio_master: Resume at the very end of the audio reads as a dropout',
+  'ltcplay/clock.py',
+  '        if start >= cue["frames"]:\n',
+  '        if False:\n'),
+
+ ("audio_master: Stop waits on the audio's watch thread",
+  'ltcplay/showaudio.py',
+  '        self._reap(p, c, self.CLOSE_S)\n        self._watch = None\n',
+  '        self._reap(p, c, self.CLOSE_S)\n        if self._watch is not None:\n            self._watch.join(2.0)\n        self._watch = None\n'),
+
+ ("audio_master: the audio process re-runs the program's main script",
+  'ltcplay/showaudio.py',
+  '                main.__dict__.pop("__file__", None)\n                main.__dict__["__spec__"] = None\n',
+  '                pass\n'),
+
+ ("the Mac app's boot.py runs the engine without a __main__ guard",
+  'Build LTC Player app.command',
+  '\nif __name__ == "__main__":\n    # --selfcheck is used',
+  '\nif True:\n    # --selfcheck is used'),
+
+
+ # -- audio_master, Jeff's answers (2026-09-27): no show without its
+ # interface, at most 8 outputs and 8 stems, one audio process per user,
+ # and liveness from the stream's progress, never from its level.
+ ('audio_master: a show starts without its audio interface',
+  'ltcplay/clock.py',
+  '            if not self._device_ok:\n                # Jeff, 2026-09-27: a show never starts',
+  '            if False:\n                # Jeff, 2026-09-27: a show never starts'),
+
+ ('audio_master: a cue may have more than 8 stems',
+  'ltcplay/showaudio.py',
+  '        if len(stems) > MAX_STEMS:\n',
+  '        if False:\n'),
+
+ ('audio_master: the show may use more than 8 outputs',
+  'ltcplay/showaudio.py',
+  'MAX_OUTPUTS = 8              # Jeff',
+  'MAX_OUTPUTS = 64             # Jeff'),
+
+ ('audio_master: a second audio process plays alongside the first',
+  'ltcplay/showaudio.py',
+  '            held = take_lock(spec)\n',
+  '            held = type("NoLock", (), {"release": lambda self: None})()\n'),
+
+ ('audio_master: silence in the music is taken for a lost interface',
+  'ltcplay/showaudio.py',
+  '        try:\n            outdata[:] = m.render(frames)\n        except Exception:\n            self.render_errors += 1\n',
+  '        try:\n            outdata[:] = m.render(frames)\n            if outdata.any():\n                self._loud_at = now\n            self.last_cb = getattr(self, "_loud_at", self.last_cb)\n        except Exception:\n            self.render_errors += 1\n'),
+
+
+ # -- audio_master, Windows bench B23 (the Scarlett): every allowed host
+ # API is tried in order until one takes 48 kHz.
+ ('audio_master: one host API refusing 48 kHz ends the search (B23)',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it will not play {channels} output(s) "',
+  '            raise Refusal(str(e))\n            tried.append((label, f"it will not play {channels} output(s) "'),
+
+ ('audio_master: WDM-KS is never tried',
+  'ltcplay/showaudio.py',
+  '    ("Windows WDM-KS", False, "WDM-KS", True),\n',
+  ''),
+
+ ('audio_master: an endpoint someone else holds ends the search',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it would not open ({_clean(e)})"))\n            continue\n',
+  '            raise Unavailable(str(e))\n'),
+
+ ('audio_master: the refusal does not say what was tried and why',
+  'ltcplay/showaudio.py',
+  '    said = "; ".join(f"{label}: {why}" for label, why in tried)\n',
+  '    said = "nothing worked"\n'),
+
+
+ # -- audio_master: loading is all or nothing (Jeff, 2026-09-27).
+ ('audio_master: a short read returns a shorter clip',
+  'ltcplay/showaudio.py',
+  '    if done != info.frames:\n',
+  '    if False:\n'),
+
+ ('audio_master: a stem length mismatch is accepted',
+  'ltcplay/showaudio.py',
+  '                if same_length and len(lengths) > 1:\n',
+  '                if False:\n'),
+
+ ('audio_master: a stem shorter than it was when checked is accepted',
+  'ltcplay/showaudio.py',
+  '                    if pcm.shape[0] != want:\n',
+  '                    if False:\n'),
+
+ ('audio_master: a stem with no checked length is accepted',
+  'ltcplay/showaudio.py',
+  '                    if len(st) <= 3:\n',
+  '                    if False:\n'),
  # -- round 1 review of PR 25 -------------------------------------------
  ("a clock jump is not noticed", "ltcplay/schedule_service.py",
   '            if abs(wall_elapsed - perf_elapsed) > CLOCK_JUMP_LIMIT_S:\n',
@@ -3130,6 +3484,8 @@ def _run():
         print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
               "so a restore did not land. Fix that before trusting any line "
               "above.")
+        for w in _LAST_FAILS:
+            print(f"      {w}")
         return 2
     print("tree restored and green")
     if not expected_file:

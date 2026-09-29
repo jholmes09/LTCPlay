@@ -185,6 +185,11 @@ def clock_warnings(clk):
     if ticker is not None and ticker.errors:
         out.append(f"The show clock hit {ticker.errors} error(s) and kept "
                    f"going. Last: {ticker.last_error}")
+    # audio_master's own sentences: the audio interface lost, the mix
+    # clipping. No other clock has this.
+    more = getattr(clk, "health_warnings", None)
+    if more is not None:
+        out.extend(more())
     return out
 
 

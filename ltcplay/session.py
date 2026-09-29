@@ -347,8 +347,11 @@ class Session:
                 self.dev = None
                 self.channel = 1
                 self.rate = 48000
-                self.input_summary = ("none, this machine is the show clock "
-                                      "(Art-Net timecode)")
+                self.input_summary = (
+                    "none, this machine is the show clock "
+                    + ("(the show audio)"
+                       if self.clock.source == "audio_master"
+                       else "(Art-Net timecode)"))
                 self.dec = LTCDecoder(self.rate)
                 return self
 
@@ -476,7 +479,13 @@ class Session:
         self._running = True
         if self.clock is not None:
             # Run pressed. A master still sends nothing until a cue plays.
-            self.clock.start()
+            # audio_master opens its audio interface here, and one that is
+            # there but cannot run the show refuses Run with a sentence.
+            try:
+                self.clock.start()
+            except ValueError as e:
+                self.stop()
+                raise SessionError(str(e))
         # The show file may ask for this mode to be armed from the start. Off
         # unless it says so: a backup that arms itself is not a backup.
         if self.tl.trigger is not None and self.tl.trigger.enabled:
