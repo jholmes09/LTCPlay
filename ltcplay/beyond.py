@@ -28,6 +28,19 @@ hook threads (see madmapper.py's module docstring). The follow-up
 one serialized executor, with the real ordering guarantees Hold, Resume,
 Abort and Closing each need.
 
+devices.py, alongside this module, composes blank()/unblank() with
+madmapper.py's own primitives into on_hold()/on_resume()/on_abort() --
+plain synchronous functions with the handoff's ordering already built in,
+ready for that future conductor to call directly without re-deriving it.
+Notably, on_abort() blanks BEYOND at once rather than ramping its
+brightness down over the same 1 s as the video/audio fade: the handoff's
+own words for Abort ("lasers by a BEYOND brightness ramp, not an instant
+blank") call for a ramp, but this module's allow-list (S5, below) only
+ever permits the two exact values 0.0 and 100.0 -- loosening that for an
+Abort ramp is a laser-safety-relevant change this task did not make
+unreviewed. See devices.py's own module docstring for the full reasoning
+and the flag for Andy/Jeff.
+
 The facts that shape this module:
 
   No feedback, ever (like MadMapper: bench B2.4, and BEYOND's own OSC

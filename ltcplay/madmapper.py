@@ -7,7 +7,7 @@ inertness clock.py, schedule_service.py and announce.py each already rely
 on, proven the same way: see test_the_gpl_path_never_loads_madmapper.
 
 This module is the DEVICE LAYER: clean primitives (select_bank, stop_bank,
-play, play_from_beginning, fade_audio, fade_surfaces, set_audio,
+play, play_from_beginning, fade_audio, fade_surfaces, fade_all, set_audio,
 set_surfaces, restore_levels) and the Watchdog (arm/disarm are explicit
 calls, never inferred). It contains NO sequencing logic and NO scheduler
 wiring: no on_transition, no hold()/resume()/abort()/closing(), no
@@ -24,6 +24,13 @@ a Hold's blank (R2). The fix is architectural, not a patch: a future
 (START_SHOW, FREEZE_SHOW, BLANK_LASERS, FADE_MUSIC_OUT, ...) through ONE
 serialized executor with a generation guard, and will be the only thing
 that ever calls the primitives below. See the PR body for the follow-up.
+
+devices.py, alongside this module, composes these primitives (and
+beyond.py's blank()/unblank()) into on_hold()/on_resume()/on_abort(): three
+plain synchronous functions with the handoff's own ordering already built
+in, ready for that future conductor to call directly. They are NOT
+scheduler hooks either -- see devices.py's own module docstring for why
+that distinction matters here.
 
 Everything below follows the Pico bench report, 2026-09-25
 (bench/bench_report_2026-09-25.md on branch bench/2026-09-25), sections B1
@@ -757,6 +764,46 @@ class Link:
         self._submit(lambda: self._ramp(self._surface_addrs(), start, end,
                                         seconds, steps, gen, curve=curve),
                     wait=wait)
+
+    def fade_all(self, start, end, seconds=None, steps=None, wait=True,
+                surface_curve=None):
+        """Fade the master audio level (always linear, like fade_audio())
+        and every surface's opacity (the configured video curve, like
+        fade_surfaces()) TOGETHER, in the same real time.
+
+        This exists because fade_audio() and fade_surfaces() each submit
+        their own job to this Link's single worker thread: calling them
+        back to back sends the audio ramp to completion BEFORE the surface
+        ramp even starts, not "together". The handoff's Abort wording
+        (section 4a, Jeff 2026-09-27) is explicit that music, video and
+        pixels fade to black "together over 1 s" -- this is that single,
+        combined ramp, still one worker job, still cancellable the same
+        way (a newer ramp, or cancel(), stops it at the next step)."""
+        surface_curve = (self.cfg.video_curve if surface_curve is None
+                         else surface_curve)
+        seconds = self.cfg.fade_s if seconds is None else seconds
+        steps = self.cfg.ramp_steps if steps is None else steps
+        gen = self._bump_gen()
+
+        def _run():
+            audio_values = ramp_values(start, end, steps)
+            surface_values = shape_values(ramp_values(start, end, steps),
+                                          start, end, surface_curve)
+            addrs = self._surface_addrs()
+            interval = seconds / (steps - 1) if steps > 1 else 0.0
+            t0 = self._clock()
+            for i in range(len(audio_values)):
+                if self._gen_current() != gen:
+                    break
+                self._send(AUDIO_ADDR, float(audio_values[i]))
+                for addr in addrs:
+                    self._send(addr, float(surface_values[i]))
+                if i < len(audio_values) - 1:
+                    due = t0 + (i + 1) * interval
+                    now = self._clock()
+                    if now < due:
+                        self._sleep(due - now)
+        self._submit(_run, wait=wait)
 
 
 # ------------------------------------------------------------- watchdog ----
