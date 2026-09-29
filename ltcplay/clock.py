@@ -20,6 +20,12 @@ chase engine does not know or care which one is in charge.
   LtcAudioMaster   fallback 1, LTC audio generated on a named output device.
                    Not built. Naming it in a show file is refused at load
                    with a sentence, never discovered at showtime.
+  AudioMaster      handoff section 4a (Jeff, 2026-09-27): this machine plays
+                   the show's multi-track audio itself, in its own process
+                   (showaudio.py), and the timecode is read off the audio
+                   device's playback position. Art-Net timecode out and the
+                   pixels follow it exactly as they follow ArtNetMaster.
+                   showaudio.py is imported only for this source.
 
 Which one runs is the "source" setting, and show audio is a separate
 "show_audio" switch, so proving or disproving MadMapper's Art-Net lock on day
@@ -75,7 +81,8 @@ TYPE_FILM, TYPE_EBU, TYPE_DF, TYPE_SMPTE = 0, 1, 2, 3
 MASTER_FPS = 30
 MASTER_TYPE = TYPE_SMPTE
 
-SOURCES = ("artnet_master", "ltc_audio_master", "ltc_audio_slave")
+SOURCES = ("artnet_master", "ltc_audio_master", "ltc_audio_slave",
+           "audio_master")
 SHOW_AUDIO = ("madmapper", "ltcplay")
 ROLES = ("show", "intermission")
 IDLE = "idle"
@@ -344,16 +351,28 @@ class Ticker:
         self.errors = 0
         self.last_error = ""
 
-    def run(self, t0, stop=None):
+    def run(self, t0, stop=None, n0=0):
         """The loop itself. Runs on the caller's thread; start() runs it on
         its own. Returns when tick() returns False or stop() is called.
 
         The stop flag is this run's own, so a thread that outlives a join
-        still sees the stop meant for it, not the next run's fresh flag."""
+        still sees the stop meant for it, not the next run's fresh flag.
+
+        `n0` is the frame number this run already considers itself to be
+        at, before the first tick. Play() begins a cue at 0, the default.
+        Resume() begins one already in progress: it moves `t0` back by the
+        frozen frame's own length so the very first frame computed from it
+        lands on frame_frozen + 1, and n0 is what tells that apart from a
+        clock that is simply, legitimately late. Without it the first
+        iteration below sees `n_next` still at 0 and `n` already at
+        frame_frozen + 1, and counts the whole paused span as skipped --
+        a real bug, found on the Fire & Ice bench 2026-09-25: 600-ish
+        skipped frames appearing out of nowhere on every Hold/Resume, none
+        of them real, because the receiver saw nothing skipped at all."""
         self.t0 = t0
         stop = self._stop if stop is None else stop
         fps = self.fps
-        n_next = 0
+        n_next = n0
         clock, sleep = self._clock, self._sleep
         while not stop.is_set():
             due = t0 + n_next / fps
@@ -387,12 +406,12 @@ class Ticker:
                 return
             n_next = n + 1
 
-    def start(self, t0=None):
+    def start(self, t0=None, n0=0):
         self.stop()
         t0 = self._clock() if t0 is None else t0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self.run,
-                                        args=(t0, self._stop),
+                                        args=(t0, self._stop, n0),
                                         name=self.name, daemon=True)
         self._thread.start()
         return t0
@@ -752,11 +771,13 @@ class ClockConfig:
     KEYS = frozenset(("source", "show_audio", "artnet", "zones", "notes"))
 
     def __init__(self, source, show_audio="madmapper", artnet=None,
-                 zones=None):
+                 zones=None, audio=None):
         self.source = source
         self.show_audio = show_audio
         self.artnet = artnet
         self.zones = zones or ZoneConfig()
+        # showaudio.AudioConfig, only for "audio_master".
+        self.audio = audio
 
     @classmethod
     def parse(cls, doc, where="timeline"):
@@ -765,7 +786,11 @@ class ClockConfig:
         # file that says "clock" and means nothing is a mistake to name.
         what = "'clock'"
         _obj(doc, where, what)
-        _no_typos(doc, cls.KEYS, where, what)
+        # "audio" is a setting only audio_master has. Any other source reads
+        # it as the typo it would be, in exactly the words it always did.
+        keys = cls.KEYS | {"audio"} if doc.get("source") == "audio_master" \
+            else cls.KEYS
+        _no_typos(doc, keys, where, what)
         src = doc.get("source")
         if src not in SOURCES:
             raise ClockConfigError(
@@ -773,6 +798,8 @@ class ClockConfig:
                 f"{', '.join(SOURCES)}.")
         if src == "ltc_audio_master":
             raise ClockConfigError(LtcAudioMaster.REFUSAL.format(where=where))
+        if src == "audio_master":
+            return cls._parse_audio_master(doc, where)
         audio = doc.get("show_audio", "madmapper")
         if audio not in SHOW_AUDIO:
             raise ClockConfigError(
@@ -796,8 +823,51 @@ class ClockConfig:
                                                                     where)
         return cls(src, audio, art, zones)
 
+    @classmethod
+    def _parse_audio_master(cls, doc, where):
+        """The audio_master block. Its own path, so the other sources parse
+        exactly as they did before it existed."""
+        audio = doc.get("show_audio", "ltcplay")
+        if audio != "ltcplay":
+            raise ClockConfigError(
+                f"{where}: 'clock.source' is \"audio_master\", so this "
+                f"program plays the show audio itself. 'clock.show_audio' "
+                f"must be \"ltcplay\" or left out, not {audio!r}; MadMapper "
+                f"plays the video only.")
+        art = doc.get("artnet")
+        if art is None:
+            raise ClockConfigError(
+                f"{where}: 'clock.source' is \"audio_master\" but there is "
+                f"no 'clock.artnet' block, so the timecode would reach "
+                f"nobody. Name MadMapper and BEYOND under "
+                f"'clock.artnet.nodes'.")
+        art = ArtNetConfig.parse(art, where)
+        if art.broadcast:
+            raise ClockConfigError(
+                f"{where}: with \"audio_master\" the timecode goes to each "
+                f"program by name, never by broadcast: on the bench "
+                f"broadcast reached BEYOND but not MadMapper. List them "
+                f"under 'clock.artnet.nodes' instead.")
+        block = doc.get("audio")
+        if block is None:
+            raise ClockConfigError(
+                f"{where}: 'clock.source' is \"audio_master\" but there is "
+                f"no 'clock.audio' block naming the audio interface and the "
+                f"stems to play.")
+        from . import showaudio
+        try:
+            acfg = showaudio.AudioConfig.parse(block, where)
+        except showaudio.AudioConfigError as e:
+            raise ClockConfigError(str(e))
+        zones = doc.get("zones")
+        zones = ZoneConfig() if zones is None else ZoneConfig.parse(zones,
+                                                                    where)
+        return cls("audio_master", "ltcplay", art, zones, audio=acfg)
+
     def summary(self):
         s = self.source
+        if self.audio is not None:
+            s += f", {self.audio.summary()}"
         if self.artnet is not None:
             s += f", Art-Net timecode to {self.artnet.summary()}"
         return s
@@ -886,10 +956,16 @@ class ArtNetMaster(Clock):
 
     def __init__(self, cfg, sink=None, out=None, clock=time.perf_counter,
                  sleep=time.sleep, mono=time.perf_counter, log=None,
-                 on_stop=None):
+                 on_stop=None, on_pause=None, on_resume=None):
         self.cfg = cfg
         self.sink = sink
         self.on_stop = on_stop
+        # Told apart from on_stop: a Hold is not the clock stopping, it is
+        # the clock telling the chase engine, in so many words, "this is a
+        # real pause, not a hiccup" -- see _set_paused() below for why that
+        # needs saying at all.
+        self.on_pause = on_pause
+        self.on_resume = on_resume
         self.out = out
         self._clock = clock
         self._mono = mono
@@ -949,7 +1025,7 @@ class ArtNetMaster(Clock):
             self.ticker.stop()
             frames = int(math.ceil(float(length_s) * MASTER_FPS - 1e-9))
             self._cue = (float(position_s), frames, label)
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
             self._frozen_n = None
             self._frozen_pos = None
@@ -974,7 +1050,7 @@ class ArtNetMaster(Clock):
             was = self._cue
             self.ticker.stop()
             self._cue = None
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
             self._frozen_n = None
             self._frozen_pos = None
@@ -1017,7 +1093,7 @@ class ArtNetMaster(Clock):
             self._frozen_n = n
             self._frozen_pos = position_s + n / MASTER_FPS
             self.last_sent = (h, m, s, f)
-            self._paused = True
+            self._set_paused(True)
             self._sync_point("pause")
             self._event(f"paused at {h:02d}:{m:02d}:{s:02d}:{f:02d} for "
                         f"{label or 'the cue'}")
@@ -1055,17 +1131,54 @@ class ArtNetMaster(Clock):
             self.ticker.stop()
             label = self._cue[2]
             n_frozen = self._frozen_n
-            self._paused = False
+            self._set_paused(False)
             self._frozen = None
+            self._frozen_n = None
             self._frozen_pos = None
             t0 = self._clock() - (n_frozen + 1) / MASTER_FPS
             self._mono_t0 = self._mono() - (self._clock() - t0)
             self._event(f"resumed for {label or 'the cue'}")
-            return self.ticker.start(t0)
+            # n0 tells the ticker it is already at frame_frozen + 1, not
+            # starting fresh at 0: see Ticker.run()'s docstring. Without it
+            # the backdated t0 above reads as the ticker having fallen
+            # frame_frozen + 1 frames behind on its very first iteration,
+            # and counts the whole hold as skipped -- see the bug this
+            # fixes, named in Ticker.run()'s docstring.
+            return self.ticker.start(t0, n0=n_frozen + 1)
 
     @property
     def paused(self):
         return self._paused
+
+    def _set_paused(self, active):
+        """Flip _paused and tell the player, the one place both happen, so
+        the two can never drift apart. pause(), resume(), a fresh play()
+        starting over an old pause, and halt() while paused all go through
+        here.
+
+        Why the player needs telling at all: Player.feed_timecode() already
+        reads a repeated position as PARKED, immediately -- but the output
+        thread only trusts that reading once the same value has held for
+        `park_s` (its debounce against a real LTC deck's decode noise,
+        never a machine-generated clock's concern). For up to that long
+        after every Hold, the pixels kept computing their position from the
+        old, running clock instead of the frozen one, drifted forward, and
+        then snapped back the moment the debounce caught up -- one pixel
+        frame sent out of order on nearly every Hold, on the Fire & Ice
+        bench 2026-09-25. This tells the player, without ambiguity and
+        without waiting, that this is a real pause; the debounce itself is
+        untouched, so a real LTC deck (GPL/Dollywood) is unaffected."""
+        if self._paused == active:
+            return
+        self._paused = active
+        cb = self.on_pause if active else self.on_resume
+        if cb is not None:
+            try:
+                cb()
+            except Exception as e:
+                self._event(f"telling the pixels the clock "
+                            f"{'paused' if active else 'resumed'} failed: "
+                            f"{e}")
 
     def _stopped(self):
         if self.on_stop is not None:
@@ -1146,6 +1259,981 @@ class ArtNetMaster(Clock):
                   "last_ended": self.last_ended})
         d.update(_out_snapshot(self.out, self.ticker))
         return d
+
+
+class AudioMaster(Clock):
+    """This machine plays the show audio, and the audio is the clock.
+
+    Handoff section 4a (Jeff, 2026-09-27). The show's stems play in their
+    own process (showaudio.py); this class never touches a sample. It reads
+    where the audio device is, from the audio process's shared memory: the
+    cue frame at the start of the last buffer, and when that buffer is heard
+    (the callback's perf_counter plus the device's own output latency). From
+    that it keeps one number, `_epoch`, the perf_counter time at which the
+    cue's second zero is heard, so the position between callbacks is simply
+    now - epoch: interpolated on perf_counter, smooth at 30 fps whatever
+    size the device's buffers are. Each callback nudges the epoch a tenth of
+    the way to what it says (callback timing jitter, and the device's own
+    crystal drifting against this computer's), so the timecode follows the
+    audio without stepping on its jitter.
+
+    Out: one ArtTimeCode packet per frame, through the same TimecodeOut and
+    arttimecode() as ArtNetMaster, to the named nodes (unicast only), and
+    the same position to the pixels through the same sink call. The frame
+    sent is the one the audio is in, sent the moment the audio reaches it;
+    a frame is never sent twice in a row while playing and never goes
+    backwards.
+
+    Hold (pause): the audio fades out over hold_fade_ms (250 ms) and stops
+    on an exact sample, which the audio process announces the moment the
+    fade starts. The timecode follows the audio down the fade and freezes on
+    the frame holding the last sample played, repeating it 30 times a second
+    as ArtNetMaster does, with on_pause() at that moment. No run-on: the
+    audio process plays silence from that sample on. Resume plays from that
+    exact sample with a fade in, and the timecode carries on from the frozen
+    frame once the audio is heard again (on_resume()).
+
+    Abort (halt): the level fades to zero over abort_fade_ms (1 s), the
+    timecode following the audio as it fades, then the cue stops: the
+    audio, the timecode, and on_stop() to hand the pixels back.
+
+    The end of the audio ends the cue: when the position passes the audio's
+    length the cue stops through on_stop(), the same way ArtNetMaster's cue
+    ends, so the same SHOW_ENDED path works.
+
+    The audio interface lost mid-show (Jeff, 2026-09-27): the show carries
+    on. The epoch stops being corrected and the position runs on
+    perf_counter from exactly where it was, so the timecode does not jump;
+    health goes red with a sentence and a journal line. The audio process
+    keeps trying to reopen the interface (1 s, then backing off to 3 s).
+    When it is back the audio restarts at the show's current position, fades
+    in over return_fade_ms (1 s), and the clock goes back to following it:
+    the small offset left at the handover is slewed out, never more than 5%
+    faster or slower than real time, never a jump. The audio process dying
+    counts as the interface being lost; AudioEngine starts a new one.
+
+    Locking: every command and every step of the timecode thread take one
+    lock. Unlike ArtNetMaster this has one long-lived thread, started by
+    start() and joined only by stop() outside the lock, so no command ever
+    waits on the thread while holding the lock the thread needs."""
+
+    source = "audio_master"
+    master = True
+    ticker = None
+
+    # No callback for this long while playing: lost. A little longer than
+    # the audio process's own limit (showaudio.AudioProcess.STALL_S), so the
+    # audio process, which can see why, is the one that says so; this is
+    # the backstop for one that cannot. A shorter hiccup is not a loss: the
+    # clock keeps following, and catches up with the audio when it moves.
+    STALL_S = 0.6
+    START_S = 1.0          # play or resume sent, nothing heard: lost
+    FOLLOW_SLEW = 0.1      # share of each callback's correction taken
+    RETURN_RATE = 0.05     # handover slew: at most 5% off real time
+    RETURN_DONE_S = 0.001
+    RESEEK_S = 0.25        # a handover further off than this is re-tried,
+                           # not slewed (0.25 s is 5 s of slewing)
+    RETRY_S = (1.0, 2.0, 3.0)
+    MAX_SLEEP_S = 0.05
+    LEAD_S = 0.005         # a command's trip to the audio process
+    STOP_FADE_MS = 50      # Stop (not Abort): just enough not to click
+    OUTLIER_S = 0.05       # a reading this far off the clock is ignored,
+    OUTLIER_RUN = 6        # unless this many in a row (a fifth of a
+                           # second) agree with it: then the clock goes
+                           # straight to it
+    RECENT_S = 10.0
+
+    def __init__(self, cfg, sink=None, out=None, engine=None, cues=None,
+                 clock=time.perf_counter, sleep=time.sleep,
+                 mono=time.perf_counter, log=None, journal=None,
+                 on_stop=None, on_pause=None, on_resume=None, threaded=True):
+        from . import showaudio
+        self._sa = showaudio
+        self.cfg = cfg
+        self.audio = cfg.audio
+        self.rate = showaudio.RATE
+        self.sink = sink
+        self.out = out
+        self.engine = engine
+        self.cues = dict(cues or {})     # timeline cue name -> (role, frames)
+        self._clock = clock
+        self._sleep = sleep
+        self._mono = mono
+        self.log = log
+        # Anything with the journal's fault(actor, sentence, action=...) and
+        # record(...): journal.Logbook. None writes the show log only.
+        self.journal = journal
+        self.on_stop = on_stop
+        self.on_pause = on_pause
+        self.on_resume = on_resume
+        self.threaded = threaded
+        self.stream_id = cfg.artnet.stream_id if cfg.artnet else 0
+        self._lock = threading.RLock()
+        self._thread = None
+        self._halt_evt = threading.Event()
+        # Set by every command so the timecode thread acts on it now, not
+        # at the end of whatever it was sleeping for.
+        self._wake = threading.Event()
+        self.kicked = False
+        self._live = False
+        self._started = False
+        # The device, as the audio process last reported it.
+        self._device_ok = False
+        self._device_desc = ""
+        self._latency = 0.0          # what the driver says
+        self._cb_latency = None      # what the stream's callbacks show
+        self._outliers = 0           # callbacks ignored in a row
+        self._resync = False         # the audio really moved: follow it in
+        self.outliers = 0
+        self._loss_open = False      # a loss the journal has not closed
+        self._loss_fault = None
+        self._stall_loss = False     # lost because callbacks went quiet
+        self.render_errors = 0
+        self._render_err_at = None
+        self._shared = False
+        self._loaded = set()
+        self._load_failed = {}
+        self._fault = None
+        self._fault_at = None
+        # The cue.
+        self._cue = None
+        self._token = 0
+        self._mode = None       # wait | follow | freerun | return
+        self._epoch = None
+        self._target = None
+        self._slewed_at = None
+        self._wait_since = None
+        self._seen_seq = None
+        self._last_cb = None
+        self._child = (None, None)   # (token, state) of the last callback
+        self._stop_frame = None
+        self._pause_req = False
+        self._paused = False
+        self._resuming = False
+        self._resume_after = False
+        self._halting = False
+        self._halt_end = None
+        self._level_down = False
+        self._frozen_frame = None
+        self._frozen_sec = None
+        self._frozen_pos = None
+        self._last_frame = None
+        self._last_send_at = None
+        self._lost_at = None
+        self._retry_n = 0
+        self._next_return = 0.0
+        # What the page shows.
+        self.last_sent = None
+        self.last_ended = ""
+        self.cues_played = 0
+        self.skipped = 0
+        self.losses = 0
+        self.returns = 0
+        self.clipped = 0
+        self.underflows = 0
+        self._clip_at = None
+        self._underflow_at = None
+        self.errors = 0
+        self.last_error = ""
+
+    # -- the session's side ----------------------------------------------
+    def start(self):
+        """Run pressed: start the audio process and open the interface.
+        A device that is there but cannot run this show (too few outputs,
+        not at 48 kHz, only reachable through Windows' shared mixer) refuses
+        Run with its sentence. One that is simply not attached does not:
+        health goes red and the audio process keeps trying."""
+        with self._lock:
+            self._live = True
+        if not self._started:
+            try:
+                first = self.engine.start()
+            except Exception as e:
+                raise ClockConfigError(f"The show audio could not start: "
+                                       f"{type(e).__name__}: {e}.")
+            if first is not None and first[0] == "refused":
+                try:
+                    self.engine.close()
+                except Exception:
+                    pass
+                raise ClockConfigError(first[1])
+            self._started = True
+        if self.threaded and (self._thread is None
+                              or not self._thread.is_alive()):
+            self._halt_evt = threading.Event()
+            self._thread = threading.Thread(
+                target=self._run, args=(self._halt_evt,),
+                name="ltcplay-audio-timecode", daemon=True)
+            self._thread.start()
+
+    def stop(self):
+        with self._lock:
+            self._live = False
+            if self._cue is not None:
+                self._end("stopped", self._clock(),
+                          fade=self._sa.fade_frames(self.STOP_FADE_MS))
+        self._halt_evt.set()
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(1.0)
+        self._thread = None
+        if self._started:
+            try:
+                self.engine.close()
+            except Exception:
+                pass
+            self._started = False
+        if self.out is not None:
+            self.out.close()
+
+    def play(self, position_s, length_s=None, label=""):
+        """Run a cue: its audio from the top, the timecode from 00:00:00:00
+        as the first sample is heard, the pixels from `position_s`. The
+        cue's length is its audio's, whatever `length_s` says."""
+        got = self.cues.get(label)
+        if got is None:
+            raise ClockConfigError(
+                f"{label or 'This cue'} has no show audio in "
+                f"'clock.audio.cues'. With \"audio_master\" the audio is the "
+                f"clock, so a cue without audio cannot play.")
+        role, frames = got
+        with self._lock:
+            now = self._clock()
+            if not self._live:
+                raise ClockConfigError("Nothing is running. Press Run first.")
+            if not self._device_ok:
+                # Jeff, 2026-09-27: a show never starts without its sound.
+                # Losing the interface once a show is running is different:
+                # that carries on and recovers (see _lost).
+                why = self._fault or "It has not opened yet."
+                msg = (f"The show will not start: the show audio interface "
+                       f"{self.audio.device} is not available. "
+                       f"{_strip_stop(why)}")
+                self._event(msg)
+                raise ClockConfigError(msg)
+            if role in self._load_failed:
+                raise ClockConfigError(
+                    f"{_strip_stop(self._load_failed[role])} Replace the "
+                    f"file, then press Stop and Run again.")
+            if role not in self._loaded:
+                raise ClockConfigError(
+                    f"The {role} audio is still loading. Try again in a few "
+                    f"seconds.")
+            self._reset_cue()
+            self._token += 1
+            tc_frames = int(math.ceil(frames / float(self.rate) * MASTER_FPS
+                                      - 1e-9))
+            self._cue = {"label": label, "role": role, "frames": frames,
+                         "position_s": float(position_s),
+                         "tc_frames": tc_frames}
+            self.cues_played += 1
+            self._set_paused(False)
+            self._restore_level()
+            self._send(("play", role, 0, 0, self._token))
+            self._mode = "wait"
+            self._wait_since = now
+            self._event(f"timecode from 00:00:00:00 for "
+                        f"{label or 'a cue'}, following its audio")
+            self._kick()
+            return now
+
+    def halt(self):
+        """Abort: fade the level to zero over abort_fade_ms, then stop."""
+        with self._lock:
+            if self._cue is None or self._halting:
+                return
+            now = self._clock()
+            fade = self._sa.fade_frames(self.audio.abort_fade_ms)
+            if self._paused or self._mode in ("freerun", "wait") \
+                    or fade <= 0:
+                self._end("stopped", now)
+                return
+            self._send(("level", 0.0, fade))
+            self._level_down = True
+            self._halting = True
+            # Until the fade has been heard, not just sent.
+            self._halt_end = now + fade / float(self.rate) + \
+                self._heard_latency() + 0.05
+            self._pause_req = False
+            self._resume_after = False
+            self._kick()
+            self._event(f"Abort: the show audio fades out over "
+                        f"{self.audio.abort_fade_ms / 1000.0:g} s, then the "
+                        f"timecode stops")
+
+    def pause(self):
+        """Hold: fade the audio out and freeze on the frame it stops on."""
+        with self._lock:
+            if self._cue is None:
+                raise ClockConfigError("Nothing is playing to pause.")
+            if self._paused or self._pause_req:
+                raise ClockConfigError("The clock is already paused.")
+            if self._halting:
+                raise ClockConfigError("The show is stopping, so it cannot "
+                                       "be paused.")
+            now = self._clock()
+            fade = self._sa.fade_frames(self.audio.hold_fade_ms)
+            if self._mode in ("follow", "return") and fade > 0:
+                self._send(("pause", fade, self._token))
+                self._stop_frame = None
+                self._pause_req = True
+                self._event(f"Hold: the show audio fades out over "
+                            f"{self.audio.hold_fade_ms:g} ms and the "
+                            f"timecode freezes where it stops")
+                return
+            if self._mode in ("follow", "return", "wait"):
+                self._send(("pause", 0, self._token))
+            self._freeze(now)
+            self._kick()
+
+    def resume(self):
+        """Carry on from exactly where the audio stopped."""
+        with self._lock:
+            if self._cue is None:
+                raise ClockConfigError("Nothing is playing to resume.")
+            if self._pause_req and not self._paused:
+                # Resume pressed inside the Hold's own fade: the Hold
+                # finishes first, then this runs, so the audio and the
+                # timecode stop and start on the same sample.
+                self._resume_after = True
+                return
+            if not self._paused:
+                raise ClockConfigError(
+                    "The clock is not paused, so there is nothing to resume.")
+            if self._resuming:
+                raise ClockConfigError("The clock is already resuming.")
+            self._resume(self._clock())
+            self._kick()
+
+    @property
+    def paused(self):
+        return self._paused or self._pause_req
+
+    @property
+    def playing(self):
+        return self._cue is not None
+
+    # -- internals, all called with the lock held --------------------------
+    def _kick(self):
+        self.kicked = True
+        self._wake.set()
+
+    def _send(self, msg):
+        try:
+            return self.engine.send(msg)
+        except Exception:
+            return False
+
+    def _restore_level(self):
+        if self._level_down:
+            self._send(("level", 1.0, 0))
+            self._level_down = False
+
+    def _heard_latency(self):
+        """How long after a callback its sound is heard: what the stream's
+        callbacks show, or what the driver says before there are any."""
+        return self._latency if self._cb_latency is None else \
+            self._cb_latency
+
+    def _reset_cue(self):
+        self._mode = None
+        self._epoch = None
+        self._target = None
+        self._stop_frame = None
+        self._pause_req = False
+        self._resuming = False
+        self._resume_after = False
+        self._halting = False
+        self._halt_end = None
+        self._frozen_frame = self._frozen_sec = self._frozen_pos = None
+        self._last_frame = None
+        self._last_send_at = None
+
+    def _set_paused(self, active):
+        """Flip _paused and tell the pixels, the one place both happen:
+        the same contract as PR 20's ArtNetMaster._set_paused."""
+        if self._paused == active:
+            return
+        self._paused = active
+        cb = self.on_pause if active else self.on_resume
+        if cb is not None:
+            try:
+                cb()
+            except Exception as e:
+                self._event(f"telling the pixels the clock "
+                            f"{'paused' if active else 'resumed'} failed: "
+                            f"{e}")
+
+    def _freeze(self, now):
+        cue = self._cue
+        if self._stop_frame is not None:
+            sec = self._stop_frame / float(self.rate)
+            last = max(self._stop_frame - 1, 0)
+            frame = int(math.floor(last * MASTER_FPS / float(self.rate)
+                                   + 1e-9))
+        else:
+            sec = max(self._pos(now) or 0.0, 0.0)
+            frame = frame_at(sec, MASTER_FPS)
+        if self._last_frame is not None:
+            frame = max(frame, self._last_frame)
+        self._frozen_frame = frame
+        self._frozen_sec = sec
+        self._frozen_pos = cue["position_s"] + frame / MASTER_FPS
+        self._pause_req = False
+        self._set_paused(True)
+        h, m, s, f = frames_to_tc(frame, MASTER_FPS)
+        self._event(f"paused at {h:02d}:{m:02d}:{s:02d}:{f:02d} for "
+                    f"{cue['label'] or 'the cue'}")
+        if self._resume_after:
+            self._resume_after = False
+            self._resume(now)
+
+    def _resume(self, now):
+        cue = self._cue
+        start = int(round(self._frozen_sec * self.rate))
+        fade = self._sa.fade_frames(self.audio.hold_fade_ms)
+        if start >= cue["frames"]:
+            # Held on the very end of the audio: there is nothing left to
+            # resume, so the cue ends here, the normal way.
+            self._end("finished", now)
+            return
+        if self._mode != "freerun" and self._device_ok \
+                and cue["role"] in self._loaded:
+            if self._child == (self._token, self._sa.PAUSED) and \
+                    self._stop_frame == start:
+                # The audio process is holding this cue on that sample:
+                # it carries on from there.
+                self._send(("resume", fade, self._token))
+            else:
+                # It lost the cue meanwhile (a new process, a reopened
+                # interface): the same sample, from the top.
+                self._token += 1
+                self._send(("play", cue["role"], start, fade, self._token))
+            self._mode = "wait"
+            self._wait_since = now
+            self._resuming = True
+            self._stop_frame = None
+            self._event(f"resumed for {cue['label'] or 'the cue'}: the "
+                        f"audio fades back in from where it stopped")
+            return
+        self._unfreeze(now)
+        self._event(f"resumed for {cue['label'] or 'the cue'} on this "
+                    f"computer's own clock")
+
+    def _unfreeze(self, now):
+        self._epoch = now - self._frozen_sec
+        self._stop_frame = None
+        self._resuming = False
+        self._mode = "freerun"
+        self._set_paused(False)
+
+    def _pos(self, now):
+        """Seconds into the cue's audio, or None before it is heard."""
+        if self._paused:
+            return self._frozen_sec
+        if self._epoch is None or self._mode == "wait":
+            return None
+        p = now - self._epoch
+        if self._stop_frame is not None:
+            p = min(p, self._stop_frame / float(self.rate))
+        return p
+
+    def _end(self, why, now, fade=0):
+        cue = self._cue
+        self._cue = None
+        self._reset_cue()
+        self._send(("stop", fade, None))
+        self._restore_level()
+        self._set_paused(False)
+        label = cue["label"] if cue else ""
+        self.last_ended = f"{label or 'cue'} {why}"
+        self._event(f"timecode {'ended with' if why == 'finished' else 'stopped for'}"
+                    f" {label or 'the cue'}")
+        if self.on_stop is not None:
+            try:
+                self.on_stop()
+            except Exception as e:
+                self._event(f"handing the pixels back failed: {e}")
+
+    def _event(self, msg):
+        if self.log:
+            try:
+                self.log.event("clock", msg)
+            except Exception:
+                pass
+
+    def _journal(self, sentence, fault, action="show audio"):
+        if self.log:
+            try:
+                self.log.event("show-audio", sentence)
+            except Exception:
+                pass
+        j = self.journal
+        if j is None:
+            return
+        try:
+            if fault:
+                j.fault("system", sentence, action=action)
+            else:
+                j.record(actor="system", action=action, outcome="recovered",
+                         reason=sentence, text=sentence)
+        except Exception:
+            pass
+
+    def _tc_text(self, frame):
+        h, m, s, f = frames_to_tc(frame, MASTER_FPS)
+        return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+
+    def _set_fault(self, sentence, now, journal=True):
+        if sentence == self._fault:
+            return
+        self._fault = sentence
+        self._fault_at = now
+        if journal:
+            self._journal(sentence, True)
+
+    # -- what the audio process says ---------------------------------------
+    def _on_event(self, ev, now):
+        kind = ev[0]
+        if kind == "opened":
+            self._device_ok = True
+            self._device_desc = ev[1]
+            self._latency = float(ev[2] or 0.0)
+            self._cb_latency = None
+            self._shared = bool(ev[3])
+            self._event(f"show audio on {ev[1]}")
+            if (self._cue is None or self._mode != "freerun") and \
+                    self._fault not in self._load_failed.values():
+                if self._fault is not None:
+                    self._journal(f"The show audio interface is working: "
+                                  f"{ev[1]}.", False)
+                self._fault = None
+        elif kind in ("lost", "refused", "unavailable", "crashed"):
+            self._device_ok = False
+            self._stall_loss = False
+            if kind == "crashed":
+                self._loaded.clear()
+            if self._cue is not None and self._mode in ("wait", "follow",
+                                                        "return"):
+                self._lost(now, ev[1])
+            elif self._cue is not None and self._mode == "freerun":
+                self._fault = self._fault or ev[1]
+            else:
+                self._set_fault(ev[1], now)
+        elif kind == "loaded":
+            self._loaded.add(ev[1])
+            self._load_failed.pop(ev[1], None)
+            self._event(f"the {ev[1]} audio is loaded, "
+                        f"{self._sa.fmt_len(ev[2])}")
+        elif kind == "load_failed":
+            self._loaded.discard(ev[1])
+            self._load_failed[ev[1]] = ev[2]
+            self._set_fault(ev[2], now)
+
+    def _on_reading(self, r, now):
+        if r.seq == self._seen_seq:
+            return
+        self._seen_seq = r.seq
+        self._last_cb = r.perf
+        self._cb_latency = r.latency
+        self._child = (r.token, r.state)
+        if r.underflows > self.underflows:
+            self.underflows = r.underflows
+            self._underflow_at = now
+        if r.clipped > self.clipped:
+            self.clipped = r.clipped
+            self._clip_at = now
+        if r.errors > self.render_errors:
+            self.render_errors = r.errors
+            self._render_err_at = now
+        if self._cue is None or r.token != self._token:
+            return                       # another cue's, or an older play's
+        if r.stop_frame >= 0 and self._pause_req:
+            self._stop_frame = r.stop_frame
+        if not r.playing:
+            if self._mode == "follow" and not self._paused \
+                    and not self._pause_req and not self._halting:
+                self._stopped_playing(r, now)
+            return
+        e = r.perf + r.latency - r.frame / float(self.rate)
+        if self._mode == "freerun" and self._stall_loss and \
+                not self._paused:
+            # The same stream playing the same cue again after going quiet:
+            # follow it again rather than stop it, and let the timecode
+            # wait for the audio to catch up.
+            self._mode = "follow"
+            self._stall_loss = False
+            self._recovered(now)
+            self._resync = True
+        if self._mode == "wait":
+            self._epoch = e
+            self._mode = "follow"
+            self._outliers = 0
+            self._resync = False
+            if self._resuming:
+                self._resuming = False
+                self._set_paused(False)
+            self._recovered(now)
+        elif self._mode == "follow":
+            if self._outlier(e, self._epoch):
+                return
+            if self._resync:
+                # The audio really moved (an underrun, a stream catching its
+                # breath): go straight to it. The timecode never runs
+                # backwards (_emit holds the last frame until the audio
+                # reaches it), so this is the clock waiting for the sound,
+                # exactly as long as the sound stopped.
+                self._epoch = e
+                self._resync = False
+                return
+            self._epoch += (e - self._epoch) * self.FOLLOW_SLEW
+        elif self._mode == "return":
+            if self._target is None and abs(e - self._epoch) > self.RESEEK_S:
+                self._lost(now, f"{self.audio.device} came back "
+                                f"{abs(e - self._epoch):.2f} s away from the "
+                                f"show.")
+                return
+            if self._target is not None and self._outlier(e, self._target):
+                return
+            self._target = e if self._target is None else \
+                self._target + (e - self._target) * self.FOLLOW_SLEW
+
+    def _outlier(self, e, ref):
+        """True for one callback far off the clock: a driver's latency
+        report spiking, not the audio moving, so it is ignored. When
+        OUTLIER_RUN in a row agree, the audio really has moved (an underrun,
+        a stream catching its breath) and the clock follows it in until it
+        is close again."""
+        if abs(e - ref) <= self.OUTLIER_S:
+            self._outliers = 0
+            self._resync = False
+            return False
+        if self._resync:
+            return False
+        self._outliers += 1
+        self.outliers += 1
+        if self._outliers >= self.OUTLIER_RUN:
+            self._resync = True
+        return True
+
+    def _stopped_playing(self, r, now):
+        """The audio process says it is not playing this cue although the
+        clock is following it. At the end of the audio that is the end of
+        the cue, which _emit ends; anywhere else the sound has stopped,
+        and that is a loss, never something to carry on quietly past."""
+        cue = self._cue
+        if r.state == self._sa.ENDED and \
+                r.frame >= cue["frames"] - self.rate // MASTER_FPS:
+            return
+        self._lost(now, f"The show audio stopped playing at "
+                        f"{self._sa.fmt_len(r.frame)} of "
+                        f"{self._sa.fmt_len(cue['frames'])} with nothing "
+                        f"asking it to.")
+
+    def _recovered(self, now):
+        """The clock follows the audio again after a loss: clear the red and
+        close the loss in the journal. Every way back comes through here."""
+        if not self._loss_open:
+            return
+        self._loss_open = False
+        self.returns += 1
+        self._retry_n = 0
+        gone = now - (self._lost_at or now)
+        pos = self._pos(now)
+        at = self._tc_text(frame_at(pos, MASTER_FPS)) if pos is not None \
+            and pos >= 0 else "the frozen frame"
+        if self._fault == self._loss_fault:
+            self._fault = None
+        self._loss_fault = None
+        self._journal(f"The show audio is back after {gone:.1f} s and the "
+                      f"show clock follows it again, from {at}.", False)
+
+    def _check(self, now):
+        cue = self._cue
+        if cue is None:
+            return
+        name = self.audio.device
+        if self._mode == "wait" and now - self._wait_since > self.START_S:
+            self._lost(now, f"No sound came from {name} within "
+                            f"{self.START_S:g} s of starting.")
+        elif self._mode == "return" and self._target is None and \
+                now - self._wait_since > self.START_S:
+            self._lost(now, f"{name} came back but did not play.")
+        elif (self._mode == "follow" or (self._mode == "return"
+                                          and self._target is not None)) \
+                and self._last_cb is not None and \
+                now - self._last_cb > self.STALL_S:
+            self._lost(now, f"{name} stopped playing: nothing from it for "
+                            f"{now - self._last_cb:.1f} s.", stall=True)
+
+    def _lost(self, now, why, stall=False):
+        """The audio stopped mid-cue. Carry on on perf_counter from exactly
+        where the clock was: the epoch simply stops being corrected."""
+        cue = self._cue
+        retry = self._mode == "return"
+        if self._mode == "wait":
+            if self._resuming:
+                self._unfreeze(now)
+            elif self._epoch is None:
+                self._epoch = now
+        self._mode = "freerun"
+        self._target = None
+        # A stall seen only from here may be the stream catching its breath:
+        # leave its sound alone. The audio process stops it itself if it
+        # really has died, and says so.
+        self._stall_loss = stall
+        if not stall:
+            self._send(("stop", 0, None))
+        if self._pause_req:
+            self._stop_frame = None
+            self._freeze(now)
+        if self._halting:
+            self._end("stopped", now)
+            return
+        if retry:
+            # A handover that did not take: back on this computer's clock,
+            # the same loss still standing, and try again a little later.
+            self._retry_n += 1
+            self._next_return = now + self.RETRY_S[
+                min(self._retry_n, len(self.RETRY_S) - 1)]
+            self._event(f"the show audio did not come back: {why}")
+            return
+        if self._loss_open:
+            return
+        self.losses += 1
+        self._lost_at = now
+        self._retry_n = 0
+        self._next_return = now + self.RETRY_S[0]
+        pos = self._pos(now) or 0.0
+        at = self._tc_text(frame_at(pos, MASTER_FPS))
+        self._loss_open = True
+        self._loss_fault = (
+            f"The show audio dropped out at {at} in "
+            f"{cue['label'] or 'the cue'}. {_strip_stop(why)} The rest of "
+            f"the show carries on on this computer's own clock, and "
+            f"ltcplay keeps trying to reopen the interface.")
+        self._set_fault(self._loss_fault, now)
+
+    def _maybe_return(self, now):
+        cue = self._cue
+        if cue is None or self._mode != "freerun" or self._paused \
+                or self._pause_req or self._halting:
+            return
+        if not self._device_ok or cue["role"] not in self._loaded:
+            return
+        if now < self._next_return:
+            return
+        fade = self._sa.fade_frames(self.audio.return_fade_ms)
+        start = now - self._epoch + self.LEAD_S + self._heard_latency()
+        first = int(round(start * self.rate))
+        if first + fade >= cue["frames"]:
+            return               # too near the end to be worth it
+        self._token += 1
+        self._restore_level()
+        self._send(("play", cue["role"], first, fade, self._token))
+        self._stall_loss = False
+        self._resync = False
+        self._outliers = 0
+        self._mode = "return"
+        self._target = None
+        self._wait_since = now
+        self._slewed_at = now
+        self._event(f"the show audio interface is back; its audio restarts "
+                    f"at {self._tc_text(frame_at(start, MASTER_FPS))} and "
+                    f"fades in")
+
+    def _slew(self, now):
+        if self._mode != "return" or self._target is None:
+            self._slewed_at = now
+            return
+        dt = max(0.0, now - (self._slewed_at or now))
+        self._slewed_at = now
+        d = self._target - self._epoch
+        lim = self.RETURN_RATE * dt
+        self._epoch += max(-lim, min(lim, d))
+        if abs(self._target - self._epoch) <= self.RETURN_DONE_S:
+            self._mode = "follow"
+            self._recovered(now)
+
+    # -- the timecode ------------------------------------------------------
+    def step(self, now):
+        """One pass: take in what the audio process said, send the frame
+        that is due, and return when the next one is. The timecode thread
+        calls this; the tests call it on a clock of their own."""
+        with self._lock:
+            for ev in self.engine.events():
+                self._on_event(ev, now)
+            r = self.engine.read()
+            if r is not None:
+                self._on_reading(r, now)
+            self._check(now)
+            self._maybe_return(now)
+            self._slew(now)
+            return self._emit(now)
+
+    def _emit(self, now):
+        cue = self._cue
+        if cue is None:
+            return now + self.MAX_SLEEP_S
+        period = 1.0 / MASTER_FPS
+        if self._paused:
+            last = self._last_send_at
+            if last is None or now - last >= period - 1e-9:
+                self._send_frame(self._frozen_frame, now, frozen=True)
+                if last is not None and now - last < 2 * period:
+                    self._last_send_at = last + period
+                last = self._last_send_at
+            return last + period
+        if self._halting and now >= self._halt_end:
+            self._end("stopped", now)
+            return now + self.MAX_SLEEP_S
+        pos = self._pos(now)
+        if pos is None:
+            return now + 0.002
+        if pos < 0:
+            return min(self._epoch, now + self.MAX_SLEEP_S)
+        if self._pause_req and self._stop_frame is not None and \
+                pos * self.rate >= self._stop_frame - 1e-6:
+            self._freeze(now)
+            return now
+        frame = frame_at(pos, MASTER_FPS)
+        if frame >= cue["tc_frames"]:
+            self._end("finished", now)
+            return now + self.MAX_SLEEP_S
+        last = self._last_frame
+        if last is None:
+            # Every cue's timecode starts at 00:00:00:00 (handoff section
+            # 4), however late this thread got to it on a busy machine:
+            # frame 0 first, stamped with the moment it began, then straight
+            # on to the frame the audio is in.
+            frame = 0
+        if last is None or frame > last:
+            if last is not None and frame > last + 1:
+                self.skipped += frame - last - 1
+            self._send_frame(frame, now)
+            last = frame
+        return min(self._epoch + (last + 1) / MASTER_FPS,
+                   now + self.MAX_SLEEP_S)
+
+    def _send_frame(self, frame, now, frozen=False):
+        cue = self._cue
+        h, m, s, f = frames_to_tc(frame, MASTER_FPS)
+        if self.out is not None:
+            self.out.send(arttimecode(h, m, s, f, MASTER_TYPE,
+                                      self.stream_id))
+        self.last_sent = (h, m, s, f)
+        self._last_frame = frame
+        self._last_send_at = now
+        if self.sink is None:
+            return
+        text = f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
+        if frozen:
+            self.sink(self._frozen_pos, self._mono(), False, text)
+        else:
+            began = self._epoch + frame / MASTER_FPS
+            self.sink(cue["position_s"] + frame / MASTER_FPS,
+                      self._mono() - (self._clock() - began), False, text)
+
+    def _run(self, halt):
+        while not halt.is_set():
+            try:
+                due = self.step(self._clock())
+            except Exception as e:
+                # Nothing raised here may end the clock: see Ticker.run.
+                self.errors += 1
+                self.last_error = f"{type(e).__name__}: {e}"
+                if self.log:
+                    try:
+                        self.log.event(
+                            "clock-error", f"step failed: {self.last_error}",
+                            throttle_s=5.0)
+                    except Exception:
+                        pass
+                due = self._clock() + 0.01
+            wait = due - self._clock()
+            if wait > 0:
+                self._wake.wait(min(wait, self.MAX_SLEEP_S))
+            self._wake.clear()
+            self.kicked = False
+
+    # -- the page ----------------------------------------------------------
+    def health_warnings(self):
+        """What is wrong with the show audio right now, as sentences.
+        display.clock_warnings adds these to the page's red list."""
+        out = []
+        now = self._clock()
+        if self._fault:
+            out.append(self._fault)
+        if self._shared:
+            out.append("The show audio is going through Windows' shared "
+                       "audio engine because 'allow_shared_mode' is on. "
+                       "That is for a bench test only: on the bench it "
+                       "broke up 3 to 6 times a show.")
+        if self._clip_at is not None and now - self._clip_at < self.RECENT_S:
+            out.append(f"The show audio mix is clipping ({self.clipped} "
+                       f"samples so far). Turn a stem's gain_db down.")
+        if self._underflow_at is not None and \
+                now - self._underflow_at < self.RECENT_S:
+            out.append(f"The audio interface ran short of audio "
+                       f"{self.underflows} time(s) so far; each is a click "
+                       f"in the sound.")
+        if self._render_err_at is not None and \
+                now - self._render_err_at < self.RECENT_S:
+            out.append(f"The show audio process hit {self.render_errors} "
+                       f"error(s) making the sound and played silence "
+                       f"instead. The show log has the details.")
+        if self.errors:
+            out.append(f"The show clock hit {self.errors} error(s) and "
+                       f"kept going. Last: {self.last_error}")
+        return out
+
+    def snapshot(self):
+        d = super().snapshot()
+        lt = self.last_sent
+        cue = self._cue
+        pos = None
+        try:
+            pos = self._pos(self._clock()) if cue else None
+        except Exception:
+            pass
+        d.update({"playing": cue["label"] if cue else None,
+                  "paused": self.paused,
+                  "sending": (f"{lt[0]:02d}:{lt[1]:02d}:{lt[2]:02d}:"
+                              f"{lt[3]:02d}" if lt and cue else None),
+                  "skipped": self.skipped,
+                  "last_ended": self.last_ended,
+                  "audio": {"device": self.audio.device,
+                            "connected": self._device_ok,
+                            "via": self._device_desc,
+                            "mixer_free": (not self._shared
+                                           if self._device_desc else None),
+                            "mode": self._mode or "idle",
+                            "following": self._mode == "follow",
+                            "stopping": self._halting,
+                            "position": pos,
+                            "fault": self._fault,
+                            "losses": self.losses,
+                            "returns": self.returns,
+                            "clipped": self.clipped,
+                            "underflows": self.underflows,
+                            "render_errors": self.render_errors,
+                            "outliers": self.outliers,
+                            "respawns": getattr(self.engine, "respawns", 0),
+                            "loaded": sorted(self._loaded),
+                            # A cue is ready only once every stem of it is
+                            # wholly in memory and checked.
+                            "ready": {
+                                role: ("failed" if role in self._load_failed
+                                       else "ready" if role in self._loaded
+                                       else "loading")
+                                for role, _f in self.cues.values()}}})
+        d.update(_out_snapshot(self.out, self))
+        return d
+
+
+def _strip_stop(why):
+    why = str(why).strip()
+    return why if why.endswith(".") else why + "."
 
 
 class LtcAudioSlave(Clock):
@@ -1280,19 +2368,41 @@ class LtcAudioMaster(Clock):
 
 
 def build(cfg, timeline, sink, log=None, no_output=False, out=None,
-          bind_ip=None, on_stop=None):
-    """The clock a show file asks for, wired to the position stream."""
+          bind_ip=None, on_stop=None, on_pause=None, on_resume=None,
+          engine=None):
+    """The clock a show file asks for, wired to the position stream.
+
+    engine is read by audio_master only."""
     if out is None and not no_output and cfg.artnet is not None:
         out = TimecodeOut(cfg.artnet.dests,
                           broadcast=bool(cfg.artnet.broadcast), log=log,
                           bind_ip=bind_ip)
+    if cfg.source == "audio_master":
+        return _build_audio_master(cfg, timeline, sink, out, log, on_stop,
+                                   on_pause, on_resume, engine)
     if cfg.source == "artnet_master":
-        return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop)
+        return ArtNetMaster(cfg, sink=sink, out=out, log=log, on_stop=on_stop,
+                            on_pause=on_pause, on_resume=on_resume)
     if cfg.source == "ltc_audio_slave":
         show_len = cfg.zones.show_len_s
-        if show_len is None and "show" in cfg.zones.forward \
-                and cfg.artnet is not None:
-            show_len = _show_length(timeline, cfg.zones.show)
+        derived = None
+        if "show" in cfg.zones.forward and cfg.artnet is not None:
+            derived = _show_length(timeline, cfg.zones.show)
+        if show_len is None:
+            # Show length follows the show's own media (Jeff, 2026-09-26):
+            # read from the renders, never typed in a second place, so a
+            # config that names no length cannot drift from the show.
+            show_len = derived
+        elif derived is not None and show_len < derived:
+            # A configured length shorter than the show's own media would
+            # cut it off mid-cue (the handoff's own example: 440 configured
+            # against a 444.42 s music track). Refuse rather than free run
+            # to a made-up end that is short by the difference.
+            raise ClockConfigError(
+                f"'clock.zones.show_len_s' is {show_len:g} s, shorter than "
+                f"the show's own media, which runs {derived:g} s. Set "
+                f"'clock.zones.show_len_s' to at least {derived:g}, or "
+                f"leave it out so the length is read from the show.")
         return LtcAudioSlave(cfg, count=timeline.count, drop=timeline.drop,
                              fps=timeline.fps, show_len_s=show_len, out=out,
                              log=log)
@@ -1301,11 +2411,33 @@ def build(cfg, timeline, sink, log=None, no_output=False, out=None,
     raise ClockConfigError(f"no clock called {cfg.source!r}")
 
 
+def _build_audio_master(cfg, timeline, sink, out, log, on_stop, on_pause,
+                        on_resume, engine):
+    """Check every stem against the show folder, then wire the clock to an
+    audio process that is not started until Run."""
+    from . import showaudio
+    try:
+        checked = showaudio.check_show(cfg.audio, timeline)
+    except showaudio.AudioConfigError as e:
+        raise ClockConfigError(str(e))
+    if engine is None:
+        engine = showaudio.AudioEngine(
+            showaudio.engine_spec(cfg.audio, checked), log=log)
+    cues = {c["label"]: (role, c["frames"]) for role, c in checked.items()}
+    return AudioMaster(cfg, sink=sink, out=out, engine=engine, cues=cues,
+                       log=log, on_stop=on_stop, on_pause=on_pause,
+                       on_resume=on_resume)
+
+
 def _show_length(timeline, hour):
     """How long the show zone runs: to the end of its last cue.
 
     Free running to the end of the show needs to know where the end is.
-    Read from the renders rather than typed in a second place."""
+    Read from the renders rather than typed in a second place. This is also
+    what "show length follows the music track" (Jeff, 2026-09-26) means in
+    practice: the show's cues cover its own music, so the last cue's own end
+    is the music's own length, without opening the audio file a second time
+    to ask again."""
     start = hour * 3600.0
     end = None
     for c in timeline.cues:
@@ -1321,3 +2453,93 @@ def _show_length(timeline, hour):
             f"free run would never stop. Set 'clock.zones.show_len_s', or "
             f"put the show at {hour:02d}:00:00:00.")
     return end - start
+
+
+def derive_show_length_in_folder(folder, sd=None):
+    """(path, length_s, warning) about the show the folder's clock config
+    actually names:
+
+    - (path, length_s, None): exactly one show file in the folder names a
+      clock block with a derivable show length. Use it.
+    - (None, None, sentence): otherwise -- more than one candidate, with
+      no way to tell which one is the real one (refuse rather than guess
+      "the first *.json", review round 2, 2026-09-26), or none at all, or
+      one that named a clock block but would not open or would not
+      derive. `sentence` says which, and names every candidate file
+      involved, so the caller can warn instead of silently skipping the
+      check (review round 2: "never silently skip").
+
+    Used at startup, before anything is served, to cross-check the
+    SCHEDULER's own show_len_s against the show's own media the same way
+    `build` already checks `clock.zones.show_len_s` (Jeff, 2026-09-26:
+    show length follows the music, wherever the code has access to it).
+    See web.serve(), the only place that has both the schedule rules and a
+    show folder at once; schedule.py stays pure and never reads a file of
+    its own, and this function does not touch it or schedule_service.py.
+
+    A plain Timeline.load() is not enough: a cue's own end_seconds needs
+    its duration, which only a real open reads off the FSEQ header, the
+    same as clock.build() itself is only ever called from inside one (see
+    session.py). So each candidate is opened the same way the page's own
+    Check button does (Session, no_output, no_log): safe to call for every
+    file in the folder, and it never touches real audio or network output.
+
+    Never raises: a file that is not JSON, is not a show, has no clock
+    block, will not open (a missing FSEQ, a bad setting) or cannot derive
+    a length is recorded as a problem, not thrown."""
+    import glob
+    import json as _json
+    import os as _os
+    from .session import Session
+    candidates = []       # [(path, length_s)]
+    problems = []          # [sentence], one per candidate that could not
+                           # be used
+    for path in sorted(glob.glob(_os.path.join(folder, "*.json"))):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = _json.load(fh)
+        except (OSError, ValueError):
+            continue
+        # A cheap pre-filter before the expensive part (opening every FSEQ
+        # a candidate names): only a real show names cues, and only one
+        # with a clock block is a candidate for this check at all.
+        if not (isinstance(doc, dict) and isinstance(doc.get("cues"), list)
+                and "clock" in doc):
+            continue
+        name = _os.path.basename(path)
+        try:
+            s = Session(path, no_output=True, no_log=True, sd=sd)
+            s.open()
+        except Exception as e:
+            problems.append(f"{name} could not be opened: {_clean_e(e)}")
+            continue
+        if s.tl is None or s.tl.clock is None:
+            continue
+        try:
+            length_s = _show_length(s.tl, s.tl.clock.zones.show)
+        except ClockConfigError as e:
+            problems.append(f"{name}'s show length could not be read: "
+                            f"{_clean_e(e)}")
+            continue
+        candidates.append((path, length_s))
+    if len(candidates) == 1:
+        return candidates[0][0], candidates[0][1], None
+    if len(candidates) > 1:
+        names = ", ".join(_os.path.basename(p) for p, _ in candidates)
+        return None, None, (
+            f"more than one show file in the folder names a clock block "
+            f"({names}), so it is not clear which one to check the "
+            f"schedule's show_len_s against")
+    if problems:
+        return None, None, "; ".join(problems)
+    return None, None, ("no show file in the folder names a clock block, "
+                        "so the schedule's show_len_s could not be checked "
+                        "against the show's own media")
+
+
+def _clean_e(e):
+    # Unicode escapes, not literal characters: this file's own source is
+    # scanned for a bare em or en dash (test_clock_settings_fail_loudly),
+    # and this is the one place clock.py has to name them in order to
+    # strip them from someone else's exception text.
+    return str(e).replace("\u2014", "-").replace("\u2013", "-")

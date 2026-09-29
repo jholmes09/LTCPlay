@@ -186,6 +186,11 @@ class Player:
 
         self._last_tc_value = None
         self._park_since = None
+        # Set only by a master clock (clock.py's ArtNetMaster, via
+        # set_hard_park()) around its own pause()/resume(). See
+        # set_hard_park()'s docstring for why a repeated LTC frame is not
+        # enough on its own to make this true.
+        self._hard_parked = False
         self.parked_since = None
         self.last_ltc_seconds = None
         self.last_ltc_text = None
@@ -443,6 +448,24 @@ class Player:
                 self._epoch += delta * self.slew
             self.state = LOCKED
 
+    def set_hard_park(self, active):
+        """A master clock (clock.py) telling us, without ambiguity, that it
+        has frozen the frame right now, or just let it go again.
+
+        feed_timecode() already reads a repeated position as PARKED on the
+        spot -- but only for ITSELF; the state it sets there is overwritten
+        a moment later by _tick(), which recomputes PARKED on its own,
+        gated by `park_s`: at least a fifth of a second of the same value
+        before it is trusted, on purpose, so that one corrupt LTC frame
+        that happens to repeat the last one does not freeze a real deck's
+        playback. A machine-generated clock has nothing to debounce -- it
+        already knows the difference between a pause and noise -- so for
+        the span this is True, _tick() skips that debounce and holds
+        immediately. Nothing here touches park_s or the debounce itself, so
+        a real LTC deck (GPL/Dollywood) reads exactly as it always has."""
+        with self._lock:
+            self._hard_parked = bool(active)
+
     def drop_clock(self):
         """The show clock stopped on purpose: hand the rig to the idle look.
 
@@ -456,6 +479,7 @@ class Player:
             self._epoch = None
             self._pending_jump = None
             self._park_since = None
+            self._hard_parked = False
             self._last_tc_value = None
             self.freerun_epoch = None
         self._event("clock", "the show clock stopped; back to the idle look")
@@ -653,7 +677,9 @@ class Player:
 
         with self._lock:
             park_since = self._park_since
-        parked = (park_since is not None and now - park_since >= self.park_s)
+            hard_parked = self._hard_parked
+        parked = hard_parked or (park_since is not None
+                                 and now - park_since >= self.park_s)
 
         since = now - last
         if since > self.hold_s:
@@ -875,7 +901,9 @@ class Player:
             return
         with self._lock:
             park_since = self._park_since
-        parked = (park_since is not None and now - park_since >= self.park_s)
+            hard_parked = self._hard_parked
+        parked = hard_parked or (park_since is not None
+                                 and now - park_since >= self.park_s)
         since = now - last
         if since > self.hold_s:
             self.state = LOST
@@ -963,9 +991,49 @@ class Player:
             self._event("trigger", self.last_error)
 
     def _loop(self, step_ms):
+        # Paced the same way clock.py's Ticker paces Art-Net timecode: every
+        # deadline computed fresh from one fixed origin (`t0`, read once,
+        # never touched again), never from a running total and never from
+        # when the last frame actually went out. That distinction is not
+        # cosmetic. The previous shape kept a moving `next_at` and, on
+        # falling behind, gave up by setting `next_at = _now()` -- which
+        # sounds like the same "skip, don't burst" policy, but it throws
+        # away the ONLY thing that made the old deadlines meaningful: their
+        # distance from where the loop started. Every deadline after that
+        # is now measured from wherever "now" happened to land, not from
+        # the original schedule, so one overrun permanently shifts every
+        # frame after it, forever, by however late that one wake was. Found
+        # on the Fire & Ice bench, 2026-09-25, B9: one show's pixel timing
+        # against the cue stepped by 23.5ms during a CPU-loaded stretch and
+        # never came back for the rest of the show. Computing `n` fresh
+        # from `t0` every time, the way below does, cannot drift: a late
+        # wake still only ever skips the slots it actually missed, and
+        # every slot after it is exactly where it always was.
+        #
+        # What this does NOT fix, and is not trying to: that same bench
+        # window also had, in the minutes before the step, occasional
+        # single frames repeated then skipped -- a send landing just
+        # before a 25ms content-frame boundary reads that frame, and the
+        # next send, arriving a normal period later, reads the one after
+        # it, one frame later than the arithmetic "should" give (measured
+        # directly, scratchpad/pixelstep_b9.py: 1738 such pairs before the
+        # bench's stall, 1862 after it, on this fix). That is the pixel
+        # send schedule and the content's own 25ms frame grid sitting at a
+        # phase that does not line up -- unrelated to the origin drifting,
+        # and not solved by fixing the origin. Aligning the two grids
+        # would be a real change and belongs in its own PR, not this one.
         period = step_ms / 1000.0
-        next_at = _now()
+        t0 = _now()
+        n_next = 0
         while self._running:
+            due = t0 + n_next * period
+            now = _now()
+            if now < due:
+                time.sleep(min(due - now, 0.05))
+                continue
+            # Never below the slot that was due: see clock.py's frame_at()
+            # for why the epsilon matters at a large clock reading.
+            n = max(int((now - t0) / period + 1e-9), n_next)
             try:
                 frame = self._tick()
                 self.sender.send_frame(frame if frame is not None else b"")
@@ -988,14 +1056,7 @@ class Player:
                     except Exception:
                         pass
                 time.sleep(0.01)
-            next_at += period
-            sleep = next_at - _now()
-            if sleep > 0:
-                time.sleep(sleep)
-            else:
-                # Fell behind: give up the missed slots rather than sprinting to
-                # catch up, which would burst packets at the controllers.
-                next_at = _now()
+            n_next = n + 1
 
     def _supervise(self):
         """Restart the output thread if it ever stops.

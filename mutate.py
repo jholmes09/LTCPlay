@@ -930,15 +930,12 @@ MUTATIONS = [
   "    return time.monotonic()"),
 
  ("the pixel output thread's pacing accumulates sleep error", "ltcplay/player.py",
-  "            next_at += period\n"
-  "            sleep = next_at - _now()\n"
-  "            if sleep > 0:\n"
-  "                time.sleep(sleep)\n"
-  "            else:\n"
-  "                # Fell behind: give up the missed slots rather than sprinting to\n"
-  "                # catch up, which would burst packets at the controllers.\n"
-  "                next_at = _now()",
-  "            next_at += period\n"
+  "            due = t0 + n_next * period\n"
+  "            now = _now()\n"
+  "            if now < due:\n"
+  "                time.sleep(min(due - now, 0.05))\n"
+  "                continue",
+  "            now = _now()\n"
   "            time.sleep(period)"),
 
  ("the run loop's heartbeat reads the other clock", "ltcplay/cli.py",
@@ -1134,8 +1131,22 @@ MUTATIONS = [
   '        try:\n'),
 
  ('a stopped master cue leaves the pixels chasing on their own', 'ltcplay/session.py',
-  '                    bind_ip=self.bind, on_stop=self.player.drop_clock)',
-  '                    bind_ip=self.bind, on_stop=None)'),
+  '                    bind_ip=self.bind, on_stop=self.player.drop_clock,\n'
+  '                    on_pause=lambda: self.player.set_hard_park(True),\n'
+  '                    on_resume=lambda: self.player.set_hard_park(False))',
+  '                    bind_ip=self.bind, on_stop=None,\n'
+  '                    on_pause=lambda: self.player.set_hard_park(True),\n'
+  '                    on_resume=lambda: self.player.set_hard_park(False))'),
+
+ ('a Hold never tells the pixels it is a real pause, so they wait out '
+  'the noise debounce', 'ltcplay/session.py',
+  '                    on_pause=lambda: self.player.set_hard_park(True),',
+  '                    on_pause=lambda: None,'),
+
+ ('a Resume never tells the pixels the pause is over, so a hard park '
+  'can get stuck on', 'ltcplay/session.py',
+  '                    on_resume=lambda: self.player.set_hard_park(False))',
+  '                    on_resume=lambda: None)'),
 
  ('a master clock lets on_lost run the show file on its own', 'ltcplay/session.py',
   '                    self.player.on_lost = "hold"',
@@ -1437,11 +1448,12 @@ MUTATIONS = [
 
  ("pruning goes by the file's timestamp, not its name",
   "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:\n                continue',
-  '            if datetime.fromtimestamp(os.path.getmtime(os.path.join(\n'
-  '                    self.folder, name)), timezone.utc).date() >= cutoff \\\n'
-  '                    or d in newest:\n'
-  '                continue'),
+  '                if keep_from is None or d >= keep_from:\n'
+  '                    continue\n',
+  '                if keep_from is None or datetime.fromtimestamp(\n'
+  '                        os.path.getmtime(os.path.join(root, name)),\n'
+  '                        timezone.utc).date() >= keep_from:\n'
+  '                    continue\n'),
 
  ("pruning removes files it did not write", "ltcplay/journal.py",
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
@@ -1491,8 +1503,8 @@ MUTATIONS = [
   '        for le in out.log:\n            self.journal.append(le.to_dict())'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
-  '            if prune:\n                self._log(self.logbook.prune, d, state=state)',
-  '            if False:\n                self._log(self.logbook.prune, d, state=state)'),
+  '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
+  '            if False:\n                self._log(self.logbook.prune, d, state=state,'),
 
  ("the GPL path loads the journal", "ltcplay/web.py",
   'from . import brand as brand_mod\n',
@@ -1519,9 +1531,9 @@ MUTATIONS = [
 
  ("a torn last line from a power cut gets the next line glued on",
   "ltcplay/journal.py",
-  '        cut = path not in self._tails_ok and os.path.exists(path) and \\',
+  '        cut = path not in self._tails_ok and not new and \\',
   '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
-  '            and os.path.exists(path) and \\'),
+  '            and not new and \\'),
 
  ("a line cut short by a full disk is not looked for afterwards",
   "ltcplay/journal.py",
@@ -1548,9 +1560,18 @@ MUTATIONS = [
   '        if False:\n            return self.machine.date\n'
   '        return self.logbook.night_of(now)'),
 
- ("a clock a year ahead prunes every night", "ltcplay/journal.py",
-  '            if d >= cutoff or d in newest:',
-  '            if d >= cutoff:'),
+ ("a trusted clock still applies the newest-120 floor",
+  "ltcplay/journal.py",
+  '            if floor:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if True:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
+
+ ("an untrusted clock prunes by age", "ltcplay/journal.py",
+  '            if floor:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
+  '            if False:\n'
+  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
 
  ("pruning trusts a clock nobody has checked",
   "ltcplay/schedule_service.py",
@@ -1631,16 +1652,34 @@ MUTATIONS = [
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
   '                if prune:\n'
   '                    self._pruned_for = d\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
-  '            if prune:\n',
+  '            if prune:\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n',
   '                look = not self._looked_back\n'
   '                prune = self._pruned_for != d and self._prune_allowed()\n'
+  '                # Computed fresh, right here, never from a snapshot taken\n'
+  '                # earlier (round 2 review of PR 25): a trusted clock (the\n'
+  '                # time server agreed, and _watch_clock has noticed no jump\n'
+  '                # since) prunes by age alone; anything else keeps the\n'
+  '                # newest nights and incident folders that exist and\n'
+  '                # removes nothing by age, so a wrong clock can never call\n'
+  '                # good history old.\n'
+  '                floor = not self._clock_trusted()\n'
   '            if look:\n'
   '                self._look_back(d, state)\n'
   '                self._looked_back = True\n'
   '            if prune:\n'
-  '                self._pruned_for = d\n'),
+  '                self._pruned_for = d\n'
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)\n'),
 
  ("a failure while writing is silent", "ltcplay/journal.py",
   '        except Exception as e:\n'
@@ -2168,11 +2207,112 @@ MUTATIONS = [
   "    unknown = sorted(k for k in d if k not in allowed)\n    if unknown:",
   "    unknown = sorted(k for k in d if k not in allowed)\n    if False:"),
 
- ("an announcement plays over a running or paused show", "ltcplay/announce.py",
-  '    if state in BLOCKED_STATES:\n'
-  '        how = "paused" if state == "PAUSED" else "running"',
-  '    if False:\n'
-  '        how = "paused" if state == "PAUSED" else "running"'),
+ ("an announcement never holds the show first", "ltcplay/announce.py",
+  '            claim_epoch = None\n'
+  '            if self.hold_requester is not None:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
+  '                if hold_refusal:',
+  '            claim_epoch = None\n'
+  '            if False:\n'
+  '                hold_refusal, claim_epoch = self._request_hold(\n'
+  '                    who, screen,\n'
+  '                    detail=f"played the {label} announcement{screen_txt}")\n'
+  '                if hold_refusal:'),
+
+ # Deliberately no mutation here disabling the FIRST checkpoint's own
+ # "if hold_refusal:" alone (only the "if self.hold_requester is not
+ # None:" gate above it, and the SECOND checkpoint's own check): the
+ # second checkpoint re-checks (now read-only: _check_still_held)
+ # immediately before the stream starts, on purpose (the TOCTOU
+ # recheck), so disabling only the first check's own refusal changes
+ # nothing a test can observe -- the second one still refuses. Confirmed
+ # equivalent by hand (mutate.py run, 2026-09-26): NOT CAUGHT, correctly.
+ # The second checkpoint's own gate is covered instead by "the second
+ # check re-Holds instead of only reading the state" (review round 2).
+
+ ("the Hold request does not carry the Play press's own operator and "
+  "screen", "ltcplay/announce.py",
+  '        try:\n'
+  '            return self.hold_requester(who, screen, detail=detail)\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e)), None',
+  '        try:\n'
+  '            return self.hold_requester("", "", detail=detail)\n'
+  '        except Exception as e:\n'
+  '            return _clean(str(e)), None'),
+
+ ("Service.hold_for_announcement never refuses, even when Hold itself "
+  "was refused", "ltcplay/schedule_service.py",
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return out.refused or None, self.hold_epoch',
+  '            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,\n'
+  '                                        screen=screen, detail=detail or ""))\n'
+  '            return None, self.hold_epoch'),
+
+ ("announcements never Hold the scheduler in production, web.py never "
+  "wires it", "ltcplay/web.py",
+  '        httpd.announce.hold_requester = sched.hold_for_announcement',
+  '        pass'),
+
+ # ---------------------------------------------------------------------
+ # flamesafe/: Jeff, 2026-09-26: losing the show program disarms.
+ # ---------------------------------------------------------------------
+
+
+ ("flamesafe: losing the show program keeps the latches, so it re-arms when back",
+  "flamesafe/composer.py",
+  '            self._reset_latches("show program link lost",\n'
+  '                                journal=self._link_live)',
+  "            pass"),
+
+ ("flamesafe: a lost show program is journaled and counted on every stale tick, 40 lines a second",
+  "flamesafe/composer.py",
+  "                                journal=self._link_live)",
+  "                                journal=True)"),
+
+ ("flamesafe: a group may arm before the show program has ever answered",
+  "flamesafe/composer.py",
+  "        link_live = frame_fresh\n",
+  "        link_live = frame_fresh or self._frame_at is None\n"),
+
+ ("flamesafe: losing the show program is not journaled",
+  "flamesafe/composer.py",
+  '            self._event("link", "show program stopped answering: every group "\n'
+  '                                "disarmed; cycle the arm to re-arm once it "\n'
+  '                                "is back")',
+  "            pass"),
+
+ ("flamesafe: a lost show program shows flashing amber, telling the operator to cycle now",
+  "flamesafe/composer.py",
+  "            return (LINK_LOST, \"steady\")",
+  "            return (LINK_LOST, \"flashing\")"),
+
+ # "an announcement plays over a running or paused show" (origin/main,
+ # PR #23) retargeted here (Jeff, 2026-09-26): its old anchor,
+ # BLOCKED_STATES in interlock_refusal, is gone -- superseded by the
+ # Hold-first feature on this branch (an announcement Holds the show
+ # instead of refusing outright). The bypass PR #23's mutation checked
+ # for -- skipping the Hold block entirely -- is already exactly
+ # "an announcement never holds the show first" above, so this keeps
+ # the same protection (Hold before play) but breaks a different part
+ # of it: the paused case of the SECOND claim in hold_for_announcement.
+ # An already-paused show must count as already claimed, with no new
+ # Hold event and no journal noise (test:
+ # test_announce_hold_for_announcement_no_noise_when_already_held);
+ # dropping PAUSED from the recognized set here makes that second claim
+ # try to re-Hold a show that cannot take a HOLD_ON from PAUSED (see
+ # schedule.py's transition table), so it wrongly refuses instead of
+ # succeeding.
+ ("hold_for_announcement's second claim no longer recognizes an "
+  "already-paused show, only an already-held one",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if self.machine.state in (sch.HOLD,):\n"
+  "                return None, self.hold_epoch"),
 
  ("a second announcement is allowed to start while one plays",
   "ltcplay/announce.py",
@@ -2232,13 +2372,40 @@ MUTATIONS = [
   '            refusal = interlock_refusal(state)\n'
   '            if False:\n'),
 
- ("a 32-bit float announcement file is played as noise", "ltcplay/announce.py",
-  '    if tag == 3:\n'
-  '        raise ValueError(f"{_clean(path)} is a 32-bit floating point WAV, "\n'
-  '                         f"which is not supported. Export 16-bit or "\n'
-  '                         f"32-bit PCM (integer), not float, instead.")',
+ ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
+  '    if is_float:\n'
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted',
   '    if False:\n'
-  '        pass'),
+  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted'),
+
+ ("a 24-bit announcement file is shifted the wrong way, changing its "
+  "level 256x", "ltcplay/announce.py",
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, 1:] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)',
+  '        n_samples = len(raw) // 3\n'
+  '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
+  '        padded[:, :3] = np.frombuffer(raw, dtype=np.uint8)[\n'
+  '            :n_samples * 3].reshape(-1, 3)'),
+
+ ("24-bit PCM falls through to the wrong dtype lookup", "ltcplay/announce.py",
+  '    elif sampwidth == 3:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.',
+  '    elif False:\n'
+  '        # 24-bit PCM: 3 bytes per sample, little-endian.'),
+
+ ("an unsupported WAV format tag is accepted", "ltcplay/announce.py",
+  '    is_float = tag == 3\n'
+  '    if tag is not None and tag not in (1, 3):',
+  '    is_float = tag == 3\n'
+  '    if False:'),
+
+ ("a non-32-bit floating point WAV is accepted as float", "ltcplay/announce.py",
+  '        if bits != 32:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "',
+  '        if False:\n'
+  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "'),
 
  ("an announcement device that stopped answering is never noticed",
   "ltcplay/announce.py",
@@ -2246,9 +2413,9 @@ MUTATIONS = [
   '        if False:'),
 
  ("a show starting never stops a playing announcement", "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
   '            pass'),
 
  ("the show-start hook tears the stream down synchronously",
@@ -2271,8 +2438,8 @@ MUTATIONS = [
 
  ("the announcements hook runs inside Service.lock again",
   "ltcplay/schedule_service.py",
-  '            state_now, hook = self.machine.state, self.on_show_started\n'
-  '            self._pending_hooks.append(lambda: hook(state_now))',
+  '            reason = "resume" if ev.kind == sch.RESUME else "new"\n'
+  '            self._pending_hooks.append(lambda: hook(state_now, reason))',
   '            self.on_show_started(self.machine.state)'),
 
  ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
@@ -2375,14 +2542,16 @@ MUTATIONS = [
   '            self.ticker.stop()\n'
   '            label = self._cue[2]\n'
   '            n_frozen = self._frozen_n\n'
-  '            self._paused = False\n'
+  '            self._set_paused(False)\n'
   '            self._frozen = None\n'
+  '            self._frozen_n = None\n'
   '            self._frozen_pos = None\n'
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS',
   '            label = self._cue[2]\n'
   '            n_frozen = self._frozen_n\n'
-  '            self._paused = False\n'
+  '            self._set_paused(False)\n'
   '            self._frozen = None\n'
+  '            self._frozen_n = None\n'
   '            self._frozen_pos = None\n'
   '            self.ticker.stop()\n'
   '            t0 = self._clock() - (n_frozen + 1) / MASTER_FPS'),
@@ -2393,9 +2562,9 @@ MUTATIONS = [
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)\n'
-  '            self._paused = True\n'
+  '            self._set_paused(True)\n'
   '            self._sync_point("pause")',
-  '            self._paused = True\n'
+  '            self._set_paused(True)\n'
   '            self._sync_point("pause")\n'
   '            self._frozen = (h, m, s, f)\n'
   '            self._frozen_n = n\n'
@@ -2556,6 +2725,259 @@ MUTATIONS = [
   "        return end + (frac ** 2) * (start - end)\n"
   "    frac = (v_lin - start) / (end - start)\n"
   "    return start + (frac ** 2) * (end - start)"),
+
+ ("show length no longer follows the show's own media when nothing is "
+  "configured", "ltcplay/clock.py",
+  "        if show_len is None:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):",
+  "        if False:\n"
+  "            # Show length follows the show's own media (Jeff, 2026-09-26):"),
+
+ ("a configured show length shorter than the music is no longer refused",
+  "ltcplay/clock.py",
+  "        elif derived is not None and show_len < derived:",
+  "        elif False:"),
+
+ ("the derived show length takes whichever cue comes first, not the "
+  "latest end", "ltcplay/clock.py",
+  "        end = max(end or 0.0, c.end_seconds)",
+  "        end = c.end_seconds"),
+
+ ("the scheduler's show_len_s is never checked against the show's media",
+  "ltcplay/web.py",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if configured < derived:",
+  "                configured = schedule.rule.show_len_s\n"
+  "                if False:"),
+
+ ("the show length derivation for the scheduler check always finds "
+  "nothing", "ltcplay/clock.py",
+  "        if s.tl is None or s.tl.clock is None:",
+  "        if True:"),
+
+ ("the hold epoch never bumps, so a stale claim looks still good",
+  "ltcplay/schedule_service.py",
+  "            if was_held != is_held:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
+ ("midnight sweeping a held night never bumps the hold epoch",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state == sch.HOLD:\n"
+  "                self.hold_epoch += 1",
+  "            if False:\n"
+  "                self.hold_epoch += 1"),
+
+ ("the second check re-Holds instead of only reading the state",
+  "ltcplay/announce.py",
+  "            if self.hold_requester is not None \\\n"
+  "                    and not self._check_still_held(claim_epoch):",
+  "            if False:"),
+
+ ("hold_still_claimed ignores the epoch, only the state",
+  "ltcplay/schedule_service.py",
+  "            return (self.hold_epoch == claim_epoch\n"
+  "                    and self.machine.state in (sch.HOLD, sch.PAUSED))",
+  "            return self.machine.state in (sch.HOLD, sch.PAUSED)"),
+
+ ("on_show_started always says a show started, never that it resumed",
+  "ltcplay/announce.py",
+  "            self._player.stop_reason = (\"the show resumed\"\n"
+  "                                        if reason == \"resume\" else\n"
+  "                                        \"a show started\")",
+  "            self._player.stop_reason = \"a show started\""),
+
+ ("the resume reason is never computed, on_show_started never learns why",
+  "ltcplay/schedule_service.py",
+  "            reason = \"resume\" if ev.kind == sch.RESUME else \"new\"",
+  "            reason = \"new\""),
+
+ ("hold_for_announcement issues HOLD_ON even when already held or paused",
+  "ltcplay/schedule_service.py",
+  "            if self.machine.state in (sch.HOLD, sch.PAUSED):\n"
+  "                return None, self.hold_epoch",
+  "            if False:\n"
+  "                return None, self.hold_epoch"),
+
+ ("an announcement's Hold claim never names the announcement in the "
+  "journal", "ltcplay/announce.py",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen,\n"
+  "                    detail=f\"played the {label} announcement{screen_txt}\")",
+  "                hold_refusal, claim_epoch = self._request_hold(\n"
+  "                    who, screen)"),
+
+ ("schedule.py never uses the announcement's own claim wording, during a "
+  "show", "ltcplay/schedule.py",
+  "        if ev.detail:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")",
+  "        if False:\n"
+  "            text = (f\"{_operator_name(ev)} {ev.detail}. Show {n} is held \"\n"
+  "                    f\"for it: flame cues zeroed, lasers blanked, music \"\n"
+  "                    f\"fading out. Resume carries on from there.\")"),
+
+ ("schedule.py never uses the announcement's own claim wording, between "
+  "shows", "ltcplay/schedule.py",
+  "    if ev.detail:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")",
+  "    if False:\n"
+  "        text = (f\"{_operator_name(ev)} {ev.detail}. No show starts by \"\n"
+  "                f\"itself until Resume; a show whose time passes meanwhile \"\n"
+  "                f\"is delayed and waits for Start now.\")"),
+
+ ("more than one candidate show file is not treated as ambiguous",
+  "ltcplay/clock.py",
+  "    if len(candidates) > 1:",
+  "    if False:"),
+
+ ("a folder with no derivable show length never warns, it silently skips",
+  "ltcplay/web.py",
+  "            elif warning:",
+  "            elif False:"),
+
+ ("WAVE_FORMAT_EXTENSIBLE float is never resolved, it stays refused with "
+  "a raw GUID", "ltcplay/announce.py",
+  "                    if tag == 0xFFFE and len(body) >= 40:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")",
+  "                    if False:\n"
+  "                        guid = body[24:40]\n"
+  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
+  "                            return int.from_bytes(guid[:4], \"little\")"),
+
+ ("the data chunk size sanity check never runs", "ltcplay/announce.py",
+  "    problem = _data_chunk_size_problem(path, size)\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)",
+  "    problem = None\n"
+  "    if problem:\n"
+  "        raise ValueError(problem)"),
+
+ ("a placeholder data chunk size (0 or 0xFFFFFFFF) is accepted as healthy",
+  "ltcplay/announce.py",
+  "                    if size == 0 or size == 0xFFFFFFFF:",
+  "                    if False:"),
+
+ ("a data chunk bigger than the file on disk is accepted, overstating "
+  "the length", "ltcplay/announce.py",
+  "                    if size > remaining:",
+  "                    if False:"),
+ # -- the journal, Jeff's settings of 2026-09-26 ------------------------
+ ("a batch goes to the disk without an fsync", "ltcplay/journal.py",
+  '                self._fsync(fh.fileno())\n                if new:',
+  '                pass\n                if new:'),
+
+ ("a line can wait five seconds in memory", "ltcplay/journal.py",
+  '            self._wake.wait(MAX_LINE_WAIT_S)',
+  '            self._wake.wait(5.0)'),
+
+ ("night files are kept 90 days again", "ltcplay/journal.py",
+  'KEEP_DAYS = 120',
+  'KEEP_DAYS = 90'),
+
+ ("incident folders are never pruned", "ltcplay/journal.py",
+  '            found.append((d, name, inc_root, True))',
+  '            pass'),
+
+ ("a checked clock still keeps the newest nights",
+  "ltcplay/schedule_service.py",
+  '                floor = not self._clock_trusted()',
+  '                floor = True'),
+
+ ("an unchecked clock prunes by age alone", "ltcplay/schedule_service.py",
+  '                self._log(self.logbook.prune, d, state=state, floor=floor)',
+  '                self._log(self.logbook.prune, d, state=state, floor=False)'),
+
+ ("the free space floor is 100 MB again", "ltcplay/journal.py",
+  'FREE_FLOOR_MB = 500',
+  'FREE_FLOOR_MB = 100'),
+
+ ("a start looks back only one night for a missing summary",
+  "ltcplay/schedule_service.py",
+  '            if n < d and not os.path.exists(',
+  '            if n == d - timedelta(days=1) and not os.path.exists('),
+
+ ("the journal says End night again", "ltcplay/schedule.py",
+  '            f"{_operator_name(ev)} pressed Close for the night"',
+  '            f"{_operator_name(ev)} pressed End night"'),
+
+ ("the transport panel still says End night", "ltcplay/schedule.py",
+  '    {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,',
+  '    {"id": "end_night", "label": "End night", "event": END_NIGHT,'),
+ # Pixel output pacing, Fire & Ice bench B9, 2026-09-25: a show's pixel
+ # timing against the cue stepped once, under load, and never came back.
+ # The fix (this file, Player._loop()) is clock.py's Ticker's own
+ # technique -- every deadline computed fresh from one origin read once,
+ # never from a running total or from when the last frame actually went
+ # out -- so these two mutations put back the two ways that can regress.
+ ("the pixel loop's origin moves every frame instead of staying fixed",
+  'ltcplay/player.py',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1',
+  '                time.sleep(0.01)\n'
+  '            n_next = n + 1\n'
+  '            t0 = now'),
+
+ ("a stalled pixel loop never catches up to the frame that is actually "
+  "due", 'ltcplay/player.py',
+  '            n = max(int((now - t0) / period + 1e-9), n_next)',
+  '            n = n_next'),
+
+ # Opus review of PR #19, two survivors it found with its own repro
+ # scripts (scratchpad/pixelstep_failtick.py, pixelstep's sleep-cap
+ # check): a failed tick has to move the schedule on regardless, or the
+ # loop retries the same already-past slot forever; and the wait for a
+ # far-off deadline has to stay capped, or Stop would wait out the whole
+ # gap.
+ ("a failed pixel tick no longer advances the schedule", 'ltcplay/player.py',
+  '                time.sleep(0.01)\n            n_next = n + 1',
+  '                time.sleep(0.01)\n                continue\n            n_next = n + 1'),
+
+ ("the pixel loop's wait for a far-off deadline is no longer capped",
+  'ltcplay/player.py',
+  '                time.sleep(min(due - now, 0.05))',
+  '                time.sleep(due - now)'),
+
+ # This fix, 2026-09-26: bench evidence, Fire & Ice, run hold1 (B4). Two
+ # findings, two mutations.
+ ("resume() forgets which frame the ticker already considers itself at, "
+  "so it double-counts a hold as skipped", 'ltcplay/clock.py',
+  '            return self.ticker.start(t0, n0=n_frozen + 1)',
+  '            return self.ticker.start(t0)'),
+
+ ("a machine-generated pause waits for the same debounce a real LTC "
+  "deck's noise needs", 'ltcplay/player.py',
+  '        parked = hard_parked or (park_since is not None\n'
+  '                                 and now - park_since >= self.park_s)\n'
+  '\n'
+  '        since = now - last',
+  '        parked = (park_since is not None\n'
+  '                  and now - park_since >= self.park_s)\n'
+  '\n'
+  '        since = now - last'),
+
+ # The same bypass, the same debounce, but read by _state_from_feed()
+ # instead of _tick(): the override path (Freerun, Blackout, Preshow)
+ # keeps the feed's OWN readout honest through _state_from_feed(), a
+ # second, separate copy of the same parked computation -- so a
+ # machine-generated Hold has to reach this one too, or the display lies
+ # about being parked for up to park_s while any override is engaged.
+ ("under Freerun, Blackout or Preshow, a machine-generated pause waits "
+  "for the same debounce a real LTC deck's noise needs",
+  'ltcplay/player.py',
+  '        parked = hard_parked or (park_since is not None\n'
+  '                                 and now - park_since >= self.park_s)\n'
+  '        since = now - last',
+  '        parked = (park_since is not None\n'
+  '                  and now - park_since >= self.park_s)\n'
+  '        since = now - last'),
+
  # A show file, or another JSON file a person hand-edits, saved by Windows
  # Notepad or PowerShell carries a UTF-8 BOM. "utf-8-sig" strips it if it is
  # there and does nothing if it is not; plain "utf-8" instead reports
@@ -2673,6 +3095,375 @@ def build():
             h.update(b"<unreadable>")
     _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
     return _BUILD_CACHE'''),
+
+
+ # -- audio_master (handoff section 4a, Jeff 2026-09-27): ltcplay plays the
+ # show's multi-track audio and the timecode is read off the audio device.
+ # One per rule: the refusals, no Windows shared mixer, the audio's own
+ # process, the mix, following the audio, Hold/Resume/Abort, the interface
+ # lost and back, the end of the cue, and the wall around GPL.
+ ('audio_master: a stem at another sample rate plays',
+  'ltcplay/showaudio.py',
+  '            if info.rate != RATE:\n',
+  '            if False:\n'),
+
+ ('audio_master: stems of different lengths play',
+  'ltcplay/showaudio.py',
+  '        if len(set(frames)) > 1 and not cue.allow_different_lengths:\n',
+  '        if False:\n'),
+
+ ('audio_master: a missing stem is not named as missing',
+  'ltcplay/showaudio.py',
+  '            if not os.path.exists(path):\n                raise AudioConfigError(\n                    f"The {role} audio file',
+  '            if False:\n                raise AudioConfigError(\n                    f"The {role} audio file'),
+
+ ('audio_master: the show file may ask for a rate other than 48000',
+  'ltcplay/showaudio.py',
+  '        if rate != RATE or isinstance(rate, bool):\n',
+  '        if isinstance(rate, bool):\n'),
+
+ ('audio_master: an interface with too few outputs is opened',
+  'ltcplay/showaudio.py',
+  '    if channels > have:\n',
+  '    if False:\n'),
+
+ ('audio_master: Windows falls back to the shared mixer on its own',
+  'ltcplay/showaudio.py',
+  '        order = list(WINDOWS_APIS) + (list(WINDOWS_SHARED_APIS)\n                                      if allow_shared else [])',
+  '        order = list(WINDOWS_APIS) + list(WINDOWS_SHARED_APIS)'),
+
+ ("audio_master: WASAPI is preferred over the interface's ASIO driver",
+  'ltcplay/showaudio.py',
+  '    ("ASIO", False, "ASIO", True),\n    ("Windows WASAPI", True, "WASAPI exclusive", True),\n',
+  '    ("Windows WASAPI", True, "WASAPI exclusive", True),\n    ("ASIO", False, "ASIO", True),\n'),
+
+ ('audio_master: WASAPI is opened in shared mode',
+  'ltcplay/showaudio.py',
+  '        extra = sd.WasapiSettings(exclusive=True)',
+  '        extra = sd.WasapiSettings(exclusive=False)'),
+
+ ('audio_master: sounddevice never sees ASIO',
+  'ltcplay/showaudio.py',
+  '        os.environ["SD_ENABLE_ASIO"] = "1"\n',
+  '        pass\n'),
+
+ ("audio_master: a stem's gain is ignored",
+  'ltcplay/showaudio.py',
+  '                col = seg[:, 0] * np.float32(gain)\n',
+  '                col = seg[:, 0]\n'),
+
+ ('audio_master: stems on one output replace each other',
+  'ltcplay/showaudio.py',
+  '                    out[:k, o] += seg[:, i] * np.float32(gain)\n',
+  '                    out[:k, o] = seg[:, i] * np.float32(gain)\n'),
+
+ ("audio_master: a stem's channels go to the wrong outputs",
+  'ltcplay/showaudio.py',
+  '                for i, o in enumerate(outs):\n                    out[:k, o]',
+  '                for i, o in enumerate(outs[::-1]):\n                    out[:k, o]'),
+
+ ('audio_master: the mix goes over full scale',
+  'ltcplay/showaudio.py',
+  '            np.clip(out, -1.0, 1.0, out=out)\n',
+  '            pass\n'),
+
+ ('audio_master: the audio process is forked, not spawned',
+  'ltcplay/showaudio.py',
+  '        self._ctx = multiprocessing.get_context("spawn")',
+  '        self._ctx = multiprocessing.get_context("fork")'),
+
+ ('audio_master: a dead audio process is never replaced',
+  'ltcplay/showaudio.py',
+  '                np_, nc, why = self._spawn(stop)\n                if why is None:',
+  '                np_, nc, why = None, None, "not replaced"\n                if why is None:'),
+
+ ('audio_master: PortAudio is re-initialised under a working stream',
+  'ltcplay/showaudio.py',
+  '            if why is None:\n                return\n            self._drop()',
+  '            if why is None:\n                self.sd._initialize()\n                return\n            self._drop()'),
+
+ ('audio_master: reopening the interface never backs off',
+  'ltcplay/showaudio.py',
+  '        self.next_try = now + self.RETRY_S[min(self.fails - 1,\n',
+  '        self.next_try = now + self.RETRY_S[min(0,\n'),
+
+ ('audio_master: the clock stops following the audio after the first callback',
+  'ltcplay/clock.py',
+  '            self._epoch += (e - self._epoch) * self.FOLLOW_SLEW\n',
+  '            pass\n'),
+
+ ('audio_master: a frame goes out late instead of when the audio reaches it',
+  'ltcplay/clock.py',
+  '        return min(self._epoch + (last + 1) / MASTER_FPS,\n                   now + self.MAX_SLEEP_S)',
+  '        return now + self.MAX_SLEEP_S'),
+
+ ('audio_master: Hold freezes the timecode before the audio has stopped',
+  'ltcplay/clock.py',
+  '                self._stop_frame = None\n                self._pause_req = True\n',
+  '                self._stop_frame = None\n                self._pause_req = True\n                self._freeze(now)\n'),
+
+ ('audio_master: Hold stops repeating the frozen frame',
+  'ltcplay/clock.py',
+  '                self._send_frame(self._frozen_frame, now, frozen=True)\n',
+  '                self._last_send_at = now\n'),
+
+ ('audio_master: Resume restarts the audio away from where it stopped',
+  'ltcplay/clock.py',
+  '        start = int(round(self._frozen_sec * self.rate))\n        fade = ',
+  '        start = int(round(self._frozen_sec * self.rate)) + 480\n        fade = '),
+
+ ('audio_master: Abort cuts the audio instead of fading it',
+  'ltcplay/clock.py',
+  '            self._send(("level", 0.0, fade))\n            self._level_down = True\n',
+  '            self._end("stopped", now)\n            return\n'),
+
+ ('audio_master: losing the audio jumps the timecode',
+  'ltcplay/clock.py',
+  '        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here',
+  '        self._epoch = (self._epoch or now) - 0.2\n        self._mode = "freerun"\n        self._target = None\n        # A stall seen only from here'),
+
+ ('audio_master: a dropout says nothing on the page or in the journal',
+  'ltcplay/clock.py',
+  '        self._set_fault(self._loss_fault, now)\n',
+  '        pass\n'),
+
+ ('audio_master: the audio never comes back when the interface does',
+  'ltcplay/clock.py',
+  '        if now < self._next_return:\n            return\n',
+  '        if True:\n            return\n'),
+
+ ('audio_master: the audio comes back where it dropped out, not where the show is',
+  'ltcplay/clock.py',
+  '        start = now - self._epoch + self.LEAD_S + self._heard_latency()\n',
+  '        start = (self._lost_at or now) - self._epoch + self.LEAD_S + self._heard_latency()\n'),
+
+ ('audio_master: the handover jumps instead of slewing',
+  'ltcplay/clock.py',
+  '        self._epoch += max(-lim, min(lim, d))\n',
+  '        self._epoch += d\n'),
+
+ ('audio_master: the audio ending does not end the cue',
+  'ltcplay/clock.py',
+  '        if frame >= cue["tc_frames"]:\n            self._end("finished", now)',
+  '        if False:\n            self._end("finished", now)'),
+
+ ('audio_master: an interface that cannot run the show does not stop Run',
+  'ltcplay/session.py',
+  '            except ValueError as e:\n                self.stop()\n                raise SessionError(str(e))',
+  '            except ValueError as e:\n                pass'),
+
+ ('audio_master: the show audio is loaded by every clock',
+  'ltcplay/clock.py',
+  'from .tc import frames_to_tc, tc_to_frames\n',
+  'from .tc import frames_to_tc, tc_to_frames\nfrom . import showaudio as _eager_showaudio  # noqa\n'),
+
+ ('audio_master: artnet_master accepts an audio block',
+  'ltcplay/clock.py',
+  '        keys = cls.KEYS | {"audio"} if doc.get("source") == "audio_master" \\\n            else cls.KEYS\n',
+  '        keys = cls.KEYS | {"audio"}\n'),
+
+ ("audio_master: the page never shows the show audio's faults",
+  'ltcplay/display.py',
+  '        out.extend(more())\n',
+  '        pass\n'),
+
+ ('audio_master: audio that comes back far off the show is slewed for minutes',
+  'ltcplay/clock.py',
+  '            if self._target is None and abs(e - self._epoch) > self.RESEEK_S:\n',
+  '            if False:\n'),
+
+
+ # -- audio_master, review of PR 26 (2026-09-27): late starts, stale and
+ # torn readings, the frozen frame floor, Abort's latency, Hold during a
+ # loss, bad WAV sizes, latency spikes, hiccups, the engine's generations,
+ # and a main script with no guard.
+ ('audio_master: a late cue does not start at 00:00:00:00',
+  'ltcplay/clock.py',
+  "        if last is None:\n            # Every cue's timecode starts at 00:00:00:00",
+  "        if False:\n            # Every cue's timecode starts at 00:00:00:00"),
+
+ ('audio_master: a reading from an older play moves the clock',
+  'ltcplay/clock.py',
+  "        if self._cue is None or r.token != self._token:\n            return                       # another cue's",
+  "        if self._cue is None:\n            return                       # another cue's"),
+
+ ('audio_master: the frozen frame can fall below the last frame sent',
+  'ltcplay/clock.py',
+  '            frame = max(frame, self._last_frame)\n',
+  '            pass\n'),
+
+ ('audio_master: a torn shared-memory read is believed',
+  'ltcplay/showaudio.py',
+  '            continue                     # a callback wrote meanwhile\n',
+  '            pass\n'),
+
+ ('audio_master: Abort stops before its fade has been heard',
+  'ltcplay/clock.py',
+  '                self._heard_latency() + 0.05\n',
+  '                0.0\n'),
+
+ ('audio_master: Hold does nothing while the audio is lost',
+  'ltcplay/clock.py',
+  '                self._send(("pause", 0, self._token))\n            self._freeze(now)\n',
+  '                self._send(("pause", 0, self._token))\n            return\n'),
+
+ ('audio_master: a WAV with a placeholder data size plays',
+  'ltcplay/showaudio.py',
+  '                if size == 0 or size == 0xFFFFFFFF:\n',
+  '                if False:\n'),
+
+ ('audio_master: a WAV cut off short plays',
+  'ltcplay/showaudio.py',
+  '                if size > left:\n',
+  '                if False:\n'),
+
+ ("audio_master: a driver's latency spike moves the clock",
+  'ltcplay/clock.py',
+  '        if abs(e - ref) <= self.OUTLIER_S:\n',
+  '        if True:\n'),
+
+ ('audio_master: a short hiccup is taken for a lost interface',
+  'ltcplay/clock.py',
+  '    STALL_S = 0.6\n',
+  '    STALL_S = 0.3\n'),
+
+ ('audio_master: the same stream playing on is stopped instead of followed',
+  'ltcplay/clock.py',
+  '        if self._mode == "freerun" and self._stall_loss and \\\n',
+  '        if False and self._stall_loss and \\\n'),
+
+ ('audio_master: a stall stops the music straight away',
+  'ltcplay/clock.py',
+  '        if not stall:\n            self._send(("stop", 0, None))\n',
+  '        self._send(("stop", 0, None))\n'),
+
+ ('audio_master: the audio moving for real is never followed',
+  'ltcplay/clock.py',
+  '        if self._outliers >= self.OUTLIER_RUN:\n            self._resync = True\n',
+  '        pass\n'),
+
+ ('audio_master: health stays red after a Resume brings the audio back',
+  'ltcplay/clock.py',
+  '                self._set_paused(False)\n            self._recovered(now)\n',
+  '                self._set_paused(False)\n'),
+
+ ('audio_master: sound that stops by itself is followed quietly',
+  'ltcplay/clock.py',
+  '                self._stopped_playing(r, now)\n',
+  '                pass\n'),
+
+ ('audio_master: errors making the sound never reach the page',
+  'ltcplay/clock.py',
+  '        if self._render_err_at is not None and \\\n',
+  '        if False and \\\n'),
+
+ ('audio_master: Resume at the very end of the audio reads as a dropout',
+  'ltcplay/clock.py',
+  '        if start >= cue["frames"]:\n',
+  '        if False:\n'),
+
+ ("audio_master: Stop waits on the audio's watch thread",
+  'ltcplay/showaudio.py',
+  '        self._reap(p, c, self.CLOSE_S)\n        self._watch = None\n',
+  '        self._reap(p, c, self.CLOSE_S)\n        if self._watch is not None:\n            self._watch.join(2.0)\n        self._watch = None\n'),
+
+ ("audio_master: the audio process re-runs the program's main script",
+  'ltcplay/showaudio.py',
+  '                main.__dict__.pop("__file__", None)\n                main.__dict__["__spec__"] = None\n',
+  '                pass\n'),
+
+ ("the Mac app's boot.py runs the engine without a __main__ guard",
+  'Build LTC Player app.command',
+  '\nif __name__ == "__main__":\n    # --selfcheck is used',
+  '\nif True:\n    # --selfcheck is used'),
+
+
+ # -- audio_master, Jeff's answers (2026-09-27): no show without its
+ # interface, at most 8 outputs and 8 stems, one audio process per user,
+ # and liveness from the stream's progress, never from its level.
+ ('audio_master: a show starts without its audio interface',
+  'ltcplay/clock.py',
+  '            if not self._device_ok:\n                # Jeff, 2026-09-27: a show never starts',
+  '            if False:\n                # Jeff, 2026-09-27: a show never starts'),
+
+ ('audio_master: a cue may have more than 8 stems',
+  'ltcplay/showaudio.py',
+  '        if len(stems) > MAX_STEMS:\n',
+  '        if False:\n'),
+
+ ('audio_master: the show may use more than 8 outputs',
+  'ltcplay/showaudio.py',
+  'MAX_OUTPUTS = 8              # Jeff',
+  'MAX_OUTPUTS = 64             # Jeff'),
+
+ ('audio_master: a second audio process plays alongside the first',
+  'ltcplay/showaudio.py',
+  '            held = take_lock(spec)\n',
+  '            held = type("NoLock", (), {"release": lambda self: None})()\n'),
+
+ ('audio_master: silence in the music is taken for a lost interface',
+  'ltcplay/showaudio.py',
+  '        try:\n            outdata[:] = m.render(frames)\n        except Exception:\n            self.render_errors += 1\n',
+  '        try:\n            outdata[:] = m.render(frames)\n            if outdata.any():\n                self._loud_at = now\n            self.last_cb = getattr(self, "_loud_at", self.last_cb)\n        except Exception:\n            self.render_errors += 1\n'),
+
+
+ # -- audio_master, Windows bench B23 (the Scarlett): every allowed host
+ # API is tried in order until one takes 48 kHz.
+ ('audio_master: one host API refusing 48 kHz ends the search (B23)',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it will not play {channels} output(s) "',
+  '            raise Refusal(str(e))\n            tried.append((label, f"it will not play {channels} output(s) "'),
+
+ ('audio_master: WDM-KS is never tried',
+  'ltcplay/showaudio.py',
+  '    ("Windows WDM-KS", False, "WDM-KS", True),\n',
+  ''),
+
+ ('audio_master: an endpoint someone else holds ends the search',
+  'ltcplay/showaudio.py',
+  '            tried.append((label, f"it would not open ({_clean(e)})"))\n            continue\n',
+  '            raise Unavailable(str(e))\n'),
+
+ ('audio_master: the refusal does not say what was tried and why',
+  'ltcplay/showaudio.py',
+  '    said = "; ".join(f"{label}: {why}" for label, why in tried)\n',
+  '    said = "nothing worked"\n'),
+
+
+ # -- audio_master: loading is all or nothing (Jeff, 2026-09-27).
+ ('audio_master: a short read returns a shorter clip',
+  'ltcplay/showaudio.py',
+  '    if done != info.frames:\n',
+  '    if False:\n'),
+
+ ('audio_master: a stem length mismatch is accepted',
+  'ltcplay/showaudio.py',
+  '                if same_length and len(lengths) > 1:\n',
+  '                if False:\n'),
+
+ ('audio_master: a stem shorter than it was when checked is accepted',
+  'ltcplay/showaudio.py',
+  '                    if pcm.shape[0] != want:\n',
+  '                    if False:\n'),
+
+ ('audio_master: a stem with no checked length is accepted',
+  'ltcplay/showaudio.py',
+  '                    if len(st) <= 3:\n',
+  '                    if False:\n'),
+ # -- round 1 review of PR 25 -------------------------------------------
+ ("a clock jump is not noticed", "ltcplay/schedule_service.py",
+  '            if abs(wall_elapsed - perf_elapsed) > CLOCK_JUMP_LIMIT_S:\n',
+  '            if False:\n'),
+
+ ("a stale .partial is judged by the date in its name",
+  "ltcplay/journal.py",
+  '                if name.endswith(".partial"):\n',
+  '                if False:\n'),
+
+ ("prune() no longer shares save_incident()'s lock", "ltcplay/journal.py",
+  '        removed, problems, stale = [], [], []\n        with self._io:\n',
+  '        removed, problems, stale = [], [], []\n'
+  '        with threading.Lock():\n'),
 
 ]
 
@@ -2848,6 +3639,8 @@ def _run():
         print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
               "so a restore did not land. Fix that before trusting any line "
               "above.")
+        for w in _LAST_FAILS:
+            print(f"      {w}")
         return 2
     print("tree restored and green")
     if not expected_file:

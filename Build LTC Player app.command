@@ -301,103 +301,104 @@ def say(msg):
         pass
 
 
-# --selfcheck is used by the build script to prove, through a real launch,
-# that this app starts and can load everything it needs. The answer is
-# written OUTSIDE the bundle: a file written inside would break the
-# signature the check is there to verify.
-if "--selfcheck" in sys.argv[1:]:
-    import json
-    result = {"folder": folder, "python": sys.executable, "ok": False}
-    try:
-        import numpy, sounddevice, zstandard        # noqa: F401
-        from ltcplay.cli import main                # noqa: F401
-        result["ok"] = True
-    except Exception as e:
-        result["error"] = f"{type(e).__name__}: {e}"
-    with open(os.path.join(folder, ".ltcplay_appcheck"), "w") as fh:
-        json.dump(result, fh)
-    sys.exit(0 if result["ok"] else 1)
-
-
-def open_page():
-    """Open the browser once the port actually answers.
-
-    The engine opening its own browser was swallowing every failure, so a
-    page that never appeared looked exactly like an app that never started.
-    And opening one before the port is up lands the browser on a connection
-    error that it then sits on."""
-    import socket
-    for _ in range(150):
-        s = socket.socket()
-        s.settimeout(0.2)
+if __name__ == "__main__":
+    # --selfcheck is used by the build script to prove, through a real launch,
+    # that this app starts and can load everything it needs. The answer is
+    # written OUTSIDE the bundle: a file written inside would break the
+    # signature the check is there to verify.
+    if "--selfcheck" in sys.argv[1:]:
+        import json
+        result = {"folder": folder, "python": sys.executable, "ok": False}
         try:
-            s.connect(("127.0.0.1", int(PORT)))
-            note("the engine is listening on " + PORT)
-            break
-        except OSError:
-            time.sleep(0.1)
-        finally:
+            import numpy, sounddevice, zstandard        # noqa: F401
+            from ltcplay.cli import main                # noqa: F401
+            result["ok"] = True
+        except Exception as e:
+            result["error"] = f"{type(e).__name__}: {e}"
+        with open(os.path.join(folder, ".ltcplay_appcheck"), "w") as fh:
+            json.dump(result, fh)
+        sys.exit(0 if result["ok"] else 1)
+
+
+    def open_page():
+        """Open the browser once the port actually answers.
+
+        The engine opening its own browser was swallowing every failure, so a
+        page that never appeared looked exactly like an app that never started.
+        And opening one before the port is up lands the browser on a connection
+        error that it then sits on."""
+        import socket
+        for _ in range(150):
+            s = socket.socket()
+            s.settimeout(0.2)
             try:
-                s.close()
-            except Exception:
-                pass
-    else:
-        say("The show page never came up.\n\nThe engine started but nothing "
-            "is listening on port " + PORT + ". Something else may be using "
-            "it. There is a full record in:\n\n~/Library/Logs/"
-            "LTCPlayer-start.log")
-        return
-    try:
-        subprocess.Popen(["/usr/bin/open", URL])
-        note("opened " + URL)
-    except Exception as e:
-        say("The show is running at:\n\n" + URL + "\n\nbut the browser "
-            "would not open by itself (" + repr(e) + "). Type that address "
-            "in yourself.")
-
-
-try:
-    from ltcplay.cli import main
-except Exception:
-    say("The show program could not be loaded.\n\n"
-        + traceback.format_exc()[-1200:])
-    sys.exit(70)
-
-args = [a for a in sys.argv[1:] if a != "--selfcheck"]
-serving = not args
-if serving:
-    args = ["serve", "--port", PORT, "--bind", "127.0.0.1", "--no-browser"]
-    threading.Thread(target=open_page, daemon=True).start()
-
-# Everything the engine prints, including the reason it could not start,
-# goes to the log. Without this it goes to a terminal that does not exist.
-rc = 70
-try:
-    with open(LOG, "a", buffering=1) as fh:
-        fh.write("\n" + time.strftime("%Y-%m-%d %H:%M:%S")
-                 + "  starting in " + folder + "\n")
-        sys.stdout = sys.stderr = fh
+                s.connect(("127.0.0.1", int(PORT)))
+                note("the engine is listening on " + PORT)
+                break
+            except OSError:
+                time.sleep(0.1)
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        else:
+            say("The show page never came up.\n\nThe engine started but nothing "
+                "is listening on port " + PORT + ". Something else may be using "
+                "it. There is a full record in:\n\n~/Library/Logs/"
+                "LTCPlayer-start.log")
+            return
         try:
-            rc = main(args)
-        finally:
-            sys.stdout = sys.__stdout__
-            sys.stderr = sys.__stderr__
-except SystemExit:
-    raise
-except Exception:
-    say("LTC Player stopped with an error.\n\n"
-        + traceback.format_exc()[-1200:])
-    sys.exit(70)
+            subprocess.Popen(["/usr/bin/open", URL])
+            note("opened " + URL)
+        except Exception as e:
+            say("The show is running at:\n\n" + URL + "\n\nbut the browser "
+                "would not open by itself (" + repr(e) + "). Type that address "
+                "in yourself.")
 
-if serving and rc:
-    tail = ""
+
     try:
-        tail = "".join(open(LOG).readlines()[-8:])
+        from ltcplay.cli import main
     except Exception:
-        pass
-    say("LTC Player could not start.\n\n" + tail)
-note("exited with " + repr(rc))
-sys.exit(rc or 0)
+        say("The show program could not be loaded.\n\n"
+            + traceback.format_exc()[-1200:])
+        sys.exit(70)
+
+    args = [a for a in sys.argv[1:] if a != "--selfcheck"]
+    serving = not args
+    if serving:
+        args = ["serve", "--port", PORT, "--bind", "127.0.0.1", "--no-browser"]
+        threading.Thread(target=open_page, daemon=True).start()
+
+    # Everything the engine prints, including the reason it could not start,
+    # goes to the log. Without this it goes to a terminal that does not exist.
+    rc = 70
+    try:
+        with open(LOG, "a", buffering=1) as fh:
+            fh.write("\n" + time.strftime("%Y-%m-%d %H:%M:%S")
+                     + "  starting in " + folder + "\n")
+            sys.stdout = sys.stderr = fh
+            try:
+                rc = main(args)
+            finally:
+                sys.stdout = sys.__stdout__
+                sys.stderr = sys.__stderr__
+    except SystemExit:
+        raise
+    except Exception:
+        say("LTC Player stopped with an error.\n\n"
+            + traceback.format_exc()[-1200:])
+        sys.exit(70)
+
+    if serving and rc:
+        tail = ""
+        try:
+            tail = "".join(open(LOG).readlines()[-8:])
+        except Exception:
+            pass
+        say("LTC Player could not start.\n\n" + tail)
+    note("exited with " + repr(rc))
+    sys.exit(rc or 0)
 BOOT
 step "boot script written"
 

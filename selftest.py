@@ -985,9 +985,10 @@ def test_pixel_pacing_never_accumulates_error():
     # sleep is deliberately dishonest: it always overshoots a little and
     # stalls hard now and then, exactly what a real OS timer does under
     # load. A pacer built on `time.sleep(period)` and a running total would
-    # inherit every one of those overshoots forever; one built on absolute
-    # deadlines (next_at += period, computed fresh from itself, never from
-    # when the last frame actually went out) cannot.
+    # inherit every one of those overshoots forever; one built on a fixed
+    # origin (`t0`, read once, every deadline computed fresh as
+    # `t0 + n_next * period`) cannot, because it never asks "when did the
+    # last frame go out", only "how far is it from where this started".
     #
     # No thread: _loop's own while loop is driven synchronously by having
     # the fake sender stop it after N frames, so this is fully deterministic
@@ -1044,22 +1045,511 @@ def test_pixel_pacing_never_accumulates_error():
     period = 0.025
     check(len(at) == N, f"expected {N} frames, got {len(at)}")
     start = at[0]
-    late = [a - (start + i * period) for i, a in enumerate(at)]
-    check(all(x >= -1e-9 for x in late),
-          f"a frame went out before its own deadline: {min(late):.6f}s early")
-    # The property under test: lateness stays bounded by roughly one
-    # iteration's own overshoot, not by how many iterations have run. A
-    # pacer that slept a fixed period and counted sleeps would have this
-    # grow with every frame; one paced on absolute deadlines cannot.
-    check(max(late) < 0.05,
-          f"lateness grew to {max(late) * 1000:.1f}ms over {N} frames -- the "
-          f"deadline is drifting instead of staying put")
-    tail = late[-20:]
-    check(max(tail) - min(tail) < 0.05,
-          f"lateness late in the run ranges {min(tail) * 1000:.2f} to "
-          f"{max(tail) * 1000:.2f}ms -- still growing rather than settled")
-    print(f"  ok ({N} frames on a simulated clock, max lateness "
-          f"{max(late) * 1000:.2f}ms, never compounding)")
+    # Every send lands close to a whole number of periods after the loop's
+    # own fixed origin (approximately `start`, its first tick) -- not "the
+    # i-th frame is therefore i periods after start", which a big overshoot
+    # (a hard stall, injected 2% of the time above) stops being true for:
+    # player.py's _loop() gives up the CONTENT of a slot it truly missed
+    # (the frame number jumps ahead) rather than sending it late, the same
+    # "skip, never burst" policy clock.py's Ticker already proved out for
+    # Art-Net timecode -- one send still goes out every period, so `at`
+    # stays exactly N long, just not evenly spaced through a stall. What
+    # must never happen is the ORIGIN itself moving: a pacer that gives up
+    # a missed slot by re-anchoring to "now" loses exactly that, and every
+    # send after it lands off phase by however late that one wake was,
+    # forever. This is the bug the Fire & Ice bench found, 2026-09-25, B9:
+    # a show's pixel timing against the cue stepped once, under load, and
+    # never came back.
+    # `phase` is a send's offset from the nearest period boundary, wrapped
+    # into (-period/2, period/2] -- by construction never more than 12.5ms
+    # either way, whatever actually happened, so a bound on its own worst
+    # value cannot fail and is not a check (removed: it read "< 60ms",
+    # which no wrap into +/-12.5ms could ever breach). Likewise a plain
+    # monotonic check on `at` (also removed): `sim.t` only ever advances,
+    # so any loop that reads it honestly sends in non-decreasing order
+    # whether its pacing is right or not. What actually distinguishes a
+    # fixed origin from one that moves is the AVERAGE phase late in the
+    # run reading the same as near the start. A pacer that re-anchors to
+    # "now" on a big overshoot would show these shifted apart by roughly
+    # that overshoot, permanently -- this is the Fire & Ice bench's B9
+    # finding (2026-09-25): a show's pixel timing against the cue stepped
+    # once, under load, and never came back for the rest of the show.
+    # Windows enough (20 samples each) that one rare big overshoot landing
+    # in a window barely moves its mean; a real, permanent step would not
+    # average out.
+    phase = [(((a - start) + period / 2) % period) - period / 2 for a in at]
+    head, tail = phase[5:25], phase[-20:]
+    head_ms = sum(head) / len(head) * 1000.0
+    tail_ms = sum(tail) / len(tail) * 1000.0
+    check(abs(tail_ms - head_ms) < 5.0,
+          f"the average phase drifted from {head_ms:.2f}ms near the start "
+          f"to {tail_ms:.2f}ms near the end of the run -- the loop's "
+          f"origin moved")
+    print(f"  ok ({len(at)} of {N} frames sent, "
+          f"phase {head_ms:.2f}ms near the start vs {tail_ms:.2f}ms near "
+          f"the end)")
+
+
+def test_pixel_scheduler_recovers_after_one_late_wake():
+    section("pixel output: one very late wake never leaves the pixel "
+            "schedule stuck off its original grid, whatever size the "
+            "stall happens to be")
+    # The Fire & Ice bench's B9 finding, isolated to one deliberate event
+    # instead of leaving it to chance, and swept across several stall
+    # sizes -- including a few chosen so the stall's remainder against one
+    # 25ms period is small (49, 70, 74, 99ms are each just under a whole
+    # number of periods). That is deliberate: at those sizes the very next
+    # slot is legitimately due again within a few ms of the late one, which
+    # is the schedule being exactly back on grid, not a burst. A single
+    # short gap like that is expected and fine; more than one, or a true
+    # 0ms back-to-back pair, is not. Runs Player._loop itself, not a copy,
+    # on a clock that moves only when told to: no thread, no wall time,
+    # fully deterministic.
+    import ltcplay.player as plmod
+    STALL_AFTER = 150
+    N = 300
+    period = 0.025
+
+    def run_stall(stall_s):
+        at = []
+
+        class Sim:
+            def __init__(self):
+                self.t = 5000.0
+
+            def monotonic(self):
+                return self.t
+
+            def perf_counter(self):
+                return self.t
+
+            def sleep(self, s):
+                over = stall_s if len(at) == STALL_AFTER else 0.0
+                self.t += s + over
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        sim = Sim()
+        tl = _timeline([])
+
+        class Sender:
+            def send_frame(self, data):
+                at.append(sim.t)
+                if len(at) >= N:
+                    p._running = False
+
+            def blackout(self):
+                pass
+
+            def close(self):
+                pass
+
+        p = Player(tl, FakeNetmap(), Sender())
+        p._idle_epoch = sim.t
+        p._running = True
+        real = plmod.time
+        plmod.time = sim
+        try:
+            p._loop(25)
+        finally:
+            plmod.time = real
+        return at
+
+    for stall_ms in (20, 24, 26, 30, 49, 51, 60, 70, 74, 99):
+        at = run_stall(stall_ms / 1000.0)
+        check(len(at) == N,
+              f"stall {stall_ms}ms: expected {N} frames, got {len(at)}")
+        start = at[0]
+        phase = [(((a - start) + period / 2) % period) - period / 2
+                for a in at]
+        before = phase[100:STALL_AFTER - 5]
+        after = phase[STALL_AFTER + 10:STALL_AFTER + 60]
+        before_ms = sum(before) / len(before) * 1000.0
+        after_ms = sum(after) / len(after) * 1000.0
+        check(abs(after_ms - before_ms) < 2.0,
+              f"stall {stall_ms}ms: the pixel schedule shifted from "
+              f"{before_ms:.2f}ms to {after_ms:.2f}ms off its own grid "
+              f"and never came back -- the Fire & Ice bench's B9 finding, "
+              f"2026-09-25: a show's pixel timing against the cue "
+              f"stepped once, under load, and stayed there for the rest "
+              f"of the show")
+
+        around = [at[i + 1] - at[i]
+                  for i in range(STALL_AFTER - 3, STALL_AFTER + 20)]
+        check(min(around) > 1e-4,
+              f"stall {stall_ms}ms: two sends landed "
+              f"{min(around) * 1000:.3f}ms apart -- a true back-to-back "
+              f"burst, not a recovered schedule")
+        short = [g for g in around if g < period * 0.5]
+        check(len(short) <= 1,
+              f"stall {stall_ms}ms: {len(short)} gaps under half a period "
+              f"around the stall ({[round(g * 1000, 2) for g in short]}ms) "
+              f"-- more than the one short gap a single stall can explain")
+    print("  ok (stall sizes 20 to 99ms: schedule always recovers, no "
+          "burst, at most one short gap each)")
+
+
+def test_a_failing_send_still_advances_the_pixel_schedule():
+    section("pixel output: a sender that keeps failing is retried at the "
+            "configured rate, not as fast as the loop can spin")
+    # If a failed tick did not still move the schedule on to the next
+    # slot, `due` would stay anchored to the same, already-past slot
+    # forever: the loop would retry after only the 10ms error backoff
+    # instead of waiting for the next real slot, turning a 40/s pixel
+    # rate into roughly 100/s of pure retry noise the moment a sender
+    # misbehaves -- worse for whatever it is retrying against, and a
+    # false read of how unhealthy the output really is.
+    import ltcplay.player as plmod
+    FAIL_START, FAIL_END = 3.0, 5.0
+
+    class Sim:
+        def __init__(self):
+            self.t = 9000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            self.t += s
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    t0 = sim.t
+    tl = _timeline([])
+    attempts = []
+
+    class Sender:
+        def send_frame(self, data):
+            attempts.append(sim.t)
+            if sim.t - t0 >= 6.0:
+                p._running = False
+            if FAIL_START <= sim.t - t0 < FAIL_END:
+                raise RuntimeError("simulated send failure")
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(25)
+    finally:
+        plmod.time = real
+
+    during = [a for a in attempts if FAIL_START <= a - t0 < FAIL_END]
+    rate = len(during) / (FAIL_END - FAIL_START)
+    check(rate < 60.0,
+          f"{rate:.0f} attempts a second while every send failed for "
+          f"{FAIL_END - FAIL_START:.0f}s -- the configured pixel rate is "
+          f"40/s; a failed tick that never advances the schedule retries "
+          f"as fast as the loop can spin instead")
+    print(f"  ok ({rate:.1f} attempts/s while the sender failed, expected "
+          f"around 40/s)")
+
+
+def test_pixel_loop_sleep_is_capped():
+    section("pixel output: a wait for a far-off deadline is broken into "
+            "short sleeps, never one long one")
+    # If the sleep argument here were not capped, a long gap before the
+    # next due slot -- a huge step_ms, or simply the wait before the first
+    # cue starts -- would block the loop in one uninterruptible sleep for
+    # however long that gap is. clock.py's Ticker caps its own wait for
+    # exactly this reason (MAX_SLEEP_S, "so stop() is noticed within a
+    # twentieth second"); player.py's loop needs the same guarantee, or a
+    # Stop pressed during a long gap would wait out the whole thing.
+    import ltcplay.player as plmod
+    slept = []
+
+    class Sim:
+        def __init__(self):
+            self.t = 1000.0
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def sleep(self, s):
+            slept.append(s)
+            self.t += s
+            if len(slept) >= 5:
+                p._running = False
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    sim = Sim()
+    tl = _timeline([])
+
+    class Sender:
+        def send_frame(self, data):
+            pass
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    # A huge step: the very first slot after this one is due 1000s away,
+    # so an uncapped wait would try to sleep that whole gap in one call.
+    p = Player(tl, FakeNetmap(), Sender())
+    p._idle_epoch = sim.t
+    p._running = True
+    real = plmod.time
+    plmod.time = sim
+    try:
+        p._loop(1000 * 1000)
+    finally:
+        plmod.time = real
+
+    check(len(slept) >= 5,
+          f"the loop never slept enough times to stop itself, got "
+          f"{len(slept)}")
+    check(max(slept) <= 0.05 + 1e-9,
+          f"one sleep call asked for {max(slept):.3f}s -- longer than the "
+          f"cap that keeps Stop from waiting out a distant deadline")
+    print(f"  ok ({len(slept)} sleeps, longest {max(slept) * 1000:.1f}ms, "
+          f"capped)")
+
+
+def test_pixel_loop_matches_the_old_one_when_healthy():
+    section("pixel output: the new pacing sends at the same times, with "
+            "the same content, as the loop it replaces, whenever nothing "
+            "goes wrong")
+    # A differential proof, not just a bound on one run: the OLD loop
+    # (kept below, frozen, exactly as it read on main before this PR --
+    # see ltcplay/player.py's history for the real, current copy, this is
+    # a fixed reference and is never meant to change) and the NEW one
+    # (Player._loop) are driven through the identical injected clock, the
+    # identical show, and the identical schedule of LTC frames, overrides
+    # and sender misbehaviour, and every single send must land at the
+    # same simulated time with the same content. Adapted from the
+    # review's own differential harness (scratchpad/pixelstep_diff.py).
+    import heapq
+    import textwrap
+    import ltcplay.player as plmod
+
+    OLD_SRC = textwrap.dedent("""\
+        def _loop(self, step_ms):
+            period = step_ms / 1000.0
+            next_at = _now()
+            while self._running:
+                try:
+                    frame = self._tick()
+                    self.sender.send_frame(frame if frame is not None else b"")
+                    self.frames_sent += 1
+                    self._service_trigger()
+                except Exception as e:
+                    self.loop_errors += 1
+                    self.last_loop_error = f"{type(e).__name__}: {e}"
+                    if self.log:
+                        try:
+                            self.log.event("loop-error", self.last_loop_error)
+                        except Exception:
+                            pass
+                    time.sleep(0.01)
+                next_at += period
+                sleep = next_at - _now()
+                if sleep > 0:
+                    time.sleep(sleep)
+                else:
+                    next_at = _now()
+        """)
+    ns = {}
+    exec(compile(OLD_SRC, "<pre-PR#19 _loop, frozen reference>", "exec"),
+        plmod.__dict__, ns)
+    OLD_LOOP = ns["_loop"]
+    NEW_LOOP = Player._loop
+
+    class Sim:
+        """time.* stand-in whose sleep() runs any scheduled events (LTC
+        frames, operator actions) due before it returns, so they land
+        exactly where a real concurrent thread would put them."""
+
+        def __init__(self):
+            self.t = 3_000_000.0
+            self.events = []
+            self.seq = 0
+
+        def at(self, when, fn):
+            self.seq += 1
+            heapq.heappush(self.events, (when, self.seq, fn))
+
+        def monotonic(self):
+            return self.t
+
+        def perf_counter(self):
+            return self.t
+
+        def _run_until(self, target):
+            while self.events and self.events[0][0] <= target:
+                when, _, fn = heapq.heappop(self.events)
+                if when > self.t:
+                    self.t = when
+                fn()
+            if target > self.t:
+                self.t = target
+
+        def sleep(self, s):
+            self._run_until(self.t + s)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    class Recorder:
+        def __init__(self, sim, box, t_end, raise_every=0):
+            self.sim, self.box, self.t_end = sim, box, t_end
+            self.rows = []
+            self.raise_every = raise_every
+            self.n = 0
+
+        def send_frame(self, data):
+            self.n += 1
+            p = self.box[0]
+            if self.raise_every and self.n % self.raise_every == 0:
+                raise RuntimeError("simulated send failure")
+            self.rows.append((self.sim.t, bytes(data), p.current_frame,
+                             p.current_cue.name if p.current_cue else None,
+                             p.source, p.state))
+            if self.sim.t >= self.t_end:
+                p._running = False
+
+        def blackout(self):
+            pass
+
+        def close(self):
+            pass
+
+    def feed_ltc(sim, box, start_t, tc0, seconds, fps=30.0, ppm=0.0,
+                jitter=0.0, seed=1):
+        rnd = random.Random(seed)
+        n = int(seconds * fps)
+        for k in range(n):
+            gen_t = k / fps
+            wall = start_t + gen_t * (1 + ppm * 1e-6)
+            tc = tc0 + gen_t
+            cap = wall + (rnd.uniform(-jitter, jitter) if jitter else 0.0)
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+
+    def run(loop, scenario, step_ms=25, t_end=44.9873, raise_every=0):
+        sim = Sim()
+        real = plmod.time
+        plmod.time = sim
+        try:
+            box = [None]
+            rec = Recorder(sim, box, sim.t + t_end, raise_every=raise_every)
+            p = scenario(sim, rec, box)
+            box[0] = p
+            p._idle_epoch = sim.t - 0.0004
+            p._running = True
+            loop(p, step_ms)
+        finally:
+            plmod.time = real
+        return rec, p
+
+    def base_show(sim, rec, box, **kw):
+        A = FakeFSEQ(frames=800, step=25)     # 20s
+        B = FakeFSEQ(frames=600, step=25)     # 15s
+        idle = FakeFSEQ(frames=40, step=25)
+        tl = _timeline([("01:00:05:00", "A", A), ("01:00:30:00", "B", B)],
+                      idle="/tmp/idle.fseq")
+        p = Player(tl, FakeNetmap(), rec, freewheel_ms=250, hold_ms=2000,
+                  **kw)
+        p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow")
+        p.idle_cue.fseq = idle
+        p.idle_cue._spans = [(0, 0, 64)]
+        return p
+
+    def s_healthy(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:00:00", 30)
+        feed_ltc(sim, box, sim.t + 2.0137, tc0, 45.0, ppm=40.0, jitter=0.0003)
+        return p
+
+    def s_park_resume(sim, rec, box):
+        p = base_show(sim, rec, box, on_lost="freerun")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        rnd = random.Random(2)
+        n = int(50.0 * 30.0)
+        parked_tc = None
+        for k in range(n):
+            gen_t = k / 30.0
+            wall = sim.t + 1.0137 + gen_t
+            if 10.0 <= gen_t < 16.0:
+                if parked_tc is None:
+                    parked_tc = tc0 + gen_t
+                tc = parked_tc
+            else:
+                tc = tc0 + gen_t
+            cap = wall
+
+            def ev(tc=tc, cap=cap):
+                box[0].feed_timecode(tc, cap, text="x")
+            sim.at(wall + 0.004, ev)
+        return p
+
+    def s_overrides(sim, rec, box):
+        p = base_show(sim, rec, box, on_end="hold")
+        tc0 = tcmod.parse_tc("01:00:04:00", 30)
+        feed_ltc(sim, box, sim.t + 1.0137, tc0, 20.0)
+        t = sim.t
+        sim.at(t + 5.0071, lambda: setattr(box[0], "override", "blackout"))
+        sim.at(t + 7.0071, lambda: setattr(box[0], "override", "preshow"))
+        sim.at(t + 9.0071, lambda: setattr(box[0], "override", None))
+        sim.at(t + 15.0071, lambda: box[0].go(tcmod.parse_tc("01:00:28:00", 30)))
+        sim.at(t + 20.0071, lambda: box[0].nudge(-3.3))
+        sim.at(t + 25.0071, lambda: box[0].release())
+        return p
+
+    ok = True
+    for name, scen, kw in [
+        ("healthy LTC with generator drift", s_healthy, {}),
+        ("hard park then resume", s_park_resume, {}),
+        ("blackout/preshow/GO/nudge/release", s_overrides, {}),
+        ("send raises every 7th", s_healthy, {"raise_every": 7}),
+        ("step 33ms (30fps)", s_healthy, {"step_ms": 33}),
+        ("step 100ms (10fps)", s_healthy, {"step_ms": 100}),
+    ]:
+        old_rec, old_p = run(OLD_LOOP, scen, **kw)
+        new_rec, new_p = run(NEW_LOOP, scen, **kw)
+        ra, rb = old_rec.rows, new_rec.rows
+        same_len = len(ra) == len(rb)
+        # Old paces by repeated addition (next_at += period, ~1800 times
+        # over a run), new by one multiplication (t0 + n * period): not
+        # bit-identical arithmetic, so a few ULPs of float noise on the
+        # send time is expected and not a real difference. Everything
+        # else in the row (content, cue, source, state) must still match
+        # exactly.
+        diffs = [(i, x, y) for i, (x, y) in enumerate(zip(ra, rb))
+                 if abs(x[0] - y[0]) > 1e-6 or x[1:] != y[1:]]
+        good = same_len and not diffs
+        ok &= good
+        check(good,
+              f"{name}: old sent {len(ra)}, new sent {len(rb)}, "
+              f"{len(diffs)} differ" +
+              (f"; first at {diffs[0]}" if diffs else ""))
+        check(old_p.loop_errors == new_p.loop_errors,
+              f"{name}: old loop_errors={old_p.loop_errors} new="
+              f"{new_p.loop_errors}")
+    print(f"  ok ({6 if ok else 'not all'} scenarios matching the "
+          f"pre-PR#19 loop's sends)")
 
 
 def test_windows_pixel_clock_choice():
@@ -9769,7 +10259,7 @@ def test_schedule_abort_end_night_and_operator_actions():
           f"End night closes: flame cues to zero, MadMapper stopped, fade, "
           f"blackout. Got {[e.kind for e in o.effects]}")
     check(all(s.status != S.PENDING for s in n.m.slots) and
-          all(s.reason == "SKIPPED (operator, End night)"
+          all(s.reason == "SKIPPED (operator, Close for the night)"
               for s in n.m.slots if s.status == S.SKIPPED and s.n > 3),
           "End night skips every show still to come, and says why")
     n.do(S.CLOSING_DONE, "system", _den(S, 19, 0, 2))
@@ -11528,8 +12018,9 @@ def _ann_write_float32(path, seconds=1.0, rate=8000, value=0.9):
 
 
 def test_announce_probe_matches_open_for_format():
-    section("announcements: the startup probe catches exactly what "
-            "playing would fail on: 24-bit and 32-bit float WAVs")
+    section("announcements: 16-bit, 24-bit and 32-bit float WAVs are all "
+            "accepted (Jeff, 2026-09-26), and the startup probe agrees "
+            "with the press-time open on exactly what will play")
     A = _ann()
     work = tempfile.mkdtemp()
     _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=1.0)
@@ -11547,20 +12038,285 @@ def test_announce_probe_matches_open_for_format():
                             state_provider=lambda: "STANDBY")
     by_id = {i["id"]: i for i in svc.status()["announcements"]}
     check(by_id[A.DELAYED]["available"], "a plain 16-bit WAV is fine")
-    check(not by_id[A.CANCELLATION]["available"]
-          and "24-bit" in by_id[A.CANCELLATION]["reason"],
-          f"a 24-bit WAV must be caught AT STARTUP, not at the press: "
+    check(by_id[A.CANCELLATION]["available"],
+          f"a 24-bit WAV must be accepted, at startup: "
           f"{by_id[A.CANCELLATION]}")
-    check(not by_id[A.CANNOT_CONTINUE]["available"]
-          and "floating point" in by_id[A.CANNOT_CONTINUE]["reason"],
-          f"a 32-bit float WAV must be caught too, never played as "
-          f"reinterpreted noise: {by_id[A.CANNOT_CONTINUE]}")
-    for aid in (A.CANCELLATION, A.CANNOT_CONTINUE):
+    check(by_id[A.CANNOT_CONTINUE]["available"],
+          f"a 32-bit float WAV must be accepted too, at startup: "
+          f"{by_id[A.CANNOT_CONTINUE]}")
+    for aid in A.IDS:
+        r = svc.play(aid, "Andy", "rack screen")
+        check(r["playing"]["id"] == aid,
+              f"{aid} must actually play, agreeing with the probe, not "
+              f"just look clean and then fail at the press: {r}")
+        svc.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_unsupported_wav_formats_rejected():
+    section("announcements: a WAV format this module cannot play safely "
+            "is still refused, the same way at startup and at the press")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_alaw(path, seconds=1.0, rate=8000):
+        import struct
+        n = int(seconds * rate)
+        data = b"\x00" * n
+        fmt_chunk = struct.pack("<HHIIHH", 6, 1, rate, rate, 1, 8)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    def write_float64(path, seconds=1.0, rate=8000):
+        import array
+        import struct
+        n = int(seconds * rate)
+        data = array.array("d", [0.1] * n).tobytes()
+        byte_rate = rate * 8
+        fmt_chunk = struct.pack("<HHIIHH", 3, 1, rate, byte_rate, 8, 64)
+        riff = (b"RIFF" +
+               struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+               b"WAVE")
+        fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+        data_chunk = b"data" + struct.pack("<I", len(data)) + data
+        with open(path, "wb") as fh:
+            fh.write(riff + fmt + data_chunk)
+
+    write_alaw(os.path.join(work, "delayed.wav"))
+    write_float64(os.path.join(work, "cancellation.wav"))
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    cfg = {"device": "MOTU M4",
+           "files": {"delayed": "delayed.wav",
+                    "cancellation": "cancellation.wav",
+                    "cannot_continue": "cannot_continue.wav"}}
+    path = os.path.join(work, "ltcplay_announce.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    svc = A.AnnounceService(path, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: "STANDBY")
+    by_id = {i["id"]: i for i in svc.status()["announcements"]}
+    check(not by_id[A.DELAYED]["available"]
+          and "format 6" in by_id[A.DELAYED]["reason"],
+          f"A-law (a non-PCM, non-float tag) must still be caught at "
+          f"startup: {by_id[A.DELAYED]}")
+    check(not by_id[A.CANCELLATION]["available"]
+          and "64-bit" in by_id[A.CANCELLATION]["reason"],
+          f"64-bit float must still be caught at startup, never silently "
+          f"truncated to 32-bit: {by_id[A.CANCELLATION]}")
+    check(by_id[A.CANNOT_CONTINUE]["available"], "the plain WAV is fine")
+    for aid in (A.DELAYED, A.CANCELLATION):
         try:
             svc.play(aid, "Andy", "rack screen")
             check(False, f"{aid} must never actually play")
         except ValueError as e:
             check("not available" in str(e), f"{e}")
+    print("  ok")
+
+
+def test_announce_wav_decode_values():
+    section("announcements: 24-bit PCM and 32-bit float samples decode "
+            "to the right values, not just the right length")
+    import struct
+    import wave
+    import numpy as np
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    # 24-bit: known samples, left-justified (shifted up 8 bits) into
+    # int32 is the only conversion that keeps both the sign and the full
+    # scale right.
+    path24 = os.path.join(work, "a24.wav")
+    samples = (0, 1, -1, 8388607, -8388608, 12345)
+    raw = b"".join(int(s & 0xFFFFFF).to_bytes(3, "little")
+                  for s in samples)
+    with wave.open(path24, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(3)
+        w.setframerate(8000)
+        w.writeframes(raw)
+    pcm, channels, rate, _length = A._wav_info(path24, decode=True)
+    check(pcm.dtype == np.int32, f"24-bit PCM must decode to int32: "
+                                 f"{pcm.dtype}")
+    got = pcm.reshape(-1).astype(np.int64).tolist()
+    want = [s * 256 for s in samples]
+    check(got == want,
+          f"24-bit samples must be shifted up 8 bits, sign and all, not "
+          f"reinterpreted some other way: want {want}, got {got}")
+
+    # 32-bit float: the wav module cannot write this format, so it is
+    # built by hand, the same way a DAW or field recorder would hand one
+    # over (Jeff, 2026-09-26: recordings may be float).
+    path32 = os.path.join(work, "a32f.wav")
+    values = (0.5, -0.5, 0.999, -1.0)
+    data = _pack_float32(values)
+    byte_rate = 8000 * 4
+    fmt_chunk = struct.pack("<HHIIHH", 3, 1, 8000, byte_rate, 4, 32)
+    riff = (b"RIFF" +
+           struct.pack("<I", 4 + 8 + len(fmt_chunk) + 8 + len(data)) +
+           b"WAVE")
+    fmt = b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+    data_chunk = b"data" + struct.pack("<I", len(data)) + data
+    with open(path32, "wb") as fh:
+        fh.write(riff + fmt + data_chunk)
+    pcm2, channels2, rate2, length2 = A._wav_info(path32, decode=True)
+    check(pcm2.dtype == np.float32,
+          f"32-bit float must decode to float32, not be reinterpreted as "
+          f"int32 (loud noise, no error anywhere): {pcm2.dtype}")
+    got2 = [round(float(v), 3) for v in pcm2.reshape(-1)]
+    check(got2 == list(values),
+          f"the float samples themselves must round-trip: want "
+          f"{list(values)}, got {got2}")
+    check(rate2 == 8000 and channels2 == 1 and abs(length2 - 0.0005) < 1e-6,
+          f"channels, rate and length must all be read off the float "
+          f"file's own fmt chunk: {channels2} {rate2} {length2}")
+
+    # The probe (decode=False) must agree with the open on both.
+    _, ch3, rate3, len3 = A._wav_info(path24, decode=False)
+    check(ch3 == 1 and rate3 == 8000, f"probe must read the same header "
+                                      f"a real open would: {ch3} {rate3}")
+    _, ch4, rate4, len4 = A._wav_info(path32, decode=False)
+    check(ch4 == 1 and rate4 == 8000 and abs(len4 - 0.0005) < 1e-6,
+          f"the probe must agree with the open on the float file too: "
+          f"{ch4} {rate4} {len4}")
+    print("  ok")
+
+
+def _pack_float32(values):
+    import array
+    return array.array("f", values).tobytes()
+
+
+def _chunk(cid, body):
+    import struct
+    out = cid + struct.pack("<I", len(body)) + body
+    if len(body) % 2:
+        out += b"\x00"
+    return out
+
+
+def _riff(body):
+    import struct
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+
+
+def _fmt_extensible(channels, rate, bits, subformat_guid):
+    import struct
+    block_align = channels * (bits // 8)
+    byte_rate = rate * block_align
+    body = struct.pack("<HHIIHH", 0xFFFE, channels, rate, byte_rate,
+                       block_align, bits)
+    body += struct.pack("<H", 22)          # cbSize
+    body += struct.pack("<H", bits)        # wValidBitsPerSample
+    body += struct.pack("<I", 0)           # dwChannelMask
+    body += subformat_guid
+    return _chunk(b"fmt ", body)
+
+
+_SUBTYPE_FLOAT = bytes.fromhex("0300000000001000800000aa00389b71")
+_SUBTYPE_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
+
+
+def test_announce_wav_extensible_float_accepted():
+    section("announcements: WAVE_FORMAT_EXTENSIBLE wrapping IEEE float is "
+            "accepted and decoded as float, not refused with a raw GUID "
+            "(review round 2, 2026-09-26, should-fix 5: many DAWs, "
+            "Audacity among them, write 32-bit float this way)")
+    A = _ann()
+    n = 50
+    data = _pack_float32([0.5] * n)
+    body = _fmt_extensible(1, 48000, 32, _SUBTYPE_FLOAT) + _chunk(b"data",
+                                                                  data)
+    work = tempfile.mkdtemp()
+    path = os.path.join(work, "ext_float.wav")
+    with open(path, "wb") as fh:
+        fh.write(_riff(body))
+    pcm, channels, rate, length_s = A._wav_info(path, decode=True)
+    check(str(pcm.dtype) == "float32",
+          f"an extensible float file must decode as float32, not be "
+          f"reinterpreted as integers: {pcm.dtype}")
+    check(float(pcm.ravel()[0]) == 0.5,
+          f"the float value itself must round-trip: {pcm.ravel()[:1]}")
+    _, ch2, rate2, len2 = A._wav_info(path, decode=False)
+    check(ch2 == 1 and rate2 == 48000,
+          f"the probe must agree with the open: {ch2} {rate2}")
+
+    # An extensible sub-format this module does not recognize (A-law
+    # under extensible) must still be a PLAIN sentence, never a raw GUID.
+    alaw_guid = bytes.fromhex("0600000000001000800000aa00389b71")
+    body2 = _fmt_extensible(1, 8000, 8, alaw_guid) + _chunk(
+        b"data", b"\x00" * 100)
+    path2 = os.path.join(work, "ext_alaw.wav")
+    with open(path2, "wb") as fh:
+        fh.write(_riff(body2))
+    try:
+        A._wav_info(path2, decode=False)
+        check(False, "an unrecognized extensible sub-format must be "
+                     "refused, not accepted")
+    except ValueError as e:
+        msg = str(e)
+        check("8000-00aa00389b71" not in msg and "0000-0010" not in msg,
+              f"the refusal must never contain a raw GUID: {msg}")
+        _no_dashes(msg, "extensible unrecognized sub-format refusal")
+    print("  ok")
+
+
+def test_announce_wav_data_chunk_sanity():
+    section("announcements: a WAV whose data chunk declares an impossible "
+            "size is refused loudly, the same way at the probe and the "
+            "press, for BOTH the PCM and the float path (review round 2, "
+            "2026-09-26, should-fix 6: audit15_wav_floatparser.py / "
+            "audit15_wav_edgecases.py)")
+    A = _ann()
+    work = tempfile.mkdtemp()
+
+    def write_pcm16(name, real_frames, declared_size):
+        import struct
+        real = struct.pack(f"<{real_frames}h", *([1000] * real_frames))
+        fmt = _chunk(b"fmt ", struct.pack("<HHIIHH", 1, 1, 8000, 16000,
+                                          2, 16))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt + header + real))
+        return path
+
+    def write_float(name, real_frames, declared_size):
+        import struct
+        real = _pack_float32([0.25] * real_frames)
+        fmt_chunk = _chunk(b"fmt ", struct.pack("<HHIIHH", 3, 1, 48000,
+                                                48000 * 4, 4, 32))
+        header = b"data" + struct.pack("<I", declared_size)
+        path = os.path.join(work, name)
+        with open(path, "wb") as fh:
+            fh.write(_riff(fmt_chunk + header + real))
+        return path
+
+    cases = [
+        ("pcm_truncated.wav", write_pcm16, 100, 400, "cut off"),
+        ("pcm_zero.wav", write_pcm16, 100, 0, "placeholder"),
+        ("pcm_ffffffff.wav", write_pcm16, 100, 0xFFFFFFFF, "placeholder"),
+        ("float_truncated.wav", write_float, 50, 1000, "cut off"),
+        ("float_zero.wav", write_float, 50, 0, "placeholder"),
+        ("float_ffffffff.wav", write_float, 50, 0xFFFFFFFF, "placeholder"),
+    ]
+    for name, writer, frames, declared, must_say in cases:
+        path = writer(name, frames, declared)
+        for decode in (False, True):
+            try:
+                A._wav_info(path, decode=decode)
+                check(False, f"{name} (decode={decode}) must be refused, "
+                             f"not read as a healthy file")
+            except ValueError as e:
+                msg = str(e)
+                check(must_say in msg,
+                      f"{name} (decode={decode}): the refusal must say "
+                      f"why: {msg}")
+                _no_dashes(msg, f"{name} data-chunk-sanity refusal")
     print("  ok")
 
 
@@ -11611,22 +12367,45 @@ def test_announce_device_exact_match_only():
 
 
 def test_announce_toctou_recheck_before_start():
-    section("announcements: the interlock is rechecked immediately "
-            "before the stream actually starts")
+    section("announcements: the SECOND check, immediately before the "
+            "stream actually starts, is read-only -- it refuses the "
+            "announcement rather than re-Holding a show the operator "
+            "resumed during the file read (review round 2, 2026-09-26: "
+            "audit15_resume_race.py)")
     A = _ann()
     work, cfg, _lengths = _ann_workdir()
-    state_holder = {"v": "STANDBY"}
+    fake = {"state": "STANDBY", "epoch": 0}
+    hold_calls = []
+    claimed_checks = []
+
+    def fake_hold(who, screen, detail=None):
+        # Hold always succeeds here and moves the fake schedule to HOLD,
+        # bumping its epoch, exactly as the real Service would.
+        hold_calls.append((who, screen, detail, fake["state"]))
+        fake["state"] = "HOLD"
+        fake["epoch"] += 1
+        return None, fake["epoch"]
+
+    def fake_still_claimed(claim_epoch):
+        claimed_checks.append(claim_epoch)
+        return (claim_epoch == fake["epoch"]
+                and fake["state"] in ("HOLD", "PAUSED"))
+
     sd = FakeSD()
     svc = A.AnnounceService(cfg, sd=sd, operators_folder=work,
-                            state_provider=lambda: state_holder["v"])
+                            state_provider=lambda: fake["state"])
+    svc.hold_requester = fake_hold
+    svc.hold_still_claimed = fake_still_claimed
     real_decode = svc._decode
 
     def decode_and_flip(ann_id):
-        # Stands in for real wall time elapsing during the file read: a
-        # show starting in that window is entirely realistic, since the
-        # scheduler ticks on its own thread with no lock shared with this
-        # service (audit13_toctou_race.py).
-        state_holder["v"] = "SHOW"
+        # Stands in for real wall time elapsing during the file read: an
+        # operator resuming (a real Resume bumps the epoch, same as
+        # fake_hold above) in that window is entirely realistic, since
+        # the scheduler ticks on its own thread with no lock shared with
+        # this service (audit13_toctou_race.py / audit15_resume_race.py).
+        fake["state"] = "SHOW"
+        fake["epoch"] += 1
         return real_decode(ann_id)
 
     svc._decode = decode_and_flip
@@ -11636,16 +12415,72 @@ def test_announce_toctou_recheck_before_start():
               "check")
         try:
             svc.play(A.DELAYED, "Andy", "rack screen")
-            check(False, "the recheck must catch the state that changed "
-                         "during the file read and refuse")
+            check(False, "a Resume during the file read must refuse the "
+                         "announcement, not silently re-Hold the show")
         except ValueError as e:
-            check("running" in str(e), f"the refusal must say why: {e}")
+            check("resumed while the announcement was loading" in str(e),
+                  f"the refusal must say why: {e}")
     finally:
         svc._decode = real_decode
-    check(svc.playing is None, "a caught race must never start playing")
-    check(sd.output_opened == [],
-          "the stream must never actually be opened once the recheck "
-          "refuses")
+    check(svc.playing is None, "a refused claim must never start playing")
+    check(len(hold_calls) == 1,
+          f"Hold must be requested only ONCE, before the file read: the "
+          f"second check must be read-only, never Hold again: {hold_calls}")
+    check(len(claimed_checks) == 1 and claimed_checks[0] == 1,
+          f"the second check must ask about the epoch captured at the "
+          f"FIRST Hold, not the current one: {claimed_checks}")
+    print("  ok")
+
+
+def test_announce_interlock_recheck_catches_a_state_provider_with_no_hold():
+    section("announcements: the interlock recheck immediately before the "
+            "stream starts still matters on its own -- not made redundant "
+            "by hold_still_claimed -- when state_provider is wired but "
+            "hold_requester is not, the one configuration "
+            "test_announce_interlock_matrix already proves the module "
+            "must support even though web.serve() never wires it that "
+            "way: the epoch has nothing to compare there, so the interlock "
+            "recheck is the ONLY thing standing between a state that goes "
+            "away mid-decode and an announcement playing into it blind "
+            "(coordinator review, 2026-09-26, on CI's shard 1 survivor)")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    fake = {"state": "STANDBY"}
+    svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: fake["state"])
+    check(svc.hold_requester is None and svc.hold_still_claimed is None,
+          "setup: state_provider only, exactly as "
+          "test_announce_interlock_matrix wires it -- no scheduler is Held "
+          "and there is no epoch to ask about")
+    real_decode = svc._decode
+
+    def decode_and_drop(ann_id):
+        # Stands in for the scheduler going away entirely during the file
+        # read (unloaded, its rule file failed to reload, the process that
+        # owned it exited) -- with no hold_requester wired, nothing bumps
+        # an epoch for this to be caught by; the state provider itself is
+        # the only signal left, and it now says "I don't know".
+        fake["state"] = None
+        return real_decode(ann_id)
+
+    svc._decode = decode_and_drop
+    try:
+        check(A.interlock_refusal(svc._current_state()) is None,
+              "setup: the interlock legitimately allows it at the first "
+              "check")
+        try:
+            svc.play(A.DELAYED, "Andy", "rack screen")
+            check(False, "the state going away during the file read must "
+                         "refuse the announcement, not let it play blind "
+                         "into an unknown show state")
+        except ValueError as e:
+            check("inert" in str(e),
+                  f"the refusal must be the plain interlock sentence, the "
+                  f"only guard left once hold_requester is not wired: {e}")
+    finally:
+        svc._decode = real_decode
+    check(svc.playing is None,
+          "a refused claim must never start playing")
     print("  ok")
 
 
@@ -11977,7 +12812,7 @@ def test_schedule_hook_runs_outside_service_lock():
     HANG_S = 1.0
     calls = []
 
-    def slow_hook(state):
+    def slow_hook(state, reason=None):
         calls.append(state)
         # A deliberately slow hook, standing in for ANY future hook that
         # is not as careful as announce.py's own about never touching a
@@ -12133,60 +12968,551 @@ def test_announce_reentrant_claim_does_not_orphan_a_stream():
 
 
 def test_announce_interlock_matrix():
-    section("announcements: the interlock, every scheduler state times "
-            "every button")
+    section("announcements: the interlock, every scheduler state (a show "
+            "running or paused is no longer refused HERE, since Play "
+            "Holds it first instead, Jeff, 2026-09-26)")
     from ltcplay import schedule as sch_mod
     A = _ann()
     states = (sch_mod.BOOT, sch_mod.IDLE, sch_mod.STANDBY, sch_mod.SHOW,
               sch_mod.PAUSED, sch_mod.CLOSING, sch_mod.OFF, sch_mod.HOLD)
     check(len(set(states)) == 8,
           "the matrix must cover all 8 scheduler states")
-    blocked_states = {sch_mod.SHOW, sch_mod.PAUSED}
     for state in states + (None,):
         refusal = A.interlock_refusal(state)
         if state is None:
             check(refusal is not None and "inert" in refusal,
                   f"no scheduler: announcements must be inert, got "
                   f"{refusal!r}")
-        elif state in blocked_states:
-            check(refusal is not None and refusal.endswith("."),
-                  f"{state}: a show running or paused must refuse, got "
-                  f"{refusal!r}")
         else:
             check(refusal is None,
-                  f"{state}: announcements must be allowed, got {refusal!r}")
+                  f"{state}: the interlock itself must not refuse a real "
+                  f"state any more; a show running or paused is Held "
+                  f"first instead. Got {refusal!r}")
         _no_dashes(refusal or "", f"interlock refusal in {state}")
-    # Abort is the only way out of SHOW or PAUSED in the real machine, and it
-    # always lands in STANDBY, so the interlock never has to remember Abort
-    # happened; it only has to ask the scheduler what is true right now.
+    # Abort is still the only way out of SHOW or PAUSED in the real
+    # machine, and it always lands in STANDBY; unrelated to the interlock
+    # change above, this is a schedule.py fact that used to matter here too.
     check(sch_mod.ALLOWED[sch_mod.ABORT] ==
           frozenset((sch_mod.SHOW, sch_mod.PAUSED)),
-          "Abort must be exactly the exit from the two blocked states")
+          "Abort must be exactly the exit from SHOW and PAUSED")
 
+    # With state_provider set but no hold_requester -- an announcements
+    # config with no scheduler ALSO wired for Hold, which web.serve() never
+    # actually does (see test_announce_routes), but which the interlock's
+    # own contract above has to hold for regardless -- a real state is
+    # allowed straight through: nothing can Hold it, and the interlock no
+    # longer refuses a running show on its own.
     work, cfg, _lengths = _ann_workdir()
-    for state in states + (None,):
-        blocked = state is None or state in blocked_states
+    for state in states:
         svc = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
                                 state_provider=(lambda s=state: s))
+        check(svc.hold_requester is None, "setup: no scheduler wired")
         for aid in A.IDS:
-            if blocked:
-                try:
-                    svc.play(aid, "Andy", "rack screen")
-                    check(False, f"{state}: {aid} must be refused")
-                except ValueError as e:
-                    check(str(e).endswith("."),
-                          f"{state}/{aid}: refusal must end with a full "
-                          f"stop: {e!r}")
-                check(svc.playing is None,
-                      f"{state}: a refused press must not start anything")
-            else:
-                svc.play(aid, "Andy", "rack screen")
-                check(svc.playing == aid,
-                      f"{state}: {aid} must be allowed to play")
-                svc.stop("Andy", "rack screen")
-                check(svc.playing is None,
-                      "Stop must clear it for the next id")
+            svc.play(aid, "Andy", "rack screen")
+            check(svc.playing == aid,
+                  f"{state}, no hold_requester: {aid} must be allowed to "
+                  f"play")
+            svc.stop("Andy", "rack screen")
+            check(svc.playing is None, "Stop must clear it for the next id")
     print("  ok")
+
+
+def test_announce_hold_between_shows():
+    section("announcements: between shows, Play Holds the schedule first "
+            "(the same path the operator's own Hold uses), then plays, "
+            "and the next show does not start at its time")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: intermission running, waiting for the next slot: "
+          f"{svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.DELAYED, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.DELAYED,
+          f"the announcement must actually play: {r}")
+    check(svc.machine.state == S.HOLD,
+          f"between shows, Hold is what Play must trigger first: "
+          f"{svc.machine.state}")
+    # The journal line for the Hold itself carries the SAME who/screen the
+    # Play press used, exactly as the operator's own Hold would, and reads
+    # as held FOR the announcement (review round 2, 2026-09-26:
+    # audit15_journal_noise2.py), not as an indistinguishable operator
+    # Hold press.
+    hold_lines = [r for r in svc.journal
+                 if r.get("action") == S.HOLD_ON]
+    check(hold_lines and hold_lines[0]["who"] == "Andy"
+          and hold_lines[0]["screen"] == "rack screen",
+          f"the Hold the announcement triggered must be attributed to the "
+          f"SAME operator and screen as the Play press: {hold_lines}")
+    check(hold_lines and "played the Delayed announcement" in
+          hold_lines[0]["text"],
+          f"the Hold's own journal line must name the announcement, not "
+          f"just say 'pressed Hold': {hold_lines}")
+
+    # The next show's time passes while held: it must not fire.
+    now[0] = _den(S, 17, 55)
+    svc.tick()
+    check(svc.machine.state == S.HOLD, "still on hold")
+    slot2 = svc.machine.slot(2)
+    check(slot2.status == S.DELAYED,
+          f"the next show's time passed during the Hold, so it waits "
+          f"instead of starting: {slot2.status} {slot2.reason}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_during_show():
+    section("announcements: during a show, Play Holds it (pauses it in "
+            "place, the section 5 Hold actions), then plays")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          f"setup: a show is running at its start time: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    r = ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(r["playing"]["id"] == A.CANCELLATION,
+          f"the announcement must actually play over the paused show: {r}")
+    check(svc.machine.state == S.PAUSED,
+          f"during a show, Hold must pause it in place, not refuse the "
+          f"announcement (the old 'locked during a show' rule is gone): "
+          f"{svc.machine.state}")
+    # The journal line for THIS Hold also reads as held for the
+    # announcement, not just a plain operator Hold press (review round 2,
+    # 2026-09-26: audit15_journal_noise2.py).
+    hold_lines = [row for row in svc.journal if row.get("action") == S.HOLD_ON]
+    check(hold_lines and "played the Cancellation announcement" in
+          hold_lines[0]["text"] and "is held for it" in hold_lines[0]["text"],
+          f"the Hold's own journal line, during a show, must name the "
+          f"announcement: {hold_lines}")
+    ann.stop("Andy", "rack screen")
+    print("  ok")
+
+
+def test_announce_hold_refused_refuses_the_announcement():
+    section("announcements: if Hold is refused (the night is over), the "
+            "announcement is refused too, with the same sentence")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "18:00"}},
+        exceptions={}))
+    now = [_den(S, 23, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state in (S.CLOSING, S.OFF),
+          f"setup: the night is over: {svc.machine.state}")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "Hold being refused must refuse the announcement too")
+    except ValueError as e:
+        msg = str(e)
+        check("over" in msg and "hold" in msg.lower(),
+              f"the refusal must carry Hold's own plain sentence: {msg}")
+        _no_dashes(msg, "hold-refused announcement refusal")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def test_announce_stays_held_after_it_ends():
+    section("announcements: when the announcement ends, the system STAYS "
+            "on Hold until an operator presses Resume; nothing resumes "
+            "by itself")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: the show is paused")
+    # The announcement finishes on its own (a natural end, not a Stop).
+    ann._player.done = True
+    ann._settle()
+    check(ann.playing is None, "the announcement itself must clear")
+    check(svc.machine.state == S.PAUSED,
+          f"the schedule must STAY held after the announcement ends: "
+          f"{svc.machine.state}")
+    # More time passing changes nothing by itself.
+    now[0] = _den(S, 18, 5)
+    svc.tick()
+    check(svc.machine.state == S.PAUSED,
+          f"nothing resumes by itself, however much time passes: "
+          f"{svc.machine.state}")
+    # Only an operator's own Resume moves it on.
+    svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                       screen="rack screen"))
+    check(svc.machine.state == S.SHOW,
+          f"an operator's Resume, and only that, carries the show on: "
+          f"{svc.machine.state}")
+    print("  ok")
+
+
+def test_announce_resume_wins_over_second_hold_request():
+    section("announcements: an operator's Resume, pressed while an "
+            "announcement is still loading, wins outright -- the second "
+            "check never re-Holds the show it was just resumed from "
+            "(review round 2, 2026-09-26: audit15_resume_race.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5),
+              "setup: the announcement thread must reach the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              f"setup: the FIRST Hold request must pause the show: "
+              f"{svc.machine.state}")
+        # The operator, on a different screen, presses Resume -- a real,
+        # independent action -- while the announcement is still mid-decode.
+        with svc._locked():
+            out = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                     screen="Rack"))
+        check(not out.refused, f"setup: Resume must be accepted: "
+                               f"{out.refused}")
+        check(svc.machine.state == S.SHOW,
+              f"the operator's Resume must take effect immediately, not "
+              f"wait for the announcement: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"the announcement must be refused, not silently re-pause the "
+          f"resumed show: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(svc.machine.state == S.SHOW,
+          f"the operator's Resume must still hold, never silently undone "
+          f"by the announcement's own second check: {svc.machine.state}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_resume_then_rehold_still_refuses():
+    section("announcements: Resume immediately followed by a FRESH Hold "
+            "(the state looks the same again, PAUSED, but it is a "
+            "DIFFERENT claim) must still refuse a stale announcement "
+            "attempt -- this is exactly why the second check compares an "
+            "epoch, not just the state (review round 2, 2026-09-26: "
+            "\"Resume then Hold again should still refuse this attempt\")")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "cannot_continue.wav"), seconds=1.0)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 30, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show is running")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    decode_paused = threading.Event()
+    resume_done = threading.Event()
+    real_decode = ann._decode
+
+    def slow_decode(ann_id):
+        decode_paused.set()
+        resume_done.wait(timeout=5)
+        return real_decode(ann_id)
+
+    ann._decode = slow_decode
+    result = {}
+
+    def do_play():
+        try:
+            result["status"] = ann.play(A.CANNOT_CONTINUE, "Jeff",
+                                        "Announce Panel")
+        except ValueError as e:
+            result["error"] = str(e)
+
+    t = threading.Thread(target=do_play, daemon=True)
+    t.start()
+    try:
+        check(decode_paused.wait(timeout=5), "setup: reached the file read")
+        check(wait_for(lambda: svc.machine.state == S.PAUSED, timeout=2.0),
+              "setup: the first Hold request must pause the show")
+        # Resume, then IMMEDIATELY Hold again from someone else (a real
+        # scenario: an operator's own Hold press, back to back with the
+        # Resume, both real actions the announcement never asked for).
+        # State ends up PAUSED again -- the same as the original claim --
+        # but this is a DIFFERENT hold, and the stale attempt must still
+        # be refused.
+        with svc._locked():
+            svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                               screen="Rack"))
+        with svc._locked():
+            svc._apply(S.Event(S.HOLD_ON, "operator", who="Andy",
+                               screen="Rack"))
+        check(svc.machine.state == S.PAUSED,
+              f"setup: the state must look the same again (PAUSED), which "
+              f"is exactly what makes this case need the epoch, not just "
+              f"the state: {svc.machine.state}")
+    finally:
+        resume_done.set()
+        t.join(timeout=5)
+
+    check("error" in result,
+          f"a stale claim must still refuse even though the state looks "
+          f"unchanged: {result}")
+    if "error" in result:
+        check("resumed while the announcement was loading" in
+              result["error"], f"the refusal must say why: {result}")
+    check(ann.playing is None, "the refused announcement must not play")
+    print("  ok")
+
+
+def test_announce_on_show_started_reason_new_vs_resume():
+    section("announcements: on_show_started's journal wording says WHY "
+            "the show is moving -- 'a show started' for a genuinely new "
+            "show, 'the show resumed' for a Resume from Hold (review "
+            "round 2, 2026-09-26: audit15_resume_fires_showstart.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    work, cfg, _lengths = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "delayed.wav"), seconds=90.0,
+                   rate=8000)
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "17:30", "interval_min": 20,
+                        "last_end": "22:00"}},
+        exceptions={}))
+    now = [_den(S, 17, 34, 0)]
+    sd = FakeSD()
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY, "setup: intermission running")
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: svc.machine.state
+                                if svc.machine else None)
+    svc.on_show_started = ann.on_show_started
+    ann.hold_requester = svc.hold_for_announcement
+    ann.hold_still_claimed = svc.hold_still_claimed
+
+    # Between shows: Play Holds (HOLD), then the next slot's time arrives
+    # -- but the schedule is held, so nothing fires by itself. Resume it
+    # by hand via Start now instead, landing the announcement's own show
+    # start under the "new show" label.
+    ann.play(A.DELAYED, "Andy", "rack screen")
+    check(svc.machine.state == S.HOLD, "setup: held between shows")
+    stream_a = sd.output_streams[-1]
+    # Through _locked(), not a bare _apply(): the on_show_started hook is
+    # only ever drained on the outermost exit from _locked() (see
+    # Service._locked's own docstring), so a bare _apply() here would
+    # queue the hook and never actually run it.
+    with svc._locked():
+        out = svc._apply(S.Event(S.START_NOW, "operator", who="Andy",
+                                 screen="Rack"))
+    check(not out.refused and svc.machine.state == S.SHOW,
+          f"setup: Start now must fire a genuinely new show: "
+          f"{out.refused} {svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "a show started",
+                   timeout=2.0),
+          "a genuinely new show must fade the announcement out labelled "
+          "'a show started'")
+    stream_a.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "a show started"
+             for r in status["journal"]),
+          f"the journal must say 'a show started' for a genuinely new "
+          f"show: {status['journal']}")
+
+    # Now the resume case: hold DURING a show (pauses it), play another
+    # announcement, then Resume while it is still playing.
+    now2_ok = svc.machine.state == S.SHOW
+    check(now2_ok, "setup: a show is running for the resume case")
+    ann.play(A.CANCELLATION, "Andy", "rack screen")
+    check(svc.machine.state == S.PAUSED, "setup: Hold paused the show")
+    stream_b = sd.output_streams[-1]
+    with svc._locked():
+        out2 = svc._apply(S.Event(S.RESUME, "operator", who="Andy",
+                                  screen="Rack"))
+    check(not out2.refused and svc.machine.state == S.SHOW,
+          f"setup: Resume must carry the show on: {out2.refused} "
+          f"{svc.machine.state}")
+    check(wait_for(lambda: ann._player is not None
+                   and ann._player.stop_reason == "the show resumed",
+                   timeout=2.0),
+          "a Resume from Hold must fade the announcement out labelled "
+          "'the show resumed', not 'a show started'")
+    stream_b.pump(int(8000 * A.SHOW_START_FADE_S) + 100)
+    status2 = ann.status()
+    check(any(r["outcome"] == "stopped" and r["reason"] == "the show resumed"
+             for r in status2["journal"]),
+          f"the journal must say 'the show resumed', not 'a show "
+          f"started', for a Resume: {status2['journal']}")
+    print("  ok")
+
+
+def test_announce_hold_for_announcement_no_noise_when_already_held():
+    section("announcements: hold_for_announcement never writes a "
+            "'refused' line for the routine case of asking for Hold when "
+            "the schedule is already held or paused (review round 2, "
+            "2026-09-26: audit15_journal_noise.py / "
+            "audit15_journal_noise2.py)")
+    A, S, SV = _ann(), *_sched_and_service_modules()
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc(
+        weekly={"sat": {"first_start": "19:00", "interval_min": 20,
+                        "last_end": "23:00"}},
+        exceptions={}))
+    now = [_den(S, 20, 0, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "setup: a show fired at boot")
+
+    r1, epoch1 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cancellation "
+        "announcement on the Announce Panel")
+    check(r1 is None and svc.machine.state == S.PAUSED,
+          f"setup: the first claim must pause the show: {r1} "
+          f"{svc.machine.state}")
+    before = len(svc.journal)
+    r2, epoch2 = svc.hold_for_announcement(
+        "Jeff", "Announce Panel", detail="played the Cannot continue "
+        "announcement on the Announce Panel")
+    check(r2 is None, f"the second, routine claim must also succeed: {r2}")
+    check(epoch1 == epoch2,
+          f"asking again while already held must NOT bump the epoch: "
+          f"{epoch1} {epoch2}")
+    check(len(svc.journal) == before,
+          f"the routine second claim must add NOTHING to the journal, "
+          f"not even a refused line: "
+          f"{list(svc.journal)[len(svc.journal) - before:]}")
+    check(not any("refused" in (r.get("text") or "").lower()
+                 for r in svc.journal),
+          f"no 'refused' line must appear anywhere for this routine "
+          f"sequence: {list(svc.journal)}")
+    print("  ok")
+
+
+def test_announce_no_scheduler_stays_inert():
+    section("announcements: with no scheduler configured (the GPL path), "
+            "an announcement behaves exactly as before: inert, and it "
+            "never tries to Hold anything")
+    A = _ann()
+    work, cfg, _lengths = _ann_workdir()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    check(ann.state_provider is None and ann.hold_requester is None,
+          "setup: neither the state nor the hold path is wired")
+    try:
+        ann.play(A.DELAYED, "Andy", "rack screen")
+        check(False, "with no scheduler, Play must still refuse")
+    except ValueError as e:
+        check("inert" in str(e), f"the refusal must say why: {e}")
+    check(ann.playing is None, "nothing must have started playing")
+    print("  ok")
+
+
+def _sched_and_service_modules():
+    from ltcplay import schedule as S
+    from ltcplay import schedule_service as SV
+    return S, SV
 
 
 def test_announce_single_flight():
@@ -12528,12 +13854,16 @@ def test_announce_routes():
         check(svc.machine.state == S.SHOW,
               f"setup: the scheduler should be running a show at 18:20: "
               f"{svc.machine.state}")
-        code, bad = call(base, "/api/announce/play",
-                         {"id": A.DELAYED, "who": "Andy",
-                          "screen": "rack screen"})
-        check(code == 400 and "running" in bad.get("error", ""),
-              f"a show running must refuse the announcement through the "
-              f"live link: {code} {bad}")
+        code, ok = call(base, "/api/announce/play",
+                        {"id": A.DELAYED, "who": "Andy",
+                         "screen": "rack screen"})
+        check(code == 200 and ok.get("playing", {}).get("id") == A.DELAYED,
+              f"a show running is Held first, through the live link, then "
+              f"the announcement plays: {code} {ok}")
+        check(svc.machine.state == S.PAUSED,
+              f"the show must end up paused: the announcement Held it, "
+              f"through hold_requester, before it played: "
+              f"{svc.machine.state}")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -13251,6 +14581,213 @@ def test_timecode_zones_for_fallback_3():
     r.frame(1, 0, 59, 29, 7.0)
     check(r.at(7.0 + 1.0 / 29.97 + 1e-6) == ("show", (0, 1, 0, 2)),
           "drop frame free run did not skip frames 00 and 01")
+    print("  ok")
+
+
+def test_clock_show_length_follows_the_music():
+    section("clock: show length follows the show's own media (Jeff, "
+            "2026-09-26), and a configured length shorter than it is "
+            "refused rather than cutting the show short")
+    import math
+    import types
+    from ltcplay import clock as C
+
+    def cue(tc, end):
+        return types.SimpleNamespace(tc_seconds=tc, end_seconds=end)
+
+    class _FakeTimeline:
+        def __init__(self, cues):
+            self.cues = cues
+            self.fps = 30.0
+            self.drop = False
+            self.count = 30
+
+    # The show zone is hour 1 (3600 to 7200 s). The cue that opens FURTHEST
+    # in ends LATEST, at 3600 + 444.42, matching the handoff's own example:
+    # the music (IgniteTheNight_Music_Unmixed_092526.wav) runs 444.42 s, and
+    # the handoff's own show_len_s of 440 is 4.42 s short of it. It is
+    # listed FIRST here on purpose: the derivation has to take the latest
+    # end across every cue in the hour, not whichever cue happens to come
+    # last in the list.
+    tl = _FakeTimeline([cue(3610.0, 3600.0 + 444.42),
+                       cue(3600.0, 3600.0 + 200.0)])
+    got = C._show_length(tl, 1)
+    check(abs(got - 444.42) < 1e-9,
+          f"the derived length must be the LATEST cue end in that hour, "
+          f"not the first one, the last one in the list, or a shorter "
+          f"one: {got}")
+
+    artnet = {"nodes": {"MadMapper": "127.0.0.1"}}
+    cfg_derived = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"]}})
+    clk = C.build(cfg_derived, tl, sink=None, no_output=True)
+    check(abs(clk.reader.show_len_frames / 30.0 - 444.42) < 0.05,
+          f"with no show_len_s configured, the length must come from the "
+          f"show's own media, not a fixed number: "
+          f"{clk.reader.show_len_frames / 30.0}")
+
+    # A configured length that meets or exceeds the media is fine.
+    cfg_ok = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 445}})
+    clk2 = C.build(cfg_ok, tl, sink=None, no_output=True)
+    check(clk2.reader.show_len_frames == math.ceil(445 * 30.0 - 1e-9),
+          "a configured length at least as long as the media is used "
+          "as given")
+
+    # The handoff's own example: 440 s configured against 444.42 s of
+    # music must be refused when the show file loads, not silently cut
+    # the last 4.4 s off the show.
+    cfg_short = C.ClockConfig.parse({
+        "source": "ltc_audio_slave", "artnet": artnet,
+        "zones": {"show": 1, "intermission": 2, "forward": ["show"],
+                 "show_len_s": 440}})
+    try:
+        C.build(cfg_short, tl, sink=None, no_output=True)
+        check(False, "440 s configured against 444.42 s of music must be "
+                     "refused, not silently cut the show short")
+    except C.ClockConfigError as e:
+        msg = str(e)
+        check("444.42" in msg and "440" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "show length refusal")
+    print("  ok")
+
+
+def test_scheduler_show_len_s_checked_against_the_show_media():
+    section("serving: the scheduler's own show_len_s is cross-checked "
+            "against the show's own media at startup (Jeff, 2026-09-26, "
+            "the coordinator's own follow-up: show length follows the "
+            "music wherever the code has access to it)")
+    import json
+    import test_show_fixtures as fixtures
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    from ltcplay import clock as C
+
+    show_dir = fixtures.synthetic_show_dir()
+    # The Opener fixture is 2000 frames at 25ms: 50.0s exactly.
+    opener = "GPL 2026_Set 1_Opener.fseq"
+
+    def _write_show(folder, name="show.json"):
+        doc = {"fps": 25, "show_dir": show_dir,
+              "cues": [{"tc": "01:00:00:00", "fseq": opener}],
+              "clock": {"source": "artnet_master",
+                       "artnet": {"nodes": {"test": "127.0.0.1"}},
+                       "zones": {"show": 1, "intermission": 2,
+                                "forward": ["show"]}}}
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        return path
+
+    def _write_rule(folder, show_len_s):
+        path = os.path.join(folder, SV.RULE_FILE)
+        SV.save_rule(path, {
+            "timezone": "America/Denver",
+            "season": {"first_date": "2026-11-14",
+                      "last_date": "2027-01-02"},
+            "weekly": {"sat": {"first_start": "17:30", "interval_min": 20,
+                              "last_end": "22:00"}},
+            "exceptions": {}, "show_len_s": show_len_s, "guard_s": 5,
+            "late_grace_s": 0})
+        return path
+
+    # Direct unit check of the derivation helper first.
+    work0 = tempfile.mkdtemp()
+    show_path0 = _write_show(work0)
+    found_path, found_len, found_warn = C.derive_show_length_in_folder(work0)
+    check(found_path == show_path0 and abs(found_len - 50.0) < 1e-6
+          and found_warn is None,
+          f"the folder's own show file must derive to the Opener fixture's "
+          f"real 50.0s: {(found_path, found_len, found_warn)}")
+
+    # A configured show_len_s SHORTER than the media: refuse to serve at
+    # all, naming both numbers, before anything is bound.
+    work1 = tempfile.mkdtemp()
+    _write_show(work1)
+    spath1 = _write_rule(work1, 40)
+    try:
+        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        check(False, "40s configured against 50s of media must refuse to "
+                     "serve, not silently start")
+    except ValueError as e:
+        msg = str(e)
+        check("40" in msg and "50" in msg,
+              f"the refusal must name both the configured and the media "
+              f"length: {msg}")
+        _no_dashes(msg, "scheduler show_len_s refusal")
+
+    # A configured show_len_s at least as long as the media: fine.
+    work2 = tempfile.mkdtemp()
+    _write_show(work2)
+    spath2 = _write_rule(work2, 60)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    try:
+        check(httpd2.schedule is not None and httpd2.schedule.rule is not
+              None, "a long-enough show_len_s must serve normally")
+    finally:
+        httpd2.schedule.stop()
+        httpd2.server_close()
+
+    # No show media in the folder at all: never silently skipped (review
+    # round 2, 2026-09-26) -- it must still serve (a schedule with no show
+    # file to check against cannot be blocked by this), but it must WARN,
+    # in the journal, saying the check could not be done and why.
+    work3 = tempfile.mkdtemp()
+    spath3 = _write_rule(work3, 1)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    try:
+        check(httpd3.schedule is not None,
+              "no show media in the folder must not block serving")
+        check(any(row["outcome"] == "warning"
+                 and "could not be checked" in row["text"]
+                 for row in httpd3.schedule.journal),
+              f"no show media must still warn, not silently skip: "
+              f"{list(httpd3.schedule.journal)}")
+    finally:
+        httpd3.schedule.stop()
+        httpd3.server_close()
+
+    # More than one candidate show file: refuse to GUESS which one is the
+    # real one (review round 2, 2026-09-26) -- still serves (this is a
+    # warning, not a hard refusal: only a KNOWN-shorter length refuses to
+    # serve), but names both files in the warning.
+    work5 = tempfile.mkdtemp()
+    _write_show(work5, "show_a.json")
+    _write_show(work5, "show_b.json")
+    spath5 = _write_rule(work5, 1)
+    p5, l5, w5 = C.derive_show_length_in_folder(work5)
+    check(p5 is None and l5 is None and w5 is not None
+          and "show_a.json" in w5 and "show_b.json" in w5,
+          f"two candidates must refuse to pick one, naming both: "
+          f"{(p5, l5, w5)}")
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    try:
+        check(httpd5.schedule is not None,
+              "an ambiguous folder must still serve (this warns, it does "
+              "not refuse to start)")
+        check(any(row["outcome"] == "warning" and "show_a.json" in row["text"]
+                 and "show_b.json" in row["text"]
+                 for row in httpd5.schedule.journal),
+              f"the ambiguity warning must name both files, in the "
+              f"journal: {list(httpd5.schedule.journal)}")
+    finally:
+        httpd5.schedule.stop()
+        httpd5.server_close()
+
+    # No schedule configured at all: the GPL path, entirely unchanged.
+    work4 = tempfile.mkdtemp()
+    _write_show(work4)
+    httpd4 = web_mod.serve(work4, port=_free_port())
+    try:
+        check(httpd4.schedule is None,
+              "with no --schedule, this check never runs at all")
+    finally:
+        httpd4.server_close()
     print("  ok")
 
 
@@ -14543,7 +16080,7 @@ def test_the_clock_freezes_on_hold_and_resume_carries_on():
     # loop reads: no real ticker thread, so a pause here cannot spin one
     # forever chasing wall time it will never see move, and nothing here
     # depends on real time passing at all.
-    m.ticker.start = lambda t0=None: (
+    m.ticker.start = lambda t0=None, n0=0: (
         setattr(m.ticker, "t0", st.t if t0 is None else t0), m.ticker.t0)[1]
     m.ticker.stop = lambda: None
     try:
@@ -14677,6 +16214,290 @@ def test_the_clock_freezes_on_hold_and_resume_carries_on():
     print("  ok")
 
 
+def test_resume_backdating_a_ticker_is_not_a_skip():
+    section("Ticker: resume() moving t0 into the past on purpose must "
+            "never be counted as the ticker having fallen behind")
+    # Bench evidence, Fire & Ice 2026-09-25, run hold1 (B4): 20 cues of a
+    # 58s show, each held at 20s for 5s. The clock's own "skipped" count
+    # rose by about 600 every 5s Hold (11,424 after 19 cues) while the
+    # pixel receiver saw almost nothing skipped. Reproduced here directly,
+    # on an injected clock, never wall time: Ticker.run() is called twice,
+    # the second time exactly as ArtNetMaster.resume() calls it -- t0
+    # moved back by the frozen frame's own length, so the very first frame
+    # computed lands on frame_frozen + 1.
+    from ltcplay import clock as C
+
+    class Exact:
+        """clock()/sleep() that move only when told to."""
+        def __init__(self, start):
+            self.now = start
+
+        def clock(self):
+            return self.now
+
+        def sleep(self, d):
+            self.now += d
+
+    fps = C.MASTER_FPS
+
+    # A plain start (play()): the zero point IS now, so nothing is owed.
+    ex = Exact(1000.0)
+    got = []
+    tk = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 5)[1],
+                 clock=ex.clock, sleep=ex.sleep)
+    tk.run(ex.now)
+    check(got == [0, 1, 2, 3, 4], f"a plain start sent {got}")
+    check(tk.skipped == 0,
+          f"a plain start should never skip a frame, got {tk.skipped}")
+
+    # Exactly what resume() does: 20s into a 30fps cue (hold1's own
+    # position), t0 moved back by (n_frozen + 1) / fps, n0 carried
+    # alongside it so the ticker knows that is where it already is.
+    n_frozen = 599                      # 20s into the cue, 30 a second
+    resume_now = 2000.0                 # some time after a 5s hold; the
+                                        # value itself does not matter
+    t0 = resume_now - (n_frozen + 1) / fps
+
+    got.clear()
+    ex_fixed = Exact(resume_now)
+    tk_fixed = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 10)[1],
+                        clock=ex_fixed.clock, sleep=ex_fixed.sleep)
+    tk_fixed.run(t0, n0=n_frozen + 1)
+    check(got[:3] == [600, 601, 602],
+          f"resuming should continue at frame 600, got {got[:3]}")
+    check(tk_fixed.skipped == 0,
+          f"a Hold that dropped nothing on the wire must never be counted "
+          f"as skipped frames; got {tk_fixed.skipped}")
+
+    # The bug itself, shown directly: the identical resume with n0 left
+    # out -- what clock.py did before this fix.
+    got.clear()
+    ex_bug = Exact(resume_now)
+    tk_bug = C.Ticker(fps, lambda n, now: (got.append(n), len(got) < 10)[1],
+                      clock=ex_bug.clock, sleep=ex_bug.sleep)
+    tk_bug.run(t0)                      # n0 defaults to 0: the old call
+    check(tk_bug.skipped == n_frozen + 1,
+          f"this is the exact mechanism the bench found, not a guess: "
+          f"leaving out n0 turns a Hold that lost nothing into "
+          f"{tk_bug.skipped} 'skipped' frames -- matching the bench's "
+          f"~600-per-hold reading (11,424 after 19 cues) almost exactly")
+    print("  ok")
+
+
+def test_hold_freezes_the_pixels_at_once_and_resume_never_reorders():
+    section("Hold: the pixels freeze on the spot, not up to a debounce "
+            "window later; Resume never sends an earlier pixel frame than "
+            "one already sent, and drops at most one on the way back")
+    # Bench evidence, Fire & Ice 2026-09-25, run hold1 (B4): pixels held
+    # the frame through the hold (about 190 repeats per 5s hold) with 0
+    # skipped during, BUT "one frame number arrived out of order around
+    # most holds", and "14 pixel frames were skipped in total in the 3s
+    # after resume, across 19 holds". Reproduced here with the real Player
+    # and ArtNetMaster, on one injected clock shared by two independently
+    # paced tickers -- the show clock's own 30fps and the pixel output's
+    # own 40fps (25ms step) -- exactly as they run for real, never wall
+    # time.
+    from ltcplay import clock as C
+
+    fs = FakeFSEQ(frames=200000, step=25)      # 40fps, ample runway
+    tl = _timeline([("00:00:00:00", "A", fs)])
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=200,
+              freewheel_ms=250, hold_ms=2000)
+    st = _Stepped(p, step_ms=25)
+    out = _TcOut()
+    cfg, m = _master(C, out=out, sink=p.feed_timecode,
+                     clock=lambda: st.t, mono=lambda: st.t,
+                     on_pause=lambda: p.set_hard_park(True),
+                     on_resume=lambda: p.set_hard_park(False))
+    fps = C.MASTER_FPS
+    try:
+        m.start()
+        st.t = 1000.0
+        t0 = m.play(0.0, 100000.0, "A")
+
+        next_clock_t = [t0]
+        next_out_t = [st.t]
+        n = [0]
+        idxs = []
+
+        def step():
+            # Whichever of the two independent tickers is due first, never
+            # both at once: the same discipline clock.py's own Ticker and
+            # player.py's output loop each keep on their own. The clock
+            # ticks at 30fps the whole time, paused or not -- that is the
+            # feature -- but n only advances when it is not paused: while
+            # paused, _tick() ignores n entirely (it sends the frozen frame
+            # regardless), so holding it at n_frozen + 1 costs nothing and
+            # is exactly the frame a real resume() restarts its own ticker
+            # counting from (see clock.py's Ticker.run() and resume()).
+            if next_clock_t[0] <= next_out_t[0]:
+                st.t = next_clock_t[0]
+                m._tick(n[0], st.t)
+                if not m._paused:
+                    n[0] += 1
+                next_clock_t[0] += 1.0 / fps
+            else:
+                st.t = next_out_t[0]
+                st.tick()
+                idxs.append(p.current_frame)
+                next_out_t[0] += st.step
+
+        # Run to 20s into the cue -- hold1's own position -- then Hold for
+        # 5s, matching the bench run exactly.
+        PAUSE_AT_N = int(round(20.0 * fps))     # 600
+        while n[0] < PAUSE_AT_N:
+            step()
+        m.pause()
+        check(m.paused, "pause() did not mark the clock paused")
+        # pause() itself feeds nothing; only its own ticker's very next
+        # tick does, and this test's clock and output tickers are not
+        # phase locked to each other, so the frozen value is whatever that
+        # first post-pause output tick reads -- never a later one, which
+        # is exactly the property under test.
+        before_len = len(idxs)
+        while len(idxs) == before_len:
+            step()
+        frozen_idx = idxs[-1]
+
+        # Not one pixel frame may differ from the one pause() froze on:
+        # no forward creep while a debounce window catches up, so no snap
+        # back either. hold_ms=2000 here is unrelated to this park_ms=200
+        # debounce; the fix must beat it by more than an order of
+        # magnitude, so 5s of hold, sampled at both tickers' full rate,
+        # is a hard check, not a lucky one.
+        hold_end_t = st.t + 5.0
+        bad = []
+        while st.t < hold_end_t or next_clock_t[0] < hold_end_t \
+                or next_out_t[0] < hold_end_t:
+            before = len(idxs)
+            step()
+            if len(idxs) > before and idxs[-1] != frozen_idx:
+                bad.append((round(st.t - t0, 4), idxs[-1]))
+        check(not bad,
+              f"the pixels moved during the hold before settling on the "
+              f"frozen frame ({frozen_idx}), or moved at all: {bad[:5]}")
+        check(p.state == PARKED,
+              f"expected PARKED throughout the hold, got {p.state}")
+
+        m.resume()
+        check(not m.paused, "resume() left the clock marked paused")
+
+        # 3s after Resume, matching the bench's own measurement window.
+        # idx must never fall (an out-of-order frame, B4's finding), and
+        # what it skips is bounded and small, never a burst. A resume is a
+        # 1/30s step on the clock landing on a 1/25s grid of pixel frames:
+        # 30 and 40 do not share a per-frame boundary, so the very first
+        # frame after almost every Resume is, by simple arithmetic, not
+        # the very next pixel frame but the one after -- one frame short
+        # every time, not a bug to fix, exactly as B4 measured (14 skipped
+        # across 19 holds, well under 1 per hold on average, never
+        # growing, never backward). This is that bound, checked directly,
+        # not assumed: a real pacing bug would show up here as a gap that
+        # keeps growing, or a burst of many frames at once, neither of
+        # which this tolerates.
+        seq = [frozen_idx]
+        window_end_t = st.t + 3.0
+        while st.t < window_end_t or next_clock_t[0] < window_end_t \
+                or next_out_t[0] < window_end_t:
+            before = len(idxs)
+            step()
+            if len(idxs) > before:
+                seq.append(idxs[-1])
+        gaps = [b - a for a, b in zip(seq, seq[1:])]
+        check(all(g >= 0 for g in gaps),
+              f"a pixel frame arrived out of order after Resume: {seq}")
+        check(all(g <= 3 for g in gaps),
+              f"more than two pixel frames skipped in a single step after "
+              f"Resume (a catch-up burst, not the one-off quantising "
+              f"between the 30fps clock and the 40fps pixel grid this "
+              f"tolerates): gaps {gaps}")
+        skipped = sum(g - 1 for g in gaps if g > 1)
+        check(skipped <= 3,
+              f"{skipped} pixel frames skipped in the 3s after Resume, "
+              f"more than the bench's own worst case (B4: 14 skipped in "
+              f"total across 19 holds, well under 1 per hold on average)")
+        check(seq[-1] > frozen_idx, "the pixels never moved again after "
+                                    "Resume")
+    finally:
+        st.close()
+        try:
+            m.stop()
+        except Exception:
+            pass
+    print("  ok")
+
+
+def test_hard_park_is_seen_at_once_under_every_override():
+    section("Hold: Freerun, Blackout and Preshow all read a machine-"
+            "generated pause as PARKED at once, not after the debounce "
+            "window")
+    # player.py has two copies of the "parked" computation: _tick()'s own,
+    # used for the ordinary show path, and _state_from_feed()'s, used only
+    # while an override (Freerun, Blackout, Preshow) is engaged, to keep
+    # the feed's own readout honest underneath it. The fix for the
+    # out-of-order pixel frame (set_hard_park(), wired from
+    # ArtNetMaster.pause()/resume()) has to reach both, or the display
+    # still waits out the park_s debounce whenever an override happens to
+    # be up during a Hold.
+    from ltcplay.player import FREERUN
+    fs = FakeFSEQ(frames=20000)
+    idle = FakeFSEQ(frames=40)
+    tl = _timeline([("01:00:00:00", "A", fs)], idle="/tmp/idle.fseq")
+    p = Player(tl, FakeNetmap(), CountingSender(), park_ms=200,
+              freewheel_ms=250, hold_ms=2000)
+    p.idle_cue = timeline.Cue("00:00:00:00", "/tmp/idle.fseq", "preshow loop")
+    p.idle_cue.fseq = idle
+    p.idle_cue._spans = [(0, 0, 64)]
+    clk = _Stepped(p, step_ms=25)
+    try:
+        base = tcmod.parse_tc("01:00:30:00", 30)
+        clk.run(0.5, tc_from=base)
+        check(p.state == LOCKED, f"expected LOCKED before Hold, got {p.state}")
+
+        # Exactly what ArtNetMaster.pause() does via set_hard_park(): told
+        # immediately, no repeated frame needed, no waiting for park_s
+        # (200ms here). A single tick, right after, is well inside that
+        # window.
+        p.set_hard_park(True)
+
+        # Freerun beats the feed for the SHOW's own state (FREERUN, so the
+        # rig keeps running the free run and does not yank sideways), but
+        # the feed's own honest reading -- what the operator sees the LTC
+        # line doing underneath it -- lives in feed_state.
+        p.go(base + 0.5)
+        clk.tick()
+        check(p.state == FREERUN, f"expected FREERUN, got {p.state}")
+        check(p.feed_state == PARKED,
+              f"Freerun did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.feed_state}")
+        p.release()
+
+        # Blackout
+        p.override = "blackout"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Blackout did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        # Preshow
+        p.override = "preshow"
+        clk.tick()
+        check(p.state == PARKED,
+              f"Preshow did not read a machine-generated Hold as PARKED "
+              f"at once, got {p.state}")
+        p.override = None
+
+        p.set_hard_park(False)
+        clk.tick()
+        check(p.state != PARKED,
+              "releasing the hard park left the state stuck on PARKED")
+    finally:
+        clk.close()
+        p.stop()
+    print("  ok")
+
+
 def test_session_hold_and_resume():
     section("Session.clock_pause / clock_resume: refused with nothing to "
             "pause or resume, without a master clock, and twice; halt "
@@ -14769,7 +16590,20 @@ def test_session_hold_and_resume():
         sess.clock_play("Show")
         check(wait_for(lambda: sess.player.current_cue is not None,
                        timeout=3.0), "the cue never reached the pixels")
+        # A real quarter second in, not the first frame: the skipped-count
+        # bug this guards (below, at Resume) scales with how far into the
+        # cue the freeze happens, and a Hold in the first instant of a cue
+        # would hide it almost entirely.
+        time.sleep(0.25)
         sess.clock_pause()
+        # Told immediately, not after the debounce settles: this is the
+        # whole point of wiring on_pause through Session.open() to
+        # Player.set_hard_park (clock.py's ArtNetMaster._set_paused(),
+        # session.py's clock_mod.build() call). No sleep, no wait_for --
+        # right here, before anything has had time to settle on its own.
+        check(sess.player._hard_parked,
+              "Session never told the player Hold is a real pause "
+              "(on_pause is not wired, or never called)")
         # The chase engine only calls a repeating position PARKED once it
         # has repeated for park_ms: right up to that debounce, the reading
         # can still say LOCKED for a frame here and there. Let it settle
@@ -14810,7 +16644,23 @@ def test_session_hold_and_resume():
             check("already paused" in str(e), f"unclear refusal: {e}")
 
         # 5. Resume: the show carries on, and a second Resume is refused.
+        # The pause above ran real time (the 0.5s settle sleep is real,
+        # not simulated), so by now the ticker has legitimately been
+        # frozen for many real frames -- exactly the shape that exposed
+        # the bogus skipped-frame count on the Fire & Ice bench: resume()
+        # backdates the ticker's zero point by that many frames on
+        # purpose, and forgetting to also tell it where it already is
+        # (n0) reads as the ticker having just fallen that far behind.
+        skipped_before = sess.clock.ticker.skipped
         sess.clock_resume()
+        check(sess.clock.ticker.skipped - skipped_before <= 3,
+              f"Resume added {sess.clock.ticker.skipped - skipped_before} "
+              f"to the clock's own skipped-frame count for a hold that "
+              f"dropped nothing on the wire")
+        check(not sess.player._hard_parked,
+              "Session never told the player Hold is over (on_resume is "
+              "not wired, or never called), so a later Hold would find "
+              "the pixels already told they are paused")
         check(wait_for(lambda: sess.player.state == LOCKED, timeout=3.0),
               "the show did not carry on after Resume")
         check(not sess.clock.paused, "the clock still reads paused")
@@ -15151,6 +17001,15 @@ def test_pause_resume_survive_a_real_ticker_under_pressure():
         check(m.ticker.errors == 0,
               f"{m.ticker.errors} tick(s) errored under pressure "
               f"({cycles} pause/resume cycles): {m.ticker.last_error!r}")
+        # Each cycle's resume() backdates the ticker's own zero point by
+        # whatever it was frozen for; forgetting to say so (n0) reads as
+        # that many frames having been dropped, on every single cycle.
+        # 300 cycles of real, if tiny, backdating would add up fast; a
+        # genuinely clean resume leaves this near zero however many
+        # cycles ran.
+        check(m.ticker.skipped < cycles,
+              f"{m.ticker.skipped} frames counted as skipped over "
+              f"{cycles} pause/resume cycles that dropped nothing")
         check(m.playing and m._cue is not None,
               "the cue is not alive after the stress cycles")
         check(not m.paused, "the clock was left paused after the cycles")
@@ -17576,9 +19435,11 @@ def test_journal_rotation_and_pruning_across_dst():
     check([l[:10] for l in j] == ["00:00:01  ", "01:30:00  ", "01:30:00  "],
           f"the journal reads the wall clock: {j}")
 
-    # Pruning, by the name's date. A night for every day from 1 Jul to
-    # 1 Nov (124 nights), two with misleading timestamps, and things this
-    # module did not write.
+    # Pruning, by the name's date: kept 120 days (Jeff, 2026-09-26). A
+    # night for every day from 1 Jun to 1 Nov, two with misleading
+    # timestamps, incident folders, and things this module did not write.
+    check(J.KEEP_DAYS == 120, f"night files are kept 120 days: {J.KEEP_DAYS}")
+
     def nights_from(first, n, folder, kinds=(J.machine_name, J.journal_name)):
         made = []
         for i in range(n):
@@ -17591,60 +19452,117 @@ def test_journal_rotation_and_pruning_across_dst():
 
     old = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(old)
-    made = nights_from(date(2026, 7, 1), 124, old)
+    made = nights_from(date(2026, 6, 1), 154, old)
     # A kept night with an ancient timestamp, a pruned one stamped today.
-    os.utime(os.path.join(old, J.machine_name("2026-08-05")), (1, 1))
-    os.utime(os.path.join(old, J.machine_name("2026-08-01")),
+    os.utime(os.path.join(old, J.machine_name("2026-07-05")), (1, 1))
+    os.utime(os.path.join(old, J.machine_name("2026-07-01")),
              (_t.time(), _t.time()))
-    strangers = ["notes.txt", "night_2026-08-01.jsonl.bak",
+    strangers = ["notes.txt", "night_2026-07-01.jsonl.bak",
                  "night_2020-01-01.jsonl.txt", "ltcplay.log"]
     for n in strangers:
         open(os.path.join(old, n), "w").write("x")
     os.makedirs(os.path.join(old, "night_2020-01-01.jsonl"))
-    os.makedirs(os.path.join(old, "incidents", "incident_2020-01-01_120000"))
+    inc = os.path.join(old, "incidents")
+    for n in ("incident_2026-07-01_120000", "incident_2026-07-02_120000_2",
+              "incident_2026-07-03_120000.partial",
+              "incident_2026-07-10_120000", "notes"):
+        os.makedirs(os.path.join(inc, n))
+        open(os.path.join(inc, n, "journal.txt"), "w").write("x\n")
+    open(os.path.join(inc, "incident_2020-01-01_120000"), "w").write("x")
+    # The .partial is a crash leftover, not work in progress: old enough
+    # (over a day, by its mtime) that the stale rule removes it. Its NAME's
+    # date (2026-07-03, also older than 120 days) must play no part: that
+    # would be pruning a `.partial` by the date rule, which round 1 of the
+    # review said never to do again.
+    stale_partial = os.path.join(inc, "incident_2026-07-03_120000.partial")
+    stale_ts = datetime(2026, 7, 3, tzinfo=utc).timestamp()
+    os.utime(stale_partial, (stale_ts, stale_ts))
     now[0] = datetime(2026, 11, 1, 18, 0, tzinfo=utc)   # the fall-back day
     p = _book(J, old, now)
     gone = p.prune(date(2026, 11, 1))
     left = set(os.listdir(old))
-    # Kept: 90 days back from 1 Nov is 3 Aug.
-    want = sorted(n for d, n in made if d < date(2026, 8, 3))
+    # Kept: 120 days back from 1 Nov is 4 Jul.
+    want = sorted([n for d, n in made if d < date(2026, 7, 4)] +
+                  ["incident_2026-07-01_120000",
+                   "incident_2026-07-02_120000_2",
+                   "incident_2026-07-03_120000.partial"])
     check(sorted(gone) == want,
-          f"nights older than 90 days are removed, by the date in their "
-          f"name: {len(gone)} {sorted(gone)[:4]}")
-    check(all(n in left for d, n in made if d >= date(2026, 8, 3)),
-          "the 90th night back and newer are kept, whatever their "
+          f"night files and incident folders older than 120 days are "
+          f"removed, by the date in their name: {len(gone)} "
+          f"{sorted(set(gone) ^ set(want))[:4]}")
+    check(all(n in left for d, n in made if d >= date(2026, 7, 4)),
+          "the 120th night back and newer are kept, whatever their "
           "timestamps say")
+    check(sorted(os.listdir(inc)) == ["incident_2020-01-01_120000",
+                                      "incident_2026-07-10_120000", "notes"],
+          f"a newer incident, and anything that is not an incident folder, "
+          f"stay: {sorted(os.listdir(inc))}")
     check(all(n in left for n in strangers)
-          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl"))
-          and os.path.isdir(os.path.join(old, "incidents")),
+          and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl")),
           "nothing this module did not write is touched")
-    check(any(f"Removed {len(want)} night log file(s)" in r["text"]
-              for r in p.memory), "the journal says what was removed")
-    # A clock a year ahead calls every night old. The nights that exist
-    # are kept all the same: never fewer than the newest 90 of them.
+    check(any("Removed 66 night log file(s) and 2 incident folder(s)" in
+              r["text"] for r in p.memory),
+          "the journal says what was removed by the date rule (the "
+          "stale .partial is reported separately, below)")
+    check(any("Removed 1 incident folder(s) left unfinished (.partial)" in
+              r["text"] and "incident_2026-07-03_120000.partial" in r["text"]
+              for r in p.memory),
+          "and a stale .partial is reported for what it is, not folded "
+          "into the by-date removal")
+    check("incident_2026-07-03_120000.partial" not in
+          set(os.listdir(inc)), "the stale .partial is gone")
+    # A clock nobody could check yet (floor=True): the newest 120 nights
+    # that exist stay, whatever the date says, and NOTHING is removed by
+    # age at all -- so a year-ahead date with only 4 nights on disk (a
+    # seasonal show early in its life) removes nothing. A clock the time
+    # server DOES agree with (floor=False) is the opposite: purely by
+    # age, with no floor to protect anything -- so the same year-ahead
+    # date, if this machine's clock can actually be trusted to say so,
+    # removes every one of those 4, having nothing left to protect them
+    # with (round 2 review of PR 25: floor is conditional again, but on
+    # trust Service keeps genuinely current, not a boot-time snapshot).
     ahead = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(ahead)
-    nights_from(date(2026, 11, 14), 4, ahead)
+    made_ahead = nights_from(date(2026, 11, 14), 4, ahead)
     now[0] = datetime(2027, 11, 20, 18, 0, tzinfo=utc)
-    check(_book(J, ahead, now).prune(date(2027, 11, 20)) == []
+    check(_book(J, ahead, now).prune(date(2027, 11, 20), floor=True) == []
           and len(os.listdir(ahead)) == 8,
-          f"a clock a year ahead removes nothing: {os.listdir(ahead)}")
+          f"an untrusted clock a year ahead removes nothing at all, by "
+          f"count alone: {os.listdir(ahead)}")
+    gone_ahead = _book(J, ahead, now).prune(date(2027, 11, 20), floor=False)
+    check(sorted(gone_ahead) == sorted(n for _d, n in made_ahead)
+          and not any(os.path.exists(os.path.join(ahead, n))
+                      for _d, n in made_ahead),
+          f"a TRUSTED clock a year ahead removes everything by age alone, "
+          f"with no floor to protect the last few nights that exist: "
+          f"{gone_ahead}")
     many = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(many)
-    made = nights_from(date(2026, 11, 1), 120, many, (J.machine_name,))
-    gone = _book(J, many, now).prune(date(2028, 1, 1))
+    made = nights_from(date(2026, 11, 1), 150, many, (J.machine_name,))
+    gone = _book(J, many, now).prune(date(2028, 1, 1), floor=True)
     check(sorted(gone) == [n for _d, n in made[:30]]
           and sum(os.path.exists(os.path.join(many, n))
-                  for _d, n in made) == 90,
-          f"however far ahead, the newest 90 nights stay: {len(gone)}")
-    # The spring change: 90 days back from 14 Mar 2027 is 14 Dec 2026.
+                  for _d, n in made) == 120,
+          f"however far ahead, an untrusted clock keeps the newest 120 "
+          f"nights, by count alone: {len(gone)}")
+    many2 = os.path.join(tempfile.mkdtemp(), "nights")
+    os.makedirs(many2)
+    made2 = nights_from(date(2026, 11, 1), 150, many2, (J.machine_name,))
+    gone2 = _book(J, many2, now).prune(date(2028, 1, 1))       # floor=False
+    check(sorted(gone2) == sorted(n for _d, n in made2)
+          and not any(os.path.exists(os.path.join(many2, n))
+                      for _d, n in made2),
+          f"and a TRUSTED clock removes every one of them by age alone: "
+          f"every seeded night is more than 120 days before 2028-01-01, "
+          f"and there is no floor to keep any of them: {len(gone2)}")
+    # The spring change: 120 days back from 14 Mar 2027 is 14 Nov 2026.
     spring = os.path.join(tempfile.mkdtemp(), "nights")
     os.makedirs(spring)
-    made = nights_from(date(2026, 12, 1), 104, spring, (J.machine_name,))
+    made = nights_from(date(2026, 11, 1), 134, spring, (J.machine_name,))
     now[0] = datetime(2027, 3, 14, 9, 30, tzinfo=utc)     # 02:30 MST skipped
     sp = _book(J, spring, now)
     check(sorted(sp.prune(date(2027, 3, 14))) ==
-          [n for d, n in made if d < date(2026, 12, 14)],
+          [n for d, n in made if d < date(2026, 11, 14)],
           f"across the spring change too: {sorted(os.listdir(spring))[:3]}")
     check(sp.night_of() == date(2027, 3, 14), "the night is the local date")
 
@@ -17654,15 +19572,18 @@ def test_journal_rotation_and_pruning_across_dst():
     work = tempfile.mkdtemp()
     nights = os.path.join(work, "nights")
     os.makedirs(nights)
-    nights_from(date(2026, 7, 1), 95, nights, (J.machine_name,))
+    # More than 120 nights, and running right up to yesterday, so the age
+    # rule (not the newest-120 floor, always applied now regardless -- see
+    # journal.Logbook.prune()) is what is actually under test here.
+    nights_from(date(2026, 6, 1), 165, nights, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc = _svc(S, work, now).start(thread=False)
 
     def there(d):
         return os.path.exists(os.path.join(nights, J.machine_name(d)))
 
-    check(not there("2026-07-06") and there("2026-07-07"),
-          "the service prunes when a night begins, keeping the newest 90")
+    check(not there("2026-07-16") and there("2026-07-17"),
+          "the service prunes by age when a night begins")
     now[0] = _den(S, 21, 35)
     svc._apply(_op(S, S.HOLD_ON))
     now[0] = _den(S, 23, 59, 50)
@@ -17672,29 +19593,370 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
-    check(not there("2026-07-07") and there("2026-07-08"),
+    check(not there("2026-07-17") and there("2026-07-18"),
           "and prunes again when the next night begins")
     check(there("2026-11-15"),
           "after midnight the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
-    # has run for 10 minutes.
+    # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
     nights2 = os.path.join(work2, "nights")
     os.makedirs(nights2)
-    nights_from(date(2026, 7, 1), 95, nights2, (J.machine_name,))
+    nights_from(date(2026, 6, 1), 130, nights2, (J.machine_name,))
     now[0] = _den(S, 21, 30)
     svc2 = _svc(S, work2, now, ntp_query=lambda: 90000.0).start(thread=False)
-    first = os.path.join(nights2, J.machine_name("2026-07-01"))
+    first = os.path.join(nights2, J.machine_name("2026-06-01"))
     check(svc2.clock_check["level"] == "warn" and os.path.exists(first),
           "an unchecked clock prunes nothing at first")
     now[0] = _den(S, 21, 40, 1)
     svc2.tick()
-    check(not os.path.exists(first),
-          "and prunes, still keeping the newest 90, after 10 minutes")
+
+    def there2(d):
+        return os.path.exists(os.path.join(nights2, J.machine_name(d)))
+
+    check(not there2("2026-06-11") and there2("2026-06-12"),
+          "and after 10 minutes prunes, keeping the newest 120 nights even "
+          "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
     check(os.path.exists(sp14) and "written at midnight" in
           open(sp14, encoding="utf-8").read(),
           "and the night that never closed gets its summary at midnight")
+    print("  ok")
+
+
+def test_journal_prune_never_removes_a_partial_by_its_name_date():
+    section("journal: a .partial incident is never removed by the date in "
+            "its name; only a stale one, by how long it has sat "
+            "unfinished, ever goes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    # A .partial dated long ago (a wrong clock, or simply an old crash,
+    # could leave one so named), but written moments ago by this run's own
+    # clock: save_incident() could still be filling it. prune() must leave
+    # it alone even with `today` set far enough ahead that the date-based
+    # rule would remove a FINISHED incident with the same name's date
+    # (round 1 review of PR 25, should-fix).
+    folder = tempfile.mkdtemp()
+    inc = os.path.join(folder, J.INCIDENTS)
+    os.makedirs(inc)
+    partial = os.path.join(inc, "incident_2020-01-01_000000.partial")
+    os.makedirs(partial)
+    open(os.path.join(partial, "journal.txt"), "w").write("still open\n")
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    # Its mtime is real wall-clock time (whenever this test happens to
+    # run), which has nothing to do with the mocked clock above: set it to
+    # match `now[0]`, so "freshly written" is judged against the same
+    # clock prune() itself uses.
+    fresh_ts = now[0].timestamp()
+    os.utime(partial, (fresh_ts, fresh_ts))
+    b = _book(J, folder, now)
+    gone = b.prune(date(2026, 11, 1))       # far more than 120 days past 2020
+    check(gone == [] and os.path.isdir(partial),
+          f"a freshly-written .partial survives, whatever its name's date "
+          f"says: {gone}")
+
+    # The same folder, now old enough (mtime over a day) that whatever was
+    # writing it is gone: a separate, simple rule removes it, and only
+    # that rule.
+    old_ts = (now[0] - timedelta(days=2)).timestamp()
+    os.utime(partial, (old_ts, old_ts))
+    gone2 = b.prune(date(2026, 11, 1))
+    check(gone2 == ["incident_2020-01-01_000000.partial"]
+          and not os.path.exists(partial),
+          f"a .partial unfinished for more than a day is removed, as a "
+          f"stale crash leftover: {gone2}")
+    check(any("left unfinished (.partial)" in r["text"] for r in b.memory),
+          "and the journal says so, distinctly from a by-date removal")
+    print("  ok")
+
+
+def test_journal_prune_takes_the_incident_lock():
+    section("journal: prune() takes the same lock save_incident() uses, "
+            "so the two can never interleave")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    from datetime import date, datetime, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    folder = tempfile.mkdtemp()
+    now = [datetime(2026, 11, 1, 12, 0, tzinfo=utc)]
+    b = _book(J, folder, now)
+    # prune() defaults to floor=False (a trustworthy clock, the ordinary
+    # case): purely by age, no newest-N floor at all, so a single old
+    # night file is removed on its own, whatever else does or does not
+    # exist alongside it.
+    old_name = J.machine_name("2020-01-01")
+    open(os.path.join(b.folder, old_name), "w").write("x\n")
+
+    order = []
+    holding = threading.Event()
+    released = threading.Event()
+
+    def hold_and_release():
+        with b._io:
+            order.append("held")
+            holding.set()
+            released.wait(2)
+        order.append("released")
+
+    holder = threading.Thread(target=hold_and_release, daemon=True)
+    holder.start()
+    check(holding.wait(2), "the other holder took the lock")
+
+    result = {}
+
+    def run_prune():
+        result["gone"] = b.prune(date(2026, 11, 1))
+        order.append("pruned")
+
+    pruner = threading.Thread(target=run_prune, daemon=True)
+    pruner.start()
+    pruner.join(timeout=0.3)
+    check(pruner.is_alive()
+          and os.path.exists(os.path.join(b.folder, old_name)),
+          "prune() waits for the lock, rather than running through it "
+          "while save_incident() (or anything else) holds it")
+    released.set()
+    pruner.join(timeout=2)
+    holder.join(timeout=2)
+    check(not pruner.is_alive() and result.get("gone") == [old_name],
+          "and runs, and removes the old file, once the lock is free")
+    check(order == ["held", "released", "pruned"],
+          f"the two never interleave: {order}")
+    print("  ok")
+
+
+def test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled():
+    section("scheduler: a clock that jumps mid-run, after passing its own "
+            "one-shot check at start, never breaks the 120-night floor, "
+            "and is itself noticed and journaled")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 12, 0, tzinfo=utc)
+    base = boot.date() - timedelta(days=1)
+    made = []
+    for i in range(130):
+        d = base - timedelta(days=i)
+        open(os.path.join(nights, J.machine_name(d.isoformat())), "w") \
+            .write("x\n")
+        made.append(d)
+
+    def unique_dates():
+        # Every distinct night date still on disk, this test's own 130
+        # seeded ones and any the service itself wrote for "tonight"
+        # alike: the floor protects whatever the newest 120 actually are,
+        # not just the ones this test happened to seed.
+        out = set()
+        for name in os.listdir(nights):
+            m = J._NAME.match(name)
+            if m:
+                out.add(date(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))))
+        return out
+
+    now = [boot]
+    perf = [0.0]
+
+    def real_ntp_query():
+        # A real time server measures against the true elapsed time,
+        # which perf_counter tracks (it cannot be stepped by whatever
+        # stepped `now`): this is the offset an actual server would
+        # report, so a recheck after the jump below genuinely still
+        # catches the wrong clock, rather than a fixed "it's fine"
+        # answer that could never have noticed anything either way.
+        true_now = boot + timedelta(seconds=perf[0])
+        return (now[0] - true_now).total_seconds()
+
+    svc = _svc(S, work, now, ntp_query=real_ntp_query,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)                     # a good clock at boot
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+    check(len(unique_dates()) >= 120,
+          f"the boot-time prune never keeps fewer than the newest 120: "
+          f"{len(unique_dates())}")
+
+    # The clock steps forward 200 days between two ticks that, by
+    # perf_counter, were a quarter of a second apart: an NTP step, an RTC
+    # glitch, or someone setting it by hand -- none of which this process
+    # would otherwise ever notice again after its one boot-time check.
+    now[0] = boot + timedelta(days=200)
+    perf[0] = 0.25
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "the jump itself is noticed and journaled")
+    check(svc.clock_check["level"] != "ok",
+          "the recheck the jump triggers genuinely still catches the "
+          "wrong clock (a real time server would), so trust is not "
+          "wrongly restored")
+    check(len(unique_dates()) >= 120,
+          f"and nothing beyond the newest 120 nights is ever removed, "
+          f"however this tick's own housekeeping used the wrong date: "
+          f"{len(unique_dates())}")
+    print("  ok")
+
+
+def test_journal_prune_trusted_clock_deletes_purely_by_age():
+    section("journal: prune() with a trusted clock (floor=False) deletes "
+            "purely by age, even a handful of nights spread over years "
+            "(a seasonal show), with no newest-N floor to protect any of "
+            "them (round 2 review of PR 25: an unconditional floor had "
+            "overcorrected the round 1 fix, and a seasonal show could "
+            "then never age files out at all)")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    # The reviewer's own case: 10 nights over the last two years, none of
+    # them recent, all genuinely more than 120 days old.
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    lb = J.Logbook(folder=tmp, clock=lambda: datetime.now(utc))
+    removed = lb.prune(today, state="BOOT", floor=False)
+    check(sorted(removed) == sorted(names),
+          f"a trusted clock removes every one of these 10 nights: "
+          f"{removed}")
+    check(not any(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "and none of them are left on disk")
+    print("  ok")
+
+
+def test_journal_prune_untrusted_clock_keeps_them_all():
+    section("journal: prune() with an untrusted clock (floor=True) "
+            "removes nothing by age at all; with only a handful of "
+            "nights on disk, every one of them IS 'the newest 120'")
+    import tempfile
+    from datetime import date, datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    tmp = tempfile.mkdtemp()
+    today = date(2026, 9, 27)
+    old_nights = [today - timedelta(days=n)
+                 for n in (800, 700, 600, 500, 400, 300, 250, 200, 150, 130)]
+    names = [J.journal_name(d) for d in old_nights]
+    for d in old_nights:
+        open(os.path.join(tmp, J.journal_name(d)), "wb").write(b"x\n")
+    now = [datetime(2026, 9, 27, 12, 0, tzinfo=utc)]
+    lb = J.Logbook(folder=tmp, clock=lambda: now[0])
+    removed = lb.prune(today, state="BOOT", floor=True)
+    check(removed == [],
+          f"an untrusted clock removes nothing: {removed}")
+    check(all(os.path.exists(os.path.join(tmp, n)) for n in names),
+          "every one of the 10 nights is still there")
+    print("  ok")
+
+
+def test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning():
+    section("scheduler: sleeping for days and waking again looks like a "
+            "jump too (the wall clock moves, perf_counter barely does), "
+            "but a genuinely correct clock is re-confirmed at once, not "
+            "left distrusted, and pruning resumes normally")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    now = [boot]
+    perf = [0.0]
+    # A genuinely correct clock throughout: unlike a bad jump, a real time
+    # server agrees with it before AND after the sleep.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0,
+              perf_counter=lambda: perf[0])
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the boot-time check passed")
+
+    # The machine sleeps for three days over a long weekend; perf_counter
+    # (suspend time is not counted) barely advances, but the wall clock
+    # genuinely did move three real days.
+    now[0] = boot + timedelta(days=3)
+    perf[0] = 0.3
+    svc.tick()
+
+    check(any(r.get("outcome") == "jumped" for r in svc.journal),
+          "sleep and wake is itself noticed and journaled, the same as "
+          "any other jump")
+    check(svc.clock_check["level"] == "ok",
+          "but the recheck it triggers finds a genuinely correct clock, "
+          "so trust is restored, not left lost")
+    check(svc._clock_trusted(), "and the service agrees it is trusted")
+
+    # An old night added after waking is removed by age, proving pruning
+    # is not stuck refusing to trust the clock just because a jump was
+    # noticed once.
+    old = now[0].date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+    gone = svc.logbook.prune(now[0].date(), state="BOOT",
+                             floor=not svc._clock_trusted())
+    check(gone == [old_name],
+          f"and age-based pruning resumes normally after waking: {gone}")
+    print("  ok")
+
+
+def test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping():
+    section("scheduler: Service's own housekeeping, not just Logbook.prune() "
+            "called directly, computes floor from LIVE trust: a trusted "
+            "clock deletes an old night by age even with only one night "
+            "on disk, far fewer than the newest-120 floor would ever let "
+            "age alone touch")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from ltcplay import journal as J
+    utc = timezone.utc
+
+    work = tempfile.mkdtemp()
+    nights = os.path.join(work, J.FOLDER)
+    os.makedirs(nights)
+    boot = datetime(2026, 9, 27, 20, 0, tzinfo=utc)
+    old = boot.date() - timedelta(days=200)
+    old_name = J.machine_name(old.isoformat())
+    open(os.path.join(nights, old_name), "w").write("x\n")
+
+    now = [boot]
+    # A trusted clock from the start: no jump, no ambiguity.
+    svc = _svc(S, work, now, ntp_query=lambda: 0.0)
+    svc.start(thread=False)
+    check(svc.clock_check["level"] == "ok", "the clock is trusted")
+    check(not os.path.exists(os.path.join(nights, old_name)),
+          "and Service's own housekeeping removed the 200-day-old night "
+          "by age alone, through its normal start-up tick, not because "
+          "this test called Logbook.prune() itself")
     print("  ok")
 
 
@@ -17760,7 +20022,8 @@ def test_journal_nightly_summary():
     text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
     for want, why in (
             ("# Night summary: Saturday 14 November 2026", "the title"),
-            ("closed by Andy with End night", "who closed the night"),
+            ("closed by Andy with Close for the night",
+             "who closed the night"),
             ("| 1 | 18:00 | DONE |", "show 1 ran"),
             ("| 2 | 18:20 | MISSED | MISSED (late by 1m 0s)",
              "show 2 missed, with its reason"),
@@ -17768,7 +20031,7 @@ def test_journal_nightly_summary():
             ("ABORTED (operator)", "with its reason"),
             ("| 4 | 19:00 | DONE | started 19:03:00; ended 19:10:20; "
              "DELAYED START (operator hold)", "show 4's delayed start"),
-            ("SKIPPED (operator, End night)", "the rest skipped"),
+            ("SKIPPED (operator, Close for the night)", "the rest skipped"),
             ("Andy played the Delayed announcement, 18 s, finished "
              "normally.", "the announcement"),
             ("MadMapper stopped sending its heartbeat", "the fault, in its "
@@ -17822,7 +20085,7 @@ def test_journal_nightly_summary():
     c = _svc(S, work2, now).start(thread=False)
     p3 = os.path.join(work2, "nights", J.summary_name("2026-11-14"))
     t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
-    check("written the next day" in t3 and "| 3 |  | ABORTED |" in t3
+    check("written later from the journal" in t3 and "| 3 |  | ABORTED |" in t3
           and "| 2 |  | MISSED |" in t3,
           f"a night without a summary gets one the next day, from its "
           f"journal: {t3[:600]!r}")
@@ -18052,7 +20315,8 @@ def test_journal_a_full_disk_stops_the_logging_not_the_show():
     now[0] = _den(S, 18, 5)
     svc._journal_line("system", "A line with the disk nearly full.")
     h = svc.logbook.health()
-    check(not h["ok"] and "only 50 MB is free" in h["sentence"],
+    check(J.FREE_FLOOR_MB == 500 and not h["ok"] and
+          "only 50 MB is free on the disk, under the 500 MB" in h["sentence"],
           f"a nearly full disk stops the logging: {h['sentence']}")
     check(h["free_mb"] == 50 and h["free_checked_age_s"] is not None,
           "the free space carries the age of its reading")
@@ -18777,6 +21041,41 @@ def test_journal_a_show_past_midnight_keeps_its_night():
     print("  ok")
 
 
+def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
+    section("scheduler: the hold epoch bumps when midnight sweeps away a "
+            "night left on Hold, not only when an operator's own Hold or "
+            "Resume crosses that line during the night (merge with #14, "
+            "2026-09-26: _ensure_night's own end-of-night write_summary "
+            "touches the same crossing hold_for_announcement's epoch "
+            "depends on, and that crossing happens by direct assignment, "
+            "not through _apply's own before/after check)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 10)]
+    svc = _svc(S, work, now)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: between shows, not mid-show: {svc.machine.state}")
+    out = svc._apply(_op(S, S.HOLD_ON))
+    check(out.accepted and svc.machine.state == S.HOLD,
+          f"setup: the night is on Hold: {svc.machine.state} {out.refused}")
+    epoch_before = svc.hold_epoch
+    check(epoch_before > 0, "setup: Hold already bumped the epoch once")
+    now[0] = _den(S, 3, 0, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.state != S.HOLD,
+          f"setup: midnight replaced the held night: {svc.machine.state}")
+    check(svc.hold_epoch != epoch_before,
+          f"the epoch must bump on this crossing too: an announcement's "
+          f"Hold claim from last night must never still look current after "
+          f"midnight swept the night it was claimed on. Stayed at "
+          f"{svc.hold_epoch}")
+    print("  ok")
+
+
 def test_journal_waiting_lines_are_capped_and_counted():
     section("journal: lines waiting for a full disk are capped, and the "
             "ones let go are counted")
@@ -18979,16 +21278,16 @@ def test_journal_housekeeping_runs_once():
         with svc.lock:
             svc._ensure_night(base)
         svc.clock_check = {"level": "ok"}
-        calls = {"prune": 0, "summary": 0}
+        calls = {"prune": 0, "summary": {}}
         real_prune, real_sum = svc.logbook.prune, svc.logbook.write_summary
 
         def prune(*a, **k):
             calls["prune"] += 1
             return real_prune(*a, **k)
 
-        def summary(*a, **k):
-            calls["summary"] += 1
-            return real_sum(*a, **k)
+        def summary(night, *a, **k):
+            calls["summary"][night] = calls["summary"].get(night, 0) + 1
+            return real_sum(night, *a, **k)
 
         svc.logbook.prune, svc.logbook.write_summary = prune, summary
         slow["on"] = True
@@ -19001,10 +21300,2178 @@ def test_journal_housekeeping_runs_once():
         for t in ts:
             t.join(10)
         slow["on"] = False
-        if calls["prune"] > 1 or calls["summary"] > 1:
+        if calls["prune"] > 1 or any(n > 1 for n in
+                                     calls["summary"].values()):
             twice.append(dict(calls))
     check(not twice, f"housekeeping is decided under the lock, so it runs "
                      f"once: {twice}")
+    print("  ok")
+
+
+# ------------------------------------------------------------ audio_master
+# ltcplay plays the show's multi-track audio and the timecode is read off
+# the audio device (handoff section 4a). Everything below runs without a
+# sound card: showaudio.FakeSoundDevice stands in for sounddevice, and all
+# but the last two tests run the audio process's own loop in THIS process
+# on a clock the test moves, so every timing is exact and repeatable.
+
+class _AmClock:
+    """A perf_counter the test moves by hand."""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def _am_write_wav(path, x, rate=48000, fmt="pcm16"):
+    """A WAV file of `x` (frames, channels), -1.0 to 1.0, written by hand so
+    every format the show audio accepts can be made: pcm16, pcm24, pcm32,
+    float32, and float32 wrapped as WAVE_FORMAT_EXTENSIBLE."""
+    import numpy as np
+    import struct
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim == 1:
+        x = x[:, None]
+    ch = x.shape[1]
+    if fmt in ("float32", "ext_float32"):
+        data, tag, bits = x.astype("<f4").tobytes(), 3, 32
+    elif fmt == "pcm16":
+        data = np.clip(np.round(x * 32767), -32768, 32767).astype(
+            "<i2").tobytes()
+        tag, bits = 1, 16
+    elif fmt == "pcm24":
+        v = np.clip(np.round(x * 8388607), -8388608, 8388607).astype("<i4")
+        data = v.view(np.uint8).reshape(-1, 4)[:, :3].tobytes()
+        tag, bits = 1, 24
+    elif fmt == "pcm32":
+        data = np.clip(np.round(x * 2147483647), -2147483648,
+                       2147483647).astype("<i4").tobytes()
+        tag, bits = 1, 32
+    else:
+        raise ValueError(fmt)
+    align = ch * bits // 8
+    if fmt == "ext_float32":
+        fmt_chunk = struct.pack("<HHIIHHHHI", 0xFFFE, ch, rate, rate * align,
+                                align, bits, 22, bits, 0) + \
+            struct.pack("<I", 3) + bytes.fromhex("00001000800000aa00389b71")
+    else:
+        fmt_chunk = struct.pack("<HHIIHH", tag, ch, rate, rate * align,
+                                align, bits)
+    body = (b"WAVE" + b"LIST" + struct.pack("<I", 4) + b"INFO"
+            + b"fmt " + struct.pack("<I", len(fmt_chunk)) + fmt_chunk
+            + b"data" + struct.pack("<I", len(data)) + data
+            + (b"\x00" if len(data) & 1 else b""))
+    with open(path, "wb") as fh:
+        fh.write(b"RIFF" + struct.pack("<I", len(body)) + body)
+
+
+def _am_tone(seconds, channels=1, amp=0.5, freq=375.0, rate=48000):
+    import numpy as np
+    t = np.arange(int(round(seconds * rate))) / float(rate)
+    x = amp * np.sin(2 * np.pi * freq * t)
+    return np.repeat(x[:, None], channels, axis=1)
+
+
+def _am_clock_doc(show_stems, intermission_stems=None, **audio):
+    cues = {"show": {"cue": "Show", "stems": show_stems}}
+    if intermission_stems:
+        cues["intermission"] = {"cue": "Intermission",
+                                "stems": intermission_stems}
+    a = {"device": "Show DSP", "rate": 48000, "channels": 8, "cues": cues}
+    a.update(audio)
+    return {"source": "audio_master",
+            "artnet": {"nodes": {"MadMapper": "127.0.0.1",
+                                 "BEYOND": "127.0.0.2"}},
+            "audio": a}
+
+
+def _am_show(work, seconds=6.0, clock_doc=None, silences=(), **audio):
+    """A show folder with a show and an intermission, each with its audio,
+    and the timeline loaded from it. `silences` are (start, end) seconds of
+    digital silence (exact zeros) in every show stem."""
+    music, sub = _am_tone(seconds, 2), _am_tone(seconds, 1, 0.3)
+    for a, b in silences:
+        music[int(a * 48000):int(b * 48000)] = 0.0
+        sub[int(a * 48000):int(b * 48000)] = 0.0
+    _am_write_wav(os.path.join(work, "music.wav"), music)
+    _am_write_wav(os.path.join(work, "sub.wav"), sub)
+    _am_write_wav(os.path.join(work, "loop.wav"), _am_tone(2.0, 2, 0.2))
+    doc = clock_doc or _am_clock_doc(
+        [{"file": "music.wav", "gain_db": 0, "channels": [1, 2]},
+         {"file": "sub.wav", "gain_db": -6, "channels": [3]}],
+        [{"file": "loop.wav", "channels": [1, 2]}], **audio)
+    tlp, net = _clock_show(work, doc,
+                           [("01:00:00:00", "Show.fseq", "Show"),
+                            ("02:00:00:00", "Intermission.fseq",
+                             "Intermission")])
+    return timeline.Timeline.load(tlp), tlp, net
+
+
+class _AmOut(_TcOut):
+    """Every Art-Net timecode packet, stamped on the test's clock."""
+
+    def __init__(self, clock):
+        super().__init__()
+        self._vc = clock
+
+    def send(self, pkt):
+        self.sent.append((self._vc(), bytes(pkt)))
+        self.packets_sent += 1
+        return True
+
+    def frames(self, since=None):
+        out = []
+        for t, p in self.sent:
+            if since is not None and t < since:
+                continue
+            h, m, s, f, _ = _tc_of(p)
+            out.append((t, ((h * 60 + m) * 60 + s) * 30 + f))
+        return out
+
+
+class _AmJournal:
+    def __init__(self):
+        self.faults, self.records = [], []
+
+    def fault(self, actor, sentence, action=None, **kw):
+        self.faults.append((actor, sentence, action))
+
+    def record(self, **kw):
+        self.records.append(kw)
+
+
+class _AmLog:
+    def __init__(self):
+        self.lines = []
+
+    def event(self, kind, msg, throttle_s=0.0):
+        self.lines.append((kind, msg))
+
+    def info(self, msg):
+        self.lines.append(("info", msg))
+
+
+class _AmLocalEngine:
+    """showaudio.AudioProcess, the audio process's real loop, run in this
+    process against a FakeSoundDevice on the test's clock. The same
+    interface as showaudio.AudioEngine, with no process in it."""
+
+    def __init__(self, spec, vc, block=480, latency=0.02, drift_ppm=0.0,
+                 devices=None, hostapis=None, reported_latency=None):
+        from ltcplay import showaudio as sa
+        self.sa, self.spec, self.vc = sa, spec, vc
+        self.block, self.latency, self.drift_ppm = block, latency, drift_ppm
+        self.devices, self.hostapis = devices, hostapis
+        self.reported_latency = reported_latency
+        self.log = []                 # (t, Position, block) per callback
+        self.respawns = 0
+        self.crashed = False
+        self._msgs = []
+        self._new()
+
+    def _new(self):
+        sa = self.sa
+        self.arr = [0.0] * sa.SLOTS
+        fake = {"threaded": False, "block": self.block,
+                "latency": self.latency, "drift_ppm": self.drift_ppm,
+                "devices": self.devices or [{"name": "Show DSP", "hostapi": 0,
+                                             "max_output_channels": 8}],
+                "reported_latency": self.reported_latency}
+        if self.hostapis:
+            fake["hostapis"] = self.hostapis
+        self.sd = sa.FakeSoundDevice(**fake)
+        self.proc = sa.AudioProcess(self.spec, self.sd,
+                                    sa.Publisher(self.arr),
+                                    self._msgs.append, clock=self.vc,
+                                    sync_load=True)
+        self.period = self.block / 48000.0 / (1.0 + self.drift_ppm * 1e-6)
+        self._stream = None
+        self._next = None
+        self._next_step = self.vc()
+
+    def start(self, wait_s=0):
+        self.proc.step(self.vc())
+        same = self.spec.get("same_length", {})
+        for role, stems in self.spec["cues"].items():
+            self.proc.command(("load", role, stems, same.get(role, True)))
+        self.proc.step(self.vc())
+        for m in self._msgs:
+            if m[0] in ("opened", "refused", "unavailable"):
+                return m
+        return None
+
+    def send(self, msg):
+        if self.crashed:
+            return False
+        self.proc.command(msg)
+        return True
+
+    def read(self):
+        return self.sa.read_position(self.arr)
+
+    def events(self):
+        out = list(self._msgs)
+        del self._msgs[:]
+        return out
+
+    def close(self):
+        self.proc.close(wait_s=0)
+
+    def crash(self):
+        """The audio process dies: the engine says so, as the real one
+        does, and a new one is started later by respawn()."""
+        self.crashed = True
+        self._stream = None
+        self._msgs.append(("crashed", "The show audio process stopped: it "
+                                      "exited (code 3). It is being started "
+                                      "again."))
+
+    def respawn(self):
+        self.crashed = False
+        self.respawns += 1
+        self._new()
+        self._msgs.append(("respawned", 0))
+        self.start()
+
+    def next_time(self):
+        if self.crashed:
+            return float("inf")
+        s = self.proc.stream
+        if s is not self._stream:
+            self._stream = s
+            self._next = None if s is None else self.vc() + self.period
+        t = self._next_step
+        if self._next is not None:
+            t = min(t, self._next)
+        return t
+
+    def run_at(self, t):
+        if self.crashed:
+            return
+        if self._next is not None and t >= self._next - 1e-12 \
+                and self.proc.stream is self._stream:
+            blk = self._stream.pump(t)
+            if blk is not None:
+                self.log.append((t, self.read(), blk))
+            self._next += self.period
+        if t >= self._next_step - 1e-12:
+            self.proc.step(t)
+            self._next_step = t + 0.02
+
+
+class _AmSim:
+    """Runs a clock and its local engine together on the test's clock,
+    waking the clock exactly when it asked to be woken, the way its own
+    thread would with no scheduling delay at all."""
+
+    def __init__(self, am, eng, vc):
+        self.am, self.eng, self.vc = am, eng, vc
+        self.next_am = vc()
+        self.trace = []               # (t, epoch, mode) after each step
+
+    def run(self, until):
+        vc = self.vc
+        if self.am.kicked:
+            self.am.kicked = False
+            self.next_am = vc()
+        while True:
+            t = min(self.next_am, self.eng.next_time())
+            if t > until:
+                vc.t = until
+                return
+            vc.t = t
+            self.eng.run_at(t)
+            if t >= self.next_am - 1e-12:
+                due = self.am.step(t)
+                self.trace.append((t, self.am._epoch, self.am._mode))
+                self.next_am = max(due, t + 1e-6)
+
+    def until(self, pred, limit):
+        end = self.vc() + limit
+        while self.vc() < end:
+            self.run(min(self.vc() + 0.005, end))
+            if pred():
+                return True
+        return pred()
+
+
+def _am_rig(work=None, seconds=6.0, block=480, latency=0.02, drift_ppm=0.0,
+            devices=None, reported_latency=None, silences=(), **audio):
+    """A deterministic audio_master: the show, the clock, a local audio
+    engine, and a recorder for everything the clock tells the world."""
+    import tempfile
+    from ltcplay import clock as clock_mod, showaudio as sa
+    work = work or tempfile.mkdtemp()
+    tl, _tlp, _net = _am_show(work, seconds, silences=silences, **audio)
+    checked = sa.check_show(tl.clock.audio, tl)
+    # The fake interface is a CoreAudio one, so this is a Mac's rule for
+    # picking the output, on every OS the suite runs on.
+    spec = sa.engine_spec(tl.clock.audio, checked, platform="darwin")
+    vc = _AmClock()
+    eng = _AmLocalEngine(spec, vc, block=block, latency=latency,
+                         drift_ppm=drift_ppm, devices=devices,
+                         reported_latency=reported_latency)
+    out = _AmOut(vc)
+    calls = {"stop": [], "pause": [], "resume": []}
+    fed = []
+    jr, lg = _AmJournal(), _AmLog()
+    am = clock_mod.AudioMaster(
+        tl.clock, sink=lambda pos, at, drop, text: fed.append(
+            (vc(), pos, at, text)),
+        out=out, engine=eng,
+        cues={c["label"]: (role, c["frames"]) for role, c in checked.items()},
+        clock=vc, mono=vc, log=lg, journal=jr, threaded=False,
+        on_stop=lambda: calls["stop"].append(vc()),
+        on_pause=lambda: calls["pause"].append(vc()),
+        on_resume=lambda: calls["resume"].append(vc()))
+    am.start()
+    sim = _AmSim(am, eng, vc)
+    sim.run(vc() + 0.05)
+    return {"am": am, "eng": eng, "vc": vc, "out": out, "calls": calls,
+            "fed": fed, "journal": jr, "log": lg, "sim": sim, "tl": tl,
+            "work": work, "checked": checked}
+
+
+def _am_true_pos(rig, t):
+    """Where the audio really is at `t`: from the callbacks the fake device
+    made (each block's first frame is heard `latency` after its callback)."""
+    best = None
+    for tc, pos, _blk in rig["eng"].log:
+        if pos is None or not pos.playing or tc + pos.latency > t:
+            continue
+        best = (tc + pos.latency, pos.frame)
+    if best is None:
+        return None
+    rate = 48000.0 * (1.0 + rig["eng"].drift_ppm * 1e-6)
+    return best[1] / 48000.0 + (t - best[0]) * rate / 48000.0
+
+
+def _am_consecutive(frames):
+    """The places a frame number did not follow the one before by 1."""
+    return [(a, b) for (_, a), (_, b) in zip(frames, frames[1:])
+            if b != a + 1]
+
+
+def test_audio_master_settings_and_files_refuse_in_sentences():
+    section("audio_master: settings, stems and devices refused in sentences")
+    import tempfile
+    from ltcplay import clock as clock_mod, showaudio as sa
+    work = tempfile.mkdtemp()
+
+    def refusal(doc, *want):
+        try:
+            clock_mod.ClockConfig.parse(doc, "show.json")
+        except clock_mod.ClockConfigError as e:
+            msg = str(e)
+            check(all(w in msg for w in want),
+                  f"the refusal does not say {want}: {msg}")
+            check(not any(d in msg for d in ("—", "–"))
+                  and msg.rstrip().endswith("."),
+                  f"a refusal is not a plain sentence: {msg}")
+            return msg
+        check(False, f"a clock block that cannot run was accepted: {doc}")
+
+    good = _am_clock_doc([{"file": "music.wav", "channels": [1, 2]}])
+    cfg = clock_mod.ClockConfig.parse(good, "show.json")
+    check(cfg.source == "audio_master" and cfg.audio.channels == 8
+          and cfg.audio.hold_fade_ms == 250 and cfg.audio.abort_fade_ms
+          == 1000 and cfg.audio.return_fade_ms == 1000
+          and not cfg.audio.allow_shared_mode,
+          "an audio_master block did not parse with its defaults")
+    check("audio_master" in cfg.summary() and "Show DSP" in cfg.summary(),
+          f"the summary does not name the audio: {cfg.summary()}")
+    import copy
+
+    def with_audio(**kw):
+        d = copy.deepcopy(good)
+        d["audio"].update(kw)
+        return d
+
+    refusal(with_audio(rate=44100), "48000")
+    refusal(with_audio(rate=96000), "48000")
+    refusal(with_audio(device=""), "names the show's audio interface")
+    refusal(with_audio(channels=0), "'clock.audio.channels'")
+    refusal(with_audio(channels=9), "1 to 8")
+    refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
+        {"file": f"s{i}.wav", "channels": [1]} for i in range(9)]}}),
+        "lists 9 stems", "at most 8")
+    refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
+        {"file": "music.wav", "channels": [9]}]}}), "output 9",
+        "'clock.audio.channels' is 8")
+    refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
+        {"file": "music.wav", "channels": [1, 1]}]}}), "same output twice")
+    refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
+        {"file": "music.wav", "gain_db": 40, "channels": [1]}]}}),
+        "gain_db")
+    refusal(with_audio(cues={"encore": {"cue": "Show", "stems": []}}),
+            "\"show\" and \"intermission\"")
+    refusal(with_audio(volume=3), "'volume'")
+    d = copy.deepcopy(good)
+    d["show_audio"] = "madmapper"
+    refusal(d, "must be \"ltcplay\"")
+    d = copy.deepcopy(good)
+    del d["audio"]
+    refusal(d, "no 'clock.audio' block")
+    d = copy.deepcopy(good)
+    del d["artnet"]
+    refusal(d, "no 'clock.artnet' block")
+    d = copy.deepcopy(good)
+    d["artnet"] = {"broadcast": "10.0.0.255"}
+    refusal(d, "never by broadcast")
+    # "audio" is audio_master's alone: any other source still reads it as
+    # the typo it is, in the same words as before.
+    d = {"source": "artnet_master", "artnet": {"nodes": {"M": "127.0.0.1"}},
+         "audio": {}}
+    msg = refusal(d, "has no setting 'audio'")
+    taken = {k.strip(" .") for k in msg.split("it takes:")[1].split(",")}
+    check(taken == {"artnet", "notes", "show_audio", "source", "zones"},
+          f"artnet_master's list of settings changed: {msg}")
+
+    # The files, against the show folder.
+    tl, _t, _n = _am_show(work, 2.0)
+
+    def file_refusal(doc_cues, *want, **kw):
+        a = sa.AudioConfig.parse(dict(good["audio"], cues=doc_cues, **kw),
+                                 "show.json")
+        try:
+            sa.check_show(a, tl)
+        except sa.AudioConfigError as e:
+            msg = str(e)
+            check(all(w in msg for w in want),
+                  f"the file refusal does not say {want}: {msg}")
+            check(not any(x in msg for x in ("—", "–"))
+                  and msg.rstrip().endswith("."),
+                  f"a file refusal is not a plain sentence: {msg}")
+            return msg
+        check(False, f"stems that cannot play were accepted: {doc_cues}")
+
+    file_refusal({"show": {"cue": "Show", "stems": [
+        {"file": "gone.wav", "channels": [1]}]}},
+        "The show audio file gone.wav is missing", "cannot play without it")
+    _am_write_wav(os.path.join(work, "cd.wav"), _am_tone(2.0, 2, rate=44100),
+                  rate=44100)
+    file_refusal({"show": {"cue": "Show", "stems": [
+        {"file": "cd.wav", "channels": [1, 2]}]}}, "cd.wav is 44100 Hz",
+        "48 kHz")
+    _am_write_wav(os.path.join(work, "short.wav"), _am_tone(1.5, 1))
+    msg = file_refusal({"show": {"cue": "Show", "stems": [
+        {"file": "music.wav", "channels": [1, 2]},
+        {"file": "short.wav", "channels": [3]}]}},
+        "not all the same length", "music.wav is 0:02.000",
+        "short.wav is 0:01.500", "allow_different_lengths")
+    ok = sa.AudioConfig.parse(dict(good["audio"], cues={"show": {
+        "cue": "Show", "allow_different_lengths": True, "stems": [
+            {"file": "music.wav", "channels": [1, 2]},
+            {"file": "short.wav", "channels": [3]}]}}), "show.json")
+    got = sa.check_show(ok, tl)
+    check(got["show"]["frames"] == 96000,
+          "stems allowed to differ do not run to the longest one")
+    file_refusal({"show": {"cue": "Show", "stems": [
+        {"file": "music.wav", "channels": [1, 2, 3]}]}}, "has 2 channels",
+        "3 output(s)")
+    file_refusal({"show": {"cue": "Finale", "stems": [
+        {"file": "music.wav", "channels": [1, 2]}]}},
+        "'Finale', which is not a cue in this show")
+    open(os.path.join(work, "notes.wav"), "w").write("not a wav")
+    file_refusal({"show": {"cue": "Show", "stems": [
+        {"file": "notes.wav", "channels": [1]}]}}, "not a WAV file")
+
+    # Every format the show audio takes decodes to the same samples.
+    import numpy as np
+    x = _am_tone(0.1, 2, 0.7)
+    for fmt, tol in (("pcm16", 1e-4), ("pcm24", 1e-6), ("pcm32", 1e-7),
+                     ("float32", 1e-7), ("ext_float32", 1e-7)):
+        p = os.path.join(work, f"{fmt}.wav")
+        _am_write_wav(p, x, fmt=fmt)
+        got = sa.read_wav(p)
+        check(got.shape == x.shape and got.dtype == np.float32
+              and float(np.max(np.abs(got - x))) <= tol,
+              f"a {fmt} WAV decoded wrong: max error "
+              f"{float(np.max(np.abs(got - x))) if got.shape == x.shape else got.shape}")
+    neg = os.path.join(work, "neg24.wav")
+    _am_write_wav(neg, np.array([[-1.0], [-0.5], [0.5]]), fmt="pcm24")
+    check(np.allclose(sa.read_wav(neg)[:, 0], [-1.0, -0.5, 0.5], atol=1e-6),
+          "a negative 24-bit sample lost its sign")
+
+    # The device: found by exact name, never through Windows' shared mixer.
+    def sd(apis, devs, **kw):
+        return sa.FakeSoundDevice(devices=devs, hostapis=apis,
+                                  threaded=False, **kw)
+
+    def dev(name, api, outs=8):
+        return {"name": name, "hostapi": api, "max_output_channels": outs}
+
+    cb = lambda *a: None
+    win = ("MME", "Windows DirectSound", "Windows WASAPI", "ASIO",
+           "Windows WDM-KS")
+    all4 = [dev("Show DSP", i) for i in range(4)]
+    s, desc, shared = sa.open_output_stream(sd(win, all4), "show dsp", 8,
+                                            48000, cb, platform="win32")
+    check("ASIO" in desc and not shared and s.dev["hostapi"] == 3,
+          f"Windows did not pick ASIO when the device offers it: {desc}")
+    s, desc, shared = sa.open_output_stream(sd(win, all4[:3]), "Show DSP", 8,
+                                            48000, cb, platform="win32")
+    check("WASAPI exclusive" in desc and not shared
+          and s.extra is not None and s.extra.exclusive is True,
+          f"without ASIO, Windows did not use WASAPI exclusive: {desc}")
+    for apis_have in (all4[:2], all4[:1]):
+        try:
+            sa.open_output_stream(sd(win, apis_have), "Show DSP", 8, 48000,
+                                  cb, platform="win32")
+            check(False, "the show audio fell back to Windows' shared mixer "
+                         "without being allowed to")
+        except sa.Refusal as e:
+            check("shared audio engine" in str(e)
+                  and "allow_shared_mode" in str(e),
+                  f"the shared-mixer refusal is not a sentence: {e}")
+    s, desc, shared = sa.open_output_stream(sd(win, all4[:2]), "Show DSP", 8,
+                                            48000, cb, allow_shared=True,
+                                            platform="win32")
+    check(shared and "DirectSound" in desc,
+          f"allow_shared_mode did not open shared, or did not say so: "
+          f"{desc}")
+    # Every allowed API is tried in order until one takes 48 kHz (bench
+    # B23, the Scarlett: WASAPI refused 48 kHz; WDM-KS, DirectSound and MME
+    # took it). Order: ASIO, WASAPI exclusive, WDM-KS, then only with
+    # allow_shared_mode WASAPI shared, DirectSound, MME.
+    def scarlett(**over):
+        d = [dict(dev("Scarlett Solo USB", i, 2), rates=[48000])
+             for i in range(5) if i != 3]           # no ASIO driver
+        for x in d:
+            if x["hostapi"] == 2:                   # WASAPI: 44.1 kHz only
+                x["rates"] = [44100]
+            if x["hostapi"] == 4 and over.get("ks_busy"):
+                x["busy"] = True
+        return sd(win, d)
+
+    def opened(*a, **k):
+        try:
+            return sa.open_output_stream(*a, **k)
+        except Exception as e:
+            return None, f"{type(e).__name__}: {e}", None
+
+    s, desc, shared = opened(scarlett(), "Scarlett Solo USB", 2, 48000, cb,
+                             platform="win32")
+    check(s is not None and s.dev["hostapi"] == 4
+          and "WDM-KS, mixer-free" in desc and not shared,
+          f"WASAPI refusing 48 kHz did not move on to WDM-KS: {desc}")
+    try:
+        sa.open_output_stream(scarlett(ks_busy=True), "Scarlett Solo USB",
+                              2, 48000, cb, platform="win32")
+        check(False, "the Scarlett opened through the shared engine unasked")
+    except (sa.Refusal, sa.Unavailable) as e:
+        msg = str(e)
+        check(isinstance(e, sa.Refusal)
+              and "WASAPI exclusive: it will not play 2 output(s) at 48000"
+              in msg and "WDM-KS: it would not open" in msg
+              and "allow_shared_mode" in msg and msg.endswith(".")
+              and "\u2014" not in msg,
+              f"the refusal does not say what was tried and why: {msg}")
+    s, desc, shared = opened(scarlett(ks_busy=True), "Scarlett Solo USB",
+                             2, 48000, cb, allow_shared=True,
+                             platform="win32")
+    check(s is not None and s.dev["hostapi"] == 1 and shared
+          and "DirectSound" in desc
+          and "shared audio engine" in desc,
+          f"with allow_shared_mode the next that works was not used: {desc}")
+    s, desc, shared = sa.open_output_stream(
+        sd(("Core Audio",), [dev("Show DSP", 0)]), "Show DSP", 8, 48000, cb,
+        platform="darwin")
+    check("CoreAudio" in desc and not shared,
+          f"macOS did not open CoreAudio: {desc}")
+    for devs, want, kind in (
+            ([dev("Show DSP", 0, 2)], "has 2 output(s), and the show uses 8",
+             sa.Refusal),
+            ([dev("Show DSP 2", 0)], "is not attached", sa.Unavailable),
+            ([dev("Show DSP", 0), dev("show dsp", 0)], "not specific enough",
+             sa.Refusal)):
+        try:
+            sa.open_output_stream(sd(("Core Audio",), devs), "Show DSP", 8,
+                                  48000, cb, platform="darwin")
+            check(False, f"a device that cannot run the show opened: {want}")
+        except kind as e:
+            check(want in str(e), f"the device refusal does not say "
+                                  f"{want!r}: {e}")
+    try:
+        sa.open_output_stream(sd(("Core Audio",), [dev("Show DSP", 0)],
+                                 rates=(44100,)), "Show DSP", 8, 48000, cb,
+                              platform="darwin")
+        check(False, "a device that cannot run at 48 kHz opened")
+    except sa.Refusal as e:
+        check("will not play 8 output(s) at 48000 Hz" in str(e)
+              and "set the interface to 48 kHz" in str(e),
+              f"the rate refusal: {e}")
+    # SD_ENABLE_ASIO has to be in the environment BEFORE sounddevice is
+    # imported, and only on Windows.
+    import inspect
+    src = inspect.getsource(sa.import_sounddevice)
+    check(src.index('os.environ["SD_ENABLE_ASIO"] = "1"')
+          < src.index("import sounddevice"),
+          "SD_ENABLE_ASIO is set after sounddevice is imported")
+    # Proven with a stand-in module, so this needs no sounddevice (CI does
+    # not install it).
+    import types
+    old = os.environ.pop("SD_ENABLE_ASIO", None)
+    had = sys.modules.get("sounddevice")
+    sys.modules["sounddevice"] = types.ModuleType("sounddevice")
+    try:
+        sa.import_sounddevice("darwin")
+        check("SD_ENABLE_ASIO" not in os.environ,
+              "SD_ENABLE_ASIO was set on a Mac")
+        sa.import_sounddevice("win32")
+        check(os.environ.get("SD_ENABLE_ASIO") == "1",
+              "SD_ENABLE_ASIO was not set on Windows")
+    except Exception as e:
+        check(False, f"importing sounddevice for the show audio failed: {e}")
+    finally:
+        os.environ.pop("SD_ENABLE_ASIO", None)
+        if old is not None:
+            os.environ["SD_ENABLE_ASIO"] = old
+        if had is None:
+            sys.modules.pop("sounddevice", None)
+        else:
+            sys.modules["sounddevice"] = had
+    print("  ok")
+
+
+def test_audio_master_mixing():
+    section("audio_master: gain, routing, summing, clipping, fades")
+    import numpy as np
+    from ltcplay import showaudio as sa
+    m = sa.Mixer(8)
+    n = 4800
+    a = np.full((n, 1), 0.25, np.float32)             # mono
+    b = np.tile(np.array([[0.1, 0.2]], np.float32), (n, 1))   # stereo
+    c = np.full((n, 1), 0.9, np.float32)
+    ramp = (np.arange(n, dtype=np.float32) / n)[:, None]
+    m.add_cue("show", [(a, sa.db_to_gain(-6.0206), [0, 1]),
+                       (b, 1.0, [1, 2]),
+                       (c, sa.db_to_gain(6.0206), [3]),
+                       (ramp, 1.0, [5])])
+    m.play("show", 1000, 0, 7)
+    blk = m.render(256)
+    check(blk.dtype == np.float32 and blk.shape == (256, 8),
+          f"the mix is {blk.dtype} {blk.shape}, not float32 (256, 8)")
+    check(np.allclose(blk[:, 0], 0.125, atol=1e-5),
+          f"-6 dB did not halve a stem: {blk[0, 0]}")
+    check(np.allclose(blk[:, 1], 0.225, atol=1e-5),
+          f"two stems on one output did not sum: {blk[0, 1]}")
+    check(np.allclose(blk[:, 2], 0.2, atol=1e-6),
+          f"a stereo stem's right channel is not on output 3: {blk[0, 2]}")
+    check(np.all(blk[:, 3] == 1.0) and m.clipped == 256,
+          f"a mix over full scale was not held at 1.0 and counted: "
+          f"{blk[0, 3]} {m.clipped}")
+    check(np.all(blk[:, 4] == 0.0) and np.all(blk[:, 6:] == 0.0),
+          "an output nothing is routed to is not silent")
+    check(np.allclose(blk[:, 5], ramp[1000:1256, 0], atol=1e-7),
+          "play from a position did not start at that frame")
+    check(m.frame == 1256, f"the frame count is {m.frame}, not 1256")
+    m.clipped = 0
+    # Pause: the fade ends the playback on an exact frame, announced as it
+    # starts, and nothing after it: no run-on.
+    m.pause(480, 7)
+    check(m.stop_frame == 1256 + 480,
+          f"the pause did not say where it stops: {m.stop_frame}")
+    pieces = [m.render(200) for _ in range(5)]
+    whole = np.concatenate(pieces)[:, 5]
+    src = ramp[1256:1256 + 1000, 0]
+    env = whole[:480] / np.maximum(src[:480], 1e-9)
+    check(np.all(np.diff(env[1:]) <= 1e-6) and abs(env[-1]) < 1e-6
+          and env[0] > 0.99,
+          "the pause is not a clean fade to zero")
+    check(np.all(whole[480:] == 0.0),
+          "sound kept coming after the pause's fade ended (run-on)")
+    check(m.state == sa.PAUSED and m.frame == 1736,
+          f"after the fade: {sa.STATE_NAMES[m.state]} at {m.frame}")
+    check(np.all(m.render(300) == 0.0) and m.frame == 1736,
+          "a paused mix moved or made sound")
+    # Resume: from the exact frame, fading in.
+    m.resume(240, 7)
+    blk = m.render(480)
+    check(m.frame == 2216 and blk[0, 5] < 0.01 and
+          abs(blk[300, 5] - ramp[1736 + 300, 0]) < 1e-6,
+          "resume did not carry on from the frame the pause stopped on")
+    # Resume inside a pause's fade cancels it.
+    m.pause(4800, 7)
+    m.render(100)
+    m.resume(0, 7)
+    check(m.state == sa.PLAYING and m.stop_frame == -1,
+          "resume during the pause's fade did not cancel it")
+    m.render(100)
+    # A command for another play is ignored.
+    check(m.pause(100, 99) is False and m.state == sa.PLAYING,
+          "a pause meant for an older cue paused this one")
+    # The level fade (Abort) scales everything, linearly.
+    m.clipped = 0
+    m.set_level(0.0, 1000)
+    blk = m.render(1000)
+    lv = blk[:, 2] / 0.2
+    check(abs(lv[499] - 0.5) < 0.01 and abs(lv[-1]) < 1e-6
+          and np.all(np.diff(lv) <= 1e-6),
+          "the level fade is not a straight line to zero")
+    check(np.all(m.render(100) == 0.0), "the level stayed up after its fade")
+    m.set_level(1.0, 0)
+    # Stop fades to nothing and forgets the cue.
+    m.stop(480, 7)
+    m.render(600)
+    check(m.state == sa.IDLE and m.cue is None,
+          "stop did not end the playback")
+    # The end of the audio.
+    m.play("show", n - 100, 0, 8)
+    blk = m.render(256)
+    check(m.state == sa.ENDED and m.frame == n
+          and np.all(blk[100:] == 0.0) and blk[99, 2] != 0.0,
+          "the end of the audio is not where the mix stops")
+    # Stems of different lengths: the short one just stops contributing.
+    m2 = sa.Mixer(2)
+    m2.add_cue("x", [(np.full((100, 1), 0.5, np.float32), 1.0, [0]),
+                     (np.full((50, 1), 0.5, np.float32), 1.0, [1])])
+    m2.play("x", 0, 0, 1)
+    blk = m2.render(100)
+    check(np.all(blk[:, 0] == 0.5) and np.all(blk[:50, 1] == 0.5)
+          and np.all(blk[50:, 1] == 0.0),
+          "a shorter stem did not simply end")
+    # A stem routed past the last output is refused, not wrapped.
+    try:
+        m2.add_cue("y", [(np.zeros((10, 1), np.float32), 1.0, [2])])
+        check(False, "a stem routed past the last output was accepted")
+    except ValueError:
+        pass
+    print("  ok")
+
+
+def test_audio_master_timecode_follows_the_audio():
+    section("audio_master: the timecode follows the audio device")
+    for block, drift in ((480, 0.0), (2400, 0.0), (480, 1500.0)):
+        r = _am_rig(block=block, drift_ppm=drift, seconds=4.0)
+        am, sim, out, fed = r["am"], r["sim"], r["out"], r["fed"]
+        t_play = r["vc"]()
+        am.play(3600.0, None, "Show")
+        sim.run(t_play + 3.0)
+        frames = out.frames()
+        check(len(frames) >= 85, f"block {block}: only {len(frames)} "
+                                 f"packets in 3 s")
+        first = [(t, p) for t, p, _b in r["eng"].log if p.playing]
+        check(first and frames and frames[0][1] == 0
+              and abs(frames[0][0] - (first[0][0] + first[0][1].latency))
+              < 1e-6,
+              f"block {block}: 00:00:00:00 did not go out the moment the "
+              f"first sample was heard")
+        check(not _am_consecutive(frames),
+              f"block {block}, drift {drift}: frames skipped or repeated: "
+              f"{_am_consecutive(frames)[:5]}")
+        # Each frame goes out when the audio reaches it, including between
+        # callbacks (block 2400 is a callback every 50 ms, under the frame
+        # rate): interpolated, not stepped.
+        worst = max(abs(_am_true_pos(r, t) - n / 30.0)
+                    for t, n in frames[3:])
+        check(worst < 0.002, f"block {block}, drift {drift}: a frame went "
+                             f"out {worst * 1000:.2f} ms off the audio")
+        gaps = [b[0] - a[0] for a, b in zip(frames, frames[1:])]
+        check(max(abs(g - 1 / 30.0) for g in gaps[3:]) < 0.002,
+              f"block {block}: the packets are not evenly spaced between "
+              f"callbacks")
+        # The pixels get the same position, the same way ArtNetMaster
+        # gives it: cue position plus frame, stamped when the frame began.
+        check(fed and all(abs(p - (3600.0 + n / 30.0)) < 1e-9
+                          for (_, p, _, _), (_, n) in zip(fed, frames)),
+              f"block {block}: the pixels were not fed the timecode's "
+              f"position")
+        check(r["am"].snapshot()["audio"]["following"],
+              "the page does not say the clock follows the audio")
+        am.stop()
+    # With the device's crystal 1500 ppm fast, the timecode runs fast with
+    # it: it follows the audio, not this computer's clock.
+    print("  ok")
+
+
+def test_audio_master_hold_resume_and_abort():
+    section("audio_master: Hold freezes on the audio's last frame, Resume "
+            "carries on, Abort fades then stops")
+    import numpy as np
+    from ltcplay import showaudio as sa
+    r = _am_rig(seconds=6.0)
+    am, sim, out, eng, vc = r["am"], r["sim"], r["out"], r["eng"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    t_hold = vc()
+    am.pause()
+    check(am.paused and r["calls"]["pause"] == [],
+          "the clock froze before the audio had faded")
+    sim.run(vc() + 1.5)
+    stop = am._frozen_sec * 48000
+    check(abs(stop - (eng.proc.mixer.stop_frame)) < 1e-6
+          and eng.proc.mixer.state == sa.PAUSED,
+          "the clock's freeze point is not where the audio stopped")
+    frozen = int(np.floor((stop - 1) * 30 / 48000.0))
+    held = out.frames(since=t_hold + 0.4)
+    check(held and all(n == frozen for _, n in held),
+          f"the timecode did not freeze on frame {frozen} (the audio's "
+          f"last): {sorted({n for _, n in held})}")
+    check(28 <= len([1 for t, _ in held if t < t_hold + 1.4]) <= 31,
+          "the frozen frame is not repeated 30 times a second")
+    check(len(r["calls"]["pause"]) == 1 and
+          t_hold + 0.25 <= r["calls"]["pause"][0] <= t_hold + 0.25 + 0.06,
+          f"on_pause was not called once, as the audio stopped: "
+          f"{r['calls']['pause']}")
+    # No run-on: nothing but silence was played from the stop point on.
+    after = [(t, p, b) for t, p, b in eng.log if t > t_hold]
+    loud = [p.frame for t, p, b in after if np.any(b != 0.0)]
+    check(loud and max(loud) < stop,
+          "sound was played after the Hold stopped the audio")
+    last_played = max(p.frame + len(b) for t, p, b in after
+                      if np.any(b != 0.0))
+    check(last_played <= stop + 480, "the audio ran on past its stop point")
+    fed = [p for t, p, _a, _x in r["fed"] if t > t_hold + 0.3]
+    check(fed and all(abs(p - (3600.0 + frozen / 30.0)) < 1e-9
+                      for p in fed),
+          "the pixels were not held on the frozen frame")
+    # Resume: the audio carries on from the exact sample it stopped on.
+    t_res = vc()
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+    am.resume()
+    eng.send = real_send
+    check([m[0] for m in sent] == ["resume"],
+          f"Resume did not ask the audio process to resume: {sent}")
+    sim.run(vc() + 1.0)
+    first = [(t, p, b) for t, p, b in eng.log if t > t_res and p.playing]
+    check(first and first[0][1].frame == int(stop),
+          f"the audio resumed at {first[0][1].frame if first else None}, "
+          f"not at {int(stop)} where it stopped")
+    check(first and abs(float(first[0][2][0, 0])) < 0.01,
+          "the audio did not fade back in")
+    moving = [n for t, n in out.frames(since=t_res) if n != frozen]
+    check(moving and moving[0] == frozen + 1 and not _am_consecutive(
+        [(0, n) for n in moving]),
+          f"the timecode did not carry on from frame {frozen + 1}: "
+          f"{moving[:3]}")
+    check(len(r["calls"]["resume"]) == 1, "on_resume was not called once")
+    worst = max(abs(_am_true_pos(r, t) - n / 30.0)
+                for t, n in out.frames(since=t_res + 0.2))
+    check(worst < 0.002, f"after Resume the timecode is {worst * 1000:.1f} "
+                         f"ms off the audio")
+    # Resume pressed inside the Hold's own fade: the Hold finishes, then
+    # the Resume runs from the same sample.
+    am.pause()
+    sim.run(vc() + 0.1)
+    am.resume()
+    sim.run(vc() + 1.0)
+    check(not am.paused and len(r["calls"]["pause"]) == 2
+          and len(r["calls"]["resume"]) == 2,
+          "Resume during the Hold's fade was lost")
+    # Abort: the level fades to zero over a second, then everything stops.
+    t_abort = vc()
+    am.halt()
+    check(am.playing and r["calls"]["stop"] == [],
+          "Abort stopped at once instead of fading")
+    sim.run(vc() + 1.5)
+    check(len(r["calls"]["stop"]) == 1 and
+          t_abort + 1.0 <= r["calls"]["stop"][0] <= t_abort + 1.2,
+          f"Abort did not stop after its 1 s fade: {r['calls']['stop']}")
+    lv = [(t, float(np.max(np.abs(b)))) for t, p, b in eng.log
+          if t_abort < t < t_abort + 1.2]
+    mid = [v for t, v in lv if t_abort + 0.45 < t < t_abort + 0.55]
+    check(mid and 0.2 < max(mid) < 0.3 and max(v for t, v in lv
+                                                if t < t_abort + 0.05) > 0.45,
+          "the Abort fade is not a fade")
+    check(all(v == 0.0 for t, v in lv if t > t_abort + 1.05),
+          "sound kept coming after Abort's fade")
+    check(not out.frames(since=r["calls"]["stop"][0] + 1e-9),
+          "timecode kept going after Abort stopped the cue")
+    check(not am.playing and "stopped" in am.last_ended,
+          f"after Abort: playing={am.playing} {am.last_ended!r}")
+    check(eng.proc.mixer.level == 1.0,
+          "the level was left at zero for the next cue")
+    # The next cue plays at full level.
+    am.play(7200.0, None, "Intermission")
+    sim.run(vc() + 0.5)
+    check(out.frames(since=vc() - 0.3) and eng.proc.mixer.level == 1.0,
+          "the cue after an Abort did not play")
+    am.stop()
+    print("  ok")
+
+
+def test_audio_master_device_loss_freeruns_and_returns():
+    section("audio_master: the interface lost mid-show, the show carries on, "
+            "the audio comes back and the clock follows it again")
+    import numpy as np
+    # Big buffers (50 ms), and a driver that says its latency is 0 while
+    # its buffers are really heard 20 ms later: the audio comes back a
+    # little away from where the clock is, and that has to be slewed out.
+    r = _am_rig(seconds=30.0, block=2400, reported_latency=0.0)
+    am, sim, out, eng, vc = r["am"], r["sim"], r["out"], r["eng"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    # A monitor's HDMI audio appearing and going away must not disturb a
+    # stream that is working.
+    opens, inits = eng.proc.opens, eng.sd.inits
+    eng.sd.control("add", "LG TV (NVIDIA High Definition Audio)")
+    sim.run(vc() + 0.5)
+    eng.sd.control("remove", "LG TV (NVIDIA High Definition Audio)")
+    sim.run(vc() + 0.5)
+    check(eng.proc.opens == opens and eng.sd.inits == inits
+          and am.snapshot()["audio"]["following"] and not am._fault,
+          "a device appearing and disappearing disturbed a healthy stream")
+    # Pull the interface.
+    tries = []
+    real_try = eng.proc._try_open
+    eng.proc._try_open = lambda now: (tries.append(now), real_try(now))[1]
+    t_pull = vc()
+    eng.sd.control("unplug")
+    sim.run(vc() + 1.0)
+    check(am._mode == "freerun" and am.losses == 1,
+          f"losing the interface did not put the show on its own clock: "
+          f"{am._mode}")
+    warn = " ".join(am.health_warnings())
+    check("dropped out" in warn and "carries on" in warn,
+          f"health does not say the audio dropped out: {warn}")
+    check(len(r["journal"].faults) == 1 and
+          "dropped out" in r["journal"].faults[0][1],
+          f"no journal line for the dropout: {r['journal'].faults}")
+    check(any("dropped out" in m for k, m in r["log"].lines),
+          "the show log does not say the audio dropped out")
+    snap = am.snapshot()
+    check(snap["audio"]["connected"] is False and snap["audio"]["fault"],
+          "the page does not show the interface lost")
+    from ltcplay import display as disp_mod
+    check(any("dropped out" in w for w in disp_mod.clock_warnings(am)),
+          "the page's red list does not carry the dropout")
+    sim.run(t_pull + 8.0)
+    lost_at = [t for t, _p, _b in eng.log][-1]
+    rel = [round(t - tries[0], 2) for t in tries]
+    check(len(tries) >= 4 and all(abs(a - b) < 0.1 for a, b in
+                                  zip(rel, [0.0, 1.0, 3.0, 6.0]))
+          and 1.4 < tries[0] - lost_at < 1.6,
+          f"the reopen attempts are not every 1 s backing off to 3 s: "
+          f"{rel}, first {tries[0] - lost_at:.2f} s after the loss")
+    # Back.
+    t_plug = vc()
+    eng.sd.control("plug")
+    ok = sim.until(lambda: am._mode == "follow", 12.0)
+    check(ok, f"the audio came back but the clock never followed it again "
+              f"(mode {am._mode})")
+    t_back = vc()
+    check(am.returns == 1 and not am._fault
+          and not am.health_warnings(),
+          f"health did not clear when the audio came back: "
+          f"{am.health_warnings()}")
+    check(r["journal"].records and "is back" in
+          r["journal"].records[-1]["text"],
+          "no journal line for the audio coming back")
+    sim.run(vc() + 1.0)
+    frames = out.frames()
+    check(not _am_consecutive(frames),
+          f"the timecode jumped somewhere through the loss and the return: "
+          f"{_am_consecutive(frames)[:5]}")
+    gaps = [b[0] - a[0] for a, b in zip(frames[3:], frames[4:])]
+    check(max(gaps) < 1 / 30.0 * 1.05 + 0.001
+          and min(gaps) > 1 / 30.0 * 0.95 - 0.001,
+          f"the timecode stepped (a packet gap of {max(gaps) * 1000:.1f} or "
+          f"{min(gaps) * 1000:.1f} ms): never slewed faster than 5%")
+    # The audio restarted at the show's current position, faded in.
+    back = [(t, p, b) for t, p, b in eng.log if t > t_plug and p.playing]
+    heard = back[0][0] + back[0][1].latency
+    clock_pos = heard - [e for t, e, m in sim.trace if t <= heard][-1]
+    offset = back[0][1].frame / 48000.0 - clock_pos
+    check(abs(offset) < 0.06,
+          f"the audio came back at {back[0][1].frame / 48000.0:.3f} s, the "
+          f"show was at {clock_pos:.3f} s")
+    t_in = back[0][0]
+    lv = [(t - t_in, float(np.max(np.abs(b)))) for t, p, b in back]
+    early = [v for t, v in lv if t < 0.1]
+    mid = [v for t, v in lv if 0.45 < t < 0.55]
+    late = [v for t, v in lv if 1.1 < t < 1.5]
+    check(early and max(early) < 0.08 and mid and 0.15 < max(mid) < 0.32
+          and late and min(late) > 0.45,
+          f"the returning audio did not fade in over a second: "
+          f"{early[:2]} {mid[:2]} {late[:2]}")
+    # The handover slewed: the epoch never moved faster than 5% of the
+    # time that passed.
+    tr = [(t, e) for t, e, m in sim.trace if t_plug <= t <= t_back
+          and e is not None]
+    fast = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(tr, tr[1:])
+            if b[0] - a[0] > 1e-4]
+    check(fast and max(abs(x) for x in fast) <= 0.0501,
+          "the handover moved the clock faster than a 5% slew")
+    t_follow = [t for t, e, m in sim.trace if t > t_plug and m == "return"]
+    took = t_follow[-1] - t_follow[0] if t_follow else 0.0
+    check(abs(offset) > 0.005 and
+          abs(offset) / 0.05 - 0.1 < took < abs(offset) / 0.05 + 0.2,
+          f"a {offset * 1000:.1f} ms handover offset took {took:.2f} s to "
+          f"slew out, not about {abs(offset) / 0.05:.2f} s")
+    worst = max(abs(_am_true_pos(r, t) - n / 30.0)
+                for t, n in out.frames(since=t_back + 0.3))
+    check(worst < 0.002, f"after the return the timecode is "
+                         f"{worst * 1000:.1f} ms off the audio")
+    # The audio process dying counts the same way, and a new one takes
+    # over.
+    eng.crash()
+    sim.run(vc() + 0.5)
+    check(am._mode == "freerun" and am.losses == 2,
+          "the audio process dying was not treated as losing the audio")
+    eng.respawn()
+    ok = sim.until(lambda: am._mode == "follow", 8.0)
+    check(ok and am.returns == 2, "the new audio process did not take over")
+    check(not _am_consecutive(out.frames()),
+          "the timecode jumped when the audio process died")
+    # Audio that comes back far from where the show is (here a quarter of
+    # a second and more) is not slewed for minutes: the handover is tried
+    # again.
+    eng.sd.control("unplug")
+    sim.run(vc() + 1.0)
+    am.LEAD_S = 0.6
+    eng.sd.control("plug")
+    ok = sim.until(lambda: any("did not come back" in m and "away from the "
+                               "show" in m for k, m in r["log"].lines), 12.0)
+    check(ok and am._mode != "follow",
+          "audio that came back far from the show was slewed, not re-tried")
+    type(am).LEAD_S and delattr(am, "LEAD_S")
+    ok = sim.until(lambda: am._mode == "follow", 12.0)
+    check(ok and not _am_consecutive(out.frames()),
+          "the retried handover did not take, or the timecode jumped")
+    am.stop()
+    print("  ok")
+
+
+def test_audio_master_the_audio_ending_ends_the_cue():
+    section("audio_master: the end of the audio is the end of the cue")
+    r = _am_rig(seconds=1.0)
+    am, sim, out, vc = r["am"], r["sim"], r["out"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    frames = [n for _, n in out.frames()]
+    check(frames == list(range(30)),
+          f"a 1 s cue sent frames {frames[:3]}..{frames[-3:]}, not 0 to 29")
+    check(len(r["calls"]["stop"]) == 1 and not am.playing
+          and am.last_ended == "Show finished",
+          f"the audio ending did not stop the cue the normal way: "
+          f"{r['calls']['stop']} {am.last_ended!r}")
+    end = r["calls"]["stop"][0]
+    heard_end = _am_true_pos(r, end)
+    check(heard_end is not None and 1.0 - 1e-6 <= heard_end < 1.0 + 1 / 30.0,
+          f"the cue ended at {heard_end}, not when its audio did")
+    # With no interface a show does not start at all (Jeff, 2026-09-27):
+    # a sentence on the page, in the log, and nothing sent.
+    from ltcplay import clock as clock_mod
+    r2 = _am_rig(seconds=1.0)
+    r2["eng"].sd.control("unplug")
+    r2["sim"].run(r2["vc"]() + 1.0)
+    try:
+        r2["am"].play(3600.0, None, "Show")
+        check(False, "a show started with its audio interface missing")
+    except clock_mod.ClockConfigError as e:
+        check("will not start" in str(e) and "Show DSP" in str(e)
+              and str(e).endswith("."), f"the refusal: {e}")
+        check(any("will not start" in m for k, m in r2["log"].lines),
+              "the refusal is not in the show log")
+    r2["sim"].run(r2["vc"]() + 1.0)
+    check(not r2["out"].sent and not r2["am"].playing
+          and not r2["calls"]["stop"],
+          "something was sent for a show that did not start")
+    check(r2["am"].health_warnings(), "no interface, and health is clear")
+    # A cue with no audio cannot play under audio_master.
+    try:
+        r["am"].play(0.0, 10.0, "Preshow")
+        check(False, "a cue with no audio played under audio_master")
+    except clock_mod.ClockConfigError as e:
+        check("has no show audio" in str(e), f"the refusal: {e}")
+    r["am"].stop()
+    r2["am"].stop()
+    print("  ok")
+
+
+def test_audio_master_session_hold_resume_abort():
+    section("audio_master through the session: Run, play, Hold, Resume, "
+            "Abort")
+    import tempfile
+    from ltcplay.session import Session, SessionError
+    from ltcplay import settings as st_mod, showaudio as sa
+    import ltcplay.player as plmod
+    work = tempfile.mkdtemp()
+    real_path, real_prefs = st_mod.path, st_mod.prefs_path
+    st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+    st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+    real_prepare = plmod.Player._prepare
+
+    def fake_prepare(self, cue):
+        cue.fseq = FakeFSEQ(frames=4000)
+        cue.duration = cue.fseq.duration_ms / 1000.0
+        cue._spans = [(0, 0, cue.fseq.channel_count)]
+        cue._gaps = None
+        return 0
+
+    plmod.Player._prepare = fake_prepare
+    _tl, tlp, net = _am_show(work, 8.0)
+    sess = None
+    stop_proc = threading.Event()
+    try:
+        sess = Session(tlp, no_output=True, networks=net, no_log=True,
+                       sd=FakeSD())
+        sess.open()
+        clk = sess.clock
+        check(clk is not None and clk.source == "audio_master"
+              and isinstance(clk.engine, sa.AudioEngine),
+              "the show file asked for audio_master and did not get it")
+        check("the show audio" in sess.input_summary,
+              f"the input line: {sess.input_summary}")
+        # The real engine would start a process; this one runs the audio
+        # process's loop on a thread here, with a fake interface in real
+        # time.
+        spec = dict(clk.engine.spec, platform="darwin")
+        arr = [0.0] * sa.SLOTS
+        msgs = []
+        fsd = sa.FakeSoundDevice(threaded=True, keep=False,
+                                 devices=[{"name": "Show DSP", "hostapi": 0,
+                                           "max_output_channels": 8}])
+        proc = sa.AudioProcess(spec, fsd, sa.Publisher(arr), msgs.append,
+                               sync_load=True)
+
+        class Eng:
+            respawns = 0
+
+            def start(self, wait_s=0):
+                proc.step(time.perf_counter())
+                same = spec.get("same_length", {})
+                for role, stems in spec["cues"].items():
+                    proc.command(("load", role, stems,
+                                  same.get(role, True)))
+
+                def loop():
+                    while not stop_proc.is_set():
+                        proc.step(time.perf_counter())
+                        time.sleep(0.01)
+                threading.Thread(target=loop, daemon=True).start()
+                return msgs[0] if msgs else None
+
+            def send(self, msg):
+                proc.command(msg)
+                return True
+
+            def read(self):
+                return sa.read_position(arr)
+
+            def events(self):
+                out = list(msgs)
+                del msgs[:]
+                return out
+
+            def close(self):
+                stop_proc.set()
+                proc.close(wait_s=0)
+
+        clk.engine = Eng()
+        out = _TcOut()
+        clk.out = out
+        sess.start()
+        sess.clock_play("Show")
+        check(wait_for(lambda: len(out.sent) >= 10
+                       and sess.player.current_cue is not None, 3.0),
+              "the show audio clock started but nothing followed it")
+        check(_tc_of(out.sent[0][1])[:4] == (0, 0, 0, 0),
+              "the cue's timecode did not start at 00:00:00:00")
+        check(3600.0 <= sess.player.tc_seconds < 3602.0,
+              f"the pixels are at {sess.player.tc_seconds}, not the show")
+        sess.clock_pause()
+        check(wait_for(lambda: clk._paused, 2.0),
+              "Hold through the session did not freeze the clock")
+        n0 = len(out.sent)
+        check(wait_for(lambda: len(out.sent) - n0 >= 6, 3.0),
+              "the frozen frame is not being repeated")
+        held = {_tc_of(p)[:4] for _, p in out.sent[n0:]}
+        check(len(held) == 1, f"the timecode moved while held: {held}")
+        check(sess.snapshot()["clock"]["paused"] is True,
+              "the page does not say the clock is paused")
+        try:
+            sess.clock_pause()
+            check(False, "a second Hold was accepted")
+        except SessionError:
+            pass
+        sess.clock_resume()
+        check(wait_for(lambda: not clk._paused, 3.0),
+              "Resume through the session did not unfreeze the clock")
+        n1 = len(out.sent)
+        check(wait_for(lambda: len({_tc_of(p)[:4]
+                                    for _, p in out.sent[n1:]}) >= 4, 3.0),
+              f"the timecode did not move after Resume: "
+              f"{[_tc_of(p)[:4] for _, p in out.sent[n1:n1 + 5]]}")
+        sess.clock_halt()
+        check(clk.playing, "Abort through the session did not fade first")
+        check(wait_for(lambda: not clk.playing, 2.5),
+              "Abort through the session never stopped the cue")
+        check(wait_for(lambda: sess.player.current_cue is None, 2.0),
+              "after Abort the pixels did not go back to the idle look")
+        snap = sess.snapshot()
+        check(snap["clock"]["source"] == "audio_master"
+              and snap["clock"]["audio"]["device"] == "Show DSP",
+              f"the page does not show the audio clock: {snap['clock']}")
+        sess.stop()
+        sess = None
+        # An interface that is there but cannot run the show refuses Run
+        # with its sentence, and leaves nothing running.
+        s2 = Session(tlp, no_output=True, networks=net, no_log=True,
+                     sd=FakeSD())
+        s2.open()
+
+        class Refuses:
+            def start(self, wait_s=0):
+                return ("refused", "Show DSP has 2 output(s), but the show "
+                                   "uses 8.")
+
+            def close(self):
+                pass
+
+        s2.clock.engine = Refuses()
+        try:
+            s2.start()
+            check(False, "Run went ahead on an interface that cannot run "
+                         "the show")
+        except SessionError as e:
+            check("has 2 output(s)" in str(e), f"the Run refusal: {e}")
+        check(not s2.running and not s2.clock.playing,
+              "a refused Run left the session running")
+        s2.stop()
+    finally:
+        stop_proc.set()
+        if sess is not None:
+            sess.stop()
+        plmod.Player._prepare = real_prepare
+        st_mod.path, st_mod.prefs_path = real_path, real_prefs
+    print("  ok")
+
+
+def test_audio_master_runs_in_its_own_process():
+    section("audio_master: the audio plays in its own process, and a new "
+            "one takes over if it dies")
+    import tempfile
+    from ltcplay import showaudio as sa
+    work = tempfile.mkdtemp()
+    tl, _t, _n = _am_show(work, 3.0)
+    checked = sa.check_show(tl.clock.audio, tl)
+    spec = sa.engine_spec(tl.clock.audio, checked, platform="darwin",
+                          fake={"devices": [{"name": "Show DSP",
+                                             "hostapi": 0,
+                                             "max_output_channels": 8}]})
+    spec["lock"] = os.path.join(work, "audio.lock")
+    eng = sa.AudioEngine(spec)
+    eng.RESPAWN_S = (0.2, 0.2, 0.2)
+    seen = []
+
+    def got(kind, limit=10.0):
+        end = time.time() + limit
+        while time.time() < end:
+            seen.extend(eng.events())
+            if any(e[0] == kind for e in seen):
+                return True
+            time.sleep(0.02)
+        return False
+
+    try:
+        first = eng.start()
+        check(first is not None and first[0] == "opened",
+              f"the audio process did not open the interface: {first}")
+        check(eng.pid and eng.pid != os.getpid() and eng.alive
+              and eng._ctx.get_start_method() == "spawn",
+              "the audio is not in a spawned process of its own")
+        check(abs(eng.offset) < 0.01,
+              f"the audio process's clock is {eng.offset:.4f} s off this "
+              f"one's")
+        check(got("loaded"), f"the show audio did not load: {seen}")
+        eng.send(("play", "show", 0, 0, 5))
+        check(wait_for(lambda: (eng.read() or sa.Position(*[0] * 13))
+                       .frame > 24000, 3.0),
+              "the audio process's position did not advance")
+        p = eng.read()
+        check(p.token == 5 and p.playing and p.callbacks > 10
+              and abs(time.perf_counter() - p.perf) < 0.5,
+              f"the shared position is wrong: {p}")
+        eng.send(("pause", 480, 5))
+        time.sleep(0.2)
+        a = eng.read().frame
+        time.sleep(0.2)
+        check(eng.read().frame == a and eng.read().stop_frame == a,
+              "the audio kept moving after a pause in its own process")
+        pid = eng.pid
+        del seen[:]
+        eng.send(("fake", "crash"))
+        check(got("crashed", 5.0), "the audio process died and nobody "
+                                   "noticed")
+        check(got("respawned", 8.0) and got("opened", 5.0)
+              and got("loaded", 5.0) and eng.pid != pid and eng.alive,
+              f"no new audio process took over: {seen}")
+    finally:
+        eng.close()
+    check(not eng.alive, "the audio process outlived close()")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_the_show_audio():
+    section("GPL and artnet_master: the show audio code is never loaded")
+    import json, subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "showaudio.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.match(r"(from \.showaudio |from \. import .*\bshowaudio\b|"
+                        r"import ltcplay\.showaudio|from ltcplay import .*"
+                        r"\bshowaudio\b)", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the show audio is imported at module scope: {top}")
+    script = r'''
+import json, os, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+import selftest as T
+from ltcplay import settings as st_mod
+from ltcplay.session import Session
+import ltcplay.player as plmod
+import ltcplay.web, ltcplay.cli
+work = tempfile.mkdtemp()
+st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+def fake_prepare(self, cue):
+    cue.fseq = T.FakeFSEQ(frames=4000)
+    cue.duration = cue.fseq.duration_ms / 1000.0
+    cue._spans = [(0, 0, cue.fseq.channel_count)]
+    cue._gaps = None
+    return 0
+plmod.Player._prepare = fake_prepare
+res = {}
+for label, clock_doc in (("gpl", None),
+                         ("artnet", {"source": "artnet_master",
+                                     "artnet": {"nodes": {"M": "127.0.0.1"}}})):
+    d = tempfile.mkdtemp(dir=work)
+    tlp, net = T._clock_show(d, clock_doc, [("01:00:00:00", "S.fseq", "S")])
+    s = Session(tlp, no_output=True, networks=net, no_log=True,
+                sd=T.FakeSD(), device="MOTU M4", channel=2)
+    s.open(); s.start()
+    if label == "artnet":
+        s.clock.out = T._TcOut()
+        s.clock_play()
+        s.clock_pause(); s.clock_resume(); s.clock_halt()
+    time.sleep(0.3)
+    s.snapshot()
+    s.stop()
+    res[label] = sorted(m for m in sys.modules
+                        if m == "ltcplay.showaudio"
+                        or m.startswith("multiprocessing"))
+print(json.dumps(res))
+'''
+    r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
+                text=True, timeout=120)
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        check(False, f"the GPL/artnet check did not run: {r.stdout[-400:]} "
+                     f"{r.stderr[-800:]}")
+        return
+    check("ltcplay.showaudio" not in res["gpl"],
+          "a GPL run imported the show audio")
+    check("ltcplay.showaudio" not in res["artnet"],
+          "an artnet_master run imported the show audio")
+    check(not res["gpl"] and not res["artnet"],
+          f"a run without audio_master loaded multiprocessing: {res}")
+    print("  ok")
+
+
+class _AmJitterEngine(_AmLocalEngine):
+    """A driver that enters its callback a few ms late at random, and can
+    report a latency spike on chosen callbacks, while the sound is really
+    heard a steady `latency` after each callback (review of PR 26)."""
+
+    jitter = (0.0, 0.003)
+    spikes = {}
+
+    def __init__(self, *a, **k):
+        import random
+        self.rng = random.Random(7)
+        self.n = 0
+        super().__init__(*a, **k)
+
+    def run_at(self, t):
+        if self.crashed:
+            return
+        if self._next is not None and t >= self._next - 1e-12 \
+                and self.proc.stream is self._stream:
+            from ltcplay import showaudio as sa
+            import numpy as np
+            j = self.rng.uniform(*self.jitter)
+            extra = self.spikes.get(self.n, 0.0)
+            self.n += 1
+            real = self.proc._clock
+            self.proc._clock = lambda: t + j
+            s = self._stream
+            out = np.zeros((s.sd.block, s.channels), dtype=np.float32)
+            if s.running and not s.closed and s.dev["present"]:
+                s.callback(out, s.sd.block,
+                           sa._TimeInfo(t + j + s.sd.latency + extra, t + j),
+                           sa._Flags(False))
+                p = self.read()
+                self.log.append((t + j, p._replace(latency=s.sd.latency),
+                                 out))
+            self.proc._clock = real
+            self._next += self.period
+        if t >= self._next_step - 1e-12:
+            self.proc.step(t)
+            self._next_step = t + 0.02
+
+
+def _am_jitter_rig(drift=0.0, seconds=20.0, spikes=None):
+    """_am_rig with the jittery driver, and the clock thread itself woken
+    0 to 4 ms late, and now and then 25 ms late."""
+    import random
+    global _AmLocalEngine
+    real = _AmLocalEngine
+    _AmJitterEngine.spikes = spikes or {}
+    _AmLocalEngine = _AmJitterEngine
+    try:
+        r = _am_rig(seconds=seconds, drift_ppm=drift)
+    finally:
+        _AmLocalEngine = real
+    rng = random.Random(11)
+    sim = r["sim"]
+
+    def run(until):
+        vc = sim.vc
+        if sim.am.kicked:
+            sim.am.kicked = False
+            sim.next_am = vc()
+        while True:
+            t = min(sim.next_am, sim.eng.next_time())
+            if t > until:
+                vc.t = until
+                return
+            vc.t = t
+            sim.eng.run_at(t)
+            if t >= sim.next_am - 1e-12:
+                due = sim.am.step(t)
+                sim.trace.append((t, sim.am._epoch, sim.am._mode))
+                late = rng.uniform(0.0, 0.004)
+                if rng.random() < 0.002:
+                    late += 0.025
+                sim.next_am = max(due, t + 1e-6) + late
+    sim.run = run
+    return r
+
+
+def _am_errors(r, since):
+    fr = r["out"].frames(since=since)
+    n = [x for _, x in fr]
+    back = [(a, b) for a, b in zip(n, n[1:]) if b <= a]
+    skip = [(a, b) for a, b in zip(n, n[1:]) if b > a + 1]
+    errs = [(_am_true_pos(r, t) - x / 30.0, t) for t, x in fr
+            if _am_true_pos(r, t) is not None]
+    return fr, back, skip, errs
+
+
+def test_audio_master_review_rules():
+    section("audio_master: the review's rules (late start, stale readings, "
+            "frozen frame floor, spikes, stalls, Hold in odd places)")
+    import numpy as np
+    from ltcplay import showaudio as sa
+
+    # A clock thread 250 ms late to a new cue still starts it at
+    # 00:00:00:00, then goes straight to where the audio is.
+    r = _am_rig(seconds=6.0)
+    am, sim, vc = r["am"], r["sim"], r["vc"]
+    t0 = vc()
+    am.play(3600.0, None, "Show")
+    am.kicked = False
+    sim.next_am = t0 + 0.25
+    sim.run(t0 + 1.0)
+    n = [x for _, x in r["out"].frames(since=t0)]
+    check(n[:1] == [0] and 6 <= n[1] <= 8 and not _am_consecutive(
+        [(0, x) for x in n[1:]]),
+          f"a cue reached 250 ms late did not start at 00:00:00:00 and "
+          f"then follow the audio: {n[:5]}")
+    # A reading from an older play or another cue moves nothing.
+    ep, mode = am._epoch, am._mode
+    pos = sa.read_position(r["eng"].arr)
+    am._on_reading(pos._replace(seq=pos.seq + 1001, token=am._token - 1,
+                                frame=pos.frame - 960), vc())
+    check(am._epoch == ep and am._mode == mode,
+          "a reading from an older play moved the clock")
+    # The frozen frame is never below the last frame sent.
+    with am._lock:
+        am._stop_frame = 24000              # frame 14
+        last = am._last_frame
+        am._pause_req = True
+        am._freeze(vc())
+    check(am._frozen_frame == last and last > 14,
+          f"the clock froze on frame {am._frozen_frame}, below the "
+          f"{last} it had already sent")
+    am.stop()
+
+    # The seqlock: a read that sees a write in progress, or a write
+    # between its two looks, reads again.
+    class Torn(list):
+        def __init__(self, passes):
+            super().__init__([0.0] * sa.SLOTS)
+            self.passes, self.looks = passes, 0
+
+        def __getitem__(self, k):
+            if k == sa.SEQ:
+                v = self.passes[min(self.looks, len(self.passes) - 1)]
+                self.looks += 1
+                return v
+            if isinstance(k, slice):
+                body = [7.0 if self.looks < 4 else 8.0] * (
+                    sa.ERRORS - sa.TOKEN + 1)
+                return body
+            return super().__getitem__(k)
+
+    got = sa.read_position(Torn([3.0, 4.0, 6.0, 6.0, 6.0, 6.0]))
+    check(got is not None and got.seq == 6 and got.token == 8,
+          f"a torn read was returned instead of read again: {got}")
+
+    # A driver whose latency report spikes (0.88 s, then 0.48 s) moves
+    # nothing; nor does a PC clock 100 ppm either way, with the callbacks
+    # and the clock thread both jittering.
+    for drift, spikes in ((100.0, {}), (-100.0, {}),
+                          (0.0, {500: 0.88, 900: 0.48})):
+        r = _am_jitter_rig(drift, 20.0, spikes)
+        t0 = r["vc"]()
+        r["am"].play(3600.0, None, "Show")
+        r["sim"].run(t0 + 16.0)
+        fr, back, skip, errs = _am_errors(r, t0)
+        late = max(abs(e) for e, t in errs if t > t0 + 1.0)
+        tail = max(abs(e) for e, t in errs if t > t0 + 10.0)
+        check(len(fr) > 450 and not back and not skip,
+              f"drift {drift}, spikes {spikes}: frames backwards {back[:3]} "
+              f"or skipped {skip[:3]}")
+        check(tail < 0.008 and late < 0.035,
+              f"drift {drift}, spikes {spikes}: the timecode strayed "
+              f"{late * 1000:.1f} ms (last 6 s {tail * 1000:.1f} ms) from "
+              f"the audio")
+        if spikes:
+            check(r["am"].outliers >= 2,
+                  "the latency spikes were not recognised as spikes")
+        r["am"].stop()
+
+    # A 350 ms hiccup in the driver (callbacks pause, the stream stays
+    # open) is not a loss: the music is not stopped and reopened, the
+    # clock just waits for the audio.
+    r = _am_rig(seconds=10.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    dev = eng.proc.stream.dev
+    th = vc()
+    dev["present"] = False
+    sim.run(vc() + 0.35)
+    dev["present"] = True
+    sim.run(vc() + 3.0)
+    silent = [t for t, p, b in eng.log if t > th and not np.any(b != 0)]
+    fr, back, skip, _e = _am_errors(r, 0)
+    check(am.losses == 0 and eng.proc.opens == 1 and not silent
+          and not r["journal"].faults and not back,
+          f"a 0.35 s hiccup became a loss: losses {am.losses}, opens "
+          f"{eng.proc.opens}, silent callbacks {len(silent)}")
+    worst = max(abs(_am_true_pos(r, t) - x / 30.0)
+                for t, x in fr if t > th + 1.0)
+    check(worst < 0.002, f"after a hiccup the timecode is "
+                         f"{worst * 1000:.1f} ms off the audio")
+    # Longer than the clock's own limit, but the audio process has not
+    # given up on the stream (a hung child, say): when the same stream
+    # plays on, the clock follows it again, and the music was never
+    # stopped.
+    eng.proc.STALL_S = 5.0
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+    th = vc()
+    dev["present"] = False
+    sim.run(vc() + 0.8)
+    check(am.losses == 1 and am._mode == "freerun",
+          "0.8 s with no audio was not treated as a loss")
+    dev["present"] = True
+    sim.run(vc() + 2.0)
+    eng.send = real_send
+    check(am._mode == "follow" and not am._fault and am.returns == 1
+          and not [m for m in sent if m[0] in ("stop", "play")]
+          and eng.proc.opens == 1,
+          f"the same stream playing on was not followed again: mode "
+          f"{am._mode}, sent {sent}")
+    check(not _am_errors(r, 0)[1], "the timecode went backwards")
+    # The audio process stopping the sound with nothing asking it to is a
+    # loss, not something to follow quietly.
+    eng.send(("stop", 0, None))
+    sim.run(vc() + 0.3)
+    check(am.losses == 2 and am._fault and "stopped playing" in am._fault,
+          f"sound that stopped by itself was not a loss: {am._fault}")
+    ok = sim.until(lambda: am._mode == "follow", 8.0)
+    check(ok and not am._fault, "the audio did not come back after that")
+    # Errors making the sound reach the page.
+    real_render = eng.proc.mixer.render
+    boom = [1]
+
+    def render(n):
+        if boom:
+            boom.pop()
+            raise RuntimeError("test")
+        return real_render(n)
+
+    eng.proc.mixer.render = render
+    sim.run(vc() + 0.2)
+    check(any("error(s) making the sound" in w
+              for w in am.health_warnings()),
+          f"an error in the audio process did not reach the page: "
+          f"{am.health_warnings()}")
+    am.stop()
+
+    # Hold during a loss: freezes at once, repeats the frame; Resume
+    # carries on on this computer's clock; the audio comes back after.
+    r = _am_rig(seconds=30.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    eng.sd.control("unplug")
+    sim.run(vc() + 1.0)
+    th = vc()
+    am.pause()
+    check(am._paused and len(r["calls"]["pause"]) == 1,
+          "Hold during a loss did not freeze at once")
+    sim.run(vc() + 1.0)
+    held = r["out"].frames(since=th + 0.05)
+    check(len(held) >= 28 and len({x for _, x in held}) == 1,
+          "Hold during a loss did not keep repeating the frozen frame")
+    frozen = held[0][1]
+    tr = vc()
+    am.resume()
+    sim.run(vc() + 0.5)
+    moving = [x for _, x in r["out"].frames(since=tr)]
+    check(moving and moving[0] in (frozen, frozen + 1) and moving[-1] > frozen
+          + 10 and am._fault,
+          "Resume during a loss did not carry on from the frozen frame")
+    eng.sd.control("plug")
+    ok = sim.until(lambda: am._mode == "follow", 12.0)
+    check(ok and not am._fault and not _am_consecutive(
+        [(0, x) for x in moving[1:]]), "the audio did not come back")
+    am.stop()
+
+    # Hold during the handover slew, then Resume: the red clears.
+    r = _am_rig(seconds=30.0, block=2400, reported_latency=0.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    eng.sd.control("unplug")
+    sim.run(vc() + 3.0)
+    eng.sd.control("plug")
+    sim.until(lambda: am._mode == "return" and am._target is not None, 10.0)
+    am.pause()
+    sim.run(vc() + 1.0)
+    am.resume()
+    sim.run(vc() + 2.0)
+    check(am._mode == "follow" and not am._fault and not
+          am.health_warnings() and r["journal"].records,
+          f"Hold during the handover left health red: {am._fault}")
+    am.stop()
+
+    # Hold inside the last fade, then Resume: the cue simply ends.
+    r = _am_rig(seconds=3.0)
+    am, sim, vc = r["am"], r["sim"], r["vc"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.93)
+    am.pause()
+    sim.run(vc() + 1.0)
+    am.resume()
+    sim.run(vc() + 2.0)
+    check(not r["journal"].faults and am.losses == 0
+          and am.last_ended == "Show finished"
+          and len(r["calls"]["stop"]) == 1,
+          f"Resume at the very end gave {r['journal'].faults} "
+          f"{am.last_ended!r}")
+    am.stop()
+
+    # Abort waits until its fade has been HEARD, not just sent.
+    r = _am_rig(seconds=6.0, latency=0.1)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 2.0)
+    ta = vc()
+    am.halt()
+    sim.run(vc() + 2.0)
+    stop = r["calls"]["stop"][0]
+    heard = [t + p.latency for t, p, b in eng.log
+             if t > ta and np.any(b != 0)]
+    check(stop - ta >= 1.1 and heard and max(heard) <= stop,
+          f"Abort stopped the cue {stop - ta:.2f} s in, before the last of "
+          f"its fade was heard at {max(heard) - ta:.2f} s")
+    am.stop()
+
+    # The show's music has silences longer than half a second. Losing the
+    # audio means the stream stopped moving, never that it went quiet: a
+    # cue with 5 s of exact zeros at its start, in its middle and at its
+    # end plays through with no loss, no stall, no fault, health clear.
+    r = _am_rig(seconds=20.0, silences=((0.0, 5.0), (7.0, 12.0),
+                                        (15.0, 20.0)))
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    t0 = vc()
+    am.play(3600.0, None, "Show")
+    warned = []
+    while vc() < t0 + 21.0:
+        sim.run(vc() + 0.5)
+        warned += am.health_warnings()
+    quiet = [t for t, p, b in eng.log if p.playing and not np.any(b != 0)]
+    check(len(quiet) > 1400, "the silent stretches were not silent")
+    check(am.losses == 0 and eng.proc.opens == 1 and not warned
+          and not r["journal"].faults and am.last_ended == "Show finished"
+          and not _am_consecutive(r["out"].frames(since=t0)),
+          f"digital silence was taken for a lost interface: losses "
+          f"{am.losses}, opens {eng.proc.opens}, faults "
+          f"{r['journal'].faults}, health {warned[:1]}")
+    am.stop()
+
+    # WAV files whose data size cannot be true are refused, not played.
+    import struct, tempfile
+    work = tempfile.mkdtemp()
+    good = os.path.join(work, "good.wav")
+    _am_write_wav(good, _am_tone(0.2, 1))
+    raw = open(good, "rb").read()
+    at = raw.index(b"data") + 4
+    for size, want in ((0, "placeholder"), (0xFFFFFFFF, "placeholder"),
+                       (len(raw), "cut off")):
+        p = os.path.join(work, f"bad{size}.wav")
+        open(p, "wb").write(raw[:at] + struct.pack("<I", size) +
+                            raw[at + 4:])
+        try:
+            sa.wav_info(p)
+            check(False, f"a WAV claiming {size} bytes of audio was taken")
+        except sa.AudioConfigError as e:
+            check(want in str(e) and str(e).endswith("."),
+                  f"the size refusal is not a plain sentence: {e}")
+    # Decoded a chunk at a time, the samples are the same.
+    x = _am_tone(0.05, 3, 0.6)
+    for fmt in ("pcm16", "pcm24", "float32"):
+        p = os.path.join(work, f"c_{fmt}.wav")
+        _am_write_wav(p, x, fmt=fmt)
+        whole = sa.read_wav(p)
+        real = sa.READ_CHUNK_FRAMES
+        sa.READ_CHUNK_FRAMES = 7
+        try:
+            parts = sa.read_wav(p)
+        finally:
+            sa.READ_CHUNK_FRAMES = real
+        check(parts.shape == whole.shape and np.array_equal(parts, whole)
+              and np.max(np.abs(whole - x)) < 1e-4,
+              f"decoding {fmt} in chunks changed the samples")
+    print("  ok")
+
+
+def test_audio_master_stop_during_a_respawn():
+    section("audio_master: Stop while the audio process is being replaced, "
+            "then Run, leaves one process and one watch thread; a second "
+            "audio process is refused")
+    import multiprocessing
+    import signal
+    from ltcplay import showaudio as sa
+    import tempfile
+    spec = {"device": "Fake Interface", "channels": 2, "rate": 48000,
+            "allow_shared": False, "cues": {}, "platform": "darwin",
+            "fake": {"threaded": True},
+            "lock": os.path.join(tempfile.mkdtemp(), "audio.lock")}
+
+    def ours():
+        return [p for p in multiprocessing.active_children()
+                if p.name == "ltcplay-show-audio"]
+
+    def watches():
+        return sum(t.name == "ltcplay-audio-watch" and t.is_alive()
+                   for t in threading.enumerate())
+
+    eng = sa.AudioEngine(spec)
+    eng.RESPAWN_S = (0.1, 0.1, 0.1)
+    try:
+        first = eng.start()
+        check(first is not None and first[0] == "opened",
+              f"the audio process did not start: {first}")
+        real = eng._hello
+
+        def slow(p, conn, stop):
+            time.sleep(2.0)            # numpy's import on a slow PC
+            return real(p, conn, stop)
+
+        eng._hello = slow
+        os.kill(eng.pid, signal.SIGKILL) if hasattr(signal, "SIGKILL") \
+            else eng._proc.kill()
+        time.sleep(0.5)                # noticed; the new one is starting
+        t = time.perf_counter()
+        eng.close()
+        took = time.perf_counter() - t
+        check(took < 1.0, f"Stop waited {took:.1f} s for the audio process")
+        eng._hello = real
+        first = eng.start()
+        check(first is not None and first[0] == "opened",
+              f"Run after that did not start the audio: {first}")
+        time.sleep(1.0)
+        check(len(ours()) == 1 and watches() == 1,
+              f"after Stop then Run: {len(ours())} audio processes, "
+              f"{watches()} watch threads")
+        check(eng.alive and eng.pid == ours()[0].pid if ours() else False,
+              "the engine is not talking to the process that is running")
+    finally:
+        eng.close()
+    check(wait_for(lambda: not ours(), 3.0),
+          f"{len(ours())} audio process(es) outlived the last close")
+
+    # One audio process per user, by an operating-system lock: a second
+    # one refuses with a sentence and exits, and the engine says so.
+    from ltcplay import onlyone
+    check(os.path.dirname(sa.lock_path()) == os.path.dirname(onlyone.path())
+          and sa.lock_path().endswith(sa.LOCK_FILE),
+          f"the audio lock is not beside ltcplay's own: {sa.lock_path()}")
+    a = sa.AudioEngine(dict(spec))
+    b = sa.AudioEngine(dict(spec, lock_wait_s=0.3))
+    try:
+        check((a.start() or ("",))[0] == "opened",
+              "the first audio process did not open")
+        got = b.start()
+        check(got is not None and got[0] == "refused"
+              and "Another show audio process is already running" in got[1]
+              and got[1].endswith("."),
+              f"a second audio process was not refused: {got}")
+        check(wait_for(lambda: len(ours()) == 1, 3.0) and not b.alive,
+              f"{len(ours())} audio processes are running at once")
+        a.close()
+        check(wait_for(lambda: not ours(), 3.0),
+              "the first audio process did not go")
+        got = b.start()
+        check(got is not None and got[0] == "opened",
+              f"the lock was not released when its process went: {got}")
+    finally:
+        a.close()
+        b.close()
+    check(wait_for(lambda: not ours(), 3.0),
+          "an audio process outlived the lock test")
+    print("  ok")
+
+
+def test_audio_master_never_reruns_an_unguarded_main():
+    section("audio_master: the audio process never re-runs a main script "
+            "that has no __main__ guard")
+    import subprocess as _sp, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    log = os.path.join(work, "ran.log")
+    script = os.path.join(work, "boot.py")
+    # The shape the Mac app's boot.py had: everything at the top level.
+    open(script, "w").write(
+        "import os, sys\n"
+        f"sys.path.insert(0, {here!r})\n"
+        f"open({log!r}, 'a').write(str(os.getpid()) + '\\n')\n"
+        "from ltcplay import showaudio as sa\n"
+        "eng = sa.AudioEngine({'device': 'Fake Interface', 'channels': 2,\n"
+        "    'rate': 48000, 'allow_shared': False, 'cues': {},\n"
+        f"    'lock': {os.path.join(work, 'audio.lock')!r},\n"
+        "    'platform': 'darwin', 'fake': {'threaded': True}})\n"
+        "eng.HELLO_S = 10.0\n"
+        "first = eng.start(wait_s=5)\n"
+        "print('FIRST', first and first[0])\n"
+        "eng.close()\n")
+    r = _sp.run([sys.executable, script], capture_output=True, text=True,
+                timeout=60, cwd=work)
+    ran = open(log).read().split() if os.path.exists(log) else []
+    check("FIRST opened" in r.stdout,
+          f"the audio did not start under an unguarded main: "
+          f"{r.stdout[-300:]} {r.stderr[-500:]}")
+    check(len(ran) == 1, f"the main script ran {len(ran)} times; the audio "
+                         f"process ran it again")
+    b = _builder_text()
+    if b is not None:
+        boot = _between(b, "<<'BOOT'\n", "\nBOOT\n")
+        check('\nif __name__ == "__main__":\n' in boot
+              and boot.index('if __name__ == "__main__":')
+              < boot.index("from ltcplay.cli import main"),
+              "the Mac app's boot.py runs the engine without a __main__ "
+              "guard")
+    print("  ok")
+
+
+def test_audio_master_loads_all_or_nothing():
+    section("audio_master: a cue is loaded whole and checked, or not at all")
+    import builtins
+    import numpy as np
+    from ltcplay import clock as clock_mod, showaudio as sa
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    stems = eng.spec["cues"]["show"]
+    music = stems[0][0]
+    check(all(len(st) == 4 and st[3] == 192000 for st in stems),
+          f"the audio process is not told how long each stem must be: "
+          f"{[st[3:] for st in stems]}")
+    ready = am.snapshot()["audio"]["ready"]
+    check(ready == {"show": "ready", "intermission": "ready"},
+          f"the page does not say both cues are ready: {ready}")
+
+    def reload_and_play():
+        eng.proc.command(("load", "show", stems, True))
+        sim.run(vc() + 0.1)
+        try:
+            am.play(3600.0, None, "Show")
+            return None
+        except clock_mod.ClockConfigError as e:
+            return str(e)
+
+    # 1. A read that stops halfway (a disk error, a placeholder file).
+    real_open = builtins.open
+
+    class Half:
+        def __init__(self, fh, limit):
+            self.fh, self.left = fh, limit
+
+        def read(self, n=-1):
+            if self.left <= 0:
+                return b""
+            b = self.fh.read(min(n, self.left) if n >= 0 else self.left)
+            self.left -= len(b)
+            return b
+
+        def __getattr__(self, k):
+            return getattr(self.fh, k)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.fh.close()
+
+    def half_open(path, mode="r", *a, **k):
+        fh = real_open(path, mode, *a, **k)
+        if path == music and "b" in mode:
+            return Half(fh, os.path.getsize(path) // 2)
+        return fh
+
+    sa.open = half_open
+    try:
+        try:
+            sa.read_wav(music)
+            check(False, "a read that stopped halfway gave a shorter clip")
+        except sa.AudioConfigError as e:
+            check("could only be read to" in str(e) and "of 0:04.000" in
+                  str(e) and str(e).endswith("."),
+                  f"the short read refusal: {e}")
+        why = reload_and_play()
+    finally:
+        del sa.open
+    check(why is not None and "could not be loaded" in why
+          and "could only be read to" in why
+          and "press Stop and Run again" in why and not am.playing,
+          f"a cue read only halfway could still be started: {why}")
+    check(am.snapshot()["audio"]["ready"]["show"] == "failed",
+          "the page shows a half-read cue as ready")
+    check(any("could only be read to" in f[1] for f in r["journal"].faults)
+          or "could only be read to" in (am._fault or ""),
+          "a half-read cue is not reported")
+
+    # 2. The file cut short after the show was checked.
+    raw = real_open(music, "rb").read()
+    real_open(music, "wb").write(raw[:len(raw) // 2])
+    why = reload_and_play()
+    check(why is not None and "could not be loaded" in why
+          and "press Stop and Run again" in why and not am.playing,
+          f"a cue cut short after checking could still be started: {why}")
+    # Every stem swapped for a whole, consistent, but shorter file after
+    # the show was checked: still refused, on the lengths it was checked at.
+    sub = stems[1][0]
+    raw_sub = real_open(sub, "rb").read()
+    _am_write_wav(music, _am_tone(3.0, 2))
+    _am_write_wav(sub, _am_tone(3.0, 1, 0.3))
+    why = reload_and_play()
+    check(why is not None and "when the show was checked" in why
+          and not am.playing,
+          f"stems changed since the show was checked could be started: "
+          f"{why}")
+    real_open(sub, "wb").write(raw_sub)
+    real_open(music, "wb").write(raw)
+    why = reload_and_play()
+    check(why is None and am.playing,
+          f"the cue did not load again once the file was whole: {why}")
+    am.stop()
+
+    # 3. Stems that decode to different lengths, each still exactly as long
+    # as it was checked (so the length-mismatch defense is exercised on its
+    # own, not stacked behind the per-stem checked-length refusal).
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    stems = list(eng.spec["cues"]["show"])
+    sub = stems[1][0]
+    _am_write_wav(sub, _am_tone(3.0, 1, 0.3))
+    stems[1] = (stems[1][0], stems[1][1], stems[1][2], int(3.0 * 48000))
+    eng.proc.command(("load", "show", stems, True))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a cue whose stems differ in length was started")
+    except clock_mod.ClockConfigError as e:
+        check("not all the same length" in str(e) and "sub.wav is 0:03.000"
+              in str(e), f"the length refusal: {e}")
+    eng.proc.command(("load", "show", stems, False))
+    sim.run(vc() + 0.1)
+    check(am.snapshot()["audio"]["ready"]["show"] == "ready",
+          "stems allowed to differ in length were not loaded")
+    am.stop()
+
+    # 4. Stems sent without their checked length (a caller bug, since
+    # production always sends it from check_show): a loud refusal, never a
+    # silent skip of the length check.
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    short_stems = [tuple(st[:3]) for st in eng.spec["cues"]["show"]]
+    eng.proc.command(("load", "show", short_stems, True))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a cue with no checked length was started")
+    except clock_mod.ClockConfigError as e:
+        check("has no checked length" in str(e)
+              and "not checked before" in str(e), f"the refusal: {e}")
+    check(am.snapshot()["audio"]["ready"]["show"] == "failed",
+          "the page shows a cue with no checked length as ready")
+
+    # 5. A load command with no same-length flag at all: the same loud
+    # refusal, not a silent default.
+    r = _am_rig(seconds=4.0)
+    am, sim, vc, eng = r["am"], r["sim"], r["vc"], r["eng"]
+    eng.proc.command(("load", "show", eng.spec["cues"]["show"]))
+    sim.run(vc() + 0.1)
+    try:
+        am.play(3600.0, None, "Show")
+        check(False, "a load command with no same-length flag was accepted")
+    except clock_mod.ClockConfigError as e:
+        check("no same-length flag" in str(e)
+              and "not checked before" in str(e),
+              f"the missing same-length refusal: {e}")
+    print("  ok")
+
+
+def test_journal_every_line_reaches_the_disk_within_a_second():
+    section("journal: every line is on the disk, flushed and synced, within "
+            "a second of happening")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import time as _t
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    syncs = {"n": 0}
+
+    def fsync(fd):
+        syncs["n"] += 1
+        return os.fsync(fd)
+
+    b = J.Logbook(work, tz=S.zone("America/Denver"), state="SHOW",
+                  fsync=fsync).start_writer()
+    jp = os.path.join(work, J.journal_name(b.current_night()))
+
+    def on_disk(text):
+        try:
+            return text in open(jp, encoding="utf-8").read()
+        except OSError:
+            return False
+
+    check(J.MAX_LINE_WAIT_S <= 1.0, f"the bound is a second at most: "
+                                    f"{J.MAX_LINE_WAIT_S}")
+    for i in range(3):
+        before = syncs["n"]
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Line {i}, which must be on the disk at once.")
+        check(wait_for(lambda: on_disk(f"Line {i},"),
+                       timeout=J.MAX_LINE_WAIT_S),
+              f"line {i} is on the disk within {J.MAX_LINE_WAIT_S:g} s")
+        check(wait_for(lambda: syncs["n"] >= before + 2, timeout=1.0),
+              f"and both files were synced to the disk: "
+              f"{syncs['n'] - before}")
+    # A wake-up that never comes: the line still goes down within the
+    # bound, because the writer looks again at least that often.
+    wake = b._wake.set
+    b._wake.set = lambda: None
+    t0 = _t.monotonic()
+    b.record(actor="system", action="note", outcome="done", reason="r",
+             text="A line whose wake-up was lost.")
+    got = wait_for(lambda: on_disk("whose wake-up was lost"), timeout=3.0)
+    took = _t.monotonic() - t0
+    check(got and took <= J.MAX_LINE_WAIT_S + 0.5,
+          f"a line waits at most about {J.MAX_LINE_WAIT_S:g} s even when "
+          f"nothing wakes the writer: {took:.2f} s")
+    b._wake.set = wake
+    # The program dies: the writer stops where it is, nothing is closed or
+    # flushed on the way out. Every line older than the bound is there.
+    for i in range(10):
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text=f"Burst line {i} before the crash.")
+    _t.sleep(J.MAX_LINE_WAIT_S + 0.2)
+    b._closing = True                 # killed: no close(), no last drain
+    text = open(jp, encoding="utf-8").read()
+    missing = [i for i in range(10) if f"Burst line {i} before" not in text]
+    check(not missing, f"after a crash every line older than "
+                       f"{J.MAX_LINE_WAIT_S:g} s is on the disk: missing "
+                       f"{missing}")
+    print("  ok")
+
+
+def test_journal_summary_is_written_however_the_night_closes():
+    section("journal: the nightly summary is written by itself, however "
+            "the night closes")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from ltcplay import journal as J
+    # The schedule's own close, after the last show: nobody presses
+    # anything.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now).start(thread=False)
+    for t in ((21, 40), (21, 47, 20), (21, 47, 21)):
+        now[0] = _den(S, *t)
+        svc.tick()
+    path = os.path.join(work, "nights", J.summary_name("2026-11-14"))
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) \
+        else ""
+    check(svc.machine.state == S.OFF and "closed after the last show" in
+          text, f"the schedule's own close writes it: "
+                f"{svc.machine.state} {text[:200]!r}")
+    # Close for the night: the operator's words, never End night.
+    work2 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    b = _svc(S, work2, now).start(thread=False)
+    now[0] = _den(S, 18, 30)
+    b._apply(_op(S, S.END_NIGHT, confirmed=True))
+    t2 = open(os.path.join(work2, "nights", J.summary_name("2026-11-14")),
+              encoding="utf-8").read()
+    j2 = open(os.path.join(work2, "nights", J.journal_name("2026-11-14")),
+              encoding="utf-8").read()
+    check("closed by Andy with Close for the night" in t2
+          and "Andy pressed Close for the night on the rack screen" in j2
+          and "the night was closed" in j2,
+          "Close for the night writes it, in those words")
+    check("End night" not in t2 and "End night" not in j2
+          and "End the night" not in j2,
+          "no operator sentence says End night any more")
+    check([a["label"] for a in S.ACTIONS if a["id"] == "end_night"] ==
+          ["Close for the night"] and "Close for the night?" in
+          [a["confirm"] for a in S.ACTIONS if a["id"] == "end_night"][0],
+          "the transport panel's label and question say it too")
+    # A crash, and ltcplay not back for three days: every night it missed
+    # closing gets its summary when it starts, with no button.
+    work3 = tempfile.mkdtemp()
+    now[0] = _den(S, 17, 30)
+    a = _svc(S, work3, now).start(thread=False)
+    now[0] = _den(S, 18, 0)
+    a.tick()                                       # show 1; then the crash
+    now[0] = _den(S, 17, 0, d=(2026, 11, 17))
+    _svc(S, work3, now).start(thread=False)
+    p3 = os.path.join(work3, "nights", J.summary_name("2026-11-14"))
+    t3 = open(p3, encoding="utf-8").read() if os.path.exists(p3) else ""
+    check("written later from the journal" in t3 and "| 1 |" in t3,
+          f"the night the crash cut short gets its summary three days "
+          f"later: {t3[:200]!r}")
     print("  ok")
 
 
@@ -19031,6 +23498,10 @@ if __name__ == "__main__":
     test_loop_never_dies()
     test_pixel_output_frame_jitter()
     test_pixel_pacing_never_accumulates_error()
+    test_pixel_scheduler_recovers_after_one_late_wake()
+    test_a_failing_send_still_advances_the_pixel_schedule()
+    test_pixel_loop_sleep_is_capped()
+    test_pixel_loop_matches_the_old_one_when_healthy()
     test_windows_pixel_clock_choice()
     test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()
@@ -19158,6 +23629,13 @@ if __name__ == "__main__":
     test_journal_line_format_is_the_spec()
     test_journal_is_append_only()
     test_journal_rotation_and_pruning_across_dst()
+    test_journal_prune_never_removes_a_partial_by_its_name_date()
+    test_journal_prune_takes_the_incident_lock()
+    test_schedule_clock_jump_midrun_keeps_the_floor_and_is_journaled()
+    test_journal_prune_trusted_clock_deletes_purely_by_age()
+    test_journal_prune_untrusted_clock_keeps_them_all()
+    test_schedule_sleep_and_wake_restores_trust_and_resumes_pruning()
+    test_schedule_trusted_clock_prunes_by_age_through_normal_housekeeping()
     test_journal_nightly_summary()
     test_journal_incident_bundle()
     test_journal_a_full_disk_stops_the_logging_not_the_show()
@@ -19169,15 +23647,23 @@ if __name__ == "__main__":
     test_journal_a_torn_last_line_after_a_power_cut()
     test_journal_a_repeating_fault_does_not_flood()
     test_journal_a_show_past_midnight_keeps_its_night()
+    test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night()
     test_journal_waiting_lines_are_capped_and_counted()
     test_journal_a_clean_stop_reads_as_one()
     test_journal_screens_come_from_a_list()
     test_journal_summary_lists_every_fault()
     test_journal_leftover_temp_files_are_cleared()
     test_journal_housekeeping_runs_once()
+    test_journal_every_line_reaches_the_disk_within_a_second()
+    test_journal_summary_is_written_however_the_night_closes()
     test_announce_probe_matches_open_for_format()
+    test_announce_unsupported_wav_formats_rejected()
+    test_announce_wav_decode_values()
+    test_announce_wav_extensible_float_accepted()
+    test_announce_wav_data_chunk_sanity()
     test_announce_device_exact_match_only()
     test_announce_toctou_recheck_before_start()
+    test_announce_interlock_recheck_catches_a_state_provider_with_no_hold()
     test_announce_show_start_stops_announcement()
     test_announce_stall_watchdog()
     test_announce_callback_status_errors()
@@ -19187,6 +23673,15 @@ if __name__ == "__main__":
     test_schedule_hook_runs_outside_service_lock()
     test_announce_reentrant_claim_does_not_orphan_a_stream()
     test_announce_interlock_matrix()
+    test_announce_hold_between_shows()
+    test_announce_hold_during_show()
+    test_announce_hold_refused_refuses_the_announcement()
+    test_announce_stays_held_after_it_ends()
+    test_announce_resume_wins_over_second_hold_request()
+    test_announce_resume_then_rehold_still_refuses()
+    test_announce_on_show_started_reason_new_vs_resume()
+    test_announce_hold_for_announcement_no_noise_when_already_held()
+    test_announce_no_scheduler_stays_inert()
     test_announce_single_flight()
     test_announce_operator_validation()
     test_announce_missing_files_at_startup()
@@ -19199,6 +23694,8 @@ if __name__ == "__main__":
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
     test_timecode_zones_for_fallback_3()
+    test_clock_show_length_follows_the_music()
+    test_scheduler_show_len_s_checked_against_the_show_media()
     test_clock_settings_fail_loudly()
     test_the_gpl_path_never_loads_the_clock()
     test_a_master_clock_runs_the_show()
@@ -19209,10 +23706,26 @@ if __name__ == "__main__":
     test_timecode_health_is_shown()
     test_a_lost_feed_still_reads_lost_without_a_master_clock()
     test_the_clock_freezes_on_hold_and_resume_carries_on()
+    test_resume_backdating_a_ticker_is_not_a_skip()
+    test_hold_freezes_the_pixels_at_once_and_resume_never_reorders()
+    test_hard_park_is_seen_at_once_under_every_override()
     test_session_hold_and_resume()
     test_pause_does_not_race_its_own_ticker()
     test_resume_does_not_race_its_own_ticker()
     test_pause_resume_survive_a_real_ticker_under_pressure()
+    test_audio_master_settings_and_files_refuse_in_sentences()
+    test_audio_master_mixing()
+    test_audio_master_timecode_follows_the_audio()
+    test_audio_master_hold_resume_and_abort()
+    test_audio_master_device_loss_freeruns_and_returns()
+    test_audio_master_the_audio_ending_ends_the_cue()
+    test_audio_master_session_hold_resume_abort()
+    test_audio_master_runs_in_its_own_process()
+    test_the_gpl_path_never_loads_the_show_audio()
+    test_audio_master_review_rules()
+    test_audio_master_stop_during_a_respawn()
+    test_audio_master_never_reruns_an_unguarded_main()
+    test_audio_master_loads_all_or_nothing()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()

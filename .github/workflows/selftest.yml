@@ -44,7 +44,9 @@ jobs:
   # fixtures (PR #9) switched the show-folder tests on, so it runs where it
   # pays for itself:
   #   ubuntu   on a release tag, and on any PR or push to main that changes
-  #            trigger.py, output.py, player.py or session.py (CLAUDE.md), or
+  #            a file mutate.py breaks on purpose (every file named in its
+  #            MUTATIONS list, read from mutate.py itself on each run so the
+  #            list can never drift), anything under flamesafe/, or
   #            mutate.py, selftest.py, the expected-miss list or this file
   #   windows  on a release tag only
   #   macOS    never here (billed at 10x); it is run on the show Mac, with
@@ -79,22 +81,85 @@ jobs:
         run: |
           set -u
           say() { echo "$1"; echo "oses=$2" >> "$GITHUB_OUTPUT"; exit 0; }
-          watched='^(ltcplay/(trigger|output|player|session)\.py|flamesafe/.*\.py|mutate\.py|selftest\.py|mutate_expected_misses\.txt|\.github/workflows/selftest\.yml)$'
           if [[ "$REF" == refs/tags/* ]]; then
             say "release tag: ubuntu and windows" '["ubuntu-latest","windows-latest"]'
           fi
           if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; else base="$BEFORE"; fi
           # No usable base (a first push, a rewritten one): run it rather
           # than guess.
+          changed="$RUNNER_TEMP/changed"
           if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
-             ! files=$(git diff --name-only "$base" "$GITHUB_SHA"); then
+             ! git diff --name-only -z "$base" "$GITHUB_SHA" > "$changed"; then
             say "no base to compare against: ubuntu" '["ubuntu-latest"]'
           fi
-          echo "changed:"; echo "$files" | sed 's/^/  /'
-          if echo "$files" | grep -Eq "$watched"; then
-            say "a watched file changed: ubuntu" '["ubuntu-latest"]'
-          fi
-          say "nothing mutate.py proves has changed" '[]'
+          # The watched files are not a hand-kept list (one drifted: clock.py
+          # and web.py had mutations but did not trigger them). They are read
+          # out of this commit's mutate.py: every file its MUTATIONS list
+          # breaks, plus flamesafe/*.py, mutate.py, selftest.py, the
+          # expected-miss list and this workflow. The list is parsed, never
+          # imported or run, and anything in it that is not a plain
+          # (name, "path", old, new) entry fails this job rather than letting
+          # a file slip out of the set. Exit 0: a watched file changed.
+          # Exit 1: none did. Anything else: stop, loudly.
+          set +e
+          python3 - "$changed" <<'PY'
+          import ast, sys
+
+          ALWAYS = {"mutate.py", "selftest.py", "mutate_expected_misses.txt",
+                    ".github/workflows/selftest.yml"}
+
+          def die(why):
+              print(f"::error::cannot work out what mutate.py covers: {why}")
+              sys.exit(3)
+
+          try:
+              tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
+          except (OSError, SyntaxError) as e:
+              die(f"mutate.py could not be read ({e})")
+          lists = []
+          for node in ast.walk(tree):
+              names = []
+              if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                  targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                  names = [t for t in targets if isinstance(t, ast.Name)]
+                  if any(t.id == "MUTATIONS" for t in names):
+                      lists.append(node)
+              elif (isinstance(node, ast.Attribute) and node.attr in ("append", "extend", "insert")
+                    and isinstance(node.value, ast.Name) and node.value.id == "MUTATIONS"):
+                  die(f"line {node.lineno} changes MUTATIONS after it is built")
+          if len(lists) != 1 or not isinstance(lists[0], ast.Assign) \
+                  or not isinstance(lists[0].value, ast.List):
+              die("expected exactly one plain `MUTATIONS = [...]`")
+          targets = set()
+          for entry in lists[0].value.elts:
+              if not (isinstance(entry, ast.Tuple) and len(entry.elts) == 4
+                      and isinstance(entry.elts[1], ast.Constant)
+                      and isinstance(entry.elts[1].value, str)):
+                  die(f"the entry at line {entry.lineno} is not (name, \"path\", old, new)")
+              targets.add(entry.elts[1].value)
+          if not targets:
+              die("MUTATIONS is empty")
+          watched = targets | ALWAYS
+          print(f"watched: {len(watched)} files, {len(targets)} of them named in MUTATIONS,"
+                " plus flamesafe/*.py")
+          with open(sys.argv[1], "rb") as fh:
+              changed = [p for p in fh.read().decode("utf-8").split("\0") if p]
+          print("changed:")
+          for p in changed:
+              print(f"  {p}")
+          hits = [p for p in changed if p in watched
+                  or (p.startswith("flamesafe/") and p.endswith(".py"))]
+          for p in hits:
+              print(f"watched: {p}")
+          sys.exit(0 if hits else 1)
+          PY
+          rc=$?
+          set -e
+          case $rc in
+            0) say "a watched file changed: ubuntu" '["ubuntu-latest"]' ;;
+            1) say "nothing mutate.py proves has changed" '[]' ;;
+            *) exit 1 ;;
+          esac
 
   mutate:
     needs: changes

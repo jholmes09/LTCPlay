@@ -877,7 +877,7 @@ def _verb(ev):
         HOLD_ON: "Hold", RESUME: "Resume", SKIP_NEXT: "Skip next",
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
-        ABORT: "Abort show", END_NIGHT: "End night",
+        ABORT: "Abort show", END_NIGHT: "Close for the night",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
     }[ev.kind]
@@ -1323,24 +1323,40 @@ def _start_now(m, ev, now):
 
 
 def _hold(m, ev, now):
+    # ev.detail, when set, is an announcement's own claim wording (see
+    # schedule_service.hold_for_announcement), so the journal reads as
+    # held FOR the announcement -- naming it, the operator and the screen
+    # -- rather than as an indistinguishable operator Hold press (review
+    # round 2, 2026-09-26: audit15_journal_noise2.py). Empty (the default,
+    # every operator's own Hold press) keeps the original wording exactly.
     tx = _Tx(m, ev, now)
     if m.state == SHOW:
         # Hold during a show pauses it where it is (Jeff, 2026-09-23).
         n = m.running
         tx.m = replace(tx.m, paused_at=now)
         _enter(tx, PAUSED, show=n)
-        tx.note(HOLD_ON, "paused", "PAUSED (operator hold)",
-                f"{_operator_name(ev)} pressed Hold{_screen(ev)} during show "
-                f"{n}. The show is paused at its current frame: flame cues "
-                f"zeroed, lasers blanked, music fading out. Resume carries "
-                f"on from there.", show=n)
+        if ev.detail:
+            text = (f"{_operator_name(ev)} {ev.detail}. Show {n} is held "
+                    f"for it: flame cues zeroed, lasers blanked, music "
+                    f"fading out. Resume carries on from there.")
+        else:
+            text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)} during "
+                    f"show {n}. The show is paused at its current frame: "
+                    f"flame cues zeroed, lasers blanked, music fading out. "
+                    f"Resume carries on from there.")
+        tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
     tx.m = replace(tx.m, held_from=m.state)
     _enter(tx, HOLD)
-    tx.note(HOLD_ON, "done", "schedule on hold",
-            f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show starts "
-            f"by itself until Resume; a show whose time passes meanwhile is "
-            f"delayed and waits for Start now.")
+    if ev.detail:
+        text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
+                f"itself until Resume; a show whose time passes meanwhile "
+                f"is delayed and waits for Start now.")
+    else:
+        text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show "
+                f"starts by itself until Resume; a show whose time passes "
+                f"meanwhile is delayed and waits for Start now.")
+    tx.note(HOLD_ON, "done", "schedule on hold", text)
     return tx.done()
 
 
@@ -1509,15 +1525,18 @@ def _end_night(m, ev, now):
     tx = _Tx(m, ev, now)
     skipped = []
     for s in m.pending() + ([m.delayed()] if m.delayed() else []):
-        tx.set_slot(s.n, status=SKIPPED, reason="SKIPPED (operator, End night)")
+        tx.set_slot(s.n, status=SKIPPED,
+                    reason="SKIPPED (operator, Close for the night)")
         skipped.append(s.n)
     tx.m = replace(tx.m, held_from="")
     _enter(tx, CLOSING)
     for n in skipped:
-        tx.note(END_NIGHT, "skipped", "SKIPPED (operator, End night)",
-                f"Show {n} will not run: the night was ended.", show=n)
-    tx.note(END_NIGHT, "done", "night ended by the operator",
-            f"{_operator_name(ev)} pressed End night{_screen(ev)}. "
+        tx.note(END_NIGHT, "skipped",
+                "SKIPPED (operator, Close for the night)",
+                f"Show {n} will not run: the night was closed.", show=n)
+    tx.note(END_NIGHT, "done", "night closed by the operator",
+            f"{_operator_name(ev)} pressed Close for the night"
+            f"{_screen(ev)}. "
             f"{len(skipped)} show(s) skipped. Closing: flame cues to zero, "
             f"MadMapper stopped, pixels faded, blackout.")
     return tx.done()
@@ -1664,9 +1683,9 @@ def _why_not(m, ev):
     if k == END_NIGHT:
         if st in (SHOW, PAUSED):
             how = "paused" if st == PAUSED else "running"
-            return (f"Show {m.running} is {how}. Abort it first, then End "
-                    f"night.")
-        return "The night has already been ended."
+            return (f"Show {m.running} is {how}. Abort it first, then "
+                    f"Close for the night.")
+        return "The night has already been closed."
     if k in (SKIP_NEXT, DELAY_NEXT, DELAY_REST, EDIT_MOVE, EDIT_ADD,
              EDIT_REMOVE):
         return ("The night is over. Tonight's list can no longer change; "
@@ -2006,9 +2025,9 @@ ACTIONS = (
                  "black and every flame cue goes to zero. This does not "
                  "disarm the flames; the E-stop and the Stream Deck do "
                  "that.")},
-    {"id": "end_night", "label": "End night", "event": END_NIGHT,
+    {"id": "end_night", "label": "Close for the night", "event": END_NIGHT,
      "minutes": 0,
-     "confirm": ("End the night? Every show still to come tonight is "
+     "confirm": ("Close for the night? Every show still to come tonight is "
                  "skipped, and the rig fades out and goes dark.")},
 )
 

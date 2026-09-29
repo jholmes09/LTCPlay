@@ -45,6 +45,15 @@ NTP_SERVER = "pool.ntp.org"
 # own thread, so even this never holds up a show.
 CLOCK_CHECK_LIMIT_S = 5.0
 
+# NTP is only ever queried once, at start. Nothing else would ever notice
+# the wall clock stepping later -- an NTP step, an RTC glitch, someone
+# setting it by hand -- so every tick compares how far the wall clock moved
+# since the last one against how far perf_counter moved, which the OS
+# clock cannot step. A disagreement past this many seconds is an
+# impossible jump, not drift, and the clock stops being trusted until it
+# is checked again (round 1 review of PR 25, blocker).
+CLOCK_JUMP_LIMIT_S = 3600.0
+
 # This build decides and does not act. A constant, not a setting: there is
 # nothing to act WITH until the transport lands, and a switch that does
 # nothing is a switch someone will flip on show night and trust.
@@ -391,10 +400,17 @@ class Service:
 
     def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
                  clock_limit_s=CLOCK_CHECK_LIMIT_S, log_dir=None,
-                 flame_provider=None, logbook=None):
+                 flame_provider=None, logbook=None, perf_counter=None):
         self.path = path
         self.clock = clock or _utc_now
         self.ntp_query = ntp_query
+        # Injected so a test can move the wall clock and perf_counter apart
+        # on purpose, deterministically, with nothing asleep and no real
+        # time passing. See _watch_clock().
+        self._perf_counter = perf_counter or _time.perf_counter
+        self._last_wall = None
+        self._last_perf = None
+        self._clock_trust_lost = False
         self.state_dir = state_dir or data_dir()
         self.clock_limit_s = clock_limit_s
         self.persist_error = ""
@@ -441,6 +457,14 @@ class Service:
         # next status() poll. schedule_service.py never imports announce.py
         # to make this call; it only ever calls whatever was set here.
         self.on_show_started = None
+        # Bumped by _apply() every time the machine crosses into or out of
+        # a held or paused state. See hold_for_announcement and
+        # hold_still_claimed: the second, read-only check an announcement
+        # makes right before its stream opens compares against the epoch
+        # it captured at claim time, not just the state, so a Resume that
+        # happens during the file read is never silently undone (review
+        # round 2, 2026-09-26: audit15_resume_race.py).
+        self.hold_epoch = 0
         self._stop = threading.Event()
         self._thread = None
         self._clock_thread = None
@@ -630,11 +654,25 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # Bumped every time the machine crosses INTO or OUT OF a held or
+        # paused state, whoever does it: an operator's own Hold or Resume,
+        # or an announcement's hold_for_announcement. hold_still_claimed
+        # compares against this, not just against the state, so a Resume
+        # followed by a fresh Hold (state looks the same again) still
+        # shows as a DIFFERENT claim -- the operator's Resume always wins
+        # over an announcement still loading (review round 2, 2026-09-26:
+        # audit15_resume_race.py).
+        if before is not None and self.machine is not None:
+            was_held = before.state in (sch.HOLD, sch.PAUSED)
+            is_held = self.machine.state in (sch.HOLD, sch.PAUSED)
+            if was_held != is_held:
+                self.hold_epoch += 1
         if self.machine.state == sch.OFF and before is not None and \
                 before.state != sch.OFF and self.machine.slots:
-            # The night has closed, by End night or after its last show:
+            # The night has closed, by Close for the night or after its
+            # last show:
             # the morning read goes beside the journal now.
-            how = (f"closed by {ev.who} with End night"
+            how = (f"closed by {ev.who} with Close for the night"
                    if ev.kind == sch.END_NIGHT else
                    "closed after the last show" if before.state != sch.BOOT
                    else "closed at start up, every show having passed")
@@ -661,7 +699,14 @@ class Service:
                 and self.machine.state == sch.SHOW \
                 and self.on_show_started is not None:
             state_now, hook = self.machine.state, self.on_show_started
-            self._pending_hooks.append(lambda: hook(state_now))
+            # PAUSED -> SHOW (a Resume) fires this hook exactly like a
+            # genuinely new show starting, on purpose: either way, an
+            # announcement still playing must fade and stop, because the
+            # show is moving. Only the WORDING differs, so the journal
+            # says why (review round 2, 2026-09-26:
+            # audit15_resume_fires_showstart.py).
+            reason = "resume" if ev.kind == sch.RESUME else "new"
+            self._pending_hooks.append(lambda: hook(state_now, reason))
         return out
 
     # -- the nightly summary ------------------------------------------------
@@ -703,18 +748,36 @@ class Service:
                                  "summary to write. " + self.error)
             return self._write_summary("written on request")
 
+    # How many earlier nights a start looks back over for a missing summary.
+    LOOK_BACK_NIGHTS = 14
+
     def _look_back(self, d, state):
-        """Once per run (housekeeping decides when): a night that ended
-        without its summary (the program was not running when it closed,
-        or the power went) gets one from its own journal, so the morning
-        read is always there."""
-        prev = d - timedelta(days=1)
+        """Once per run (housekeeping decides when): every earlier night
+        that ended without its summary (the program was not running when it
+        closed, or the power went, perhaps for days) gets one from its own
+        journal, so the morning read is always there. It never waits for a
+        button."""
         folder = self.logbook.folder
-        if os.path.exists(os.path.join(folder, journal.machine_name(prev))) \
-                and not os.path.exists(
-                    os.path.join(folder, journal.summary_name(prev))):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return
+        nights = []
+        for name in names:
+            m = journal._NAME.match(name)
+            if not m or m.group(4) != "jsonl":
+                continue
+            try:
+                n = datetime(int(m.group(1)), int(m.group(2)),
+                             int(m.group(3))).date()
+            except ValueError:
+                continue
+            if n < d and not os.path.exists(
+                    os.path.join(folder, journal.summary_name(n))):
+                nights.append(n)
+        for prev in sorted(nights)[-self.LOOK_BACK_NIGHTS:]:
             self._log(self.logbook.write_summary, prev, state=state,
-                      closed_by="written the next day from the journal, "
+                      closed_by="written later from the journal, "
                                 "because the night never closed while "
                                 "ltcplay was running")
 
@@ -822,6 +885,19 @@ class Service:
                                     "never closed", self.machine)
             # Yesterday's summary was just seen to; no looking back needed.
             self._looked_back = True
+            # This assignment, not _apply(), is what actually drops a night
+            # left on Hold at midnight (PAUSED and SHOW already returned
+            # above; only a genuinely running show is never swept). It
+            # bypasses _apply's own before/after bump, because by the time
+            # BOOT_DONE below runs _apply again, `before` is already
+            # tomorrow's fresh machine, not tonight's HOLD one -- so the
+            # crossing has to be bumped here, by hand, or an announcement's
+            # claim from tonight could otherwise still look current after
+            # midnight swept the night it was claimed on (merge with #14,
+            # 2026-09-26: _ensure_night's own end-of-night write_summary
+            # touches this same crossing).
+            if self.machine.state == sch.HOLD:
+                self.hold_epoch += 1
             self.machine = None
         if self.machine is None:
             self.machine = replace(self._load_tonight(d, now),
@@ -832,6 +908,7 @@ class Service:
     def tick(self):
         with self._locked():
             now = self.clock()
+            self._watch_clock(now)
             if not self._ensure_night(now):
                 return None
             m = self.machine
@@ -853,10 +930,61 @@ class Service:
         with self._locked():
             self.clock_check = {"level": level, "text": text,
                                 "offset_s": offset}
+            # Consulting the time server again is what restores trust,
+            # whatever it comes back saying: _prune_allowed() below then
+            # decides on the fresh answer, the same as it always has.
+            self._clock_trust_lost = False
             self._journal_line("system", text, action="clock check",
                                outcome=level)
         self._after_tick()
         return self.clock_check
+
+    def _watch_clock(self, now):
+        """Notice a clock that steps while this process is running.
+
+        NTP is only ever queried once, at start (check_clock(), called from
+        start()). Nothing else would ever notice the wall clock jumping
+        later -- an NTP step, an RTC glitch, someone setting it by hand --
+        so this compares how far the wall clock moved since the last tick
+        against how far perf_counter moved, which the OS clock cannot
+        step. The two have to agree to within CLOCK_JUMP_LIMIT_S; past
+        that it is an impossible jump, not drift, and pruning stops
+        trusting this machine's clock until it has been checked again
+        (round 1 review of PR 25, blocker: a clock that was fine at boot
+        and then jumped kept pruning as if the boot-time check still
+        applied, and Logbook.prune()'s own newest-keep_days floor was, at
+        the time, conditional on the caller saying the clock was
+        untrusted -- see prune()'s docstring for that half of the fix)."""
+        perf = self._perf_counter()
+        if self._last_wall is not None:
+            wall_elapsed = (now - self._last_wall).total_seconds()
+            perf_elapsed = perf - self._last_perf
+            if abs(wall_elapsed - perf_elapsed) > CLOCK_JUMP_LIMIT_S:
+                self._clock_trust_lost = True
+                self._journal_line(
+                    "system",
+                    f"This machine's clock moved "
+                    f"{journal.fmt_span(wall_elapsed)} between two ticks "
+                    f"that were only {journal.fmt_span(perf_elapsed)} "
+                    f"apart by perf_counter, which the operating system's "
+                    f"clock cannot step. Something set the clock, or "
+                    f"stepped it: it is not trusted for pruning until it "
+                    f"has been checked again.", action="clock check",
+                    outcome="jumped", fault=True)
+                self._recheck_clock()
+        self._last_wall = now
+        self._last_perf = perf
+
+    def _recheck_clock(self):
+        """Ask the time server again, right away: on its own thread when
+        the service is running for real (an NTP lookup must never hold up
+        a tick), or in line when it is not (start(thread=False), and every
+        selftest), so a test sees the fresh answer before its next call."""
+        if self._thread is not None:
+            threading.Thread(target=self._check_clock_safely, daemon=True,
+                             name="ltcplay-clock-recheck").start()
+        else:
+            self._check_clock_safely()
 
     # -- housekeeping: disk work that is not a scheduling decision ----------
     # Pruning waits for a clock this machine can trust: the time server said
@@ -864,9 +992,22 @@ class Service:
     # would otherwise call every night old on the first tick.
     PRUNE_AFTER_S = 600
 
+    def _clock_trusted(self):
+        """Live, not cached: computed fresh from the current state every
+        time it is asked, never from a snapshot taken once at start or
+        once at the last check (round 2 review of PR 25). True only when
+        the time server agreed with this clock AND nothing has moved it
+        out from under that agreement since (_watch_clock's own jump
+        detection resets this the instant it notices one, and restores it
+        the instant the clock is re-checked -- see check_clock())."""
+        return not self._clock_trust_lost and \
+            (self.clock_check or {}).get("level") == "ok"
+
     def _prune_allowed(self):
-        if (self.clock_check or {}).get("level") == "ok":
+        if self._clock_trusted():
             return True
+        if self._clock_trust_lost:
+            return False
         return (self.clock() - self._born).total_seconds() >= \
             self.PRUNE_AFTER_S
 
@@ -909,10 +1050,18 @@ class Service:
                 prune = self._pruned_for != d and self._prune_allowed()
                 if prune:
                     self._pruned_for = d
+                # Computed fresh, right here, never from a snapshot taken
+                # earlier (round 2 review of PR 25): a trusted clock (the
+                # time server agreed, and _watch_clock has noticed no jump
+                # since) prunes by age alone; anything else keeps the
+                # newest nights and incident folders that exist and
+                # removes nothing by age, so a wrong clock can never call
+                # good history old.
+                floor = not self._clock_trusted()
             if look:
                 self._look_back(d, state)
             if prune:
-                self._log(self.logbook.prune, d, state=state)
+                self._log(self.logbook.prune, d, state=state, floor=floor)
         finally:
             self._hk_busy = False
 
@@ -1178,6 +1327,59 @@ class Service:
             if out.refused:
                 raise ValueError(out.refused)
         return self.tonight_view()
+
+    def hold_for_announcement(self, who, screen, detail=None):
+        """Put the scheduler on Hold exactly as the operator's own Hold
+        does, `who` and `screen` carried through so the journal attributes
+        it the same way (Jeff, 2026-09-26: "any announcement actually just
+        auto triggers a hold"). `detail`, when given, replaces the journal
+        line's own "pressed Hold" wording (see schedule.py's _hold): an
+        announcement's own claim reads as held FOR the announcement, not
+        as an indistinguishable operator Hold press (review round 2,
+        2026-09-26: audit15_journal_noise2.py). Wired by web.py's serve()
+        as AnnounceService.hold_requester, alongside state_provider and
+        on_show_started; see announce.py's play().
+
+        Checks the state FIRST: already on Hold or already paused is
+        success without ever issuing HOLD_ON, so the routine case (a
+        second announcement, or this same call succeeding twice) never
+        writes a "Hold was refused" line for something that was not
+        actually refused from the operator's point of view (review round
+        2, audit15_journal_noise.py / audit15_journal_noise2.py).
+
+        Returns (refusal_or_None, epoch): epoch is self.hold_epoch right
+        after this call, for hold_still_claimed to compare against later
+        -- seeing THIS claim through, not just seeing the same state
+        again by coincidence (review round 2: audit15_resume_race.py)."""
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                return self.error or "There is no schedule loaded.", \
+                    self.hold_epoch
+            if self.machine.state in (sch.HOLD, sch.PAUSED):
+                return None, self.hold_epoch
+            out = self._apply(sch.Event(sch.HOLD_ON, "operator", who=who,
+                                        screen=screen, detail=detail or ""))
+            return out.refused or None, self.hold_epoch
+
+    def hold_still_claimed(self, claim_epoch):
+        """True if the schedule is still on Hold or paused AND nothing has
+        crossed a Hold/Resume boundary since `claim_epoch` was captured
+        (see hold_for_announcement). Read-only: this NEVER issues Hold
+        itself, unlike the old second check it replaces -- an operator's
+        own Resume, pressed while an announcement is still loading, always
+        wins, rather than being silently undone by the announcement's own
+        recheck re-Holding the show it was just resumed from (review round
+        2, 2026-09-26: audit15_resume_race.py). Comparing the epoch, not
+        only the state, is what catches a Resume immediately followed by a
+        fresh Hold from someone else: the state looks the same again, but
+        this claim is still stale."""
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                return False
+            return (self.hold_epoch == claim_epoch
+                    and self.machine.state in (sch.HOLD, sch.PAUSED))
 
     # -- the journal, for the page -------------------------------------------
     def journal_view(self, n=journal.PAGE_LINES):

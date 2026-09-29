@@ -928,12 +928,32 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
 
     `announce` is the same shape for the announcements config: a path, or a
     ready-made AnnounceService. Without it announcements are not imported
-    either. When BOTH are configured, the two are wired together in both
+    either. When BOTH are configured, the two are wired together in four
     directions, here and nowhere else: the announcement service reads the
-    scheduler's state through its one-method provider (may I play), and the
+    scheduler's state through its one-method provider (may I play), the
     scheduler pushes to the announcement service's on_show_started hook the
-    instant it starts a show (stop, a show just started). Neither module
-    imports the other; this function is the only place that knows both.
+    instant it starts a show (stop, a show just started), the announcement
+    service asks the scheduler to Hold, through hold_requester, before it
+    ever plays (Jeff, 2026-09-26: every announcement triggers a Hold), and
+    it asks again, read-only, through hold_still_claimed, immediately
+    before the stream opens, so an operator's own Resume during the file
+    read always wins rather than being silently undone (review round 2,
+    2026-09-26: audit15_resume_race.py). Neither module imports the other;
+    this function is the only place that knows both.
+
+    This is also the only place that knows both the schedule rules and the
+    show's own media (Jeff, 2026-09-26: show length follows the music,
+    everywhere the code has access to it): if a schedule is configured
+    and exactly one show file in `folder` names a clock block with a
+    derivable show length, the schedule's own show_len_s is cross-checked
+    against it before anything is served, and refused, naming both
+    numbers, if it is shorter. More than one candidate, with no way to
+    tell which one is the real one, refuses too, naming them, rather than
+    guessing the first one alphabetically (review round 2, 2026-09-26).
+    The check is never silently skipped: unable to identify or derive a
+    show length is printed and journalled as a warning, not passed over
+    in silence. schedule.py stays pure and schedule_service.py is not
+    touched for this: see clock.derive_show_length_in_folder.
 
     `madmapper` is the same shape again, for madmapper.py: a validated
     MadMapperConfig, or a ready-made (Link, Watchdog) pair from
@@ -942,15 +962,48 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     on. `beyond` is the same shape for beyond.py's laser link: a
     BeyondConfig, or a ready-made Beyond from beyond.build().
 
-    Deliberately NOT wired to the scheduler at all: madmapper.py and
-    beyond.py are device layer only in this build, with no sequencing
-    logic to attach to a scheduler transition (see madmapper.py's module
-    docstring for why an earlier version of this wiring was removed). This
-    function only constructs the links, exposes their read-only health
-    routes, and -- when it built them itself, from a config -- closes them
-    on server_close() (which blanks BEYOND, a safe default; see beyond.py).
-    A ready-made pair or link passed in is the caller's own to close."""
+    madmapper.py and beyond.py stay device layer only here: this function
+    only constructs the links, exposes their read-only health routes, and
+    -- when it built them itself, from a config -- closes them on
+    server_close() (which blanks BEYOND, a safe default; see beyond.py). A
+    ready-made pair or link passed in is the caller's own to close. Their
+    Hold/Resume/Abort hooks (madmapper.py's on_hold/on_resume/on_abort) are
+    NOT wired to the scheduler by this function -- that sequencing belongs
+    to the show conductor, built separately; see madmapper.py's module
+    docstring."""
     control = Control(folder, defaults=defaults, sd=sd)
+    httpd_schedule = None
+    if schedule is not None:
+        if isinstance(schedule, str):
+            from . import schedule_service
+            schedule = schedule_service.Service(schedule)
+        if schedule.rule is not None:
+            from . import clock as clock_mod
+            show_path, derived, warning = \
+                clock_mod.derive_show_length_in_folder(folder)
+            if show_path is not None:
+                configured = schedule.rule.show_len_s
+                if configured < derived:
+                    raise ValueError(
+                        f"The schedule's show_len_s is {configured:g} s, "
+                        f"shorter than the show's own media in "
+                        f"{os.path.basename(show_path)}, which runs "
+                        f"{derived:g} s. Set show_len_s in the schedule to "
+                        f"at least {derived:g}, or leave the show's media "
+                        f"alone to run its own length, before serving.")
+            elif warning:
+                # Never silently skip the check (review round 2,
+                # 2026-09-26): a schedule that could not be checked
+                # against the show's media is not the same as one that
+                # was checked and found fine, and the operator has to be
+                # told which.
+                msg = (f"The schedule's show_len_s could not be checked "
+                      f"against the show's own media: {warning}.")
+                print(msg)
+                schedule._journal_line("system", msg,
+                                       action="show length check",
+                                       outcome="warning")
+        httpd_schedule = schedule
     on_network = bind not in LOOPBACK
     if on_network and token is None:
         # Anyone who can reach this port can black out the rig. On a venue
@@ -962,11 +1015,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     httpd.token = token if on_network else None
     httpd.daemon_threads = True
     httpd.schedule = None
-    if schedule is not None:
-        if isinstance(schedule, str):
-            from . import schedule_service
-            schedule = schedule_service.Service(schedule)
-        httpd.schedule = schedule.start()
+    if httpd_schedule is not None:
+        httpd.schedule = httpd_schedule.start()
     httpd.announce = None
     if announce is not None:
         if isinstance(announce, str):
@@ -983,6 +1033,16 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # announcement service finding out on its own next status() poll.
         # See announce.py's module docstring and on_show_started.
         sched.on_show_started = httpd.announce.on_show_started
+        # The third direction: every announcement Holds the scheduler
+        # first, through the same path an operator's own Hold uses. See
+        # Service.hold_for_announcement and announce.py's play().
+        httpd.announce.hold_requester = sched.hold_for_announcement
+        # The read-only partner to the above, for the second check right
+        # before the stream opens: never re-Holds, so an operator's own
+        # Resume during the file read always wins (review round 2,
+        # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
+        # and announce.py's _check_still_held.
+        httpd.announce.hold_still_claimed = sched.hold_still_claimed
     httpd.madmapper = None
     _built_madmapper = False
     if madmapper is not None:
