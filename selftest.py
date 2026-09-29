@@ -19133,6 +19133,70 @@ def test_devices_skip_gracefully_with_no_madmapper_or_no_beyond():
     print("  ok")
 
 
+def test_devices_in_show_must_be_a_real_bool():
+    section("devices: on_resume() refuses anything but in_show=True or "
+            "in_show=False -- a truthy state name or number must never "
+            "unblank the lasers during intermission")
+    from ltcplay import devices as D, beyond as B, madmapper as MM
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+        try:
+            D.on_resume(mm_link, b_link, in_show=bad, fade_seconds=0.1)
+            raised = False
+        except TypeError:
+            raised = True
+        sent_b = [MM.decode_float(p)[1] for s in b_socks for p, _a in s.sent]
+        sent_mm = [p for s in mm_socks for p, _a in s.sent]
+        mm_link.close()
+        b_link.close()
+        check(raised, f"in_show={bad!r} must raise TypeError, not be "
+                      f"read as truthy/falsy")
+        check(B.UNBLANK_VALUE not in sent_b and sent_mm == [],
+              f"in_show={bad!r}: nothing may be sent before refusing: "
+              f"BEYOND {sent_b}, MadMapper {len(sent_mm)} packet(s)")
+    # The two real values still work.
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_resume(mm_link, b_link, in_show=True, fade_seconds=0.1)
+          is True, "in_show=True unblanks and reports True")
+    check(D.on_resume(mm_link, b_link, in_show=False, fade_seconds=0.1)
+          is None, "in_show=False refuses and reports None")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_report_a_failed_blank_to_the_caller():
+    section("devices: on_hold()/on_abort() hand BEYOND's own blank() "
+            "result back -- a blank that never got out returns False, "
+            "never a silent 'done'")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    check(D.on_hold(mm_link, dead, fade_seconds=0.1) is False,
+          "on_hold must return False when the blank never got out")
+    check(D.on_abort(mm_link, dead, fade_seconds=0.1) is False,
+          "on_abort must return False when the blank never got out")
+    mm_link.close()
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_hold(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_hold returns True when the blank got out")
+    check(D.on_abort(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_abort returns True when the blank got out")
+    check(D.on_hold(mm_link, None, fade_seconds=0.1) is None,
+          "no BEYOND configured: None")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
 def test_the_gpl_path_never_loads_devices():
     section("devices: the real GPL path (web.serve() with nothing "
             "configured) never imports it -- nothing in this codebase "
@@ -24038,6 +24102,8 @@ if __name__ == "__main__":
     test_devices_on_resume_not_in_show_refuses_to_unblank()
     test_devices_on_abort_blanks_beyond_then_fades_everything_together()
     test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
+    test_devices_in_show_must_be_a_real_bool()
+    test_devices_report_a_failed_blank_to_the_caller()
     test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()

@@ -2754,7 +2754,7 @@ MUTATIONS = [
  ("on_hold() no longer blanks BEYOND, only fades the music",
   "ltcplay/devices.py",
   "    if beyond is not None:\n"
-  "        beyond.blank(show=show)\n"
+  "        blanked = beyond.blank(show=show)\n"
   "    if madmapper is not None:\n"
   "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
   "    if madmapper is not None:\n"
@@ -2766,12 +2766,38 @@ MUTATIONS = [
 
  ("on_resume() ignores in_show and unblanks BEYOND during intermission "
   "too", "ltcplay/devices.py",
-  "        if in_show:\n"
-  "            beyond.unblank(show=show)\n"
+  "        if in_show is True:\n"
+  "            return beyond.unblank(show=show)\n"
   "        else:",
   "        if True:\n"
-  "            beyond.unblank(show=show)\n"
+  "            return beyond.unblank(show=show)\n"
   "        else:"),
+
+ ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
+  "unblanks the lasers during intermission", "ltcplay/devices.py",
+  "    if not isinstance(in_show, bool):\n"
+  "        raise TypeError(",
+  "    if False:\n"
+  "        raise TypeError("),
+
+ ("on_resume() checks in_show's type but unblanks on anything truthy",
+  "ltcplay/devices.py",
+  "        if in_show is True:\n",
+  "        if in_show or True:\n"),
+
+ ("on_hold() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return blanked",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return True"),
+
+ ("on_abort() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return blanked",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return True"),
 
  ("on_resume()'s intermission refusal is never journalled, a silent "
   "skip instead", "ltcplay/devices.py",
@@ -2787,7 +2813,7 @@ MUTATIONS = [
  ("on_abort() no longer blanks BEYOND, only fades MadMapper",
   "ltcplay/devices.py",
   "    if beyond is not None:\n"
-  "        beyond.blank(show=show)\n"
+  "        blanked = beyond.blank(show=show)\n"
   "    if madmapper is not None:\n"
   "        kwargs = {\"wait\": wait}",
   "    if madmapper is not None:\n"

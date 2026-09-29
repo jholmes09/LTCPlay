@@ -115,11 +115,18 @@ def on_hold(madmapper=None, beyond=None, *, show=None,
     its own beyond what madmapper.py's fade_audio() and beyond.py's
     blank() already do through their own `journal` callbacks -- `journal`
     here is for what THIS function decides, which for on_hold() is
-    nothing extra."""
+    nothing extra.
+
+    Returns BEYOND's own blank() result: True if the blank got out, False
+    if it did NOT (the lasers may still be live -- the caller must treat
+    that as a fault, not as "blanked"), None if no BEYOND is configured.
+    The music fade still runs either way."""
+    blanked = None
     if beyond is not None:
-        beyond.blank(show=show)
+        blanked = beyond.blank(show=show)
     if madmapper is not None:
         madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)
+    return blanked
 
 
 def on_resume(madmapper=None, beyond=None, *, in_show, show=None,
@@ -135,12 +142,26 @@ def on_resume(madmapper=None, beyond=None, *, in_show, show=None,
     task asks for, enforced here in the device layer rather than left to
     every future caller to remember. It is logged through `journal` (not
     through beyond.py's own journal, since no command was actually sent to
-    beyond.py to log) so the refusal is visible, not silent."""
+    beyond.py to log) so the refusal is visible, not silent.
+
+    `in_show` must be the real bool True or False: anything else (a state
+    name, a slot number, 1, "false", None) raises TypeError BEFORE anything
+    is sent, rather than being read as truthy -- a non-empty string such as
+    "STANDBY" or "false" would otherwise silently unblank the lasers during
+    intermission.
+
+    Returns BEYOND's unblank() result (True/False) when it was unblanked,
+    None when no BEYOND is configured or the unblank was refused."""
+    if not isinstance(in_show, bool):
+        raise TypeError(
+            f"on_resume() needs in_show=True or in_show=False, not "
+            f"{in_show!r}: whether the lasers may come back is never "
+            f"guessed from a truthy value.")
     if madmapper is not None:
         madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)
     if beyond is not None:
-        if in_show:
-            beyond.unblank(show=show)
+        if in_show is True:
+            return beyond.unblank(show=show)
         else:
             _note(journal,
                  f"BEYOND stays blanked{_for_show(show)}: Resume is "
@@ -157,11 +178,16 @@ def on_abort(madmapper=None, beyond=None, *, show=None,
     explicitly) using Link.fade_all() -- see the module docstring for why
     BEYOND is blanked instantly here rather than ramped over the same
     window, a deliberate, documented deviation from the handoff's literal
-    words pending a reviewed change to beyond.py's allow-list."""
+    words pending a reviewed change to beyond.py's allow-list.
+
+    Returns BEYOND's blank() result, exactly as on_hold() does: False means
+    the blank did NOT get out and must be treated as a fault."""
+    blanked = None
     if beyond is not None:
-        beyond.blank(show=show)
+        blanked = beyond.blank(show=show)
     if madmapper is not None:
         kwargs = {"wait": wait}
         if fade_seconds is not None:
             kwargs["seconds"] = fade_seconds
         madmapper.fade_all(1.0, 0.0, **kwargs)
+    return blanked
