@@ -17940,6 +17940,68 @@ def test_madmapper_restore_levels():
     print("  ok")
 
 
+def test_madmapper_fade_all_sends_audio_and_surfaces_together():
+    section("madmapper: fade_all() ramps audio (linear) and every "
+            "surface (the configured curve) in ONE worker job, so they "
+            "land in the same real time instead of audio finishing "
+            "before video starts (used by devices.on_abort)")
+    from ltcplay import madmapper as MM
+    cfg = _mm_cfg()
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_all(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    sent = socks[0].sent
+    # Every step must send audio THEN both surfaces before the next step's
+    # sleep, proving they are interleaved within one job rather than
+    # audio's whole ramp completing first.
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"] * 5,
+         f"each step must send audio then every surface, all 5 steps "
+         f"interleaved, not audio's ramp finishing before surfaces "
+         f"start: {addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    surface_vals = [MM.decode_float(p)[1] for p, _a in sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"audio must stay plain linear inside fade_all(), same as "
+         f"fade_audio() on its own: {audio_vals}")
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"surfaces must still get the configured (perceptual) curve "
+         f"inside fade_all(): {surface_vals}")
+    check(steps.t >= 0.4 - 1e-9,
+         f"fade_all must actually pace over the requested duration: "
+         f"{steps.t}")
+
+    # Cancellable exactly like fade_audio()/fade_surfaces(): a newer ramp
+    # supersedes an in-flight fade_all().
+    import time as _time
+    cfg2 = _mm_cfg(fade_s=0.3, ramp_steps=30)
+    socks2 = []
+
+    def factory2():
+        s = _FakeMMSock()
+        socks2.append(s)
+        return s
+    link2 = MM.Link(cfg2, socket_factory=factory2)
+    link2.fade_all(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    link2.cancel()
+    _time.sleep(0.05)
+    stopped_at = len(socks2[0].sent)
+    _time.sleep(0.3)
+    check(stopped_at < len(socks2[0].sent) + 1
+          and len(socks2[0].sent) == stopped_at,
+         f"cancel() must stop fade_all() mid-ramp, same as the other "
+         f"ramps: {stopped_at} then {len(socks2[0].sent)}")
+    check(0 < stopped_at < 30 * 3,
+         f"must have been interrupted partway, not run to completion: "
+         f"{stopped_at}")
+    link2.close()
+    print("  ok")
+
+
 def test_madmapper_config_refusals():
     section("madmapper: config refusals are clear sentences, not stack "
             "traces")
@@ -18890,6 +18952,207 @@ def test_web_closes_a_config_built_beyond_link():
              "closing a config-built beyond link must blank it again")
     finally:
         B.build = real_build
+    print("  ok")
+
+
+# ============================================================= devices ====
+# on_hold()/on_resume()/on_abort(): plain synchronous functions composing
+# madmapper.py's and beyond.py's own primitives with the handoff's ordering
+# already built in, for a future conductor to call. See devices.py's own
+# module docstring for why these are not scheduler hooks.
+
+def _devices_pair(mm_cfg=None, b_cfg=None):
+    from ltcplay import madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_socks = []
+    b_socks = []
+
+    def mm_factory():
+        s = _FakeMMSock()
+        mm_socks.append(s)
+        return s
+
+    def b_factory():
+        s = _FakeMMSock()
+        b_socks.append(s)
+        return s
+    mm_link = MM.Link(mm_cfg or _mm_cfg(), socket_factory=mm_factory,
+                      clock=steps.clock, sleep=steps.sleep)
+    b_link = B.Beyond(b_cfg or B.BeyondConfig.parse({}),
+                      socket_factory=b_factory, clock=steps.clock,
+                      sleep=steps.sleep)
+    return mm_link, mm_socks, b_link, b_socks, steps
+
+
+def test_devices_on_hold_blanks_beyond_then_fades_music_down():
+    section("devices: on_hold() blanks BEYOND first (a real command), "
+            "then fades MadMapper's music down over 0.25 s -- never "
+            "touches the surfaces (video freezes via timecode, not an "
+            "OSC fade)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(mm_link, b_link, show=3, fade_seconds=0.25, wait=True)
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_hold() never blanking
+    # BEYOND itself (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must actually get the blank packets, before close() "
+         f"ever runs: {[s.sent for s in b_socks]}")
+    b_addrs = _mm_addrs(b_socks[0])
+    check(all(a == B.BRIGHTNESS_ADDR for a in b_addrs),
+         f"only the brightness address: {b_addrs}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_hold must blank (0.0), not unblank: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(all(a == MM.AUDIO_ADDR for a in mm_addrs),
+         f"on_hold must never touch the surfaces, only the master audio "
+         f"level: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"music must fade from 1.0 to 0.0: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_in_show_fades_up_then_unblanks():
+    section("devices: on_resume(in_show=True) fades the music back up "
+            "then unblanks BEYOND")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_resume(mm_link, b_link, in_show=True, show=3, fade_seconds=0.25)
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"music must fade from 0.0 back up to 1.0: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default (never leave the lasers live by omission), which would
+    # otherwise add 3 more (0.0) packets after the unblank this test is
+    # actually checking for.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+         f"on_resume(in_show=True) must unblank (100.0): {b_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_refuses_to_unblank():
+    section("devices: on_resume(in_show=False) fades the music up but "
+            "leaves BEYOND blanked and untouched -- 'no lasers during "
+            "intermission' enforced HERE, not left to the caller, and "
+            "the refusal is journalled, not silent")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    notes = []
+    D.on_resume(mm_link, b_link, in_show=False, show=None,
+               fade_seconds=0.25, journal=_mm_journal(notes))
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"the music still fades up between shows: {audio_vals}")
+    # Snapshot BEFORE close(): see the note in the in_show=True test above.
+    # No socket is even opened (Beyond's socket is lazy): b_socks stays
+    # empty, since send() -- the only thing that would open one -- is
+    # never called at all.
+    check(b_socks == [], f"BEYOND must get NO packet at all, and no "
+                        f"socket even opened, when not in a show: "
+                        f"{[s.sent for s in b_socks]}")
+    check(any("intermission" in t for t, _e in notes),
+         f"the refusal must be journalled in plain words, not silent: "
+         f"{notes}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_abort_blanks_beyond_then_fades_everything_together():
+    section("devices: on_abort() blanks BEYOND at once, then fades "
+            "MadMapper's music AND every surface to black TOGETHER over "
+            "the show's fade_s (fade_all(), not fade_audio()+"
+            "fade_surfaces() back to back)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_cfg = _mm_cfg(fade_s=0.4, ramp_steps=5)
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair(mm_cfg=mm_cfg)
+    D.on_abort(mm_link, b_link, show=7)
+    # Snapshot BEFORE close(): see the note in the on_resume tests above --
+    # close() blanks BEYOND again as its own safe default.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_abort must blank BEYOND: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(mm_addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                       "/surfaces/Quad-2/opacity"] * 5,
+         f"audio and both surfaces must be interleaved step by step, "
+         f"proving they ran together (fade_all), not one after the "
+         f"other: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"must fade to black: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+
+    # An explicit fade_seconds must actually override the show's own
+    # fade_s (0.4 s above) rather than being silently ignored.
+    mm_link2, mm_socks2, b_link2, b_socks2, steps2 = _devices_pair(
+        mm_cfg=mm_cfg)
+    D.on_abort(mm_link2, b_link2, show=7, fade_seconds=0.1)
+    mm_link2.close()
+    b_link2.close()
+    check(steps2.t < 0.4 - 1e-9,
+         f"an explicit fade_seconds=0.1 must actually pace faster than "
+         f"the show's own fade_s=0.4, not be ignored: took {steps2.t:g} s")
+    print("  ok")
+
+
+def test_devices_skip_gracefully_with_no_madmapper_or_no_beyond():
+    section("devices: on_hold/on_resume/on_abort skip cleanly when a "
+            "show has no madmapper block, no beyond block, or neither -- "
+            "the same optional-link rule web.py already follows")
+    from ltcplay import devices as D
+    # Neither configured: nothing to call, nothing raises.
+    D.on_hold(None, None)
+    D.on_resume(None, None, in_show=True)
+    D.on_resume(None, None, in_show=False)
+    D.on_abort(None, None)
+
+    # Only BEYOND configured (a show with lasers but no MadMapper link).
+    _mm, _s1, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(None, b_link, show=1)
+    D.on_abort(None, b_link, show=1)
+    b_link.close()
+    check(len(b_socks[0].sent) > 0, "BEYOND must still get its commands "
+                                    "with no MadMapper link at all")
+
+    # Only MadMapper configured (a show with video but no lasers).
+    mm_link, mm_socks, _b, _s2, steps2 = _devices_pair()
+    D.on_hold(mm_link, None, fade_seconds=0.1)
+    mm_link.close()
+    check(len(mm_socks[0].sent) > 0, "MadMapper must still get its fade "
+                                     "with no BEYOND link at all")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_devices():
+    section("devices: the real GPL path (web.serve() with nothing "
+            "configured) never imports it -- nothing in this codebase "
+            "wires it in yet; it exists only for a future conductor to "
+            "call")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    code = (
+        "import sys, tempfile\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "from ltcplay import web\n"
+        "h = web.serve(tempfile.mkdtemp(), port=0)\n"
+        "h.server_close()\n"
+        "print(sorted(m for m in sys.modules if m.endswith('.devices') "
+        "or m == 'devices'))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    loaded = (rc.stdout or "").strip().splitlines()[-1:] or ["<no output>"]
+    check(loaded == ["[]"], f"the GPL path loaded devices.py: {loaded}; "
+                            f"stderr: {rc.stderr[-800:]}")
     print("  ok")
 
 
@@ -23740,6 +24003,7 @@ if __name__ == "__main__":
     test_madmapper_fade_surfaces_perceptual_curve_step_values()
     test_madmapper_ramp_is_cancellable()
     test_madmapper_restore_levels()
+    test_madmapper_fade_all_sends_audio_and_surfaces_together()
     test_madmapper_config_refusals()
     test_madmapper_watchdog_bind_must_be_loopback()
     test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
@@ -23769,6 +24033,12 @@ if __name__ == "__main__":
     test_beyond_web_route_reports_health()
     test_web_does_not_close_a_ready_made_beyond_link()
     test_web_closes_a_config_built_beyond_link()
+    test_devices_on_hold_blanks_beyond_then_fades_music_down()
+    test_devices_on_resume_in_show_fades_up_then_unblanks()
+    test_devices_on_resume_not_in_show_refuses_to_unblank()
+    test_devices_on_abort_blanks_beyond_then_fades_everything_together()
+    test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
+    test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     for arg in sys.argv[1:]:

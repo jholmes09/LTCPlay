@@ -2726,6 +2726,84 @@ MUTATIONS = [
   "    frac = (v_lin - start) / (end - start)\n"
   "    return start + (frac ** 2) * (end - start)"),
 
+ # -- madmapper.py: fade_all() -- audio and surfaces ramped TOGETHER,
+ # in one worker job (devices.on_abort's own fade) --
+
+ ("fade_all()'s cancellation check is removed, so a superseded ramp "
+  "keeps sending anyway", "ltcplay/madmapper.py",
+  "                if self._gen_current() != gen:\n"
+  "                    break\n"
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))"),
+
+ ("fade_all()'s surfaces are no longer shaped by the configured video "
+  "curve, only plain linear", "ltcplay/madmapper.py",
+  "            surface_values = shape_values(ramp_values(start, end, steps),\n"
+  "                                          start, end, surface_curve)",
+  "            surface_values = ramp_values(start, end, steps)"),
+
+ ("fade_all() stops sending the master audio level, only the surfaces",
+  "ltcplay/madmapper.py",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))\n"
+  "                for addr in addrs:",
+  "                for addr in addrs:"),
+
+ # -- devices.py: on_hold()/on_resume()/on_abort(), composing madmapper.py
+ # and beyond.py's own primitives with the handoff's ordering built in --
+
+ ("on_hold() no longer blanks BEYOND, only fades the music",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_hold() fades the music UP instead of down", "ltcplay/devices.py",
+  "madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_resume() ignores in_show and unblanks BEYOND during intermission "
+  "too", "ltcplay/devices.py",
+  "        if in_show:\n"
+  "            beyond.unblank(show=show)\n"
+  "        else:",
+  "        if True:\n"
+  "            beyond.unblank(show=show)\n"
+  "        else:"),
+
+ ("on_resume()'s intermission refusal is never journalled, a silent "
+  "skip instead", "ltcplay/devices.py",
+  "        else:\n"
+  "            _note(journal,\n"
+  "                 f\"BEYOND stays blanked{_for_show(show)}: Resume is \"\n"
+  "                 f\"between shows (no lasers during intermission), not \"\n"
+  "                 f\"during a show.\", action=\"unblank\", outcome=\"refused\",\n"
+  "                 show=show)",
+  "        else:\n"
+  "            pass"),
+
+ ("on_abort() no longer blanks BEYOND, only fades MadMapper",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}",
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}"),
+
+ ("on_abort() fades everything UP to full instead of down to black",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)",
+  "        madmapper.fade_all(0.0, 1.0, **kwargs)"),
+
+ ("on_abort() ignores an explicit fade_seconds override", "ltcplay/devices.py",
+  "        if fade_seconds is not None:\n"
+  "            kwargs[\"seconds\"] = fade_seconds",
+  "        if False:\n"
+  "            kwargs[\"seconds\"] = fade_seconds"),
+
  ("show length no longer follows the show's own media when nothing is "
   "configured", "ltcplay/clock.py",
   "        if show_len is None:\n"
