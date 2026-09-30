@@ -2708,6 +2708,47 @@ MUTATIONS = [
   "        if port == 8000:",
   "        if False:"),
 
+ ("unblank()'s in_show type check is removed, so a truthy value like "
+  "\"STANDBY\" or 1 unblanks the lasers during intermission",
+  "ltcplay/beyond.py",
+  "        if not isinstance(in_show, bool):\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")",
+  "        if False:\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")"),
+
+ ("unblank() ignores in_show=False and unblanks BEYOND during "
+  "intermission anyway", "ltcplay/beyond.py",
+  "        if in_show is not True:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\"",
+  "        if False:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\""),
+
+ ("unblank(in_show=False)'s refusal is never journalled, a silent skip "
+  "instead", "ltcplay/beyond.py",
+  "            self.last_result = \"refused\"\n"
+  "            self._note(\n"
+  "                f\"BEYOND stays blanked{_for_show(show)}: unblank() "
+  "was \"\n"
+  "                f\"called with in_show=False (no lasers during \"\n"
+  "                f\"intermission).\", action=\"unblank\", "
+  "outcome=\"refused\",\n"
+  "                show=show)\n"
+  "            return False",
+  "            self.last_result = \"refused\"\n"
+  "            return False"),
+
  ("the first heartbeat after a recovery is judged for drift again "
   "(bench B14)", "ltcplay/madmapper.py",
   "            if self._settle_count > 0:\n"
@@ -2767,10 +2808,10 @@ MUTATIONS = [
  ("on_resume() ignores in_show and unblanks BEYOND during intermission "
   "too", "ltcplay/devices.py",
   "        if in_show is True:\n"
-  "            return beyond.unblank(show=show)\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
   "        else:",
   "        if True:\n"
-  "            return beyond.unblank(show=show)\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
   "        else:"),
 
  ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
@@ -2801,14 +2842,44 @@ MUTATIONS = [
 
  ("on_resume()'s intermission refusal is never journalled, a silent "
   "skip instead", "ltcplay/devices.py",
-  "        else:\n"
-  "            _note(journal,\n"
-  "                 f\"BEYOND stays blanked{_for_show(show)}: Resume is \"\n"
-  "                 f\"between shows (no lasers during intermission), not \"\n"
-  "                 f\"during a show.\", action=\"unblank\", outcome=\"refused\",\n"
-  "                 show=show)",
-  "        else:\n"
-  "            pass"),
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND stays blanked{_for_show(show)} (re-sent "
+  "as \"\n"
+  "                     f\"a defensive check): Resume is between shows "
+  "(no \"\n"
+  "                     f\"lasers during intermission), not during a "
+  "show.\",\n"
+  "                     action=\"unblank\", outcome=\"refused\", "
+  "show=show)",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if False:\n"
+  "                pass"),
+
+ ("on_resume()'s defensive re-blank is sent but a FAILED re-blank is "
+  "never journalled as a fault, only the calm refusal wording",
+  "ltcplay/devices.py",
+  "            else:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND was told to stay blanked{_for_show(show)} "
+  "\"\n"
+  "                     f\"(Resume is between shows, no lasers during \"\n"
+  "                     f\"intermission), but the defensive re-blank "
+  "FAILED: \"\n"
+  "                     f\"no packet got out. The lasers may still be "
+  "live \"\n"
+  "                     f\"through intermission.\", action=\"unblank\",\n"
+  "                     outcome=\"refused\", show=show, fault=True)\n"
+  "            return reblanked",
+  "            return reblanked"),
+
+ ("on_resume(in_show=False) no longer re-sends a defensive blank at all",
+  "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:",
+  "            reblanked = True\n"
+  "            if reblanked:"),
 
  ("on_abort() no longer blanks BEYOND, only fades MadMapper",
   "ltcplay/devices.py",

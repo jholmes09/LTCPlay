@@ -50,7 +50,11 @@ What each one sends, and why (handoff section 5 and section 4a; Jeff's
   a caller has to say which case this is, rather than this module
   guessing from a state it is never given. Refusing is done HERE, not left
   to the caller to remember -- see `in_show`'s own docstring below for
-  exactly what "refuse" means when it isn't a show.
+  exactly what "refuse" means when it isn't a show, including the
+  defensive re-blank it sends rather than trusting an earlier blank
+  landed. beyond.py's own unblank() also refuses an in_show=False on its
+  own, a second guard for any caller that reaches it directly instead of
+  through here -- see beyond.py's own module docstring.
 
   on_abort() -- "flame cues zero and every group disarms instantly; music,
   video, pixels and lasers fade to black together over 1 s (lasers by a
@@ -137,12 +141,20 @@ def on_resume(madmapper=None, beyond=None, *, in_show, show=None,
     `in_show` has no default on purpose: the handoff's rule ("No lasers
     during intermission") is absolute, and a caller has to say which case
     this is rather than this function guessing. When `in_show` is False,
-    BEYOND is deliberately left exactly as it was (blanked, if it was
-    blanked) and NOT sent an unblank command -- this is the refusal the
-    task asks for, enforced here in the device layer rather than left to
-    every future caller to remember. It is logged through `journal` (not
-    through beyond.py's own journal, since no command was actually sent to
-    beyond.py to log) so the refusal is visible, not silent.
+    BEYOND is NOT sent an unblank command -- this is the refusal the task
+    asks for, enforced here in the device layer rather than left to every
+    future caller to remember. But "leave BEYOND as it was" trusts nothing:
+    the earlier blank (on Hold, or whenever BEYOND was last blanked) might
+    itself have failed, silently, with nobody the wiser until this moment.
+    So this branch does not just skip; it re-sends the blank command
+    defensively, every time, through beyond.py's own blank() -- the exact
+    same fail-loud reporting (through beyond.py's own `journal`) that a
+    real Hold or Abort blank already gets, not a special silent case for
+    Resume. THIS function's own `journal` additionally gets one sentence
+    naming why the unblank itself was refused (Resume between shows), and,
+    if the defensive re-blank failed, a second, explicitly fault-flagged
+    sentence -- a failed re-blank during intermission is never folded into
+    the calm "stays blanked" wording.
 
     `in_show` must be the real bool True or False: anything else (a state
     name, a slot number, 1, "false", None) raises TypeError BEFORE anything
@@ -150,8 +162,12 @@ def on_resume(madmapper=None, beyond=None, *, in_show, show=None,
     "STANDBY" or "false" would otherwise silently unblank the lasers during
     intermission.
 
-    Returns BEYOND's unblank() result (True/False) when it was unblanked,
-    None when no BEYOND is configured or the unblank was refused."""
+    Returns BEYOND's unblank() result (True/False) when `in_show` is True,
+    or the defensive re-blank's own result (True/False) when it is False --
+    either way, False means a laser-safety command did NOT get out and
+    must be treated as a fault, the same rule on_hold()/on_abort() already
+    follow for their own blank(). None only when no BEYOND is configured
+    at all."""
     if not isinstance(in_show, bool):
         raise TypeError(
             f"on_resume() needs in_show=True or in_show=False, not "
@@ -161,13 +177,32 @@ def on_resume(madmapper=None, beyond=None, *, in_show, show=None,
         madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)
     if beyond is not None:
         if in_show is True:
-            return beyond.unblank(show=show)
+            return beyond.unblank(show=show, in_show=True)
         else:
-            _note(journal,
-                 f"BEYOND stays blanked{_for_show(show)}: Resume is "
-                 f"between shows (no lasers during intermission), not "
-                 f"during a show.", action="unblank", outcome="refused",
-                 show=show)
+            # Refused here, not by calling beyond.unblank(in_show=False):
+            # this in_show check is done and refused BEFORE ever asking
+            # beyond.py for an unblank at all. beyond.py's unblank() carries
+            # the identical in_show check as a second, independent layer
+            # for any caller that reaches it directly instead of through
+            # here -- see its own docstring. What IS sent here is a
+            # defensive re-blank (see the docstring above): never assume
+            # the earlier blank actually landed.
+            reblanked = beyond.blank(show=show)
+            if reblanked:
+                _note(journal,
+                     f"BEYOND stays blanked{_for_show(show)} (re-sent as "
+                     f"a defensive check): Resume is between shows (no "
+                     f"lasers during intermission), not during a show.",
+                     action="unblank", outcome="refused", show=show)
+            else:
+                _note(journal,
+                     f"BEYOND was told to stay blanked{_for_show(show)} "
+                     f"(Resume is between shows, no lasers during "
+                     f"intermission), but the defensive re-blank FAILED: "
+                     f"no packet got out. The lasers may still be live "
+                     f"through intermission.", action="unblank",
+                     outcome="refused", show=show, fault=True)
+            return reblanked
 
 
 def on_abort(madmapper=None, beyond=None, *, show=None,

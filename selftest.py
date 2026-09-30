@@ -18696,7 +18696,7 @@ def test_beyond_blank_and_unblank_succeed_and_report_ok():
     check(link.last_command == "blank" and link.last_result == "ok",
          f"health fields: {link.last_command} {link.last_result}")
 
-    ok2 = link.unblank(4)
+    ok2 = link.unblank(4, in_show=True)
     check(ok2 is True, "unblank() must return True too")
     vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent[B.RETRY_COUNT:]]
     check(all(v == 100.0 for v in vals),
@@ -18820,7 +18820,7 @@ def test_beyond_never_sends_blackout_or_masterpause():
             pass
     for i in range(20):
         link.blank(i)
-        link.unblank(i)
+        link.unblank(i, in_show=True)
     link.close()
     seen = set()
     for pkt, _addr in socks[0].sent:
@@ -19038,30 +19038,109 @@ def test_devices_on_resume_in_show_fades_up_then_unblanks():
 
 
 def test_devices_on_resume_not_in_show_refuses_to_unblank():
-    section("devices: on_resume(in_show=False) fades the music up but "
-            "leaves BEYOND blanked and untouched -- 'no lasers during "
-            "intermission' enforced HERE, not left to the caller, and "
-            "the refusal is journalled, not silent")
+    section("devices: on_resume(in_show=False) fades the music up, never "
+            "sends an unblank, but DOES re-send a defensive blank -- "
+            "never assume the earlier blank (Hold, or whenever it was "
+            "last sent) actually got out -- and the refusal is "
+            "journalled, not silent")
     from ltcplay import devices as D, madmapper as MM, beyond as B
     mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
     notes = []
-    D.on_resume(mm_link, b_link, in_show=False, show=None,
-               fade_seconds=0.25, journal=_mm_journal(notes))
+    result = D.on_resume(mm_link, b_link, in_show=False, show=None,
+                         fade_seconds=0.25, journal=_mm_journal(notes))
     audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
     check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
          f"the music still fades up between shows: {audio_vals}")
-    # Snapshot BEFORE close(): see the note in the in_show=True test above.
-    # No socket is even opened (Beyond's socket is lazy): b_socks stays
-    # empty, since send() -- the only thing that would open one -- is
-    # never called at all.
-    check(b_socks == [], f"BEYOND must get NO packet at all, and no "
-                        f"socket even opened, when not in a show: "
-                        f"{[s.sent for s in b_socks]}")
-    check(any("intermission" in t for t, _e in notes),
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_resume() sending its own
+    # defensive blank (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must get a defensive re-blank, not silence, when not "
+         f"in a show: {[s.sent for s in b_socks]}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"the defensive re-send must be a blank (0.0), never an "
+         f"unblank: {b_vals}")
+    check(result is True, "the defensive re-blank got out, so on_resume "
+                          "must report True, not None")
+    # A successful defensive re-blank must be journalled as the calm
+    # "stays blanked" refusal, NOT the fault-flagged "FAILED" wording --
+    # both sentences happen to mention "intermission", so this checks the
+    # non-fault note specifically (an audit found the loose check missed
+    # a mutation that always took the FAILED branch, fault or not).
+    non_fault = [(t, e) for t, e in notes if not e.get("fault")]
+    check(any("intermission" in t for t, _e in non_fault),
          f"the refusal must be journalled in plain words, not silent: "
          f"{notes}")
+    check(not any(e.get("fault") for _t, e in notes),
+         f"a defensive re-blank that DID get out must never be "
+         f"journalled as a fault: {notes}")
     mm_link.close()
     b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_reports_a_failed_reblank():
+    section("devices: on_resume(in_show=False) reports it, fault-flagged, "
+            "when even the defensive re-blank fails -- the lasers may "
+            "still be live through intermission, and that must never be "
+            "folded into the calm 'stays blanked' wording")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    notes = []
+    result = D.on_resume(mm_link, dead, in_show=False, show=None,
+                         fade_seconds=0.1, journal=_mm_journal(notes))
+    check(result is False, "a failed defensive re-blank must report "
+                           "False, never None or True")
+    fault_notes = [(t, e) for t, e in notes if e.get("fault")]
+    check(any("FAILED" in t for t, _e in fault_notes),
+         f"a failed defensive re-blank must be journalled as its own, "
+         f"flagged fault, not silently folded into the refusal note: "
+         f"{notes}")
+    mm_link.close()
+    print("  ok")
+
+
+def test_beyond_unblank_itself_refuses_in_show_false():
+    section("beyond: unblank() enforces its own in_show guard, "
+            "independently of devices.py's on_resume() -- a caller that "
+            "reaches unblank() directly, bypassing on_resume() entirely, "
+            "still cannot bring the lasers back during intermission")
+    from ltcplay import beyond as B
+    notes = []
+    link, socks, steps = _beyond_link(journal=_mm_journal_beyond(notes))
+    ok = link.unblank(5, in_show=False)
+    check(ok is False, "unblank(in_show=False) must return False, never "
+                       "True or None")
+    check(socks == [], "unblank(in_show=False) must send NO packet, and "
+                       "not even open a socket")
+    check(link.last_command == "unblank" and link.last_result == "refused",
+         f"health fields must reflect the refusal: {link.health()}")
+    check(any("intermission" in t for t, _e in notes),
+         f"a direct unblank(in_show=False) must still leave a trace in "
+         f"this Beyond's own journal: {notes}")
+
+    # The two real values still work, exactly like on_resume()'s own rule.
+    ok_true = link.unblank(5, in_show=True)
+    check(ok_true is True, "unblank(in_show=True) must still send and "
+                           "succeed")
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        try:
+            link.unblank(5, in_show=bad)
+            check(False, f"unblank(in_show={bad!r}) must raise TypeError, "
+                        f"not be read as truthy/falsy")
+        except TypeError:
+            pass
+    link.close()
     print("  ok")
 
 
@@ -19159,7 +19238,8 @@ def test_devices_in_show_must_be_a_real_bool():
     check(D.on_resume(mm_link, b_link, in_show=True, fade_seconds=0.1)
           is True, "in_show=True unblanks and reports True")
     check(D.on_resume(mm_link, b_link, in_show=False, fade_seconds=0.1)
-          is None, "in_show=False refuses and reports None")
+          is True, "in_show=False refuses the unblank but still sends "
+                   "its own defensive re-blank, which gets out here")
     mm_link.close()
     b_link.close()
     print("  ok")
@@ -24100,6 +24180,8 @@ if __name__ == "__main__":
     test_devices_on_hold_blanks_beyond_then_fades_music_down()
     test_devices_on_resume_in_show_fades_up_then_unblanks()
     test_devices_on_resume_not_in_show_refuses_to_unblank()
+    test_devices_on_resume_not_in_show_reports_a_failed_reblank()
+    test_beyond_unblank_itself_refuses_in_show_false()
     test_devices_on_abort_blanks_beyond_then_fades_everything_together()
     test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
     test_devices_in_show_must_be_a_real_bool()

@@ -57,6 +57,14 @@ The facts that shape this module:
   the timecode input both keep running throughout: this is a real blank,
   not a stop.
 
+  unblank() itself requires an explicit `in_show` (True/False, no default,
+  same strictness devices.py's on_resume() already enforces): "No lasers
+  during intermission" has to hold even for a caller that reaches this
+  primitive directly instead of going through devices.py's on_resume(),
+  which is the only sanctioned path for deciding when a Resume may bring
+  the lasers back. See unblank()'s own docstring for exactly what happens
+  when in_show is False.
+
   blank()/unblank() send the brightness packet 3 times, about 20 ms apart,
   and check whether at least one actually got out (an audit of the first
   version of this PR, round 2, found a failed send was still journaled as
@@ -433,8 +441,48 @@ class Beyond:
                 outcome="failed", show=show, fault=True)
         return ok
 
-    def unblank(self, show=None):
-        """Returns True if at least one of the 3 packets got out."""
+    def unblank(self, show=None, *, in_show):
+        """Send brightness 100 -- but ONLY when `in_show` is the real bool
+        True. unblank() is a public primitive, callable directly (there is
+        no other way to reach BEYOND from outside this module), so this is
+        where "No lasers during intermission" (handoff, section 5) has to
+        hold even if a caller reaches this primitive directly instead of
+        going through devices.py's on_resume() -- the only SANCTIONED path
+        for deciding when a Resume may bring the lasers back. This is a
+        second, independent layer on top of on_resume()'s own in_show
+        check, the identical "hold even if a layer above it did not"
+        pattern S5's allow-list already follows twice over (see
+        _allowed()'s own docstring and _Socket.send()).
+
+        `in_show` has no default, on purpose, matching on_resume()'s own
+        rule exactly: it must be the real bool True or False. Anything else
+        (a state name, "false", 1, None) raises TypeError BEFORE anything
+        is sent, rather than being read as truthy.
+
+        When `in_show` is not True, nothing is sent at all -- no packet,
+        no socket even opened -- and this returns False, the same "did not
+        happen" value a failed send reports; the refusal is also noted
+        through this Beyond's own `journal`, if one is configured, so a
+        direct call still leaves a trace even though devices.py's
+        on_resume() logs its own, fuller refusal sentence through its own
+        journal for the sanctioned path.
+
+        Returns True if at least one of the 3 packets got out, False if
+        all 3 failed OR the unblank was refused for in_show=False."""
+        if not isinstance(in_show, bool):
+            raise TypeError(
+                f"unblank() needs in_show=True or in_show=False, not "
+                f"{in_show!r}: whether the lasers may come back is never "
+                f"guessed from a truthy value.")
+        if in_show is not True:
+            self.last_command = "unblank"
+            self.last_result = "refused"
+            self._note(
+                f"BEYOND stays blanked{_for_show(show)}: unblank() was "
+                f"called with in_show=False (no lasers during "
+                f"intermission).", action="unblank", outcome="refused",
+                show=show)
+            return False
         ok = self._send_retried(UNBLANK_VALUE)
         self.last_command = "unblank"
         self.last_result = "ok" if ok else "failed"

@@ -919,6 +919,29 @@ class _BeyondRoutes:
         return 404, {"error": "no such thing here"}
 
 
+def _beyond_journal(httpd_schedule):
+    """A real journal for beyond.py's fault lines, so a failed blank/unblank
+    goes SOMEWHERE rather than nowhere (beyond.build() with no `journal` at
+    all is exactly what silently drops them -- see beyond.py's own
+    docstring: "a false 'the lasers are down' report is worse than no
+    report", but no report at all is not the goal either).
+
+    Always prints, the same way this function already prints what it
+    cannot silently skip (see the schedule/show-length check, above). When
+    a schedule is configured, its own night journal is also reachable, so
+    every line is forwarded there too, through the exact `_journal_line()`
+    call the schedule's own show-length warning already uses (actor=
+    "system") -- not a new journal, the one already running. Without a
+    schedule there is no night journal in this process to reach at all,
+    the same as every other device link web.py builds; printing is what is
+    left."""
+    def journal(text, **extra):
+        print(text)
+        if httpd_schedule is not None:
+            httpd_schedule._journal_line("system", text, **extra)
+    return journal
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None):
@@ -967,10 +990,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     -- when it built them itself, from a config -- closes them on
     server_close() (which blanks BEYOND, a safe default; see beyond.py). A
     ready-made pair or link passed in is the caller's own to close. Their
-    Hold/Resume/Abort hooks (madmapper.py's on_hold/on_resume/on_abort) are
-    NOT wired to the scheduler by this function -- that sequencing belongs
-    to the show conductor, built separately; see madmapper.py's module
-    docstring."""
+    Hold/Resume/Abort hooks (devices.py's on_hold/on_resume/on_abort,
+    composing madmapper.py's and beyond.py's own primitives) are NOT wired
+    to the scheduler by this function -- that sequencing belongs to the
+    show conductor, built separately; see devices.py's module docstring."""
     control = Control(folder, defaults=defaults, sd=sd)
     httpd_schedule = None
     if schedule is not None:
@@ -1057,7 +1080,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if beyond is not None:
         from . import beyond as beyond_mod
         if isinstance(beyond, beyond_mod.BeyondConfig):
-            beyond = beyond_mod.build(beyond)
+            beyond = beyond_mod.build(beyond,
+                                      journal=_beyond_journal(httpd_schedule))
             _built_beyond = True
         httpd.beyond = beyond
     if _built_madmapper or _built_beyond:
