@@ -23,9 +23,11 @@ blanked by a real command (a frozen laser cue is a static beam), then the
 music fades over 0.25 s and the clock freezes on the frame where the fade
 ends. That fade then freeze is clock.py's own (AudioMaster.pause); this
 module asks for it and waits for the clock to say it froze. Video and pixels
-hold on the frozen frame, as the handoff says ("pixels hold, video holds").
-Rehearsal (Jeff 2026-09-27): the same Hold with no fade, a mode flag, not a
-second code path.
+fade to black together with the lasers, the same as an announcement and an
+Abort (Jeff 2026-09-30, resolving the handoff's open question).
+Rehearsal (Jeff 2026-09-27, video/pixels decided 2026-09-30): the same Hold
+with no fade, a mode flag, not a second code path: video and pixels freeze
+in place on the current frame instead of fading to black.
 
 Resume: the music fades back in from the frozen frame; once the clock says
 the timecode is MOVING again, the lasers come back (if the show is not in
@@ -678,7 +680,14 @@ class Conductor:
                    self.show.music_hold, fade, only_from=(MUSIC_PLAYING,
                                                           UNKNOWN))
         faded = False
-        if look == DARK:
+        # An announcement (DARK) always takes video and pixels to black,
+        # fading over `fade` if there is one, at once if not (rehearsal).
+        # A Hold (HELD) does the same only when there IS a fade: that is
+        # production, where Jeff wants video and pixels faded to black with
+        # the lasers, same as an announcement or an Abort. In rehearsal
+        # `fade` is 0 (mode flag, not a second code path, see _fade), so
+        # this is skipped and video and pixels hold on the frozen frame.
+        if look == DARK or fade > 0:
             faded |= self._step(gen, "video", BLACK, "video faded", progress,
                                 self.devices.video_fade_out, fade)
             faded |= self._step(gen, "pixels", BLACK, "pixels faded",

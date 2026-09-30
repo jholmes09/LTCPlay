@@ -22460,14 +22460,23 @@ def test_conductor_abort_mid_hold_fade_wins():
     hold = rig.first("music_hold")
     check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
           f"the Hold had started its 0.25 s fade: {hold}")
-    for name in ("video_fade_out", "pixels_fade_out", "music_halt"):
+    # The Hold's own video and pixels fade (Jeff 2026-09-30) had already
+    # gone out at the press, over the Hold's 0.25 s, before Abort landed.
+    for name in ("video_fade_out", "pixels_fade_out"):
         got = rig.first(name)
-        check(got is not None and abs(got[2] - 400.1) < 1e-9
-              and got[1] == (1.0,),
-              f"{name} starts the moment Abort lands, not after the Hold's "
-              f"fade: {got}")
+        check(got is not None and abs(got[2] - 400.0) < 1e-9
+              and got[1] == (0.25,),
+              f"{name} went with the Hold at the press: {got}")
+    halt = rig.first("music_halt")
+    check(halt is not None and abs(halt[2] - 400.1) < 1e-9
+          and halt[1] == (1.0,),
+          f"music_halt starts the moment Abort lands, not after the Hold's "
+          f"fade: {halt}")
     check(rig.count("lasers_fade_out") == 0 and rig.count("lasers_blank")
           == 1, "the lasers the Hold already blanked are not sent again")
+    check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
+          == 1, "Abort does not re-send video or pixels: the Hold's fade "
+          "already left them black")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
           f"Abort's own 1 s runs from its press: {stop}")
@@ -22488,12 +22497,10 @@ def test_conductor_resume_before_the_hold_fade_finishes():
     c.hold("Andy", "rack screen")
     c.run_pending()
     names = rig.names()
-    check(names[:3] == ["flames_zero", "lasers_blank", "music_hold"],
-          f"Hold: flames, then lasers, then the music fade: {names}")
-    check(not any(n.startswith("video") or n.startswith("pixels")
-                  for n in names),
-          f"a production Hold leaves the video and pixels frozen in view: "
-          f"{names}")
+    check(names[:5] == ["flames_zero", "lasers_blank", "music_hold",
+                        "video_fade_out", "pixels_fade_out"],
+          f"Hold: flames, lasers, the music fade, then video and pixels "
+          f"fade to black with it (Jeff 2026-09-30): {names}")
     res = rig.first("music_resume")
     check(res is not None and abs(res[2] - 500.1) < 1e-9,
           f"the music resumes at the Resume press: {res}")
@@ -22674,22 +22681,28 @@ def test_conductor_announcements_hold_go_dark_then_play():
     for name in ("music_resume", "video_restore", "pixels_restore",
                  "lasers_restore", "flames_release"):
         check(rig.first(name, n) is not None, f"Resume sends {name}")
-    # During a production Hold: only video and pixels still need to go.
+    # During a production Hold: a production Hold already faded video and
+    # pixels to black with the lasers (Jeff 2026-09-30), so there is
+    # nothing left for the announcement to send, and it plays at once
+    # rather than waiting 0.5 s in a dark that is already there.
     c, rig, T, lines = _cond(
         hold_gate=hold_gate,
         announcer=lambda *a: plays.append(a + (T.now(),)))
     _cond_live(c, rig)
     c.hold("Andy", "rack screen")
     c.run_pending()
+    check(rig.first("video_fade_out") is not None and
+          rig.first("pixels_fade_out") is not None,
+          "the Hold itself already faded video and pixels to black")
     n = len(rig.calls)
     T.t = 900.0
     c.announce("delayed", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == ["video_fade_out", "pixels_fade_out"],
-          f"an announcement during a Hold fades only what is still up: "
+    check(rig.names(n) == [],
+          f"an announcement during a Hold sends nothing: already dark: "
           f"{rig.names(n)}")
-    check(_in_the_dark(plays[-1][3], 900.25),
-          f"then 0.5 s in the dark: {plays[-1]}")
+    check(plays[-1][3] == 900.0,
+          f"and it plays at once, with nothing left to fade: {plays[-1]}")
     # A Hold pressed during the wait in the dark changes nothing.
     c, rig, T, lines = _cond(
         hold_gate=hold_gate,
@@ -22873,6 +22886,53 @@ def test_conductor_rehearsal_hold_is_instant():
     c.run_pending()
     holds = [x for x in rig.calls if x[0] == "music_hold"]
     check(holds[-1][1] == (0.25,), f"production fades again: {holds}")
+    print("  ok")
+
+
+def test_conductor_hold_video_pixels_freeze_or_fade():
+    section("conductor: rehearsal Hold leaves video and pixels frozen in "
+            "place; production Hold fades them to black with the lasers "
+            "(Jeff 2026-09-30)")
+    C = _cond_mod()
+    # Rehearsal: video and pixels are never touched, so they hold on
+    # whatever frame they were already showing (frozen, not black).
+    c, rig, T, lines = _cond()
+    check(c.set_mode(C.REHEARSAL).ok, "rehearsal")
+    _cond_live(c, rig)
+    c.hold("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("video_fade_out") is None and
+          rig.first("pixels_fade_out") is None,
+          f"a rehearsal Hold never calls video or pixel fade: "
+          f"{rig.names()}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"neither was ever sent a command, so they stay exactly as they "
+          f"were (lit, showing the frozen frame), not black: {a}")
+    # Production: video and pixels fade out over the same 0.25 s as the
+    # music and the lasers, and land on black.
+    c, rig, T, lines = _cond()
+    check(c.mode == C.PRODUCTION, "production by default")
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    vcall, pcall = rig.first("video_fade_out"), rig.first("pixels_fade_out")
+    check(vcall is not None and vcall[1] == (0.25,),
+          f"a production Hold fades the video out over 0.25 s: {vcall}")
+    check(pcall is not None and pcall[1] == (0.25,),
+          f"and the pixels too: {pcall}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.BLACK and a["pixels"] == C.BLACK,
+          f"both land on black, not merely frozen: {a}")
+    # Resume brings them back either way.
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("video_restore") is not None and
+          rig.first("pixels_restore") is not None,
+          "Resume brings video and pixels back up")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"and they are lit again: {a}")
     print("  ok")
 
 
@@ -23319,6 +23379,7 @@ if __name__ == "__main__":
     test_conductor_announcements_hold_go_dark_then_play()
     test_conductor_no_lasers_during_intermission()
     test_conductor_rehearsal_hold_is_instant()
+    test_conductor_hold_video_pixels_freeze_or_fade()
     test_conductor_output_failures_are_loud_and_never_crash_it()
     test_conductor_on_real_threads()
     test_the_gpl_path_never_loads_the_conductor()

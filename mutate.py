@@ -3401,15 +3401,28 @@ def build():
   "        if look == DARK and fade > 0:",
   "        if fade > 0:"),
 
- ("conductor: a production Hold fades the video and pixels out",
+ ("conductor: an announcement leaves the video and pixels up",
   "ltcplay/conductor.py",
-  "        if look == DARK:\n            faded |=",
-  "        if True:\n            faded |="),
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if fade > 0:\n            faded |="),
 
- ("conductor: an announcement during a Hold leaves the video and pixels up",
+ ("conductor: a production Hold leaves the video and pixels up instead of "
+  "fading them",
   "ltcplay/conductor.py",
-  "        if look == DARK:\n            faded |=",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if look == DARK:\n            faded |="),
+
+ ("conductor: a production Hold and an unfaded Hold both leave the video "
+  "and pixels up",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
   "        if False:\n            faded |="),
+
+ ("conductor: a rehearsal Hold fades the video and pixels out instead of "
+  "freezing them",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if look == DARK or fade >= 0:\n            faded |="),
 
  ("conductor: Hold does not wait for the clock to freeze",
   "ltcplay/conductor.py",
