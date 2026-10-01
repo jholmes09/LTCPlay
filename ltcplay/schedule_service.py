@@ -36,6 +36,10 @@ RULE_FILE = "ltcplay_schedule.json"
 PREVIOUS_SUFFIX = ".previous.json"
 TONIGHT_PREFIX = "ltcplay_tonight_"
 OPERATORS_FILE = "ltcplay_operators.json"
+# Who is currently operating the rig (Stream Deck operator gate, 2026-10-01).
+# Separate from OPERATORS_FILE: that file is the LIST of names allowed to
+# press things; this one is which of them is doing it right now.
+CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 # Which screens an operator can press things from. Beside the operator list,
 # and checked the same way, so the journal never names a screen nobody has.
 SCREENS_FILE = "ltcplay_screens.json"
@@ -186,6 +190,49 @@ def load_operators(folder=None):
             f"{str(e).rstrip('.')}. Using "
             f"{', '.join(sch.DEFAULT_OPERATORS)} until it is fixed.")
     return names, ""
+
+
+def current_operator_path(folder=None):
+    return os.path.join(folder or data_dir(), CURRENT_OPERATOR_FILE)
+
+
+def load_current_operator(folder, operators):
+    """(name, sentence). Who is currently operating the rig, for the Stream
+    Deck's operator gate (Jeff, 2026-10-01: a name is chosen before the
+    deck's actions unlock, with no separate password -- Andy's own physical
+    key is the accountability control). No file, or a name no longer on the
+    operator list (the list was edited since it was chosen): "" and a
+    sentence, never a guess. This is bookkeeping, not a safety rule: an
+    empty current operator blocks nothing on its own; see streamdeck.py."""
+    path = current_operator_path(folder)
+    if not os.path.exists(path):
+        return "", ""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or set(doc) != {"current_operator"}:
+            raise ValueError('it has to be {"current_operator": name} and '
+                             'nothing else.')
+        name = doc["current_operator"]
+        if not isinstance(name, str):
+            raise ValueError("current_operator has to be a name.")
+    except (OSError, ValueError) as e:
+        return "", (f"The current operator file {path} could not be used: "
+                    f"{str(e).rstrip('.')}. No operator is selected until "
+                    f"one is chosen again.")
+    if not name:
+        return "", ""
+    names = {n.lower(): n for n in operators}
+    if name.lower() not in names:
+        return "", (f"{name!r} was the current operator but is no longer "
+                    f"on the operator list. No operator is selected until "
+                    f"one is chosen again.")
+    return names[name.lower()], ""
+
+
+def save_current_operator(folder, name):
+    write_json_atomic(current_operator_path(folder),
+                      {"current_operator": name})
 
 
 # ------------------------------------------------------------ the file --
@@ -450,6 +497,8 @@ class Service:
         self._born = self.clock()
         self.operators, why = load_operators(self.state_dir)
         self.screens, why_screens = load_screens(self.state_dir)
+        self.current_operator, why_current = load_current_operator(
+            self.state_dir, self.operators)
         # A plain callable, or None: set by web.py when an announcements
         # service is ALSO configured (serve()'s own job, see its module
         # docstring). Called the instant a show starts, so a playing
@@ -479,6 +528,8 @@ class Service:
             self._journal_line("system", why, action="operators")
         if why_screens:
             self._journal_line("system", why_screens, action="screens")
+        if why_current:
+            self._journal_line("system", why_current, action="operator")
 
     @contextmanager
     def _locked(self):
@@ -1466,14 +1517,58 @@ class Service:
             who=names[who.lower()], screen=screen, state=state, night=night,
             config=config, why=str(body.get("why") or ""))
 
+    def operator_view(self):
+        return {"ok": True, "current_operator": self.current_operator,
+               "operators": list(self.operators)}
+
+    def set_operator(self, body):
+        """Choose who is currently operating the rig (Jeff, 2026-10-01: a
+        name before the Stream Deck's actions unlock, no password -- see
+        load_current_operator). Starts, stops, holds and arms nothing by
+        itself; it only names who is about to press something. An empty
+        name clears the selection (nobody operating)."""
+        body = body or {}
+        name = str(body.get("who") or "").strip()
+        screen = str(body.get("screen") or "").strip()
+        if name:
+            names = {n.lower(): n for n in self.operators}
+            if name.lower() not in names:
+                raise ValueError(f"{name!r} is not on the operator list "
+                                 f"({', '.join(self.operators)}). Pick a "
+                                 f"name from the list. Nothing was changed.")
+            name = names[name.lower()]
+        screen = self._check_screen(screen, name, "operator",
+                                    "Choosing the operator")
+        with self._locked():
+            try:
+                save_current_operator(self.state_dir, name)
+            except OSError as e:
+                raise ValueError(f"The current operator could not be saved: "
+                                 f"{e}. Nothing was changed.") from None
+            self.current_operator = name
+            self._log(self.logbook.record, actor="operator", action="operator",
+                      outcome="done", reason="",
+                      text=(f"{self._who_text(screen)} chose {name} as the "
+                            f"operator." if name else
+                            f"{self._who_text(screen)} cleared the operator "
+                            f"selection."),
+                      state=self._state_name(), night=self._night(),
+                      who=name or "unnamed operator", screen=screen)
+        return self.operator_view()
+
+    @staticmethod
+    def _who_text(screen):
+        return f"The {screen}" if screen else "Someone"
+
     # -- the web routes ---------------------------------------------------
     GET_ROUTES = ("/api/schedule", "/api/schedule/tonight",
                   "/api/schedule/state", "/api/schedule/journal",
-                  "/api/schedule/logging")
-    # Editing tonight's list and saving an incident are the only things that
-    # can be posted. There is deliberately no route that starts, stops,
-    # holds or arms anything.
-    POST_ROUTES = ("/api/schedule/tonight", "/api/schedule/incident")
+                  "/api/schedule/logging", "/api/schedule/operator")
+    # Editing tonight's list, saving an incident and choosing the operator
+    # are the only things that can be posted. There is deliberately no
+    # route that starts, stops, holds or arms anything.
+    POST_ROUTES = ("/api/schedule/tonight", "/api/schedule/incident",
+                   "/api/schedule/operator")
 
     def get(self, route):
         if route == "/api/schedule":
@@ -1486,6 +1581,8 @@ class Service:
             return 200, self.journal_view()
         if route == "/api/schedule/logging":
             return 200, self.logging_view()
+        if route == "/api/schedule/operator":
+            return 200, self.operator_view()
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body):
@@ -1494,4 +1591,6 @@ class Service:
         if route == "/api/schedule/incident":
             out = self.save_incident(body)
             return (200 if out["ok"] else 500), out
+        if route == "/api/schedule/operator":
+            return 200, self.set_operator(body)
         return 404, {"error": "no such thing here"}

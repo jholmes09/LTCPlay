@@ -3552,6 +3552,80 @@ def build():
   "            if self._latched:\n                return done(\"The show is aborted, so",
   "            if False:\n                return done(\"The show is aborted, so"),
 
+ # ---------------------------------------------------------------------
+ # the arm link (build step 7b, 2026-10-01): the Stream Deck's wire into
+ # flamesafe's real ArmInput, and the deck's own pure logic in ltcplay.
+ # ---------------------------------------------------------------------
+
+ ("flamesafe: an arm frame with the wrong key is accepted",
+  "flamesafe/link.py",
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "arm":',
+  '    if obj.get("t") != "arm":'),
+
+ ("flamesafe: an arm frame of the wrong contract version is accepted",
+  "flamesafe/link.py",
+  '    if obj.get("v") != CONTRACT_VERSION:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "arm":',
+  '    if obj.get("t") != "arm":'),
+
+ ("flamesafe: an arm frame with the wrong number of wanted values is accepted",
+  "flamesafe/link.py",
+  '    wanted = obj.get("wanted")\n'
+  '    if not isinstance(wanted, list) or len(wanted) != expect_n \\\n'
+  "            or any(not isinstance(w, bool) for w in wanted):",
+  '    wanted = obj.get("wanted")\n'
+  "    if not isinstance(wanted, list):"),
+
+ ("flamesafe: an arm frame with the wrong number of names is accepted",
+  "flamesafe/link.py",
+  '    names = obj.get("names")\n'
+  '    if not isinstance(names, list) or len(names) != expect_n \\\n'
+  "            or any(not isinstance(n, str) for n in names):",
+  '    names = obj.get("names")\n'
+  "    if not isinstance(names, list):"),
+
+ ("flamesafe: SocketArmInput accepts a frame it could not decode",
+  "flamesafe/arminput.py",
+  "            try:\n"
+  "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
+  "            except link.LinkError as e:\n"
+  '                self._event("arm-link", f"arm frame rejected: {e}")\n'
+  "                continue\n"
+  "            best = ArmAssertion(wanted, seq, names)",
+  "            try:\n"
+  "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
+  "            except link.LinkError as e:\n"
+  "                wanted, seq, names = [False] * self._n, 0, None\n"
+  "            best = ArmAssertion(wanted, seq, names)"),
+
+ ("flamesafe: SocketArmInput keeps asserting after close()",
+  "flamesafe/arminput.py",
+  "    def poll(self):\n"
+  "        sock = self._sock\n"
+  "        if sock is None:\n"
+  "            return None",
+  "    def poll(self):\n"
+  "        sock = self._sock"),
+
+ ("flamesafe: arm_port is allowed to collide with listen_port or status_port",
+  "flamesafe/config.py",
+  "            if c.link_arm_ip == other_ip and c.link_arm_port == other_port:\n"
+  '                raise ConfigError(f"link arm_port is the same as {other_name}; "\n'
+  '                                  f"flamesafe would be talking to itself.")',
+  "            pass"),
+
+ ("flamesafe: a non-loopback arm_ip is accepted",
+  "flamesafe/config.py",
+  '        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),\n'
+  '                            "link arm_ip", loopback_only=True)',
+  '        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),\n'
+  '                            "link arm_ip", loopback_only=False)'),
 
 ]
 

@@ -420,6 +420,47 @@ def test_example_config_loads_and_is_marked_unconfirmed():
           and any("Flame Monitor" in row[0] for row in cards["Showven"]),
           "the required head settings card carries the two settings that "
           "ship wrong")
+    check(c.link_arm_port == 5573 and c.link_arm_ip == "127.0.0.1",
+          "the example config now wires the arm link too (build step 7b)")
+
+
+def test_config_validates_the_arm_link():
+    section("config: the arm link is optional, and when present must not "
+            "collide with anything else")
+    d = example_dict()
+    del d["link"]["arm_port"]
+    c = config.from_dict(d)
+    check(c.link_arm_port is None and c.link_arm_ip is None,
+          "no arm_port in the file: the arm link is simply not configured")
+    d2 = example_dict()
+    d2["link"]["arm_port"] = d2["link"]["listen_port"]
+    try:
+        config.from_dict(d2)
+        check(False, "arm_port same as listen_port was accepted")
+    except config.ConfigError as e:
+        check("arm_port" in str(e) and "listen_port" in str(e), str(e))
+    d3 = example_dict()
+    d3["link"]["arm_port"] = d3["link"]["status_port"]
+    try:
+        config.from_dict(d3)
+        check(False, "arm_port same as status_port was accepted")
+    except config.ConfigError as e:
+        check("arm_port" in str(e) and "status_port" in str(e), str(e))
+    d4 = example_dict()
+    del d4["link"]["arm_port"]
+    d4["link"]["arm_ip"] = "127.0.0.1"
+    try:
+        config.from_dict(d4)
+        check(False, "arm_ip without arm_port was accepted")
+    except config.ConfigError as e:
+        check("arm_ip" in str(e) and "arm_port" in str(e), str(e))
+    d5 = example_dict()
+    d5["link"]["arm_ip"] = "8.8.8.8"
+    try:
+        config.from_dict(d5)
+        check(False, "a non-loopback arm_ip was accepted")
+    except config.ConfigError as e:
+        check("loopback" in str(e), str(e))
 
 
 # =========================================================================
@@ -1040,6 +1081,210 @@ def test_link_rejects_malformed_datagrams():
           "rejections are counted and the last good frame still stands")
     check(r.out.status["frames"]["last_reject"],
           "the status frame names the last rejection")
+
+
+def test_arm_link_rejects_malformed_datagrams_and_round_trips():
+    section("the arm link (build step 7b) rejects malformed datagrams and "
+            "round-trips a good one")
+    good = {"v": 2, "k": KEY, "t": "arm", "seq": 3,
+            "wanted": [True, False, False, False, False, False],
+            "names": list(NAMES)}
+    w, seq, names = link.decode_arm(json.dumps(good).encode(), 6, KEY)
+    check(w == (True, False, False, False, False, False) and seq == 3
+          and names == tuple(NAMES), "a good arm frame decodes")
+    enc = link.encode_arm(9, [True] * 6, NAMES, KEY)
+    w2, seq2, names2 = link.decode_arm(enc, 6, KEY)
+    check(w2 == (True,) * 6 and seq2 == 9 and names2 == tuple(NAMES),
+          "encode_arm round-trips")
+
+    def bad(msg, obj=None, raw=None, n=6):
+        data = raw if raw is not None else json.dumps(obj).encode()
+        try:
+            link.decode_arm(data, n, KEY)
+        except link.LinkError as e:
+            return check(str(e), f"{msg}: {e}")
+        return check(False, f"NOT rejected: {msg}")
+
+    def variant(**kw):
+        d = dict(good)
+        for k, v in kw.items():
+            if v is KeyError:
+                d.pop(k)
+            else:
+                d[k] = v
+        return d
+
+    bad("not JSON", raw=b"\xff\xfe hello")
+    bad("not an object", raw=b"[1,2,3]")
+    bad("too long", raw=b"{" + b" " * 20000 + b"}")
+    bad("wrong version", variant(v=1))
+    bad("wrong key", variant(k=KEY + "x"))
+    bad("missing key", variant(k=KeyError))
+    bad("wrong type", variant(t="flame"))
+    bad("missing type", variant(t=KeyError))
+    bad("negative seq", variant(seq=-1))
+    bad("float seq", variant(seq=1.5))
+    bad("boolean seq", variant(seq=True))
+    bad("missing seq", variant(seq=KeyError))
+    bad("wanted too short", variant(wanted=[True] * 5))
+    bad("wanted too long", variant(wanted=[True] * 7))
+    bad("wanted not booleans", variant(wanted=[1, 0, 0, 0, 0, 0]))
+    bad("wanted not a list", variant(wanted="no"))
+    bad("missing wanted", variant(wanted=KeyError))
+    bad("names too short", variant(names=NAMES[:5]))
+    bad("names not strings", variant(names=[1, 2, 3, 4, 5, 6]))
+    bad("missing names", variant(names=KeyError))
+    # decode_arm itself does not compare the names against any config: that
+    # is the composer's job (assert_arm), so the wrong names for THIS
+    # config still decode here, and are rejected one layer up instead.
+    w3, _seq3, names3 = link.decode_arm(
+        json.dumps(variant(names=["a", "b", "c", "d", "e", "f"])).encode(),
+        6, KEY)
+    check(names3 == ("a", "b", "c", "d", "e", "f"),
+          "decode_arm itself does not police the names; the composer does")
+
+
+def test_socket_arm_input_is_the_real_build_step_7b_driver():
+    section("SocketArmInput: a keyed loopback link that really arms a "
+            "group, rejects what it must, and goes silent on close")
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6)
+    inp.open()
+    port = inp._sock.getsockname()[1]
+
+    def send(seq, wanted, names=NAMES, key=KEY, v=2, t="arm", sock=deck):
+        sock.sendto(link.encode_arm(seq, wanted, names, key)
+                    if (key == KEY and t == "arm" and v == 2) else
+                    json.dumps({"v": v, "k": key, "t": t, "seq": seq,
+                               "wanted": list(wanted),
+                               "names": list(names)}).encode(),
+                    ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    check(inp.poll() is None, "nothing sent yet: poll() returns None")
+    send(1, [False] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (False,) * 6 and a.seq == 1
+          and a.names == tuple(NAMES), f"a good frame is read back: {a}")
+    check(inp.poll() is None, "nothing NEW since the last poll: None again")
+    # A flood: only the last one decoded this poll is kept.
+    for s in range(2, 8):
+        send(s, [s % 2 == 0] * 6)
+    a = inp.poll()
+    check(a.seq == 7, f"a flood keeps only the last one decoded: {a.seq}")
+    # Rejected: wrong key, wrong shape. Each changes nothing.
+    log = Log()
+    inp2 = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log)
+    inp2.open()
+    port2 = inp2._sock.getsockname()[1]
+    deck.sendto(link.encode_arm(1, [True] * 6, NAMES, KEY + "x"),
+               ("127.0.0.1", port2))
+    deck.sendto(json.dumps({"v": 2, "k": KEY, "t": "arm", "seq": 1,
+                           "wanted": [True] * 5, "names": list(NAMES)}
+                          ).encode(), ("127.0.0.1", port2))
+    time.sleep(0.02)
+    check(inp2.poll() is None, "wrong key and wrong shape: both rejected")
+    check(len(log.events) == 2 and all(k == "arm-link" for k, _ in log.events),
+          f"each rejection is journaled once: {log.events}")
+    inp.close()
+    inp2.close()
+    deck.close()
+    check(inp.poll() is None, "closed: poll() returns None, not an error")
+
+
+def test_socket_arm_input_really_arms_a_group_end_to_end():
+    section("the arm link end to end: a real UDP frame arms a real group "
+            "through a real Service and Composer tick")
+    node = _udp()
+    ltc_status = _udp()
+    listen_port = _udp()
+    lp = listen_port.getsockname()[1]
+    listen_port.close()
+    arm_port_sock = _udp()
+    ap = arm_port_sock.getsockname()[1]
+    arm_port_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "arm_port": ap, "key": KEY})
+    check(cfg.link_arm_port == ap, "the config carries the arm port")
+    t = [0.0]
+    log = Log()
+    arm_input = arminput.SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
+                                        cfg.link_key, cfg.n, log=log)
+    svc = Service(cfg, arm_input, clock=lambda: t[0], log=log)
+    svc.open()
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ltc_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def tick():
+        t[0] += cfg.tick_period_s
+        time.sleep(0.005)
+        return svc.run_once()
+
+    def send_arm(seq, wanted):
+        deck.sendto(link.encode_arm(seq, wanted, NAMES, KEY), ("127.0.0.1", ap))
+        time.sleep(0.01)
+
+    def send_flame(seq, slots):
+        vals = [0] * 512
+        for s, v in slots.items():
+            vals[s - 1] = v
+        ltc_tx.sendto(link.encode_flame(seq, "00:00:00:01", t[0], 1, vals, KEY),
+                     ("127.0.0.1", lp))
+        time.sleep(0.01)
+
+    fseq = [0]
+
+    def keep_flame_alive():
+        fseq[0] += 1
+        send_flame(fseq[0], {})
+
+    try:
+        keep_flame_alive()
+        send_arm(1, [False] * 6)
+        tick()
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["groups"][0]["armed"] == "disarmed",
+              "the first assertion proves nothing: still disarmed")
+        for seq in (2, 3):
+            send_arm(seq, [False] * 6)
+            tick()
+        send_arm(4, [True, False, False, False, False, False])
+        keep_flame_alive()
+        tick()
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["groups"][0]["armed"] == "armed",
+              f"a real Stream Deck datagram, decoded by a real socket, "
+              f"really arms the group: {s['groups'][0]}")
+        # Unplugging the deck (no more datagrams): every group disarms
+        # within arm_stale_ms, with nothing more sent on this link.
+        stale_ticks = int(cfg.arm_stale_ms / 1000.0 / cfg.tick_period_s) + 3
+        for _ in range(stale_ticks):
+            keep_flame_alive()  # the FLAME link stays alive; only the arm
+                                # link goes silent, isolating what disarms it
+            tick()
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        g = s["groups"][0]
+        # Still asking (wanted stays True: nobody touched the key), but
+        # refused and off the wire: sent_safety 0 is the fact that matters,
+        # "held"/"arm input stale" is the lamp that explains why (CONTRACT.md).
+        check(g["sent_safety"] == 0 and g["armed"] != "armed"
+              and "stale" in g["reason"],
+              f"the deck going silent (unplugged, crashed, killed) disarms "
+              f"the group's real output within arm_stale_ms, with no new "
+              f"code for it -- the EXISTING staleness rule did this: {g}")
+        check(s["arm_input"]["state"] == "stale",
+              f"the status frame itself says the arm input is stale: "
+              f"{s['arm_input']}")
+    finally:
+        svc.close()
+        deck.close()
+        ltc_tx.close()
+        node.close()
+        ltc_status.close()
 
 
 def test_link_sequence_and_clock_rules():
@@ -2261,6 +2506,7 @@ if __name__ == "__main__":
     test_rule1_arm_value_is_derived()
     test_rule8_config_refuses_every_bad_table()
     test_example_config_loads_and_is_marked_unconfirmed()
+    test_config_validates_the_arm_link()
     test_rule10_startup_is_all_zeros()
     test_rule6_consent()
     test_rule2_dirty_edge_holds_the_arm()
@@ -2271,6 +2517,9 @@ if __name__ == "__main__":
     test_liveness_loss_zeros_within_a_bounded_time()
     test_ltcplay_stale_zeros_fire_then_disarms()
     test_link_rejects_malformed_datagrams()
+    test_arm_link_rejects_malformed_datagrams_and_round_trips()
+    test_socket_arm_input_is_the_real_build_step_7b_driver()
+    test_socket_arm_input_really_arms_a_group_end_to_end()
     test_link_sequence_and_clock_rules()
     test_rule9_only_the_writer()
     test_rule10_compose_never_raises()

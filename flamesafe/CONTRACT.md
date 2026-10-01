@@ -192,6 +192,74 @@ If no status frame arrives for 1 s, ltcplay shows red for the safety
 program and keeps running the rest of the show. It never takes over the
 flame universe. There is no fallback path, deliberately.
 
+## The arm link (build step 7b, landed 2026-10-01)
+
+A fourth loopback socket, `link.arm_port` on `link.arm_ip` (default: the
+same address as `link.listen_ip`), optional: a config without it runs with
+`NullArmInput`, exactly as before this build step, and every group stays
+disarmed. The Stream Deck (part of ltcplay's own process, `ltcplay/
+streamdeck.py`, never flamesafe's) sends one arm frame at 10 Hz or faster,
+always carrying every group's current wanted state, whether or not
+anything changed:
+
+```json
+{"v": 2, "k": "<link.key>", "t": "arm", "seq": 4410,
+ "wanted": [true, false, false], "names": ["front row", "cat-walk", "wave flamer"]}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | integer | must be 2 |
+| `k` | string | must equal flamesafe's `link.key` |
+| `t` | string | must be `"arm"` |
+| `seq` | integer, 0 or more | the deck's own liveness counter; see the arm input rules below |
+| `wanted` | list of exactly N booleans | N is flamesafe's configured group count; positional, in config order |
+| `names` | list of exactly N strings | the group names, in config order; required on this frame (unlike `arminput.ArmAssertion.names`, which is optional for the test driver) |
+
+Rejected, with the reason journaled: not JSON, not an object, longer than
+16384 bytes, wrong `v`, wrong or missing `k`, wrong `t`, `seq` missing or
+negative, `wanted` not exactly N booleans, `names` not exactly N strings. A
+rejected datagram changes nothing, exactly as for a rejected flame frame.
+Unlike the flame-frame link there is no sender lock: there is exactly one
+Stream Deck in this show, and the key already keeps out anything that has
+not read flamesafe's config.
+
+**This frame says only what the deck wants.** It decides nothing: every
+rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,
+`arm_stale_ms`) runs in the composer exactly as it does for the test
+driver. The Stream Deck's bottom-row keys toggle `wanted` for one group
+each on press; they never encode "armed", "cycling" or "waiting" on the
+wire; those are read back from the status frame's per-group `armed`,
+`reason`, `amber` and `dwell_s` and drawn on the key.
+
+**Abort disarms over this same link, not a new message to flamesafe.**
+Pressing and holding the Stream Deck's ABORT key sends `wanted` all false
+at once, on the same socket, before anything else happens; this is the
+"an Abort from the Stream Deck disarms (the safety program owns the deck)"
+referred to in `ltcplay/conductor.py`'s `ShowOutputs.flames_disarm_all`
+docstring. An Abort from the Rack screen or Phone has no such path yet: it
+can only zero ltcplay's own flame cue values (`flames_zero`), because
+flamesafe has no message on the EXISTING flame-frame link that means
+"disarm", on purpose -- the only thing that can disarm a group from outside
+flamesafe is the thing that is allowed to say what it wants armed.
+
+**Losing the Stream Deck is losing the arm input**, not a new failure mode:
+`poll()` returns None once nothing has arrived for the input's own
+bookkeeping to call fresh, and the EXISTING `arm_stale_ms` rule below does
+the rest -- every group disarms within `arm_stale_ms` of the last accepted
+frame, the same as a crashed or frozen test driver. flamesafe does not
+distinguish "the deck was unplugged" from "the deck process died" from "the
+cable is bad": silence is silence. **Reconnecting never re-arms anything by
+itself** (rule 6, consent): the deck's own `seq` restarts at 0 on every
+connect and reconnect (rule 3 below), so even a deck that remembered its
+last button states and resent them immediately would fail consent, which
+needs the counter proven to advance while already fresh -- the first
+assertion after any gap proves nothing. The Stream Deck driver additionally
+never tries to remember pre-disconnect state: on open (first connect, or a
+reconnect after the hardware was lost) it starts every group `wanted`
+false, so the operator sees every key read OFF and re-arms by pressing it,
+matching what the lamp already says ("cycle the arm").
+
 ## The arm input (for build step 7b)
 
 Not on this link; an in-process interface (`flamesafe/arminput.py`), but
@@ -277,3 +345,9 @@ Version 1 (2026-09-25, superseded the same day): no `k`, no sender lock, no
 
 Version 2, 2026-09-26: link loss disarms every group (no field changed;
 two new `reason` sentences).
+
+Version 2, 2026-10-01 (build step 7b): the arm input becomes a real,
+optional link -- a new `"t": "arm"` frame on `link.arm_port`/`link.arm_ip`,
+keyed exactly like the flame and status frames. No existing frame's field,
+meaning or type changed; a config without `link.arm_port` runs exactly as
+before this step.

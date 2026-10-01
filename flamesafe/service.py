@@ -95,6 +95,7 @@ class Service:
     # -------------------------------------------------------------- sockets
 
     def open(self):
+        self.arm_input.open()
         rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # On Windows SO_REUSEADDR would let a second program bind our port
         # and take the frames; SO_EXCLUSIVEADDRUSE forbids that.  On POSIX a
