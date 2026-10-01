@@ -24809,6 +24809,414 @@ def test_conductor_on_real_threads():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The conductor wired to the real device layer: a real Conductor, driven
+# through conductor.ConductorDevices into a real beyond.Beyond and a real
+# madmapper.Link, whose sockets are fakes that stamp every packet into the
+# same call log as the show side (_CondRig). So one ordered list holds the
+# flame cut, every BEYOND packet, the music, the pixels and every MadMapper
+# packet, and the ordering guarantees devices.py's on_hold()/on_resume()/
+# on_abort() were written to give can be checked against what the
+# conductor actually sends.
+# ---------------------------------------------------------------------------
+
+class _StampSock(_FakeMMSock):
+    """A fake socket that also writes (kind, (address, value), now) into a
+    shared log as each packet goes out. value is None for an OSC message
+    with no float (MadMapper's conductor/stop)."""
+
+    def __init__(self, kind, log, now):
+        super().__init__()
+        self.kind, self.log, self.now = kind, log, now
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        super().sendto(pkt, addr)
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        self.log.append((self.kind, (address, None if f is None else f[1]),
+                         self.now()))
+
+
+def _cond_devices(gate=None, mm=True, beyond=True, beyond_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    steps = _Steps()
+    link = bey = None
+    if mm:
+        link = MM.Link(_mm_cfg(ramp_steps=5),
+                       socket_factory=lambda: _StampSock("mm", rig.calls,
+                                                         T.now),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+    if beyond:
+        bey = B.Beyond(B.BeyondConfig.parse({}),
+                       socket_factory=beyond_factory or (
+                           lambda: _StampSock("beyond", rig.calls, T.now)),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate if gate is not None else (lambda: None),
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False)
+    return c, rig, T, lines, link, bey
+
+
+def _mm_flush(link):
+    """Wait for the Link's worker to finish every job already queued (the
+    conductor starts video fades with wait=False)."""
+    if link is not None:
+        link._submit(lambda: None, wait=True)
+
+
+def _cd_live(c, rig, link):
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    _mm_flush(link)
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def _cd_idx(calls, kind):
+    return [i for i, e in enumerate(calls) if e[0] == kind]
+
+
+def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
+    section("conductor + devices: a Hold sends BEYOND a real blank, and it "
+            "is out before the music or the video starts to fade; "
+            "MadMapper's audio is never touched")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.wired and c.snapshot()["devices_wired"],
+          "with BEYOND and MadMapper both given, the conductor is wired")
+    check(not any("not connected" in t for t, _f in lines),
+          f"no 'not connected' fault line when wired: {lines}")
+    _cd_live(c, rig, link)
+    T.t = 300.0
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check(names[0] == "flames_zero", f"the flame cues go first: {names}")
+    check(len(b) == B.RETRY_COUNT and
+          all(ev[i][1] == (B.BRIGHTNESS_ADDR, B.BLANK_VALUE) for i in b),
+          f"BEYOND gets a real blank, brightness 0, {B.RETRY_COUNT} "
+          f"packets: {[ev[i] for i in b]}")
+    check(b and max(b) < names.index("music_hold"),
+          f"the blank is out before the music starts to fade: {names}")
+    check(m and b and min(m) > max(b),
+          f"every MadMapper packet comes after the blank: {names}")
+    check(all(ev[i][2] == 300.0 for i in b),
+          "the blank goes at the press, with no fade of its own")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (C.HOLD_FADE_S,),
+          f"the music fades over 0.25 s, then the clock freezes: {hold}")
+    check(all(ev[i][1][0] != MM.AUDIO_ADDR for i in m),
+          "MadMapper's audio level is never sent: ltcplay plays the music "
+          "(clock source audio_master), MadMapper only the video")
+    surf = [ev[i][1] for i in m]
+    check(all(a.startswith("/surfaces/") for a, _v in surf),
+          f"a production Hold fades the video surfaces (Jeff 2026-09-30): "
+          f"{surf}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in surf if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades from 1 to black: {vals}")
+    check(not any(f for t, f in lines),
+          f"no fault, and no slow call: {[t for t, f in lines if f]}")
+    check(c.snapshot()["applied"]["lasers"] == "black", "lasers black")
+    link.close()
+
+    # Rehearsal: still a real blank first, but the video freezes in place.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.set_mode(C.REHEARSAL)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    check([e[1][1] for e in ev if e[0] == "beyond"]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"a rehearsal Hold blanks BEYOND too: {ev}")
+    check(_cd_idx(ev, "mm") == [],
+          f"a rehearsal Hold sends MadMapper nothing: the video freezes "
+          f"with the timecode: {ev}")
+    check(rig.first("music_hold")[1] == (0.0,), "and the music stops at once")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_abort_blanks_at_once_never_ramps():
+    section("conductor + devices: Abort blanks BEYOND at once (never a "
+            "brightness ramp; beyond.py's 0/100 allow-list is unchanged), "
+            "before the video and music fade, then stops the video bank")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    check(B.ALLOWED_VALUES == (0.0, 100.0),
+          f"beyond.py's allow-list is still exactly 0.0 and 100.0: "
+          f"{B.ALLOWED_VALUES}")
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.show_starting("Andy", "rack screen").ok, "show start")
+    c.run_pending()
+    _mm_flush(link)
+    check([e[1][1] for e in rig.calls if e[0] == "beyond"]
+          == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"the show starts with the lasers up: {rig.calls}")
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+    T.t = 400.0
+    check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+    check([e[0] for e in rig.calls] == ["flames_zero", "flames_disarm_all"],
+          f"the flames are cut on the press, before anything else: "
+          f"{rig.calls}")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check([ev[i][1] for i in b]
+          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * B.RETRY_COUNT,
+          f"Abort sends BEYOND brightness 0 only, never anything between "
+          f"0 and 100: {[ev[i] for i in b]}")
+    check(all(ev[i][2] == 400.0 for i in b),
+          f"all at the press, not spread over the 1 s fade: "
+          f"{[ev[i][2] for i in b]}")
+    for later in ("pixels_fade_out", "music_halt"):
+        check(later in names and max(b) < names.index(later),
+              f"BEYOND is dark before {later} starts: {names}")
+    check(m and min(m) > max(b),
+          f"BEYOND is dark before MadMapper is sent anything: {names}")
+    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
+          f"the journal says the lasers were blanked, not faded: {lines}")
+    mm_ev = [ev[i][1] for i in m]
+    check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
+          f"MadMapper's audio level is not sent: {mm_ev}")
+    stop = f"/timelines/{link.cfg.show_bank}/conductor/stop"
+    check(mm_ev and mm_ev[-1] == (stop, None),
+          f"the show bank is stopped last, after the fade: {mm_ev[-3:]}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in mm_ev if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades to black before the stop: {vals}")
+    check(rig.first("music_halt")[1] == (C.ABORT_FADE_S,),
+          "the music fades over 1 s")
+    link.close()
+
+    # Abort after a Hold: the lasers are already dark, and the blank is
+    # sent again anyway (never trusted to have landed), still first.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    T.t = 450.0
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"Abort after a Hold sends BEYOND the blank again: {ev}")
+    check(b and max(b) < names.index("music_halt"),
+          f"and still before the music: {names}")
+    check(any(C.AGAIN in t for t, _f in lines),
+          "the journal says it was a re-send to lasers already dark")
+    mm_ev = [e[1] for e in ev if e[0] == "mm"]
+    check(mm_ev == [(f"/timelines/{link.cfg.show_bank}/conductor/stop",
+                     None)],
+          f"the video the Hold already faded is not faded again, only "
+          f"stopped: {mm_ev}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_resume_unblanks_only_after_timecode_and_gate():
+    section("conductor + devices: Resume unblanks BEYOND only once the "
+            "timecode moves and the laser gate says yes; in intermission it "
+            "re-sends the blank instead, every time")
+    from ltcplay import beyond as B
+    C = _cond_mod()
+    state = ["SHOW"]
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    rig.move_s = 0.3
+    T.t = 500.0
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"BEYOND comes back up (100): {[ev[i] for i in b]}")
+    check(b and min(b) > names.index("music_resume"),
+          f"after the music starts back: {names}")
+    check(all(ev[i][2] >= 500.3 - 1e-9 for i in b),
+          f"and not before the timecode moves (0.3 s): "
+          f"{[ev[i][2] for i in b]}")
+    check(names.index("flames_release") > max(b),
+          f"the flame cues are released last, after the lasers: {names}")
+    up = [e[1] for e in ev if e[0] == "mm"]
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in up if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 0.0 and vals[-1] == 1.0,
+              f"{s} fades back up: {vals}")
+    link.close()
+
+    # A Resume in intermission: no unblank, ever, and a real blank re-sent
+    # even though the record already says black (devices.py's defensive
+    # re-blank, kept).
+    state[0] = "SHOW"
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["lasers"] == "black", "held: black")
+    del rig.calls[:]
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(B.UNBLANK_VALUE not in vals,
+          f"no unblank during intermission: {vals}")
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the blank is re-sent, not assumed: {vals}")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "the journal says why")
+    check(bey.last_command == "blank" and bey.last_result == "ok",
+          f"BEYOND's own record agrees: {bey.health()}")
+    # Leaving the show blanks them again too.
+    del rig.calls[:]
+    c.intermission("scheduler")
+    c.run_pending()
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"intermission() sends BEYOND the blank: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_failures_missing_links_and_speed():
+    section("conductor + devices: a failed or broken device is a failed "
+            "Result, never a raise; a show without BEYOND or MadMapper says "
+            "it is not wired; every call returns at once")
+    import time as _time
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+
+    def no_socket():
+        raise OSError("no network")
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=no_socket)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          f"a blank that never got out leaves the lasers UNKNOWN, never "
+          f"black: {c.snapshot()['applied']}")
+    check(any(f and "may still be showing" in t for t, f in lines),
+          f"and says so as a fault: {[t for t, f in lines if f]}")
+    link.close()
+
+    # Missing links: nothing sent, every call still a Result, and a
+    # Conductor built with it says it is not wired.
+    for mm_ok, b_ok in ((False, True), (True, False), (False, False)):
+        c, rig, T, lines, link, bey = _cond_devices(mm=mm_ok, beyond=b_ok)
+        check(not c.wired and any("not connected" in t and f
+                                  for t, f in lines),
+              f"MadMapper {mm_ok}, BEYOND {b_ok}: the conductor says the "
+              f"rig is not wired: {lines}")
+        if link is not None:
+            link.close()
+    dev = C.ConductorDevices(None, None)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (0.0,)), ("video_stop", ())):
+        r = getattr(dev, name)(*args)
+        check(isinstance(r, C.Result) and r.ok and "no " in r.sentence,
+              f"{name} with nothing configured: {r}")
+        r = getattr(C.ConductorDevices(object(), object()), name)(*args)
+        check(isinstance(r, C.Result) and not r.ok,
+              f"{name} on a broken device is a failed Result, not a "
+              f"raise: {r}")
+    link, socks, _steps = _mm_link()
+    link.close()
+    r = C.ConductorDevices(link, None).video_fade_out(1.0)
+    check(not r.ok and "closed" in r.sentence,
+          f"a closed MadMapper link is not reported as sent: {r}")
+
+    # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
+    # fade included (it runs on the Link's own worker).
+    link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
+    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock)
+    dev = C.ConductorDevices(link, bey)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (1.0,)), ("video_fade_out", (0.0,)),
+                       ("video_stop", ())):
+        t0 = _time.perf_counter()
+        r = getattr(dev, name)(*args)
+        took = _time.perf_counter() - t0
+        check(r.ok and took < C.SLOW_CALL_S,
+              f"{name}{args} returns at once: {took * 1000:.0f} ms, {r}")
+    link.close()
+    bey.close()
+    print("  ok")
+
+
+def test_conductor_devices_instant_video_lands_after_a_running_fade():
+    section("conductor + devices: an instant video level (rehearsal) "
+            "cancels a fade still running and lands after its last step")
+    C = _cond_mod()
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    gate = threading.Event()
+    link._submit(gate.wait, wait=False)       # hold the worker
+    dev.video_restore(1.0)                    # a fade up, queued
+    dev.video_fade_out(0.0)                   # then black at once
+    gate.set()
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and sent[-2:] == [0.0, 0.0],
+          f"black is the last thing each surface is told: {sent[-4:]}")
+    check(len(sent) < 31 * 2,
+          f"the fade up was cancelled, not run to the end first: "
+          f"{len(sent)} packets")
+    link.close()
+    print("  ok")
+
+
+def _mm_values(socks):
+    from ltcplay import madmapper as MM
+    out = []
+    for s in socks:
+        for pkt, _addr in s.sent:
+            f = MM.decode_float(pkt)
+            if f is not None:
+                out.append(f)
+    return out
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
@@ -25152,6 +25560,11 @@ if __name__ == "__main__":
     test_conductor_hold_video_pixels_freeze_or_fade()
     test_conductor_output_failures_are_loud_and_never_crash_it()
     test_conductor_on_real_threads()
+    test_conductor_devices_hold_blanks_beyond_before_anything_fades()
+    test_conductor_devices_abort_blanks_at_once_never_ramps()
+    test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
+    test_conductor_devices_failures_missing_links_and_speed()
+    test_conductor_devices_instant_video_lands_after_a_running_fade()
     test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
         test_real_show(arg)

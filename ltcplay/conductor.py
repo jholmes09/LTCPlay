@@ -5,10 +5,10 @@ Imported ONLY by code that runs the Fire & Ice show. The GPL show at
 Dollywood never reaches it (test_the_gpl_path_never_loads_the_conductor).
 In this build nothing constructs a Conductor outside the selftest: the
 scheduler still runs dry (schedule_service.DRY_RUN) and ShowOutputs is not
-built yet. The real laser and video side is devices.ConductorDevices (PR
-#17's madmapper.py and beyond.py, wired to DeviceOutputs below); its own
-docstring says why it calls their primitives directly rather than
-devices.py's on_hold()/on_resume()/on_abort().
+built yet. The real laser and video side is ConductorDevices, below: PR
+#17's beyond.py and madmapper.py objects, handed in already built, wired to
+DeviceOutputs one primitive per method. devices.py's module docstring says
+why it does not call devices.on_hold()/on_resume()/on_abort().
 
 What it does, from the handoff and Jeff's decisions
 ===================================================
@@ -202,7 +202,7 @@ class DeviceOutputs:
         """Ramp BEYOND's brightness to 0 over `seconds` (Abort: 1 s, Jeff
         2026-09-27; an announcement: 0.25 s). beyond.Beyond sends only 0
         or 100 and refuses anything between (its reviewed allow-list), so
-        devices.ConductorDevices blanks at once instead and journals that
+        ConductorDevices (below) blanks at once instead and journals that
         it was not a fade. A real ramp needs its own reviewed change to
         beyond.py."""
         raise NotImplementedError
@@ -254,6 +254,134 @@ class NotWiredDevices(DeviceOutputs):
 
     def video_stop(self):
         return self._nothing("Video stop")
+
+
+def _device_note(journal, text, **fields):
+    """ConductorDevices' own journal lines. Never raises."""
+    if journal:
+        try:
+            journal(text, **fields)
+        except Exception:
+            pass
+
+class ConductorDevices(DeviceOutputs):
+    """The conductor's lasers (BEYOND) and video (MadMapper): conductor.py's
+    DeviceOutputs, one primitive per method, no sequencing of its own.
+    devices.py's module docstring says why this calls beyond.py and
+    madmapper.py directly instead of devices.on_hold()/on_resume()/
+    on_abort(), and where each of their ordering guarantees now lives.
+
+    `madmapper` is an already-built madmapper.Link or None, `beyond` an
+    already-built beyond.Beyond or None. This module imports neither (nor
+    devices.py): it is handed the objects.
+    `wired` is True only when both are given, so a Conductor built with a
+    show that lacks either one writes its "not connected" fault line at
+    start rather than passing for a rig whose lasers it blanks.
+
+    Every method follows DeviceOutputs' rules: returns a conductor Result,
+    never raises, and returns at once. Video fades are started with
+    wait=False and run on the Link's own worker; a newer one supersedes
+    the old (the Link's ramp generation). beyond.py's blank() and
+    unblank() send 3 packets 20 ms apart and return after them, about
+    40 ms, so the lasers are dark before the conductor's next call."""
+
+    def __init__(self, madmapper=None, beyond=None, *, show=None,
+                 journal=None):
+        self.mm = madmapper
+        self.beyond = beyond
+        self.show = show
+        self._journal = journal
+        self.wired = madmapper is not None and beyond is not None
+        if beyond is None:
+            _device_note(journal, "No BEYOND is configured for this show: the "
+                  "conductor's laser commands reach nothing.",
+                  action="devices", outcome="not_configured", fault=True)
+        if madmapper is None:
+            _device_note(journal, "No MadMapper is configured for this show: the "
+                  "conductor's video commands reach nothing.",
+                  action="devices", outcome="not_configured", fault=True)
+
+    # -- lasers: beyond.py ---------------------------------------------------
+    _BLANK_FAILED = "The lasers may still be showing whatever they were."
+
+    def _beyond(self, what, method, failed_means, **kw):
+        if self.beyond is None:
+            return done(f"{what}: no BEYOND is configured for this show.")
+        try:
+            ok = getattr(self.beyond, method)(show=self.show, **kw)
+        except Exception as e:
+            return failed(f"{what} failed: {type(e).__name__}: {e}. "
+                          f"{failed_means}")
+        if ok is True:
+            return done(f"{what}: sent to BEYOND.")
+        return failed(f"{what}: no packet got out to BEYOND. {failed_means}")
+
+    def lasers_blank(self):
+        return self._beyond("Laser blank", "blank", self._BLANK_FAILED)
+
+    def lasers_fade_out(self, seconds):
+        """NOT a fade: an instant blank, the same command as lasers_blank().
+        beyond.py's allow-list only ever lets brightness 0.0 or 100.0 off
+        the machine (a safety audit, S5), so there is no ramp to send.
+        Going dark at once is never later than the asked-for fade would
+        have been. Changing this to a real ramp is a laser-safety-relevant
+        change to beyond.py that needs its own review; it is not made here.
+        Journaled every time, so the record never says "faded" alone."""
+        r = self._beyond("Laser blank", "blank", self._BLANK_FAILED)
+        if self.beyond is not None and r.ok:
+            _device_note(self._journal,
+                  f"BEYOND was blanked at once, not faded over {seconds:g} "
+                  f"s: beyond.py only allows brightness 0 or 100, and a "
+                  f"brightness ramp has not been reviewed.",
+                  action="lasers", outcome="blanked_not_faded")
+        return r
+
+    def lasers_restore(self):
+        """The only unblank. in_show=True is the conductor's laser gate's
+        answer: the conductor calls this only after the gate said yes
+        (conductor.Conductor._restore_lasers), and beyond.unblank() still
+        refuses anything but the real bool True on its own."""
+        return self._beyond("Laser restore", "unblank",
+                            "The lasers stay dark.", in_show=True)
+
+    # -- video: madmapper.py -------------------------------------------------
+    def _madmapper(self, what, send):
+        if self.mm is None:
+            return done(f"{what}: no MadMapper is configured for this show.")
+        if getattr(self.mm, "_closed", False):
+            return failed(f"{what}: the MadMapper link is closed, so nothing "
+                          f"was sent.")
+        try:
+            send()
+        except Exception as e:
+            return failed(f"{what} failed: {type(e).__name__}: {e}.")
+        return done(f"{what}: sent to MadMapper.")
+
+    def _surfaces(self, start, end, seconds):
+        if seconds <= 0:
+            # At once: stop any ramp still running (it checks the Link's
+            # generation before every step), then one level. The level is
+            # queued behind that ramp's job on the Link's single worker, so
+            # it always lands after the ramp's last step, never under it.
+            self.mm.cancel()
+            self.mm.set_surfaces(end, wait=False)
+        else:
+            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False)
+
+    def video_fade_out(self, seconds):
+        return self._madmapper(
+            f"Video fade to black over {seconds:g} s",
+            lambda: self._surfaces(1.0, 0.0, seconds))
+
+    def video_restore(self, seconds):
+        return self._madmapper(
+            f"Video back up over {seconds:g} s",
+            lambda: self._surfaces(0.0, 1.0, seconds))
+
+    def video_stop(self):
+        return self._madmapper(
+            "Video stop",
+            lambda: self.mm.stop_bank(self.mm.cfg.show_bank, wait=False))
 
 
 class ShowOutputs:
