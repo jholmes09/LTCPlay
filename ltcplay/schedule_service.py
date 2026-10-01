@@ -1560,15 +1560,55 @@ class Service:
     def _who_text(screen):
         return f"The {screen}" if screen else "Someone"
 
+    def deck_event(self, body):
+        """One line from the REAL Stream Deck (ltcplay/streamdeck.py, a
+        SEPARATE process, never this one): every arm, disarm, Abort and
+        refusal it journals locally is also posted here (safety review of
+        PR #31, item 9), off the deck's own main loop exactly like its
+        operator lookup, so a hung or slow web server can never delay a
+        key read or an arm-frame send on the deck's side. This writes ONE
+        journal line and nothing else: it starts, stops, holds and arms
+        nothing, so it does not touch the "no route that starts, stops,
+        holds or arms anything" rule above.
+
+        `who` is the operator the deck itself last read, or "" when none
+        was chosen or the deck could not say (e.g. Abort and disarm, which
+        are never gated on one). An empty `who` is written as the
+        "system" actor, never as an unnamed operator: an operator event
+        with no name is refused by build_event, and rightly so."""
+        body = body or {}
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise ValueError("A deck event needs its text. Nothing was "
+                             "written.")
+        who = str(body.get("who") or "").strip()
+        screen = str(body.get("screen") or "Stream Deck").strip()
+        action = str(body.get("action") or "deck").strip() or "deck"
+        fault = bool(body.get("fault"))
+        actor = "operator" if who else "system"
+        kw = dict(action=action, state=self._state_name(),
+                  night=self._night())
+        if actor == "operator":
+            kw["who"], kw["screen"] = who, screen
+        if fault:
+            self._log(self.logbook.fault, actor, text, **kw)
+        else:
+            self._log(self.logbook.record, actor=actor, outcome="done",
+                      reason=text, text=text, **kw)
+        return {"ok": True}
+
     # -- the web routes ---------------------------------------------------
     GET_ROUTES = ("/api/schedule", "/api/schedule/tonight",
                   "/api/schedule/state", "/api/schedule/journal",
                   "/api/schedule/logging", "/api/schedule/operator")
-    # Editing tonight's list, saving an incident and choosing the operator
-    # are the only things that can be posted. There is deliberately no
-    # route that starts, stops, holds or arms anything.
+    # Editing tonight's list, saving an incident, choosing the operator and
+    # recording a line the real Stream Deck process posts about its own
+    # arm/disarm/Abort actions (2026-10-01, review item 9) are the only
+    # things that can be posted. deck-event only writes a journal line;
+    # there is still deliberately no route that starts, stops, holds or
+    # arms anything.
     POST_ROUTES = ("/api/schedule/tonight", "/api/schedule/incident",
-                   "/api/schedule/operator")
+                   "/api/schedule/operator", "/api/schedule/deck-event")
 
     def get(self, route):
         if route == "/api/schedule":
@@ -1593,4 +1633,6 @@ class Service:
             return (200 if out["ok"] else 500), out
         if route == "/api/schedule/operator":
             return 200, self.set_operator(body)
+        if route == "/api/schedule/deck-event":
+            return 200, self.deck_event(body)
         return 404, {"error": "no such thing here"}

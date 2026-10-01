@@ -10546,16 +10546,19 @@ def test_schedule_routes():
         check(open(path, "rb").read() == rule_bytes,
               "editing tonight must never write the rule file")
         # Nothing that starts, stops or arms anything can be posted: only
-        # tonight's edits, Save the last incident, and choosing the current
+        # tonight's edits, Save the last incident, choosing the current
         # operator (2026-10-01, the Stream Deck's operator gate) -- which
         # only names who is about to press something, the same as `who` on
-        # every other schedule route already does.
+        # every other schedule route already does -- and a journal line the
+        # real Stream Deck process posts about its own arm/disarm/Abort
+        # actions (review item 9).
         check(SV.Service.POST_ROUTES == ("/api/schedule/tonight",
                                          "/api/schedule/incident",
-                                         "/api/schedule/operator"),
+                                         "/api/schedule/operator",
+                                         "/api/schedule/deck-event"),
               f"the only schedule routes that take a POST are the tonight "
-              f"edit, the incident bundle and choosing the operator, got "
-              f"{SV.Service.POST_ROUTES}")
+              f"edit, the incident bundle, choosing the operator and the "
+              f"deck's own journal line, got {SV.Service.POST_ROUTES}")
         for r in ("/api/schedule/start", "/api/schedule/state",
                   "/api/schedule", "/api/schedule/abort",
                   "/api/schedule/hold"):
@@ -10577,6 +10580,43 @@ def test_schedule_routes():
                              {"who": "", "screen": "rack screen"})
         check(code == 200 and cleared["current_operator"] == "",
               f"an empty who clears the selection: {code} {cleared}")
+
+        # The real Stream Deck (a separate process) posts its own
+        # arm/disarm/Abort/refusal lines here (review item 9): this is the
+        # SAME night journal everything else writes to, not a separate log.
+        code, bad = call("/api/schedule/deck-event", {"text": ""})
+        check(code == 400 and "text" in bad.get("error", "").lower(),
+              f"a deck event with no text is refused: {code} {bad}")
+        before = len(svc.journal)
+        code, ok = call("/api/schedule/deck-event",
+                        {"text": "front row arm pressed by Andy.",
+                         "action": "arm", "who": "Andy",
+                         "screen": "Stream Deck"})
+        check(code == 200 and ok.get("ok") and len(svc.journal) == before + 1,
+              f"a deck arm event is accepted and written: {code} {ok}")
+        check(any(r["actor"] == "operator" and r["who"] == "Andy"
+                  and "front row arm pressed by Andy" in r["text"]
+                  for r in svc.journal),
+              f"the deck's arm press landed in the real night journal, "
+              f"named: {[r['text'] for r in svc.journal][-3:]}")
+        code, ok2 = call("/api/schedule/deck-event",
+                         {"text": "Abort pressed with nothing armed or "
+                                 "wanted; refused (nothing to do).",
+                          "action": "abort"})
+        check(code == 200 and ok2.get("ok") and
+              any(r["actor"] == "system" and "nothing armed" in r["text"]
+                  for r in svc.journal),
+              "a deck refusal with no operator named still lands in the "
+              "journal, as the system actor, not dropped for lack of a name")
+        code, ok3 = call("/api/schedule/deck-event",
+                         {"text": "flamesafe has not answered in over a "
+                                 "second.", "action": "arm-link",
+                          "fault": True})
+        check(code == 200 and ok3.get("ok") and
+              any(r.get("fault") and "flamesafe has not answered"
+                  in r["text"] for r in svc.journal),
+              f"a deck fault event is journaled as a fault: "
+              f"{[r for r in svc.journal if r.get('fault')][-1:]}")
 
         # Dry run: at 18:25 the engine decides to start show 5 (moved there
         # above) and nothing performs it; the clock ends it after show_len_s.
@@ -23137,10 +23177,40 @@ def test_streamdeck_pure_logic():
           "a reason not in the table still shows something (HELD), never "
           "a crash or a blank key")
 
+    # Item 4: a non-empty top-level `fault` is red for EVERY group, even
+    # one flamesafe itself still reports armed -- the wire is not being
+    # written, so "armed" is not "fine" (CONTRACT.md).
+    faulted = sd.group_look({"armed": "armed"}, fault="sACN send failed")
+    check(faulted[0] == "FAULT" and faulted[2] == sd.RED,
+          f"a fault overrides even a reported ARMED: {faulted}")
+    unconfirmed = sd.group_look({"armed": "armed"}, confirmed=False)
+    check((unconfirmed[0], unconfirmed[1]) == ("NOT", "CONFIRMED"),
+          f"confirmed=False shows its own look, behind a real fault: "
+          f"{unconfirmed}")
+    both = sd.group_look({"armed": "armed"}, fault="overrun",
+                         confirmed=False)
+    check(both[0] == "FAULT",
+          f"a real fault wins over an unconfirmed config too: {both}")
+    check(sd.group_look({"armed": "armed"})[0] == "ARMED",
+          "fault='' and confirmed=True (the defaults) change nothing: "
+          "every existing caller keeps working")
+
+    # Item 2: Abort's own gate takes (any_group_active, show_running); the
+    # old single-arg meaning ("is the show running") is GONE -- the first
+    # arg is now "is there anything to abort", as the deck itself knows
+    # it, and show_running is only ever an ADDITIONAL reason to light up.
     check((sd.abort_is_live(True), sd.abort_is_live(False),
           sd.abort_is_live(None)) == (True, False, False),
-          "ABORT is live only while the show is actually playing or held "
-          "(Jeff, 2026-10-01); unknown is treated as not live, never live")
+          "any_group_active alone decides it when show_running is omitted")
+    check(sd.abort_is_live(False, True) is True,
+          "show_running=True lights the key even with nothing armed (a "
+          "wired conductor's own lasers/video/pixels/music cascade)")
+    check(sd.abort_is_live(True, False) is True,
+          "REVIEW ITEM 2, the proven bug: something armed must light the "
+          "key even while the scheduler says no show is running")
+    check(sd.abort_is_live(False, None) is False,
+          "nothing armed and an unreachable scheduler: dim, the safe "
+          "default")
 
     check(sd.operator_gate("", "arm") and sd.operator_gate("", "start")
           and sd.operator_gate("", "hold"),
@@ -23148,7 +23218,8 @@ def test_streamdeck_pure_logic():
     check(sd.operator_gate("", "abort") is None
           and sd.operator_gate("", "disarm") is None,
           "Abort and disarm are NEVER gated on an operator: a risk-reducing "
-          "press must never wait on a picker")
+          "press must never wait on a picker (item 7, Jeff's policy, "
+          "blessed explicitly)")
     check(sd.operator_gate("Andy", "arm") is None,
           "a chosen operator unlocks arm")
 
@@ -23185,10 +23256,12 @@ class _FakeArmSocket:
         self.wanted = [False] * n
         self.sends = []
         self.opens = 0
+        self.seq = 0
 
     def open(self):
         self.opens += 1
         self.wanted = [False] * self.n
+        self.seq = 0
 
     def close(self):
         pass
@@ -23200,6 +23273,7 @@ class _FakeArmSocket:
         self.wanted = [bool(on)] * self.n
 
     def send(self, names):
+        self.seq += 1
         self.sends.append(list(self.wanted))
 
 
@@ -23261,9 +23335,11 @@ def test_streamdeck_controller_with_fakes():
     status = _FakeStatusSocket()
     names = ["front row", "cat-walk", "wave flamer"]
     events = []
+    t = [0.0]
     c = sd.Controller(arm, status, names, operator_provider=lambda: "",
                       show_running_provider=lambda: True,
-                      journal=lambda t, **kw: events.append((t, kw)))
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
 
     down = [False] * 6
 
@@ -23283,19 +23359,61 @@ def test_streamdeck_controller_with_fakes():
 
     press(sd.GROUP_KEYS[0])
     check(arm.wanted == [False, False, False],
-          "arming is refused with no operator chosen: wanted stays false")
+          "arming is refused with no operator chosen: wanted stays false, "
+          "and the hold never even starts")
     check("no operator is chosen" in events[-1][0], events[-1])
+    check(c._arm_holds[0].fraction(t[0]) == 0.0,
+          "the hold itself never started: nothing to let go of")
     release(sd.GROUP_KEYS[0])
 
+    # Item 8 (Jeff, 2026-10-01): arming now needs a HOLD. A plain
+    # press-and-release, even with an operator chosen, sends nothing.
     c.operator_provider = lambda: "Andy"
     press(sd.GROUP_KEYS[0])
-    check(arm.wanted == [True, False, False],
-          f"arming front row with Andy chosen: {arm.wanted}")
+    check(arm.wanted == [False, False, False],
+          "pressing starts the hold, but nothing is sent until it "
+          f"completes: {arm.wanted}")
+    check(c._arm_holds[0]._down_at is not None, "the hold is now running")
     release(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False],
+          "letting go before ARM_HOLD_S cancels the hold: nothing sent, "
+          "exactly like letting go of Abort early")
+
+    # Held the full ARM_HOLD_S this time: arms for real.
+    press(sd.GROUP_KEYS[0])
+    down_held = list(down)
+    t[0] += sd.ARM_HOLD_S / 2
+    c.run_once(down_held)           # still held, short of ARM_HOLD_S
+    check(arm.wanted == [False, False, False],
+          f"held for only half of ARM_HOLD_S: nothing fired yet: "
+          f"{arm.wanted}")
+    t[0] += sd.ARM_HOLD_S
+    c.run_once(down_held)           # held past ARM_HOLD_S: fires
+    check(arm.wanted == [True, False, False],
+          f"holding the full ARM_HOLD_S arms front row: {arm.wanted}")
+    release(sd.GROUP_KEYS[0])
+
+    # Disarm stays an instant single tap, no hold.
     press(sd.GROUP_KEYS[0])
     check(arm.wanted == [False, False, False],
-          "a second press disarms, instantly, no hold needed (Jeff, "
-          "2026-10-01)")
+          "a single press disarms an armed group instantly, no hold "
+          f"needed (Jeff, 2026-10-01): {arm.wanted}")
+    release(sd.GROUP_KEYS[0])
+
+    # Item 8's refractory window: pressing the SAME key again right after
+    # its own disarm must not even start a hold.
+    press(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False]
+          and c._arm_holds[0].fraction(t[0]) == 0.0,
+          "an immediate re-press right after a disarm is refused before "
+          "the hold can even start")
+    check("refractory" in events[-1][0], events[-1])
+    release(sd.GROUP_KEYS[0])
+    t[0] += sd.REARM_REFRACTORY_S + 0.1
+    press(sd.GROUP_KEYS[0])
+    check(c._arm_holds[0]._down_at is not None,
+          "once the refractory window has passed, the same key can start "
+          "a hold again")
     release(sd.GROUP_KEYS[0])
 
     # Start Now and Hold: no conductor connected, journaled, nothing done.
@@ -23307,21 +23425,48 @@ def test_streamdeck_controller_with_fakes():
     check("no show conductor is connected" in events[-1][0], events[-1])
     release(sd.TOP_HOLD)
 
+    # Item 2: Abort must respond whenever anything is armed or wanted,
+    # REGARDLESS of what the scheduler reports -- tested here with
+    # show_running explicitly False/None, the exact case the review found
+    # broken.
+    arm2 = _FakeArmSocket(3)
+    events2 = []
+    c_noshow = sd.Controller(arm2, status, names,
+                             operator_provider=lambda: "Andy",
+                             show_running_provider=lambda: False,
+                             journal=lambda t_, **kw: events2.append(
+                                 (t_, kw)), clock=lambda: t[0])
+    down_noabort = [False] * 6
+    down_noabort[sd.TOP_ABORT] = True
+    c_noshow.run_once(down_noabort)
+    check(events2 and "nothing armed or wanted" in events2[-1][0],
+          f"nothing armed or wanted, and no show running: Abort's hold "
+          f"does not even start, and the refusal is journaled at once, "
+          f"never a silent no-op: {events2}")
+    c_noshow.run_once([False] * 6)
+    arm2.set_group(0, True)   # a group armed before any show starts
+    events2.clear()
+    c_noshow.run_once(down_noabort)
+    t[0] += sd.ABORT_HOLD_S + 0.1
+    c_noshow.run_once(down_noabort)
+    check(arm2.wanted == [False, False, False],
+          f"Abort fires with a group armed, even though the scheduler "
+          f"says no show is running (review item 2, PR #31): {arm2.wanted}")
+
     # Abort: a 0.5 s hold, real disarm-all sent regardless of the conductor.
     arm.set_group(0, True)
-    t = [100.0]
+    down2 = [False] * 6
+    down2[sd.TOP_ABORT] = True
     c2 = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
                        show_running_provider=lambda: True,
                        journal=lambda t_, **kw: events.append((t_, kw)),
                        clock=lambda: t[0])
-    down2 = [False] * 6
-    down2[sd.TOP_ABORT] = True
     c2.run_once(down2)             # press (edge)
-    t[0] = 100.2
+    t[0] += 0.2
     c2.run_once(down2)             # still held, not yet fired
     check(arm.wanted == [True, False, False],
           "held for only 0.2 s of the 0.5 s: nothing fired yet")
-    t[0] = 100.6
+    t[0] += 0.4
     c2.run_once(down2)             # held past 0.5 s: fires
     check(arm.wanted == [False, False, False],
           f"Abort disarms every group over the arm link: {arm.wanted}")
@@ -23372,6 +23517,215 @@ def test_streamdeck_controller_with_fakes():
     c3.run_once(down8)
     check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
           f"Reset while latched reaches the real conductor: {cond.calls}")
+
+
+class _FakeStatus:
+    """A controllable fake StatusSocket for the spoof-alarm and group_look
+    wiring tests: unlike _FakeStatusSocket (always stale), this one can
+    hold a real status dict and say it is fresh."""
+
+    def __init__(self):
+        self.last = None
+        self._stale = True
+
+    def set(self, doc):
+        self.last = doc
+        self._stale = False
+
+    def stale(self, clock=None):
+        return self._stale
+
+    def poll(self, clock=None):
+        pass
+
+
+def test_streamdeck_spoof_alarm():
+    section("Stream Deck: a visible, journaled alarm when flamesafe's "
+            "reported arm state diverges from what this deck itself sent "
+            "(item 1's second line of defence, safety review of PR #31)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def status_doc(seq, wanted):
+        return {"arm_input": {"state": "live", "seq": seq},
+               "groups": [{"name": n, "wanted": w}
+                          for n, w in zip(names, wanted)]}
+
+    arm.send(names)      # arm.seq == 1
+    status.set(status_doc(1, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm, "matching state, nothing to alarm about")
+
+    # Reported seq AHEAD of what this deck has sent: something else is
+    # feeding flamesafe arm frames. The debounce window has to PERSIST
+    # across two checks before it is trusted, so the first call only
+    # starts the clock.
+    status.set(status_doc(99, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a fresh mismatch does not alarm on the very first sighting: "
+          "the debounce clock has only just started")
+    t[0] += sd.SPOOF_GRACE_S + 0.1   # outlast the debounce grace window
+    c.check_links()
+    check(c._spoof_alarm and "ahead of" in c._spoof_alarm,
+          f"...but the SAME mismatch, still there after SPOOF_GRACE_S, "
+          f"raises the alarm: {c._spoof_alarm!r}")
+    check(any("ALARM" in t_ for t_, kw in events),
+          f"and it is journaled, loudly: {events}")
+
+    # Clears once the state matches again.
+    status.set(status_doc(1, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm, "the alarm clears once state matches again")
+    check(any("cleared" in t_ for t_, kw in events[-2:]),
+          f"and the clearing is itself journaled: {events[-2:]}")
+
+    # A brief one-tick lag (reported wanted momentarily behind what we
+    # just sent) must NOT alarm: only a mismatch that PERSISTS does.
+    arm.set_group(0, True)
+    arm.send(names)
+    status.set(status_doc(2, [False, False, False]))   # status lags behind
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a one-tick send/receive lag is not treated as a spoof")
+
+    # But a wanted mismatch that persists past SPOOF_GRACE_S IS an alarm.
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm and "front row" in c._spoof_alarm,
+          f"a persistent wanted mismatch raises the alarm, naming the "
+          f"group: {c._spoof_alarm!r}")
+
+    # A reconnect (ArmSocket.open() resets our own seq) must not itself
+    # read as a spoof: the grace window covers it.
+    arm.open()                       # arm.seq -> 0
+    status.set(status_doc(2, [False, False, False]))
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(not c._spoof_alarm,
+          "right after a reconnect, a stale-looking status is not an "
+          "alarm even after the debounce window: RECONNECT_GRACE_S "
+          "covers it")
+
+
+def test_streamdeck_arm_socket_logs_failed_sends_once():
+    section("Stream Deck: ArmSocket logs a persistent send failure once, "
+            "not once per dropped frame (item 10)")
+    from ltcplay import streamdeck as sd
+
+    events = []
+
+    class _BoomSocket:
+        def sendto(self, *a):
+            raise OSError("Network is unreachable")
+
+        def close(self):
+            pass
+
+    arm = sd.ArmSocket("127.0.0.1", 1, "k" * 20, 1,
+                       journal=lambda t, **kw: events.append((t, kw)))
+    arm._sock = _BoomSocket()
+    for _ in range(5):
+        arm.send(["front row"])
+    faults = [e for e in events if e[1].get("fault")]
+    check(len(faults) == 1,
+          f"five dropped frames in a row log exactly one fault line, not "
+          f"five: {events}")
+
+    class _OkSocket:
+        def sendto(self, *a):
+            pass
+
+    arm._sock = _OkSocket()
+    arm._send_failing = True
+    arm.send(["front row"])
+    check(any("working again" in t for t, kw in events),
+          f"recovery is logged too: {events}")
+
+
+def test_streamdeck_local_schedule_never_blocks_the_main_loop():
+    section("Stream Deck: LocalSchedule polls the operator and show-"
+            "running state on a BACKGROUND thread; the main-loop-facing "
+            "reads never touch the network (item 5)")
+    from ltcplay import streamdeck as sd
+    import threading as _threading
+
+    calls = []
+    ready = _threading.Event()
+
+    def fetcher(path):
+        calls.append(path)
+        ready.set()
+        if path == "/api/schedule/operator":
+            return {"current_operator": "Andy"}
+        if path == "/api/schedule/state":
+            return {"ok": True, "state": "SHOW"}
+        return None
+
+    sched = sd.LocalSchedule("http://127.0.0.1:1", poll_hz=50.0,
+                             fetcher=fetcher)
+    check(sched.current_operator() == "" and sched.show_running() is None,
+          "before start(), both read their safe defaults forever, never "
+          "the network")
+    sched.start()
+    try:
+        check(wait_for(lambda: ready.is_set(), timeout=2.0),
+              "the background thread is actually polling")
+        check(wait_for(lambda: sched.current_operator() == "Andy",
+                       timeout=2.0),
+              "current_operator() reads the cache the background thread "
+              "filled")
+        check(sched.show_running() is True,
+              "show_running() reads the same cache")
+    finally:
+        sched.stop()
+    calls.clear()
+    t0 = time.monotonic()
+    check(sched.current_operator() == "Andy", "still cached after stop()")
+    check(time.monotonic() - t0 < 0.05,
+          "reading the cache after stop() is instant: no network call")
+    check(not calls, "and no fetch happened: the thread is really stopped")
+
+
+def test_streamdeck_deck_journal_prints_and_posts():
+    section("Stream Deck: DeckJournal prints locally at once and posts to "
+            "ltc serve's real journal on its OWN background thread (item "
+            "9); a server that cannot be reached never blocks the caller")
+    from ltcplay import streamdeck as sd
+
+    printed = []
+    posted = []
+    dj = sd.DeckJournal("http://127.0.0.1:1",
+                        poster=lambda text, kw: posted.append((text, kw)),
+                        echo=lambda line: printed.append(line))
+    dj("front row arm pressed by Andy.", action="arm", who="Andy",
+      screen="Stream Deck")
+    check(printed == ["front row arm pressed by Andy."],
+          f"printed at once, on the calling thread: {printed}")
+    check(wait_for(lambda: posted == [
+        ("front row arm pressed by Andy.",
+         {"action": "arm", "who": "Andy", "screen": "Stream Deck"})],
+        timeout=2.0),
+        f"and posted (here: handed to the injected poster) on the "
+        f"background thread: {posted}")
+
+    # The real _post must never raise into the background thread even when
+    # the server cannot be reached at all -- it is caught by the loop, but
+    # _post itself should also degrade quietly.
+    dj2 = sd.DeckJournal("http://127.0.0.1:1")   # the real HTTP poster
+    dj2("a line nobody is listening for.", action="deck")
+    time.sleep(0.2)   # give the background thread a moment; nothing to
+                      # assert except that the process is still alive
 
 
 def test_streamdeck_reconnect_never_remembers_old_state():
@@ -23725,6 +24079,10 @@ if __name__ == "__main__":
     test_conductor_on_real_threads()
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
+    test_streamdeck_spoof_alarm()
+    test_streamdeck_arm_socket_logs_failed_sends_once()
+    test_streamdeck_local_schedule_never_blocks_the_main_loop()
+    test_streamdeck_deck_journal_prints_and_posts()
     test_streamdeck_reconnect_never_remembers_old_state()
     test_streamdeck_never_imports_flamesafe()
     test_the_gpl_path_never_loads_the_conductor()
