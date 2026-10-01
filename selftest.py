@@ -23471,6 +23471,11 @@ def test_streamdeck_controller_with_fakes():
     check(arm.wanted == [False, False, False],
           f"Abort disarms every group over the arm link: {arm.wanted}")
     check(c2._latched_now() is True, "Abort latches (no conductor: locally)")
+    check(all(f > 0 for f in
+              (c2._in_rearm_refractory(i, t[0]) for i in range(3))),
+          "Abort also starts every group's own re-arm refractory window "
+          "(item 8): a panicked re-press right after Reset cannot quietly "
+          "re-arm either")
     down3 = [False] * 6
     c2.run_once(down3)
     press_reset = list(down3)

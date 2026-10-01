@@ -1115,9 +1115,17 @@ class Controller:
 
     def _do_abort(self):
         """ALWAYS real: every group's wanted goes false on the arm link at
-        once, whether or not a conductor is connected (module docstring)."""
+        once, whether or not a conductor is connected (module docstring).
+
+        Also starts every group's own re-arm refractory window (item 8):
+        Abort is itself the panic button, and a reflexive "make sure it's
+        really off" press on a group key right after Reset must be just as
+        unable to quietly re-arm as one right after that key's own single
+        disarm."""
         self.arm.set_all(False)
         self.arm.send(self.names)
+        now = self._clock()
+        self._disarmed_at = [now] * len(self.names)
         who = self.operator_provider() or ""
         if self.conductor is not None:
             r = self.conductor.abort(who=who, screen="Stream Deck")

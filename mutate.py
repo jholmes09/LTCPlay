@@ -3627,6 +3627,63 @@ def build():
   '        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),\n'
   '                            "link arm_ip", loopback_only=False)'),
 
+ # ---------------------------------------------------------------------
+ # Safety review of PR #31 (2026-10-01): the arm-link sender lock, the
+ # name-mismatch journal lines, and the deck's own journal route.
+ # ---------------------------------------------------------------------
+
+ ("flamesafe: a second sender's arm frame is accepted once the first is "
+  "locked in",
+  "flamesafe/arminput.py",
+  "            if self._sender is None:\n"
+  "                self._sender = addr\n"
+  "            elif addr != self._sender:\n"
+  '                self._event("arm-link", f"arm frame rejected: another "\n'
+  '                            f"sender ({addr[0]}:{addr[1]} is not the "\n'
+  '                            f"locked sender {self._sender[0]}:"\n'
+  '                            f"{self._sender[1]})")\n'
+  "                continue",
+  "            if self._sender is None:\n"
+  "                self._sender = addr"),
+
+ ("flamesafe: the arm-link sender lock never releases once stale",
+  "flamesafe/arminput.py",
+  "        if self._sender is not None and self._sender_at is not None and \\\n"
+  "                (now - self._sender_at) * 1000.0 > self._stale_ms:",
+  "        if False:"),
+
+ ("flamesafe: a flame-group name mismatch on the arm link is rejected in "
+  "total silence again",
+  "flamesafe/composer.py",
+  "                    self.stats[\"arm_rejected\"] += 1\n"
+  '                    self._event("arm-link",\n'
+  '                                f"arm assertion rejected: its group names "\n'
+  '                                f"{list(names)!r} do not match this "\n'
+  '                                f"config\'s {want_names!r}; a deck built "\n'
+  '                                f"against a different group map cannot "\n'
+  '                                f"arm the wrong head")\n'
+  "                    return False",
+  "                    self.stats[\"arm_rejected\"] += 1\n"
+  "                    return False"),
+
+ ("flamesafe: service.py drops a raising assert_arm with no journal line",
+  "flamesafe/service.py",
+  "            self.input_errors += 1\n"
+  '            self._event("arm-input", f"assert_arm raised "\n'
+  '                                     f"{type(e).__name__}: {e}; this is a "\n'
+  '                                     f"bug in the composer, which must "\n'
+  '                                     f"never raise here. The assertion "\n'
+  '                                     f"was dropped.")',
+  "            self.input_errors += 1"),
+
+ ("ltcplay: the deck's own journal route accepts an event with no text",
+  "ltcplay/schedule_service.py",
+  '        if not text:\n'
+  '            raise ValueError("A deck event needs its text. Nothing was "\n'
+  '                             "written.")',
+  "        if False:\n"
+  '            raise ValueError("unreachable")'),
+
 ]
 
 
