@@ -24183,8 +24183,18 @@ def test_conductor_abort_mid_hold_fade_wins():
           and halt[1] == (1.0,),
           f"music_halt starts the moment Abort lands, not after the Hold's "
           f"fade: {halt}")
-    check(rig.count("lasers_fade_out") == 0 and rig.count("lasers_blank")
-          == 1, "the lasers the Hold already blanked are not sent again")
+    # The Hold blanked the lasers; Abort sends their dark command again
+    # anyway (conductor.ALWAYS_RESENT: BEYOND never confirms, so "already
+    # dark" is never trusted), at its press and before the music fade.
+    check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
+    las = rig.first("lasers_fade_out")
+    check(las is not None and abs(las[2] - 400.1) < 1e-9
+          and rig.names().index("lasers_fade_out")
+          < rig.names().index("music_halt"),
+          f"Abort sends the lasers dark again at its press, before "
+          f"anything else it fades: {las} {rig.names()}")
+    check(any(_cond_mod().AGAIN in t for t, _f in lines),
+          "the journal says the blank was a re-send to lasers already dark")
     check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
           == 1, "Abort does not re-send video or pixels: the Hold's fade "
           "already left them black")
@@ -24378,12 +24388,15 @@ def test_conductor_announcements_hold_go_dark_then_play():
     check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
           f"played 0.5 s after the 0.25 s fade ended: {plays}")
     # Another announcement once that one has started: already dark, so it
-    # plays at once with nothing sent.
+    # plays at once with nothing sent but the lasers' blank, which is always
+    # re-sent (conductor.ALWAYS_RESENT), and is not a change worth 0.5 s.
     n = len(rig.calls)
     T.t = 810.0
     c.announce("cancellation", "Andy", "rack screen")
     c.run_pending()
-    check(len(rig.calls) == n, "already dark: nothing more is sent")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"already dark: only the lasers' blank is sent again: "
+          f"{rig.names(n)}")
     check(plays[-1][3] == 810.0, "and it plays at once")
     # Resume from the dark: everything comes back.
     T.t = 820.0
@@ -24409,9 +24422,9 @@ def test_conductor_announcements_hold_go_dark_then_play():
     T.t = 900.0
     c.announce("delayed", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == [],
-          f"an announcement during a Hold sends nothing: already dark: "
-          f"{rig.names(n)}")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"an announcement during a Hold sends nothing but the lasers' "
+          f"blank again (always re-sent): already dark: {rig.names(n)}")
     check(plays[-1][3] == 900.0,
           f"and it plays at once, with nothing left to fade: {plays[-1]}")
     # A Hold pressed during the wait in the dark changes nothing.

@@ -4,9 +4,11 @@ are carried out on the rig, fire, lasers, video, pixels and music together.
 Imported ONLY by code that runs the Fire & Ice show. The GPL show at
 Dollywood never reaches it (test_the_gpl_path_never_loads_the_conductor).
 In this build nothing constructs a Conductor outside the selftest: the
-scheduler still runs dry (schedule_service.DRY_RUN), and the real laser and
-video calls (PR #17, madmapper.py and beyond.py) are not merged yet. See
-DeviceOutputs for exactly what that integration has to provide.
+scheduler still runs dry (schedule_service.DRY_RUN) and ShowOutputs is not
+built yet. The real laser and video side is devices.ConductorDevices (PR
+#17's madmapper.py and beyond.py, wired to DeviceOutputs below); its own
+docstring says why it calls their primitives directly rather than
+devices.py's on_hold()/on_resume()/on_abort().
 
 What it does, from the handoff and Jeff's decisions
 ===================================================
@@ -85,10 +87,13 @@ pieces, each small enough to prove:
    drive each output from what was actually applied toward the look the
    latest request wants (reconcile). So a Resume that supersedes a Hold
    half way through undoes exactly the steps the Hold got to, no more and
-   no fewer, and an Abort after a Hold does not blank lasers that are
-   already dark. A call that fails, raises, or returns something that is
-   not a Result leaves that output UNKNOWN, which never counts as done, so
-   the next effect that wants it dark sends the command again.
+   no fewer, and an Abort after a Hold does not fade video that is already
+   black. A call that fails, raises, or returns something that is not a
+   Result leaves that output UNKNOWN, which never counts as done, so the
+   next effect that wants it dark sends the command again. The one
+   exception is the lasers' dark command, which is sent every time a look
+   wants them dark, whatever the record says (ALWAYS_RESENT): BEYOND never
+   confirms anything, so "already dark" is never taken on trust.
 
 Abort's flame cut does not wait for the executor at all: abort() bumps the
 generation and zeroes and disarms the flames on the calling thread, inside
@@ -131,6 +136,18 @@ UNKNOWN = "unknown"
 LIT, BLACK, STOPPED = "lit", "black", "stopped"
 LIVE, ZERO = "live", "zero"
 MUSIC_PLAYING, MUSIC_HELD, MUSIC_STOPPED = "playing", "held", "stopped"
+
+# Outputs whose "dark" command is sent EVERY time a look wants them dark,
+# even when the record says the last one already landed. Only the lasers.
+# BEYOND answers nothing (bench B8), so "applied" only ever means a packet
+# left this machine, never that BEYOND acted on it, and someone at the
+# BEYOND console may have brought brightness back up by hand since. This is
+# devices.py's own rule ("never assume the earlier blank actually landed",
+# PR #17), kept when the conductor took over the sequencing: a repeated
+# blank costs about 40 ms and is never wrong; a skipped one could be.
+# Lighting things (and every other output) still reconciles as before.
+ALWAYS_RESENT = frozenset((("lasers", BLACK),))
+AGAIN = "(re-sent, already dark)"
 
 # Scheduler states in which the lasers may be lit (schedule.py's names),
 # plus the rehearsal page's own. Anything else, None included, is dark.
@@ -183,10 +200,11 @@ class DeviceOutputs:
 
     def lasers_fade_out(self, seconds):
         """Ramp BEYOND's brightness to 0 over `seconds` (Abort: 1 s, Jeff
-        2026-09-27; an announcement: 0.25 s). NOTE for #17: beyond.Beyond
-        today sends only 0 or 100 and refuses anything between, so this
-        needs a ramp (or, until Andy approves one, a blank, reported in the
-        Result's sentence so the journal says it was not a fade)."""
+        2026-09-27; an announcement: 0.25 s). beyond.Beyond sends only 0
+        or 100 and refuses anything between (its reviewed allow-list), so
+        devices.ConductorDevices blanks at once instead and journals that
+        it was not a fade. A real ramp needs its own reviewed change to
+        beyond.py."""
         raise NotImplementedError
 
     def lasers_restore(self):
@@ -517,7 +535,9 @@ class Conductor:
             else:
                 # Between shows the Hold only delays the next show: the rig
                 # keeps the look it already had (re-reconciling it sends
-                # nothing already sent), and the announcement plays at once.
+                # nothing already sent, except the lasers' blank, which is
+                # always re-sent: ALWAYS_RESENT), and the announcement plays
+                # at once.
                 look = self._look
             self._announcing = ann
             self._accept("Announcement", look, who, screen,
@@ -707,7 +727,10 @@ class Conductor:
                 progress.append("show frozen")
         elif faded:
             self._pause(gen, fade)
-        want["changed"] = bool(progress)
+        # A laser blank re-sent to lasers already dark (ALWAYS_RESENT) is
+        # not a change: an announcement while already held and dark does
+        # not wait another 0.5 s for it.
+        want["changed"] = any(AGAIN not in p for p in progress)
 
     def _run_up(self, gen, want, progress):
         """PLAYING: music back, video and pixels up, then (once the timecode
@@ -825,16 +848,20 @@ class Conductor:
               only_from=None):
         """Check the generation and make one call, as one locked step.
         Returns True if a command was sent. Skips an output already at
-        `value` (UNKNOWN never is), or not in `only_from` when given."""
+        `value` (UNKNOWN never is), or not in `only_from` when given,
+        EXCEPT lasers dark (ALWAYS_RESENT): see that constant."""
         with self._lock:
             self._check(gen)
             now = self._applied[output]
-            if now == value:
+            again = now == value
+            if again and (output, value) not in ALWAYS_RESENT:
                 return False
             if only_from is not None and now not in only_from:
                 return False
             r = self._call(label, fn, *args)
             self._applied[output] = value if r.ok else UNKNOWN
+        if again:
+            label = f"{label} {AGAIN}"
         progress.append(label if r.ok else f"{label} (FAILED)")
         return True
 
