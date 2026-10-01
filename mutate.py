@@ -2089,7 +2089,9 @@ MUTATIONS = [
 
  ("flamesafe: wrong group names in an assertion are accepted",
   "flamesafe/composer.py",
-  "                if list(names) != [g.name for g in self.groups]:",
+  "                want_names = [g.name for g in self.groups]\n"
+  "                if list(names) != want_names:",
+  "                want_names = [g.name for g in self.groups]\n"
   "                if False:"),
 
  ("flamesafe: a negative arm seq is taken as a real assertion",
@@ -3596,13 +3598,11 @@ def build():
   "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
   "            except link.LinkError as e:\n"
   '                self._event("arm-link", f"arm frame rejected: {e}")\n'
-  "                continue\n"
-  "            best = ArmAssertion(wanted, seq, names)",
+  "                continue\n",
   "            try:\n"
   "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
   "            except link.LinkError as e:\n"
-  "                wanted, seq, names = [False] * self._n, 0, None\n"
-  "            best = ArmAssertion(wanted, seq, names)"),
+  "                wanted, seq, names = [False] * self._n, 0, None\n"),
 
  ("flamesafe: SocketArmInput keeps asserting after close()",
   "flamesafe/arminput.py",
