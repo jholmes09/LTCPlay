@@ -632,6 +632,20 @@ def test_rule6_consent():
     check(bad == [False] * 6 and r7.c.stats["arm_rejected"] == 6
           and r7.c._arm_seq == before,
           f"six malformed assertions rejected, counter untouched: {bad}")
+    # Safety review of PR #31, item 6: a group-name mismatch used to be
+    # dropped in total silence (the generic except below just counted it,
+    # like a malformed shape); it is now its own journal line, naming the
+    # names it got and what it expected. The other four malformed shapes
+    # above are driver bugs, not a group-map mismatch, and stay uncounted
+    # here on purpose: only the two name mismatches should have written
+    # anything.
+    name_lines = [m for k, m in r7.log.events if k == "arm-link"]
+    check(len(name_lines) == 2
+          and all("do not match this config's" in m for m in name_lines)
+          and repr(list(NAMES[::-1])) in name_lines[0]
+          and repr(list(NAMES[:5])) in name_lines[1],
+          f"both group-name mismatches are journaled, saying which names "
+          f"and that they do not match: {name_lines}")
     check(r7.c.assert_arm([True] * 6, before + 1, names=NAMES),
           "the same assertion with the right names is accepted")
 
@@ -1190,6 +1204,88 @@ def test_socket_arm_input_is_the_real_build_step_7b_driver():
     inp2.close()
     deck.close()
     check(inp.poll() is None, "closed: poll() returns None, not an error")
+
+
+def test_socket_arm_input_sender_lock():
+    section("SocketArmInput: a second local sender is rejected while the "
+            "first is live, and a stale lock releases for a new one "
+            "(safety review of PR #31, item 1)")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    send(deck, 1, [False] * 6)
+    a = inp.poll()
+    check(a is not None and a.seq == 1, "the real deck's first frame locks "
+                                       "it in as the sender")
+    send(rogue, 10 ** 6, [True] * 6)
+    a = inp.poll()
+    check(a is None, "a rogue sender's frame is rejected outright: nothing "
+                     "to decode this poll")
+    check(any(k == "arm-link" and "another sender" in m
+              for k, m in log.events),
+          f"the rejection is journaled, not dropped in silence: "
+          f"{log.events}")
+    send(deck, 2, [True, False, False, False, False, False])
+    a = inp.poll()
+    check(a is not None and a.seq == 2 and a.wanted[0] is True,
+          f"the real deck's own next frame still goes through: {a.wanted}")
+    check(a.wanted != [True] * 6,
+          "the rogue's all-True frame from before never reached the "
+          "composer: Abort could not have been masked by it")
+    # Once the lock goes stale (nothing accepted for stale_ms), a new
+    # sender -- even the same rogue -- is accepted, exactly like the
+    # flame-frame link's own lock (CONTRACT.md).
+    t[0] += 0.3
+    send(rogue, 1, [False] * 6)
+    a = inp.poll()
+    check(a is not None and a.seq == 1,
+          f"after the lock goes stale a new sender is taken: {a}")
+    inp.close()
+    deck.close()
+    rogue.close()
+
+
+def test_service_journals_a_raising_assert_arm():
+    section("service: if assert_arm ever raised (it must not, by its own "
+            "contract), the service journals it instead of dropping it in "
+            "silence (safety review of PR #31, item 6)")
+    cfg = make_config()
+    log = Log()
+
+    class _OneAssertion(arminput.ArmInput):
+        def __init__(self):
+            self.polled = False
+
+        def poll(self):
+            if self.polled:
+                return None
+            self.polled = True
+            return arminput.ArmAssertion([False] * cfg.n, 1)
+
+    svc = Service(cfg, _OneAssertion(), log=log)
+
+    def boom(*a, **kw):
+        raise RuntimeError("deliberately broken for this test")
+
+    svc.composer.assert_arm = boom
+    svc._poll_arm()
+    check(svc.input_errors == 1, "the bad assertion is counted")
+    check(any(k == "arm-input" and "RuntimeError" in m
+              for k, m in log.events),
+          f"and journaled, not dropped in silence: {log.events}")
 
 
 def test_socket_arm_input_really_arms_a_group_end_to_end():
@@ -2519,6 +2615,8 @@ if __name__ == "__main__":
     test_link_rejects_malformed_datagrams()
     test_arm_link_rejects_malformed_datagrams_and_round_trips()
     test_socket_arm_input_is_the_real_build_step_7b_driver()
+    test_socket_arm_input_sender_lock()
+    test_service_journals_a_raising_assert_arm()
     test_socket_arm_input_really_arms_a_group_end_to_end()
     test_link_sequence_and_clock_rules()
     test_rule9_only_the_writer()

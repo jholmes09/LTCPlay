@@ -45,7 +45,8 @@ def main(argv=None):
                                 + (cfg.note or ""))
     if cfg.link_arm_port is not None:
         arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
-                                   cfg.link_key, cfg.n, log=journal)
+                                   cfg.link_key, cfg.n, log=journal,
+                                   stale_ms=cfg.arm_stale_ms)
         journal.event("config", f"arm input: the Stream Deck asserts arm "
                                 f"over {cfg.link_arm_ip}:{cfg.link_arm_port} "
                                 f"(build step 7b); until it connects and is "

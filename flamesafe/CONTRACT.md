@@ -218,19 +218,68 @@ anything changed:
 
 Rejected, with the reason journaled: not JSON, not an object, longer than
 16384 bytes, wrong `v`, wrong or missing `k`, wrong `t`, `seq` missing or
-negative, `wanted` not exactly N booleans, `names` not exactly N strings. A
-rejected datagram changes nothing, exactly as for a rejected flame frame.
-Unlike the flame-frame link there is no sender lock: there is exactly one
-Stream Deck in this show, and the key already keeps out anything that has
-not read flamesafe's config.
+negative, `wanted` not exactly N booleans, `names` not exactly N strings, a
+sender other than the locked one (below), group names that do not match
+this config's (checked one layer up, in the arm input rules below, and
+also journaled). A rejected datagram changes nothing, exactly as for a
+rejected flame frame.
+
+**The sender lock (added 2026-10-01, after a second safety review).** This
+section used to end here: "Unlike the flame-frame link there is no sender
+lock: there is exactly one Stream Deck in this show, and the key already
+keeps out anything that has not read flamesafe's config... the cost of
+being wrong here is a DISARM, never a fire." Running the actual code
+proved that false. `wanted` can ask for EITHER state, so a second local
+process that has read flamesafe's config -- the key is not a secret in the
+cryptographic sense, it lives in a file -- can send `wanted=True` exactly
+as easily as `wanted=False`. Worse, because the service keeps only the
+LAST arm datagram it could decode each tick, a rogue sender racing the
+real Stream Deck can win a tick outright: if the operator's own Abort
+sends `wanted` all false and a rogue frame lands after it in the same
+tick, or the rogue simply keeps re-asserting `True` faster than anyone
+notices, the composer sees only the rogue's `True` that tick, and a group
+can read ARMED again a moment after the operator just told it not to be --
+an Abort visibly undone by a datagram the operator never sent, on the
+screen they are watching. That is not "only ever a disarm"; it is a way
+to MASK an Abort.
+
+So the arm link now has the same sender lock the flame-frame link always
+had: while a datagram has been accepted from one (ip, port) inside
+`arm_stale_ms` of another, a datagram from anywhere else is rejected as
+`another sender` and journaled, changing nothing. Once nothing has been
+accepted for `arm_stale_ms` the lock releases, so a restarted deck on a
+new port still takes over -- the window in which a genuinely different
+sender could slip in is never wider than the window in which a
+disconnect would have disarmed every group anyway. This lock lives in
+`flamesafe/arminput.py`'s `SocketArmInput`, not in the composer: every
+consent, dwell, chatter and edge-quiet rule is unchanged by this fix, and
+the lock holder still has to prove consent (rule 6 below) all over again.
+On the Stream Deck's own side (`ltcplay/streamdeck.py`), this is a second
+line of defence, not the only one: the deck compares flamesafe's reported
+arm counter and per-group `wanted` states against what it itself last
+sent, and raises a visible alarm the moment they diverge, because it
+should never see state on the wire that it did not set and does not
+expect.
 
 **This frame says only what the deck wants.** It decides nothing: every
 rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,
 `arm_stale_ms`) runs in the composer exactly as it does for the test
-driver. The Stream Deck's bottom-row keys toggle `wanted` for one group
-each on press; they never encode "armed", "cycling" or "waiting" on the
-wire; those are read back from the status frame's per-group `armed`,
-`reason`, `amber` and `dwell_s` and drawn on the key.
+driver. The Stream Deck's bottom-row keys set `wanted` for one group each;
+they never encode "armed", "cycling" or "waiting" on the wire; those are
+read back from the status frame's per-group `armed`, `reason`, `amber` and
+`dwell_s` and drawn on the key. **Arming is a hold, disarming is a tap**
+(Jeff, 2026-10-01, safety review of PR #31, item 8): pressing an OFF (or
+SHOW LOST) group key starts a short hold-to-arm timer on the DECK side
+only (the same shape as the Abort key's own hold, with the same kind of
+fill feedback); only once it completes does the deck send `wanted=True`
+for that group, and letting go early sends nothing. Pressing an
+armed-or-held key sends `wanted=False` at once, no hold, same as always.
+A group key also refuses to even START a hold for a short refractory
+window right after that same key's last disarm, so pressing it again "to
+be sure" during a panic can never quietly re-arm it. None of this changes
+what is on the wire or what the composer does with it; `wanted` is still
+a plain boolean vector, asserted continuously, exactly as this whole
+section already describes -- only the deck's own button feel changed.
 
 **Abort disarms over this same link, not a new message to flamesafe.**
 Pressing and holding the Stream Deck's ABORT key sends `wanted` all false
@@ -242,6 +291,20 @@ can only zero ltcplay's own flame cue values (`flames_zero`), because
 flamesafe has no message on the EXISTING flame-frame link that means
 "disarm", on purpose -- the only thing that can disarm a group from outside
 flamesafe is the thing that is allowed to say what it wants armed.
+
+**Abort must respond whenever there is anything to abort** (Jeff,
+2026-10-01, safety review of PR #31, item 2): the deck's own hold-to-fire
+gate on the Abort key used to ask ltcplay's scheduler whether a show was
+PLAYING or HELD, and refused to even start the hold otherwise. That left
+Abort dead exactly when it still mattered: a group armed before a show
+has started, a group left armed between two shows, or any group at all
+while ltcplay's own web server (and so the scheduler's state) could not
+be reached. The gate is now whether any flame group is wanted or armed,
+as the deck itself knows it, never a scheduler's opinion; a scheduler
+that says a show is running is an ADDITIONAL reason to light the key (for
+a wired conductor's own lasers/video/pixels/music cascade), never the
+only one. Pressing Abort with nothing armed or wanted is refused and
+journaled, so it is never a silent no-op.
 
 **Losing the Stream Deck is losing the arm input**, not a new failure mode:
 `poll()` returns None once nothing has arrived for the input's own
@@ -351,3 +414,10 @@ optional link -- a new `"t": "arm"` frame on `link.arm_port`/`link.arm_ip`,
 keyed exactly like the flame and status frames. No existing frame's field,
 meaning or type changed; a config without `link.arm_port` runs exactly as
 before this step.
+
+Version 2, 2026-10-01 (safety review follow-up, same day): the arm link
+gets the flame-frame link's own sender lock (a datagram from a second
+sender is now rejected as `another sender`, journaled), and a group-name
+mismatch the composer rejects is now journaled too. No field's name, type
+or wire meaning changed; a deck and a flamesafe that already spoke build
+step 7b's arm frame correctly see no difference at all.

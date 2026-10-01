@@ -39,11 +39,21 @@ chatter and edge-quiet rule in rules.py runs in the composer exactly as it
 does for ScriptedArmInput in the tests.  It is deliberately dumb for the
 same reason composer.py is the only place that writes the flame universe:
 one place to get the safety rules right, not two.
+
+SENDER LOCK (added 2026-10-01, after a second safety review proved a
+forged local datagram is not harmless -- see SocketArmInput's own
+docstring for the full reasoning): while SocketArmInput has accepted a
+datagram from an (ip, port) inside arm_stale_ms of another, a datagram
+from anywhere else is rejected as "another sender" and journaled, exactly
+like the flame-frame link's own lock (composer.ingest_frame). The lock
+lives in this file, not in the composer: consent (rule 2 below) still has
+to be proved by whoever holds it, unchanged.
 """
 
 from __future__ import annotations
 
 import socket
+import time
 
 from . import link
 
@@ -51,6 +61,12 @@ from . import link
 # only the last one decoded this call is kept, matching service.py's own
 # _drain() for the flame-frame link.
 DRAIN_PER_TICK = 200
+
+# The sender lock's own staleness window (see SocketArmInput below), the
+# same default CONTRACT.md gives arm_stale_ms.  __main__.py passes the
+# config's real arm_stale_ms instead; this is only what you get if nobody
+# does.
+DEFAULT_STALE_MS = 500
 
 
 class ArmAssertion:
@@ -136,25 +152,64 @@ class SocketArmInput(ArmInput):
 
     poll() drains everything waiting and returns only the LAST one it could
     decode, as one ArmAssertion; a flood never backs up into a queue that
-    grows faster than it drains.  A datagram this config cannot accept
-    (wrong key, wrong shape, wrong group names) is rejected and journaled,
-    exactly like a rejected flame frame, and changes nothing: it is simply
-    not there, which is the same as the deck not having sent it.
+    grows faster than it drains.  A datagram this config cannot even decode
+    (wrong key, wrong shape) is rejected here and journaled.  A datagram
+    that decodes fine but whose group NAMES do not match this config's is a
+    separate check, one layer up in composer.assert_arm; it is also
+    journaled, by the composer itself (build step 7b's safety review found
+    the prior code dropped that one in total silence, despite an earlier
+    version of this docstring claiming it was "journaled exactly like a
+    rejected flame frame" -- it was not, and the claim is fixed here along
+    with the code).
 
-    No sender lock, unlike the flame-frame link.  There is exactly one
-    Stream Deck in this show, the key already keeps out anything that has
-    not read flamesafe's config, and the cost of being wrong here is a
-    DISARM (rule 6, consent, still has to be re-proved), never a fire --
-    the asymmetry that justifies the flame link's own extra lock does not
-    apply to an input that can only ever ask for less."""
+    THE SENDER LOCK (added after a second safety review, 2026-10-01).  An
+    earlier version of this class had none, on the reasoning: "the cost of
+    being wrong here is a DISARM ... never a fire." Running the actual code
+    proved that false. `wanted` can ask for EITHER state, so a second local
+    process that has read flamesafe's config -- the key lives in a file,
+    it is not a secret in the cryptographic sense, CONTRACT.md says so --
+    can send `wanted=True` exactly as easily as `wanted=False`. Worse,
+    service.py's own drain keeps only the LAST datagram it could decode
+    each tick: a rogue sender racing the real Stream Deck can win a tick
+    outright. If the operator's own Abort sends `wanted` all false and a
+    rogue frame lands after it in the same tick, or the rogue simply keeps
+    re-asserting `True` faster than anyone is watching for it, the composer
+    sees only the rogue's `True` that tick, and a group can read ARMED
+    again a moment after the operator just told it not to be: an Abort
+    visibly undone by a datagram the operator never sent, on the very
+    screen they are watching. That is not "only ever a disarm"; it is a
+    way to MASK an Abort, which is the worst of both failure directions at
+    once.
 
-    def __init__(self, listen_ip, listen_port, key, n, log=None):
+    So poll() now does exactly what composer.ingest_frame already does for
+    the flame-frame link: while a datagram has been accepted inside
+    `stale_ms` of another, only that SAME (ip, port) is accepted; a
+    datagram from anywhere else is rejected as `another sender` and
+    journaled, and changes nothing here or in the composer. Once nothing
+    has been accepted for `stale_ms`, the lock releases and the next
+    sender to decode cleanly takes it over -- `stale_ms` defaults to the
+    config's own `arm_stale_ms` (__main__.py passes it), the same value
+    that already disarms every group on silence, so the window in which a
+    genuinely different sender could slip in is never wider than the
+    window in which a disconnect would have disarmed every group anyway.
+    This lock lives entirely in this file, never in composer.py: every
+    arm/disarm/dwell/chatter/consent rule there is unchanged by this fix on
+    purpose, and the lock holder still has to prove consent (rule 6) all
+    over again, exactly as before."""
+
+    def __init__(self, listen_ip, listen_port, key, n, log=None,
+                stale_ms=DEFAULT_STALE_MS, clock=time.perf_counter):
         self._ip = listen_ip
         self._port = listen_port
         self._key = key
         self._n = n
         self._log = log
+        self._stale_ms = stale_ms
+        self._clock = clock
         self._sock = None
+        self._sender = None       # (ip, port) locked while a datagram from
+                                  # it has been accepted inside stale_ms
+        self._sender_at = None    # our own clock, last accepted datagram
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -163,15 +218,25 @@ class SocketArmInput(ArmInput):
         sock.bind((self._ip, self._port))
         sock.setblocking(False)
         self._sock = sock
+        self._sender = None
+        self._sender_at = None
 
     def poll(self):
         sock = self._sock
         if sock is None:
             return None
+        now = self._clock()
+        if self._sender is not None and self._sender_at is not None and \
+                (now - self._sender_at) * 1000.0 > self._stale_ms:
+            # Nothing accepted from the locked sender for stale_ms: release
+            # it, exactly as the flame-frame link releases its own lock
+            # once frame_stale_ms has passed (CONTRACT.md).
+            self._sender = None
+            self._sender_at = None
         best = None
         for _ in range(DRAIN_PER_TICK):
             try:
-                data, _addr = sock.recvfrom(65535)
+                data, addr = sock.recvfrom(65535)
             except BlockingIOError:
                 break
             except ConnectionResetError:
@@ -180,11 +245,21 @@ class SocketArmInput(ArmInput):
                 continue
             except OSError:
                 break
+            addr = tuple(addr[:2])
             try:
                 wanted, seq, names = link.decode_arm(data, self._n, self._key)
             except link.LinkError as e:
                 self._event("arm-link", f"arm frame rejected: {e}")
                 continue
+            if self._sender is None:
+                self._sender = addr
+            elif addr != self._sender:
+                self._event("arm-link", f"arm frame rejected: another "
+                            f"sender ({addr[0]}:{addr[1]} is not the "
+                            f"locked sender {self._sender[0]}:"
+                            f"{self._sender[1]})")
+                continue
+            self._sender_at = now
             best = ArmAssertion(wanted, seq, names)
         return best
 
@@ -195,6 +270,8 @@ class SocketArmInput(ArmInput):
                 sock.close()
             except OSError:
                 pass
+        self._sender = None
+        self._sender_at = None
 
     def _event(self, kind, msg):
         if self._log is None:

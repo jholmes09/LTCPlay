@@ -124,8 +124,22 @@ class Composer:
             if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
                 raise ValueError("seq")
             if names is not None:
-                if list(names) != [g.name for g in self.groups]:
-                    raise ValueError("names")
+                want_names = [g.name for g in self.groups]
+                if list(names) != want_names:
+                    # Safety review of PR #31, item 6: this used to be
+                    # folded into the generic except below, which counted
+                    # it and journaled NOTHING -- a deck built against a
+                    # different group map failed to arm anything and the
+                    # night journal never said why. Named here instead, so
+                    # it says which names, and against what.
+                    self.stats["arm_rejected"] += 1
+                    self._event("arm-link",
+                                f"arm assertion rejected: its group names "
+                                f"{list(names)!r} do not match this "
+                                f"config's {want_names!r}; a deck built "
+                                f"against a different group map cannot "
+                                f"arm the wrong head")
+                    return False
         except Exception:                               # noqa: BLE001
             self.stats["arm_rejected"] += 1
             return False

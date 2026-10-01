@@ -185,8 +185,19 @@ class Service:
         try:
             self.composer.assert_arm(a.wanted, a.seq,
                                      names=getattr(a, "names", None))
-        except Exception:                               # noqa: BLE001
+        except Exception as e:                          # noqa: BLE001
+            # assert_arm's own contract is "never raises" (composer.py); if
+            # it ever does anyway, that is a bug in the composer, and the
+            # old code here dropped the assertion with nothing but a
+            # counter bumped (safety review of PR #31, item 6: named
+            # alongside composer.py's own silent drop of a name mismatch,
+            # because both left the same kind of rejection invisible).
             self.input_errors += 1
+            self._event("arm-input", f"assert_arm raised "
+                                     f"{type(e).__name__}: {e}; this is a "
+                                     f"bug in the composer, which must "
+                                     f"never raise here. The assertion "
+                                     f"was dropped.")
 
     def run_once(self):
         """One tick.  Returns the composer's Output."""
