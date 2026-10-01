@@ -3882,6 +3882,122 @@ def build():
   "            if self._latched:\n                return done(\"The show is aborted, so",
   "            if False:\n                return done(\"The show is aborted, so"),
 
+ # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
+ # the lasers-dark re-send that keeps devices.py's "never assume a blank
+ # landed" rule). Still "conductor:", so `mutate.py conductor:` runs them.
+ ("conductor: lasers already dark are trusted and not blanked again",
+  "ltcplay/conductor.py",
+  "            if again and (output, value) not in ALWAYS_RESENT:",
+  "            if again:"),
+
+ ("conductor: a laser blank re-sent to lasers already dark earns another "
+  "0.5 s in the dark",
+  "ltcplay/conductor.py",
+  "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
+  "        want[\"changed\"] = bool(progress)"),
+
+ ("conductor: Abort fades the video before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        faded |= self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                            self.devices.lasers_fade_out, fade)\n"
+  "        faded |= self._step(gen, \"video\", BLACK, \"video faded\", progress,\n"
+  "                            self.devices.video_fade_out, fade,\n"
+  "                            only_from=(LIT, UNKNOWN))\n",
+  "        faded |= self._step(gen, \"video\", BLACK, \"video faded\", progress,\n"
+  "                            self.devices.video_fade_out, fade,\n"
+  "                            only_from=(LIT, UNKNOWN))\n"
+  "        faded |= self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                            self.devices.lasers_fade_out, fade)\n"),
+
+ ("conductor: a Hold fades the music before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n",
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n"
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"),
+
+ ("conductor: the real device layer says it is wired without BEYOND or "
+  "MadMapper",
+  "ltcplay/conductor.py",
+  "        self.wired = madmapper is not None and beyond is not None",
+  "        self.wired = True"),
+
+ ("conductor: a BEYOND command that never got out is reported as sent",
+  "ltcplay/conductor.py",
+  "        if ok is True:\n            return done(f\"{what}: sent to BEYOND.\")",
+  "        if True:\n            return done(f\"{what}: sent to BEYOND.\")"),
+
+ ("conductor: a broken BEYOND raises into the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n"
+  "            ok = getattr(self.beyond, method)(show=self.show, **kw)\n"
+  "        except Exception as e:\n"
+  "            return failed(f\"{what} failed: {type(e).__name__}: {e}. \"\n"
+  "                          f\"{failed_means}\")\n",
+  "        ok = getattr(self.beyond, method)(show=self.show, **kw)\n"),
+
+ ("conductor: the Abort's instant laser blank is not journaled as not a fade",
+  "ltcplay/conductor.py",
+  "        if self.beyond is not None and r.ok:\n            _device_note(",
+  "        if False:\n            _device_note("),
+
+ ("conductor: the Abort's laser command lights the lasers instead",
+  "ltcplay/conductor.py",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
+  "                         in_show=True)"),
+
+ ("conductor: a Resume never lights the lasers through the real device layer",
+  "ltcplay/conductor.py",
+  "        return self._beyond(\"Laser restore\", \"unblank\",\n"
+  "                            \"The lasers stay dark.\", in_show=True)",
+  "        return self._beyond(\"Laser restore\", \"blank\",\n"
+  "                            \"The lasers stay dark.\")"),
+
+ ("conductor: the video fade blocks the conductor until it ends",
+  "ltcplay/conductor.py",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False)",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=True)"),
+
+ ("conductor: an instant video level does not stop a fade still running",
+  "ltcplay/conductor.py",
+  "            self.mm.cancel()\n            self.mm.set_surfaces(end, wait=False)",
+  "            self.mm.set_surfaces(end, wait=False)"),
+
+ ("conductor: Abort stops the intermission bank instead of the show's",
+  "ltcplay/conductor.py",
+  "self.mm.stop_bank(self.mm.cfg.show_bank, wait=False))",
+  "self.mm.stop_bank(self.mm.cfg.intermission_bank, wait=False))"),
+
+ ("conductor: a closed MadMapper link is reported as sent",
+  "ltcplay/conductor.py",
+  "        if getattr(self.mm, \"_closed\", False):",
+  "        if False:"),
+
+ ("conductor: the video fade to black fades up instead",
+  "ltcplay/conductor.py",
+  "            lambda: self._surfaces(1.0, 0.0, seconds))",
+  "            lambda: self._surfaces(0.0, 1.0, seconds))"),
+
+
 
 ]
 

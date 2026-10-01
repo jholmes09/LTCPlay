@@ -24855,6 +24855,18 @@ def _cond_devices(gate=None, mm=True, beyond=True, beyond_factory=None):
                        socket_factory=lambda: _StampSock("mm", rig.calls,
                                                          T.now),
                        clock=steps.clock, sleep=steps.sleep, journal=journal)
+        # Packets leave from the Link's own worker thread, so their place
+        # in the log depends on thread timing. The CALL into the Link is
+        # made on the conductor's thread: log that too ("mm_call"), so an
+        # order check never passes by luck of scheduling.
+        for name in ("fade_surfaces", "set_surfaces", "cancel", "stop_bank",
+                     "fade_audio", "set_audio", "fade_all",
+                     "restore_levels", "select_bank", "play",
+                     "play_from_beginning"):
+            def rec(*a, _name=name, _fn=getattr(link, name), **k):
+                rig.calls.append(("mm_call", (_name,) + a, T.now()))
+                return _fn(*a, **k)
+            setattr(link, name, rec)
     if beyond:
         bey = B.Beyond(B.BeyondConfig.parse({}),
                        socket_factory=beyond_factory or (
@@ -24915,6 +24927,13 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
           f"the blank is out before the music starts to fade: {names}")
     check(m and b and min(m) > max(b),
           f"every MadMapper packet comes after the blank: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check(mc and b and min(mc) > max(b),
+          f"the conductor calls MadMapper only after the blank is out: "
+          f"{names}")
+    check([ev[i][1][:3] for i in mc] == [("fade_surfaces", 1.0, 0.0)],
+          f"one call: the surfaces fade from 1 to 0, nothing else: "
+          f"{[ev[i][1] for i in mc]}")
     check(all(ev[i][2] == 300.0 for i in b),
           "the blank goes at the press, with no fade of its own")
     hold = rig.first("music_hold")
@@ -24947,7 +24966,7 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     check([e[1][1] for e in ev if e[0] == "beyond"]
           == [B.BLANK_VALUE] * B.RETRY_COUNT,
           f"a rehearsal Hold blanks BEYOND too: {ev}")
-    check(_cd_idx(ev, "mm") == [],
+    check(_cd_idx(ev, "mm") == [] and _cd_idx(ev, "mm_call") == [],
           f"a rehearsal Hold sends MadMapper nothing: the video freezes "
           f"with the timecode: {ev}")
     check(rig.first("music_hold")[1] == (0.0,), "and the music stops at once")
@@ -24996,6 +25015,11 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
               f"BEYOND is dark before {later} starts: {names}")
     check(m and min(m) > max(b),
           f"BEYOND is dark before MadMapper is sent anything: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check([ev[i][1][0] for i in mc] == ["fade_surfaces", "stop_bank"]
+          and min(mc) > max(b),
+          f"the conductor calls MadMapper (fade, then stop) only after "
+          f"BEYOND is dark: {names}")
     check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
           f"the journal says the lasers were blanked, not faded: {lines}")
     mm_ev = [ev[i][1] for i in m]
@@ -25034,6 +25058,9 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
     check(any(C.AGAIN in t for t, _f in lines),
           "the journal says it was a re-send to lasers already dark")
     mm_ev = [e[1] for e in ev if e[0] == "mm"]
+    check([e[1][0] for e in ev if e[0] == "mm_call"] == ["stop_bank"]
+          and names.index("mm_call") > max(b),
+          f"after the blank, MadMapper is only told to stop: {names}")
     check(mm_ev == [(f"/timelines/{link.cfg.show_bank}/conductor/stop",
                      None)],
           f"the video the Hold already faded is not faded again, only "
@@ -25068,6 +25095,8 @@ def test_conductor_devices_resume_unblanks_only_after_timecode_and_gate():
           f"BEYOND comes back up (100): {[ev[i] for i in b]}")
     check(b and min(b) > names.index("music_resume"),
           f"after the music starts back: {names}")
+    check(min(b) > names.index("mm_call"),
+          f"and after the video has been asked back up: {names}")
     check(all(ev[i][2] >= 500.3 - 1e-9 for i in b),
           f"and not before the timecode moves (0.3 s): "
           f"{[ev[i][2] for i in b]}")
