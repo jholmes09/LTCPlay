@@ -400,9 +400,15 @@ class Service:
 
     def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
                  clock_limit_s=CLOCK_CHECK_LIMIT_S, log_dir=None,
-                 flame_provider=None, logbook=None, perf_counter=None):
+                 flame_provider=None, logbook=None, perf_counter=None,
+                 conductor=None):
         self.path = path
         self.clock = clock or _utc_now
+        # The Fire & Ice show conductor (ltcplay.conductor.Conductor), or
+        # None (the GPL path, and every build before PR #17's device layer
+        # lands). See _drive_conductor: without one, every effect is only
+        # journaled as not performed, exactly as before this was added.
+        self.conductor = conductor
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -628,12 +634,77 @@ class Service:
             screen=(le.screen.strip() or "unnamed screen") if op else None,
             fault=le.outcome in self.FAULT_OUTCOMES)
 
-    def _record(self, out, now):
+    # Effect-kind bundles schedule.py always emits together for one show
+    # conductor action (see its module docstring, and entry_effects and
+    # _abort_effects). Checked by subset, most specific first, so the
+    # abort and closing bundles -- which both carry ZERO_FLAME_CUES and
+    # STOP_CONDUCTOR -- are never confused: closing never also carries
+    # BLANK_LASERS or FADE_MUSIC_OUT, but the check order makes that true
+    # by construction rather than by relying on it.
+    _HOLD_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                               sch.FREEZE_SHOW, sch.FADE_MUSIC_OUT))
+    _RESUME_EFFECTS = frozenset((sch.RESUME_SHOW, sch.FADE_MUSIC_IN,
+                                 sch.UNBLANK_LASERS))
+    _ABORT_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                                sch.FADE_MUSIC_OUT, sch.FADE_VIDEO_OUT,
+                                sch.FADE_PIXELS, sch.STOP_CONDUCTOR))
+
+    def _drive_conductor(self, out, ev):
+        """Hand the effects that belong to the show conductor (Hold,
+        Resume, Abort, a show starting, leaving the show for intermission)
+        to conductor.Conductor, instead of only ever journaling them as
+        not performed. Returns (label, conductor.Result), or None when
+        there is no conductor attached (every build before PR #17's
+        device layer lands, and the GPL path, which never even passes a
+        schedule) or the outcome carries no effects (a refused event, or a
+        TICK that changed nothing).
+
+        Matched by which effect KINDS came back, not by which event was
+        sent: that is what schedule.py's own module docstring describes
+        as the contract for whatever performs its effects, and it is
+        robust to a bundle arriving by more than one route (SHOW_FAILED
+        and a restart mid-show fade out exactly like an Abort).
+
+        Only the effects conductor.py actually implements are claimed.
+        PRESHOW_LOOK and INTERMISSION both map onto its one BETWEEN look
+        (conductor.py's own docstring: "intermission, preshow, closing").
+        The closing sequence's pixel fade and blackout are NOT claimed:
+        conductor.py has no method for them, so they are still only
+        journaled as not performed, same as before this existed."""
+        if self.conductor is None or not out.effects:
+            return None
+        kinds = {e.kind for e in out.effects}
+        who, screen = ev.who, ev.screen
+        if kinds >= self._HOLD_EFFECTS:
+            return "Hold", self.conductor.hold(who, screen)
+        if kinds >= self._RESUME_EFFECTS:
+            return "Resume", self.conductor.resume(who, screen)
+        if kinds >= self._ABORT_EFFECTS:
+            return "Abort", self.conductor.abort(who, screen)
+        if sch.START_SHOW in kinds:
+            return "Show start", self.conductor.show_starting(who, screen)
+        if sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
+            return "Intermission", self.conductor.intermission(who, screen)
+        return None
+
+    def _record(self, out, now, claimed=None):
         for le in out.log:
             self._record_logevent(le)
-        for eff in out.effects:
-            desc = eff.kind + (f" show {eff.show}" if eff.show else "") + \
+        if not out.effects:
+            return
+        descs = [eff.kind + (f" show {eff.show}" if eff.show else "") +
                 (f" over {eff.seconds:g} s" if eff.seconds else "")
+                for eff in out.effects]
+        if claimed is not None:
+            label, result = claimed
+            text = f"{label}: {', '.join(descs)}. {result.sentence}".strip()
+            self._journal_line(
+                "system", text, action=label.lower(),
+                outcome="done" if result.ok else "failed",
+                reason=result.sentence or "sent to the show conductor",
+                fault=not result.ok)
+            return
+        for eff, desc in zip(out.effects, descs):
             self._journal_line(
                 "system", f"Not performed, dry run: {desc}.",
                 action=eff.kind, outcome="not performed",
@@ -645,7 +716,8 @@ class Service:
         before = self.machine
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
-        self._record(out, now)
+        claimed = self._drive_conductor(out, ev)
+        self._record(out, now, claimed)
         if DRY_RUN and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -875,9 +947,17 @@ class Service:
             # (the machine was asleep across it) is marked MISSED in the
             # journal rather than dropped without a word.
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            if self.machine.state in (sch.SHOW, sch.PAUSED):
+            if self.machine.state in (sch.SHOW, sch.PAUSED) or \
+                    self.machine.delayed() is not None:
                 # Never replace a running night: a show started by hand at
-                # 23:58 finishes on yesterday's list.
+                # 23:58 finishes on yesterday's list. Same for a night that
+                # still has a delayed show waiting for Start now or Close
+                # for the night (Jeff, 2026-10-01): the calendar date
+                # rolling over must not be what closes it. schedule.py's
+                # own _tick no longer auto-misses a delayed show at
+                # midnight either, so without this check the delayed show
+                # would survive the tick above only to be thrown away here
+                # a moment later.
                 return True
             if str(self.machine.date) not in self._summarised and \
                     self.machine.slots:

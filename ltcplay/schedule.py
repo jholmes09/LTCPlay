@@ -15,6 +15,18 @@ Windows needs the `tzdata` package.
 
 It never looks at flame arm state. Flames are gated by the safety process,
 not by the calendar, so there is no arm field, arm event or arm effect here.
+This is also Jeff's answer (2026-10-01) to whether the scheduler should wait
+for a person to clear a flamesafe latch (a group that disarmed itself, for a
+sensor trip or anything else, and needs the arm cycled by hand) before
+auto-starting the next scheduled show: it should NOT wait, it starts the
+next show anyway. Today that is true only because there is no signal path
+at all from flamesafe into this module (see flamesafe/CONTRACT.md and
+conductor.py's own note on flames_disarm_all needing a link message that
+does not exist yet) -- so there is nothing here FOR this file to hold on.
+If a later change ever gives the scheduler a way to see flamesafe's latch
+state, it must not use it to hold or block a scheduled show; that would be
+a fire-safety behavior change, and it needs Jeff's own review, same as this
+decision did.
 
 Contract for PR 3, the code that performs the effects
 ------------------------------------------------------
@@ -139,6 +151,15 @@ INTERMISSION_AFTER_A_STOPPED_SHOW = False
 # started. Past this, a SHOW_FAILED is recorded as a fault and the show
 # keeps running: six minutes into a show is not a failed start.
 CONFIRM_WINDOW_S = 10
+
+# The intermission loop starts this long before the first show of the
+# night, not the moment the night opens and not only once the first show's
+# own time arrives (Jeff, 2026-10-01). Before this window IDLE plays the
+# preshow look; inside it, STANDBY runs the intermission timeline. If the
+# night opens with less than this much time before the first show, there
+# is no preshow phase at all: it goes straight to STANDBY. See
+# _in_preshow_lead, used by _boot_done, _tick and _resume.
+PRESHOW_LEAD_S = 30 * 60
 
 # Events, and who may send each one. A blank or unknown actor is a
 # programming error and raises; an event sent in the wrong state is refused
@@ -917,6 +938,15 @@ def _guard_left(m, now):
     return max(0.0, left)
 
 
+def _in_preshow_lead(m, now):
+    """True once `now` is within PRESHOW_LEAD_S of the first show, which is
+    whatever `next_slot()` says while nothing tonight has happened yet (the
+    only time this is asked). None if there is no show left to be first."""
+    nxt = m.next_slot()
+    return nxt is not None and \
+        now >= nxt.start - timedelta(seconds=PRESHOW_LEAD_S)
+
+
 def _closing_effects():
     return [Effect(ZERO_FLAME_CUES), Effect(STOP_CONDUCTOR),
             Effect(FADE_PIXELS, seconds=CLOSING_FADE_S), Effect(BLACKOUT)]
@@ -1130,6 +1160,10 @@ def _boot_done(m, ev, now):
     elif any(s.status != PENDING for s in tx.m.slots):
         _enter(tx, STANDBY, after_stop=cut)
         why = "shows have already passed tonight"
+    elif _in_preshow_lead(tx.m, now):
+        _enter(tx, STANDBY)
+        why = (f"within {fmt_span(PRESHOW_LEAD_S)} of the first show, so the "
+               f"intermission loop runs rather than the preshow look")
     else:
         _enter(tx, IDLE)
         why = "before the first show"
@@ -1148,13 +1182,10 @@ def _tick(m, ev, now):
         return Outcome(m)
     tx = _Tx(m, ev, now)
     before = tx.m.state
-    d = tx.m.delayed()
-    if d is not None and now >= midnight(tx.m):
-        why = "MISSED (still delayed at midnight)"
-        tx.set_slot(d.n, status=MISSED, reason=why)
-        tx.note("miss", "missed", why,
-                f"The delayed show {d.n} was never started, and the night is "
-                f"over.", show=d.n, actor="scheduler")
+    # A delayed show keeps the night open on its own (Jeff, 2026-10-01): it
+    # is never auto-missed or auto-closed just because midnight came and
+    # went. It waits for Start now, or for the operator to Close for the
+    # night, however long that takes.
     _sweep(tx)
     st = tx.m.state
     if st in (IDLE, STANDBY) and not tx.m.waiting():
@@ -1169,6 +1200,16 @@ def _tick(m, ev, now):
         _enter(tx, STANDBY)
         tx.note("standby", "done", "the first show was missed",
                 "Waiting for the next show with the intermission running.",
+                actor="scheduler")
+    elif before == IDLE and st == IDLE and _in_preshow_lead(tx.m, now):
+        # The first show is close enough now that the intermission loop
+        # takes over from the preshow look (Jeff, 2026-10-01).
+        nxt = tx.m.next_slot()
+        _enter(tx, STANDBY)
+        tx.note("standby", "done",
+                f"within {fmt_span(PRESHOW_LEAD_S)} of the first show",
+                f"The intermission loop starts: show {nxt.n} is "
+                f"{fmt_span(lateness_s(now, nxt.start))} away.",
                 actor="scheduler")
     return tx.done()
 
@@ -1307,7 +1348,19 @@ def _start_now(m, ev, now):
     is running or paused (refused in step). It ignores guard_s, and it works
     straight after an Abort. It starts the DELAYED show if there is one,
     otherwise the next show now (using up that slot), otherwise an extra
-    show. Jeff, 2026-09-23."""
+    show. Jeff, 2026-09-23.
+
+    FLAGGED for Jeff, 2026-10-01: a later backlog item was relayed as "Start
+    now always runs as an extra show, never jumps the next scheduled slot
+    early", which would mean dropping the STARTED_EARLY branch below. That
+    is the opposite of the dated decision just above (three reasons,
+    STARTED_EARLY included, 2026-09-23) and of every test that pins it
+    (test_schedule_start_now_in_every_state). The same backlog item's own
+    pointer to "it ignores guard_s" only supports the guard_s change
+    already covered below (STARTED_EARLY itself is unchanged); it reads
+    like this was conflated with that guard_s question while being
+    relayed, so nothing here was changed on the strength of it alone.
+    Confirm with Jeff before touching this branch."""
     tx = _Tx(m, ev, now)
     d, nxt = m.delayed(), m.next_slot()
     if d is not None:
@@ -1375,7 +1428,11 @@ def _resume(m, ev, now):
                 f"{clock(_local(tx.m, tx.m.expected_end()))}.", show=n)
         return tx.done()
     back = m.held_from if m.held_from in (IDLE, STANDBY) else STANDBY
-    if back == IDLE and any(s.status != PENDING for s in m.slots):
+    if back == IDLE and (any(s.status != PENDING for s in m.slots) or
+                          _in_preshow_lead(m, now)):
+        # Either a show has already happened, or the Hold ran long enough
+        # that the first show is now inside the preshow lead: either way
+        # Resume lands in the intermission, not the preshow look.
         back = STANDBY
     tx.m = replace(tx.m, held_from="")
     _enter(tx, back)
