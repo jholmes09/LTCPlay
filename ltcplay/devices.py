@@ -17,12 +17,14 @@ immediately followed by a quick Resume could run in either order or
 interleave). That problem is about WHEN and HOW OFTEN something gets
 called, not what it sends once it is actually called -- so it is not fixed
 by moving the code here. It is fixed by never calling these from an
-unordered hook thread again: the future show conductor's own single,
-serialized executor is the only thing that may ever call on_hold(),
-on_resume() or on_abort(), one at a time, in the order its own ordered
-effects list says to. Until that conductor exists, nothing calls these
-functions at all -- they exist so it has a correct, already-tested place to
-call into instead of re-deriving the handoff's ordering itself.
+unordered hook thread again. When this was written, the plan was that the
+future show conductor's single, serialized executor would call on_hold(),
+on_resume() and on_abort() as whole units. That is NOT how it was wired:
+the conductor sequences each output itself and reaches the rig through
+ConductorDevices, at the end of this module. See "The conductor does NOT
+call on_hold(), on_resume() or on_abort()" below for why, and for where
+each ordering guarantee these three functions gave now lives. Nothing
+calls these three functions.
 
 What each one sends, and why (handoff section 5 and section 4a; Jeff's
 2026-09-26 and 2026-09-27 decisions):
@@ -85,7 +87,71 @@ or ever talks to the scheduler. Each degrades gracefully when the show has
 no MadMapper block, no BEYOND block, or neither (a show file need not
 configure either device layer): a None `madmapper` or `beyond` is simply
 skipped, exactly like web.py's own serve() already treats a None link
-everywhere else in this codebase."""
+everywhere else in this codebase.
+
+The conductor does NOT call on_hold(), on_resume() or on_abort()
+================================================================
+
+Everything above was written before the conductor (conductor.py, PR #28)
+existed. When it arrived, its DeviceOutputs interface turned out to be
+granular (lasers_blank, lasers_fade_out, lasers_restore, video_fade_out,
+video_restore, video_stop), and the conductor does its own sequencing: one
+step at a time, under its generation guard, with its own record of what
+each output was last told. ConductorDevices, below, is the conductor's
+device layer. It calls beyond.py's and madmapper.py's own primitives
+directly, one primitive per method, and composes nothing itself. The three
+functions above are kept, tested, but nothing calls them; they are not a
+second way into the rig, and must not become one. Calling them from the
+conductor would be wrong in five ways:
+
+  1. Double sequencing. on_hold() blanks BEYOND and fades music in one
+     call; the conductor would also be stepping lasers, music and video
+     itself, under its own generation guard. A Resume that supersedes a
+     Hold half way can only undo the steps the conductor knows were taken.
+  2. The wrong music. on_hold()/on_resume()/on_abort() fade MadMapper's
+     master audio level. With clock source "audio_master" (handoff section
+     4a, Jeff 2026-09-27), ltcplay plays the show music itself and
+     MadMapper plays the video only; the conductor fades the music through
+     ShowOutputs.music_hold/music_resume/music_halt (AudioMaster).
+  3. Superseded video rule. on_hold() never fades MadMapper's surfaces
+     ("pixels hold, video holds", 2026-09-27). Jeff changed that on
+     2026-09-30: a production Hold fades video and pixels to black with
+     the lasers, a rehearsal Hold freezes them. The conductor carries the
+     newer decision.
+  4. Lasers too early on Resume. on_resume() unblanks BEYOND straight after
+     starting the music fade. The conductor waits until the show clock says
+     the timecode is MOVING again, then asks its laser gate, then lights
+     them. Later is the safe direction.
+  5. Blocking. With wait=True they sleep through the fade; the conductor
+     holds its lock across every device call and needs each to return in
+     well under 0.1 s, or an Abort waits behind a Hold's fade.
+
+Every guarantee the three functions gave is kept on the conductor path,
+and selftest's test_conductor_devices_* tests drive a real Conductor
+through ConductorDevices into fake BEYOND and MadMapper sockets to prove
+it:
+
+  - BEYOND goes dark BEFORE any music or video fade starts, on Hold, on an
+    announcement and on Abort. The conductor's own order is flames, then
+    lasers, then the rest, and beyond.blank() returns only after its
+    packets have gone (about 40 ms), so the blank is out before MadMapper
+    is sent anything.
+  - Abort's lasers are an instant blank, never a ramp: lasers_fade_out()
+    here blanks at once and journals that it was not a fade. beyond.py's
+    allow-list (0.0 and 100.0 only) is untouched. A real ramp for Abort is
+    still a separate, laser-safety-relevant change for review.
+  - Hold's 0.25 s fade, then freeze: the conductor asks AudioMaster for it
+    (music_hold) and waits for the clock to report frozen.
+  - No lasers in intermission: lasers_restore() is the only unblank, and
+    the conductor calls it only after its laser gate says yes; a gate that
+    says no (or fails) gets a real blank sent instead, every time.
+  - A blank is never assumed to have landed: the conductor re-sends the
+    lasers' dark command whenever a look wants them dark, even when its
+    record says they already are (conductor.ALWAYS_RESENT)."""
+
+import time
+
+from .conductor import DeviceOutputs, done, failed
 
 # The Hold fade (handoff, Jeff 2026-09-27: "Hold in production: fade 0.25 s,
 # THEN freeze at the frame where the fade ends"). Deliberately its own
@@ -226,3 +292,121 @@ def on_abort(madmapper=None, beyond=None, *, show=None,
             kwargs["seconds"] = fade_seconds
         madmapper.fade_all(1.0, 0.0, **kwargs)
     return blanked
+
+
+class ConductorDevices(DeviceOutputs):
+    """The conductor's lasers (BEYOND) and video (MadMapper): conductor.py's
+    DeviceOutputs, one primitive per method, no sequencing of its own. See
+    the module docstring for why this calls beyond.py and madmapper.py
+    directly instead of on_hold()/on_resume()/on_abort().
+
+    `madmapper` is an already-built madmapper.Link or None, `beyond` an
+    already-built beyond.Beyond or None; this module still imports neither.
+    `wired` is True only when both are given, so a Conductor built with a
+    show that lacks either one writes its "not connected" fault line at
+    start rather than passing for a rig whose lasers it blanks.
+
+    Every method follows DeviceOutputs' rules: returns a conductor Result,
+    never raises, and returns at once. Video fades are started with
+    wait=False and run on the Link's own worker; a newer one supersedes
+    the old (the Link's ramp generation). beyond.py's blank() and
+    unblank() send 3 packets 20 ms apart and return after them, about
+    40 ms, so the lasers are dark before the conductor's next call."""
+
+    def __init__(self, madmapper=None, beyond=None, *, show=None,
+                 journal=None):
+        self.mm = madmapper
+        self.beyond = beyond
+        self.show = show
+        self._journal = journal
+        self.wired = madmapper is not None and beyond is not None
+        if beyond is None:
+            _note(journal, "No BEYOND is configured for this show: the "
+                  "conductor's laser commands reach nothing.",
+                  action="devices", outcome="not_configured", fault=True)
+        if madmapper is None:
+            _note(journal, "No MadMapper is configured for this show: the "
+                  "conductor's video commands reach nothing.",
+                  action="devices", outcome="not_configured", fault=True)
+
+    # -- lasers: beyond.py ---------------------------------------------------
+    _BLANK_FAILED = "The lasers may still be showing whatever they were."
+
+    def _beyond(self, what, method, failed_means, **kw):
+        if self.beyond is None:
+            return done(f"{what}: no BEYOND is configured for this show.")
+        try:
+            ok = getattr(self.beyond, method)(show=self.show, **kw)
+        except Exception as e:
+            return failed(f"{what} failed: {type(e).__name__}: {e}. "
+                          f"{failed_means}")
+        if ok is True:
+            return done(f"{what}: sent to BEYOND.")
+        return failed(f"{what}: no packet got out to BEYOND. {failed_means}")
+
+    def lasers_blank(self):
+        return self._beyond("Laser blank", "blank", self._BLANK_FAILED)
+
+    def lasers_fade_out(self, seconds):
+        """NOT a fade: an instant blank, the same command as lasers_blank().
+        beyond.py's allow-list only ever lets brightness 0.0 or 100.0 off
+        the machine (a safety audit, S5), so there is no ramp to send.
+        Going dark at once is never later than the asked-for fade would
+        have been. Changing this to a real ramp is a laser-safety-relevant
+        change to beyond.py that needs its own review; it is not made here.
+        Journaled every time, so the record never says "faded" alone."""
+        r = self._beyond("Laser blank", "blank", self._BLANK_FAILED)
+        if self.beyond is not None and r.ok:
+            _note(self._journal,
+                  f"BEYOND was blanked at once, not faded over {seconds:g} "
+                  f"s: beyond.py only allows brightness 0 or 100, and a "
+                  f"brightness ramp has not been reviewed.",
+                  action="lasers", outcome="blanked_not_faded")
+        return r
+
+    def lasers_restore(self):
+        """The only unblank. in_show=True is the conductor's laser gate's
+        answer: the conductor calls this only after the gate said yes
+        (conductor.Conductor._restore_lasers), and beyond.unblank() still
+        refuses anything but the real bool True on its own."""
+        return self._beyond("Laser restore", "unblank",
+                            "The lasers stay dark.", in_show=True)
+
+    # -- video: madmapper.py -------------------------------------------------
+    def _madmapper(self, what, send):
+        if self.mm is None:
+            return done(f"{what}: no MadMapper is configured for this show.")
+        if getattr(self.mm, "_closed", False):
+            return failed(f"{what}: the MadMapper link is closed, so nothing "
+                          f"was sent.")
+        try:
+            send()
+        except Exception as e:
+            return failed(f"{what} failed: {type(e).__name__}: {e}.")
+        return done(f"{what}: sent to MadMapper.")
+
+    def _surfaces(self, start, end, seconds):
+        if seconds <= 0:
+            # At once: stop any ramp still running (it checks the Link's
+            # generation before every step), then one level. The level is
+            # queued behind that ramp's job on the Link's single worker, so
+            # it always lands after the ramp's last step, never under it.
+            self.mm.cancel()
+            self.mm.set_surfaces(end, wait=False)
+        else:
+            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False)
+
+    def video_fade_out(self, seconds):
+        return self._madmapper(
+            f"Video fade to black over {seconds:g} s",
+            lambda: self._surfaces(1.0, 0.0, seconds))
+
+    def video_restore(self, seconds):
+        return self._madmapper(
+            f"Video back up over {seconds:g} s",
+            lambda: self._surfaces(0.0, 1.0, seconds))
+
+    def video_stop(self):
+        return self._madmapper(
+            "Video stop",
+            lambda: self.mm.stop_bank(self.mm.cfg.show_bank, wait=False))
