@@ -4147,7 +4147,7 @@ def build():
 
  ("conductor: BEYOND takes a host name again (finding D)",
   "ltcplay/beyond.py",
-  "        try:\n            ipaddress.ip_address(host)\n",
+  "        try:\n            ipaddress.IPv4Address(host)\n",
   "        try:\n            pass\n"),
 
  ("conductor: an announcement after Abort and Reset runs the Abort again "
@@ -4155,6 +4155,52 @@ def build():
   "ltcplay/conductor.py",
   "                look = BETWEEN if self._look == ABORTED else self._look",
   "                look = self._look"),
+
+ # -- review round 3 of PR #29: the second independent review's surviving
+ # hand mutations, and its two beyond.py fixes.
+ ("conductor: the 0 after a late 100 is one packet with no retry again "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "                self._send_retried(BLANK_VALUE)\n"
+  "                return ok, True",
+  "                self._send(BRIGHTNESS_ADDR, BLANK_VALUE, force=True)\n"
+  "                return ok, True"),
+
+ ("conductor: BEYOND takes an IPv6 address its IPv4 socket cannot reach "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "            ipaddress.IPv4Address(host)\n",
+  "            ipaddress.ip_address(host)\n"),
+
+ ("conductor: an unblank takes a fresh blank count before every packet, "
+  "so never sees a blank (round 3)",
+  "ltcplay/beyond.py",
+  "            with self._lock:\n"
+  "                if self._blank_epoch != epoch or \\",
+  "            with self._lock:\n"
+  "                epoch = self._blank_epoch\n"
+  "                if self._blank_epoch != epoch or \\"),
+
+ ("conductor: a blank counts itself only after its packets, so 100s go "
+  "out while it is sending (round 3)",
+  "ltcplay/beyond.py",
+  "        with self._lock:\n            self._blank_epoch += 1\n"
+  "        ok = self._send_retried(BLANK_VALUE)\n",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        with self._lock:\n            self._blank_epoch += 1\n"),
+
+ ("conductor: a laser gate that never answers counts as a yes (round 3)",
+  "ltcplay/conductor.py",
+  "        return (f\"the laser gate did not answer within \"",
+  "        return None\n"
+  "        return (f\"the laser gate did not answer within \""),
+
+ ("conductor: stopping a video fade leaves its success report current, "
+  "so a rehearsal Hold records the video lit (round 3)",
+  "ltcplay/conductor.py",
+  "            self.video_seq += 1      # no older command's success counts "
+  "now",
+  "            pass"),
 
 
 
