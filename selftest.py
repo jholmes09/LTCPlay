@@ -25851,20 +25851,21 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
         def is_set(self):
             return self.n <= 0
 
-        def wait(self, d):
-            self.waits += 1
-            clk[0] += d + late.get(self.waits, 0.0)
-            self.n -= 1
-
         def set(self):
             self.n = 0
 
         def clear(self):
             pass
-    paced = fl.FlameLink(cfg, clock=lambda: clk[0])
+    stop_after = FakeStop(120)
+
+    def fake_sleep(d):
+        stop_after.waits += 1
+        clk[0] += d + late.get(stop_after.waits, 0.0)
+        stop_after.n -= 1
+    paced = fl.FlameLink(cfg, clock=lambda: clk[0], sleep=fake_sleep)
     psock = _FlSock()
     paced._sock = psock
-    paced._stop = FakeStop(120)
+    paced._stop = stop_after
     paced._run()
     monos = [json.loads(d)["mono"] for d, _a in psock.sent]
     pg = [round(b - a, 6) for a, b in zip(monos, monos[1:])]

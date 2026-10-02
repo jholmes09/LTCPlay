@@ -526,7 +526,12 @@ class FlameLink:
                     next_at = None
                     delay = period
                 if delay > 0:
-                    self._stop.wait(delay)
+                    # time.sleep (self._sleep), not Event.wait: on macOS a
+                    # timed Event.wait of 25 ms was seen taking 110 to
+                    # 175 ms (CI), as long as fire_hold_ms; time.sleep
+                    # keeps time there, as the pixel loop does. At most
+                    # 50 ms at a time, so stop() is never kept waiting.
+                    self._sleep(min(delay, 0.05))
         except BaseException as e:
             # Not re-raised: the line below says it, and a daemon thread's
             # traceback on stderr would say nothing more to anyone.
