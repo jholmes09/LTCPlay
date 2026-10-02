@@ -24024,6 +24024,15 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
                           {"name": "wave flamer", "armed": "disarmed",
                            "wanted": False, "reason": "", "amber": "",
                            "dwell_s": 0}]})
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        # Pixels need Pillow. Without it Fonts() raises SystemExit, which
+        # used to end the whole suite here (round 5). CI installs Pillow
+        # so this runs there; a box without it says so and carries on.
+        print("  note: Pillow is not installed here, so the latched "
+              "screen's pixels are not checked on this machine.")
+        return
     fonts = sd.Fonts()
     # This CI box has none of the system font paths Fonts._sans_bold() /
     # the serif fallback look for (all macOS/Windows paths) -- drawing is
