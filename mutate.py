@@ -4090,8 +4090,62 @@ def build():
 
  ("flamelink: every copy of one Abort is journaled",
   "flamesafe/composer.py",
-  "        new_abort = msg.abort_id != self._disarm_last_id",
+  "        new_abort = key != self._disarm_last_key",
   "        new_abort = True"),
+
+ # -- fix round 1 of PR #34: flamesafe's side ------------------------------
+ ("fix1: a new sender's Abort with a repeated id is not journaled",
+  "flamesafe/composer.py",
+  "        key = (msg.abort_id, sender)",
+  "        key = (msg.abort_id, None)"),
+
+ ("fix1: an arm-hold begun before the Abort can complete after it",
+  "flamesafe/composer.py",
+  "                if in_abort_window and self._low_predates_abort[i]:",
+  "                if False and self._low_predates_abort[i]:"),
+
+ ("fix1: disarm_all does not mark the lows going on at the Abort",
+  "flamesafe/composer.py",
+  "        self._low_predates_abort = [True] * self.n",
+  "        self._low_predates_abort = [False] * self.n"),
+
+ ("fix1: the post-Abort window never ends",
+  "flamesafe/composer.py",
+  "            and (t - self._disarm_at) * 1000.0 < self.cfg.min_arm_dwell_ms)",
+  "            and (t - self._disarm_at) * 1000.0 < 10 ** 9)"),
+
+ ("fix1: a fresh low after the Abort is still treated as an old one",
+  "flamesafe/composer.py",
+  "                        self._low_predates_abort[i] = False",
+  "                        pass"),
+
+ ("fix1 H1: disarm_all does not advance the sequence",
+  "flamesafe/composer.py",
+  "        self._frame_seq = msg.seq\n        self._frame_mono = msg.mono\n"
+  "        was_up",
+  "        was_up"),
+
+ ("fix1 H2: a disarm_all with the same seq as the last frame is taken",
+  "flamesafe/composer.py",
+  "            if msg.seq <= self._frame_seq:\n"
+  "                raise ValueError(f\"out of order: seq {msg.seq} after \"",
+  "            if msg.seq < self._frame_seq:\n"
+  "                raise ValueError(f\"out of order: seq {msg.seq} after \""),
+
+ ("fix1 H3: disarm_all refreshes the flame link's liveness",
+  "flamesafe/composer.py",
+  "        self._disarm_at = t\n",
+  "        self._disarm_at = t\n        self._frame_at = t\n"),
+
+ ("fix1: flamesafe takes a timecode with a trailing newline",
+  "flamesafe/link.py",
+  "isinstance(tc, str) and _TC.fullmatch(tc)):",
+  "isinstance(tc, str) and re.match(r\"^\\d{2}:\\d{2}:\\d{2}[:;]\\d{2}$\", tc)):"),
+
+ ("fix1: flamesafe takes a key with a trailing newline",
+  "flamesafe/link.py",
+  "            and bool(_KEY.fullmatch(key)))",
+  "            and bool(re.match(r\"^[\\x21-\\x7e]+$\", key)))"),
 
  ("flamelink: the service drops every disarm_all on the floor",
   "flamesafe/service.py",
@@ -4175,18 +4229,139 @@ def build():
 
  ("flamelink: zero() waits for the next tick instead of sending at once",
   "ltcplay/flamelink.py",
-  '''            self.zeroed = True
-            return self.send_frame()''',
-  '''            self.zeroed = True
+  '''            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            self._zero_gen += 1
             return self._sock is not None'''),
 
  ("flamelink: disarm_all leaves the cues released",
   "ltcplay/flamelink.py",
   '''                self.zeroed = True
-                self.send_frame()
+                self._zero_gen += 1
+                self._send_zero_frame()
+                self.abort_id += 1''',
+  '''                self._zero_gen += 1
+                self._send_zero_frame()
+                self.abort_id += 1'''),
+
+ # -- fix round 1 of PR #34: ltcplay's sender -----------------------------
+ ("fix1 H10: disarm_all's immediate frame is built from the providers before zeroing",
+  "ltcplay/flamelink.py",
+  '''                self.zeroed = True
+                self._zero_gen += 1
+                self._send_zero_frame()
                 self.abort_id += 1''',
   '''                self.send_frame()
+                self.zeroed = True
+                self._zero_gen += 1
                 self.abort_id += 1'''),
+
+ ("fix1 H11: zero()'s immediate frame is built from the providers before zeroing",
+  "ltcplay/flamelink.py",
+  '''            self.zeroed = True
+            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            ok = self.send_frame()
+            self.zeroed = True
+            self._zero_gen += 1
+            return ok'''),
+
+ ("fix1: zero() asks the providers for its frame",
+  "ltcplay/flamelink.py",
+  '''            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            self._zero_gen += 1
+            return self.send_frame()'''),
+
+ ("fix1: the sender asks the providers under the link's lock",
+  "ltcplay/flamelink.py",
+  '''        with self._read_lock:
+            tc, values = self.values_now()''',
+  '''        with self._lock:
+            tc, values = self.values_now()'''),
+
+ ("fix1: a frame read before a zero() goes out with its values",
+  "ltcplay/flamelink.py",
+  "            if self.zeroed or gen != self._zero_gen:",
+  "            if self.zeroed:"),
+
+ ("fix1: an Abort is not repeated",
+  "ltcplay/flamelink.py",
+  "                self._abort_repeat = (aid, why, self._clock() + repeat_s)",
+  "                self._abort_repeat = None"),
+
+ ("fix1: an Abort repeats forever",
+  "ltcplay/flamelink.py",
+  "        if self._clock() > until:",
+  "        if False:"),
+
+ ("fix1: an Abort's repeat ignores flamesafe's frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "                   self.frame_stale_ms / 1000.0 + ABORT_REPEAT_MARGIN_S)",
+  "                   0.0)"),
+
+ ("fix1: any larger last_id confirms the Abort",
+  "ltcplay/flamelink.py",
+  "                if _is_int(last) and last == pend[0]:",
+  "                if _is_int(last) and last >= pend[0]:"),
+
+ ("fix1: seq starts at 0",
+  "ltcplay/flamelink.py",
+  "        self.seq = _random_start()",
+  "        self.seq = 0"),
+
+ ("fix1: abort ids start at 0",
+  "ltcplay/flamelink.py",
+  "        self.abort_id = _random_start()",
+  "        self.abort_id = 0"),
+
+ ("fix1: a timecode that has stopped moving still carries cues",
+  "ltcplay/flamelink.py",
+  "        if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:",
+  "        if self._tc_moved_at is None:"),
+
+ ("fix1: a sender pass that raises ends the thread",
+  "ltcplay/flamelink.py",
+  '''                except Exception as e:
+                    self._run_failed(e)''',
+  '''                except ZeroDivisionError as e:
+                    self._run_failed(e)'''),
+
+ ("fix1: a dead sender thread reads as fine",
+  "ltcplay/flamelink.py",
+  '''        if self._run_dead or (t is not None and not t.is_alive()
+                              and not self._stop.is_set()):''',
+  '''        if False:'''),
+
+ ("fix1: a failing sender reads as fine",
+  "ltcplay/flamelink.py",
+  '''                                   and sender not in ("failing", "dead")),''',
+  '''                                   ),'''),
+
+ ("fix1: an exception whose str() raises escapes the error handling",
+  "ltcplay/flamelink.py",
+  '''        text = "(its message could not be read)"''',
+  '''        raise'''),
+
+ ("fix1: the journal says an unconfirmed Abort was done",
+  "ltcplay/flamelink.py",
+  '''                       f"for {repeat_s:g} s. Sent, NOT yet confirmed by "''',
+  '''                       f"for {repeat_s:g} s. Done, every group disarmed by "'''),
+
+ ("fix1 H13: a late sender bursts to catch up",
+  "ltcplay/flamelink.py",
+  "                        next_at = now + period",
+  "                        pass"),
+
+ ("fix1: ltcplay takes a timecode with a trailing newline",
+  "ltcplay/flamelink.py",
+  "        if not (isinstance(tc, str) and _TC.fullmatch(tc)):",
+  "        if not (isinstance(tc, str) and re.match(r\"^\\d{2}:\\d{2}:\\d{2}[:;]\\d{2}$\", tc)):"),
+
+ ("fix1: ltcplay takes a key with a trailing newline",
+  "ltcplay/flamelink.py",
+  "            and bool(_KEY.fullmatch(key)))",
+  "            and bool(re.match(r\"^[\\x21-\\x7e]+$\", key)))"),
 
  ("flamelink: one Abort is a single datagram",
   "ltcplay/flamelink.py",

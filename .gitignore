@@ -51,6 +51,14 @@ VERSION
 *secret*
 *password*
 
+# Real show configs that carry the flame link key (fix round 1 of PR #34).
+# Only the example config, whose key is a placeholder, is ever committed.
+ltcplay_fire_ice.json
+flamesafe.json
+flamesafe_*.json
+flamesafe/*.json
+!flamesafe/flamesafe.example.json
+
 # Claude-Brain
 Claude-Brain/
 
