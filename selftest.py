@@ -55,6 +55,95 @@ SOURCE_TREE = os.path.exists(
 RAN = set()
 
 
+class _TempRun:
+    """Keeps one run of this file from littering the machine's temp folder.
+
+    Nearly every test makes itself a folder with tempfile.mkdtemp() and none
+    of them used to remove it; a run left hundreds behind (about 110MB), and a
+    loop of runs filled the disk. So the run makes ONE private folder inside
+    the temp folder, points everything at it (this process through
+    tempfile.tempdir, child processes through TMPDIR), remembers every
+    mkdtemp() made in this process, removes those when the next test starts
+    (and when a test fails, because it also runs at exit), and removes the
+    private folder when the run ends.
+
+    It never looks at the rest of the temp folder, so other runs going on at
+    the same time cannot be mistaken for this one's leftovers: whatever sits
+    in the private folder was made by this run and nobody else.
+
+    What it does NOT sweep up is what a test makes by some other route
+    (a file, or a folder a child process made). Those are still there when
+    the run ends and finish() fails the run, naming them."""
+
+    KEEP_PREFIX = "ltcplay_fixture_show_"   # the shared synthetic show
+
+    def __init__(self):
+        self.outer = tempfile.gettempdir()
+        self._real_mkdtemp = tempfile.mkdtemp
+        self.root = self._real_mkdtemp(prefix="ltcplay_selftest_",
+                                       dir=self.outer)
+        self.tracked = []
+        self.leftovers = None
+        self._test = None
+        self._saved_env = {k: os.environ.get(k)
+                           for k in ("TMPDIR", "TEMP", "TMP")}
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = self.root
+        for k in self._saved_env:
+            os.environ[k] = self.root
+        tempfile.mkdtemp = self._mkdtemp
+        import atexit
+        atexit.register(self.close)
+
+    def _mkdtemp(self, suffix=None, prefix=None, dir=None):
+        path = self._real_mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        if not (prefix or "").startswith(self.KEEP_PREFIX):
+            self.tracked.append(path)
+        return path
+
+    def sweep(self):
+        import shutil
+        while self.tracked:
+            shutil.rmtree(self.tracked.pop(), ignore_errors=True)
+
+    def next_test(self, name):
+        if name != self._test:
+            self.sweep()
+            self._test = name
+
+    def finish(self):
+        """Run at the end: nothing may be left in this run's own folder.
+        Returns the names that were."""
+        self.sweep()
+        try:
+            import test_show_fixtures
+            test_show_fixtures.cleanup()
+        except ImportError:
+            pass
+        try:
+            self.leftovers = sorted(os.listdir(self.root))
+        except OSError:
+            self.leftovers = []
+        return self.leftovers
+
+    def close(self):
+        import shutil
+        self.sweep()
+        shutil.rmtree(self.root, ignore_errors=True)
+        tempfile.mkdtemp = self._real_mkdtemp
+        tempfile.tempdir = self._saved_tempdir
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# Set by the __main__ block below; None when this file is imported (mutate.py
+# imports it for its helpers) so that importing it changes nothing.
+_TEMPRUN = None
+
+
 # The real renders, for the tests that need a whole show. They are never in
 # the repo (600MB, and CLAUDE.md says never commit them). Say where they are
 # with LTCPLAY_TEST_SHOW_DIR; the default is where they sat in the machine
@@ -202,7 +291,10 @@ def section(name):
     # tests, because a string replace into the call list below silently matched
     # nothing.
     import sys as _sys
-    RAN.add(_sys._getframe(1).f_code.co_name)
+    _who = _sys._getframe(1).f_code.co_name
+    if _TEMPRUN is not None and _who.startswith("test_"):
+        _TEMPRUN.next_test(_who)
+    RAN.add(_who)
     print(f"\n== {name}")
 
 
@@ -3501,7 +3593,7 @@ def test_web_ui():
     # once a show folder was configured, which never happened until
     # synthetic fixtures landed, so a Unix-only path here was never
     # exercised on Windows. It is now, and Windows has no /tmp.
-    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
+    wav = os.path.join(folder, "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
@@ -10639,7 +10731,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -10655,7 +10748,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.schedule is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n")
+        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json
@@ -13910,7 +14004,8 @@ def test_the_gpl_path_never_loads_announcements():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -13926,7 +14021,8 @@ def test_the_gpl_path_never_loads_announcements():
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.announce is None,\n"
         "    'loaded': sorted(m for m in sys.modules if 'announce' in "
-        "m)}))\n")
+        "m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json as _json
@@ -14710,7 +14806,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     _write_show(work1)
     spath1 = _write_rule(work1, 40)
     try:
-        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        web_mod.serve(work1, port=_free_port(), schedule=SV.Service(spath1, state_dir=work1))
         check(False, "40s configured against 50s of media must refuse to "
                      "serve, not silently start")
     except ValueError as e:
@@ -14724,7 +14820,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     work2 = tempfile.mkdtemp()
     _write_show(work2)
     spath2 = _write_rule(work2, 60)
-    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=SV.Service(spath2, state_dir=work2))
     try:
         check(httpd2.schedule is not None and httpd2.schedule.rule is not
               None, "a long-enough show_len_s must serve normally")
@@ -14738,7 +14834,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     # in the journal, saying the check could not be done and why.
     work3 = tempfile.mkdtemp()
     spath3 = _write_rule(work3, 1)
-    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=SV.Service(spath3, state_dir=work3))
     try:
         check(httpd3.schedule is not None,
               "no show media in the folder must not block serving")
@@ -14764,7 +14860,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
           and "show_a.json" in w5 and "show_b.json" in w5,
           f"two candidates must refuse to pick one, naming both: "
           f"{(p5, l5, w5)}")
-    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=SV.Service(spath5, state_dir=work5))
     try:
         check(httpd5.schedule is not None,
               "an ambiguous folder must still serve (this warns, it does "
@@ -14969,6 +15065,7 @@ print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
                   "snap": "clock" in snap,
                   "ltc": s.player.last_ltc_at is not None,
                   "opened": len(s._sd.opened)}))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -17571,6 +17668,7 @@ print(json.dumps({
     "clock": "ltcplay.clock" in sys.modules,
     "output": "ltcplay.output" in sys.modules,
 }))
+import shutil; shutil.rmtree(os.path.dirname(lockpath), ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                text=True, timeout=30)
@@ -19268,7 +19366,8 @@ def test_the_gpl_path_never_loads_the_journal():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
         "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
-        "                     or 'schedule' in m)}))\n")
+        "                     or 'schedule' in m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     try:
@@ -21357,6 +21456,7 @@ for label, clock_doc in (("gpl", None),
                         if m == "ltcplay.showaudio"
                         or m.startswith("multiprocessing"))
 print(json.dumps(res))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -22173,6 +22273,7 @@ def test_journal_summary_is_written_however_the_night_closes():
 
 if __name__ == "__main__":
     t0 = time.time()
+    _TEMPRUN = _TempRun()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -22454,6 +22555,16 @@ if __name__ == "__main__":
             print(f"\n  FAIL  THE REAL SHOW FOLDER WAS CHANGED BY THIS RUN:")
             for t in touched:
                 print(f"    {t}")
+
+    # Last check: this run's own temp folder must be empty once the tests'
+    # folders are gone. A test that leaves a file or a child process's folder
+    # behind is caught here, not discovered later as a full disk.
+    _left = _TEMPRUN.finish()
+    if _left:
+        FAILS.append(f"this run left {len(_left)} temp entries behind: "
+                     + ", ".join(_left[:20]))
+        print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
+              f"its own temp folder: {', '.join(_left[:20])}")
 
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
