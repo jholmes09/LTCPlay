@@ -25703,8 +25703,12 @@ def test_flame_link_fix_round_1():
 
     def cues11(tc):
         if st11["zero_inside"]:
+            # A zero() and then a release() land while this frame's cues
+            # are being read: the frame was read before the zero, so it
+            # must not go out with those values, released or not.
             st11["zero_inside"] = False
             lk11.zero()
+            lk11.release()
         return fire
     lk11, s11 = make(lambda: t11[0], show_state=state11, cues=cues11)
     lk11.release()
@@ -25730,7 +25734,12 @@ def test_flame_link_fix_round_1():
     f = [x for x in sent(s11, n0) if x["t"] == "flame"]
     check(len(f) == 2 and not any(f[0]["values"]) and not any(f[1]["values"]),
           "a frame whose cues were read before a zero() landed goes out as "
-          "zeros")
+          "zeros, even if a release() followed it")
+    n0 = len(s11.sent)
+    lk11.send_frame()
+    f = [x for x in sent(s11, n0) if x["t"] == "flame"]
+    check(len(f) == 1 and f[0]["values"][410] == 200,
+          "and the next frame, read after the release, carries the cue")
     # A provider that hangs, on the real thread: the Abort does not wait.
     gate = threading.Event()
     hang = {"on": False}
