@@ -1706,9 +1706,9 @@ class AudioMaster(Clock):
     def _resume(self, now):
         cue = self._cue
         start = int(round(self._frozen_sec * self.rate))
-        ms = self._resume_fade_ms
-        fade = self._sa.fade_frames(self.audio.hold_fade_ms if ms is None
-                                    else ms)
+        fade = self._sa.fade_frames(self.audio.hold_fade_ms
+                                    if self._resume_fade_ms is None
+                                    else self._resume_fade_ms)
         if start >= cue["frames"]:
             # Held on the very end of the audio: there is nothing left to
             # resume, so the cue ends here, the normal way.

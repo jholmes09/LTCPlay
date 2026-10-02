@@ -3999,6 +3999,152 @@ def build():
 
 
 
+
+ # -- Fire & Ice: fire_ice.py's ShowOutputs and runner, the per-call
+ # AudioMaster fade it needs, and where `ltc serve` builds the conductor.
+ ("fire & ice: the Hold's fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.pause(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.pause())"),
+
+ ("fire & ice: Abort's music fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.halt(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.halt())"),
+
+ ("fire & ice: frozen is read from the Hold request, not the clock",
+  "ltcplay/fire_ice.py",
+  "        if self._clock() is None:\n            return None\n"
+  "        return self._frozen",
+  "        if self._clock() is None:\n            return None\n"
+  "        return bool(self._clock()._paused or self._hooked is not None)"),
+
+ ("fire & ice: chaining on_pause drops the session's own hard park",
+  "ltcplay/fire_ice.py",
+  "                try:\n                    if before_p is not None:\n"
+  "                        before_p()",
+  "                try:\n                    pass"),
+
+ ("fire & ice: an Abort's disarm reports success it did not have",
+  "ltcplay/fire_ice.py",
+  "        return C.failed(f\"{reason}: {NO_DISARM}{tail}\")",
+  "        return C.done(f\"{reason}: {NO_DISARM}{tail}\")"),
+
+ ("fire & ice: an Abort's disarm does not zero the flame cues",
+  "ltcplay/fire_ice.py",
+  "        z = self.flames_zero()\n",
+  "        z = C.done('')\n"),
+
+ ("fire & ice: pixels restore over the operator's own look",
+  "ltcplay/fire_ice.py",
+  "            if p.override != \"blackout\":",
+  "            if False:"),
+
+ ("fire & ice: pixels restore to auto, not the look from before",
+  "ltcplay/fire_ice.py",
+  "            p.override = self._pix_prev",
+  "            p.override = None"),
+
+ ("fire & ice: scheduler_performs accepts anything truthy",
+  "ltcplay/fire_ice.py",
+  "        if performs is not True and performs is not False:",
+  "        performs = bool(performs)\n        if False:"),
+
+ ("fire & ice: the dry run ends without the switch",
+  "ltcplay/fire_ice.py",
+  "    if cfg.scheduler_performs:\n        runner = ShowRunner(",
+  "    if True:\n        runner = ShowRunner("),
+
+ ("fire & ice: a show starts before Run is pressed",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is not None and clk is None:"),
+
+ ("fire & ice: a show starts while the conductor is still aborted",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is None or clk is None:"),
+
+ ("fire & ice: an unconfirmed cue that stops is reported as ended",
+  "ltcplay/fire_ice.py",
+  "            self.svc.report(\"SHOW_ENDED\" if cue[\"confirmed\"]\n"
+  "                            else \"SHOW_FAILED\", how, show=n)",
+  "            self.svc.report(\"SHOW_ENDED\", how, show=n)"),
+
+ ("fire & ice: the show is confirmed before the timecode moves",
+  "ltcplay/fire_ice.py",
+  "        if not cue[\"confirmed\"] and mine and \\\n"
+  "                getattr(clk, \"_last_frame\", None) not in (None, 0):",
+  "        if not cue[\"confirmed\"] and mine:"),
+
+ ("fire & ice: the laser gate does not follow the scheduler",
+  "ltcplay/fire_ice.py",
+  "        devices, show, C.laser_gate_for(state),",
+  "        devices, show, lambda: None,"),
+
+ ("fire & ice: closing is never reported done",
+  "ltcplay/fire_ice.py",
+  "        self.svc.report(\"CLOSING_DONE\",",
+  "        (lambda *a: None)(\"CLOSING_DONE\","),
+
+ ("fire & ice: the conductor is told a show started before its audio is",
+  "ltcplay/schedule_service.py",
+  "                started = self.performer.start_show(shows[0])\n"
+  "                if not started.ok:\n"
+  "                    return \"Show start\", started",
+  "                r = self.conductor.show_starting(who, screen)\n"
+  "                started = self.performer.start_show(shows[0])\n"
+  "                return \"Show start\", r"),
+
+ ("fire & ice: a performing scheduler still ends shows on its own clock",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run and m.state == sch.SHOW and \\",
+  "            if m.state == sch.SHOW and \\"),
+
+ ("fire & ice: a performing scheduler still finishes closing by itself",
+  "ltcplay/schedule_service.py",
+  "        if self.dry_run and self.machine.state == sch.CLOSING:",
+  "        if self.machine.state == sch.CLOSING:"),
+
+ ("fire & ice: a report is applied during a dry run",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run or self.machine is None:\n"
+  "                return None\n            ev = sch.Event(",
+  "            if self.machine is None:\n"
+  "                return None\n            ev = sch.Event("),
+
+ ("fire & ice: GPL serve builds the conductor too",
+  "ltcplay/cli.py",
+  "    fire_ice = None\n    if schedule is not None:\n",
+  "    fire_ice = None\n    if True:\n"),
+
+ ("fire & ice: the scheduler is never given the conductor's config",
+  "ltcplay/cli.py",
+  "                              announce=announce, fire_ice=fire_ice)",
+  "                              announce=announce)"),
+
+ ("audio_master per-call fade: pause ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.hold_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.hold_fade_ms"),
+
+ ("audio_master per-call fade: halt ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.abort_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.abort_fade_ms"),
+
+ ("audio_master per-call fade: a resume's fade is left for the next one",
+  "ltcplay/clock.py",
+  "            self._resume_fade_ms = fade_ms\n",
+  "            if fade_ms is not None:\n"
+  "                self._resume_fade_ms = fade_ms\n"),
+
+ ("audio_master per-call fade: resume ignores the fade it is given",
+  "ltcplay/clock.py",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms\n"
+  "                                    if self._resume_fade_ms is None\n"
+  "                                    else self._resume_fade_ms)",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms)"),
 ]
 
 

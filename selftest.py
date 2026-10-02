@@ -25595,9 +25595,9 @@ def test_fire_ice_show_outputs():
           "the look from before comes back")
     show.pixels_fade_out(0)
     s.player.override = None          # the operator pressed auto
-    s.player.override = "preshow"     # then Preshow
-    check(show.pixels_restore(0).ok and s.player.override == "preshow",
+    check(show.pixels_restore(0).ok and s.player.override is None,
           "the operator's own look is left alone")
+    s.player.override = "preshow"
     check(show.pixels_restore(0).ok and s.player.override == "preshow",
           "restore when the conductor never took them changes nothing")
     # Flames: no link in this build. Zero and release say so; the disarm
@@ -25788,8 +25788,7 @@ def test_fire_ice_night_end_to_end():
     rows = [r for r in svc.journal if r.get("action") == "show start"]
     check(rows and rows[-1]["outcome"] == "done", f"journaled: {rows}")
     n.w.runner.poll()
-    check(not any(r.get("action") == "SHOW_CONFIRMED"
-                  for r in svc.journal),
+    check(svc.machine.slot(svc.machine.running).confirmed_at is None,
           "not confirmed before the timecode moves")
     n.sess.clock._last_frame = 30
     n.w.runner.poll()
@@ -25902,18 +25901,29 @@ def test_fire_ice_runner_reports_the_show():
           f"the show ends when its audio does: {svc.machine.state}")
     done = [s for s in svc.machine.slots if s.n == 1]
     check(done and done[0].status == S.DONE, f"show 1 DONE: {done}")
+    # A cue that stops before its timecode ever moved did not start.
+    n.now[0] = _den(S, 18, 20)
+    svc.tick()
+    c.run_pending()
+    check(svc.machine.state == S.SHOW, "show 2 starts")
+    n.sess.clock.playing = False
+    n.w.runner.poll()
+    s2 = [s for s in svc.machine.slots if s.n == 2]
+    check(svc.machine.state == S.STANDBY and s2 and s2[0].status == S.FAULT,
+          f"a cue that never moved is a failed start, not an ended show: "
+          f"{svc.machine.state} {s2}")
     # Run not pressed: the start fails, the conductor is never asked.
     n.control.session = None
-    n.now[0] = _den(S, 18, 20)
+    n.now[0] = _den(S, 18, 40)
     svc.tick()
     rows = [r for r in svc.journal if r.get("action") == "show start"]
     check(rows and rows[-1]["outcome"] == "failed" and
           "Run has not been pressed" in rows[-1]["text"],
           f"no Run: the start is refused in words: {rows[-1:]}")
     n.w.runner.poll()
-    s2 = [s for s in svc.machine.slots if s.n == 2]
-    check(svc.machine.state == S.STANDBY and s2 and s2[0].status == S.FAULT,
-          f"and reported as a failed start: {svc.machine.state} {s2}")
+    s3 = [s for s in svc.machine.slots if s.n == 3]
+    check(svc.machine.state == S.STANDBY and s3 and s3[0].status == S.FAULT,
+          f"and reported as a failed start: {svc.machine.state} {s3}")
     # Closing: End night, then the runner closes and reports it done.
     n.control.session = n.sess
     out = svc._apply(_op(S, S.END_NIGHT, confirmed=True))
