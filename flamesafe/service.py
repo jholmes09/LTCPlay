@@ -168,7 +168,7 @@ class Service:
                 msg = decode_from_ltcplay(data, self.cfg.universe,
                                           self.cfg.link_key)
             except LinkError as e:
-                self.composer.reject_frame(str(e))
+                self.composer.reject_frame(str(e), sender=tuple(addr[:2]))
                 continue
             if isinstance(msg, DisarmAll):
                 # The show program's Abort (CONTRACT.md, disarm_all).

@@ -4122,32 +4122,32 @@ def build():
   "    if not _is_int(abort_id) or abort_id < 1:",
   "    if not _is_int(abort_id) or abort_id < 0:"),
 
- ("flamelink: every rejection is journaled, a flood floods the journal",
+ ("flamelink: rejections are keyed by the raw message, so a sender varying it floods the journal",
   "flamesafe/composer.py",
-  '''            if ep is not None:
-                ep["at"] = t
-                ep["count"] += 1
-                return''',
-  '''            if False:
-                return'''),
+  "            reason = _flame_reason(why)",
+  "            reason = why"),
 
  ("flamelink: an episode of rejections never says how many",
   "flamesafe/composer.py",
-  '''            if ep["count"] > 1:
-                self._event("link-reject",''',
-  '''            if False:
-                self._event("link-reject",'''),
+  "            self._rejects.sweep(",
+  "            (lambda *a, **k: None)("),
 
  ("flamelink: an undecodable datagram is not journaled",
   "flamesafe/composer.py",
   '''        self._last_reject = str(why)
-        self._note_reject(self._last_reject)''',
+        self._note_reject(self._last_reject, sender)''',
   '''        self._last_reject = str(why)'''),
 
- ("flamelink: a sender can open unbounded rejection kinds",
+ ("flamelink: a refused flame frame is not journaled",
   "flamesafe/composer.py",
-  "REJECT_KINDS_MAX = 16",
-  "REJECT_KINDS_MAX = 10 ** 6"),
+  '''            self._last_reject = str(e) or type(e).__name__
+            self._note_reject(self._last_reject, sender)''',
+  '''            self._last_reject = str(e) or type(e).__name__'''),
+
+ ("flamelink: a sender's long text goes into the journal uncut",
+  "flamesafe/composer.py",
+  "            if len(why) > 200:          # sender-chosen text, kept short",
+  "            if False:"),
 
  # -- the flame link: ltcplay's sender -----------------------------------
  ("flamelink: a new link starts with its cues released",

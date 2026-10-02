@@ -3727,7 +3727,7 @@ def test_disarm_all_rejections():
           f"something that is not a DisarmAll is refused: {why!r}")
     # A rogue flood: one journal line for the whole episode, then one
     # closing line with the count once it stops.
-    r.wait(0.7)                   # close the episodes the refusals above began
+    r.wait(5.2)                   # close the episodes the refusals above began
     r.log.events.clear()
     for i in range(50):
         _disarm(r, sender=("127.0.0.1", 41000 + i), seq=10 ** 6 + i)
@@ -3736,9 +3736,13 @@ def test_disarm_all_rejections():
     rej = [m for k, m in r.log.events if k == "link-reject"]
     check(len(rej) == 1 and "another sender" in rej[0],
           f"a 50-datagram foreign flood from 50 ports is one line: {rej}")
-    r.wait(0.7)
+    r.wait(2.0)
+    check(len([k for k, _ in r.log.events if k == "link-reject"]) == 1,
+          "a 2 s pause does not end the episode (5 s does)")
+    r.wait(3.2)
     rej = [m for k, m in r.log.events if k == "link-reject"]
-    check(len(rej) == 2 and "stopped after 50" in rej[1],
+    check(len(rej) == 2 and "stopped after 50" in rej[1]
+          and "50 distinct source addresses" in rej[1],
           f"and one more when it stops, with the count: {rej}")
     check(r.safety(0) == ARM, "the flood disarmed nothing")
     # With the flame link stale, there is no sender to take it from.
@@ -3780,35 +3784,48 @@ def test_flame_link_rejections_journal_once_per_episode():
     check(len(rej) == 3 and "another sender" in rej[0]
           and "wrong key" in rej[1] and "wrong contract version" in rej[2],
           f"one line per kind: {rej}")
-    r.wait(0.7)
+    r.wait(5.2)
     rej = [m for k, m in r.log.events if k == "link-reject"]
     check(len(rej) == 5 and any("stopped after 30" in m for m in rej)
           and any("stopped after 2" in m for m in rej),
-          f"closing lines only for kinds that repeated: {rej}")
-    # Reasons a sender controls cannot open unbounded kinds. Quoted text
-    # and numbers are blanked, but a sender still shapes the rest: a `v`
-    # nested in lists to a different depth each time is a different reason
-    # after blanking, straight out of the real decoder.
-    r.wait(0.7)
+          f"after 5 s quiet, closing lines only for reasons that repeated: "
+          f"{rej}")
+    # Text a sender controls never opens a new episode: a `v` nested in
+    # lists to a different depth each time is a different MESSAGE straight
+    # out of the real decoder, but one REASON.
+    r.wait(5.2)
     r.log.events.clear()
-    kinds = set()
+    msgs = set()
     for depth in range(1, 61):
         bad = json.dumps({"v": json.loads("[" * depth + "]" * depth),
                           "k": KEY, "t": "flame"}).encode()
         try:
             link.decode_from_ltcplay(bad, 1, KEY)
         except link.LinkError as e:
-            kinds.add(composer._reject_kind(str(e)))
-            r.c.reject_frame(str(e))
-    check(len(kinds) > composer.REJECT_KINDS_MAX,
-          f"the decoder really does yield more kinds than the cap: "
-          f"{len(kinds)}")
+            msgs.add(str(e))
+            r.c.reject_frame(str(e), sender=("127.0.0.1", 43000 + depth))
     rej = [m for k, m in r.log.events if k == "link-reject"]
-    check(len(rej) == composer.REJECT_KINDS_MAX + 1
-          and len(r.c._reject_episodes) == composer.REJECT_KINDS_MAX + 1,
-          f"at most {composer.REJECT_KINDS_MAX} kinds plus 'other' are "
-          f"written and tracked: {len(rej)} lines, "
-          f"{len(r.c._reject_episodes)} tracked")
+    check(len(msgs) == 60 and len(rej) == 1
+          and "wrong contract version" in rej[0],
+          f"60 different messages, one reason, one line: {len(msgs)} "
+          f"messages, {rej}")
+    long = "wrong key" + "x" * 5000
+    r.wait(5.2)
+    r.log.events.clear()
+    r.c.reject_frame(long)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 1 and len(rej[0]) < 600,
+          f"a sender's long text is cut short in the line: {len(rej[0])}")
+    # And the per-minute cap: episodes one after another, each opened and
+    # closed, never write more than 4 lines for one reason in a minute.
+    r.wait(5.2)
+    r.log.events.clear()
+    for _ in range(6):
+        r.c.reject_frame("tc is not HH:MM:SS:FF or null")
+        r.c.reject_frame("tc is not HH:MM:SS:FF or null")
+        r.wait(5.2)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 4, f"6 episodes in 31 s: 4 lines, the cap: {rej}")
 
 
 def test_disarm_all_over_loopback():

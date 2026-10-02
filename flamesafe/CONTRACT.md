@@ -98,13 +98,17 @@ is not the flame universe, a sender other than the locked one.
 
 **Rejections are journaled once per episode (2026-10-02).** Before this
 date a rejected flame frame was counted and shown in `last_reject` but
-never written to the journal. Now the first rejection of each kind of
-reason writes one line, and once none of that kind has arrived for
-`frame_stale_ms` a closing line gives the count (only if there was more
-than one). The kind is the reason with its numbers and quoted text blanked
-and cut to four words, so a sender cannot open unbounded kinds by varying
-them; at most 16 kinds are tracked at once and any further kind is counted
-as `other`. This covers flame frames and disarm_all (below) alike.
+never written to the journal. Now they are journaled with the arm link's
+own throttle (round 4 of #31's review, item C, `arminput._RejectJournal`):
+one line per reason when an episode starts, naming the sender's address;
+one closing line with the count and how many distinct source addresses
+once that reason has been quiet for 5 s (only if there was more than one);
+and never more than 4 lines per reason in any 60 s. The reason is one of a
+fixed list (`composer._FLAME_REASONS`: "wrong key", "another sender",
+"wrong contract version", and so on), never the raw message, because the
+message can carry text and numbers the sender chose; a refused disarm_all
+has its own `disarm_all: <reason>` keys. The sender's text in a line is cut
+at 200 characters. This covers flame frames and disarm_all (below) alike.
 
 Two windows, both on flamesafe's clock from the last accepted frame:
 

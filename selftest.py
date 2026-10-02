@@ -25377,18 +25377,15 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         time.sleep(0.2)
         check(armed(latest(), 0), "a wrong-key or wrong-version disarm_all "
                                   "from the locked sender disarms nothing")
-        time.sleep(0.8)
-        check(len(journal("rejected: disarm_all: another sender")) == 1,
+        time.sleep(0.3)
+        t_last_reject = time.perf_counter()
+        check(len(journal(": disarm_all: another sender.")) == 1,
               f"the foreign disarm_alls: one journal line: "
               f"{journal('another sender')}")
-        check(len(journal("datagram rejected: wrong key")) == 1
-              and len(journal("datagram rejected: wrong contract version"))
-              == 1, f"wrong key, wrong version: one line each: "
-                    f"{journal('datagram rejected')}")
-        check(len(journal("stopped after 20 rejected")) == 1
-              and len(journal("stopped after 10 rejected")) == 2,
-              f"and one closing line per episode with its count: "
-              f"{journal('stopped after')}")
+        check(len(journal(": wrong key.")) == 1
+              and len(journal(": wrong contract version")) == 1,
+              f"wrong key, wrong version: one line each: "
+              f"{journal('datagram rejected')}")
         check(latest()["disarm_all"]["last_id"] == link.abort_id,
               "no refused disarm_all was counted as an Abort")
         rogue.close()
@@ -25408,6 +25405,16 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
               f"the sender stopped (frame_stale_ms 500)")
         check(link.disarm_all("Abort") is False,
               "a disarm_all on a stopped link answers False")
+        # The rejection episodes close after 5 s of quiet (the arm link's
+        # own throttle), each with one line and its count.
+        time.sleep(max(0.0, 5.6 - (time.perf_counter() - t_last_reject)))
+        check(len(journal("(disarm_all: another sender) stopped after 20 "
+                          "rejected")) == 1
+              and len(journal("(wrong key) stopped after 10 rejected")) == 1
+              and len(journal("(wrong contract version) stopped after 10 "
+                              "rejected")) == 1,
+              f"and one closing line per episode with its count: "
+              f"{journal('stopped after')}")
     finally:
         stop.set()
         try:

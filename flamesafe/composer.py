@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import math
 import time
-import re       # after time, so mutate.py's "flamesafe imports ltcplay"
-                # pattern (import math / import time) still matches once
 
 from . import rules
+from .arminput import _RejectJournal
 from .link import DisarmAll, FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
@@ -40,12 +39,25 @@ LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
 # (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
 # and the only one.  Shown until that group latches again.
 ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
-# Rejections on the flame link are journaled once per episode per kind of
-# reason (an episode ends after frame_stale_ms with no rejection of that
-# kind), never once per datagram: a flood at 40 Hz or faster would push
-# everything else out of the bounded journal queue.  At most this many
-# kinds are tracked at once; any further kind is counted under "other".
-REJECT_KINDS_MAX = 16
+# Rejections on the flame link are journaled exactly as the arm link's are
+# (arminput._RejectJournal, round 4 of #31's safety review, item C): one
+# line per REASON when an episode starts, one closing line with the count
+# once that reason has been quiet for EPISODE_QUIET_S (5 s), and never more
+# than 4 lines per reason in any 60 s.  The reason is one of the fixed
+# strings below, never the raw message: decode and refusal messages carry
+# text and numbers the SENDER chose, and a sender varying them must not get
+# a fresh episode, and a fresh line, every datagram.  A refused disarm_all
+# is throttled under its own "disarm_all: <reason>" keys.
+_FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
+                  "not a JSON object", "wrong contract version",
+                  "wrong key", "wrong message type", "seq is not",
+                  "tc is not", "mono is not", "universe",
+                  "values is not", "a channel value", "id is not",
+                  "reason is not", "disarm_all has a field",
+                  "another sender", "out of order",
+                  "sender clock went backwards",
+                  "no live flame link", "wrong length", "not a FlameFrame",
+                  "not a DisarmAll")
 
 
 def now():
@@ -109,9 +121,10 @@ class Composer:
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
         self._last_reject = ""
-        # Rejection episodes, by kind of reason: {kind: {"at", "count"}}.
-        # See REJECT_KINDS_MAX.
-        self._reject_episodes = {}
+        # Rejection journaling, the arm link's own throttle (see
+        # _FLAME_REASONS).  Written as kind "link-reject".
+        self._rejects = _RejectJournal(
+            lambda _kind, msg: self._event("link-reject", msg))
 
         # disarm_all from the show program (CONTRACT.md, 2026-10-02).
         # _aborted[i] only changes the WORDS on a held group's lamp; it is
@@ -398,14 +411,14 @@ class Composer:
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
-            self._note_reject(self._last_reject)
+            self._note_reject(self._last_reject, sender)
             return self._last_reject
 
-    def reject_frame(self, why):
+    def reject_frame(self, why, sender=None):
         """The link layer could not even decode a datagram."""
         self.stats["frames_rejected"] += 1
         self._last_reject = str(why)
-        self._note_reject(self._last_reject)
+        self._note_reject(self._last_reject, sender)
 
     def disarm_all(self, msg, sender=None):
         """The show program says: disarm every group, now (its Abort).
@@ -450,7 +463,7 @@ class Composer:
             self.stats["disarm_all_rejected"] += 1
             why = f"disarm_all: {str(e) or type(e).__name__}"
             self._last_reject = why
-            self._note_reject(why)
+            self._note_reject(why, sender)
             return why
         self._frame_seq = msg.seq
         self._frame_mono = msg.mono
@@ -480,35 +493,30 @@ class Composer:
                         f"Stream Deck.")
         return ""
 
-    def _note_reject(self, why):
-        """Journal a rejection once per episode per kind of reason."""
+    def _note_reject(self, why, sender=None):
+        """Journal a rejection: once per reason per episode (the arm link's
+        own throttle, _RejectJournal).  Never raises."""
         try:
-            kind = _reject_kind(why)
-            t = self._clock()
-            ep = self._reject_episodes.get(kind)
-            if ep is None and len(self._reject_episodes) >= REJECT_KINDS_MAX:
-                kind = "other"
-                ep = self._reject_episodes.get(kind)
-            if ep is not None:
-                ep["at"] = t
-                ep["count"] += 1
-                return
-            self._reject_episodes[kind] = {"at": t, "count": 1}
-            self._event("link-reject",
-                        f"flame link datagram rejected: {why}. Further "
-                        f"rejections of this kind are counted, not written, "
-                        f"until none for {self.cfg.frame_stale_ms} ms.")
+            why = str(why)
+            reason = _flame_reason(why)
+            where = (f" from {sender[0]}:{sender[1]}"
+                     if isinstance(sender, tuple) and len(sender) == 2
+                     else "")
+            if len(why) > 200:          # sender-chosen text, kept short
+                why = why[:200] + "..."
+            self._rejects.note(reason, self._clock(), sender,
+                               f"flame link datagram rejected{where}: {why}.")
         except Exception:                               # noqa: BLE001
             pass
 
     def _close_reject_episodes(self, t):
-        for kind in [k for k, ep in self._reject_episodes.items()
-                     if (t - ep["at"]) * 1000.0 > self.cfg.frame_stale_ms]:
-            ep = self._reject_episodes.pop(kind)
-            if ep["count"] > 1:
-                self._event("link-reject",
-                            f"flame link rejections ({kind}) stopped after "
-                            f"{ep['count']} rejected")
+        try:
+            self._rejects.sweep(
+                t, lambda reason, addrs, n:
+                f"flame link rejections ({reason}) stopped after {n} "
+                f"rejected, from {addrs}")
+        except Exception:                               # noqa: BLE001
+            pass
 
     def note_fault(self, sentence):
         """Something outside the composer failed (a send, a status write).
@@ -915,9 +923,13 @@ class Composer:
             pass
 
 
-def _reject_kind(why):
-    """A short, bounded name for the kind of a rejection reason: quoted
-    text and numbers (which a sender controls, and which change on every
-    datagram) are blanked, and only the first few words are kept."""
-    s = re.sub(r"'[^']*'|\"[^\"]*\"|\d+(\.\d+)?", "#", str(why))
-    return " ".join(s.split()[:4]) or "unknown"
+def _flame_reason(why):
+    """The fixed reason a flame-link rejection is throttled under (see
+    _FLAME_REASONS); a refused disarm_all keeps its own prefix."""
+    pre = ""
+    if why.startswith("disarm_all: "):
+        pre, why = "disarm_all: ", why[len("disarm_all: "):]
+    for r in _FLAME_REASONS:
+        if why.startswith(r):
+            return pre + r
+    return pre + "other"
