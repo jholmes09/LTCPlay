@@ -16,6 +16,7 @@ Everything it decides goes to the night journal and the machine log
 (journal.py), written together from the same event, with the last lines
 kept in memory for the page.
 """
+import collections
 import json
 import os
 import socket
@@ -386,6 +387,68 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+class _ConductorCall:
+    """One request to the show conductor, as the scheduler decided it."""
+
+    def __init__(self, label, method, who, screen):
+        self.label, self.method = label, method
+        self.who, self.screen = who, screen
+        self.ok, self.sentence = None, ""
+        self.done = threading.Event()
+
+
+class _ConductorCalls:
+    """Every show conductor request, in the order the scheduler decided
+    them, made on ONE thread of its own, never with the scheduler's lock
+    held. One FIFO and one thread is what keeps Hold, Resume and Abort in
+    order now that they no longer run inside the lock: two requests can
+    never be made at once or overtake each other. A conductor request that
+    is slow (its lock is held across a device call) holds up only the
+    requests behind it, never a tick or a status poll.
+
+    The thread starts with the first request, so a Service with no
+    conductor never has one."""
+
+    def __init__(self, run_one):
+        self._run_one = run_one
+        self._q = collections.deque()
+        self._cv = threading.Condition()
+        self._busy = False
+        self._thread = None
+
+    def put(self, call):
+        with self._cv:
+            self._q.append(call)
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._loop, daemon=True,
+                    name="ltcplay-conductor-calls")
+                self._thread.start()
+            self._cv.notify_all()
+
+    def _loop(self):
+        while True:
+            with self._cv:
+                while not self._q:
+                    self._cv.wait()
+                call = self._q.popleft()
+                self._busy = True
+            try:
+                self._run_one(call)
+            except Exception:           # never kill the only caller
+                pass
+            finally:
+                call.done.set()
+                with self._cv:
+                    self._busy = False
+                    self._cv.notify_all()
+
+    def flush(self, timeout):
+        with self._cv:
+            return self._cv.wait_for(lambda: not self._q and not self._busy,
+                                     timeout)
+
+
 class Service:
     """One scheduler, ticking, with the answers the page needs.
 
@@ -409,6 +472,13 @@ class Service:
         # lands). See _drive_conductor: without one, every effect is only
         # journaled as not performed, exactly as before this was added.
         self.conductor = conductor
+        # Requests to it, in order, off the scheduler's lock. See
+        # _ConductorCalls and _queue_conductor.
+        self._calls = _ConductorCalls(self._run_conductor_call)
+        # An operator's Abort has been queued for the conductor and has not
+        # run yet: until it has, the conductor's own `latched` cannot be
+        # believed, so the scheduler counts itself latched (see _aborted).
+        self._abort_queued = False
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -648,76 +718,225 @@ class Service:
     _ABORT_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
                                 sch.FADE_MUSIC_OUT, sch.FADE_VIDEO_OUT,
                                 sch.FADE_PIXELS, sch.STOP_CONDUCTOR))
+    # Of the closing bundle, the conductor's intermission() performs only
+    # the flame cue zero (and blanks the lasers, which closing does not
+    # list). STOP_CONDUCTOR, FADE_PIXELS and BLACKOUT have no conductor
+    # method, so they stay "not performed".
+    _CLOSING_CLAIMS = frozenset((sch.ZERO_FLAME_CUES,))
 
     def _drive_conductor(self, out, ev):
-        """Hand the effects that belong to the show conductor (Hold,
-        Resume, Abort, a show starting, leaving the show for intermission)
-        to conductor.Conductor, instead of only ever journaling them as
-        not performed. Returns (label, conductor.Result), or None when
-        there is no conductor attached (every build before PR #17's
-        device layer lands, and the GPL path, which never even passes a
-        schedule) or the outcome carries no effects (a refused event, or a
-        TICK that changed nothing).
+        """What the show conductor (conductor.Conductor) is to be asked to
+        do for this outcome: a list of (label, method, claimed effect
+        kinds), in order, possibly empty. Nothing is CALLED here: _apply
+        queues these only after tonight is saved and the journal written
+        (schedule.py's effects contract, rule 1), and _ConductorCalls calls
+        them in order, on its own thread, outside the scheduler's lock.
 
-        Matched by which effect KINDS came back, not by which event was
-        sent: that is what schedule.py's own module docstring describes
-        as the contract for whatever performs its effects, and it is
-        robust to a bundle arriving by more than one route (SHOW_FAILED
-        and a restart mid-show fade out exactly like an Abort).
+        Empty without a conductor (every build before PR #17's device layer
+        lands, and the GPL path, which never even passes a schedule), and
+        for a refused outcome.
 
-        Only the effects conductor.py actually implements are claimed.
-        PRESHOW_LOOK and INTERMISSION both map onto its one BETWEEN look
-        (conductor.py's own docstring: "intermission, preshow, closing").
-        The closing sequence's pixel fade and blackout are NOT claimed:
-        conductor.py has no method for them, so they are still only
-        journaled as not performed, same as before this existed."""
-        if self.conductor is None or not out.effects:
-            return None
+        Matched mostly by which effect KINDS came back (schedule.py's
+        contract for whatever performs its effects), with three
+        exceptions that the kinds alone cannot tell apart:
+          - the Abort bundle is an Abort only when the operator pressed
+            Abort. A failed start and a show cut by a restart fade the
+            same way, but go to show_stopped(): dark, no disarm, no latch
+            (DEFAULT pending Jeff's confirmation, 2026-10-02).
+          - START_SHOW is NOT the conductor's: it brings the rig up only
+            for a show cue that is playing (show_starting refuses "no show
+            cue is playing" otherwise). It is told once the show is
+            confirmed running, on SHOW_CONFIRMED, and only if the show is
+            not paused by then.
+          - every way out of a show tells it so, the last show of the
+            night and Close for the night included (CLOSING), not only the
+            intermission: intermission() zeroes the flame cues and blanks
+            the lasers.
+        `claimed` is only the effects the conductor really performs; the
+        rest are journaled as not performed."""
+        if self.conductor is None or out.refused:
+            return []
         kinds = {e.kind for e in out.effects}
-        who, screen = ev.who, ev.screen
+        plan = []
         if kinds >= self._HOLD_EFFECTS:
-            return "Hold", self.conductor.hold(who, screen)
-        if kinds >= self._RESUME_EFFECTS:
-            return "Resume", self.conductor.resume(who, screen)
-        if kinds >= self._ABORT_EFFECTS:
-            return "Abort", self.conductor.abort(who, screen)
-        if sch.START_SHOW in kinds:
-            return "Show start", self.conductor.show_starting(who, screen)
-        if sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
-            return "Intermission", self.conductor.intermission(who, screen)
-        return None
+            plan.append(("Hold", "hold", self._HOLD_EFFECTS))
+        elif kinds >= self._RESUME_EFFECTS:
+            plan.append(("Resume", "resume", self._RESUME_EFFECTS))
+        elif kinds >= self._ABORT_EFFECTS:
+            if ev.kind == sch.ABORT:
+                plan.append(("Abort", "abort", self._ABORT_EFFECTS))
+            else:
+                plan.append(("Show stopped", "show_stopped",
+                             self._ABORT_EFFECTS))
+        if sch.BLACKOUT in kinds:
+            plan.append(("Out of the show", "intermission",
+                         self._CLOSING_CLAIMS))
+        elif sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
+            plan.append(("Out of the show", "intermission", frozenset()))
+        if ev.kind == sch.SHOW_CONFIRMED and \
+                out.machine.state == sch.SHOW:
+            plan.append(("Show start", "show_starting", frozenset()))
+        return plan
 
-    def _record(self, out, now, claimed=None):
+    def _record(self, out, now, plan=()):
         for le in out.log:
+            if self.conductor is not None and le.action == sch.ABORT and \
+                    sch.NOTHING_DISARMED in le.text:
+                # The engine never disarms; the conductor's abort() does.
+                le = replace(le, text=le.text.replace(
+                    sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
             self._record_logevent(le)
-        if not out.effects:
-            return
-        descs = [eff.kind + (f" show {eff.show}" if eff.show else "") +
-                (f" over {eff.seconds:g} s" if eff.seconds else "")
-                for eff in out.effects]
-        if claimed is not None:
-            label, result = claimed
-            text = f"{label}: {', '.join(descs)}. {result.sentence}".strip()
+        claimed = set()
+        for label, method, kinds in plan:
+            mine = [e for e in out.effects if e.kind in kinds]
+            claimed |= set(kinds)
+            what = (f": {', '.join(self._desc(e) for e in mine)}"
+                    if mine else "")
+            extra = self.CONDUCTOR_SAYS.get(method, "")
             self._journal_line(
-                "system", text, action=label.lower(),
-                outcome="done" if result.ok else "failed",
-                reason=result.sentence or "sent to the show conductor",
-                fault=not result.ok)
-            return
-        for eff, desc in zip(out.effects, descs):
+                "system", f"Sent to the show conductor, {label}{what}."
+                          f"{extra} Its own line says what it did.",
+                action="conductor", outcome="sent",
+                reason=f"{method} asked of the show conductor")
+        for eff in out.effects:
+            if eff.kind in claimed:
+                continue
             self._journal_line(
-                "system", f"Not performed, dry run: {desc}.",
+                "system", f"Not performed, dry run: {self._desc(eff)}.",
                 action=eff.kind, outcome="not performed",
                 reason="dry run, no transport in this build",
                 show=eff.show or None)
 
+    CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
+                         "flame group; its own line says whether it went.")
+    CONDUCTOR_SAYS = {
+        "show_stopped": (" The rig goes dark and stays dark until an "
+                         "operator presses Start now or the next show "
+                         "starts. No flame group is disarmed and nothing "
+                         "is latched, so no Reset is needed (DEFAULT "
+                         "pending Jeff's confirmation)."),
+        "intermission": (" Out of the show: flame cues to zero and the "
+                         "lasers blanked."),
+    }
+
+    @staticmethod
+    def _desc(eff):
+        return eff.kind + (f" show {eff.show}" if eff.show else "") + \
+            (f" over {eff.seconds:g} s" if eff.seconds else "")
+
+    # -- the show conductor's calls, in order, off the scheduler's lock -------
+    def _queue_conductor(self, plan, ev):
+        if not plan:
+            return
+        op = ev.actor == "operator"
+        who = ev.who if op else "the scheduler"
+        screen = ev.screen if op else ""
+        for label, method, _kinds in plan:
+            if method == "abort":
+                self._abort_queued = True
+            self._calls.put(_ConductorCall(label, method, who, screen))
+
+    def _run_conductor_call(self, call):
+        """On _ConductorCalls' thread. One conductor request, whatever it
+        does or raises, then one journal line for it. Anything but a good
+        Result is a fault, raised on the scheduler so the page shows it."""
+        try:
+            r = getattr(self.conductor, call.method)(call.who, call.screen)
+            ok = getattr(r, "ok", None) is True
+            said = str(getattr(r, "sentence", "") or "")
+            if not hasattr(r, "ok"):
+                said = (f"it returned {r!r}, not a Result, so it counts as "
+                        f"not done")
+        except Exception as e:
+            ok, said = False, f"it raised {type(e).__name__}: {e}"
+        call.ok, call.sentence = ok, said
+        with self._locked():
+            if call.method == "abort":
+                # From here the conductor's own latch is the truth: set if
+                # the Abort was accepted, clear if it was refused.
+                self._abort_queued = False
+            if call.method == "reset":
+                self._log(self.logbook.record, actor="operator",
+                          action="reset", outcome="done" if ok else "refused",
+                          reason=said or "Reset",
+                          text=f"{call.who} pressed Reset on the "
+                               f"{call.screen}. {said}".strip(),
+                          state=self._state_name(), night=self._night(),
+                          who=call.who, screen=call.screen)
+            elif ok:
+                self._journal_line(
+                    "system", f"Show conductor, {call.label}: {said}".strip(),
+                    action="conductor", outcome="done", reason=said or "done")
+            else:
+                what = (f"The show conductor did not carry out "
+                        f"{call.label}: {said}")
+                if self.machine is not None:
+                    self._apply(sch.Event(sch.FAULT_RAISED, "system",
+                                          detail=what))
+                else:
+                    self._journal_line("system", what, action="conductor",
+                                       outcome="failed", fault=True)
+
+    def flush_conductor(self, timeout=5.0):
+        """True once every conductor call queued so far has been made and
+        journaled. For tests, and for stop()."""
+        return self._calls.flush(timeout)
+
+    def reset_conductor(self, who, screen, wait_s=2.0):
+        """The operator's Reset, for the show conductor's Abort latch: the
+        same Conductor.reset() an operator's own Reset press calls, queued
+        behind every conductor call already decided, so it can never land
+        before the Abort it is meant to clear. Journaled with who and which
+        screen. Returns {"ok", "text"}. Raises ValueError with a sentence
+        when there is nothing to reset or the operator or screen is not on
+        its list."""
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        if self.conductor is None:
+            raise ValueError("There is no show conductor attached, so there "
+                             "is nothing to Reset.")
+        if not who or not screen:
+            raise ValueError("Reset has to say who pressed it and which "
+                             "screen it came from. Nothing was reset.")
+        names = {n.lower(): n for n in self.operators}
+        if who.lower() not in names:
+            raise ValueError(f"{who!r} is not on the operator list "
+                             f"({', '.join(self.operators)}). Nothing was "
+                             f"reset.")
+        screen = self._check_screen(screen, who, "reset", "Reset")
+        call = _ConductorCall("Reset", "reset", names[who.lower()], screen)
+        with self._locked():
+            self._calls.put(call)
+        if not call.done.wait(wait_s):
+            return {"ok": False, "text": "Reset is queued behind the show "
+                                         "conductor's earlier work and has "
+                                         "not answered yet."}
+        return {"ok": call.ok, "text": call.sentence}
+
+    def _aborted(self):
+        """The show conductor is latched after an Abort (or one is queued
+        for it) and nobody has pressed Reset. Never with no conductor."""
+        if self.conductor is None:
+            return False
+        try:
+            latched = bool(getattr(self.conductor, "latched", False))
+        except Exception:
+            latched = False
+        return self._abort_queued or latched
+
     def _apply(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
+        if ev.kind in (sch.TICK, sch.BOOT_DONE, sch.START_NOW) and \
+                self._aborted():
+            # Jeff: after an Abort the rig stays dark until the operator
+            # acts, and Reset is that act. The engine misses a show that
+            # comes due and refuses Start now until then.
+            ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
-        claimed = self._drive_conductor(out, ev)
-        self._record(out, now, claimed)
+        plan = self._drive_conductor(out, ev)
+        self._record(out, now, plan)
         if DRY_RUN and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -726,6 +945,11 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # Only now, saved and journaled, is the conductor asked for
+        # anything: a conductor that raises or hangs can no longer lose
+        # the save or the "Show N started" line, which is what keeps a
+        # restart inside the grace from starting the same show twice.
+        self._queue_conductor(plan, ev)
         # Bumped every time the machine crosses INTO or OUT OF a held or
         # paused state, whoever does it: an operator's own Hold or Resume,
         # or an announcement's hold_for_announcement. hold_still_claimed
@@ -875,14 +1099,17 @@ class Service:
         self.persist_error = ""
         return True
 
-    def _load_tonight(self, d, now):
+    def _load_tonight(self, d, now, set_aside=True):
         """Tonight's saved machine, or a fresh one from the rule with a
         sentence saying why. The show length, guard, grace and zone always
         come from the rule file; the saved list only says what happened
         tonight, and it is checked before it is believed. A file that fails
         the checks is set aside, never overwritten, so the morning read can
         still see it. If the rule changed since the list was saved, tonight
-        is rebuilt from the new rule and only what already happened is kept."""
+        is rebuilt from the new rule and only what already happened is kept.
+        With set_aside False (an earlier night being picked up again, see
+        _open_night_before) a file that fails the checks raises instead and
+        is left exactly where it is."""
         path = tonight_path(d, self.state_dir)
         if not os.path.exists(path):
             self._journal_line(
@@ -895,6 +1122,8 @@ class Service:
                 m = sch.machine_from_doc(json.load(fh), self.rule, d, now,
                                          notes)
         except (OSError, ValueError, sch.RuleError) as e:
+            if not set_aside:
+                raise
             return self._set_aside(path, e, d, now)
         for text in notes:
             self._journal_line("system", text, action="load tonight",
@@ -937,53 +1166,172 @@ class Service:
     def _tonight(self, now):
         return now.astimezone(self.rule.tz).date()
 
+    # How many days back a start looks for a night left open past midnight
+    # (a delayed show waiting, or a show running), see _open_night_before.
+    OPEN_NIGHT_LOOK_BACK = 7
+
     def _ensure_night(self, now):
+        """The night the scheduler is on, loaded or moved on as the date
+        changes. A night stays open past midnight while a show runs or is
+        paused, and while a delayed show waits for Start now or Close for
+        the night (Jeff, 2026-10-01), but only until the NEXT night's
+        preshow lead begins (_still_open, DEFAULT pending Jeff, 2026-10-02).
+
+        On start it first looks for such a night left open by the last run
+        (_open_night_before): before 2026-10-02 a start after midnight only
+        ever loaded the calendar day's file, so a delayed show waiting from
+        last night vanished without a word, and a delayed show running
+        after midnight was lost with no fault."""
         if self.rule is None:
             return False
         d = self._tonight(now)
-        m = self.machine
-        if m is not None and m.date != d:
-            # A new day. Settle yesterday first: a show still on its list
-            # (the machine was asleep across it) is marked MISSED in the
-            # journal rather than dropped without a word.
-            self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            if self.machine.state in (sch.SHOW, sch.PAUSED) or \
-                    self.machine.delayed() is not None:
-                # Never replace a running night: a show started by hand at
-                # 23:58 finishes on yesterday's list. Same for a night that
-                # still has a delayed show waiting for Start now or Close
-                # for the night (Jeff, 2026-10-01): the calendar date
-                # rolling over must not be what closes it. schedule.py's
-                # own _tick no longer auto-misses a delayed show at
-                # midnight either, so without this check the delayed show
-                # would survive the tick above only to be thrown away here
-                # a moment later.
-                return True
-            if str(self.machine.date) not in self._summarised and \
-                    self.machine.slots:
-                self._write_summary("written at midnight; the night was "
-                                    "never closed", self.machine)
-            # Yesterday's summary was just seen to; no looking back needed.
-            self._looked_back = True
-            # This assignment, not _apply(), is what actually drops a night
-            # left on Hold at midnight (PAUSED and SHOW already returned
-            # above; only a genuinely running show is never swept). It
-            # bypasses _apply's own before/after bump, because by the time
-            # BOOT_DONE below runs _apply again, `before` is already
-            # tomorrow's fresh machine, not tonight's HOLD one -- so the
-            # crossing has to be bumped here, by hand, or an announcement's
-            # claim from tonight could otherwise still look current after
-            # midnight swept the night it was claimed on (merge with #14,
-            # 2026-09-26: _ensure_night's own end-of-night write_summary
-            # touches this same crossing).
-            if self.machine.state == sch.HOLD:
-                self.hold_epoch += 1
-            self.machine = None
         if self.machine is None:
-            self.machine = replace(self._load_tonight(d, now),
-                                   operators=self.operators)
+            old = self._open_night_before(d, now)
+            if old is None:
+                self.machine = replace(self._load_tonight(d, now),
+                                       operators=self.operators)
+                self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+                return True
+            # The open night boots exactly as tonight's would after a
+            # restart: a show that was running is cut (FAULT, the rig goes
+            # dark, nothing resumes), a delayed show keeps waiting. Then it
+            # goes through the same "is it still open" rule as at midnight.
+            self.machine = replace(old, operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+        if self.machine.date == d:
+            return True
+        # A new day. Settle yesterday first: a show still on its list
+        # (the machine was asleep across it) is marked MISSED in the
+        # journal rather than dropped without a word.
+        self._apply(sch.Event(sch.TICK, "scheduler"), now)
+        how = self._still_open(now, d)
+        if how is None:
+            return True
+        if str(self.machine.date) not in self._summarised and \
+                self.machine.slots:
+            self._write_summary(how, self.machine)
+        # Yesterday's summary was just seen to; no looking back needed.
+        self._looked_back = True
+        # This assignment, not _apply(), is what actually drops a night
+        # left on Hold (SHOW and PAUSED are never dropped; see
+        # _still_open). It bypasses _apply's own before/after bump, because
+        # by the time BOOT_DONE below runs _apply again, `before` is
+        # already the new night's fresh machine, not this HOLD one -- so
+        # the crossing has to be bumped here, by hand, or an announcement's
+        # claim from this night could still look current after it was
+        # dropped (merge with #14, 2026-09-26). Reached by a held night
+        # with nothing waiting at midnight, and by a held night whose
+        # delayed show is given up when the next night's preshow begins.
+        if self.machine.state == sch.HOLD:
+            self.hold_epoch += 1
+        self.machine = replace(self._load_tonight(d, now),
+                               operators=self.operators)
+        self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
+
+    def _next_lead(self, after, upto):
+        """(lead, date): when the first night after `after`, up to and
+        including `upto`, that has shows begins its preshow lead; (None,
+        None) when none of them has shows."""
+        x = after + timedelta(days=1)
+        while x <= upto:
+            lead = sch.next_night_lead(self.rule, x)
+            if lead is not None:
+                return lead, x
+            x += timedelta(days=1)
+        return None, None
+
+    def _still_open(self, now, d):
+        """None while the night on the machine (an earlier date than `d`)
+        must stay open; otherwise the words for its summary, once it may
+        be set aside.
+
+        A running or paused show is never set aside. A delayed show keeps
+        the night open (Jeff, 2026-10-01) until the next night's preshow
+        lead begins: then the delayed show is MISSED, with a fault line
+        naming it and why, and the night is set aside so the next night's
+        first show can fire (DEFAULT pending Jeff's confirmation,
+        2026-10-02; without it the next night never started at all)."""
+        m = self.machine
+        if m.state in (sch.SHOW, sch.PAUSED):
+            return None
+        if m.delayed() is None:
+            return "written at midnight; the night was never closed"
+        lead, when = self._next_lead(m.date, d)
+        if lead is None or now < lead:
+            return None
+        n = m.delayed().n
+        out = sch.close_for_next_night(m, now, when, lead)
+        self.machine = out.machine
+        self._record(out, now)
+        self._save_tonight()
+        return (f"closed when the night of {when} began its preshow; the "
+                f"delayed show {n} never started")
+
+    def _open_night_before(self, d, now):
+        """The most recent night saved before `d`, picked up again if it
+        was left open (a delayed show waiting, or a show running or paused),
+        or None. Only while it would still be open by _still_open's rule:
+        once a later night's preshow lead has begun, it is said out loud
+        and left. Journaled either way it matters. An unreadable file is
+        left where it is and said out loud; tonight's list then starts as
+        it always did."""
+        for back in range(1, self.OPEN_NIGHT_LOOK_BACK + 1):
+            y = d - timedelta(days=back)
+            path = tonight_path(y, self.state_dir)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    doc = json.load(fh)
+                state = doc["state"]
+                slots = [(x["n"], x["status"]) for x in doc["slots"]]
+            except (OSError, ValueError, TypeError, KeyError) as e:
+                self._journal_line(
+                    "system", f"The saved list for {y}, {path}, could not "
+                    f"be read to see whether that night was left open "
+                    f"({type(e).__name__}: {e}). It is left as it is, and "
+                    f"{d} starts from its own list.",
+                    action="load tonight", outcome="failed", fault=True)
+                return None
+            # A show that was running counts only from the day before: it
+            # is cut either way, and older than that the look-back summary
+            # (_look_back) is how that night is closed, as it always was.
+            waiting = [f"show {n} is delayed and waits for Start now"
+                       for n, st in slots if st == sch.DELAYED] + \
+                      [f"show {n} was running" for n, st in slots
+                       if st == sch.RUNNING and back == 1]
+            if state in (sch.CLOSING, sch.OFF) or not waiting:
+                return None
+            lead, when = self._next_lead(y, d)
+            if lead is not None and now >= lead:
+                # Too late to pick it up: by the same rule as at midnight it
+                # would already have given way to the night of `when`.
+                self._journal_line(
+                    "system", f"The night of {y} was left open when ltcplay "
+                    f"stopped ({'; '.join(waiting)}), but the night of "
+                    f"{when} has already begun its preshow, so it is not "
+                    f"picked up again. Nothing from it will run.",
+                    action="load tonight", outcome="not restored",
+                    fault=True)
+                return None
+            try:
+                m = self._load_tonight(y, now, set_aside=False)
+            except (OSError, ValueError, sch.RuleError) as e:
+                self._journal_line(
+                    "system", f"The night of {y} was left open ("
+                    f"{'; '.join(waiting)}), but its saved list {path} "
+                    f"could not be used: {str(e).rstrip('.')}. It is left "
+                    f"as it is, and {d} starts from its own list.",
+                    action="load tonight", outcome="failed", fault=True)
+                return None
+            self._journal_line(
+                "system", f"ltcplay started on {d} while the night of {y} "
+                f"was still open: {'; '.join(waiting)}. That night is picked "
+                f"up again first, instead of being dropped.",
+                action="load tonight", outcome="restored open night")
+            return m
+        return None
 
     def tick(self):
         with self._locked():
@@ -1287,6 +1635,9 @@ class Service:
         for t in (self._thread, self._sample_thread):
             if t is not None:
                 t.join(timeout=1)
+        # The conductor's last requests (a closing, an Abort) get their
+        # journal line before the journal closes, within a second.
+        self._calls.flush(1.0)
         # From here no line is written in this thread's time; close()
         # writes what is left within its own time limit.
         self.logbook.begin_close()

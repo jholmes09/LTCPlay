@@ -18,6 +18,12 @@ lasers (a BEYOND brightness ramp, not an instant blank), video, pixels and
 music then fade to black TOGETHER over 1 s, and the video stops. It LATCHES:
 nothing else is accepted until one Reset press. Only while something plays.
 
+A show stopped early that was NOT an Abort (a failed start, a show cut by a
+restart): show_stopped(). The same fade to black, but no disarm and no
+latch, so the rig stays dark only until Start now or the next show (Jeff's
+rule; the disarm and latch are not his, DEFAULT pending his confirmation,
+2026-10-02).
+
 Hold, production (section 5, Jeff 2026-09-27): flames to zero and the lasers
 blanked by a real command (a frozen laser cue is a static beam), then the
 music fades over 0.25 s and the clock freezes on the frame where the fade
@@ -124,6 +130,9 @@ ABORTED = "ABORTED"       # flames zero and disarmed, all faded, stopped
 BETWEEN = "BETWEEN"       # out of the show (intermission, preshow,
                           # closing): flame cues zero, lasers blanked;
                           # music, video and pixels are the scheduler's
+STOPPED_DARK = "STOPPED_DARK"  # a show that did not start, or was cut by a
+                          # restart: everything dark like ABORTED, but no
+                          # disarm and no latch (show_stopped)
 HOLDING_LOOKS = (HELD, DARK)
 
 # What each output was last told. UNKNOWN is never "done".
@@ -442,8 +451,40 @@ class Conductor:
             if self._latched:
                 return done("The show is aborted, so the rig is already "
                             "dark.")
+            if self._look == STOPPED_DARK:
+                # Darker than BETWEEN already; a new request would only cut
+                # the stop's own fade short.
+                return done("The show was stopped, so the rig is already "
+                            "dark.")
             self._accept("Intermission", BETWEEN, who, screen, fade_s=0.0)
             return done("Out of the show: flame cues zero, lasers dark.")
+
+    def show_stopped(self, who="", screen=""):
+        """A show stopped early that was NOT an operator's Abort: a start
+        that failed (no timecode), or a show cut short by ltcplay
+        restarting. The rig goes dark and stays dark until an operator acts
+        or the next show starts: flame cues zero, lasers blanked, video,
+        pixels and music faded out over ABORT_FADE_S, the video stopped.
+
+        Unlike abort() it does NOT disarm any flame group and does NOT
+        latch, so Start now or the next scheduled show brings the rig up
+        with no Reset (Jeff's rule is only "dark until the operator acts";
+        the disarm and the latch were never his decision for a failed
+        start: DEFAULT pending his confirmation, 2026-10-02). It does not
+        need a show playing: after a restart nothing is, and every output
+        is UNKNOWN, so everything is sent. While aborted it changes
+        nothing, like intermission()."""
+        with self._lock:
+            if self._latched:
+                return done("The show is aborted, so the rig is already "
+                            "dark.")
+            self._accept("Show stopped", STOPPED_DARK, who, screen,
+                         fade_s=ABORT_FADE_S)
+            return done(f"The show stopped: flame cues zeroed and lasers "
+                        f"blanked; video, pixels and music fade to black "
+                        f"over {ABORT_FADE_S:g} s. Flame groups are not "
+                        f"disarmed and nothing is latched: Start now or the "
+                        f"next show brings the rig back.")
 
     def abort(self, who="", screen=""):
         with self._lock:
@@ -634,6 +675,8 @@ class Conductor:
             look = want["look"]
             if look == ABORTED:
                 self._run_abort(gen, want, progress)
+            elif look == STOPPED_DARK:
+                self._run_stopped(gen, want, progress)
             elif look in HOLDING_LOOKS:
                 self._run_dark(gen, want, progress)
             elif look == PLAYING:
@@ -773,6 +816,31 @@ class Conductor:
         if progress:
             self._note(f"Abort finished: {', '.join(progress)}. Latched "
                        f"until Reset.", action="abort", outcome="done")
+
+    def _run_stopped(self, gen, want, progress):
+        """STOPPED_DARK: Abort's sequence without the disarm and the latch."""
+        fade = want["fade_s"]
+        self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
+                   self.show.flames_zero)
+        self._step(gen, "lasers", BLACK, "lasers blanked", progress,
+                   self.devices.lasers_blank)
+        faded = False
+        faded |= self._step(gen, "video", BLACK, "video faded", progress,
+                            self.devices.video_fade_out, fade,
+                            only_from=(LIT, UNKNOWN))
+        faded |= self._step(gen, "pixels", BLACK, "pixels faded", progress,
+                            self.show.pixels_fade_out, fade)
+        faded |= self._step(gen, "music", MUSIC_STOPPED, "music faded",
+                            progress, self.show.music_halt, fade)
+        if faded:
+            self._pause(gen, fade)
+        self._step(gen, "video", STOPPED, "video stopped", progress,
+                   self.devices.video_stop)
+        if progress:
+            self._note(f"The rig is dark after a stopped show: "
+                       f"{', '.join(progress)}. Nothing was disarmed and "
+                       f"nothing is latched.", action="show stopped",
+                       outcome="done")
 
     def _run_announce(self, gen, want, progress):
         ann_id, who, screen = want["announce"]
