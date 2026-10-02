@@ -23523,6 +23523,21 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     check(rec.names() == ["intermission", "show_starting", "hold", "resume",
                           "abort"],
           f"and the conductor got them in order: {rec.names()}")
+    # An Abort still waiting in the queue already counts: nothing can
+    # start in the moment before the conductor has latched.
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.START_NOW))
+    rec.sleep_on = {"abort": 0.5}
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now straight after Abort, before the conductor has run "
+          f"it, is refused: {out.refused}")
+    _settle(svc)
+    out = svc._apply(_op(S, S.START_NOW))
+    check(out.accepted,
+          f"once the Abort has run and the conductor says it is not "
+          f"latched, Start now works: {out.refused}")
     print("  ok")
 
 
@@ -23570,6 +23585,26 @@ def test_schedule_failed_start_goes_dark_without_disarm_or_latch():
     check(out.accepted and c.snapshot()["look"] == "PLAYING",
           f"Start now works straight away, with no Reset, and the rig comes "
           f"up: {out.refused} {c.snapshot()['look']}")
+    # The LAST show fails to start: the night closes at once, and closing
+    # must not cut the stop's fade short (video and pixels still go down).
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    _settle(svc, c)
+    now[0] = _den(S, 21, 40, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    now[0] = _den(S, 21, 40, 6)
+    svc.tick()
+    _settle(svc, c)
+    a = c.snapshot()["applied"]
+    check(svc.machine.state == S.OFF and a["video"] in ("black", "stopped")
+          and a["pixels"] == "black" and a["lasers"] == "black",
+          f"a failed last show still takes video and pixels down, though "
+          f"the night closes straight after: {svc.machine.state} {a}")
     print("  ok")
 
 

@@ -476,8 +476,8 @@ class Conductor:
         nothing, like intermission()."""
         with self._lock:
             if self._latched:
-                return done("The show is aborted, so the rig is already "
-                            "dark.")
+                return done("Already aborted: the rig is dark, and nothing "
+                            "else was sent.")
             self._accept("Show stopped", STOPPED_DARK, who, screen,
                          fade_s=ABORT_FADE_S)
             return done(f"The show stopped: flame cues zeroed and lasers "
@@ -834,7 +834,7 @@ class Conductor:
                             progress, self.show.music_halt, fade)
         if faded:
             self._pause(gen, fade)
-        self._step(gen, "video", STOPPED, "video stopped", progress,
+        self._step(gen, "video", STOPPED, "video bank stopped", progress,
                    self.devices.video_stop)
         if progress:
             self._note(f"The rig is dark after a stopped show: "
