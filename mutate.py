@@ -3910,7 +3910,8 @@ def build():
 
  ("round4: SocketArmInput never reports a flood",
   "flamesafe/arminput.py",
-  "        if n_read > FLOOD_DATAGRAMS_PER_POLL:\n",
+  "        if n_read > FLOOD_DATAGRAMS_PER_POLL or \\\n"
+  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
   "        if False:\n"),
 
  ("round4: SocketArmInput stops naming the locked sender",
@@ -4110,6 +4111,63 @@ def build():
   "ltcplay/streamdeck.py",
   "        if not self.active or secs < DECK_STABLE_S:\n",
   "        if True:\n"),
+
+ # 4: a flood is measured in bytes as well as datagrams, and the arm
+ # socket asks for a bigger receive buffer. The review's hand mutations
+ # ">=" and "50 -> 65" passed the old suite (it flooded with 70).
+ ("round5: the flood datagram threshold is off by one (>=)",
+  "flamesafe/arminput.py",
+  "        if n_read > FLOOD_DATAGRAMS_PER_POLL or \\\n",
+  "        if n_read >= FLOOD_DATAGRAMS_PER_POLL or \\\n"),
+
+ ("round5: the flood datagram threshold moves from 50 to 65",
+  "flamesafe/arminput.py",
+  "FLOOD_DATAGRAMS_PER_POLL = 50\n",
+  "FLOOD_DATAGRAMS_PER_POLL = 65\n"),
+
+ ("round5: a flood is counted in datagrams only, never bytes",
+  "flamesafe/arminput.py",
+  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
+  "                False:\n"),
+
+ ("round5: the flood byte threshold is off by one (>=)",
+  "flamesafe/arminput.py",
+  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
+  "                n_bytes >= FLOOD_BYTES_PER_POLL:\n"),
+
+ ("round5: the flood byte threshold doubles",
+  "flamesafe/arminput.py",
+  "FLOOD_BYTES_PER_POLL = 64 * 1024\n",
+  "FLOOD_BYTES_PER_POLL = 128 * 1024\n"),
+
+ ("round5: the arm socket keeps the kernel's default receive buffer",
+  "flamesafe/arminput.py",
+  "            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,\n"
+  "                            ARM_RCVBUF_BYTES)\n",
+  "            pass\n"),
+
+ # 5: a ceiling across every arm-link rejection reason, and half the
+ # journal queue kept free of arm-link lines.
+ ("round5: no global ceiling across arm-link rejection reasons",
+  "flamesafe/arminput.py",
+  "GLOBAL_LINES_PER_MINUTE = 8\n",
+  "GLOBAL_LINES_PER_MINUTE = 10 ** 6\n"),
+
+ ("round5: the global ceiling is checked but lines are never counted "
+  "against it",
+  "flamesafe/arminput.py",
+  "        self._all_lines.append(now)\n",
+  ""),
+
+ ("round5: arm-link lines can fill the whole journal queue again",
+  "flamesafe/journal.py",
+  "LOW_PRIORITY_MAX = QUEUE_MAX // 2\n",
+  "LOW_PRIORITY_MAX = QUEUE_MAX\n"),
+
+ ("round5: the journal's arm-link limit drops important lines too",
+  "flamesafe/journal.py",
+  "            if kind in LOW_PRIORITY_KINDS and \\\n",
+  "            if True and \\\n"),
 
 ]
 

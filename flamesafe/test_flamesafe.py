@@ -2068,6 +2068,174 @@ def test_round4_socket_arm_input_flags_a_flood():
         rogue.close()
 
 
+def test_round5_flood_thresholds_are_pinned_in_datagrams_and_bytes():
+    section("round 5, item 4: a flood is MORE than 50 datagrams or MORE "
+            "than 64 KiB in one poll (the kernel buffer fills by bytes: 12 "
+            "maximum-size frames filled the default one, far under 50 "
+            "datagrams), and the arm socket asks for a 4 MiB receive "
+            "buffer")
+    # Literal numbers, not the module's constants: a test that reads the
+    # constant moves along with it when someone changes it.
+    check(arminput.FLOOD_DATAGRAMS_PER_POLL == 50
+          and arminput.FLOOD_BYTES_PER_POLL == 65536
+          and arminput.ARM_RCVBUF_BYTES == 4 * 1024 * 1024,
+          f"thresholds: {arminput.FLOOD_DATAGRAMS_PER_POLL} datagrams, "
+          f"{arminput.FLOOD_BYTES_PER_POLL} bytes, receive buffer "
+          f"{arminput.ARM_RCVBUF_BYTES}")
+
+    def one_poll(sizes):
+        """A fresh input; send datagrams of these sizes from one rogue,
+        poll once, and say whether that poll read as a flood."""
+        t = [0.0]
+        inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=Log(),
+                                      stale_ms=200, clock=lambda: t[0])
+        inp.open()
+        rogue = _udp()
+        try:
+            port = inp._sock.getsockname()[1]
+            for n in sizes:
+                rogue.sendto(b"\xff" * n, ("127.0.0.1", port))
+            time.sleep(0.05)
+            inp.poll()
+            return inp.flooded, inp.rcvbuf
+        finally:
+            inp.close()
+            rogue.close()
+
+    f50, _ = one_poll([20] * 50)
+    f51, _ = one_poll([20] * 51)
+    check(not f50, "exactly 50 small datagrams in one poll: not a flood")
+    check(f51, "51 small datagrams in one poll: a flood")
+    fb, _ = one_poll([16384] * 4)
+    fb1, _ = one_poll([16384] * 4 + [1])
+    check(not fb, "four 16 KiB datagrams (exactly 64 KiB) in one poll: not "
+                  "a flood")
+    check(fb1, "64 KiB and one byte, in only 5 datagrams: a flood")
+    fv, _ = one_poll([16384] * 12)
+    check(fv, "the round-5 review's 12 maximum-size frames: a flood")
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        plain = probe.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
+                             4 * 1024 * 1024)
+        except OSError:
+            pass
+        asked = probe.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    finally:
+        probe.close()
+    _, got = one_poll([])
+    check(got == asked and (asked > plain or asked >= 4 * 1024 * 1024),
+          f"the arm socket's receive buffer is what this kernel gives a "
+          f"socket that asks for 4 MiB ({asked}), more than a plain "
+          f"socket's {plain}: {got}")
+
+
+def test_round5_arm_link_lines_have_a_global_ceiling():
+    section("round 5, item 5: arm-link rejection lines are capped at 8 a "
+            "minute across EVERY reason together, not only 4 a minute per "
+            "reason (13 reasons at 4 a minute each filled the 1000-line "
+            "journal queue behind a blocked console in about 19 minutes)")
+    check(arminput.GLOBAL_LINES_PER_MINUTE == 8,
+          f"the overall cap is 8 a minute: "
+          f"{arminput.GLOBAL_LINES_PER_MINUTE}")
+    reasons = (["decode:" + r for r in arminput._DECODE_REASONS]
+               + ["decode:other", "another sender", "flood"])
+    check(len(reasons) == 13, f"set up: 13 reasons: {len(reasons)}")
+
+    # Every reason opens an episode inside one minute: 8 lines, not 13.
+    lines = []
+    j = arminput._RejectJournal(lambda k, m: lines.append(m))
+    for i, r in enumerate(reasons):
+        j.note(r, i * 0.1, ("127.0.0.1", 1000 + i), f"opening {r}.")
+    check(len(lines) == 8,
+          f"13 reasons opening inside one minute write 8 lines: "
+          f"{len(lines)}")
+
+    # The review's worst pattern: all 13 rotating, every 10 ms, for 10
+    # minutes (fake clock), with episodes swept as the service would.
+    lines = []
+    j = arminput._RejectJournal(lambda k, m: lines.append(m))
+    t = 0.0
+    i = 0
+    per_min = {}
+    while t < 600.0:
+        j.note(reasons[i % 13], t, ("127.0.0.1", 1000 + i % 50), "opening.")
+        j.sweep(t, lambda reason, a, c: f"close {reason} {c}")
+        t += 0.01
+        i += 1
+    # and a burst-then-quiet pattern that keeps reopening episodes
+    t2 = 600.0
+    for k in range(13 * 12):
+        j.note(reasons[k % 13], t2, ("127.0.0.1", 1), "opening.")
+        t2 += arminput.EPISODE_QUIET_S + 0.1
+        j.sweep(t2, lambda reason, a, c: f"close {reason} {c}")
+    total_minutes = t2 / 60.0
+    check(len(lines) <= 8 * (int(total_minutes) + 1),
+          f"{len(lines)} lines in {total_minutes:.0f} minutes of every "
+          f"reason at once: never more than 8 a minute")
+    stamps = []
+    lines2 = []
+    j = arminput._RejectJournal(lambda k, m: (lines2.append(m),
+                                              stamps.append(now[0])))
+    now = [0.0]
+    while now[0] < 300.0:
+        for k, r in enumerate(reasons):
+            j.note(r, now[0], ("127.0.0.1", 1), "opening.")
+        now[0] += arminput.EPISODE_QUIET_S + 0.1
+        j.sweep(now[0], lambda reason, a, c: f"close {reason} {c}")
+    worst = max(sum(1 for s in stamps if a <= s < a + 60.0) for a in stamps)
+    check(worst <= 8,
+          f"in any 60 s window, at most 8 lines: worst window had {worst}")
+    check(any("went unlogged" in m for m in lines2),
+          "and a later line says how many went unlogged")
+
+
+def test_round5_arm_link_lines_never_crowd_out_important_ones():
+    section("round 5, item 5: behind a blocked console, arm-link lines can "
+            "never use more than half the journal queue, so 'show program "
+            "stopped answering', arm and disarm lines always have room")
+    from flamesafe import journal as jmod
+
+    gate = threading.Event()
+    written = []
+
+    class _Blocked:
+        def write(self, s):
+            gate.wait(10.0)
+            written.append(s)
+
+        def flush(self):
+            pass
+
+    j = jmod.Journal(stream=_Blocked())
+    try:
+        for i in range(jmod.QUEUE_MAX * 2):
+            j.event("arm-link", f"arm frame rejected {i}")
+        rejected_dropped = j.dropped
+        n = jmod.QUEUE_MAX // 4 - 5      # both kinds together fill most of
+        for i in range(n):               # the half kept for them
+            j.event("link", f"show program stopped answering {i}")
+            j.event("arm-input", f"armed {i}")
+    finally:
+        gate.set()
+    j.flush(10.0)
+    text = "".join(written)
+    important = sum(1 for i in range(n)
+                    if f"stopped answering {i}\n" in text)
+    arms = sum(1 for i in range(n) if f"armed {i}\n" in text)
+    check(rejected_dropped >= jmod.QUEUE_MAX * 2 - jmod.QUEUE_MAX // 2 - 1,
+          f"{jmod.QUEUE_MAX * 2} arm-link lines behind a blocked console: "
+          f"no more than half the queue kept ({rejected_dropped} dropped)")
+    check(important == n and arms == n,
+          f"every 'stopped answering' and arm line queued after them was "
+          f"still written: {important} and {arms} of {n}")
+    check(j.dropped == rejected_dropped,
+          f"and nothing but arm-link lines was dropped: "
+          f"{j.dropped - rejected_dropped} other lines lost")
+
+
 def test_round4_service_passes_the_flood_flag_before_assert_arm():
     section("round 4, item B: the service hands the arm input's `flooded` "
             "to the composer every tick, before assert_arm")
@@ -2136,7 +2304,11 @@ def test_round4_decode_rejections_are_throttled_per_reason():
         check(len(closers) == 4 and all("30 rejected" in m for m in closers),
               f"and one closing line each, with the count: {closers}")
 
-        # One datagram every 520 ms for 30 s: ONE episode, not 58.
+        # One datagram every 520 ms for 30 s: ONE episode, not 58.  A
+        # minute on first (round 5): the 8 lines above already used this
+        # minute's share of the global cap (GLOBAL_LINES_PER_MINUTE), and
+        # each part here measures only its own rule.
+        t[0] += 60.0
         before = len(lines())
         for i in range(58):
             tx.sendto(link.encode_arm(i, [True] * 6, NAMES, KEY + "x"),
@@ -2152,6 +2324,7 @@ def test_round4_decode_rejections_are_throttled_per_reason():
 
         # One every EPISODE_QUIET_S + 0.1 s for ~150 s: each is its own
         # episode, but the per-minute cap holds the line count down.
+        t[0] += 60.0
         before = len(lines())
         for i in range(30):
             tx.sendto(link.encode_arm(i, [True] * 6, NAMES, KEY + "x"),
@@ -3529,6 +3702,9 @@ if __name__ == "__main__":
     test_round4_genuine_lows_are_never_reported_forced()
     test_round4_consent_never_spans_two_senders()
     test_round4_socket_arm_input_flags_a_flood()
+    test_round5_flood_thresholds_are_pinned_in_datagrams_and_bytes()
+    test_round5_arm_link_lines_have_a_global_ceiling()
+    test_round5_arm_link_lines_never_crowd_out_important_ones()
     test_round4_service_passes_the_flood_flag_before_assert_arm()
     test_round4_decode_rejections_are_throttled_per_reason()
     test_round4_flood_takeover_cannot_rearm_end_to_end()
