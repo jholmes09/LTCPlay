@@ -55,6 +55,34 @@ SOURCE_TREE = os.path.exists(
 RAN = set()
 
 
+def _close_logs_under(path):
+    """Close the program's log files that live under `path`."""
+    import logging
+    try:
+        base = os.path.abspath(path)
+        loggers = [logging.getLogger(), logging.getLogger("ltcplay")]
+        for lg in loggers:
+            for h in list(lg.handlers):
+                f = getattr(h, "baseFilename", None)
+                if f and os.path.abspath(f).startswith(base):
+                    lg.removeHandler(h)
+                    h.close()
+    except Exception:
+        pass
+
+
+def _close_all_logs():
+    """Close every log file this process has open (the logging module does it
+    at exit, but that is after the run's own clean-up)."""
+    import logging
+    import gc
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    gc.collect()
+
+
 class _TempRun:
     """Keeps one run of this file from littering the machine's temp folder.
 
@@ -83,6 +111,7 @@ class _TempRun:
         self.root = self._real_mkdtemp(prefix="ltcplay_selftest_",
                                        dir=self.outer)
         self.tracked = []
+        self.seen = set()         # every folder this process made
         self.leftovers = None
         self._test = None
         self._saved_env = {k: os.environ.get(k)
@@ -110,13 +139,26 @@ class _TempRun:
         import stat
 
         def _fix(func, p, _exc):
-            try:
-                os.chmod(p, stat.S_IWRITE)
-                func(p)
-            except OSError:
-                pass
+            # A test may leave a folder or file without permissions. Give
+            # them back to the owner and let the next try remove it. Only
+            # retry the call here when it takes just a path: rmtree can hand
+            # this os.open or os.scandir, which need more.
+            for q in (os.path.dirname(p), p):
+                try:
+                    os.chmod(q, stat.S_IRWXU)
+                except OSError:
+                    pass
+            if func in (os.rmdir, os.unlink, os.remove):
+                try:
+                    func(p)
+                except OSError:
+                    pass
 
         for i in range(tries):
+            # Windows will not delete a log file that is still open. The
+            # program's own logger keeps its file open until it is replaced,
+            # so let go of any that sit under the folder being removed.
+            _close_logs_under(path)
             try:
                 if os.path.isdir(path) and not os.path.islink(path):
                     shutil.rmtree(path, onerror=_fix)
@@ -125,8 +167,10 @@ class _TempRun:
             except OSError:
                 pass
             if not os.path.lexists(path):
-                return
-            time.sleep(0.2 * (i + 1))
+                return True
+            if i + 1 < tries:
+                time.sleep(0.2 * (i + 1))
+        return False
 
     def describe(self, names):
         """What the leftovers are, for the failure message: kind and size."""
@@ -144,9 +188,16 @@ class _TempRun:
                 out.append(f"{n} ({e})")
         return out
 
-    def sweep(self):
+    def sweep(self, tries=1):
+        """Remove every folder made so far. One that cannot go yet (an open
+        file on Windows) is kept for the next sweep, not forgotten."""
+        keep = []
         while self.tracked:
-            self._remove(self.tracked.pop())
+            path = self.tracked.pop()
+            self.seen.add(path)
+            if not self._remove(path, tries):
+                keep.append(path)
+        self.tracked.extend(keep)
 
     def next_test(self, name):
         if name != self._test:
@@ -156,12 +207,13 @@ class _TempRun:
     def finish(self):
         """Run at the end: nothing may be left in this run's own folder.
         Returns the names that were."""
-        self.sweep()
         try:
             import test_show_fixtures
             test_show_fixtures.cleanup()
         except ImportError:
             pass
+        _close_all_logs()
+        self.sweep(tries=5)
         # multiprocessing keeps its own scratch folder (pymp-*) in the temp
         # folder and removes it when the process exits, which is after this
         # check. Run its clean-up now; a child process still shutting down
@@ -174,17 +226,31 @@ class _TempRun:
         deadline = time.time() + 5.0
         while True:
             try:
-                self.leftovers = sorted(os.listdir(self.root))
+                names = sorted(os.listdir(self.root))
             except OSError:
-                self.leftovers = []
-            if not self.leftovers or time.time() > deadline:
+                names = []
+            # A thread a finished test never stopped can write into its
+            # folder after the folder was removed, and that puts the folder
+            # (just its path, with a log in it) back. It is one this process
+            # made, so it is this sweeper's to remove, not a new leak.
+            for n in names:
+                path = os.path.join(self.root, n)
+                if path in self.seen:
+                    self._remove(path, 3)
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            self.leftovers = names
+            if not names or time.time() > deadline:
                 break
             time.sleep(0.25)
         return self.leftovers
 
     def close(self):
-        self.sweep()
-        self._remove(self.root)
+        _close_all_logs()
+        self.sweep(tries=3)
+        self._remove(self.root, 5)
         tempfile.mkdtemp = self._real_mkdtemp
         tempfile.tempdir = self._saved_tempdir
         for k, v in self._saved_env.items():
@@ -19422,7 +19488,7 @@ def test_the_gpl_path_never_loads_the_journal():
         "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
         "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
         "                     or 'schedule' in m)}))\n"
-        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
+        "import logging, shutil; logging.shutdown(); shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     try:
