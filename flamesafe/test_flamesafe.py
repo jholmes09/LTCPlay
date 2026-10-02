@@ -3671,6 +3671,80 @@ def test_disarm_all_dwell_and_pending_edges():
           f"a FORCED low after the Abort does not complete a cycle: "
           f"{r.group(2)}")
 
+    # Fix round 1 of PR #34, item 2 (the review's p2 s2/s3): the same edge
+    # begun up to 1 s BEFORE the Abort.  The Stream Deck reports a group
+    # low all through an arm-HOLD (0.6 s), so the low simply carries on
+    # through the Abort, re-proved by every frame after it, and the high
+    # lands when the hold completes.  It must not arm, whenever inside
+    # min_arm_dwell_ms of the Abort the high lands.
+    bad = []
+    for begun in (0.0, 0.1, 0.3, 0.6, 1.0):
+        for after in (0.025, 0.1, 0.3, 0.6, 0.95):
+            r = Rig()
+            r.prove_alive()
+            r.wait(begun)             # the low, reported every tick
+            check(_disarm(r) == "", "the Abort is taken")
+            r.wait(after)             # still low, frames still arriving
+            r.inp.set(2)              # the hold completes
+            r.wait(2.0)
+            if r.safety(2) != 0 or \
+                    r.group(2)["reason"] != composer.ABORT_DISARMED:
+                bad.append((begun, after, r.group(2)))
+    check(not bad, f"a hold begun up to 1 s before the Abort and completed "
+                   f"inside min_arm_dwell_ms after it never arms: {bad}")
+    # The window ends: a low still going on min_arm_dwell_ms after the
+    # Abort is a fresh one, and a press made after that arms as usual.
+    r = Rig()
+    r.prove_alive()
+    _disarm(r)
+    r.wait(1.1)
+    r.inp.set(2)
+    r.step(n=2)
+    check(r.safety(2) == ARM,
+          f"a press after the window arms as usual: {r.group(2)}")
+
+
+def test_disarm_all_sequence_and_liveness():
+    section("disarm_all: shares the flame frames' sequence (a same-seq one "
+            "is refused, and it moves the sequence on) and never keeps the "
+            "flame link alive by itself")
+    r = _two_armed()
+    why = _disarm(r, seq=r.seq)
+    check("out of order" in why and r.safety(0) == ARM,
+          f"a disarm_all with the same seq as the last frame is refused: "
+          f"{why!r}")
+    check(_disarm(r) == "", "the next seq is taken")
+    why = r.frame(seq=r.seq)
+    check("out of order" in why,
+          f"and a flame frame reusing that seq is then refused: {why!r}")
+    # Liveness comes from flame frames only.
+    r = _two_armed()
+    r.link_alive = False          # flame frames stop here
+    r.wait(0.3)
+    check(_disarm(r) == "", "0.3 s after the last frame: still taken")
+    r.wait(0.25)                  # 0.55 s after the frame, 0.25 after it
+    check(r.out.status["frames"]["state"] == "stale",
+          f"the link goes stale frame_stale_ms after the last FLAME frame, "
+          f"however recent the disarm_all: {r.out.status['frames']}")
+
+
+def test_link_text_fields_match_whole():
+    section("link: the timecode and the key are matched whole (fix round 1 "
+            "of PR #34, item 9): no trailing newline, ASCII digits only")
+    check(link.valid_key(KEY) and not link.valid_key(KEY + "\n"),
+          "a key with a trailing newline is not a valid key")
+    for tc in ("00:00:01:00\n", "00:00:01:00:00",
+               "٠٠:٠٠:٠١:٠٠"):
+        try:
+            link.decode_flame(link.encode_flame(1, tc, 1.0, 1, [0] * 512,
+                                                KEY), 1, KEY)
+            check(False, f"a frame with timecode {tc!r} was decoded")
+        except link.LinkError as e:
+            check("tc" in str(e), f"timecode {tc!r} refused: {e}")
+    f = link.decode_flame(link.encode_flame(1, "00:00:01:00", 1.0, 1,
+                                            [0] * 512, KEY), 1, KEY)
+    check(f.timecode == "00:00:01:00", "a plain timecode is still taken")
+
 
 def test_disarm_all_can_never_arm():
     section("disarm_all can only take arm away: a random mix of Aborts and "
@@ -3767,6 +3841,15 @@ def test_disarm_all_duplicates_journal_once():
     r.step()
     check(len([k for k, _ in r.log.events if k == "disarm-all"]) == 2,
           "abort 2: a second line")
+    # Fix round 1 of PR #34, item 4: a restarted ltcplay is a new sender.
+    # Its Abort is a new one even if its id happens to equal the last.
+    r.link_alive = False
+    r.wait(0.7)
+    other = ("127.0.0.1", 41555)
+    check(r.frame(sender=other) == "", "a new sender takes the stale link")
+    check(_disarm(r, abort_id=2, sender=other) == "", "and its Abort is taken")
+    check(len([k for k, _ in r.log.events if k == "disarm-all"]) == 3,
+          "the same id from a new sender: a new line")
 
 
 def test_flame_link_rejections_journal_once_per_episode():
@@ -3995,6 +4078,8 @@ if __name__ == "__main__":
     test_disarm_all_link_decoding()
     test_disarm_all_disarms_every_group_and_needs_a_fresh_cycle()
     test_disarm_all_dwell_and_pending_edges()
+    test_disarm_all_sequence_and_liveness()
+    test_link_text_fields_match_whole()
     test_disarm_all_can_never_arm()
     test_disarm_all_rejections()
     test_disarm_all_duplicates_journal_once()

@@ -45,8 +45,10 @@ KEY_MIN, KEY_MAX = 16, 128
 # confirmed must not still carry it, because everyone who has read the
 # repo knows it.
 EXAMPLE_KEY = "fire-and-ice-2026-replace-this-key"
-_TC = re.compile(r"^\d{2}:\d{2}:\d{2}[:;]\d{2}$")
-_KEY = re.compile(r"^[\x21-\x7e]+$")     # printable ASCII, no spaces
+# Used with fullmatch, ASCII digits only (fix round 1 of PR #34, item 9):
+# "$" also matched before a trailing newline, and \d takes any Unicode digit.
+_TC = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}[:;][0-9]{2}")
+_KEY = re.compile(r"[\x21-\x7e]+")       # printable ASCII, no spaces
 
 
 class LinkError(ValueError):
@@ -71,7 +73,7 @@ def _is_int(v):
 
 def valid_key(key):
     return (isinstance(key, str) and KEY_MIN <= len(key) <= KEY_MAX
-            and bool(_KEY.match(key)))
+            and bool(_KEY.fullmatch(key)))
 
 
 def decode_flame(data, expect_universe, key):
@@ -97,7 +99,7 @@ def decode_flame(data, expect_universe, key):
     if not _is_int(seq) or seq < 0:
         raise LinkError("seq is not a whole number at or above 0")
     tc = obj.get("tc")
-    if tc is not None and not (isinstance(tc, str) and _TC.match(tc)):
+    if tc is not None and not (isinstance(tc, str) and _TC.fullmatch(tc)):
         raise LinkError("tc is not HH:MM:SS:FF or null")
     mono = obj.get("mono")
     if isinstance(mono, bool) or not isinstance(mono, (int, float)) \

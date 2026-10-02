@@ -455,9 +455,9 @@ the same socket as the flame frames:
 | `v` | integer | must be 2 |
 | `k` | string | must equal flamesafe's `link.key`; checked before any other field |
 | `t` | string | must be `"disarm_all"` |
-| `seq` | integer, 0 or more | the SAME sequence as the flame frames: ltcplay takes the next number for every datagram it sends on this link, flame or disarm_all. Must be greater than the last accepted one |
+| `seq` | integer, 0 or more | the SAME sequence as the flame frames: ltcplay takes the next number for every datagram it sends on this link, flame or disarm_all. Must be greater than the last accepted one. ltcplay starts it at a random large number each run, so a sender counting up from 1 is never mistaken for it |
 | `mono` | number | the sender's `time.perf_counter()`, finite; must not go backwards (same rule as the flame frame) |
-| `id` | integer, 1 or more | which Abort this is. The sender repeats one Abort a few times (three copies) in case a datagram is lost; every copy is applied, only the first of each `id` is journaled |
+| `id` | integer, 1 or more | which Abort this is. ltcplay starts its ids at a random large number each run, so no other run's Abort has the same id. The sender sends three copies at once and then one more after every flame frame for at least 0.75 s, and always 0.25 s past `frame_stale_ms`, in case datagrams are lost: losing every copy then means losing enough flame frames for the link itself to be lost, which disarms every group anyway. Every copy is applied; only the first of each (`id`, sender) is journaled |
 | `reason` | string, 1 to 200 characters | for the journal, in words |
 
 No other field is allowed: a disarm_all carrying anything else is refused.
@@ -491,12 +491,28 @@ again within `min_arm_dwell_ms` of the Abort. So:
   key has to report the group down AFTER the Abort (the operator taps the
   held key, which sends `wanted=false`) and then up again (hold to arm),
   and the re-arm dwell must have passed. A forced low (round 3, above) is
-  still never a cycle. A group the deck keeps asking for reads `held`,
+  still never a cycle.
+- **A low that was already going on at the Abort is not consent for
+  `min_arm_dwell_ms` after it** (fix round 1 of PR #34). The Stream Deck
+  reports a group `wanted=false` all through an arm-HOLD, so a hold the
+  operator began before a screen Abort kept re-proving its low on every
+  frame after the Abort and armed the group when the hold completed, about
+  0.35 s after the Abort, with nothing more done. Now, until
+  `min_arm_dwell_ms` has passed since the last accepted disarm_all, a low
+  that began before it does not count; a low that begins after it (a
+  `true`-to-`false` report) counts as before. The deck's hold is 0.6 s and
+  the dwell is never under 1 s, so every hold begun before the Abort
+  completes inside this window and is refused: the group reads `held`
+  with the Abort sentence until it is cycled. Every copy of an Abort
+  restarts the window, so after a screen Abort an arm-hold has to complete
+  about 1.75 s later (0.75 s of copies, then the 1 s dwell) or more. A group the deck keeps asking for reads `held`,
   flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
   re-arm.` until it is cycled; the deck shows it as ABORTED.
 - The status frame's top-level `disarm_all` says what flamesafe took:
   `{"accepted": count, "last_id": id or null, "last_reason": "...",
   "age_ms": ms or null}`. ltcplay compares `last_id` with the Abort it sent
+  (equal, never "greater or equal": another run's id says nothing about
+  this one), says the Abort was sent but not confirmed until it matches,
   and journals a fault if it is not confirmed within 1 s.
 
 **Why a new message on the flame link, and not ltcplay sending `wanted`
@@ -647,3 +663,12 @@ existing field's name, type or meaning changed, so, following the 7b
 precedent, this stays version 2: a flamesafe from before this date refuses
 a disarm_all as `wrong message type 'disarm_all'` (counted, never acted
 on), and the two programs are installed together.
+
+Version 2, 2026-10-02 (fix round 1 of PR #34, from an independent safety
+review): a low already going on at a disarm_all is not consent for
+`min_arm_dwell_ms` after it; a disarm_all is journaled once per (`id`,
+sender) rather than per `id`; the `tc` and the key are matched whole (a
+trailing newline is refused, digits are ASCII only). On ltcplay's side,
+one Abort is repeated after every flame frame past `frame_stale_ms`, seq
+and ids start at a random large number, and only an equal `last_id`
+confirms an Abort. No field's name, type or meaning changed.

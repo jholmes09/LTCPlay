@@ -132,8 +132,16 @@ class Composer:
         self._aborted = [False] * self.n
         self._disarm_count = 0          # accepted disarm_all datagrams
         self._disarm_last_id = None
+        self._disarm_last_key = None    # (id, sender) of the last journaled
         self._disarm_last_reason = ""
         self._disarm_at = None
+        # Fix round 1 of PR #34, item 2: True for a group whose low was
+        # already going on when the last disarm_all arrived.  Such a low
+        # cannot be consent within min_arm_dwell_ms of that disarm_all
+        # (assert_arm), so an arm-hold the operator began before a screen
+        # Abort cannot complete after it.  Cleared by a genuine True-to-False
+        # report after the Abort: that low is a new one.
+        self._low_predates_abort = [False] * self.n
 
         # composing
         self._last_sent = [DISARM] * self.n
@@ -303,6 +311,19 @@ class Composer:
         disturbed = (self._foreign_arm_senders != 0
                      or self._arm_link_flooded)
         consent_ok = advanced and was_live and not disturbed
+        # Fix round 1 of PR #34, item 2: inside min_arm_dwell_ms of an
+        # accepted disarm_all, a low that was already going on at the Abort
+        # is not consent.  The Stream Deck keeps reporting False all through
+        # an arm-HOLD, so without this a hold begun before a screen Abort
+        # re-proved its low on the next frame after it and armed the group
+        # about 0.35 s later with no further operator action (review probe
+        # p2 s2/s3).  The deck's hold is ARM_HOLD_S (0.6 s) and the dwell is
+        # never under 1 s, so every hold begun before the Abort completes
+        # inside this window and is refused.  A low that begins after the
+        # Abort (a True-to-False report) is a new one and counts as before.
+        in_abort_window = (
+            self._disarm_at is not None
+            and (t - self._disarm_at) * 1000.0 < self.cfg.min_arm_dwell_ms)
         if disturbed:
             # And no down edge seen BEFORE the other sender turned up may be
             # finished while it is here: the operator cycles again once it
@@ -317,6 +338,9 @@ class Composer:
                     # either way: a value that just went to zero must not
                     # bounce straight back up, forced or not.
                     self._disarmed_at[i] = t
+                    if not f[i]:
+                        # a genuine low that began after the last Abort
+                        self._low_predates_abort[i] = False
                 # Round 3 of the safety review (item 1): seen_down is the
                 # "the operator pulled this down for real" flag a future
                 # True consumes as consent (just below).  A FORCED low --
@@ -333,6 +357,9 @@ class Composer:
                 # anything, forced or not.
                 self._seen_down[i] = consent_ok and not f[i]
                 self._latched[i] = False
+                if in_abort_window and self._low_predates_abort[i]:
+                    # a low already going on at the Abort (fix round 1)
+                    self._seen_down[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
                 self._aborted[i] = False
@@ -445,7 +472,14 @@ class Composer:
         here; mutation testing proved that unobservable (the operator's own
         low always restarts it later) and it was removed rather than kept
         as code nothing can tell is there.  It does not refresh the flame
-        link's liveness or its fire values (it carries none)."""
+        link's liveness or its fire values (it carries none).
+
+        Fix round 1 of PR #34, item 2: it also marks every group's current
+        low as one that began before the Abort, and for min_arm_dwell_ms
+        such a low is not consent (assert_arm).  That is the case the
+        dwell does NOT cover: a group that was not armed, whose low the
+        deck kept re-proving all through an arm-hold the operator began
+        before the Abort.  This, too, can only remove arming."""
         try:
             if not isinstance(msg, DisarmAll):
                 raise TypeError("not a DisarmAll")
@@ -475,14 +509,21 @@ class Composer:
         self._seen_down = [False] * self.n
         self.stats["disarm_all"] += 1
         self._disarm_count += 1
-        new_abort = msg.abort_id != self._disarm_last_id
+        self._low_predates_abort = [True] * self.n
+        # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
+        # pair.  ltcplay's abort ids now start at a random number per run,
+        # and a restarted ltcplay is a new sender too, so a second run's
+        # Abort is never mistaken for a repeat copy of the first run's.
+        key = (msg.abort_id, sender)
+        new_abort = key != self._disarm_last_key
+        self._disarm_last_key = key
         self._disarm_last_id = msg.abort_id
         self._disarm_last_reason = msg.reason
         self._disarm_at = t
         if new_abort:
-            # The sender repeats one Abort a few times in case a datagram
-            # is lost; each copy is applied (it can only clear), but only
-            # the first is written.
+            # The sender repeats one Abort on every frame for a while in
+            # case datagrams are lost; each copy is applied (it can only
+            # clear), but only the first is written.
             up = [g.name for g, u in zip(self.groups, was_up) if u]
             armed = ("armed until now: " + ", ".join(up)) if up \
                 else "none was armed"
