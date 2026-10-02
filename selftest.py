@@ -25801,10 +25801,25 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     gaps = sorted(b["mono"] - a["mono"] for a, b in zip(got, got[1:]))
     mean = sum(gaps) / len(gaps) if gaps else 0
     p95 = gaps[int(len(gaps) * 0.95)] if gaps else 0
-    check(gaps and 0.02 <= mean <= 0.03 and p95 < 0.05 and gaps[-1] < 0.1,
+    ok_rate = bool(gaps) and 0.02 <= mean <= 0.03 and p95 < 0.05 \
+        and gaps[-1] < 0.1
+    why = ""
+    if not ok_rate:
+        # What this machine is doing, so a failure in CI says why.
+        import threading as _th
+        ev = _th.Event()
+        waits = []
+        for _ in range(10):
+            w0 = time.perf_counter()
+            ev.wait(0.025)
+            waits.append(round(time.perf_counter() - w0, 3))
+        names = sorted(t.name for t in _th.enumerate())
+        why = (f"; here Event.wait(0.025) took {waits}; "
+               f"{len(names)} threads alive: {names[:25]}")
+    check(ok_rate,
           f"at its rate on a real thread: mean gap {mean:.4f} s, 95% under "
           f"{p95:.3f} s, longest {gaps[-1] if gaps else 0:.3f} s "
-          f"(flamesafe's shortest frame_stale_ms is 0.100 s)")
+          f"(flamesafe's shortest frame_stale_ms is 0.100 s){why}")
 
     # The schedule itself, on a fake clock: exactly one period between
     # frames, and after a stall (the OS late to wake the thread) the next
