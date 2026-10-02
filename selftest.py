@@ -23598,6 +23598,42 @@ class _FakeStatus:
         pass
 
 
+def _deck_draw_stubs(sd):
+    """For a test that drives the REAL sd.run_forever(): stub the drawing
+    it does on every pass, which is hardware-adjacent rendering, not the
+    logic under test. Fonts.text_block is always stubbed (no font file on
+    CI). Where Pillow itself is missing, as on the CI runners, which never
+    install it, Fonts and Controller.draw are stubbed too: Fonts() calls
+    _import_pil(), which raises SystemExit without Pillow. Before this
+    (found in round 5) that SystemExit ended the whole suite at the first
+    of these tests on every OS since round 3, so none of the Stream Deck
+    tests after it ever ran in CI. Returns a function that undoes it all."""
+    real_fonts, real_draw = sd.Fonts, sd.Controller.draw
+    real_text_block = real_fonts.text_block
+    real_fonts.text_block = lambda self, *a, **kw: None
+    try:
+        import PIL.Image  # noqa: F401
+        have_pillow = True
+    except Exception:                     # noqa: BLE001
+        have_pillow = False
+    if not have_pillow:
+        class _Img:
+            def crop(self, box):
+                return self
+
+        class _NoPillowFonts:
+            Image = None
+
+        sd.Fonts = _NoPillowFonts
+        sd.Controller.draw = lambda self, fonts, blink_on, chase: _Img()
+
+    def restore():
+        sd.Fonts = real_fonts
+        sd.Controller.draw = real_draw
+        real_fonts.text_block = real_text_block
+    return restore
+
+
 def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     section("Stream Deck: tick() advances the abort-hold and every group's "
             "arm-hold on EVERY main-loop pass, even when keys_down() "
@@ -23630,10 +23666,11 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     c._abort_hold = sd.AbortHold(hold_s=2.0)
     c._arm_holds = [sd.AbortHold(hold_s=2.0) for _ in names]
 
-    class _StopTest(Exception):
-        """Not a DeckDisconnected: run_forever() does not catch this, so
-        raising it from keys_down() is how this test ends a loop that is
-        otherwise infinite by design."""
+    class _StopTest(BaseException):
+        """Not an Exception at all, like KeyboardInterrupt: run_forever()
+        treats every Exception as an unplug (round 5, item 2) and lets only
+        a deliberate stop through, so raising this from keys_down() is how
+        this test ends a loop that is otherwise infinite by design."""
 
     down_all_false = [False] * 6
     press_group0 = list(down_all_false)
@@ -23683,8 +23720,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
             pass
 
     deck = _ChangeOnlyDeck()
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None  # see section() above
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=lambda: deck,
                        journal=lambda t_, **kw: events.append((t_, kw)),
@@ -23693,7 +23729,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
     check(results.get("armed_from_tick_alone") == [True, False, False],
           f"a 2 s arm-hold completes from tick() alone, inside the REAL "
@@ -23735,8 +23771,9 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
     # this fix has to survive, with no dependency on the real ARM_HOLD_S.
     c._arm_holds = [sd.AbortHold(hold_s=0.1) for _ in names]
 
-    class _StopTest(Exception):
-        """Not a DeckDisconnected: run_forever() does not catch this."""
+    class _StopTest(BaseException):
+        """A deliberate stop, like KeyboardInterrupt: run_forever() does
+        not catch this (it handles every Exception as an unplug)."""
 
     down_all_false = [False] * 6
     press_group0 = list(down_all_false)
@@ -23792,8 +23829,7 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
     def deck_factory():
         return decks.pop(0)
 
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=deck_factory,
                        journal=lambda t_, **kw: events.append((t_, kw)),
@@ -23802,7 +23838,7 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
     check(arm.wanted == [False, False, False],
           f"a hold in progress when the deck unplugged, released WHILE it "
@@ -23988,6 +24024,15 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
                           {"name": "wave flamer", "armed": "disarmed",
                            "wanted": False, "reason": "", "amber": "",
                            "dwell_s": 0}]})
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        # Pixels need Pillow. Without it Fonts() raises SystemExit, which
+        # used to end the whole suite here (round 5). CI installs Pillow
+        # so this runs there; a box without it says so and carries on.
+        print("  note: Pillow is not installed here, so the latched "
+              "screen's pixels are not checked on this machine.")
+        return
     fonts = sd.Fonts()
     # This CI box has none of the system font paths Fonts._sans_bold() /
     # the serif fallback look for (all macOS/Windows paths) -- drawing is
@@ -24399,15 +24444,16 @@ def test_streamdeck_reconnect_never_remembers_old_state():
           "docstring, failure mode 2")
 
 
-def _round4_run_forever(c, decks, t, on_sleep=None):
+def _round4_run_forever(c, decks, t, on_sleep=None, journal=None):
     """Drive the REAL sd.run_forever() through `decks`: each element is a
     fake deck object, or None for "deck_factory raises DeckDisconnected"
-    (no deck plugged in). Ends when the list runs out. Fake clock/sleep;
-    Fonts.text_block stubbed (no font file on CI), as the tests above."""
+    (no deck plugged in), or an Exception instance deck_factory raises
+    as-is (round 5). Ends when the list runs out. Fake clock/sleep;
+    drawing stubbed by _deck_draw_stubs, as the tests above."""
     from ltcplay import streamdeck as sd
 
-    class _StopTest(Exception):
-        pass
+    class _StopTest(BaseException):
+        pass        # a deliberate stop: run_forever lets only these through
 
     def deck_factory():
         if not decks:
@@ -24415,20 +24461,21 @@ def _round4_run_forever(c, decks, t, on_sleep=None):
         d = decks.pop(0)
         if d is None:
             raise sd.DeckDisconnected("probe: nothing plugged in")
+        if isinstance(d, Exception):
+            raise d             # round 5: any other error opening the deck
         return d
 
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=deck_factory,
-                       journal=lambda t_, **kw: None,
+                       journal=journal or (lambda t_, **kw: None),
                        sleep=lambda s: (t.__setitem__(0, t[0] + s),
                                         on_sleep and on_sleep()),
                        clock=lambda: t[0])
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
 
 class _Round4Deck:
@@ -24721,6 +24768,280 @@ def test_streamdeck_round4_other_sender_reason_has_a_label():
                           "amber": "steady", "dwell_s": 0})
     check(look[:2] == ("OTHER", "SENDER") and look[4] is False,
           f"drawn as OTHER SENDER, steady: {look}")
+
+
+def _round5_stamped(arm, t):
+    """Record (fake time, wanted) of every send while the socket is open."""
+    stamps = []
+    orig_send = arm.send
+
+    def send(names_):
+        if arm.is_open:
+            stamps.append((t[0], list(arm.wanted)))
+        orig_send(names_)
+    arm.send = send
+    return stamps
+
+
+def test_streamdeck_round5_a_long_unplug_never_goes_quiet():
+    section("Stream Deck: a deck unplugged for 120 s (fake clock) is held "
+            "OFF on the arm link the WHOLE time: no gap between two arm "
+            "frames is ever longer than one ARM_SEND_HZ period, from the "
+            "unplug to the reconnect (round 5 of the safety review, item 1: "
+            "the round-4 test's no-deck time added up to exactly 6 s, so "
+            "the hand mutation 'the OFF sender stops for good after 6 s' "
+            "passed the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = _round5_stamped(arm, t)
+    seen = {}
+
+    def deck_a(i):
+        if i == 1:
+            arm.set_group(0, True)     # the operator arms front row
+
+    def deck_b(i):
+        if i == 1:
+            seen.setdefault("back_at", t[0])
+
+    # 60 failed opens at 2 s each, plus the 1 s hold after the unplug
+    # itself: about 121 s with no deck.
+    _round4_run_forever(c, [_Round4Deck(3, deck_a)] + [None] * 60
+                        + [_Round4Deck(2, deck_b)], t)
+    period = 1.0 / sd.ARM_SEND_HZ
+    armed = [i for i, (_, w) in enumerate(stamps) if w[0]]
+    check(bool(armed), "set up: front row really was sent armed first")
+    back = seen.get("back_at")
+    check(back is not None, "set up: the deck came back at the end")
+    if not armed or back is None:
+        return
+    # From the last armed frame through the reconnect's own first frame,
+    # so a sender that went silent part way shows as one long gap.
+    off = [s for s in stamps[armed[-1]:] if s[0] <= back]
+    off_span = off[-1][0] - off[0][0] if off else 0.0
+    check(off_span >= 120.0,
+          f"set up: the deck really was away for 120 s or more "
+          f"({off_span:.2f} s)")
+    gaps = [b[0] - a[0] for a, b in zip(off, off[1:])]
+    worst = max(gaps) if gaps else None
+    worst_at = off[gaps.index(worst)][0] if gaps else None
+    check(gaps and worst <= period + 1e-9,
+          f"through the whole 120 s unplug no gap between two arm frames "
+          f"is longer than one {period:g} s send period: longest "
+          f"{worst} s, starting at t={worst_at}")
+    check(all(not any(w) for _, w in off[1:]),
+          "every frame from the unplug to the reconnect says every group "
+          "OFF")
+    check(len(off) >= int(120.0 * sd.ARM_SEND_HZ),
+          f"{len(off)} OFF frames went out in {off_span:.1f} s")
+
+
+def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
+    section("Stream Deck: ANY exception from opening the deck, or from one "
+            "main-loop pass, is handled as an unplug: run_forever keeps "
+            "every group held OFF on the arm link and only a deliberate "
+            "stop ends it, and each kind of failure is journaled once per "
+            "outage (round 5 of the safety review, item 2: a plain OSError "
+            "from hidapi's set_nonblocking or send_feature_report on a "
+            "reconnect ended run_forever after 40 OFF frames, the link went "
+            "silent and flamesafe's sender lock lapsed)")
+    from ltcplay import streamdeck as sd
+
+    # Part 1: Deck() itself turns every hidapi failure after the import
+    # into DeckDisconnected, and closes a half-opened handle.
+    class _Dev:
+        def __init__(self, fail):
+            self.fail = fail
+            self.closed = False
+
+        def _maybe(self, what):
+            if self.fail == what:
+                raise OSError(f"probe: {what} failed mid-plug")
+
+        def open(self, vid, pid):
+            self._maybe("open")
+
+        def set_nonblocking(self, on):
+            self._maybe("set_nonblocking")
+
+        def send_feature_report(self, data):
+            self._maybe("send_feature_report")
+
+        def close(self):
+            self.closed = True
+
+    devs = []
+
+    class _Hid:
+        fail = None
+
+        def device(self):
+            if self.fail == "device":
+                raise OSError("probe: no HID device object")
+            d = _Dev(self.fail)
+            devs.append(d)
+            return d
+
+    fake = _Hid()
+    orig_import = sd._import_hid
+    sd._import_hid = lambda: fake
+    try:
+        for what in ("device", "open", "set_nonblocking",
+                     "send_feature_report"):
+            fake.fail = what
+            del devs[:]
+            try:
+                sd.Deck()
+                got = "opened"
+            except sd.DeckDisconnected as e:
+                got = ("DeckDisconnected", type(e.__cause__).__name__)
+            except Exception as e:            # noqa: BLE001
+                got = f"escaped as {type(e).__name__}: {e}"
+            check(got == ("DeckDisconnected", "OSError"),
+                  f"Deck(): a {what} failure is raised as DeckDisconnected "
+                  f"(from the OSError): {got}")
+            check(all(d.closed for d in devs),
+                  f"and a half-opened handle is closed again after a "
+                  f"{what} failure: {[d.closed for d in devs]}")
+        fake.fail = None
+        d = sd.Deck()
+        check(d.h is devs[-1] and not devs[-1].closed,
+              "set up: with nothing failing, Deck() opens and keeps the "
+              "handle")
+    finally:
+        sd._import_hid = orig_import
+
+    # Part 2: the round-5 review's deck_exit probe through the REAL
+    # run_forever, plus errors from a pass, a handful of each.
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = _round5_stamped(arm, t)
+
+    class _PassDeck(_Round4Deck):
+        """keys_down() raises `exc` on pass `at`; set_key() raises `key_exc`
+        once `key_at` passes have run."""
+
+        def __init__(self, passes, at=None, exc=None, key_at=None,
+                     key_exc=None, on_pass=None):
+            super().__init__(passes, on_pass)
+            self.at, self.exc = at, exc
+            self.key_at, self.key_exc = key_at, key_exc
+
+        def keys_down(self):
+            if self.at is not None and self.i + 1 == self.at:
+                self.i += 1
+                raise self.exc
+            return super().keys_down()
+
+        def set_key(self, image, key, img):
+            if self.key_at is not None and self.i >= self.key_at:
+                raise self.key_exc
+
+    def arm_front_row(i):
+        if i == 1:
+            arm.set_group(0, True)
+
+    oserr = [OSError("probe: hid send_feature_report failed mid-plug")
+             for _ in range(30)]                       # 60 s of these
+    decks = ([None] + oserr
+             + [_PassDeck(50, at=3, exc=RuntimeError("probe: a bug in a "
+                                                     "pass"),
+                          on_pass=arm_front_row)]
+             + [OSError("probe: again"), OSError("probe: and again")]
+             + [_PassDeck(50, key_at=2,
+                          key_exc=ValueError("probe: bad key image"))]
+             + [_PassDeck(int(12 * sd.ARM_SEND_HZ))]   # 12 s clean, unplug
+             + [None, None])
+    died = None
+    try:
+        _round4_run_forever(c, decks, t,
+                            journal=lambda t_, **kw: events.append((t_, kw)))
+    except Exception as e:                    # noqa: BLE001
+        died = e
+    check(died is None and not decks,
+          f"run_forever never died: every error was handled as an unplug "
+          f"and only the deliberate stop ended it (died with "
+          f"{type(died).__name__ if died else None}: {died}; "
+          f"{len(decks)} scripted steps never reached)")
+    period = 1.0 / sd.ARM_SEND_HZ
+    gaps = [b[0] - a[0] for a, b in zip(stamps, stamps[1:])]
+    check(t[0] >= 70.0 and gaps and max(gaps) <= period + 1e-9,
+          f"arm frames went out without a gap longer than one period the "
+          f"whole {t[0]:.1f} s: longest {max(gaps) if gaps else None} s")
+    armed = [i for i, (_, w) in enumerate(stamps) if w[0]]
+    check(bool(armed) and all(not any(w) for _, w in stamps[armed[-1] + 1:]),
+          "front row was sent armed before the pass error, and every frame "
+          "after it says every group OFF")
+    check(bool(armed) and len(stamps) > armed[-1] + 1
+          and stamps[armed[-1] + 1][0] - stamps[armed[-1]][0]
+          <= period + 1e-9,
+          "the first all-OFF frame follows the error within one period")
+
+    def lines(sub):
+        return [t_ for t_, kw in events if sub in t_]
+    check(len(lines("OSError")) == 1,
+          f"32 OSErrors opening the deck in one outage: ONE journal line, "
+          f"not one per 2 s retry: {lines('OSError')}")
+    check(len(lines("RuntimeError")) == 1 and len(lines("ValueError")) == 1,
+          f"an error from a pass and from drawing a key are each "
+          f"journaled once: {lines('RuntimeError')} {lines('ValueError')}")
+    check(all(kw.get("fault") for t_, kw in events
+              if "Error" in t_ or "probe:" in t_),
+          "every failure line is a fault")
+    check(len(lines("probe: nothing plugged in")) == 1
+          and len(lines("probe: unplugged")) == 1,
+          f"the deck running {sd.DECK_STABLE_S:g} s clean ends the outage, "
+          f"so the next unplug is journaled again: "
+          f"{lines('probe: nothing plugged in')} {lines('probe: unplugged')}")
+    check(len(lines("running cleanly")) == 1
+          and "more failure" in lines("running cleanly")[0],
+          f"and the end of the outage says how many went unlogged: "
+          f"{lines('running cleanly')}")
+    check(len(lines("Stream Deck connected")) == 1,
+          f"one connect line per outage (3 reconnects inside one outage, "
+          f"1 journaled): "
+          f"{len(lines('Stream Deck connected'))}")
+
+    # Part 3: a socket that cannot be opened (no file descriptors left)
+    # is retried on the next frame, never the end of run_forever.
+    class _StubbornArm(_FakeArmSocket):
+        fails = 3
+
+        def open(self):
+            if self.fails:
+                self.fails -= 1
+                raise OSError("probe: too many open files")
+            super().open()
+
+    arm2 = _StubbornArm(3)
+    t2 = [0.0]
+    c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t2[0])
+    stamps2 = _round5_stamped(arm2, t2)
+    died = None
+    try:
+        _round4_run_forever(c2, [None, None], t2)
+    except Exception as e:                    # noqa: BLE001
+        died = e
+    check(died is None and arm2.opens == 1 and stamps2
+          and stamps2[0][0] <= 3 * period + 1e-9,
+          f"an arm socket that fails to open 3 times is opened on the 4th "
+          f"frame and sends from then on (died: {died!r}, opens "
+          f"{arm2.opens}, first frame at "
+          f"{stamps2[0][0] if stamps2 else None})")
 
 
 def test_streamdeck_never_imports_flamesafe():
@@ -26181,6 +26502,8 @@ if __name__ == "__main__":
     test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
     test_streamdeck_round4_fresh_process_gets_the_reconnect_grace()
     test_streamdeck_round4_other_sender_reason_has_a_label()
+    test_streamdeck_round5_a_long_unplug_never_goes_quiet()
+    test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit()
     test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()
     test_streamdeck_arm_socket_logs_failed_sends_once()
     test_streamdeck_local_schedule_never_blocks_the_main_loop()

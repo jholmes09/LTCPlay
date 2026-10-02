@@ -89,8 +89,14 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      and let flamesafe's arm_stale_ms do the disarming, but silence also
      released flamesafe's sender lock, and the round-4 review had another
      local process take it while the deck was unplugged and arm every
-     group. If this whole process dies, silence is still what flamesafe
-     sees, and arm_stale_ms still disarms every group.
+     group. Since round 5 (item 2) ANY exception out of the deck, the
+     deck's open, or one main-loop pass is handled exactly like an unplug,
+     not just DeckDisconnected: a plain OSError from hidapi mid-plug used
+     to end run_forever after a few frames, and the link went silent
+     anyway. Only a deliberate stop (Ctrl-C, SystemExit) ends the loop. If
+     this whole process dies, silence is still what flamesafe sees, and
+     arm_stale_ms still disarms every group; flamesafe's sender lock then
+     lapses too, which CONTRACT.md states as a residual.
   2. Deck reconnected while armed. On every (re)connect, this module
      resets its own `wanted` vector to all-false and ArmSocket's seq to 0
      before sending anything (ArmSocket.restart, on the socket it already
@@ -1076,14 +1082,28 @@ class Deck:
 
     def __init__(self):
         hid = _import_hid()
-        self.h = hid.device()
+        # Round 5 of the safety review, item 2: EVERYTHING after the import
+        # is one try. set_nonblocking and the two feature reports used to
+        # sit outside it, so a plain OSError from hidapi mid-plug escaped
+        # as itself, not DeckDisconnected, and ended run_forever (and with
+        # it the all-OFF hold that keeps flamesafe's sender lock).
+        h = None
         try:
-            self.h.open(VID, PID)
+            h = hid.device()
+            h.open(VID, PID)
+            h.set_nonblocking(1)
+            h.send_feature_report([0x0B, 0x63] + [0] * 15)
+            h.send_feature_report([0x05, 0x55, 0xAA, 0xD1, 0x01, 80]
+                                  + [0] * 11)
         except Exception as e:
-            raise DeckDisconnected(f"could not open the Stream Deck: {e}") from e
-        self.h.set_nonblocking(1)
-        self.h.send_feature_report([0x0B, 0x63] + [0] * 15)
-        self.h.send_feature_report([0x05, 0x55, 0xAA, 0xD1, 0x01, 80] + [0] * 11)
+            if h is not None:
+                try:
+                    h.close()     # a half-opened handle must not keep the
+                except Exception:  # device busy for the next attempt
+                    pass
+            raise DeckDisconnected(
+                f"could not open the Stream Deck: {e}") from e
+        self.h = h
         self.last = {}
 
     def set_key(self, Image, key, img):
@@ -1819,25 +1839,36 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     process take the free lock while the deck was unplugged, send its own
     low then high, and arm every group on the wire. Every group still
     disarms at once when the deck goes (the frames say OFF), and flamesafe
-    still disarms within arm_stale_ms if this whole process dies."""
+    still disarms within arm_stale_ms if this whole process dies.
+
+    Round 5 of the safety review, item 2: ANY Exception from
+    deck_factory() or from a main-loop pass is handled as a disconnect,
+    not only DeckDisconnected. Only DeckDisconnected used to be caught, so
+    a plain OSError from hidapi on a reconnect ended this function (and
+    the process) after one hold-off, the link went silent, and the
+    sender lock lapsed after all. Each kind of failure is journaled once
+    per outage (_DeckOutage), not once per 2 s retry. Only a deliberate
+    stop ends the loop: KeyboardInterrupt and SystemExit are not
+    Exceptions and pass straight through."""
     journal = journal or (lambda text, **kw: None)
     fonts = Fonts()
     chase = 0
     period = 1.0 / ARM_SEND_HZ
+    outage = _DeckOutage(journal)
     while True:
+        deck = None
         try:
             deck = deck_factory()
-        except DeckDisconnected as e:
-            journal(f"Stream Deck: {e}. Retrying in 2 s; every group is "
-                   f"held OFF on the arm link meanwhile.", fault=True,
-                   action="deck")
+            controller.arm.restart()
+            controller.reset_on_reconnect()
+        except Exception as e:          # round 5, item 2: not only
+            outage.failed(e, "Retrying in 2 s; every group is held OFF "
+                             "on the arm link meanwhile.")
+            _close_quietly(deck)
             _hold_link_off(controller, sleep, 2.0)
             continue
-        controller.arm.restart()
-        controller.reset_on_reconnect()
-        journal("Stream Deck connected. Every group starts OFF until "
-               "pressed; nothing on this machine remembers what was armed "
-               "or held before.", action="deck")
+        outage.connected()
+        connected_at = clock()
         try:
             while True:
                 t0 = clock()
@@ -1864,20 +1895,104 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                     deck.set_key(fonts.Image, k,
                                 img.crop((ox, oy, ox + K, oy + K)))
                 elapsed = clock() - t0
+                outage.ran_clean(clock() - connected_at)
                 if elapsed < period:
                     sleep(period - elapsed)
-        except DeckDisconnected as e:
-            journal(f"Stream Deck: {e}. Every group is sent OFF on the arm "
-                   f"link until it reconnects.", fault=True,
-                   action="deck")
+        except Exception as e:          # round 5, item 2: not only
+            outage.failed(e, "Every group is sent OFF on the arm link "
+                             "until it reconnects.")
             # NOT arm.close() (round 4, item A): see _hold_link_off.
-            controller.arm.set_all(False)
-            controller.arm.send(controller.names)
             try:
-                deck.close()
+                controller.arm.set_all(False)
+                controller.arm.send(controller.names)
             except Exception:
                 pass
+            _close_quietly(deck)
             _hold_link_off(controller, sleep, 1.0)
+
+
+# A deck that has run this long without a failure ends an outage: the next
+# failure after that is journaled again (_DeckOutage).
+DECK_STABLE_S = 10.0
+
+
+class _DeckOutage:
+    """run_forever's journal bookkeeping (round 5 of the safety review,
+    item 2). An outage starts at the first failure (a disconnect, or any
+    other exception from opening the deck or from a main-loop pass) and
+    ends once a deck has run DECK_STABLE_S without one. Inside an outage
+    each KIND of failure is journaled once, with fault=True, and only the
+    first reconnect is journaled; the rest are counted and the total goes
+    on one line when the outage ends. Before this a missing deck wrote a
+    line every 2 s retry, and a deck that failed on every pass would have
+    written two lines a second."""
+
+    def __init__(self, journal):
+        self._journal = journal
+        self.active = False
+        self._kinds = set()
+        self._unlogged = 0
+        self._reconnect_logged = False
+
+    def failed(self, e, tail):
+        if not self.active:
+            self.active = True
+            self._kinds = set()
+            self._unlogged = 0
+            self._reconnect_logged = False
+        kind = ("unplugged" if isinstance(e, DeckDisconnected)
+                else type(e).__name__)
+        if kind in self._kinds:
+            self._unlogged += 1
+            return
+        self._kinds.add(kind)
+        if isinstance(e, DeckDisconnected):
+            text = f"Stream Deck: {e}. {tail}"
+        else:
+            text = (f"Stream Deck: unexpected error ({type(e).__name__}: "
+                    f"{e}), handled exactly like an unplugged deck. {tail}")
+        _journal_quietly(self._journal,
+                         f"{text} This line does not repeat until the deck "
+                         f"has run {DECK_STABLE_S:g} s without a failure.",
+                         fault=True, action="deck")
+
+    def connected(self):
+        if self.active:
+            if self._reconnect_logged:
+                self._unlogged += 1
+                return
+            self._reconnect_logged = True
+        _journal_quietly(self._journal,
+                         "Stream Deck connected. Every group starts OFF "
+                         "until pressed; nothing on this machine remembers "
+                         "what was armed or held before.", action="deck")
+
+    def ran_clean(self, secs):
+        if not self.active or secs < DECK_STABLE_S:
+            return
+        self.active = False
+        if self._unlogged:
+            _journal_quietly(
+                self._journal,
+                f"Stream Deck: running cleanly for {DECK_STABLE_S:g} s. "
+                f"{self._unlogged} more failure(s) or reconnect(s) during "
+                f"that outage were not logged one by one.", action="deck")
+
+
+def _journal_quietly(journal, text, **kw):
+    try:
+        journal(text, **kw)
+    except Exception:
+        pass
+
+
+def _close_quietly(deck):
+    if deck is None:
+        return
+    try:
+        deck.close()
+    except Exception:
+        pass
 
 
 def _hold_link_off(controller, sleep, secs):
@@ -1885,12 +2000,17 @@ def _hold_link_off(controller, sleep, secs):
     on the arm socket this process already holds flamesafe's sender lock
     with (opening it the first time), so the lock never lapses while the
     deck is away (round 4 of the safety review, item A). Counted in sends,
-    not wall-clock time, so a test's fake sleep cannot spin it forever."""
-    if not controller.arm.is_open:
-        controller.arm.open()
+    not wall-clock time, so a test's fake sleep cannot spin it forever.
+    Round 5, item 2: never raises an Exception either; a socket that could
+    not be opened is tried again on the next frame."""
     for _ in range(max(1, int(round(secs * ARM_SEND_HZ)))):
-        controller.arm.set_all(False)
-        controller.arm.send(controller.names)
+        try:
+            if not controller.arm.is_open:
+                controller.arm.open()
+            controller.arm.set_all(False)
+            controller.arm.send(controller.names)
+        except Exception:
+            pass
         sleep(1.0 / ARM_SEND_HZ)
 
 

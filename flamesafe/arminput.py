@@ -124,6 +124,30 @@ DEFAULT_STALE_MS = 500
 # composer refuses every NEW consent edge (composer.assert_arm).
 FLOOD_DATAGRAMS_PER_POLL = 50
 
+# Round 5 of the safety review, item 4: the kernel's receive buffer is
+# limited in BYTES, not datagrams.  The round-5 review filled the default
+# 212,992-byte buffer with 12 maximum-size valid frames, far under the
+# 50-datagram line above, so a flood of big frames crowded the deck out
+# without ever reading as a flood.  So a poll that reads more than
+# FLOOD_BYTES_PER_POLL bytes is a flood too (an honest deck frame is a few
+# hundred bytes; a tick stalled for a whole second finds about 20 of them),
+# and open() asks for ARM_RCVBUF_BYTES of receive buffer.  Together: to fill
+# even the default buffer a sender has to put more than 50 datagrams or
+# more than 64 KiB there between two polls (50 datagrams of kernel
+# overhead plus 64 KiB of payload is well under 212,992 bytes), and either
+# one is a flood.
+FLOOD_BYTES_PER_POLL = 64 * 1024
+ARM_RCVBUF_BYTES = 4 * 1024 * 1024
+# What the kernel grants for ARM_RCVBUF_BYTES varies: Linux caps it at
+# net.core.rmem_max (212,992 on a stock install) and reports double that,
+# macOS allows it, Windows grants it (its default is 64 KiB), and any of
+# them may refuse.  So the byte limit actually used is never more than a
+# quarter of the buffer really granted (SocketArmInput.flood_bytes): a
+# flood still reads as one well before it can fill a small buffer.  Never
+# below FLOOD_BYTES_FLOOR, which is still several times what a deck
+# stalled for a whole second puts there.
+FLOOD_BYTES_FLOOR = 4096
+
 # Journal throttling for every arm-link rejection (round 4 of the safety
 # review, item C).  One line per REASON when an episode starts, one closing
 # line with the count once that reason has been quiet for EPISODE_QUIET_S,
@@ -134,6 +158,14 @@ FLOOD_DATAGRAMS_PER_POLL = 50
 # line, every single time.
 EPISODE_QUIET_S = 5.0
 LINES_PER_MINUTE = 4
+# Round 5 of the safety review, item 5: and never more than this many in
+# any 60 s across ALL reasons together.  The per-reason cap alone let 13
+# reasons write 52 lines a minute, enough to fill the 1000-line journal
+# queue behind a blocked console in about 19 minutes.  These are only ever
+# rejection lines: arm and disarm events, faults and "show program stopped
+# answering" are written elsewhere and never pass through here (and
+# journal.Journal keeps half its queue that arm-link lines cannot use).
+GLOBAL_LINES_PER_MINUTE = 8
 _ADDRS_TRACKED = 1000      # distinct source addresses counted per episode
 
 # The stable reason a decode rejection is throttled under.  link.decode_arm's
@@ -144,6 +176,14 @@ _DECODE_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                    "not a JSON object", "wrong contract version",
                    "wrong key", "wrong message type", "seq is not",
                    "wanted is not", "names is not")
+
+
+def flood_bytes_for(rcvbuf):
+    """The per-poll byte limit for a socket granted `rcvbuf` bytes of
+    receive buffer (None: unknown).  See FLOOD_BYTES_FLOOR."""
+    if not isinstance(rcvbuf, int) or rcvbuf <= 0:
+        return FLOOD_BYTES_FLOOR
+    return max(FLOOD_BYTES_FLOOR, min(FLOOD_BYTES_PER_POLL, rcvbuf // 4))
 
 
 def _decode_reason(msg):
@@ -160,12 +200,15 @@ class _RejectJournal:
     (kind, msg) and never raises."""
 
     def __init__(self, event, quiet_s=EPISODE_QUIET_S,
-                 per_minute=LINES_PER_MINUTE):
+                 per_minute=LINES_PER_MINUTE,
+                 global_per_minute=GLOBAL_LINES_PER_MINUTE):
         self._event = event
         self.quiet_s = quiet_s
         self.per_minute = per_minute
+        self.global_per_minute = global_per_minute
         self._episodes = {}     # reason -> {"at", "count", "addrs", "opened"}
         self._lines = {}        # reason -> [clock of each line, last 60 s]
+        self._all_lines = []    # clock of every line, any reason, last 60 s
         self._unlogged = {}     # reason -> rejections no line has counted
 
     def active(self, reason):
@@ -173,11 +216,13 @@ class _RejectJournal:
 
     def _allow(self, reason, now):
         times = [t for t in self._lines.get(reason, ()) if now - t < 60.0]
-        if len(times) >= self.per_minute:
-            self._lines[reason] = times
+        self._lines[reason] = times
+        self._all_lines = [t for t in self._all_lines if now - t < 60.0]
+        if len(times) >= self.per_minute or \
+                len(self._all_lines) >= self.global_per_minute:
             return False
         times.append(now)
-        self._lines[reason] = times
+        self._all_lines.append(now)
         return True
 
     def _carry(self, reason):
@@ -185,8 +230,9 @@ class _RejectJournal:
         if not n:
             return ""
         return (f" ({n} earlier rejection{'s' if n != 1 else ''} for this "
-                f"same reason went unlogged while its journal lines were "
-                f"capped at {self.per_minute} a minute)")
+                f"same reason went unlogged while arm-link rejection lines "
+                f"were capped at {self.per_minute} a minute per reason and "
+                f"{self.global_per_minute} a minute in all)")
 
     def note(self, reason, now, addr, opening):
         """One rejection.  `opening` is the sentence written if this starts
@@ -231,6 +277,7 @@ class _RejectJournal:
     def reset(self):
         self._episodes = {}
         self._lines = {}
+        self._all_lines = []
         self._unlogged = {}
 
 
@@ -458,6 +505,8 @@ class SocketArmInput(ArmInput):
         # whether that is still inside stale_ms as of the last poll.
         self._flood_at = None
         self._flooded = False
+        self.rcvbuf = None        # what the kernel really gave open() (r5)
+        self.flood_bytes = FLOOD_BYTES_PER_POLL
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -465,6 +514,18 @@ class SocketArmInput(ArmInput):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         sock.bind((self._ip, self._port))
         sock.setblocking(False)
+        # Round 5, item 4: see ARM_RCVBUF_BYTES.  The kernel may cap it
+        # (Linux at net.core.rmem_max); `rcvbuf` says what it really gave.
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
+                            ARM_RCVBUF_BYTES)
+        except OSError:
+            pass
+        try:
+            self.rcvbuf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        except OSError:
+            self.rcvbuf = None
+        self.flood_bytes = flood_bytes_for(self.rcvbuf)
         self._sock = sock
         self._sender = None
         self._sender_at = None
@@ -498,6 +559,7 @@ class SocketArmInput(ArmInput):
             del self._foreign[addr]
         best = None
         n_read = 0
+        n_bytes = 0
         for _ in range(DRAIN_PER_TICK):
             try:
                 data, addr = sock.recvfrom(65535)
@@ -510,6 +572,7 @@ class SocketArmInput(ArmInput):
             except OSError:
                 break
             n_read += 1
+            n_bytes += len(data)
             addr = tuple(addr[:2])
             try:
                 wanted, seq, names = link.decode_arm(data, self._n, self._key)
@@ -536,16 +599,20 @@ class SocketArmInput(ArmInput):
                 continue
             self._sender_at = now
             best = ArmAssertion(wanted, seq, names, sender=addr)
-        if n_read > FLOOD_DATAGRAMS_PER_POLL:
+        if n_read > FLOOD_DATAGRAMS_PER_POLL or \
+                n_bytes > self.flood_bytes:
             # Round 4, item B: see FLOOD_DATAGRAMS_PER_POLL.  Counted over
             # EVERY datagram, keyed or not: a flood of garbage crowds the
             # real deck out of the receive buffer just as well as a keyed
-            # one, and either way no honest sender produced it.
+            # one, and either way no honest sender produced it.  Round 5,
+            # item 4: in bytes as well (FLOOD_BYTES_PER_POLL), since the
+            # buffer fills by bytes.
             self._flood_at = now
             self._rejects.note(
                 "flood", now, ("*", 0),
-                f"arm link flooded: {n_read} datagrams were waiting in one "
-                f"poll (an honest deck sends a few). No group can be newly "
+                f"arm link flooded: {n_read} datagrams ({n_bytes} bytes) "
+                f"were waiting in one poll (an honest deck sends a few "
+                f"small ones). No group can be newly "
                 f"armed while this lasts, nor until it has stopped for "
                 f"{self._stale_ms} ms; a group already armed stays armed "
                 f"only as long as its own input stays live.")
