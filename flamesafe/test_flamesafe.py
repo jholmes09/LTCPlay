@@ -3206,6 +3206,14 @@ def test_disarm_all_disarms_every_group_and_needs_a_fresh_cycle():
     check(r.group(0)["reason"] == "" and r.safety(1) == 0
           and r.group(1)["reason"] == composer.ABORT_DISARMED,
           f"and only that group: {r.group(0)} {r.group(1)}")
+    # Once re-armed, the Abort is history for that group: a later,
+    # unrelated loss of the latch (the arm input restarting) says what
+    # really happened, not "the show's Abort".
+    r.inp.reboot()
+    r.step()
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
+          f"a later latch loss is not blamed on the old Abort: "
+          f"{r.group(0)}")
 
 
 def test_disarm_all_dwell_and_pending_edges():

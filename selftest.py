@@ -24646,6 +24646,10 @@ def test_flame_link_unit():
                                                  sent[0]["seq"] + len(sent))),
           "every datagram, flame or disarm, takes the next seq")
     check(link.zeroed, "and the cues stay zero until a new release()")
+    check(fl.DISARM_COPIES == 3 and fl.SEND_HZ_DEFAULT == 40
+          and fl.LOCK_ALARM_S == 1.0 and fl.CONFIRM_S == 1.0,
+          "the flame link's constants are pinned: changing one is a "
+          "decision, made here on purpose")
     link.disarm_all("x" * 500 + "\n")
     d2 = json.loads(sock.sent[-1][0])
     check(d2["id"] == 2 and len(d2["reason"]) <= 200,

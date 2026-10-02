@@ -3842,6 +3842,279 @@ def build():
   "REARM_REFRACTORY_S = 2.0",
   "REARM_REFRACTORY_S = 0.02"),
 
+ # -- the flame link: flamesafe's disarm_all (2026-10-02) ----------------
+ ("flamelink: a disarm_all from another sender is accepted",
+  "flamesafe/composer.py",
+  '''                raise ValueError("no live flame link to accept it from")
+            if sender != self._frame_sender:
+                raise ValueError("another sender")''',
+  '''                raise ValueError("no live flame link to accept it from")'''),
+
+ ("flamelink: a disarm_all is accepted with no live flame link",
+  "flamesafe/composer.py",
+  '''            if not self._frame_is_fresh(t):
+                raise ValueError("no live flame link to accept it from")''',
+  '''            if False:
+                raise ValueError("no live flame link to accept it from")'''),
+
+ ("flamelink: a disarm_all out of sequence is accepted",
+  "flamesafe/composer.py",
+  '''            if msg.seq <= self._frame_seq:
+                raise ValueError(f"out of order: seq {msg.seq} after "''',
+  '''            if False:
+                raise ValueError(f"out of order: seq {msg.seq} after "'''),
+
+ ("flamelink: a disarm_all whose sender clock went backwards is accepted",
+  "flamesafe/composer.py",
+  '''            if msg.mono < self._frame_mono:
+                raise ValueError("sender clock went backwards")
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1''',
+  '''            pass
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1'''),
+
+ ("flamelink: disarm_all leaves the latches standing",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: disarm_all ARMS every group",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._latched = [True] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: a consent edge from before the Abort survives it",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._latched = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: disarm_all starts no re-arm dwell",
+  "flamesafe/composer.py",
+  '''            if was_up[i]:
+                self._disarmed_at[i] = t
+            self._aborted[i] = True''',
+  '''            self._aborted[i] = True'''),
+
+ ("flamelink: the lamp never says the show's Abort disarmed it",
+  "flamesafe/composer.py",
+  '''            if self._aborted[i]:
+                return (ABORT_DISARMED, "flashing")''',
+  '''            if False:
+                return (ABORT_DISARMED, "flashing")'''),
+
+ ("flamelink: a re-armed group still blames the old Abort",
+  "flamesafe/composer.py",
+  '''                self._latched[i] = True
+                self._aborted[i] = False''',
+  '''                self._latched[i] = True'''),
+
+ ("flamelink: every copy of one Abort is journaled",
+  "flamesafe/composer.py",
+  "        new_abort = msg.abort_id != self._disarm_last_id",
+  "        new_abort = True"),
+
+ ("flamelink: the service drops every disarm_all on the floor",
+  "flamesafe/service.py",
+  "                self.composer.disarm_all(msg, sender=tuple(addr[:2]))",
+  "                pass"),
+
+ ("flamelink: a disarm_all is decoded as a flame frame",
+  "flamesafe/link.py",
+  '''    if isinstance(obj, dict) and obj.get("t") == "disarm_all":''',
+  '''    if isinstance(obj, dict) and obj.get("t") == "disarm-all":'''),
+
+ ("flamelink: a disarm_all with the wrong key is decoded",
+  "flamesafe/link.py",
+  '''        raise LinkError("wrong key")
+    if obj.get("t") != "disarm_all":''',
+  '''        pass
+    if obj.get("t") != "disarm_all":'''),
+
+ ("flamelink: a disarm_all with extra fields is decoded",
+  "flamesafe/link.py",
+  '''    if extra:
+        raise LinkError("disarm_all has a field this contract does not "''',
+  '''    if False:
+        raise LinkError("disarm_all has a field this contract does not "'''),
+
+ ("flamelink: a disarm_all with abort id 0 is decoded",
+  "flamesafe/link.py",
+  "    if not _is_int(abort_id) or abort_id < 1:",
+  "    if not _is_int(abort_id) or abort_id < 0:"),
+
+ ("flamelink: every rejection is journaled, a flood floods the journal",
+  "flamesafe/composer.py",
+  '''            if ep is not None:
+                ep["at"] = t
+                ep["count"] += 1
+                return''',
+  '''            if False:
+                return'''),
+
+ ("flamelink: an episode of rejections never says how many",
+  "flamesafe/composer.py",
+  '''            if ep["count"] > 1:
+                self._event("link-reject",''',
+  '''            if False:
+                self._event("link-reject",'''),
+
+ ("flamelink: an undecodable datagram is not journaled",
+  "flamesafe/composer.py",
+  '''        self._last_reject = str(why)
+        self._note_reject(self._last_reject)''',
+  '''        self._last_reject = str(why)'''),
+
+ ("flamelink: a sender can open unbounded rejection kinds",
+  "flamesafe/composer.py",
+  "REJECT_KINDS_MAX = 16",
+  "REJECT_KINDS_MAX = 10 ** 6"),
+
+ # -- the flame link: ltcplay's sender -----------------------------------
+ ("flamelink: a new link starts with its cues released",
+  "ltcplay/flamelink.py",
+  "        self.zeroed = True          # until the conductor releases the cues",
+  "        self.zeroed = False"),
+
+ ("flamelink: cues go out while the show is held or stopped",
+  "ltcplay/flamelink.py",
+  "        if self.zeroed or live is not True or tc is None:",
+  "        if self.zeroed:"),
+
+ ("flamelink: cues go out after the conductor zeroed them",
+  "ltcplay/flamelink.py",
+  "        if self.zeroed or live is not True or tc is None:",
+  "        if live is not True or tc is None:"),
+
+ ("flamelink: a provider's wrong-sized or out-of-range answer goes out",
+  "ltcplay/flamelink.py",
+  '''            if len(vals) != UNIVERSE_SIZE or \\
+                    any(not _is_int(x) or not 0 <= x <= 255 for x in vals):
+                raise ValueError''',
+  '''            if False:
+                raise ValueError'''),
+
+ ("flamelink: zero() waits for the next tick instead of sending at once",
+  "ltcplay/flamelink.py",
+  '''            self.zeroed = True
+            return self.send_frame()''',
+  '''            self.zeroed = True
+            return self._sock is not None'''),
+
+ ("flamelink: disarm_all leaves the cues released",
+  "ltcplay/flamelink.py",
+  '''                self.zeroed = True
+                self.send_frame()
+                self.abort_id += 1''',
+  '''                self.send_frame()
+                self.abort_id += 1'''),
+
+ ("flamelink: one Abort is a single datagram",
+  "ltcplay/flamelink.py",
+  "DISARM_COPIES = 3",
+  "DISARM_COPIES = 1"),
+
+ ("flamelink: a new socket for every frame",
+  "ltcplay/flamelink.py",
+  "            s.sendto(data, (self.cfg.ip, self.cfg.port))",
+  "            socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(\n"
+  "                data, (self.cfg.ip, self.cfg.port))"),
+
+ ("flamelink: seq does not advance",
+  "ltcplay/flamelink.py",
+  '''        self.seq += 1
+        if self.first_seq is None:''',
+  '''        if self.first_seq is None:'''),
+
+ ("flamelink: mono goes backwards with the clock",
+  "ltcplay/flamelink.py",
+  '''        if self._mono_last is not None and mono < self._mono_last:
+            mono = self._mono_last''',
+  '''        if False:
+            mono = self._mono_last'''),
+
+ ("flamelink: a failed send is journaled every frame",
+  "ltcplay/flamelink.py",
+  "            if self._fail_since is None:\n                self._fail_since = self._clock()",
+  "            if True:\n                self._fail_since = self._clock()"),
+
+ ("flamelink: the end of a send outage is never journaled",
+  "ltcplay/flamelink.py",
+  '''        if self._fail_since is not None:
+            gone = self._clock() - self._fail_since''',
+  '''        if False:
+            gone = self._clock() - self._fail_since'''),
+
+ ("flamelink: a send failure is silent",
+  "ltcplay/flamelink.py",
+  '''                self._note(f"Flame link: a frame to flamesafe could not be "''',
+  '''                (lambda *a, **k: None)(f"Flame link: a frame to flamesafe could not be "'''),
+
+ ("flamelink: the lock alarm never fires",
+  "ltcplay/flamelink.py",
+  "                if now - self._not_ours_since > LOCK_ALARM_S and \\",
+  "                if False and \\"),
+
+ ("flamelink: the lock alarm fires on one stray status",
+  "ltcplay/flamelink.py",
+  "LOCK_ALARM_S = 1.0",
+  "LOCK_ALARM_S = 0.0"),
+
+ ("flamelink: an unconfirmed disarm is never reported",
+  "ltcplay/flamelink.py",
+  "                elif now - pend[1] > CONFIRM_S and \\",
+  "                elif False and \\"),
+
+ ("flamelink: a held clock reads as live",
+  "ltcplay/flamelink.py",
+  '''        live = (playing and not getattr(clk, "paused", True)''',
+  '''        live = (playing'''),
+
+ ("flamelink: a clock fading out on Abort reads as live",
+  "ltcplay/flamelink.py",
+  '''                and not getattr(clk, "_halting", False) and tc is not None)''',
+  '''                and tc is not None)'''),
+
+ ("flamelink: the config accepts a send rate below the contract floor",
+  "ltcplay/flamelink.py",
+  "SEND_HZ_MIN = 20",
+  "SEND_HZ_MIN = 1"),
+
+ ("flamelink: the config accepts a non-loopback address",
+  "ltcplay/flamelink.py",
+  '''        if not isinstance(ip, str) or not ip.startswith("127.") or \\''',
+  '''        if not isinstance(ip, str) or \\'''),
+
+ ("flamelink: a long Abort reason is sent uncut",
+  "ltcplay/flamelink.py",
+  '''            why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \\''',
+  '''            why = " ".join(str(reason or "Abort").split()) \\'''),
+
+ ("flamelink: a status frame with another key is taken",
+  "ltcplay/flamelink.py",
+  '''            or obj.get("t") != "status" or obj.get("k") != key:''',
+  '''            or obj.get("t") != "status":'''),
+
+ ("flamelink: the example key passes without a word",
+  "ltcplay/flamelink.py",
+  "        if self.cfg.key == EXAMPLE_KEY:",
+  "        if False:"),
+
+ ("flamelink: the deck does not say ABORTED",
+  "ltcplay/streamdeck.py",
+  '''    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",''',
+  ""),
+
 ]
 
 

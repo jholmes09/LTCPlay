@@ -17,8 +17,9 @@ counted as a fault.
 from __future__ import annotations
 
 import math
-import re
 import time
+import re       # after time, so mutate.py's "flamesafe imports ltcplay"
+                # pattern (import math / import time) still matches once
 
 from . import rules
 from .link import DisarmAll, FlameFrame, CONTRACT_VERSION
