@@ -3822,9 +3822,9 @@ def build():
  ("round3: a Stream Deck reconnect no longer resets in-progress hold "
   "state",
   "ltcplay/streamdeck.py",
-  "        controller.arm.restart()\n"
-  "        controller.reset_on_reconnect()\n",
-  "        controller.arm.restart()\n"),
+  "            controller.arm.restart()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            controller.arm.restart()\n"),
 
  ("round3: the arm-hold duration changes without any test noticing",
   "ltcplay/streamdeck.py",
@@ -3842,36 +3842,42 @@ def build():
  ("round4: with no deck the hold-off sends nothing (the link goes silent "
   "and flamesafe's sender lock lapses)",
   "ltcplay/streamdeck.py",
-  "        controller.arm.set_all(False)\n"
-  "        controller.arm.send(controller.names)\n"
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "        controller.arm.set_all(False)\n"
+  "            controller.arm.set_all(False)\n"
+  "        except Exception:\n"
+  "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n"),
 
  ("round4: the deck process sends nothing until the first deck is found",
   "ltcplay/streamdeck.py",
-  "    if not controller.arm.is_open:\n"
-  "        controller.arm.open()\n"
-  "    for _ in range(",
-  "    if not controller.arm.is_open:\n"
-  "        return\n"
-  "    for _ in range("),
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
+  "            controller.arm.set_all(False)\n",
+  "            if not controller.arm.is_open:\n"
+  "                pass\n"
+  "            controller.arm.set_all(False)\n"),
 
  ("round4: a reconnect closes and reopens the arm socket (a new source "
   "port, so the sender lock changes hands)",
   "ltcplay/streamdeck.py",
-  "        controller.arm.restart()\n"
-  "        controller.reset_on_reconnect()\n",
-  "        controller.arm.close()\n"
-  "        controller.arm.open()\n"
-  "        controller.reset_on_reconnect()\n"),
+  "            controller.arm.restart()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            controller.arm.close()\n"
+  "            controller.arm.open()\n"
+  "            controller.reset_on_reconnect()\n"),
 
  ("round4: an unplug closes the arm socket again",
   "ltcplay/streamdeck.py",
   "            # NOT arm.close() (round 4, item A): see _hold_link_off.\n"
-  "            controller.arm.set_all(False)\n",
+  "            try:\n"
+  "                controller.arm.set_all(False)\n",
   "            controller.arm.close()\n"
-  "            controller.arm.set_all(False)\n"),
+  "            try:\n"
+  "                controller.arm.set_all(False)\n"),
 
  # B: no consent while anyone else is on the link.
  ("round4: consent ignores another sender on the arm link",
@@ -4017,6 +4023,93 @@ def build():
   "ltcplay/streamdeck.py",
   "        self._spoof_last_seq = None\n",
   "        self._spoof_last_seq = 0\n"),
+
+ # ---- round 5 of the safety review (PR #31) ------------------------------
+ # 1: a long unplug. The round-4 test's no-deck time added up to exactly 6 s,
+ # so this one (the review's hand mutation) passed the whole suite.
+ ("round5: the OFF sender stops for good after 6 s with no deck",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.set_all(False)\n"
+  "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
+  "            _n[0] += 1\n"
+  "            if _n[0] <= 120:\n"
+  "                controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round5: the OFF sender stops for good after 60 s with no deck",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.set_all(False)\n"
+  "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
+  "            _n[0] += 1\n"
+  "            if _n[0] <= 1200:\n"
+  "                controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ # 2: any error from the deck process is an unplug, never the end of it.
+ ("round5: a plain error opening the deck ends run_forever again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Retrying in 2 s;",
+  "        except DeckDisconnected as e:\n"
+  "            outage.failed(e, \"Retrying in 2 s;"),
+
+ ("round5: a plain error in a main-loop pass ends run_forever again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Every group is sent OFF",
+  "        except DeckDisconnected as e:\n"
+  "            outage.failed(e, \"Every group is sent OFF"),
+
+ ("round5: Deck() lets a raw hidapi OSError escape as itself again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:\n"
+  "            if h is not None:\n",
+  "        except OSError:\n"
+  "            raise\n"
+  "        except Exception as e:\n"
+  "            if h is not None:\n"),
+
+ ("round5: Deck() leaves a half-opened HID handle open",
+  "ltcplay/streamdeck.py",
+  "                    h.close()     # a half-opened handle must not keep the\n",
+  "                    pass          # a half-opened handle must not keep the\n"),
+
+ ("round5: the hold-off dies on an arm socket that will not open",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.send(controller.names)\n"
+  "        except DeckDisconnected:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round5: every deck retry is journaled again (no once-per-outage)",
+  "ltcplay/streamdeck.py",
+  "        if kind in self._kinds:\n"
+  "            self._unlogged += 1\n"
+  "            return\n",
+  ""),
+
+ ("round5: a deck outage never ends, so a later unplug is never journaled",
+  "ltcplay/streamdeck.py",
+  "        if not self.active or secs < DECK_STABLE_S:\n",
+  "        if True:\n"),
 
 ]
 
