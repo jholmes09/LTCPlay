@@ -3650,16 +3650,20 @@ def build():
  ("flamesafe: a second sender's arm frame is accepted once the first is "
   "locked in",
   "flamesafe/arminput.py",
-  "            if self._sender is None:\n"
-  "                self._sender = addr\n"
-  "            elif addr != self._sender:\n"
-  '                self._event("arm-link", f"arm frame rejected: another "\n'
-  '                            f"sender ({addr[0]}:{addr[1]} is not the "\n'
-  '                            f"locked sender {self._sender[0]}:"\n'
-  '                            f"{self._sender[1]})")\n'
-  "                continue",
-  "            if self._sender is None:\n"
-  "                self._sender = addr"),
+  """            if self._sender is None:
+                self._sender = addr
+            elif addr != self._sender:
+                # Round 2 of the safety review (item 1): rejected for every
+                # purpose EXCEPT disarming -- this sender never becomes the
+                # lock holder, never advances seq/names/consent -- but its
+                # `wanted` is remembered so a real "disarm" from it still
+                # takes effect below, even while a rogue holds the lock.
+                self._note_foreign(addr, wanted, now)
+                continue
+""",
+  """            if self._sender is None:
+                self._sender = addr
+"""),
 
  ("flamesafe: the arm-link sender lock never releases once stale",
   "flamesafe/arminput.py",
@@ -3670,16 +3674,30 @@ def build():
  ("flamesafe: a flame-group name mismatch on the arm link is rejected in "
   "total silence again",
   "flamesafe/composer.py",
-  "                    self.stats[\"arm_rejected\"] += 1\n"
-  '                    self._event("arm-link",\n'
-  '                                f"arm assertion rejected: its group names "\n'
-  '                                f"{list(names)!r} do not match this "\n'
-  '                                f"config\'s {want_names!r}; a deck built "\n'
-  '                                f"against a different group map cannot "\n'
-  '                                f"arm the wrong head")\n'
-  "                    return False",
-  "                    self.stats[\"arm_rejected\"] += 1\n"
-  "                    return False"),
+  """                    self.stats["arm_rejected"] += 1
+                    self._name_mismatch_count += 1
+                    if not self._name_mismatch_logging:
+                        # Round 2 of the safety review, item 10: logged once
+                        # per continuous episode, with a running count, not
+                        # once per assertion -- at 10 Hz or faster a
+                        # misconfigured deck would otherwise flood the
+                        # bounded journal queue (1000 lines) within a
+                        # couple of minutes, pushing out everything else.
+                        self._name_mismatch_logging = True
+                        self._event(
+                            "arm-link",
+                            f"arm assertion rejected: its group names "
+                            f"{list(names)!r} do not match this config's "
+                            f"{want_names!r}; a deck built against a "
+                            f"different group map cannot arm the wrong "
+                            f"head. Further rejections for this same "
+                            f"reason will not be logged individually "
+                            f"until it stops.")
+                    return False
+""",
+  """                    self.stats["arm_rejected"] += 1
+                    return False
+"""),
 
  ("flamesafe: service.py drops a raising assert_arm with no journal line",
   "flamesafe/service.py",

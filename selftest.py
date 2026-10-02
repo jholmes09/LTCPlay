@@ -23806,6 +23806,13 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
                            "wanted": False, "reason": "", "amber": "",
                            "dwell_s": 0}]})
     fonts = sd.Fonts()
+    # This CI box has none of the system font paths Fonts._sans_bold() /
+    # the serif fallback look for (all macOS/Windows paths) -- drawing is
+    # hardware-adjacent and, as this file's own closing comment says,
+    # "exercised on the bench, not in selftest.py". text_block is a no-op
+    # here so the REST of draw() (the fill colour decision this test is
+    # actually about) still runs without needing a real font file.
+    fonts.text_block = lambda *a, **kw: None
     canvas = c.draw(fonts, blink_on=True, chase=0)
     box = sd.face_box(sd.GROUP_KEYS[0])
     # The real look for "armed" fills the body with sd.GREEN; a flat OFF
