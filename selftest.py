@@ -101,10 +101,52 @@ class _TempRun:
             self.tracked.append(path)
         return path
 
-    def sweep(self):
+    @staticmethod
+    def _remove(path, tries=5):
+        """Remove a folder or file. A file another process still has open
+        cannot be deleted on Windows, and a read-only one needs its bit
+        cleared first, so this retries rather than giving up at once."""
         import shutil
+        import stat
+
+        def _fix(func, p, _exc):
+            try:
+                os.chmod(p, stat.S_IWRITE)
+                func(p)
+            except OSError:
+                pass
+
+        for i in range(tries):
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path, onerror=_fix)
+                elif os.path.lexists(path):
+                    os.unlink(path)
+            except OSError:
+                pass
+            if not os.path.lexists(path):
+                return
+            time.sleep(0.2 * (i + 1))
+
+    def describe(self, names):
+        """What the leftovers are, for the failure message: kind and size."""
+        out = []
+        for n in names[:20]:
+            p = os.path.join(self.root, n)
+            try:
+                if os.path.isdir(p):
+                    kids = os.listdir(p)
+                    out.append(f"{n}/ ({len(kids)} inside: "
+                               f"{', '.join(kids[:4])})")
+                else:
+                    out.append(f"{n} ({os.path.getsize(p)} bytes)")
+            except OSError as e:
+                out.append(f"{n} ({e})")
+        return out
+
+    def sweep(self):
         while self.tracked:
-            shutil.rmtree(self.tracked.pop(), ignore_errors=True)
+            self._remove(self.tracked.pop())
 
     def next_test(self, name):
         if name != self._test:
@@ -120,16 +162,29 @@ class _TempRun:
             test_show_fixtures.cleanup()
         except ImportError:
             pass
+        # multiprocessing keeps its own scratch folder (pymp-*) in the temp
+        # folder and removes it when the process exits, which is after this
+        # check. Run its clean-up now; a child process still shutting down
+        # gets a few seconds to finish removing what it made.
         try:
-            self.leftovers = sorted(os.listdir(self.root))
-        except OSError:
-            self.leftovers = []
+            import multiprocessing.util as _mpu
+            _mpu._run_finalizers()
+        except Exception:
+            pass
+        deadline = time.time() + 5.0
+        while True:
+            try:
+                self.leftovers = sorted(os.listdir(self.root))
+            except OSError:
+                self.leftovers = []
+            if not self.leftovers or time.time() > deadline:
+                break
+            time.sleep(0.25)
         return self.leftovers
 
     def close(self):
-        import shutil
         self.sweep()
-        shutil.rmtree(self.root, ignore_errors=True)
+        self._remove(self.root)
         tempfile.mkdtemp = self._real_mkdtemp
         tempfile.tempdir = self._saved_tempdir
         for k, v in self._saved_env.items():
@@ -22561,10 +22616,11 @@ if __name__ == "__main__":
     # behind is caught here, not discovered later as a full disk.
     _left = _TEMPRUN.finish()
     if _left:
+        _what = "; ".join(_TEMPRUN.describe(_left))
         FAILS.append(f"this run left {len(_left)} temp entries behind: "
-                     + ", ".join(_left[:20]))
+                     + _what)
         print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
-              f"its own temp folder: {', '.join(_left[:20])}")
+              f"its own temp folder: {_what}")
 
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
@@ -22575,6 +22631,11 @@ if __name__ == "__main__":
         print("  Open Tools and run 'Set the Advatek triggers.command'.")
         print()
     if FAILS:
+        if os.environ.get("GITHUB_ACTIONS"):
+            for _f in FAILS[:10]:
+                print("::error title=selftest::"
+                      + _f.replace("%", "%25").replace("\r", "%0D")
+                      .replace("\n", "%0A")[:900])
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
