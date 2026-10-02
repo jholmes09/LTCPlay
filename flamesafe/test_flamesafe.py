@@ -1923,6 +1923,45 @@ def test_round4_a_forced_bit_never_blocks_a_genuine_cycle_on_another_group():
     check(r.safety(1) != ARM, "group 1 stays disarmed")
 
 
+def test_round4_a_forced_low_clears_an_earlier_genuine_down_edge():
+    section("round 4: in the composer itself, a FORCED low never sets up a "
+            "consent edge and also clears one a genuine low set up earlier "
+            "(round 3's rule, tested directly: since round 4 the service "
+            "also blocks consent whenever a foreign sender is on the link, "
+            "which hid this rule from the end-to-end test)")
+    r = Rig()
+    r.prove_alive()              # genuine lows: a pending down edge
+    r.inp.set_forced(0)          # group 0's low is now FORCED
+    r.step()
+    r.inp.set_forced(0, on=False)
+    r.inp.set(0)
+    r.step(n=3)
+    check(r.safety(0) != ARM,
+          f"a True right after a forced low does not arm, even though a "
+          f"genuine low came before it: {r.group(0)}")
+    r.inp.set(0, on=False)
+    r.step(n=2)
+    r.inp.set(0)
+    r.wait(r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+    check(r.safety(0) == ARM, f"a genuine cycle afterwards arms: "
+                              f"{r.group(0)}")
+
+
+def test_round4_a_malformed_forced_vector_is_rejected():
+    section("round 4: assert_arm rejects a `forced` vector of the wrong "
+            "length or with non-bool entries, like a malformed `wanted`")
+    r = Rig()
+    before = r.c.stats["arm_rejected"]
+    w = [False] * N_GROUPS
+    check(r.c.assert_arm(w, 1, names=NAMES, forced=[False]) is False,
+          "too short: rejected")
+    check(r.c.assert_arm(w, 2, names=NAMES, forced=[0] * N_GROUPS) is False,
+          "not bools: rejected")
+    check(r.c.stats["arm_rejected"] == before + 2, "and both are counted")
+    check(r.c.assert_arm(w, 3, names=NAMES, forced=[False] * N_GROUPS)
+          is True, "a well formed one is accepted")
+
+
 def test_round4_genuine_lows_are_never_reported_forced():
     section("round 4 (hand mutation the review found surviving): a bit the "
             "LOCKED sender itself reports False is never reported forced, "
@@ -2035,17 +2074,23 @@ def test_round4_service_passes_the_flood_flag_before_assert_arm():
 
     class _Flooded(arminput.ArmInput):
         flooded = True
+        foreign_count = 2
 
         def poll(self):
-            return None
+            return None          # the locked sender is quiet this tick
 
     svc = Service(make_config(), _Flooded())
     svc._poll_arm()
     check(svc.composer._arm_link_flooded is True,
           "the composer knows the link is flooded")
+    check(svc.composer._foreign_arm_senders == 2,
+          "and how many other senders are on it, even on a tick where "
+          "poll() had no assertion to return")
     svc.arm_input.flooded = False
+    svc.arm_input.foreign_count = 0
     svc._poll_arm()
-    check(svc.composer._arm_link_flooded is False, "and when it is not")
+    check(svc.composer._arm_link_flooded is False
+          and svc.composer._foreign_arm_senders == 0, "and when not")
 
 
 def test_round4_decode_rejections_are_throttled_per_reason():
@@ -3901,6 +3946,8 @@ if __name__ == "__main__":
     test_round3_foreign_forced_edge_is_not_consent_end_to_end()
     test_round4_no_consent_while_another_sender_or_a_flood_is_on_the_link()
     test_round4_a_forced_bit_never_blocks_a_genuine_cycle_on_another_group()
+    test_round4_a_forced_low_clears_an_earlier_genuine_down_edge()
+    test_round4_a_malformed_forced_vector_is_rejected()
     test_round4_genuine_lows_are_never_reported_forced()
     test_round4_consent_never_spans_two_senders()
     test_round4_socket_arm_input_flags_a_flood()

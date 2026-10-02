@@ -3987,6 +3987,31 @@ def build():
   "            category = \"foreign-senders\"\n",
   "            category = f\"foreign-senders:{foreign}\"\n"),
 
+ ("round4: a forced low keeps an earlier genuine down edge",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = (consent_ok and not f[i]) or "
+  "(f[i] and self._seen_down[i])\n"),
+
+ ("round4: a malformed forced vector is accepted",
+  "flamesafe/composer.py",
+  "                if len(f) != self.n or any(not isinstance(x, bool) for x "
+  "in f):\n                    raise ValueError(\"forced\")\n",
+  "                pass\n"),
+
+ ("round4: the foreign-sender count only reaches the composer on ticks "
+  "with an assertion",
+  "flamesafe/service.py",
+  "            self.composer.note_foreign_arm_senders(\n"
+  "                getattr(self.arm_input, \"foreign_count\", 0))\n",
+  "            a is not None and self.composer.note_foreign_arm_senders(\n"
+  "                getattr(self.arm_input, \"foreign_count\", 0))\n"),
+
+ ("round4: an arm-link rejection episode never closes",
+  "flamesafe/arminput.py",
+  "                       if now - e[\"at\"] > self.quiet_s]:\n",
+  "                       if False]:\n"),
+
  # E: a freshly started deck process gets the reconnect grace.
  ("round4: a freshly started deck process gets no reconnect grace",
   "ltcplay/streamdeck.py",
