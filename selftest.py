@@ -25745,6 +25745,22 @@ def test_flame_link_fix_round_1():
     f = [x for x in sent(s11, n0) if x["t"] == "flame"]
     check(len(f) == 1 and f[0]["values"][410] == 200,
           "and the next frame, read after the release, carries the cue")
+    # Zeroed, the cue provider is not even asked (send_frame would zero its
+    # answer anyway; not asking it means a broken provider cannot fill the
+    # journal while no show is released).
+    asked = []
+    t13 = [0.0]
+    lk13, s13 = make(lambda: t13[0], cues=lambda tc: asked.append(tc) or fire,
+                     show_state=lambda: (f"00:00:00:{len(s13.sent) % 25:02d}",
+                                         True))
+    for _ in range(5):
+        lk13.send_frame()
+    check(not asked and not any(json.loads(s13.sent[-1][0])["values"]),
+          f"zeroed: zeros, and the cue provider was never asked: {asked}")
+    lk13.release()
+    lk13.send_frame()
+    check(len(asked) == 1, "released: it is asked")
+
     # A provider that hangs, on the real thread: the Abort does not wait.
     gate = threading.Event()
     hang = {"on": False}
