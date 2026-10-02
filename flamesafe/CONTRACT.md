@@ -165,6 +165,7 @@ Top level:
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
+| `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now; its `wanted` bits can only ever CLEAR a group's bit (never set one, and it never becomes the locked sender itself), but ltcplay must still alarm on this alone -- the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
@@ -288,7 +289,27 @@ should never see state on the wire that it did not set and does not
 expect -- and, as of round 2, that alarm (and any group flamesafe is
 still actually reporting armed) stays visible on the deck's screen even
 after an Abort has latched it: a latched screen must never paint a flat
-OFF over a group that is still really armed.
+OFF over a group that is still really armed. As of round 3 the deck also
+raises this alarm on `arm_input.foreign_senders` alone (above), since the
+AND can leave `wanted` looking exactly like what the deck expects with
+nothing else to notice.
+
+**The forced-edge fix (round 3, after a fourth safety review).** The AND
+above closes "a rogue can mask an Abort", but a fourth review found it
+opened a different hole: a foreign sender saying a group is `wanted=false`
+for a while, then `wanted=true` again, puts a false-then-true sequence in
+front of the composer's consent rule (rule 6 below) -- and that rule reads
+ANY false-then-true sequence on a live counter as the operator cycling the
+arm, with no way to tell a bit that went low because the AND forced it
+from one the LOCKED sender genuinely reported low. The locked sender's own
+report never has to change at all for this to arm a group. Fixed by
+`SocketArmInput.poll()` also reporting, per group, which False bits in the
+result it just forced (`ArmAssertion.forced`); `Composer.assert_arm` never
+lets a forced low set up a future consent edge, so a forced low-then-high
+sequence can never read as the operator cycling the arm -- only a fresh,
+UN-forced low-to-high transition from the locked sender itself can. This
+is additive to the AND above, not a replacement for it: a foreign sender
+can still only ever clear a bit, never set one.
 
 **This frame says only what the deck wants.** It decides nothing: every
 rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,

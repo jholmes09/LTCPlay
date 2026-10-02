@@ -3717,6 +3717,131 @@ def build():
   "        if False:\n"
   '            raise ValueError("unreachable")'),
 
+ # ---------------------------------------------------------------------
+ # Round 3 of the safety review (2026-10-02): a fourth review re-ran the
+ # round 1 and round 2 attacks (still closed) and found round 2's own
+ # foreign-disarm fix had opened a new hole (a forced low-then-high edge
+ # read as operator consent), plus coverage gaps in the Stream Deck's own
+ # safety logic (zero mutations existed for it at all) and in the
+ # journal/alarm rate limits. Every name starts with "round3:" so
+ # `mutate.py round3:` runs just these.
+ # ---------------------------------------------------------------------
+
+ ("round3: a forced low from a foreign sender can still register as "
+  "operator consent",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = consent_ok\n"),
+
+ ("round3: SocketArmInput stops marking which bits it forced False",
+  "flamesafe/arminput.py",
+  "                    forced[i] = True\n                    changed = True\n",
+  "                    changed = True\n"),
+
+ ("round3: SocketArmInput.foreign_count always reads zero",
+  "flamesafe/arminput.py",
+  "        poll() itself had anything new to decode and return.\"\"\"\n"
+  "        return len(self._foreign)\n",
+  "        poll() itself had anything new to decode and return.\"\"\"\n"
+  "        return 0\n"),
+
+ ("round3: the composer's status frame stops carrying foreign_senders",
+  "flamesafe/composer.py",
+  '            "arm_input": {\n'
+  '                "state": ("never" if self._arm_fresh_at is None\n'
+  '                          else "live" if live else "stale"),\n'
+  '                "seq": self._arm_seq,\n'
+  '                "age_ms": arm_age,\n'
+  '                "foreign_senders": self._foreign_arm_senders,\n'
+  '            },\n',
+  '            "arm_input": {\n'
+  '                "state": ("never" if self._arm_fresh_at is None\n'
+  '                          else "live" if live else "stale"),\n'
+  '                "seq": self._arm_seq,\n'
+  '                "age_ms": arm_age,\n'
+  '            },\n'),
+
+ ("round3: a sustained foreign-sender flood floods the journal again, one "
+  "line per datagram",
+  "flamesafe/arminput.py",
+  "        ep = self._foreign_episode\n"
+  "        if ep is None:\n"
+  '            self._foreign_episode = {"at": now, "count": 1, "addrs": '
+  "{addr}}\n",
+  "        ep = self._foreign_episode\n"
+  "        if True:\n"
+  '            self._foreign_episode = {"at": now, "count": 1, "addrs": '
+  "{addr}}\n"),
+
+ ("round3: the deck never alarms on a foreign sender alone",
+  "ltcplay/streamdeck.py",
+  "        elif isinstance(foreign, int) and not isinstance(foreign, bool) "
+  "\\\n                and foreign > 0:\n",
+  "        elif False:\n"),
+
+ ("round3: the spoof-alarm dedup compares the changing sentence again, "
+  "not a stable category",
+  "ltcplay/streamdeck.py",
+  "    def _raise_spoof_alarm(self, category, reason):\n"
+  "        self._spoof_alarm = reason      # always the LATEST text, for "
+  "draw()\n"
+  "        if self._spoof_category == category:\n"
+  "            return    # already alarming for this exact CATEGORY; no "
+  "spam,\n"
+  "                      # even though `reason`'s own numbers keep moving\n"
+  "        self._spoof_category = category\n",
+  "    def _raise_spoof_alarm(self, category, reason):\n"
+  "        if self._spoof_alarm == reason:\n"
+  "            return\n"
+  "        self._spoof_alarm = reason\n"
+  "        self._spoof_category = category\n"),
+
+ ("round3: tick() is no longer called from the Stream Deck's main loop",
+  "ltcplay/streamdeck.py",
+  "                controller.tick()\n"
+  "                controller.status.poll(clock)",
+  "                controller.status.poll(clock)"),
+
+ ("round3: an Abort can also complete a same-pass arm-hold again",
+  "ltcplay/streamdeck.py",
+  "            self._do_abort()\n"
+  "            # Item 3 (round 2 of the safety review): never ALSO "
+  "complete an\n"
+  "            # arm-hold in the SAME pass an Abort just fired in. "
+  "_do_abort()\n"
+  "            # just told every group's wanted false; finishing a hold "
+  "a\n"
+  "            # moment later in this same pass would re-arm the very "
+  "group\n"
+  "            # Abort was supposed to clear. _do_arm_fire's own "
+  "latched/\n"
+  "            # refractory guard (now set by _do_abort, just above) is "
+  "a\n"
+  "            # second, independent backstop -- this return is the "
+  "ordering\n"
+  "            # fix itself, not a substitute for that guard, nor the "
+  "other\n"
+  "            # way round.\n"
+  "            return\n",
+  "            self._do_abort()\n"),
+
+ ("round3: a Stream Deck reconnect no longer resets in-progress hold "
+  "state",
+  "ltcplay/streamdeck.py",
+  "        controller.arm.open()\n"
+  "        controller.reset_on_reconnect()\n",
+  "        controller.arm.open()\n"),
+
+ ("round3: the arm-hold duration changes without any test noticing",
+  "ltcplay/streamdeck.py",
+  "ARM_HOLD_S = 0.6",
+  "ARM_HOLD_S = 6.0"),
+
+ ("round3: the re-arm refractory window changes without any test noticing",
+  "ltcplay/streamdeck.py",
+  "REARM_REFRACTORY_S = 2.0",
+  "REARM_REFRACTORY_S = 0.02"),
+
 ]
 
 

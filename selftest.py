@@ -23150,6 +23150,24 @@ def test_streamdeck_pure_logic():
     section("Stream Deck (real wiring): the pure logic, no hardware needed")
     from ltcplay import streamdeck as sd
 
+    # The literal hold/refractory durations, Jeff's own decisions (module
+    # docstring, 2026-10-01). Every other test reads these SYMBOLICALLY
+    # (sd.ARM_HOLD_S, not a literal 0.6) so its own timing always tracks
+    # whatever the constant currently says -- which means changing the
+    # constant itself would otherwise sail through every test unnoticed
+    # (round 3 of the safety review, item 4: a hand-mutation proved this).
+    # This is the one place that pins down the actual numbers.
+    check(sd.ABORT_HOLD_S == 0.5,
+          f"Abort's hold is unchanged from the approved bench demo: "
+          f"{sd.ABORT_HOLD_S}")
+    check(sd.ARM_HOLD_S == 0.6,
+          f"arming requires a hold a little longer than Abort's own, "
+          f"short enough to still read as 'hold this key': "
+          f"{sd.ARM_HOLD_S}")
+    check(sd.REARM_REFRACTORY_S == 2.0,
+          f"a key refuses to even start a new arm-hold for this long "
+          f"after its own disarm or an Abort: {sd.REARM_REFRACTORY_S}")
+
     check(sd.group_look(None) == ("NO", "LINK", (26, 24, 21), sd.DIM_TEXT, True),
           "no status ever received (or stale): NO LINK, flashing, never a guess")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
@@ -23822,6 +23840,30 @@ def test_streamdeck_abort_same_pass_as_arm_hold_completion():
     check(not any(e for e in events if e[1].get("action") == "arm"
                   and "front row" in e[0] and "refused" not in e[0]),
           f"no successful arm line was journaled for front row: {events}")
+
+    # Round 3 of the safety review, item 4: the two guards are meant to be
+    # INDEPENDENT, but the checks above only prove the combination holds --
+    # _do_arm_fire's own latched/refractory refusal (set by _do_abort)
+    # masks a missing ordering fix completely. Prove the ordering fix (the
+    # `return` right after _do_abort() in tick()) on its own: in the pass
+    # Abort fires, _do_arm_fire must never even be reached.
+    arm2 = _FakeArmSocket(3)
+    t2 = [0.0]
+    c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t2[0])
+    reached = []
+    c2._do_arm_fire = lambda i, now: reached.append(i)
+    c2.run_once(down)
+    t2[0] = 0.1
+    c2.run_once(down2)
+    t2[0] = 0.1 + sd.ABORT_HOLD_S + 0.01
+    c2.tick()
+    check(arm2.wanted == [False, False, False] and not reached,
+          f"in the pass Abort fires, tick() returns before ANY arm-hold "
+          f"completion is even attempted -- the ordering guard on its own, "
+          f"not relying on _do_arm_fire's own refusal: reached={reached}")
 
 
 def test_streamdeck_arm_fire_refuses_latched_and_refractory():
