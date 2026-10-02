@@ -25822,8 +25822,14 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
             w0 = time.perf_counter()
             ev.wait(0.025)
             waits.append(round(time.perf_counter() - w0, 3))
+        sleeps = []
+        for _ in range(10):
+            w0 = time.perf_counter()
+            time.sleep(0.025)
+            sleeps.append(round(time.perf_counter() - w0, 3))
         names = sorted(t.name for t in _th.enumerate())
-        why = (f"; here Event.wait(0.025) took {waits}; "
+        why = (f"; here Event.wait(0.025) took {waits}, time.sleep(0.025) "
+               f"took {sleeps}; "
                f"{len(names)} threads alive: {names[:25]}")
     check(ok_rate,
           f"at its rate on a real thread: mean gap {mean:.4f} s, 95% under "
