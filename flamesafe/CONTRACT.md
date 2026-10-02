@@ -166,7 +166,7 @@ Top level:
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
 | `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now. Its `wanted` bits can only ever CLEAR a group's bit, never set one, while it is not the locked sender. It CAN become the locked sender: the lock goes to whoever sends next once the locked sender has been quiet for `arm_stale_ms`, and a flood that crowds the real deck's frames out of the receive buffer makes the real deck look quiet (the round-4 review did this). Once that has happened the real deck, still sending, is the one counted here. That is why, as of round 4, no consent edge counts while this is non-zero (see the arm link section): whoever holds the lock, nobody can arm a group while anyone else is on the link. ltcplay must alarm on this alone; the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
-| `arm_input.flooded` | true while flamesafe has seen a flood on the arm port (more datagrams waiting in one poll than an honest deck could send, keyed or not) inside the last `arm_stale_ms` (added round 4 of the safety review, 2026-10-02). No consent edge counts while it is true |
+| `arm_input.flooded` | true while flamesafe has seen a flood on the arm port (more than 50 datagrams, or more than 64 KiB, waiting in one poll, keyed or not; the byte limit added round 5) inside the last `arm_stale_ms` (added round 4 of the safety review, 2026-10-02). No consent edge counts while it is true |
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
@@ -199,8 +199,9 @@ flame universe. There is no fallback path, deliberately.
 A fourth loopback socket, `link.arm_port` on `link.arm_ip` (default: the
 same address as `link.listen_ip`), optional: a config without it runs with
 `NullArmInput`, exactly as before this build step, and every group stays
-disarmed. The Stream Deck (part of ltcplay's own process, `ltcplay/
-streamdeck.py`, never flamesafe's) sends one arm frame at 10 Hz or faster,
+disarmed. The Stream Deck (`ltcplay/streamdeck.py`, run as its own
+process by `ltc deck`, separate from both the ltcplay show program that
+sends the flame frames and flamesafe) sends one arm frame at 10 Hz or faster,
 always carrying every group's current wanted state, whether or not
 anything changed:
 
@@ -324,9 +325,24 @@ lock goes to whoever sends next once the locked sender has been quiet for
   plugged in. Fixed on the deck side (`ltcplay/streamdeck.py`): while no
   deck is connected the deck process keeps sending every group OFF at its
   normal rate on the SAME socket, and a reconnect restarts `wanted` and
-  `seq` on that socket instead of opening a new one, so the lock never
-  lapses while ltcplay is running. If ltcplay itself dies, the show link
-  goes too, and link loss disarms every group (section above).
+  `seq` on that socket instead of opening a new one, so the lock does not
+  lapse while the deck process is running, whether or not a deck is
+  plugged in. Since round 5 any error from the deck hardware or its main
+  loop is handled the same way, not only a clean unplug; only a deliberate
+  stop ends the deck process. **Residual, stated plainly: the deck process
+  is its own process (`ltc deck`), separate from the show program that
+  sends the flame frames. If the deck process alone dies, is killed or
+  freezes, the show link stays up, every group disarms within
+  `arm_stale_ms`, and the arm lock lapses with it. A local process holding
+  the key can then take the lock with nothing on the link to compete
+  against, and the "no consent while anyone else is on the link" rule
+  below has nobody else to see.** It still has to earn consent the normal
+  way, a genuine low then high from the lock holder on a live counter
+  (rule 6), and nothing it does can arm a group before that. This is a
+  residual, not something the link prevents: the key lives in a file that
+  any process running as the same user can read. Only when the show
+  program itself dies does the show link go too, and link loss disarms
+  every group (section above).
 - *The flood.* About 300,000 valid frames in 2 s crowd the real deck's
   frames out of the receive buffer; the deck looks quiet for
   `arm_stale_ms`, the arm input goes stale (every group disarms), and the
@@ -340,8 +356,8 @@ is false, and while either is not, every pending down edge is cleared too,
 so nothing seen before the other sender turned up can be finished while it
 is there. After a takeover the real deck is the foreign sender, and it
 keeps sending (20 Hz, OFF frames included, unplugged or not), so a rogue
-that holds the lock can never collect consent for as long as ltcplay is
-alive. Also: when the lock changes hands, the composer clears every latch
+that holds the lock can never collect consent for as long as the deck
+process (`ltc deck`) is alive; if it is not, see the residual above. Also: when the lock changes hands, the composer clears every latch
 and pending edge exactly as for an input restart, so a consent edge can
 never be half proved by one sender and finished by another
 (`ArmAssertion.sender`). The cost, accepted: a genuine cycle made while
@@ -352,12 +368,22 @@ lock cannot tell "the real deck is crowded out" from "a rogue that grabbed
 the lock went quiet", and the second must hand the lock back to the real
 deck. Blocking consent instead is safe whichever one holds it.
 
+A flood is more than 50 datagrams, or more than 64 KiB, waiting in one
+poll (round 5: the kernel's receive buffer fills by bytes, and 12
+maximum-size frames filled the default one without ever reaching 50
+datagrams). The arm socket also asks the kernel for a 4 MiB receive
+buffer.
+
 Every rejection on the arm link (wrong key, wrong shape, garbage, another
 sender, a flood) is journaled once per reason per episode with a count on
 the closing line; an episode ends only after 5 s with none of that reason,
-and no reason writes more than 4 lines a minute however the datagrams are
-spaced. A flood of undecodable datagrams used to write one line per
-datagram and push real events out of the bounded journal queue.
+no reason writes more than 4 lines a minute however the datagrams are
+spaced, and all the reasons together write no more than 8 a minute (round
+5). A flood of undecodable datagrams used to write one line per datagram
+and push real events out of the bounded journal queue. On top of that the
+journal never lets arm-link lines take more than half its queue, so the
+other half is always free for "show program stopped answering", arm and
+disarm lines and faults behind a blocked console.
 
 **This frame says only what the deck wants.** It decides nothing: every
 rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,
@@ -407,11 +433,16 @@ journaled, so it is never a silent no-op.
 **Losing the Stream Deck disarms every group at once.** Since round 4
 the deck process keeps sending, while no deck is connected, every group
 `wanted` false on the same socket, so every group disarms on the next
-frame and the sender lock stays with ltcplay. If the deck PROCESS dies or
-freezes, `poll()` returns None once nothing has arrived for the input's own
-bookkeeping to call fresh, and the EXISTING `arm_stale_ms` rule below does
-the rest -- every group disarms within `arm_stale_ms` of the last accepted
-frame, the same as a crashed or frozen test driver: silence is silence. **Reconnecting never re-arms anything by
+frame and the sender lock stays with the deck process. If the deck
+PROCESS dies or freezes (it runs on its own, as `ltc deck`), `poll()`
+returns None once nothing has arrived for the input's own bookkeeping to
+call fresh, and the EXISTING `arm_stale_ms` rule below does the rest --
+every group disarms within `arm_stale_ms` of the last accepted frame, the
+same as a crashed or frozen test driver: silence is silence. The show link
+stays up in that case, and the arm lock lapses after `arm_stale_ms`, so a
+local process holding the key can then take the lock with nothing to
+compete against; it still needs a genuine low then high of its own to arm
+anything (the residual stated under round 4 above). **Reconnecting never re-arms anything by
 itself** (rule 6, consent): the deck's own `seq` restarts at 0 on every
 connect and reconnect (rule 3 below), so even a deck that remembered its
 last button states and resent them immediately would fail consent, which
