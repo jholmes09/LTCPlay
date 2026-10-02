@@ -25793,14 +25793,18 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     # frames" of a real thread on a shared machine, and failed at 0.051 s
     # when the OS was slow to wake it. What the CODE schedules is proved
     # exactly below, on a fake clock; here the real thread has to keep its
-    # rate (median gap near 25 ms) and never leave a gap anywhere near
+    # rate (mean gap near 25 ms), keep 95% of its gaps inside the
+    # contract's 50 ms floor, and never leave a gap anywhere near
     # flamesafe's smallest frame_stale_ms (100 ms), the gap that matters.
+    # The mean, not the median: on Windows a wait lands on a 15.6 ms timer
+    # tick, so the gaps alternate about 31 and 16 ms around a true 25 ms.
     gaps = sorted(b["mono"] - a["mono"] for a, b in zip(got, got[1:]))
-    med = gaps[len(gaps) // 2] if gaps else 0
-    check(gaps and 0.02 <= med <= 0.03 and gaps[-1] < 0.1,
-          f"at its rate on a real thread: median {med:.3f} s, longest "
-          f"{gaps[-1] if gaps else 0:.3f} s (flamesafe's shortest "
-          f"frame_stale_ms is 0.100 s)")
+    mean = sum(gaps) / len(gaps) if gaps else 0
+    p95 = gaps[int(len(gaps) * 0.95)] if gaps else 0
+    check(gaps and 0.02 <= mean <= 0.03 and p95 < 0.05 and gaps[-1] < 0.1,
+          f"at its rate on a real thread: mean gap {mean:.4f} s, 95% under "
+          f"{p95:.3f} s, longest {gaps[-1] if gaps else 0:.3f} s "
+          f"(flamesafe's shortest frame_stale_ms is 0.100 s)")
 
     # The schedule itself, on a fake clock: exactly one period between
     # frames, and after a stall (the OS late to wake the thread) the next
