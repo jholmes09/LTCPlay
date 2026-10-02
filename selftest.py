@@ -25419,7 +25419,8 @@ def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
             _RTSock.sendto(self, pkt, addr)
 
     bey = B.Beyond(B.BeyondConfig.parse({}),
-                   socket_factory=lambda: Stall("beyond", log))
+                   socket_factory=lambda: Stall("beyond", log),
+                   sleep=_on_time_sleep)      # see _on_time_sleep: macOS CI
     got = {}
     t = threading.Thread(target=lambda: got.setdefault(
         "r", bey.unblank(in_show=True)))
