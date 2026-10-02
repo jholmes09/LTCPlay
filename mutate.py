@@ -3562,19 +3562,18 @@ def build():
  # Item 1: conductor calls after the save, in order, off the lock, faults.
  ("scheduler fix round: the conductor is asked before tonight is saved",
   "ltcplay/schedule_service.py",
-  "        plan = self._drive_conductor(out, ev)\n"
-  "        self._record(out, now, plan)",
-  "        plan = self._drive_conductor(out, ev)\n"
+  "        self._record(out, now, plan)\n"
+  "        if DRY_RUN and self.machine.state == sch.CLOSING:",
   "        self._queue_conductor(plan, ev)\n"
   "        self._calls.flush(0.5)\n"
   "        plan = []\n"
-  "        self._record(out, now, plan)"),
+  "        self._record(out, now, plan)\n"
+  "        if DRY_RUN and self.machine.state == sch.CLOSING:"),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
-  "            self._calls.put(_ConductorCall(label, method, who, screen))",
-  "            self._run_conductor_call("
-  "_ConductorCall(label, method, who, screen))"),
+  "            self._calls.put(call)\n\n    def _new_call",
+  "            self._run_conductor_call(call)\n\n    def _new_call"),
 
  ("scheduler fix round: conductor calls lose their order",
   "ltcplay/schedule_service.py",
@@ -3608,10 +3607,11 @@ def build():
 
  ("scheduler fix round: the Service's Reset never reaches the conductor",
   "ltcplay/schedule_service.py",
-  "        with self._locked():\n"
-  "            self._calls.put(call)",
-  "        call.ok, call.sentence = False, \"not sent\"\n"
-  "        call.done.set()"),
+  "            self._calls.put(call)\n"
+  "        if not call.done.wait(wait_s):",
+  "            call.ok, call.sentence = False, \"not sent\"\n"
+  "            call.done.set()\n"
+  "        if not call.done.wait(wait_s):"),
 
  ("scheduler fix round: the Abort line still says nothing was disarmed",
   "ltcplay/schedule_service.py",
@@ -3762,16 +3762,13 @@ def build():
 
  ("scheduler fix round: the service never tells the engine it is aborted",
   "ltcplay/schedule_service.py",
-  "        if ev.kind in (sch.TICK, sch.BOOT_DONE, sch.START_NOW) and \\\n"
-  "                self._aborted():",
+  "        if ev.kind in self.LATCH_EVENTS and self._aborted():",
   "        if False:"),
 
  ("scheduler fix round: an Abort still queued does not count yet",
   "ltcplay/schedule_service.py",
-  "            if method == \"abort\":\n"
-  "                self._abort_queued = True",
-  "            if method == \"abort\":\n"
-  "                pass"),
+  "            self.machine = replace(self.machine, abort_latched=True)",
+  "            pass"),
 
  # The review's own survivors.
  ("scheduler fix round: the tick never moves IDLE to STANDBY at the lead",
@@ -3784,6 +3781,199 @@ def build():
   "    if back == IDLE and (any(s.status != PENDING for s in m.slots) or\n"
   "                          _in_preshow_lead(m, now)):",
   "    if back == IDLE and any(s.status != PENDING for s in m.slots):"),
+
+ # -- PR #30 fix round 2 (independent re-review), 2026-10-02. All named
+ # "scheduler fix round 2: ..." so `python3 mutate.py "fix round 2"` runs
+ # them. Item 1: the dark sequence is sent again on every dark start.
+ ("scheduler fix round 2: a dark restart sends the conductor nothing",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind == sch.BOOT_DONE and out.machine.dark and \\",
+  "        if False and \\"),
+
+ # Item 2: the Abort latch is saved, read back, outlives the night, and
+ # only Reset ends it.
+ ("scheduler fix round 2: the Abort latch is never written to tonight's file",
+  "ltcplay/schedule.py",
+  "    if m.abort_latched:\n        doc[\"abort_latched\"] = True",
+  "    if False:\n        doc[\"abort_latched\"] = True"),
+
+ ("scheduler fix round 2: the Abort latch is never read back",
+  "ltcplay/schedule.py",
+  "        abort_latched=doc.get(\"abort_latched\", False))",
+  "        abort_latched=False)"),
+
+ ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
+  "ltcplay/schedule_service.py",
+  "        if self.machine is not None and self.machine.abort_latched:\n"
+  "            return True",
+  "        if False:\n            return True"),
+
+ ("scheduler fix round 2: Reset never clears the saved Abort latch",
+  "ltcplay/schedule_service.py",
+  "        self.machine = replace(m, abort_latched=False)\n"
+  "        self._save_tonight()\n        return ok, said",
+  "        return ok, said"),
+
+ ("scheduler fix round 2: a Reset after a restart can never end the Abort",
+  "ltcplay/schedule_service.py",
+  "        if not ok and still:\n            return ok, said",
+  "        if not ok:\n            return ok, said"),
+
+ ("scheduler fix round 2: a Reset pressed before an Abort ends it",
+  "ltcplay/schedule_service.py",
+  "        if call.seq < self._abort_seq:",
+  "        if False:"),
+
+ ("scheduler fix round 2: an unreset Abort does not make the start dark",
+  "ltcplay/schedule.py",
+  "    dark = cut or m.dark or ev.latched",
+  "    dark = cut or m.dark"),
+
+ ("scheduler fix round 2: a latched night with every show to come shows "
+  "the preshow look",
+  "ltcplay/schedule.py",
+  "    elif dark:\n        # Every show is still to come",
+  "    elif False:\n        # Every show is still to come"),
+
+ ("scheduler fix round 2: the Abort latch is not carried into the next night",
+  "ltcplay/schedule_service.py",
+  "        if latched and not m.abort_latched:\n"
+  "            m = replace(m, abort_latched=True)",
+  "        if False:\n            m = replace(m, abort_latched=True)"),
+
+ ("scheduler fix round 2: a fresh start forgets last night's Abort latch",
+  "ltcplay/schedule_service.py",
+  "                if fresh and self._latched_before(d):",
+  "                if False:"),
+
+ # Item 3: while latched, Hold, Resume and an announcement stay dark.
+ ("scheduler fix round 2: Hold while aborted brings the intermission back",
+  "ltcplay/schedule.py",
+  "    _enter(tx, HOLD, after_stop=ev.latched)",
+  "    _enter(tx, HOLD)"),
+
+ ("scheduler fix round 2: Resume while aborted brings the intermission back",
+  "ltcplay/schedule.py",
+  "    _enter(tx, back, after_stop=ev.latched)",
+  "    _enter(tx, back)"),
+
+ ("scheduler fix round 2: Hold and Resume are never told about the latch",
+  "ltcplay/schedule_service.py",
+  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,\n"
+  "                    sch.RESUME)",
+  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW)"),
+
+ # Item 4: a stuck or dead line is loud, and Abort does not wait behind it.
+ ("scheduler fix round 2: the tick never watches the conductor's line",
+  "ltcplay/schedule_service.py",
+  "            self._watch_conductor()\n", ""),
+
+ ("scheduler fix round 2: a hung conductor request is silent",
+  "ltcplay/schedule_service.py",
+  "        elif h[\"stuck\"] is not None and \\\n"
+  "                h[\"age_s\"] >= self.CONDUCTOR_STUCK_S:",
+  "        elif False:"),
+
+ ("scheduler fix round 2: a hung conductor request is a fault every tick",
+  "ltcplay/schedule_service.py",
+  "            if was is not None and was[\"key\"] == problem[0]:\n"
+  "                return",
+  "            if False:\n                return"),
+
+ ("scheduler fix round 2: no line says the conductor is answering again",
+  "ltcplay/schedule_service.py",
+  "        if was is not None:\n            self._conductor_trouble = None",
+  "        if False:\n            self._conductor_trouble = None"),
+
+ ("scheduler fix round 2: a dead line of conductor requests stays dead",
+  "ltcplay/schedule_service.py",
+  "        if not h[\"alive\"]:\n            self._calls.revive()\n",
+  "        if not h[\"alive\"]:\n"),
+
+ ("scheduler fix round 2: the conductor's trouble never reaches the page",
+  "ltcplay/schedule_service.py",
+  "                    \"trouble\": t[\"text\"] if t else None}",
+  "                    \"trouble\": None}"),
+
+ ("scheduler fix round 2: Abort waits behind a hung conductor request",
+  "ltcplay/schedule_service.py",
+  "            urgent = call.method == \"abort\" and (",
+  "            urgent = False and ("),
+
+ ("scheduler fix round 2: requests an Abort supersedes still go out after it",
+  "ltcplay/schedule_service.py",
+  "            dropped = [c for c in self._q if c.seq < call.seq and\n"
+  "                       c.method in self.SUPERSEDED_BY_ABORT]",
+  "            dropped = []"),
+
+ ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
+  "ltcplay/schedule_service.py",
+  "            dropped = [c for c in self._q if c.seq < call.seq and\n",
+  "            dropped = [c for c in self._q if\n"),
+
+ ("scheduler fix round 2: a conductor request raising SystemExit is not a "
+  "fault",
+  "ltcplay/schedule_service.py",
+  "        except BaseException as e:      # SystemExit too: never the thread",
+  "        except Exception as e:"),
+
+ # Item 5: Reset refusals are journaled.
+ ("scheduler fix round 2: a refused Reset is not journaled",
+  "ltcplay/schedule_service.py",
+  "    def _refuse_reset(self, who, screen, sentence):\n"
+  "        with self._locked():",
+  "    def _refuse_reset(self, who, screen, sentence):\n"
+  "        if False:"),
+
+ # Item 6: the review's hand mutations that nothing caught.
+ ("scheduler fix round 2: show_starting even while the confirmed show is "
+  "paused",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind == sch.SHOW_CONFIRMED and \\\n"
+  "                out.machine.state == sch.SHOW:",
+  "        if ev.kind == sch.SHOW_CONFIRMED:"),
+
+ ("scheduler fix round 2: conductor: a stopped show leaves the music playing",
+  "ltcplay/conductor.py",
+  "        faded |= self._step(gen, \"music\", MUSIC_STOPPED, \"music faded\",\n"
+  "                            progress, self.show.music_halt, fade)\n"
+  "        if faded:\n            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\"",
+  "        if faded:\n            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
+
+ ("scheduler fix round 2: the next-night miss is not on the night's fault "
+  "list",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n"
+  "    tx.note(\"miss\", \"fault\", NEXT_NIGHT_MISSED",
+  "    tx.note(\"miss\", \"fault\", NEXT_NIGHT_MISSED"),
+
+ ("scheduler fix round 2: every conductor call is made as the scheduler",
+  "ltcplay/schedule_service.py",
+  "        who = ev.who if op else \"the scheduler\"\n"
+  "        screen = ev.screen if op else \"\"",
+  "        who = \"the scheduler\"\n        screen = \"\""),
+
+ ("scheduler fix round 2: stop() does not wait for the conductor's last lines",
+  "ltcplay/schedule_service.py",
+  "        self._calls.flush(1.0)\n", ""),
+
+ ("scheduler fix round 2: an open night is looked for only one day back",
+  "ltcplay/schedule_service.py",
+  "    OPEN_NIGHT_LOOK_BACK = 7", "    OPEN_NIGHT_LOOK_BACK = 1"),
+
+ # Item 7: tonight's file format.
+ ("scheduler fix round 2: a dark night is written as format 3",
+  "ltcplay/schedule.py",
+  "        \"format\": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,",
+  "        \"format\": TONIGHT_PLAIN_FORMAT,"),
+
+ ("scheduler fix round 2: format 3 files may carry dark and the latch",
+  "ltcplay/schedule.py",
+  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT\n"
+  "                              else frozenset())",
+  "    allowed = TONIGHT_KEYS | TONIGHT_OPTIONAL"),
 ]
 
 

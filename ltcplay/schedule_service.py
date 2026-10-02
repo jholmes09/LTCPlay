@@ -390,9 +390,10 @@ def _utc_now():
 class _ConductorCall:
     """One request to the show conductor, as the scheduler decided it."""
 
-    def __init__(self, label, method, who, screen):
+    def __init__(self, label, method, who, screen, seq=0):
         self.label, self.method = label, method
         self.who, self.screen = who, screen
+        self.seq = seq
         self.ok, self.sentence = None, ""
         self.done = threading.Event()
 
@@ -406,25 +407,54 @@ class _ConductorCalls:
     is slow (its lock is held across a device call) holds up only the
     requests behind it, never a tick or a status poll.
 
+    With ONE exception: an Abort never waits more than URGENT_WAIT_S behind
+    another request. If the line has not reached it by then (the request
+    in front of it is stuck, or the line's thread has died), it is taken
+    out of the line and made at once on a thread of its own. The requests
+    still waiting in front of it that the Abort supersedes (a Hold, a
+    Resume, a show start, and above all a Reset, which was pressed before
+    this Abort and must not clear it) are not sent at all; intermission and
+    show_stopped stay in the line (they only ever take the rig dark, and
+    the conductor ignores them while latched). Requests decided after the
+    Abort stay in the line, in order.
+
     The thread starts with the first request, so a Service with no
     conductor never has one."""
 
-    def __init__(self, run_one):
+    URGENT_WAIT_S = 0.25
+    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")
+
+    def __init__(self, run_one, overtaken=None, clock=None):
         self._run_one = run_one
+        self._overtaken = overtaken or (lambda *a: None)
+        self._clock = clock or _time.monotonic
         self._q = collections.deque()
         self._cv = threading.Condition()
         self._busy = False
+        self._current = None        # the call the line is making now
+        self._since = None          # since when, on self._clock
+        self._side = {}             # Aborts sent beside the line: start time
         self._thread = None
 
     def put(self, call):
         with self._cv:
             self._q.append(call)
             if self._thread is None:
-                self._thread = threading.Thread(
-                    target=self._loop, daemon=True,
-                    name="ltcplay-conductor-calls")
-                self._thread.start()
+                self._start()
             self._cv.notify_all()
+            urgent = call.method == "abort" and (
+                self._busy or len(self._q) > 1 or not self._alive())
+        if urgent:
+            threading.Thread(target=self._mind, args=(call,), daemon=True,
+                             name="ltcplay-conductor-abort").start()
+
+    def _start(self):
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="ltcplay-conductor-calls")
+        self._thread.start()
+
+    def _alive(self):
+        return self._thread is None or self._thread.is_alive()
 
     def _loop(self):
         while True:
@@ -433,20 +463,80 @@ class _ConductorCalls:
                     self._cv.wait()
                 call = self._q.popleft()
                 self._busy = True
+                self._current, self._since = call, self._clock()
+                self._cv.notify_all()
             try:
                 self._run_one(call)
-            except Exception:           # never kill the only caller
+            except BaseException:       # never kill the only caller
                 pass
             finally:
                 call.done.set()
                 with self._cv:
                     self._busy = False
+                    self._current = self._since = None
                     self._cv.notify_all()
+
+    def _mind(self, call):
+        """An Abort that found the line busy: give the line URGENT_WAIT_S to
+        reach it, then make it here instead."""
+        with self._cv:
+            if self._cv.wait_for(lambda: call not in self._q,
+                                 self.URGENT_WAIT_S):
+                return                  # the line reached it in time
+            self._q.remove(call)
+            ahead = self._current
+            age = (self._clock() - self._since) if ahead is not None else 0.0
+            dropped = [c for c in self._q if c.seq < call.seq and
+                       c.method in self.SUPERSEDED_BY_ABORT]
+            for c in dropped:
+                self._q.remove(c)
+            self._side[call] = self._clock()
+        try:
+            self._overtaken(call, ahead, age, dropped)
+        except Exception:
+            pass
+        try:
+            self._run_one(call)
+        except BaseException:
+            pass
+        finally:
+            call.done.set()
+            with self._cv:
+                self._side.pop(call, None)
+                self._cv.notify_all()
+
+    def health(self):
+        """{"alive", "stuck", "age_s", "waiting"}: whether the line's thread
+        is running, the request that has gone longest without an answer
+        (the line's, or an Abort sent beside it) and for how long."""
+        with self._cv:
+            now = self._clock()
+            running = list(self._side.items())
+            if self._current is not None:
+                running.append((self._current, self._since))
+            stuck, age = None, 0.0
+            for c, since in running:
+                if now - since >= age:
+                    stuck, age = c, now - since
+            return {"alive": self._alive(), "stuck": stuck, "age_s": age,
+                    "waiting": len(self._q)}
+
+    def revive(self):
+        """Start the line again if its thread has died. True if it had."""
+        with self._cv:
+            if self._alive():
+                return False
+            self._busy = False
+            self._current = self._since = None
+            self._start()
+            self._cv.notify_all()
+            return True
 
     def flush(self, timeout):
         with self._cv:
-            return self._cv.wait_for(lambda: not self._q and not self._busy,
-                                     timeout)
+            return self._cv.wait_for(
+                lambda: not self._q and not self._busy and not self._side,
+                timeout)
 
 
 class Service:
@@ -474,11 +564,15 @@ class Service:
         self.conductor = conductor
         # Requests to it, in order, off the scheduler's lock. See
         # _ConductorCalls and _queue_conductor.
-        self._calls = _ConductorCalls(self._run_conductor_call)
-        # An operator's Abort has been queued for the conductor and has not
-        # run yet: until it has, the conductor's own `latched` cannot be
-        # believed, so the scheduler counts itself latched (see _aborted).
-        self._abort_queued = False
+        self._calls = _ConductorCalls(self._run_conductor_call,
+                                      overtaken=self._abort_overtook)
+        # Every conductor request gets the next number, so a Reset can tell
+        # whether an Abort was decided after it was pressed.
+        self._call_seq = 0
+        self._abort_seq = 0
+        # A stuck or dead line of conductor requests, once it has been
+        # journaled as a fault: {"key", "text"}. See _watch_conductor.
+        self._conductor_trouble = None
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -752,6 +846,8 @@ class Service:
             night and Close for the night included (CLOSING), not only the
             intermission: intermission() zeroes the flame cues and blanks
             the lasers.
+          - a start (BOOT_DONE) that leaves the rig dark sends the dark
+            sequence again, show_stopped(), whatever happened before.
         `claimed` is only the effects the conductor really performs; the
         rest are journaled as not performed."""
         if self.conductor is None or out.refused:
@@ -776,6 +872,14 @@ class Service:
         if ev.kind == sch.SHOW_CONFIRMED and \
                 out.machine.state == sch.SHOW:
             plan.append(("Show start", "show_starting", frozenset()))
+        if ev.kind == sch.BOOT_DONE and out.machine.dark and \
+                not any(p[1] == "show_stopped" for p in plan):
+            # A start (or a restart) while the rig is meant to be dark: the
+            # dark sequence it was sent before may never have gone out (the
+            # process can die after the Abort or failed start was saved but
+            # before the conductor call ran), and a fresh conductor knows
+            # nothing of it. So it is always sent again.
+            plan.append((self.DARK_AGAIN, "show_stopped", frozenset()))
         return plan
 
     def _record(self, out, now, plan=()):
@@ -792,7 +896,8 @@ class Service:
             claimed |= set(kinds)
             what = (f": {', '.join(self._desc(e) for e in mine)}"
                     if mine else "")
-            extra = self.CONDUCTOR_SAYS.get(method, "")
+            extra = self.CONDUCTOR_SAYS.get(
+                label, self.CONDUCTOR_SAYS.get(method, ""))
             self._journal_line(
                 "system", f"Sent to the show conductor, {label}{what}."
                           f"{extra} Its own line says what it did.",
@@ -809,7 +914,14 @@ class Service:
 
     CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
                          "flame group; its own line says whether it went.")
+    DARK_AGAIN = "Dark again after the start"
     CONDUCTOR_SAYS = {
+        DARK_AGAIN: (" ltcplay started while the rig was meant to be dark "
+                     "(after an Abort, a failed start or a cut show), so the "
+                     "dark sequence is sent again: flame cues zero, lasers "
+                     "blanked, video, pixels and music down. This does not "
+                     "disarm anything; an Abort not yet Reset stays latched "
+                     "here until Reset."),
         "show_stopped": (" The rig goes dark and stays dark until an "
                          "operator presses Start now or the next show "
                          "starts. No flame group is disarmed and nothing "
@@ -832,9 +944,46 @@ class Service:
         who = ev.who if op else "the scheduler"
         screen = ev.screen if op else ""
         for label, method, _kinds in plan:
+            call = self._new_call(label, method, who, screen)
             if method == "abort":
-                self._abort_queued = True
-            self._calls.put(_ConductorCall(label, method, who, screen))
+                self._abort_seq = call.seq
+            self._calls.put(call)
+
+    def _new_call(self, label, method, who, screen):
+        self._call_seq += 1
+        return _ConductorCall(label, method, who, screen, self._call_seq)
+
+    def _abort_overtook(self, call, ahead, age, dropped):
+        """On the Abort's own thread: it was sent ahead of a request that
+        had not answered, and the requests in `dropped`, decided before it
+        and superseded by it, are not sent at all."""
+        with self._locked():
+            what = (f"{ahead.label}, which had not answered for {age:.1f} s"
+                    if ahead is not None else
+                    "the requests in front of it, because the line of "
+                    "requests to the show conductor was not moving")
+            others = [c.label for c in dropped if c.method != "reset"]
+            self._journal_line(
+                "system", f"Abort was sent to the show conductor at once, "
+                f"ahead of {what}."
+                + (f" Not sent, because the Abort supersedes them: "
+                   f"{', '.join(others)}." if others else ""),
+                action="conductor", outcome="sent ahead")
+            for r in dropped:
+                r.ok = False
+                r.sentence = f"{r.label} was not sent: an Abort overtook it."
+                if r.method == "reset":
+                    r.sentence = ("Reset was not sent: an Abort was pressed "
+                                  "after it. Press Reset again once the rig "
+                                  "is dark.")
+                    self._log(self.logbook.record, actor="operator",
+                              action="reset", outcome="refused",
+                              reason=r.sentence,
+                              text=f"{r.who}'s Reset on the {r.screen} was "
+                                   f"not sent. {r.sentence}",
+                              state=self._state_name(), night=self._night(),
+                              who=r.who, screen=r.screen)
+                r.done.set()
 
     def _run_conductor_call(self, call):
         """On _ConductorCalls' thread. One conductor request, whatever it
@@ -847,14 +996,12 @@ class Service:
             if not hasattr(r, "ok"):
                 said = (f"it returned {r!r}, not a Result, so it counts as "
                         f"not done")
-        except Exception as e:
+        except BaseException as e:      # SystemExit too: never the thread
             ok, said = False, f"it raised {type(e).__name__}: {e}"
-        call.ok, call.sentence = ok, said
         with self._locked():
-            if call.method == "abort":
-                # From here the conductor's own latch is the truth: set if
-                # the Abort was accepted, clear if it was refused.
-                self._abort_queued = False
+            if call.method == "reset":
+                ok, said = self._after_reset(call, ok, said)
+            call.ok, call.sentence = ok, said
             if call.method == "reset":
                 self._log(self.logbook.record, actor="operator",
                           action="reset", outcome="done" if ok else "refused",
@@ -877,35 +1024,75 @@ class Service:
                     self._journal_line("system", what, action="conductor",
                                        outcome="failed", fault=True)
 
+    def _after_reset(self, call, ok, said):
+        """The scheduler's own Abort latch (saved in tonight's file) after
+        the conductor answered a Reset. Cleared by a Reset that worked, and
+        also by one the conductor refused only because it has nothing
+        latched (ltcplay restarted since the Abort, so this conductor never
+        saw it, or the Abort never reached it): the operator's Reset is
+        what ends the Abort either way. Never cleared by a Reset pressed
+        before the latest Abort was decided."""
+        m = self.machine
+        if m is None or not m.abort_latched:
+            return ok, said
+        try:
+            still = bool(getattr(self.conductor, "latched", False))
+        except Exception:
+            still = True
+        if not ok and still:
+            return ok, said             # e.g. the Abort is still fading
+        if call.seq < self._abort_seq:
+            return False, ("Reset was pressed before the latest Abort, so "
+                           "that Abort is still in force. Press Reset "
+                           "again.")
+        if not ok:
+            ok, said = True, ("Reset. The show conductor had nothing "
+                              "latched (ltcplay restarted since the Abort, "
+                              "or the Abort never reached it), so the "
+                              "scheduler's own Abort latch is what was "
+                              "cleared. The rig stays dark until a show "
+                              "starts.")
+        self.machine = replace(m, abort_latched=False)
+        self._save_tonight()
+        return ok, said
+
     def flush_conductor(self, timeout=5.0):
         """True once every conductor call queued so far has been made and
         journaled. For tests, and for stop()."""
         return self._calls.flush(timeout)
 
     def reset_conductor(self, who, screen, wait_s=2.0):
-        """The operator's Reset, for the show conductor's Abort latch: the
-        same Conductor.reset() an operator's own Reset press calls, queued
+        """The operator's Reset, for the Abort latch: the same
+        Conductor.reset() an operator's own Reset press calls, queued
         behind every conductor call already decided, so it can never land
-        before the Abort it is meant to clear. Journaled with who and which
-        screen. Returns {"ok", "text"}. Raises ValueError with a sentence
-        when there is nothing to reset or the operator or screen is not on
-        its list."""
+        before the Abort it is meant to clear. It also clears the
+        scheduler's own Abort latch, saved in tonight's file (see
+        _after_reset). Journaled with who and which screen.
+
+        Returns {"ok", "text"}: ok False, with the conductor's sentence,
+        when there is nothing to Reset or the Abort is still fading, and
+        when no answer has come back within wait_s. Raises ValueError with
+        a sentence, written to the journal as a refused press like every
+        other press's refusal, when no conductor is attached or the
+        operator or screen is blank or not on its list."""
         who = str(who or "").strip()
         screen = str(screen or "").strip()
         if self.conductor is None:
-            raise ValueError("There is no show conductor attached, so there "
-                             "is nothing to Reset.")
+            self._refuse_reset(who, screen, "There is no show conductor "
+                               "attached, so there is nothing to Reset.")
         if not who or not screen:
-            raise ValueError("Reset has to say who pressed it and which "
-                             "screen it came from. Nothing was reset.")
+            self._refuse_reset(who, screen, "Reset has to say who pressed it "
+                               "and which screen it came from. Nothing was "
+                               "reset.")
         names = {n.lower(): n for n in self.operators}
         if who.lower() not in names:
-            raise ValueError(f"{who!r} is not on the operator list "
-                             f"({', '.join(self.operators)}). Nothing was "
-                             f"reset.")
+            self._refuse_reset(who, screen, f"{who!r} is not on the operator "
+                               f"list ({', '.join(self.operators)}). Nothing "
+                               f"was reset.")
         screen = self._check_screen(screen, who, "reset", "Reset")
-        call = _ConductorCall("Reset", "reset", names[who.lower()], screen)
         with self._locked():
+            call = self._new_call("Reset", "reset", names[who.lower()],
+                                  screen)
             self._calls.put(call)
         if not call.done.wait(wait_s):
             return {"ok": False, "text": "Reset is queued behind the show "
@@ -913,29 +1100,54 @@ class Service:
                                          "not answered yet."}
         return {"ok": call.ok, "text": call.sentence}
 
+    def _refuse_reset(self, who, screen, sentence):
+        with self._locked():
+            self._log(self.logbook.record, actor="operator", action="reset",
+                      outcome="refused", reason=sentence,
+                      text=f"{who or 'An unnamed operator'}'s Reset was "
+                           f"refused. {sentence}",
+                      state=self._state_name(), night=self._night(),
+                      who=who or "unnamed operator",
+                      screen=screen or "unnamed screen")
+        raise ValueError(sentence)
+
     def _aborted(self):
-        """The show conductor is latched after an Abort (or one is queued
-        for it) and nobody has pressed Reset. Never with no conductor."""
+        """An operator's Abort was sent to the show conductor (or is still
+        on its way to it) and nobody has pressed Reset: the scheduler's own
+        latch, saved in tonight's file so a restart keeps it, or the
+        conductor's. Never with no conductor."""
         if self.conductor is None:
             return False
+        if self.machine is not None and self.machine.abort_latched:
+            return True
         try:
-            latched = bool(getattr(self.conductor, "latched", False))
+            return bool(getattr(self.conductor, "latched", False))
         except Exception:
-            latched = False
-        return self._abort_queued or latched
+            return False
+
+    # Events the Abort latch changes: a show coming due (TICK, BOOT_DONE),
+    # Start now, and a Hold or Resume (which must not bring a look back
+    # while aborted).
+    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,
+                    sch.RESUME)
 
     def _apply(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
-        if ev.kind in (sch.TICK, sch.BOOT_DONE, sch.START_NOW) and \
-                self._aborted():
+        if ev.kind in self.LATCH_EVENTS and self._aborted():
             # Jeff: after an Abort the rig stays dark until the operator
             # acts, and Reset is that act. The engine misses a show that
-            # comes due and refuses Start now until then.
+            # comes due, refuses Start now, and keeps a Hold or Resume dark
+            # until then.
             ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
         plan = self._drive_conductor(out, ev)
+        if any(p[1] == "abort" for p in plan):
+            # The latch is saved with the Abort itself, before the conductor
+            # is asked, so a restart in between still knows (and only a
+            # Reset clears it, see _after_reset).
+            self.machine = replace(self.machine, abort_latched=True)
         self._record(out, now, plan)
         if DRY_RUN and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
@@ -1188,8 +1400,11 @@ class Service:
         if self.machine is None:
             old = self._open_night_before(d, now)
             if old is None:
-                self.machine = replace(self._load_tonight(d, now),
-                                       operators=self.operators)
+                fresh = not os.path.exists(tonight_path(d, self.state_dir))
+                m = self._load_tonight(d, now)
+                if fresh and self._latched_before(d):
+                    m = replace(m, abort_latched=True)
+                self.machine = replace(m, operators=self.operators)
                 self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
                 return True
             # The open night boots exactly as tonight's would after a
@@ -1224,10 +1439,60 @@ class Service:
         # delayed show is given up when the next night's preshow begins.
         if self.machine.state == sch.HOLD:
             self.hold_epoch += 1
-        self.machine = replace(self._load_tonight(d, now),
-                               operators=self.operators)
+        # An Abort nobody has Reset outlives its night, exactly as the
+        # conductor's own latch does in a run that never restarts.
+        latched = self.machine.abort_latched
+        m = self._load_tonight(d, now)
+        if latched and not m.abort_latched:
+            m = replace(m, abort_latched=True)
+            self._journal_line(
+                "system", self.LATCH_CARRIED.format(night=self.machine.date),
+                action="load tonight", outcome="still aborted")
+        self.machine = replace(m, operators=self.operators)
         self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
+
+    LATCH_CARRIED = ("The night of {night} ended with an Abort that nobody "
+                     "has Reset, so tonight starts dark: no show starts and "
+                     "Start now is refused until an operator presses Reset.")
+
+    def _latched_before(self, d):
+        """True when the most recent night saved before `d` ended with an
+        Abort nobody Reset (its file says abort_latched), whatever its age:
+        a run that never restarted would still be latched too. Said in the
+        journal. A file that cannot be read says nothing here; the
+        look-back for an open night (_open_night_before) already says so
+        out loud for the recent ones."""
+        try:
+            names = os.listdir(self.state_dir)
+        except OSError:
+            return False
+        dates = []
+        for name in names:
+            if not (name.startswith(TONIGHT_PREFIX) and
+                    name.endswith(".json")):
+                continue
+            try:
+                y = datetime.strptime(name[len(TONIGHT_PREFIX):-5],
+                                      "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if y < d:
+                dates.append(y)
+        if not dates:
+            return False
+        y = max(dates)
+        try:
+            with open(tonight_path(y, self.state_dir),
+                      encoding="utf-8-sig") as fh:
+                latched = json.load(fh).get("abort_latched") is True
+        except (OSError, ValueError, AttributeError):
+            return False
+        if latched:
+            self._journal_line("system", self.LATCH_CARRIED.format(night=y),
+                               action="load tonight",
+                               outcome="still aborted")
+        return latched
 
     def _next_lead(self, after, upto):
         """(lead, date): when the first night after `after`, up to and
@@ -1337,6 +1602,7 @@ class Service:
         with self._locked():
             now = self.clock()
             self._watch_clock(now)
+            self._watch_conductor()
             if not self._ensure_night(now):
                 return None
             m = self.machine
@@ -1351,6 +1617,71 @@ class Service:
             m = self.machine
         self._after_tick()
         return m
+
+    # A conductor request with no answer after this long is a fault: they
+    # are meant to return at once (the conductor does its fades on its own
+    # thread), so this is a hang, not a slow fade.
+    CONDUCTOR_STUCK_S = 3.0
+
+    def _watch_conductor(self):
+        """Once per tick, with the lock held: a show conductor request that
+        has gone CONDUCTOR_STUCK_S without an answer, or a line of requests
+        whose thread has died, is a fault, written once, on the page
+        (the fault flag and state_view's "conductor") and in the journal,
+        and a line says when it is over. A dead line is started again at
+        once. Before 2026-10-02 both were silent: every request behind a
+        hung one (an Abort included) just waited, and a Reset answered
+        "queued" forever."""
+        if self.conductor is None:
+            return
+        h = self._calls.health()
+        problem = None
+        if not h["alive"]:
+            self._calls.revive()
+            problem = ("dead", (
+                f"The line of requests to the show conductor stopped: its "
+                f"thread ended, with {h['waiting']} request(s) waiting. "
+                f"ltcplay started it again; anything that was waiting goes "
+                f"out now, in order. That is a bug in ltcplay."))
+        elif h["stuck"] is not None and \
+                h["age_s"] >= self.CONDUCTOR_STUCK_S:
+            c = h["stuck"]
+            problem = (("stuck", id(c)), (
+                f"The show conductor has not answered {c.label} for "
+                f"{h['age_s']:.0f} s. Every request behind it is waiting "
+                f"({h['waiting']} so far); an Abort does not wait, it is "
+                f"sent on its own after {_ConductorCalls.URGENT_WAIT_S:g} "
+                f"s. Check the lasers, video and flame link, and the "
+                f"conductor's own lines."))
+        was = self._conductor_trouble
+        if problem is not None:
+            if was is not None and was["key"] == problem[0]:
+                return
+            self._conductor_trouble = {"key": problem[0],
+                                       "text": problem[1]}
+            if self.machine is not None:
+                self._apply(sch.Event(sch.FAULT_RAISED, "system",
+                                      detail=problem[1]))
+            else:
+                self._journal_line("system", problem[1], action="conductor",
+                                   outcome="failed", fault=True)
+            return
+        if was is not None:
+            self._conductor_trouble = None
+            self._journal_line(
+                "system", "The show conductor is answering again; the "
+                "requests that were waiting have gone out in order.",
+                action="conductor", outcome="recovered")
+
+    def conductor_view(self):
+        """For the page: whether a conductor is attached, whether an Abort
+        has not been Reset, and what is wrong with the line of requests to
+        it, if anything."""
+        with self._locked():
+            t = self._conductor_trouble
+            return {"attached": self.conductor is not None,
+                    "aborted": self._aborted(),
+                    "trouble": t["text"] if t else None}
 
     def check_clock(self):
         level, text, offset = check_clock(self.ntp_query,
@@ -1723,6 +2054,7 @@ class Service:
                                 if self.machine else None),
                    "save_error": self.persist_error or None,
                    "logging": self.logbook.health(),
+                   "conductor": self.conductor_view(),
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))

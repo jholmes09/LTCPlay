@@ -670,9 +670,9 @@ class Event:
     at: str = ""             # a wall clock time for an edit, "18:25"
     screen: str = ""         # operator events: which screen, from config
     who: str = ""            # operator events: the operator's name
-    # TICK, BOOT_DONE and START_NOW: the show conductor is latched after an
-    # Abort and nobody has pressed Reset. Filled in by the service, never by
-    # an operator; always False without a conductor.
+    # TICK, BOOT_DONE, START_NOW, HOLD_ON and RESUME: the show conductor is
+    # latched after an Abort and nobody has pressed Reset. Filled in by the
+    # service, never by an operator; always False without a conductor.
     latched: bool = False
 
 
@@ -731,6 +731,14 @@ class Machine:
     # stopped show the rig stays dark until the operator acts). Set and
     # cleared only by _enter.
     dark: bool = False
+    # An operator's Abort was sent to the show conductor and nobody has
+    # pressed Reset since. Kept in tonight's file so a restart (which brings
+    # up a fresh conductor that remembers nothing) still misses every show
+    # and refuses Start now until Reset (Jeff: after an Abort the rig stays
+    # dark until the operator acts). Set and cleared ONLY by
+    # schedule_service, and only with a conductor attached; the engine
+    # carries it and reads Event.latched instead.
+    abort_latched: bool = False
 
     @property
     def fault(self):
@@ -1236,7 +1244,9 @@ def _boot_done(m, ev, now):
     # earlier restart, and nobody has acted since), it stays dark until an
     # operator acts or the next show starts (Jeff's rule; before 2026-10-02
     # a restart brought the intermission loop back on its own).
-    dark = cut or m.dark
+    # An Abort nobody has Reset (ev.latched, from the service) is dark too,
+    # on any night: the latch outlives the night it was pressed on.
+    dark = cut or m.dark or ev.latched
     stayed = ""
     if not tx.m.waiting():
         _enter(tx, CLOSING)
@@ -1248,6 +1258,12 @@ def _boot_done(m, ev, now):
     elif any(s.status != PENDING for s in tx.m.slots):
         _enter(tx, STANDBY, after_stop=dark)
         why = "shows have already passed tonight"
+    elif dark:
+        # Every show is still to come, but an Abort has not been Reset: no
+        # preshow look and no intermission loop, the rig waits dark.
+        _enter(tx, STANDBY, after_stop=True)
+        why = ("an Abort has not been Reset, so the rig waits dark rather "
+               "than showing the preshow look")
     elif _in_preshow_lead(tx.m, now):
         _enter(tx, STANDBY)
         why = (f"within {fmt_span(PRESHOW_LEAD_S)} of the first show, so the "
@@ -1255,7 +1271,11 @@ def _boot_done(m, ev, now):
     else:
         _enter(tx, IDLE)
         why = "before the first show"
-    if tx.m.dark and not cut:
+    if ev.latched:
+        stayed = (" The rig stays dark: an Abort has not been Reset. No show "
+                  "starts and Start now is refused until an operator presses "
+                  "Reset.")
+    elif tx.m.dark and not cut:
         stayed = (" The rig stays dark, as it was before the restart: the "
                   "last show was stopped early and nobody has acted since. "
                   "The next show, or an operator, brings it back.")
@@ -1490,7 +1510,11 @@ def _hold(m, ev, now):
         tx.note(HOLD_ON, "paused", "PAUSED (operator hold)", text, show=n)
         return tx.done()
     tx.m = replace(tx.m, held_from=m.state)
-    _enter(tx, HOLD)
+    # While an Abort has not been Reset, a Hold (an operator's, or an
+    # announcement's) keeps the rig dark: only Reset ends the Abort (Jeff:
+    # after an Abort the rig stays dark until the operator acts, and Reset
+    # is that act). Before 2026-10-02 it brought the intermission loop back.
+    _enter(tx, HOLD, after_stop=ev.latched)
     if ev.detail:
         text = (f"{_operator_name(ev)} {ev.detail}. No show starts by "
                 f"itself until Resume; a show whose time passes meanwhile "
@@ -1499,6 +1523,9 @@ def _hold(m, ev, now):
         text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show "
                 f"starts by itself until Resume; a show whose time passes "
                 f"meanwhile is delayed and waits for Start now.")
+    if ev.latched:
+        text += (" The rig stays dark: the show was aborted and has not "
+                 "been Reset.")
     tx.note(HOLD_ON, "done", "schedule on hold", text)
     return tx.done()
 
@@ -1524,8 +1551,12 @@ def _resume(m, ev, now):
         # that the first show is now inside the preshow lead: either way
         # Resume lands in the intermission, not the preshow look.
         back = STANDBY
+    if ev.latched:
+        # Still aborted and not Reset: back to waiting, dark (IDLE is the
+        # preshow look, which never stays dark).
+        back = STANDBY
     tx.m = replace(tx.m, held_from="")
-    _enter(tx, back)
+    _enter(tx, back, after_stop=ev.latched)
     nxt, d = tx.m.next_slot(), tx.m.delayed()
     tx.note(RESUME, "done", "schedule resumed",
             f"{_operator_name(ev)} pressed Resume{_screen(ev)}."
@@ -1932,13 +1963,21 @@ def step(m, ev, now):
 
 # ------------------------------------------------ tonight, as data --
 
-TONIGHT_FORMAT = 3
+# Format 4 (2026-10-02) is format 3 plus `dark` and `abort_latched`, each
+# written only when true. A night that is neither is still written as
+# format 3, byte for byte as before, so an older ltcplay can still read it.
+# A night that IS dark or latched is written as format 4, which an older
+# ltcplay refuses ("not a saved night this version can read") and sets
+# aside, rather than reading the night and quietly dropping the dark or the
+# Abort latch: that would bring the rig back up after a restart.
+TONIGHT_FORMAT = 4
+TONIGHT_PLAIN_FORMAT = 3
+TONIGHT_FORMATS = (TONIGHT_PLAIN_FORMAT, TONIGHT_FORMAT)
 TONIGHT_KEYS = frozenset((
     "format", "date", "rule_id", "state", "running", "last_end",
     "held_from", "faults", "shows_started", "slots"))
-# Written only when true, so a night that never went dark saves exactly as
-# it did before `dark` existed.
-TONIGHT_OPTIONAL = frozenset(("dark",))
+# Format 4 only, and written only when true.
+TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched"))
 SLOT_KEYS = frozenset((
     "n", "start", "status", "reason", "origin", "planned", "fired_at",
     "confirmed_at", "ended_at", "paused_s"))
@@ -1954,8 +1993,10 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
+    marked = m.dark or m.abort_latched
     doc = {
-        "format": TONIGHT_FORMAT, "date": m.date.isoformat(),
+        "format": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,
+        "date": m.date.isoformat(),
         "rule_id": m.rule_id, "state": m.state, "running": m.running,
         "last_end": _iso(m.last_end),
         "held_from": m.held_from, "faults": list(m.faults),
@@ -1969,6 +2010,8 @@ def machine_to_doc(m):
     }
     if m.dark:
         doc["dark"] = True
+    if m.abort_latched:
+        doc["abort_latched"] = True
     return doc
 
 
@@ -2021,10 +2064,22 @@ def machine_from_doc(doc, rule, d, now, notes=None):
             raise ValueError(f"{what} is not on {d} in {rule.timezone}.")
         return dt
 
-    if not isinstance(doc, dict) or doc.get("format") != TONIGHT_FORMAT:
+    if not isinstance(doc, dict):
         raise ValueError("It is not a saved night this version can read.")
-    unknown = sorted(k for k in doc
-                     if k not in TONIGHT_KEYS | TONIGHT_OPTIONAL)
+    fmt = doc.get("format")
+    if fmt not in TONIGHT_FORMATS:
+        newer = isinstance(fmt, int) and not isinstance(fmt, bool) and \
+            fmt > TONIGHT_FORMAT
+        reads = " and ".join(str(f) for f in TONIGHT_FORMATS)
+        if newer:
+            raise ValueError(f"It was saved by a newer ltcplay (format "
+                             f"{fmt}); this version reads formats {reads}.")
+        raise ValueError(f"It is not a saved night this version can read "
+                         f"(format {fmt!r}; this version reads formats "
+                         f"{reads}).")
+    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT
+                              else frozenset())
+    unknown = sorted(k for k in doc if k not in allowed)
     missing = sorted(k for k in TONIGHT_KEYS if k not in doc)
     if unknown or missing:
         raise ValueError("It has " + "; ".join(
@@ -2037,8 +2092,9 @@ def machine_from_doc(doc, rule, d, now, notes=None):
     state = doc["state"]
     if state not in STATES or state == BOOT:
         raise ValueError(f"{state!r} is not a state it can resume in.")
-    if not isinstance(doc.get("dark", False), bool):
-        raise ValueError("dark has to be true or false.")
+    for k in sorted(TONIGHT_OPTIONAL):
+        if not isinstance(doc.get(k, False), bool):
+            raise ValueError(f"{k} has to be true or false.")
     if doc["held_from"] not in ("", IDLE, STANDBY):
         raise ValueError(f"held_from {doc['held_from']!r} is not a state "
                          f"Resume can return to.")
@@ -2126,7 +2182,8 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         base, slots=tuple(slots), running=doc["running"],
         last_end=last_end, held_from=doc["held_from"], faults=tuple(doc["faults"]),
         shows_started=doc["shows_started"], resumed_from=state,
-        rule_id=str(doc["rule_id"]), dark=doc.get("dark", False))
+        rule_id=str(doc["rule_id"]), dark=doc.get("dark", False),
+        abort_latched=doc.get("abort_latched", False))
 
 
 UNREADABLE = "MISSED (tonight's record was unreadable)"
@@ -2206,7 +2263,8 @@ def rebuild_night(rule, saved):
                 running=running, last_end=saved.last_end,
                 held_from=saved.held_from,
                 faults=saved.faults, shows_started=saved.shows_started,
-                resumed_from=saved.resumed_from, dark=saved.dark)
+                resumed_from=saved.resumed_from, dark=saved.dark,
+                abort_latched=saved.abort_latched)
     return m, notes
 
 
