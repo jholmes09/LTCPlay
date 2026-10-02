@@ -17769,6 +17769,19 @@ def test_madmapper_ramp_step_count_and_values():
     check(up[0] == 0.0 and up[-1] == 1.0, "a fade-up ramp's endpoints")
     check(MM.ramp_values(0.0, 1.0, 1) == [1.0],
          "fewer than 2 steps just sends the end value once")
+    # From ANY start, not just 1.0 (PR #29 review round 3, seen on macOS
+    # CI: a fade down from a level a stopped fade-up had reached ended on
+    # 1e-32, not 0.0). About 1 start in 30 missed before the fix.
+    rnd = random.Random(29)
+    missed = []
+    for _ in range(2000):
+        a, b = rnd.random(), rnd.choice((0.0, 1.0))
+        for curve in MM.VIDEO_CURVES:
+            v = MM.shape_values(MM.ramp_values(a, b, 31), a, b, curve)
+            if v[0] != a or v[-1] != b:
+                missed.append((a, b, curve, v[0], v[-1]))
+    check(not missed, f"a ramp from any level starts and ends exactly: "
+                      f"{len(missed)} missed, e.g. {missed[:2]}")
 
     # The ramp as Link actually sends it: right address(es), right step
     # count, right pacing (31 steps over 1 s = 30 gaps of 1/30 s each).
@@ -25281,7 +25294,8 @@ def test_conductor_devices_failures_missing_links_and_speed():
     # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
     # fade included (it runs on the Link's own worker).
     link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
-    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock)
+    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
+                   sleep=_on_time_sleep)
     dev = C.ConductorDevices(link, bey)
     for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
                        ("lasers_restore", ()), ("video_fade_out", (1.0,)),
@@ -25349,6 +25363,19 @@ class _RTSock:
         pass
 
 
+def _on_time_sleep(seconds):
+    """time.sleep that ends on time. BEYOND spaces its 3 packets 20 ms
+    apart, and the conductor calls anything slower than SLOW_CALL_S a
+    fault. macOS CI runners overshoot a 20 ms time.sleep() by up to
+    ~130 ms (seen in PR #29 round 3: a blank took 298 ms), which is the
+    runner, not the code under test. Any single sleep can overshoot like
+    that, so this only ever yields (time.sleep(0) lets other threads run)
+    until the deadline. It is only used for those 20 ms gaps."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        time.sleep(0)
+
+
 def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
     from ltcplay import madmapper as MM, beyond as B
     C = _cond_mod()
@@ -25363,7 +25390,7 @@ def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
     bey = B.Beyond(B.BeyondConfig.parse({}),
                    socket_factory=lambda: _RTSock("beyond", log,
                                                   beyond_delay),
-                   journal=journal)
+                   sleep=_on_time_sleep, journal=journal)
     dev = C.ConductorDevices(link, bey, show=1, journal=journal)
     c = C.Conductor(dev, rig, gate or (lambda: None),
                     hold_gate=lambda *a: (None, 1), announcer=announcer,

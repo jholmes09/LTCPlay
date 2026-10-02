@@ -4202,6 +4202,13 @@ def build():
   "now",
   "            pass"),
 
+ ("conductor: a fade's last value is computed, so a fade to black can end "
+  "on 1e-32 instead of 0 (round 3)",
+  "ltcplay/madmapper.py",
+  "    return [float(start + step * i) for i in range(steps - 1)] + "
+  "[float(end)]",
+  "    return [float(start + step * i) for i in range(steps)]"),
+
 
 
 ]

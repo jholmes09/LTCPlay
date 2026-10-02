@@ -210,7 +210,11 @@ def ramp_values(start, end, steps=DEFAULT_RAMP_STEPS):
     if steps < 2:
         return [float(end)]
     step = (end - start) / (steps - 1)
-    return [float(start + step * i) for i in range(steps)]
+    # The last value is `end` itself, not start + step * (steps - 1): for
+    # about 1 start in 30 that sum misses by a rounding error, and a fade
+    # to black then ended on 1e-17 (1e-32 once the perceptual curve
+    # squared it) instead of 0.0 (macOS CI, PR #29 review round 3).
+    return [float(start + step * i) for i in range(steps - 1)] + [float(end)]
 
 
 CURVE_LINEAR = "linear"
