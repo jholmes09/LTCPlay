@@ -25081,6 +25081,8 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
             th.join(2)
         node.close()
         status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
