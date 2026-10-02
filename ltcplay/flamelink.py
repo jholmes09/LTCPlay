@@ -453,11 +453,11 @@ class FlameLink:
     def _cue_episode(self, problem):
         if problem == self._cue_problem:
             return
-        if problem and not self._cue_problem:
+        if problem:
             self._note(f"Flame link: {problem}, so flame cues are zero. "
                        f"This line will not repeat until it clears.",
                        fault=True, action="flame_link", outcome="cues_zero")
-        elif not problem:
+        else:
             self._note("Flame link: the flame cue values are readable "
                        "again.", action="flame_link", outcome="cues_back")
         self._cue_problem = problem

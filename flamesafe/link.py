@@ -22,7 +22,13 @@ flamesafe's `link.arm_port`.  It carries the same key and a strict shape
 (decode_arm), but no sender lock: there is exactly one Stream Deck, the key
 already keeps out anything that has not read flamesafe's config, and the
 composer's own consent and liveness rules (arminput.py, rules.py) are what
-actually decide whether a group arms, not this module.
+actually decide whether a group arms, not this module.  (The arm link
+gained a sender lock later the same day; see arminput.py and CONTRACT.md.)
+
+2026-10-02 adds `"t": "disarm_all"` on the flame link (decode_disarm_all,
+routed by decode_from_ltcplay): the show program's Abort.  It can only
+ever clear arm state; composer.disarm_all applies it, sender-locked and in
+sequence with the flame frames.
 """
 
 from __future__ import annotations

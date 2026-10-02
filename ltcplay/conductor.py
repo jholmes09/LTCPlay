@@ -253,10 +253,13 @@ class ShowOutputs:
         AudioMaster.paused is already True during the fade, so use its
         _paused, or on_pause/on_resume. It turns False again once the audio
         is heard moving after music_resume().
-      - flames_disarm_all() needs a message to the safety program that the
-        link contract (flamesafe/CONTRACT.md, version 2) does not have yet.
-        Until it does, an Abort from the Stream Deck disarms (the safety
-        program owns the deck) but one from the screen only zeroes the cues."""
+      - flames_disarm_all() is flamelink.FlameLink.disarm_all(reason): the
+        contract's disarm_all message on the flame link (flamesafe/
+        CONTRACT.md, "Disarm every group", 2026-10-02). flames_zero() is
+        FlameLink.zero() and flames_release() is FlameLink.release(). Until
+        a FlameLink is wired into fire_ice.FireIceShow, an Abort from the
+        Stream Deck disarms (it owns the arm link) but one from the screen
+        only zeroes the cues."""
 
     def playing(self):
         """True while a show cue is loaded, running or held."""

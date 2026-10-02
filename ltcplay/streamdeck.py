@@ -506,6 +506,9 @@ _SHORT_REASON = {
     "once it is back.": "SHOW LOST",
     "Show program has not answered yet: disarmed. Cycle the arm once it "
     "is running.": "SHOW LOST",
+    # The show's Abort from the rack screen or phone (flamesafe's
+    # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
+    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
 }
 
 

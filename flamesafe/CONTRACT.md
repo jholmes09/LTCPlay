@@ -96,6 +96,16 @@ or below the last accepted one, a `mono` below the last accepted one, a
 `values` list that is not exactly 512 integers 0 to 255, a `universe` that
 is not the flame universe, a sender other than the locked one.
 
+**Rejections are journaled once per episode (2026-10-02).** Before this
+date a rejected flame frame was counted and shown in `last_reject` but
+never written to the journal. Now the first rejection of each kind of
+reason writes one line, and once none of that kind has arrived for
+`frame_stale_ms` a closing line gives the count (only if there was more
+than one). The kind is the reason with its numbers and quoted text blanked
+and cut to four words, so a sender cannot open unbounded kinds by varying
+them; at most 16 kinds are tracked at once and any further kind is counted
+as `other`. This covers flame frames and disarm_all (below) alike.
+
 Two windows, both on flamesafe's clock from the last accepted frame:
 
 - **`fire_hold_ms`** (example 100 ms, config; floor two ticks, ceiling
@@ -168,7 +178,8 @@ Top level:
 | `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now; its `wanted` bits can only ever CLEAR a group's bit (never set one, and it never becomes the locked sender itself), but ltcplay must still alarm on this alone -- the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
-| `frames.last_reject` | why the last rejected datagram was rejected |
+| `frames.last_reject` | why the last rejected datagram was rejected (a refused disarm_all's reason starts `disarm_all:`) |
+| `disarm_all` | what the show program's Abort did: `accepted` (disarm_all datagrams taken, cumulative), `last_id`, `last_reason`, `age_ms` (null before the first). Added 2026-10-02, see "Disarm every group" below |
 | `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
 | `stats.journal_dropped` | journal lines lost while the console was blocked, cumulative. When the backlog drains the journal writes how many were lost |
 
@@ -178,8 +189,8 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.` |
-| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
+| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `sent_safety` | the SENT safety value this tick: 0 or the arm value |
 | `sent_fire` | the SENT fire values this tick, one per fire slot |
@@ -331,16 +342,16 @@ what is on the wire or what the composer does with it; `wanted` is still
 a plain boolean vector, asserted continuously, exactly as this whole
 section already describes -- only the deck's own button feel changed.
 
-**Abort disarms over this same link, not a new message to flamesafe.**
-Pressing and holding the Stream Deck's ABORT key sends `wanted` all false
-at once, on the same socket, before anything else happens; this is the
-"an Abort from the Stream Deck disarms (the safety program owns the deck)"
-referred to in `ltcplay/conductor.py`'s `ShowOutputs.flames_disarm_all`
-docstring. An Abort from the Rack screen or Phone has no such path yet: it
-can only zero ltcplay's own flame cue values (`flames_zero`), because
-flamesafe has no message on the EXISTING flame-frame link that means
-"disarm", on purpose -- the only thing that can disarm a group from outside
-flamesafe is the thing that is allowed to say what it wants armed.
+**The Stream Deck's Abort disarms over this same link.** Pressing and
+holding the Stream Deck's ABORT key sends `wanted` all false at once, on
+the same socket, before anything else happens. An Abort from the Rack
+screen or Phone (the show conductor's own Abort, `ltcplay/conductor.py`)
+disarms with `disarm_all` on the flame link instead: see "Disarm every
+group: the show program's Abort" below for the message and for why it is
+not "all false" on this link. (This paragraph used to say the screen's
+Abort had no such path and could only zero the cues; `disarm_all`, added
+2026-10-02 on Jeff's rule of 2026-09-27, "on Abort, flame cues zero and
+every group disarms instantly", is that path.)
 
 **Abort must respond whenever there is anything to abort** (Jeff,
 2026-10-01, safety review of PR #31, item 2): the deck's own hold-to-fire
@@ -372,6 +383,79 @@ never tries to remember pre-disconnect state: on open (first connect, or a
 reconnect after the hardware was lost) it starts every group `wanted`
 false, so the operator sees every key read OFF and re-arms by pressing it,
 matching what the lamp already says ("cycle the arm").
+
+## Disarm every group: the show program's Abort (added 2026-10-02)
+
+Jeff, 2026-09-27: "on Abort, flame cues zero and every group disarms
+instantly". The Stream Deck's Abort already does this on the arm link. The
+show conductor's Abort (the rack screen, the phone) does it with one more
+message on the FLAME link, ltcplay to flamesafe, `link.listen_port`, from
+the same socket as the flame frames:
+
+```json
+{"v": 2, "k": "<link.key>", "t": "disarm_all", "seq": 1235,
+ "mono": 812.4721, "id": 1, "reason": "Abort from the rack screen"}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | integer | must be 2 |
+| `k` | string | must equal flamesafe's `link.key`; checked before any other field |
+| `t` | string | must be `"disarm_all"` |
+| `seq` | integer, 0 or more | the SAME sequence as the flame frames: ltcplay takes the next number for every datagram it sends on this link, flame or disarm_all. Must be greater than the last accepted one |
+| `mono` | number | the sender's `time.perf_counter()`, finite; must not go backwards (same rule as the flame frame) |
+| `id` | integer, 1 or more | which Abort this is. The sender repeats one Abort a few times (three copies) in case a datagram is lost; every copy is applied, only the first of each `id` is journaled |
+| `reason` | string, 1 to 200 characters | for the journal, in words |
+
+No other field is allowed: a disarm_all carrying anything else is refused.
+
+**Accepted only from the live, locked flame-link sender.** The key and the
+shape are checked first (a wrong key is "wrong key" whatever else is in
+it); then, exactly as for a flame frame, the sender must be the (ip, port)
+that holds the flame link's sender lock, the `seq` must be above the last
+accepted one and `mono` must not go backwards. With the flame link not
+live (`never` or `stale`) it is refused as `no live flame link to accept it
+from`: there is no locked sender to take it from, and nothing is armed
+anyway, because link loss already disarmed every group. A refused
+disarm_all changes nothing, is counted (`stats.disarm_all_rejected`), sets
+`frames.last_reject` (prefixed `disarm_all:`) and is journaled once per
+episode (above). It does not take the sender lock, refresh the link's
+liveness or carry any fire values: only flame frames do those.
+
+**What it does, and all it does.** On the tick it arrives in (the service
+drains the flame link before it composes): every group's latch is cleared,
+every pending consent edge is cleared, every group that was up or latched
+gets the re-arm dwell from now, and the safety slot of every group is zero
+on that tick's packet. It never sets a latch, never sets a consent edge
+and never touches `wanted`. So:
+
+- **It cannot arm anything.** There is no code path from it to a latch.
+- **Each group needs a fresh, genuine arm cycle from the Stream Deck
+  afterwards.** A consent edge seen before the Abort is forgotten by it, so
+  an arm press that completes after the Abort does not count; the deck's
+  key has to report the group down AFTER the Abort (the operator taps the
+  held key, which sends `wanted=false`) and then up again (hold to arm),
+  and the re-arm dwell must have passed. A forced low (round 3, above) is
+  still never a cycle. A group the deck keeps asking for reads `held`,
+  flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
+  re-arm.` until it is cycled; the deck shows it as ABORTED.
+- The status frame's top-level `disarm_all` says what flamesafe took:
+  `{"accepted": count, "last_id": id or null, "last_reason": "...",
+  "age_ms": ms or null}`. ltcplay compares `last_id` with the Abort it sent
+  and journals a fault if it is not confirmed within 1 s.
+
+**Why a new message on the flame link, and not ltcplay sending `wanted`
+all false on the arm link.** The arm link is sender-locked to the Stream
+Deck's own socket. ltcplay's conductor sending there would be a second
+sender: its frames would be "another sender", journaled as a rogue, and
+counted in `arm_input.foreign_senders`, which raises the deck's spoof
+alarm. Every screen Abort would then light the one alarm that means
+"something else is on the arm link", and an operator who sees it every
+Abort learns to ignore it. It would also make ltcplay's conductor a second
+voice saying what is WANTED, which only the operator's deck may say. The
+flame link is the link ltcplay already owns, keyed and sender-locked, and a
+message on it that can only ever take arm away keeps the arm link meaning
+exactly one thing.
 
 ## The arm input (for build step 7b)
 
@@ -488,3 +572,14 @@ actually reporting armed, nor hides the spoof/divergence alarm, while
 latched; a `confirmed: false` config now shows the real per-group state
 with an added caveat instead of blanking it (CONTRACT.md's own "show it"
 was always about an overlay, never a replacement).
+
+Version 2, 2026-10-02 (the flame link's sender, `ltcplay/flamelink.py`,
+and the show's Abort): a new message on the flame link, `"t":
+"disarm_all"`, keyed, strict, sender-locked and in sequence with the flame
+frames; it can only clear arm state (see "Disarm every group" above). The
+status frame gains a top-level `disarm_all` object and one new `reason`
+sentence. Flame-link rejections are now journaled once per episode. No
+existing field's name, type or meaning changed, so, following the 7b
+precedent, this stays version 2: a flamesafe from before this date refuses
+a disarm_all as `wrong message type 'disarm_all'` (counted, never acted
+on), and the two programs are installed together.
