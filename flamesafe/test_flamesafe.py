@@ -1388,7 +1388,7 @@ def test_socket_arm_input_foreign_sender_episode_logged_once():
           f"{len(rejections)}")
     # Once it has gone quiet for stale_ms, the episode closes with a
     # summary line naming how many were rejected.
-    t[0] += 0.3
+    t[0] += arminput.EPISODE_QUIET_S + 0.1   # round 4: episodes close after this, not stale_ms
     send(deck, 2, [False] * 6)
     inp.poll()
     closers = [m for k, m in log.events
@@ -1447,7 +1447,7 @@ def test_socket_arm_input_foreign_flood_from_varying_source_ports_logged_once():
     # Once every one of them has gone quiet for stale_ms, the episode
     # closes with ONE summary line naming the total count AND how many
     # distinct addresses were actually involved.
-    t[0] += 0.3
+    t[0] += arminput.EPISODE_QUIET_S + 0.1   # round 4: episodes close after this, not stale_ms
     send(deck, 2, [False] * 6)
     inp.poll()
     closers = [m for k, m in log.events
@@ -1863,6 +1863,376 @@ def test_round3_foreign_forced_edge_is_not_consent_end_to_end():
         ltc_tx.close()
         node.close()
         ltc_status.close()
+
+
+def test_round4_no_consent_while_another_sender_or_a_flood_is_on_the_link():
+    section("round 4 of the safety review, item B: no consent edge counts "
+            "while ANOTHER sender is on the arm link, or a flood has been "
+            "seen on it, and no down edge seen before it turned up can be "
+            "finished while it is there -- the round-4 review flooded the "
+            "port until the real deck was crowded out, became the locked "
+            "sender itself, and forged its own low-then-high")
+    for label, disturb, calm in (
+            ("another sender",
+             lambda r: r.c.note_foreign_arm_senders(1),
+             lambda r: r.c.note_foreign_arm_senders(0)),
+            ("a flood",
+             lambda r: r.c.note_arm_link_flooded(True),
+             lambda r: r.c.note_arm_link_flooded(False))):
+        r = Rig()
+        r.prove_alive()          # genuine lows on a live counter
+        disturb(r)
+        r.inp.set(0)
+        r.step(n=3)
+        g = r.group(0)
+        check(r.safety(0) != ARM,
+              f"{label}: a low-then-high finished while {label} is on the "
+              f"link does not arm: {g}")
+        check(g["armed"] == "held" and g["reason"] == composer.OTHER_SENDER
+              and g["amber"] == "steady",
+              f"{label}: held, saying why, steady (cycling now would not "
+              f"help): {g}")
+        calm(r)
+        r.wait(r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+        g = r.group(0)
+        check(r.safety(0) != ARM and g["reason"] == "cycle the arm",
+              f"{label}: once it has gone the group does NOT arm by "
+              f"itself -- the down edge from before it turned up was "
+              f"cleared, so the operator cycles again: {g}")
+        r.inp.set(0, on=False)
+        r.step(n=2)
+        r.inp.set(0)
+        r.wait(r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+        check(r.safety(0) == ARM,
+              f"{label}: and a real cycle afterwards arms it: "
+              f"{r.group(0)}")
+
+
+def test_round4_a_forced_bit_never_blocks_a_genuine_cycle_on_another_group():
+    section("round 4 (hand mutation the review found surviving): a FORCED "
+            "low on one group must not stop a GENUINE low on another "
+            "group from setting up that group's consent edge")
+    r = Rig()
+    r.inp.set_forced(1)          # group 1 reads forced low on every poll
+    r.prove_alive()              # group 0's lows are genuine
+    r.inp.set(0)
+    r.step(n=2)
+    check(r.safety(0) == ARM,
+          f"group 0's genuine cycle arms it although group 1 is forced: "
+          f"{r.group(0)}")
+    check(r.safety(1) != ARM, "group 1 stays disarmed")
+
+
+def test_round4_genuine_lows_are_never_reported_forced():
+    section("round 4 (hand mutation the review found surviving): a bit the "
+            "LOCKED sender itself reports False is never reported forced, "
+            "even while a foreign sender also says False for it -- only a "
+            "bit the AND actually cleared is")
+    t = [0.0]
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=Log(),
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = _udp()
+    rogue = _udp()
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                    ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    try:
+        send(deck, 1, [False] + [True] * 5)
+        inp.poll()
+        send(rogue, 1, [False] * 6)
+        send(deck, 2, [False] + [True] * 5)
+        a = inp.poll()
+        check(a is not None and a.wanted == (False,) * 6,
+              f"the rogue's False clears groups 1 to 5: {a and a.wanted}")
+        check(a is not None and a.forced == (False,) + (True,) * 5,
+              f"group 0's False is the deck's own, never 'forced'; groups "
+              f"1 to 5 are: {a and a.forced}")
+        check(a is not None and a.sender == deck.getsockname(),
+              f"the assertion names its (locked) sender: {a and a.sender}")
+    finally:
+        inp.close()
+        deck.close()
+        rogue.close()
+
+
+def test_round4_consent_never_spans_two_senders():
+    section("round 4: when the arm input's sender lock changes hands, a "
+            "down edge the OLD sender set up can never be finished by the "
+            "new one -- every latch and pending edge is cleared, exactly "
+            "as for an input restart")
+    r = Rig()
+    A, B = ("127.0.0.1", 40100), ("127.0.0.1", 40200)
+    seq = [0]
+
+    def send(wanted, sender, n=1):
+        for _ in range(n):
+            r.t += r.period
+            r.frame(r.cue)
+            seq[0] += 1
+            r.c.assert_arm(list(wanted), seq[0], names=NAMES, sender=sender)
+            r.out = r.c.tick()
+
+    down = [False] * N_GROUPS
+    want0 = [True] + [False] * (N_GROUPS - 1)
+    send(down, A, n=3)            # A proves itself live and genuinely low
+    send(want0, B, n=5)           # B takes over and asks for True
+    check(r.safety(0) != ARM,
+          f"B finishing A's edge does not arm: {r.group(0)}")
+    send(down, B, n=2)
+    send(want0, B, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+                         / r.period))
+    check(r.safety(0) == ARM,
+          f"B's own genuine cycle does arm: {r.group(0)}")
+
+
+def test_round4_socket_arm_input_flags_a_flood():
+    section("round 4, item B: SocketArmInput reports `flooded` for stale_ms "
+            "after a poll finds more datagrams waiting than any honest "
+            "deck could have sent (keyed or not), and journals it once")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = _udp()
+    rogue = _udp()
+    try:
+        deck.sendto(link.encode_arm(1, [False] * 6, NAMES, KEY),
+                    ("127.0.0.1", port))
+        time.sleep(0.01)
+        inp.poll()
+        check(not inp.flooded, "one frame a poll is not a flood")
+        for _ in range(arminput.FLOOD_DATAGRAMS_PER_POLL + 20):
+            rogue.sendto(b"\xff not json", ("127.0.0.1", port))
+        time.sleep(0.05)
+        inp.poll()
+        check(inp.flooded, "a poll that found more than "
+                           "FLOOD_DATAGRAMS_PER_POLL datagrams: flooded")
+        t[0] += 0.15
+        inp.poll()
+        check(inp.flooded, "still flooded inside stale_ms of it")
+        t[0] += 0.1
+        inp.poll()
+        check(not inp.flooded, "clear once stale_ms has passed with no "
+                               "flood")
+        floods = [m for k, m in log.events if "flooded" in m]
+        check(len(floods) == 1, f"journaled once: {floods}")
+    finally:
+        inp.close()
+        deck.close()
+        rogue.close()
+
+
+def test_round4_service_passes_the_flood_flag_before_assert_arm():
+    section("round 4, item B: the service hands the arm input's `flooded` "
+            "to the composer every tick, before assert_arm")
+
+    class _Flooded(arminput.ArmInput):
+        flooded = True
+
+        def poll(self):
+            return None
+
+    svc = Service(make_config(), _Flooded())
+    svc._poll_arm()
+    check(svc.composer._arm_link_flooded is True,
+          "the composer knows the link is flooded")
+    svc.arm_input.flooded = False
+    svc._poll_arm()
+    check(svc.composer._arm_link_flooded is False, "and when it is not")
+
+
+def test_round4_decode_rejections_are_throttled_per_reason():
+    section("round 4, item C: wrong-key, wrong-shape and garbage datagrams "
+            "are journaled once per reason per episode with a count, an "
+            "episode survives a datagram every 520 ms, and no reason "
+            "writes more than LINES_PER_MINUTE lines a minute (the round-4 "
+            "review needed no key at all to write ~39,000 lines in 5 s)")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=500, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    tx = _udp()
+
+    def raw(obj):
+        tx.sendto(json.dumps(obj).encode(), ("127.0.0.1", port))
+
+    def lines():
+        return [m for k, m in log.events if k == "arm-link"]
+
+    try:
+        for i in range(30):
+            tx.sendto(link.encode_arm(i, [True] * 6, NAMES, KEY + "x"),
+                      ("127.0.0.1", port))
+            raw({"v": 2, "k": KEY, "t": "arm", "seq": i,
+                 "wanted": [True] * 5, "names": NAMES})
+            tx.sendto(b"\xff garbage", ("127.0.0.1", port))
+            raw({"v": 1000 + i, "k": KEY, "t": "arm", "seq": i,
+                 "wanted": [True] * 6, "names": NAMES})
+            time.sleep(0.002)
+            inp.poll()
+            t[0] += 0.025
+        opened = lines()
+        check(len(opened) == 4,
+              f"120 rejections for 4 reasons (one of them with a different "
+              f"contract version in every datagram) write 4 lines: "
+              f"{len(opened)} {opened[:6]}")
+        t[0] += arminput.EPISODE_QUIET_S + 0.1
+        inp.poll()
+        closers = lines()[4:]
+        check(len(closers) == 4 and all("30 rejected" in m for m in closers),
+              f"and one closing line each, with the count: {closers}")
+
+        # One datagram every 520 ms for 30 s: ONE episode, not 58.
+        before = len(lines())
+        for i in range(58):
+            tx.sendto(link.encode_arm(i, [True] * 6, NAMES, KEY + "x"),
+                      ("127.0.0.1", port))
+            time.sleep(0.002)
+            inp.poll()
+            t[0] += 0.52
+        check(len(lines()) - before == 1,
+              f"a datagram every 520 ms keeps one episode open: "
+              f"{len(lines()) - before} lines")
+        t[0] += arminput.EPISODE_QUIET_S + 0.1
+        inp.poll()
+
+        # One every EPISODE_QUIET_S + 0.1 s for ~150 s: each is its own
+        # episode, but the per-minute cap holds the line count down.
+        before = len(lines())
+        for i in range(30):
+            tx.sendto(link.encode_arm(i, [True] * 6, NAMES, KEY + "x"),
+                      ("127.0.0.1", port))
+            time.sleep(0.002)
+            inp.poll()
+            t[0] += arminput.EPISODE_QUIET_S + 0.1
+        n = len(lines()) - before
+        # Literal numbers, not the module's constants: a test that reads
+        # the constant moves along with it when someone changes it.
+        check(arminput.LINES_PER_MINUTE == 4
+              and arminput.EPISODE_QUIET_S == 5.0,
+              f"the throttle is 4 lines a minute per reason and a 5 s quiet "
+              f"window: {arminput.LINES_PER_MINUTE}, "
+              f"{arminput.EPISODE_QUIET_S}")
+        check(n <= 12,
+              f"30 widely spaced rejections over ~150 s write at most 4 "
+              f"lines a minute (12 in 3 minutes), not 30: {n}")
+        check(any("went unlogged" in m for m in lines()[before:]),
+              "and a line after the cap says how many went unlogged")
+    finally:
+        inp.close()
+        tx.close()
+
+
+def test_round4_flood_takeover_cannot_rearm_end_to_end():
+    section("round 4, item B, the proven attack against the real Service/"
+            "SocketArmInput/Composer: a flood crowds the real deck out, "
+            "the rogue becomes the locked sender, then forges a "
+            "low-then-high on a group the deck still wants. Nothing arms: "
+            "the real deck, still sending, is now the foreign sender")
+    node = _udp()
+    ltc_status = _udp()
+    listen_port = _udp()
+    lp = listen_port.getsockname()[1]
+    listen_port.close()
+    arm_port_sock = _udp()
+    ap = arm_port_sock.getsockname()[1]
+    arm_port_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "arm_port": ap, "key": KEY})
+    t = [0.0]
+    log = Log()
+    arm_input = arminput.SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
+                                        cfg.link_key, cfg.n, log=log,
+                                        stale_ms=cfg.arm_stale_ms,
+                                        clock=lambda: t[0])
+    svc = Service(cfg, arm_input, clock=lambda: t[0], log=log)
+    svc.open()
+    deck = _udp()
+    rogue = _udp()
+    ltc_tx = _udp()
+    fseq = [0]
+
+    def tick():
+        fseq[0] += 1
+        ltc_tx.sendto(link.encode_flame(fseq[0], "00:00:00:01", t[0], 1,
+                                        [0] * 512, KEY), ("127.0.0.1", lp))
+        time.sleep(0.004)
+        t[0] += cfg.tick_period_s
+        return svc.run_once()
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                    ("127.0.0.1", ap))
+
+    want0 = [True] + [False] * (cfg.n - 1)
+    dseq, rseq = [0], [10 ** 6]
+
+    def deck_send(w):
+        dseq[0] += 1
+        send(deck, dseq[0], w)
+
+    def rogue_send(w):
+        rseq[0] += 1
+        send(rogue, rseq[0], w)
+
+    dwell_ticks = int(cfg.min_arm_dwell_ms / 1000.0 / cfg.tick_period_s) + 5
+    try:
+        for _ in range(3):
+            deck_send([False] * cfg.n); tick()
+        for _ in range(dwell_ticks):
+            deck_send(want0); tick()
+        check(link.decode_status(_drain(ltc_status)[-1], KEY)["groups"][0]
+              ["armed"] == "armed", "setup: the deck genuinely armed group 0")
+        # The flood, then the deck crowded out (silent) past arm_stale_ms
+        # while the rogue keeps sending: the lock lapses and the rogue
+        # takes it.
+        for _ in range(arminput.FLOOD_DATAGRAMS_PER_POLL * 3):
+            send(rogue, rseq[0], [True] * cfg.n)
+        time.sleep(0.02)
+        out = tick()
+        check(out.status["arm_input"]["flooded"] is True,
+              f"the status frame says the link is flooded: "
+              f"{out.status['arm_input']}")
+        for _ in range(int(cfg.arm_stale_ms / 1000.0 / cfg.tick_period_s)
+                       + 4):
+            rogue_send([True] * cfg.n); tick()
+        check(arm_input._sender == rogue.getsockname(),
+              "the rogue now holds the sender lock")
+        # Now the real deck is back to sending (20 Hz, still wanting
+        # group 0) and is the FOREIGN one. The rogue forges the cycle.
+        for _ in range(dwell_ticks):
+            deck_send(want0); rogue_send([True] * cfg.n); tick()
+        for _ in range(6):
+            deck_send(want0); rogue_send([False] * cfg.n); tick()
+        for _ in range(dwell_ticks * 2):
+            deck_send(want0); rogue_send([True] * cfg.n); out = tick()
+        g = out.status["groups"][0]
+        check(g["armed"] != "armed",
+              f"the rogue's forged low-then-high does NOT re-arm group 0: "
+              f"{g}")
+        check(out.status["arm_input"]["foreign_senders"] >= 1
+              and g["reason"] == composer.OTHER_SENDER,
+              f"and the status says why (the real deck is the other "
+              f"sender): {out.status['arm_input']} {g['reason']}")
+        check(all(out.universe[gr.safety - 1] == 0 for gr in cfg.groups),
+              "nothing is armed on the wire")
+    finally:
+        svc.close()
+        for s_ in (deck, rogue, ltc_tx, node, ltc_status):
+            s_.close()
 
 
 def test_link_sequence_and_clock_rules():
@@ -3513,6 +3883,14 @@ if __name__ == "__main__":
     test_socket_arm_input_really_arms_a_group_end_to_end()
     test_socket_arm_input_reports_which_bits_were_forced()
     test_round3_foreign_forced_edge_is_not_consent_end_to_end()
+    test_round4_no_consent_while_another_sender_or_a_flood_is_on_the_link()
+    test_round4_a_forced_bit_never_blocks_a_genuine_cycle_on_another_group()
+    test_round4_genuine_lows_are_never_reported_forced()
+    test_round4_consent_never_spans_two_senders()
+    test_round4_socket_arm_input_flags_a_flood()
+    test_round4_service_passes_the_flood_flag_before_assert_arm()
+    test_round4_decode_rejections_are_throttled_per_reason()
+    test_round4_flood_takeover_cannot_rearm_end_to_end()
     test_link_sequence_and_clock_rules()
     test_rule9_only_the_writer()
     test_rule10_compose_never_raises()

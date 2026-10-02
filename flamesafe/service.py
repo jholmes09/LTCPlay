@@ -195,12 +195,20 @@ class Service:
                 getattr(self.arm_input, "foreign_count", 0))
         except Exception:                               # noqa: BLE001
             pass
+        # Round 4, item B: a flood blocks consent too (composer.assert_arm).
+        # Also before assert_arm, so the very tick that saw it is covered.
+        try:
+            self.composer.note_arm_link_flooded(
+                bool(getattr(self.arm_input, "flooded", False)))
+        except Exception:                               # noqa: BLE001
+            self.composer.note_arm_link_flooded(True)
         if a is None:
             return
         try:
             self.composer.assert_arm(a.wanted, a.seq,
                                      names=getattr(a, "names", None),
-                                     forced=getattr(a, "forced", None))
+                                     forced=getattr(a, "forced", None),
+                                     sender=getattr(a, "sender", None))
         except Exception as e:                          # noqa: BLE001
             # assert_arm's own contract is "never raises" (composer.py); if
             # it ever does anyway, that is a bug in the composer, and the

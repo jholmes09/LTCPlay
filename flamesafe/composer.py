@@ -31,6 +31,9 @@ FAULT_CLEAR_S = 5.0
 # show program coming back, and then a cycle.
 LINK_LOST = ("Show program stopped answering: disarmed. Cycle the arm to "
              "re-arm once it is back.")
+# Round 4, item B: why a cycle is not being accepted right now.
+OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
+                "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
 # The words on the ARMED lamp of a group the show program's Abort disarmed
@@ -77,6 +80,7 @@ class Composer:
         self._seen_down = [False] * self.n
         self._latched = [False] * self.n
         self._arm_seq = None
+        self._arm_sender = None         # round 4: who the last one came from
         self._arm_fresh_at = None       # our clock, last time seq advanced
         self._arm_seen_at = None        # our clock, last assertion of any kind
         self._arm_live = False
@@ -92,6 +96,10 @@ class Composer:
         # observe (a forced bit that happens to already match what this
         # deck expects leaves nothing else to notice).
         self._foreign_arm_senders = 0
+        # Round 4 of the safety review, item B: whether the arm input has
+        # seen a flood (arminput.FLOOD_DATAGRAMS_PER_POLL) inside its own
+        # stale_ms, as of the last note_arm_link_flooded call.
+        self._arm_link_flooded = False
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -139,7 +147,7 @@ class Composer:
 
     # ------------------------------------------------------------ arm input
 
-    def assert_arm(self, wanted, seq, names=None, forced=None):
+    def assert_arm(self, wanted, seq, names=None, forced=None, sender=None):
         """The arm input says: I want these groups armed, and my liveness
         counter is `seq`.  Returns True if the assertion was well formed.
 
@@ -159,6 +167,13 @@ class Composer:
         be read as the operator's own down edge: see the consent loop
         below.  None (every other input) means nothing is forced, exactly
         like an all-False vector.
+
+        `sender` (round 4 of the safety review) is optional: who this
+        assertion came from (SocketArmInput: the locked (ip, port)).  When
+        it differs from the last assertion's sender, this is treated exactly
+        like an input restart: every latch and every pending down edge is
+        cleared, so no consent edge can ever be half proved by one sender
+        and finished by another.
 
         Never raises.  A malformed assertion is rejected and counted; the
         staleness rule then disarms within arm_stale_ms if nothing well
@@ -234,6 +249,12 @@ class Composer:
             # once it has been SEEN to advance.  Rev 1 latched on the
             # synthetic all-down report a booting watcher emits.
             advanced = False
+        elif sender is not None and self._arm_sender is not None and \
+                sender != self._arm_sender:
+            # Round 4: the arm input's sender lock changed hands.  Whatever
+            # the counter says, this is a different input: start over.
+            self._reset_latches("arm input changed sender")
+            advanced = False
         elif seq < self._arm_seq:
             # The counter went BACKWARDS: the input rebooted.  That is an
             # interruption even though the assertions kept arriving, and
@@ -243,6 +264,7 @@ class Composer:
         elif seq > self._arm_seq:
             advanced = True
         self._arm_seq = seq
+        self._arm_sender = sender
         self._arm_seen_at = t
         if advanced:
             self._arm_fresh_at = t
@@ -252,7 +274,28 @@ class Composer:
         # this very assertion advanced the counter, and the counter was
         # already fresh before it.  An input that boots up already asking
         # for arm has not asked this program for anything.
-        consent_ok = advanced and was_live
+        #
+        # Round 4 of the safety review, item B: and nobody else is on the
+        # link.  A foreign sender's frames can only ever clear bits (the
+        # AND in arminput.py), but the round-4 review proved a sender can
+        # still BECOME the locked one with no deck gap at all, by flooding
+        # the port until the real deck's frames are crowded out for
+        # arm_stale_ms, and then forge its own low-then-high.  Once it holds
+        # the lock the real deck is the foreign one, still sending, so
+        # "nobody else on the link and no flood" is false for as long as
+        # the real deck is alive -- the rogue can never collect consent.
+        # The cost: a genuine cycle made while another sender is on the
+        # link does not count, and the operator cycles again once it has
+        # gone (CONTRACT.md, the arm link).
+        disturbed = (self._foreign_arm_senders != 0
+                     or self._arm_link_flooded)
+        consent_ok = advanced and was_live and not disturbed
+        if disturbed:
+            # And no down edge seen BEFORE the other sender turned up may be
+            # finished while it is here: the operator cycles again once it
+            # has gone (the deck keeps re-asserting its own False, so a
+            # genuine low is re-proved on the first frame after it goes).
+            self._seen_down = [False] * self.n
         for i in range(self.n):
             if not w[i]:
                 if self._wanted[i]:
@@ -296,6 +339,14 @@ class Composer:
             self._foreign_arm_senders = max(0, int(count))
         except (TypeError, ValueError):
             pass
+
+    def note_arm_link_flooded(self, flooded):
+        """Whether the arm input has seen a flood inside its own stale_ms
+        (round 4 of the safety review, item B).  Called by the service every
+        tick, BEFORE assert_arm, like note_foreign_arm_senders.  Never
+        raises."""
+        self._arm_link_flooded = bool(flooded) if isinstance(
+            flooded, bool) else True
 
     def _reset_latches(self, why, journal=True):
         # journal=False clears just the same but neither counts nor writes
@@ -718,6 +769,12 @@ class Composer:
             if self._frame_at is None:
                 return (LINK_NEVER, "steady")
             return (LINK_LOST, "steady")
+        if not self._latched[i] and (self._foreign_arm_senders
+                                     or self._arm_link_flooded):
+            # Round 4, item B: cycling now would not count; say so instead
+            # of flashing "cycle the arm" at an operator whose cycle is
+            # being refused.
+            return (OTHER_SENDER, "steady")
         if not self._latched[i]:
             if self._aborted[i]:
                 return (ABORT_DISARMED, "flashing")
@@ -820,6 +877,7 @@ class Composer:
                 "seq": self._arm_seq,
                 "age_ms": arm_age,
                 "foreign_senders": self._foreign_arm_senders,
+                "flooded": self._arm_link_flooded,
             },
             "frames": {
                 "state": ("never" if self._frame_at is None

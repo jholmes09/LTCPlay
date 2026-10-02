@@ -80,16 +80,22 @@ and the approved layout is not to be changed.
 
 FAILURE MODES, assumptions made here (flag these in the safety review):
 
-  1. Deck unplugged mid-show, while armed. ArmSocket keeps sending whatever
-     this module last told it to; but the Stream Deck's own read/write
-     failing (DeckDisconnected) stops the main loop from calling it again
-     at all -- no more arm frames leave this machine. flamesafe's EXISTING
-     arm_stale_ms rule (500 ms default, unchanged by this PR) then disarms
-     every group with no new code: silence is silence, whatever caused it.
-  2. Deck reconnected while armed. On every (re)open, this module resets
-     its own `wanted` vector to all-false and ArmSocket's seq to 0 before
-     sending anything: it never remembers what was pressed before the
-     gap. This also could not re-arm anything even if it tried: flamesafe's
+  1. Deck unplugged mid-show, while armed. The Stream Deck's own
+     read/write failing (DeckDisconnected) ends the main loop, and from
+     then until a deck is back this module sends every group OFF on the
+     arm link at ARM_SEND_HZ, on the SAME socket (round 4 of the safety
+     review, item A; run_forever's _hold_link_off). Every group disarms on
+     the next frame, not after arm_stale_ms. It used to go silent instead
+     and let flamesafe's arm_stale_ms do the disarming, but silence also
+     released flamesafe's sender lock, and the round-4 review had another
+     local process take it while the deck was unplugged and arm every
+     group. If this whole process dies, silence is still what flamesafe
+     sees, and arm_stale_ms still disarms every group.
+  2. Deck reconnected while armed. On every (re)connect, this module
+     resets its own `wanted` vector to all-false and ArmSocket's seq to 0
+     before sending anything (ArmSocket.restart, on the socket it already
+     had, so the sender lock never changes hands): it never remembers what
+     was pressed before the gap. This also could not re-arm anything even if it tried: flamesafe's
      consent rule (rule 6) needs the counter seen advancing while already
      fresh, and a counter that restarts fails that by construction. The
      operator re-arms by pressing each group key again, same as the lamp
@@ -318,6 +324,24 @@ class ArmSocket:
         self.wanted = [False] * self.n
         self.seq = 0
 
+    @property
+    def is_open(self):
+        return self._sock is not None
+
+    def restart(self):
+        """A reconnect on the SAME socket (round 4 of the safety review,
+        item A): exactly what open() does to `wanted` and `seq` -- every
+        group OFF, the counter back to 0 so flamesafe sees an input that
+        restarted -- but keeping the socket, and so the source port, that
+        flamesafe's arm-link sender lock already belongs to. Closing and
+        reopening here is what used to hand that lock to whoever sent
+        next."""
+        if self._sock is None:
+            self.open()
+            return
+        self.wanted = [False] * self.n
+        self.seq = 0
+
     def set_group(self, i, on):
         self.wanted[i] = bool(on)
 
@@ -506,6 +530,11 @@ _SHORT_REASON = {
     "once it is back.": "SHOW LOST",
     "Show program has not answered yet: disarmed. Cycle the arm once it "
     "is running.": "SHOW LOST",
+    # Round 4 of the safety review, item B (flamesafe/composer.py's
+    # OTHER_SENDER): a cycle is refused while another sender is on the arm
+    # link. Hand-copied: this module never imports flamesafe.
+    "Another sender is on the arm link: a cycle cannot arm until it "
+    "stops. Cycle the arm again once it has gone.": "OTHER SENDER",
     # The show's Abort from the rack screen or phone (flamesafe's
     # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
     "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
@@ -1040,9 +1069,10 @@ def to_native(Image, img):
 
 class Deck:
     """The physical Stream Deck Mini. Any read or write failure is raised
-    as DeckDisconnected: the caller (Controller) must stop sending arm
-    frames the instant this happens (module docstring, failure mode 1), so
-    this class never swallows an I/O error to "keep going"."""
+    as DeckDisconnected: the caller must stop sending what the keys asked
+    for the instant this happens and send every group OFF instead (module
+    docstring, failure mode 1), so this class never swallows an I/O error
+    to "keep going"."""
 
     def __init__(self):
         hid = _import_hid()
@@ -1173,7 +1203,12 @@ class Controller:
         self._spoof_alarm = ""
         self._spoof_category = ""  # round 3, item 5: the STABLE dedup key
         self._spoof_since = None
-        self._spoof_last_seq = 0
+        # None until the first check: a deck PROCESS that just started is
+        # a reconnect too (round 4, item E). A restart quicker than
+        # flamesafe's arm_stale_ms finds the old process's lock still
+        # held, so for that long this new one is "another sender" and its
+        # seq is behind; without this, that read as a spoof.
+        self._spoof_last_seq = None
         self._spoof_grace_until = 0.0
 
     def _log(self, text, **kw):
@@ -1543,7 +1578,8 @@ class Controller:
         pass instead of once). `sentence` still carries the live numbers
         for the person reading it; only the dedup key leaves them out."""
         now = self._clock()
-        if self.arm.seq < self._spoof_last_seq:
+        if self._spoof_last_seq is None or \
+                self.arm.seq < self._spoof_last_seq:
             # ArmSocket.open() reset our own counter (a reconnect):
             # flamesafe's status may still describe the sender from before
             # the gap for up to its own arm_stale_ms. Give it a moment
@@ -1771,7 +1807,19 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     as already complete, purely from wall-clock time passing during the
     outage, the instant it reconnected) -- the operator sees every group
     read OFF and every key released, and re-arms by pressing it for real,
-    same as after any other interruption."""
+    same as after any other interruption.
+
+    Round 4 of the safety review, item A: while there is NO deck (before
+    the first connect, and between a disconnect and the next one), this
+    process keeps the arm socket open and keeps sending every group OFF at
+    ARM_SEND_HZ (_hold_link_off), and a reconnect restarts `wanted`/seq on
+    that same socket (ArmSocket.restart) instead of closing it and opening
+    a new one. It used to go silent instead, which released flamesafe's
+    sender lock after arm_stale_ms: the round-4 review had a second local
+    process take the free lock while the deck was unplugged, send its own
+    low then high, and arm every group on the wire. Every group still
+    disarms at once when the deck goes (the frames say OFF), and flamesafe
+    still disarms within arm_stale_ms if this whole process dies."""
     journal = journal or (lambda text, **kw: None)
     fonts = Fonts()
     chase = 0
@@ -1780,12 +1828,12 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
         try:
             deck = deck_factory()
         except DeckDisconnected as e:
-            journal(f"Stream Deck: {e}. Retrying in 2 s.", fault=True,
+            journal(f"Stream Deck: {e}. Retrying in 2 s; every group is "
+                   f"held OFF on the arm link meanwhile.", fault=True,
                    action="deck")
-            sleep(2.0)
+            _hold_link_off(controller, sleep, 2.0)
             continue
-        controller.arm.close()
-        controller.arm.open()
+        controller.arm.restart()
         controller.reset_on_reconnect()
         journal("Stream Deck connected. Every group starts OFF until "
                "pressed; nothing on this machine remembers what was armed "
@@ -1819,16 +1867,31 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 if elapsed < period:
                     sleep(period - elapsed)
         except DeckDisconnected as e:
-            journal(f"Stream Deck: {e}. No more arm frames will be sent "
-                   f"until it reconnects; flamesafe disarms every group "
-                   f"within its own arm_stale_ms.", fault=True,
+            journal(f"Stream Deck: {e}. Every group is sent OFF on the arm "
+                   f"link until it reconnects.", fault=True,
                    action="deck")
-            controller.arm.close()
+            # NOT arm.close() (round 4, item A): see _hold_link_off.
+            controller.arm.set_all(False)
+            controller.arm.send(controller.names)
             try:
                 deck.close()
             except Exception:
                 pass
-            sleep(1.0)
+            _hold_link_off(controller, sleep, 1.0)
+
+
+def _hold_link_off(controller, sleep, secs):
+    """No deck: assert every group OFF at ARM_SEND_HZ for about `secs`,
+    on the arm socket this process already holds flamesafe's sender lock
+    with (opening it the first time), so the lock never lapses while the
+    deck is away (round 4 of the safety review, item A). Counted in sends,
+    not wall-clock time, so a test's fake sleep cannot spin it forever."""
+    if not controller.arm.is_open:
+        controller.arm.open()
+    for _ in range(max(1, int(round(secs * ARM_SEND_HZ)))):
+        controller.arm.set_all(False)
+        controller.arm.send(controller.names)
+        sleep(1.0 / ARM_SEND_HZ)
 
 
 def load_flamesafe_link(path):

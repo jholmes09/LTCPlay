@@ -1749,11 +1749,10 @@ MUTATIONS = [
 
  ("flamesafe: an operator disarm does not start the dwell",
   "flamesafe/composer.py",
-  "                if self._wanted[i]:\n"
-  "                    # The operator disarmed this group.  The dwell applies.\n"
-  "                    self._disarmed_at[i] = t",
-  "                if self._wanted[i]:\n"
-  "                    pass"),
+  "                    # bounce straight back up, forced or not.\n"
+  "                    self._disarmed_at[i] = t\n",
+  "                    # bounce straight back up, forced or not.\n"
+  "                    pass\n"),
 
  ("flamesafe: the dwell countdown rounds down and reads 0 with time to go",
   "flamesafe/composer.py",
@@ -2026,9 +2025,9 @@ MUTATIONS = [
  # finding 3: a surviving consent mutation
  ("flamesafe: a down edge no longer clears the latch",
   "flamesafe/composer.py",
-  "                self._seen_down[i] = consent_ok\n"
-  "                self._latched[i] = False",
-  "                self._seen_down[i] = consent_ok"),
+  "                self._seen_down[i] = consent_ok and not f[i]\n"
+  "                self._latched[i] = False\n",
+  "                self._seen_down[i] = consent_ok and not f[i]\n"),
 
  # finding 4: send failures while armed showed green
  ("flamesafe: a failed sACN send is not a fault",
@@ -3609,14 +3608,11 @@ def build():
 
  ("flamesafe: SocketArmInput accepts a frame it could not decode",
   "flamesafe/arminput.py",
-  "            try:\n"
-  "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
-  "            except link.LinkError as e:\n"
-  '                self._event("arm-link", f"arm frame rejected: {e}")\n'
+  '                    f"arm frame rejected: {msg[:120]} (from {addr[0]}:"\n'
+  '                    f"{addr[1]}).")\n'
   "                continue\n",
-  "            try:\n"
-  "                wanted, seq, names = link.decode_arm(data, self._n, self._key)\n"
-  "            except link.LinkError as e:\n"
+  '                    f"arm frame rejected: {msg[:120]} (from {addr[0]}:"\n'
+  '                    f"{addr[1]}).")\n'
   "                wanted, seq, names = [False] * self._n, 0, None\n"),
 
  ("flamesafe: SocketArmInput keeps asserting after close()",
@@ -3753,25 +3749,23 @@ def build():
   '                "seq": self._arm_seq,\n'
   '                "age_ms": arm_age,\n'
   '                "foreign_senders": self._foreign_arm_senders,\n'
+  '                "flooded": self._arm_link_flooded,\n'
   '            },\n',
   '            "arm_input": {\n'
   '                "state": ("never" if self._arm_fresh_at is None\n'
   '                          else "live" if live else "stale"),\n'
   '                "seq": self._arm_seq,\n'
   '                "age_ms": arm_age,\n'
+  '                "flooded": self._arm_link_flooded,\n'
   '            },\n'),
 
  ("round3: a sustained foreign-sender flood floods the journal again, one "
   "line per datagram",
   "flamesafe/arminput.py",
-  "        ep = self._foreign_episode\n"
-  "        if ep is None:\n"
-  '            self._foreign_episode = {"at": now, "count": 1, "addrs": '
-  "{addr}}\n",
-  "        ep = self._foreign_episode\n"
-  "        if True:\n"
-  '            self._foreign_episode = {"at": now, "count": 1, "addrs": '
-  "{addr}}\n"),
+  "        ep = self._episodes.get(reason)\n"
+  "        if ep is None:\n",
+  "        ep = None\n"
+  "        if ep is None:\n"),
 
  ("round3: the deck never alarms on a foreign sender alone",
   "ltcplay/streamdeck.py",
@@ -3828,9 +3822,9 @@ def build():
  ("round3: a Stream Deck reconnect no longer resets in-progress hold "
   "state",
   "ltcplay/streamdeck.py",
-  "        controller.arm.open()\n"
+  "        controller.arm.restart()\n"
   "        controller.reset_on_reconnect()\n",
-  "        controller.arm.open()\n"),
+  "        controller.arm.restart()\n"),
 
  ("round3: the arm-hold duration changes without any test noticing",
   "ltcplay/streamdeck.py",
@@ -3841,6 +3835,163 @@ def build():
   "ltcplay/streamdeck.py",
   "REARM_REFRACTORY_S = 2.0",
   "REARM_REFRACTORY_S = 0.02"),
+
+ # ---- round 4 of the safety review (PR #31) ------------------------------
+ # A: the deck process keeps the arm link held OFF on ONE socket while no
+ # deck is connected.
+ ("round4: with no deck the hold-off sends nothing (the link goes silent "
+  "and flamesafe's sender lock lapses)",
+  "ltcplay/streamdeck.py",
+  "        controller.arm.set_all(False)\n"
+  "        controller.arm.send(controller.names)\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "        controller.arm.set_all(False)\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round4: the deck process sends nothing until the first deck is found",
+  "ltcplay/streamdeck.py",
+  "    if not controller.arm.is_open:\n"
+  "        controller.arm.open()\n"
+  "    for _ in range(",
+  "    if not controller.arm.is_open:\n"
+  "        return\n"
+  "    for _ in range("),
+
+ ("round4: a reconnect closes and reopens the arm socket (a new source "
+  "port, so the sender lock changes hands)",
+  "ltcplay/streamdeck.py",
+  "        controller.arm.restart()\n"
+  "        controller.reset_on_reconnect()\n",
+  "        controller.arm.close()\n"
+  "        controller.arm.open()\n"
+  "        controller.reset_on_reconnect()\n"),
+
+ ("round4: an unplug closes the arm socket again",
+  "ltcplay/streamdeck.py",
+  "            # NOT arm.close() (round 4, item A): see _hold_link_off.\n"
+  "            controller.arm.set_all(False)\n",
+  "            controller.arm.close()\n"
+  "            controller.arm.set_all(False)\n"),
+
+ # B: no consent while anyone else is on the link.
+ ("round4: consent ignores another sender on the arm link",
+  "flamesafe/composer.py",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded)\n",
+  "        disturbed = self._arm_link_flooded\n"),
+
+ ("round4: consent ignores a flood on the arm link",
+  "flamesafe/composer.py",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded)\n",
+  "        disturbed = self._foreign_arm_senders != 0\n"),
+
+ ("round4: a down edge from before another sender turned up can be "
+  "finished while it is there",
+  "flamesafe/composer.py",
+  "            # has gone (the deck keeps re-asserting its own False, so a\n"
+  "            # genuine low is re-proved on the first frame after it goes).\n"
+  "            self._seen_down = [False] * self.n\n",
+  "            # has gone (the deck keeps re-asserting its own False, so a\n"
+  "            # genuine low is re-proved on the first frame after it goes).\n"
+  "            pass\n"),
+
+ ("round4: a change of locked sender keeps the old sender's down edges",
+  "flamesafe/composer.py",
+  "        elif sender is not None and self._arm_sender is not None and \\\n"
+  "                sender != self._arm_sender:\n",
+  "        elif False:\n"),
+
+ ("round4: SocketArmInput never reports a flood",
+  "flamesafe/arminput.py",
+  "        if n_read > FLOOD_DATAGRAMS_PER_POLL:\n",
+  "        if False:\n"),
+
+ ("round4: SocketArmInput stops naming the locked sender",
+  "flamesafe/arminput.py",
+  "            best = ArmAssertion(wanted, seq, names, sender=addr)\n",
+  "            best = ArmAssertion(wanted, seq, names)\n"),
+
+ ("round4: the service never hands the flood flag to the composer",
+  "flamesafe/service.py",
+  "            self.composer.note_arm_link_flooded(\n"
+  "                bool(getattr(self.arm_input, \"flooded\", False)))\n",
+  "            self.composer.note_arm_link_flooded(False)\n"),
+
+ ("round4: the deck has no label for the OTHER SENDER reason",
+  "ltcplay/streamdeck.py",
+  "    \"stops. Cycle the arm again once it has gone.\": \"OTHER SENDER\",\n",
+  "    \"stops. Cycle the arm again once it has gone.x\": \"OTHER SENDER\",\n"),
+
+ # C: decode rejections throttled like every other arm-link rejection.
+ ("round4: decode rejections are journaled one line per datagram again",
+  "flamesafe/arminput.py",
+  "                msg = str(e)\n"
+  "                self._rejects.note(\n",
+  "                msg = str(e)\n"
+  "                self._event(\"arm-link\", f\"arm frame rejected: {msg}\")\n"
+  "                (lambda *a: None)(\n"),
+
+ ("round4: a decode rejection is throttled under its raw message, so a "
+  "sender varying it gets a line every datagram",
+  "flamesafe/arminput.py",
+  "                    \"decode:\" + _decode_reason(msg), now, addr,\n",
+  "                    \"decode:\" + msg, now, addr,\n"),
+
+ ("round4: an arm-link rejection episode ends after half a second again",
+  "flamesafe/arminput.py",
+  "EPISODE_QUIET_S = 5.0\n",
+  "EPISODE_QUIET_S = 0.5\n"),
+
+ ("round4: no per-minute cap on arm-link rejection lines",
+  "flamesafe/arminput.py",
+  "LINES_PER_MINUTE = 4\n",
+  "LINES_PER_MINUTE = 10 ** 6\n"),
+
+ # D: the round-4 review's hand mutations that survived the whole suite.
+ ("round4: reset_on_reconnect skips only the Abort hold",
+  "ltcplay/streamdeck.py",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n",
+  "        self._prev_keys = [False] * 6\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n"),
+
+ ("round4: reset_on_reconnect skips only the arm holds",
+  "ltcplay/streamdeck.py",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"),
+
+ ("round4: any forced bit blocks consent on every group",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = consent_ok and not any(f)\n"),
+
+ ("round4: the locked sender's own genuine lows are marked forced",
+  "flamesafe/arminput.py",
+  "                if not fw[i] and wanted[i]:\n"
+  "                    wanted[i] = False\n"
+  "                    forced[i] = True\n",
+  "                if not fw[i]:\n"
+  "                    wanted[i] = False\n"
+  "                    forced[i] = True\n"),
+
+ ("round4: the foreign-sender alarm's dedup key embeds the sender count",
+  "ltcplay/streamdeck.py",
+  "            category = \"foreign-senders\"\n",
+  "            category = f\"foreign-senders:{foreign}\"\n"),
+
+ # E: a freshly started deck process gets the reconnect grace.
+ ("round4: a freshly started deck process gets no reconnect grace",
+  "ltcplay/streamdeck.py",
+  "        self._spoof_last_seq = None\n",
+  "        self._spoof_last_seq = 0\n"),
 
  # -- the flame link: flamesafe's disarm_all (2026-10-02) ----------------
  ("flamelink: a disarm_all from another sender is accepted",

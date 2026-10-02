@@ -23290,15 +23290,29 @@ class _FakeArmSocket:
         self.wanted = [False] * n
         self.sends = []
         self.opens = 0
+        self.closes = 0
+        self.restarts = 0
+        self.is_open = False
         self.seq = 0
 
     def open(self):
         self.opens += 1
+        self.is_open = True
+        self.wanted = [False] * self.n
+        self.seq = 0
+
+    def restart(self):
+        # Mirrors sd.ArmSocket.restart (round 4, item A): same socket.
+        if not self.is_open:
+            self.open()
+            return
+        self.restarts += 1
         self.wanted = [False] * self.n
         self.seq = 0
 
     def close(self):
-        pass
+        self.closes += 1
+        self.is_open = False
 
     def set_group(self, i, on):
         self.wanted[i] = bool(on)
@@ -24030,6 +24044,7 @@ def test_streamdeck_spoof_alarm():
     status.set(status_doc(1, [False, False, False]))
     c.check_links()
     check(not c._spoof_alarm, "matching state, nothing to alarm about")
+    t[0] += sd.RECONNECT_GRACE_S + 0.1   # round 4: past the start-up grace
 
     # Reported seq AHEAD of what this deck has sent: something else is
     # feeding flamesafe arm frames. The debounce window has to PERSIST
@@ -24119,6 +24134,7 @@ def test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone():
     status.set(status_doc(1, [False, False, False], foreign=0))
     c.check_links()
     check(not c._spoof_alarm, "nothing foreign reported: no alarm")
+    t[0] += sd.RECONNECT_GRACE_S + 0.1   # round 4: past the start-up grace
 
     status.set(status_doc(1, [False, False, False], foreign=1))
     c.check_links()
@@ -24163,6 +24179,8 @@ def test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number():
 
     for _ in range(5):
         arm.send(names)                      # arm.seq is now 5
+    c.check_links()                          # round 4: start-up grace...
+    t[0] += sd.RECONNECT_GRACE_S + 0.1       # ...stepped past
     status.set({"arm_input": {"state": "live", "seq": 99999}, "groups": []})
     c.check_links()
     t[0] += sd.SPOOF_GRACE_S + 0.1
@@ -24379,6 +24397,330 @@ def test_streamdeck_reconnect_never_remembers_old_state():
           "open() (every connect and reconnect) resets wanted to all-false, "
           "exactly as a real ArmSocket's open() does -- see module "
           "docstring, failure mode 2")
+
+
+def _round4_run_forever(c, decks, t, on_sleep=None):
+    """Drive the REAL sd.run_forever() through `decks`: each element is a
+    fake deck object, or None for "deck_factory raises DeckDisconnected"
+    (no deck plugged in). Ends when the list runs out. Fake clock/sleep;
+    Fonts.text_block stubbed (no font file on CI), as the tests above."""
+    from ltcplay import streamdeck as sd
+
+    class _StopTest(Exception):
+        pass
+
+    def deck_factory():
+        if not decks:
+            raise _StopTest()
+        d = decks.pop(0)
+        if d is None:
+            raise sd.DeckDisconnected("probe: nothing plugged in")
+        return d
+
+    orig_text_block = sd.Fonts.text_block
+    sd.Fonts.text_block = lambda self, *a, **kw: None
+    try:
+        sd.run_forever(c, deck_factory=deck_factory,
+                       journal=lambda t_, **kw: None,
+                       sleep=lambda s: (t.__setitem__(0, t[0] + s),
+                                        on_sleep and on_sleep()),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        sd.Fonts.text_block = orig_text_block
+
+
+class _Round4Deck:
+    """A fake deck: on_pass(i) runs on each keys_down() call; after
+    `passes` calls it unplugs (DeckDisconnected)."""
+
+    def __init__(self, passes, on_pass=None):
+        self.passes = passes
+        self.on_pass = on_pass
+        self.i = 0
+
+    def keys_down(self):
+        from ltcplay import streamdeck as sd
+        self.i += 1
+        if self.on_pass is not None:
+            self.on_pass(self.i)
+        if self.i > self.passes:
+            raise sd.DeckDisconnected("probe: unplugged")
+        return []
+
+    def set_key(self, image, key, img):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
+    section("Stream Deck: with NO deck plugged in (before the first "
+            "connect, and between a disconnect and the next one) this "
+            "process keeps sending every group OFF at ARM_SEND_HZ on the "
+            "SAME arm socket, and a reconnect restarts wanted/seq on that "
+            "socket instead of closing it (round 4 of the safety review, "
+            "item A: it used to go silent, flamesafe's sender lock lapsed, "
+            "and the round-4 review had another local process take the lock "
+            "and arm every group while the deck was unplugged)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = []          # (fake time, wanted) of every send on an OPEN socket
+    orig_send = arm.send
+
+    def send(names_):
+        if arm.is_open:
+            stamps.append((t[0], list(arm.wanted)))
+        orig_send(names_)
+    arm.send = send
+    seen = {}
+
+    def deck_a(i):
+        if i == 1:
+            seen["a_first"] = (arm.seq, list(arm.wanted))
+            arm.set_group(0, True)     # the operator arms front row
+        if i == 3:
+            seen["armed_sent"] = any(w[0] for _, w in stamps)
+
+    def deck_b(i):
+        if i == 1:
+            seen["b_first"] = (arm.seq, list(arm.wanted))
+
+    _round4_run_forever(c, [None, _Round4Deck(3, deck_a), None,
+                            _Round4Deck(2, deck_b)], t)
+    period = 1.0 / sd.ARM_SEND_HZ
+    gaps = [b[0] - a[0] for a, b in zip(stamps, stamps[1:])]
+    check(stamps and stamps[0][0] == 0.0,
+          f"the very first arm frame goes out at once, before any deck has "
+          f"ever been found: {stamps[:1]}")
+    check(gaps and max(gaps) <= period + 1e-9,
+          f"no gap between two arm frames is ever longer than one "
+          f"ARM_SEND_HZ period, through no-deck, connect, unplug and "
+          f"reconnect: longest {max(gaps) if gaps else None} s")
+    check(t[0] >= 4.0 and len(stamps) >= int(t[0] * sd.ARM_SEND_HZ) - 2,
+          f"frames went out the whole time: {len(stamps)} in {t[0]:.2f} s")
+    check(seen.get("armed_sent") is True,
+          "set up: front row really was sent armed while the deck was in")
+    first_true = next(i for i, (_, w) in enumerate(stamps) if w[0])
+    last_true = max(i for i, (_, w) in enumerate(stamps) if w[0])
+    check(all(not any(w) for _, w in stamps[last_true + 1:]),
+          "from the unplug on, every frame says every group OFF")
+    check(all(not any(w) for _, w in stamps[:first_true]),
+          "and before the first deck, every frame said OFF too")
+    check(arm.opens == 1 and arm.closes == 0,
+          f"ONE socket the whole time, never closed (so flamesafe's sender "
+          f"lock never changes hands): opens={arm.opens} "
+          f"closes={arm.closes}")
+    check(arm.restarts == 2,
+          f"each connect restarts wanted/seq on that socket: "
+          f"{arm.restarts}")
+    check(seen.get("a_first") == (0, [False, False, False])
+          and seen.get("b_first") == (0, [False, False, False]),
+          f"after each connect the counter is back at 0 and every group "
+          f"OFF before anything is sent: {seen}")
+
+
+def test_streamdeck_round4_unplug_keeps_one_real_source_port():
+    section("Stream Deck: the same, over a REAL ArmSocket and a real UDP "
+            "receiver: every arm frame through no-deck, connect, unplug "
+            "and reconnect comes from ONE source port (the one flamesafe's "
+            "sender lock holds), the no-deck frames all say OFF, and each "
+            "connect restarts the counter (round 4, item A)")
+    import json as _json
+    import socket as _socket
+    from ltcplay import streamdeck as sd
+
+    rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.setblocking(False)
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = sd.ArmSocket("127.0.0.1", rx.getsockname()[1], "probe-key-0123456789",
+                       3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    got = []
+
+    def drain():
+        while True:
+            try:
+                data, addr = rx.recvfrom(65535)
+            except (BlockingIOError, OSError):
+                return
+            got.append((addr, _json.loads(data)))
+
+    def deck_a(i):
+        drain()
+        if i == 1:
+            arm.set_group(1, True)
+
+    try:
+        _round4_run_forever(c, [None, _Round4Deck(2, deck_a), None,
+                                _Round4Deck(1)], t, on_sleep=drain)
+        time.sleep(0.05)
+        drain()
+    finally:
+        arm.close()
+        rx.close()
+    ports = {a for a, _ in got}
+    check(len(got) > 100 and len(ports) == 1,
+          f"{len(got)} arm frames, all from one source address: {ports}")
+    seqs = [f["seq"] for _, f in got]
+    restarts = sum(1 for a, b in zip(seqs, seqs[1:]) if b < a)
+    check(restarts == 2,
+          f"the counter restarts exactly at each of the 2 connects: "
+          f"{restarts}")
+    last_on = max(i for i, (_, f) in enumerate(got) if any(f["wanted"]))
+    check(all(not any(f["wanted"]) for _, f in got[last_on + 1:])
+          and len(got) - last_on > 40,
+          f"after the unplug, a steady run of all-OFF frames: "
+          f"{len(got) - last_on - 1}")
+
+
+def test_streamdeck_round4_reconnect_releases_every_hold():
+    section("Stream Deck: reset_on_reconnect releases the Abort hold, EVERY "
+            "group's arm hold and the key snapshot, each on its own (round "
+            "4: the review's hand mutations that skipped only the Abort "
+            "hold, or only the arm holds, survived the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    c._prev_keys = [True] * 6
+    c._abort_hold.press(0.0)
+    for h in c._arm_holds:
+        h.press(0.0)
+    c.reset_on_reconnect()
+    t[0] = 10.0
+    check(c._prev_keys == [False] * 6, "every key reads released")
+    check(c._abort_hold.fraction(t[0]) == 0.0,
+          "the Abort hold is released (no fill drawn, nothing to fire)")
+    check(all(h.fraction(t[0]) == 0.0 for h in c._arm_holds),
+          f"every arm hold is released: "
+          f"{[h.fraction(t[0]) for h in c._arm_holds]}")
+
+    # What a stale Abort hold would do: after the reconnect nothing is
+    # armed, so a press of Abort is refused (it never starts a hold)...
+    down = [False] * 6
+    down[sd.TOP_ABORT] = True
+    c.run_once(down)
+    c.tick()
+    check(not c._latched and not any(kw.get("action") == "abort"
+                                     and "every flame group" in t_
+                                     for t_, kw in events),
+          f"...and a refused press must never fire an Abort off a hold "
+          f"timer left over from before the gap: latched={c._latched}")
+
+
+def test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves():
+    section("Stream Deck: the foreign-sender alarm journals ONCE while the "
+            "condition lasts, even as flamesafe's count of other senders "
+            "goes 1, 2, 1 (round 4: a dedup key that embedded the count "
+            "survived the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def doc(foreign):
+        return {"arm_input": {"state": "live", "seq": arm.seq,
+                              "foreign_senders": foreign},
+                "groups": [{"name": n, "wanted": False} for n in names]}
+
+    arm.send(names)
+    status.set(doc(0))
+    c.check_links()
+    t[0] += sd.RECONNECT_GRACE_S + 0.1
+    for foreign in (1, 1, 2, 2, 1, 1):
+        status.set(doc(foreign))
+        c.check_links()
+        t[0] += sd.SPOOF_GRACE_S + 0.1
+        c.check_links()
+    alarms = [e for e in events if "ALARM" in e[0]]
+    check(c._spoof_alarm and len(alarms) == 1,
+          f"one alarm line for one continuous episode: {len(alarms)}")
+
+
+def test_streamdeck_round4_fresh_process_gets_the_reconnect_grace():
+    section("Stream Deck: a deck PROCESS that has just started gets the "
+            "same RECONNECT_GRACE_S a reconnect does (round 4, item E: a "
+            "restart quicker than flamesafe's arm_stale_ms finds the old "
+            "process still holding the sender lock for a moment, which "
+            "used to raise a false spoof alarm)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    old = {"arm_input": {"state": "live", "seq": 5000, "foreign_senders": 1},
+           "groups": [{"name": n, "wanted": False} for n in names]}
+    arm.send(names)
+    status.set(old)
+    while t[0] < sd.RECONNECT_GRACE_S - 0.05:
+        c.check_links()
+        arm.send(names)
+        t[0] += 0.05
+    check(not c._spoof_alarm and not any("ALARM" in e[0] for e in events),
+          f"the old process's lock, still there for under a second, is not "
+          f"an alarm: {c._spoof_alarm!r}")
+    t[0] += sd.SPOOF_GRACE_S + 0.2
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm,
+          "but the same report persisting past the grace IS an alarm")
+
+
+def test_streamdeck_round4_other_sender_reason_has_a_label():
+    section("Stream Deck: flamesafe's new held reason (a cycle refused while "
+            "another sender is on the arm link, round 4 item B) has its own "
+            "short label on the key, and the hand-copied sentence matches "
+            "flamesafe's own, checked in a separate process so this one "
+            "never imports flamesafe")
+    import subprocess as _sp
+    from ltcplay import streamdeck as sd
+    r = _sp.run([sys.executable, "-c",
+                 "from flamesafe import composer; "
+                 "print(composer.OTHER_SENDER)"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True, text=True, timeout=60)
+    sentence = r.stdout.strip()
+    check(sentence in sd._SHORT_REASON,
+          f"the deck knows flamesafe's exact sentence: {sentence!r}")
+    look = sd.group_look({"armed": "held", "reason": sentence,
+                          "amber": "steady", "dwell_s": 0})
+    check(look[:2] == ("OTHER", "SENDER") and look[4] is False,
+          f"drawn as OTHER SENDER, steady: {look}")
 
 
 def test_streamdeck_never_imports_flamesafe():
@@ -25392,6 +25734,12 @@ if __name__ == "__main__":
     test_streamdeck_draw_latched_shows_real_state_not_flat_off()
     test_streamdeck_spoof_alarm()
     test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
+    test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off()
+    test_streamdeck_round4_unplug_keeps_one_real_source_port()
+    test_streamdeck_round4_reconnect_releases_every_hold()
+    test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
+    test_streamdeck_round4_fresh_process_gets_the_reconnect_grace()
+    test_streamdeck_round4_other_sender_reason_has_a_label()
     test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()
     test_streamdeck_arm_socket_logs_failed_sends_once()
     test_streamdeck_local_schedule_never_blocks_the_main_loop()
