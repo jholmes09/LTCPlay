@@ -178,7 +178,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata pillow
+      - run: python -m pip install numpy zstandard tzdata
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job.
