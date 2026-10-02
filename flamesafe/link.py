@@ -123,6 +123,95 @@ def encode_flame(seq, timecode, mono, universe, values, key):
     }, separators=(",", ":")).encode("utf-8")
 
 
+class DisarmAll:
+    """One decoded disarm_all message from ltcplay (CONTRACT.md, "Disarm
+    every group: the show program's Abort", added 2026-10-02).  It can only
+    ever take arm AWAY: composer.disarm_all clears every latch and every
+    pending consent edge, and has no path that sets one."""
+    __slots__ = ("seq", "mono", "abort_id", "reason")
+
+    def __init__(self, seq, mono, abort_id, reason):
+        self.seq = seq
+        self.mono = mono
+        self.abort_id = abort_id
+        self.reason = reason
+
+
+# Exactly these fields, no more: a disarm_all with anything extra is not a
+# message this contract describes, and is refused rather than guessed at.
+DISARM_ALL_FIELDS = frozenset(("v", "k", "t", "seq", "mono", "id", "reason"))
+REASON_MAX = 200
+
+
+def decode_disarm_all(data, key):
+    """Bytes off the wire to a DisarmAll, or LinkError with the reason.
+    Same order of checks as decode_flame: size, JSON, object, version, key
+    (before anything else is looked at), type, then every field."""
+    if not isinstance(data, (bytes, bytearray)):
+        raise LinkError("not bytes")
+    if len(data) > MAX_DATAGRAM:
+        raise LinkError(f"datagram too long: {len(data)} bytes")
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise LinkError("not valid JSON") from None
+    if not isinstance(obj, dict):
+        raise LinkError("not a JSON object")
+    if obj.get("v") != CONTRACT_VERSION:
+        raise LinkError(f"wrong contract version {obj.get('v')!r}, "
+                        f"this program speaks {CONTRACT_VERSION}")
+    if not isinstance(obj.get("k"), str) or obj.get("k") != key:
+        raise LinkError("wrong key")
+    if obj.get("t") != "disarm_all":
+        raise LinkError(f"wrong message type {obj.get('t')!r}")
+    extra = sorted(str(f) for f in obj if f not in DISARM_ALL_FIELDS)
+    if extra:
+        raise LinkError("disarm_all has a field this contract does not "
+                        "describe")
+    seq = obj.get("seq")
+    if not _is_int(seq) or seq < 0:
+        raise LinkError("seq is not a whole number at or above 0")
+    mono = obj.get("mono")
+    if isinstance(mono, bool) or not isinstance(mono, (int, float)) \
+            or mono != mono or mono in (float("inf"), float("-inf")):
+        raise LinkError("mono is not a finite number")
+    abort_id = obj.get("id")
+    if not _is_int(abort_id) or abort_id < 1:
+        raise LinkError("id is not a whole number at or above 1")
+    reason = obj.get("reason")
+    if not isinstance(reason, str) or not reason.strip() \
+            or len(reason) > REASON_MAX:
+        raise LinkError(f"reason is not 1 to {REASON_MAX} characters")
+    return DisarmAll(seq, float(mono), abort_id, reason)
+
+
+def encode_disarm_all(seq, mono, abort_id, reason, key):
+    """A disarm_all as ltcplay sends it.  Used by the tests only; ltcplay
+    writes its own encoder from CONTRACT.md (ltcplay/flamelink.py)."""
+    return json.dumps({
+        "v": CONTRACT_VERSION, "k": key, "t": "disarm_all", "seq": int(seq),
+        "mono": float(mono), "id": int(abort_id), "reason": str(reason),
+    }, separators=(",", ":")).encode("utf-8")
+
+
+def decode_from_ltcplay(data, expect_universe, key):
+    """Anything that arrives on the flame link (`link.listen_port`): a
+    FlameFrame or a DisarmAll, or LinkError with the reason.  Only a
+    datagram that is a JSON object saying `"t": "disarm_all"` goes to the
+    disarm decoder; everything else, including garbage, goes to
+    decode_flame exactly as before this message existed, so every flame
+    frame rule and every rejection reason is unchanged."""
+    try:
+        obj = json.loads(bytes(data).decode("utf-8")) \
+            if isinstance(data, (bytes, bytearray)) \
+            and len(data) <= MAX_DATAGRAM else None
+    except (UnicodeDecodeError, ValueError):
+        obj = None
+    if isinstance(obj, dict) and obj.get("t") == "disarm_all":
+        return decode_disarm_all(data, key)
+    return decode_flame(data, expect_universe, key)
+
+
 def decode_arm(data, expect_n, key):
     """Bytes off the wire to (wanted, seq, names), or LinkError with the
     reason.  One arm frame from the Stream Deck (build step 7b): it says

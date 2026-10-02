@@ -17,10 +17,11 @@ counted as a fault.
 from __future__ import annotations
 
 import math
+import re
 import time
 
 from . import rules
-from .link import FlameFrame, CONTRACT_VERSION
+from .link import DisarmAll, FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
 FAULT_CLEAR_S = 5.0
@@ -31,6 +32,16 @@ LINK_LOST = ("Show program stopped answering: disarmed. Cycle the arm to "
              "re-arm once it is back.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
+# The words on the ARMED lamp of a group the show program's Abort disarmed
+# (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
+# and the only one.  Shown until that group latches again.
+ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# Rejections on the flame link are journaled once per episode per kind of
+# reason (an episode ends after frame_stale_ms with no rejection of that
+# kind), never once per datagram: a flood at 40 Hz or faster would push
+# everything else out of the bounded journal queue.  At most this many
+# kinds are tracked at once; any further kind is counted under "other".
+REJECT_KINDS_MAX = 16
 
 
 def now():
@@ -89,6 +100,18 @@ class Composer:
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
         self._last_reject = ""
+        # Rejection episodes, by kind of reason: {kind: {"at", "count"}}.
+        # See REJECT_KINDS_MAX.
+        self._reject_episodes = {}
+
+        # disarm_all from the show program (CONTRACT.md, 2026-10-02).
+        # _aborted[i] only changes the WORDS on a held group's lamp; it is
+        # never read by anything that decides a safety value.
+        self._aborted = [False] * self.n
+        self._disarm_count = 0          # accepted disarm_all datagrams
+        self._disarm_last_id = None
+        self._disarm_last_reason = ""
+        self._disarm_at = None
 
         # composing
         self._last_sent = [DISARM] * self.n
@@ -110,7 +133,7 @@ class Composer:
             "arm_assertions", "arm_rejected", "overruns", "compose_faults",
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
-            "link_lost",
+            "link_lost", "disarm_all", "disarm_all_rejected",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -255,6 +278,7 @@ class Composer:
                 self._latched[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
+                self._aborted[i] = False
             self._wanted[i] = w[i]
         return True
 
@@ -322,12 +346,114 @@ class Composer:
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
+            self._note_reject(self._last_reject)
             return self._last_reject
 
     def reject_frame(self, why):
         """The link layer could not even decode a datagram."""
         self.stats["frames_rejected"] += 1
         self._last_reject = str(why)
+        self._note_reject(self._last_reject)
+
+    def disarm_all(self, msg, sender=None):
+        """The show program says: disarm every group, now (its Abort).
+        Returns "" if accepted, otherwise the reason it was refused.  Never
+        raises.
+
+        Accepted only from the live, locked flame-link sender, in order,
+        exactly as a flame frame would be: the right key and shape were
+        already checked by link.decode_disarm_all, and here the sender
+        lock, the sequence and the sender's clock are checked against the
+        same record the flame frames use.  With no live flame link there
+        is nothing to accept it from (and nothing armed: link loss already
+        disarmed every group), so it is refused.
+
+        What it does, and all it does: every latch and every pending
+        consent edge (`_seen_down`) is cleared, and every group that was up
+        or latched gets the re-arm dwell from now.  It never sets a latch,
+        never sets `_seen_down`, never touches `_wanted`: a group comes
+        back only through a fresh, genuine, un-forced low-to-high cycle
+        from the arm input AFTER this message (assert_arm, rule 6), and
+        then only once the dwell has passed.  It does not refresh the flame
+        link's liveness or its fire values (it carries none)."""
+        try:
+            if not isinstance(msg, DisarmAll):
+                raise TypeError("not a DisarmAll")
+            t = self._clock()
+            if not self._frame_is_fresh(t):
+                raise ValueError("no live flame link to accept it from")
+            if sender != self._frame_sender:
+                raise ValueError("another sender")
+            if msg.seq <= self._frame_seq:
+                raise ValueError(f"out of order: seq {msg.seq} after "
+                                 f"{self._frame_seq}")
+            if msg.mono < self._frame_mono:
+                raise ValueError("sender clock went backwards")
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1
+            why = f"disarm_all: {str(e) or type(e).__name__}"
+            self._last_reject = why
+            self._note_reject(why)
+            return why
+        self._frame_seq = msg.seq
+        self._frame_mono = msg.mono
+        was_up = [self._latched[i] or self._last_sent[i] != DISARM
+                  for i in range(self.n)]
+        for i in range(self.n):
+            if was_up[i]:
+                self._disarmed_at[i] = t
+            self._aborted[i] = True
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1
+        self._disarm_count += 1
+        new_abort = msg.abort_id != self._disarm_last_id
+        self._disarm_last_id = msg.abort_id
+        self._disarm_last_reason = msg.reason
+        self._disarm_at = t
+        if new_abort:
+            # The sender repeats one Abort a few times in case a datagram
+            # is lost; each copy is applied (it can only clear), but only
+            # the first is written.
+            up = [g.name for g, u in zip(self.groups, was_up) if u]
+            armed = ("armed until now: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("disarm-all",
+                        f"the show program's Abort disarmed every group "
+                        f"({msg.reason}; abort {msg.abort_id}; {armed}). "
+                        f"Each group needs a fresh arm cycle from the "
+                        f"Stream Deck.")
+        return ""
+
+    def _note_reject(self, why):
+        """Journal a rejection once per episode per kind of reason."""
+        try:
+            kind = _reject_kind(why)
+            t = self._clock()
+            ep = self._reject_episodes.get(kind)
+            if ep is None and len(self._reject_episodes) >= REJECT_KINDS_MAX:
+                kind = "other"
+                ep = self._reject_episodes.get(kind)
+            if ep is not None:
+                ep["at"] = t
+                ep["count"] += 1
+                return
+            self._reject_episodes[kind] = {"at": t, "count": 1}
+            self._event("link-reject",
+                        f"flame link datagram rejected: {why}. Further "
+                        f"rejections of this kind are counted, not written, "
+                        f"until none for {self.cfg.frame_stale_ms} ms.")
+        except Exception:                               # noqa: BLE001
+            pass
+
+    def _close_reject_episodes(self, t):
+        for kind in [k for k, ep in self._reject_episodes.items()
+                     if (t - ep["at"]) * 1000.0 > self.cfg.frame_stale_ms]:
+            ep = self._reject_episodes.pop(kind)
+            if ep["count"] > 1:
+                self._event("link-reject",
+                            f"flame link rejections ({kind}) stopped after "
+                            f"{ep['count']} rejected")
 
     def note_fault(self, sentence):
         """Something outside the composer failed (a send, a status write).
@@ -413,6 +539,8 @@ class Composer:
                                          f"clean: {self._fault}")
             self._fault = ""
             self._fault_at = None
+
+        self._close_reject_episodes(t)
 
         # 3. ltcplay's frame.  A fire value is kept on the wire for at most
         # fire_hold_ms after the last accepted frame; after that we know
@@ -590,6 +718,8 @@ class Composer:
                 return (LINK_NEVER, "steady")
             return (LINK_LOST, "steady")
         if not self._latched[i]:
+            if self._aborted[i]:
+                return (ABORT_DISARMED, "flashing")
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
 
@@ -701,6 +831,13 @@ class Composer:
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
             },
+            "disarm_all": {
+                "accepted": self._disarm_count,
+                "last_id": self._disarm_last_id,
+                "last_reason": self._disarm_last_reason,
+                "age_ms": (None if self._disarm_at is None
+                           else int((t - self._disarm_at) * 1000)),
+            },
             "stats": dict(self.stats,
                           journal_dropped=int(getattr(self._log, "dropped",
                                                       0) or 0)),
@@ -714,3 +851,11 @@ class Composer:
             self._log.event(kind, msg)
         except Exception:                               # noqa: BLE001
             pass
+
+
+def _reject_kind(why):
+    """A short, bounded name for the kind of a rejection reason: quoted
+    text and numbers (which a sender controls, and which change on every
+    datagram) are blanked, and only the first few words are kept."""
+    s = re.sub(r"'[^']*'|\"[^\"]*\"|\d+(\.\d+)?", "#", str(why))
+    return " ".join(s.split()[:4]) or "unknown"
