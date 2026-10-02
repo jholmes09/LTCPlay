@@ -113,6 +113,126 @@ DRAIN_PER_TICK = 200
 # does.
 DEFAULT_STALE_MS = 500
 
+# A FLOOD (round 4 of the safety review, item B): more datagrams waiting on
+# the arm port in one poll than any honest sender could have produced.  The
+# real deck sends at 20 Hz and flamesafe polls at 40 Hz, so a poll normally
+# finds 0 to 2; even a tick stalled for a whole second finds about 20.  A
+# flood big enough to crowd the real deck's frames out of the kernel's
+# receive buffer (which is how the round-4 review took the sender lock without
+# any deck gap at all) has to put hundreds there per tick.  While one has
+# been seen inside the input's own stale_ms, `flooded` is True and the
+# composer refuses every NEW consent edge (composer.assert_arm).
+FLOOD_DATAGRAMS_PER_POLL = 50
+
+# Journal throttling for every arm-link rejection (round 4 of the safety
+# review, item C).  One line per REASON when an episode starts, one closing
+# line with the count once that reason has been quiet for EPISODE_QUIET_S,
+# and never more than LINES_PER_MINUTE lines per reason in any 60 s, however
+# the rejections are spaced.  EPISODE_QUIET_S is ten times the default
+# arm_stale_ms on purpose: round 3 closed an episode after stale_ms (500
+# ms), so one datagram every 520 ms opened a new episode, and wrote a new
+# line, every single time.
+EPISODE_QUIET_S = 5.0
+LINES_PER_MINUTE = 4
+_ADDRS_TRACKED = 1000      # distinct source addresses counted per episode
+
+# The stable reason a decode rejection is throttled under.  link.decode_arm's
+# messages can carry text the SENDER chose (a contract version, a message
+# type, a length), so the raw message is never the key: a sender varying it
+# would get a fresh episode, and a fresh line, every datagram.
+_DECODE_REASONS = ("not bytes", "datagram too long", "not valid JSON",
+                   "not a JSON object", "wrong contract version",
+                   "wrong key", "wrong message type", "seq is not",
+                   "wanted is not", "names is not")
+
+
+def _decode_reason(msg):
+    for r in _DECODE_REASONS:
+        if msg.startswith(r):
+            return r
+    return "other"
+
+
+class _RejectJournal:
+    """One journal line per reason per episode, plus a closing count, with
+    a hard per-reason cap on lines per minute (round 4, item C).  Pure
+    bookkeeping on a clock the caller passes in; writes through `event`
+    (kind, msg) and never raises."""
+
+    def __init__(self, event, quiet_s=EPISODE_QUIET_S,
+                 per_minute=LINES_PER_MINUTE):
+        self._event = event
+        self.quiet_s = quiet_s
+        self.per_minute = per_minute
+        self._episodes = {}     # reason -> {"at", "count", "addrs", "opened"}
+        self._lines = {}        # reason -> [clock of each line, last 60 s]
+        self._unlogged = {}     # reason -> rejections no line has counted
+
+    def active(self, reason):
+        return reason in self._episodes
+
+    def _allow(self, reason, now):
+        times = [t for t in self._lines.get(reason, ()) if now - t < 60.0]
+        if len(times) >= self.per_minute:
+            self._lines[reason] = times
+            return False
+        times.append(now)
+        self._lines[reason] = times
+        return True
+
+    def _carry(self, reason):
+        n = self._unlogged.pop(reason, 0)
+        if not n:
+            return ""
+        return (f" ({n} earlier rejection{'s' if n != 1 else ''} for this "
+                f"same reason went unlogged while its journal lines were "
+                f"capped at {self.per_minute} a minute)")
+
+    def note(self, reason, now, addr, opening):
+        """One rejection.  `opening` is the sentence written if this starts
+        a new episode (and the per-minute cap allows a line)."""
+        ep = self._episodes.get(reason)
+        if ep is None:
+            ep = {"at": now, "count": 0, "addrs": set(), "opened": False}
+            self._episodes[reason] = ep
+            if self._allow(reason, now):
+                ep["opened"] = True
+                self._event("arm-link",
+                            f"{opening} Further rejections for this same "
+                            f"reason, from this or any other source "
+                            f"address, will not be logged individually "
+                            f"until none has arrived for "
+                            f"{self.quiet_s:g} s.{self._carry(reason)}")
+        ep["at"] = now
+        ep["count"] += 1
+        if len(ep["addrs"]) < _ADDRS_TRACKED:
+            ep["addrs"].add(addr)
+
+    def sweep(self, now, closing):
+        """Close every episode quiet for quiet_s.  `closing(reason, n_addrs,
+        count)` builds the closing sentence."""
+        for reason in [r for r, e in self._episodes.items()
+                       if now - e["at"] > self.quiet_s]:
+            ep = self._episodes.pop(reason)
+            unlogged = ep["count"] - (1 if ep["opened"] else 0)
+            if unlogged <= 0:
+                continue
+            if self._allow(reason, now):
+                n = len(ep["addrs"])
+                self._event("arm-link",
+                            closing(reason, f"{n}{'+' if n >= _ADDRS_TRACKED else ''}"
+                                    f" distinct source address"
+                                    f"{'es' if n != 1 else ''}",
+                                    ep["count"]) + self._carry(reason))
+            else:
+                self._unlogged[reason] = (self._unlogged.get(reason, 0)
+                                          + unlogged)
+
+    def reset(self):
+        self._episodes = {}
+        self._lines = {}
+        self._unlogged = {}
+
 
 class ArmAssertion:
     """What an input currently asserts.  `names` is optional and, when
@@ -128,14 +248,19 @@ class ArmAssertion:
     only a genuine low may ever set up a future consent edge (see
     composer.assert_arm and the module docstring's FORCED-EDGE section
     below)."""
-    __slots__ = ("wanted", "seq", "names", "forced")
+    __slots__ = ("wanted", "seq", "names", "forced", "sender")
 
-    def __init__(self, wanted, seq, names=None, forced=None):
+    def __init__(self, wanted, seq, names=None, forced=None, sender=None):
         self.wanted = tuple(bool(w) for w in wanted)
         self.seq = int(seq)
         self.names = None if names is None else tuple(str(n) for n in names)
         self.forced = (None if forced is None
                        else tuple(bool(f) for f in forced))
+        # Round 4 of the safety review: who this came from, for an input
+        # that has more than one possible sender (SocketArmInput: the
+        # locked (ip, port)). None for every other input. The composer
+        # never lets a consent edge span two different senders.
+        self.sender = sender
 
 
 class ArmInput:
@@ -165,6 +290,13 @@ class ArmInput:
         deck itself expects, which is the case the second line of defence
         (streamdeck.py's _spoof_reason) could not see without this."""
         return 0
+
+    @property
+    def flooded(self):
+        """True while the input has seen a flood of datagrams recently
+        (round 4 of the safety review, item B).  False for every input
+        that has no socket; only SocketArmInput overrides this."""
+        return False
 
 
 class NullArmInput(ArmInput):
@@ -316,9 +448,16 @@ class SocketArmInput(ArmInput):
         # address the first time it was seen, which a rogue varying its own
         # source port on every single frame turns back into a flood (a
         # real attack proved this: ~26,000 lines in 5 s from 4,000 ports).
-        # {"at": our clock, "count": total rejections, "addrs": set()} or
-        # None between episodes.
-        self._foreign_episode = None
+        # Round 4 (item C) moved this, and every decode rejection too, into
+        # one _RejectJournal: one line per reason per episode, an episode
+        # ends only after EPISODE_QUIET_S of quiet (not stale_ms, which a
+        # datagram every 520 ms defeated), and a hard per-minute cap.
+        self._rejects = _RejectJournal(self._event)
+        # Round 4 (item B): our clock at the last poll that found a flood
+        # (more than FLOOD_DATAGRAMS_PER_POLL datagrams waiting), and
+        # whether that is still inside stale_ms as of the last poll.
+        self._flood_at = None
+        self._flooded = False
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -330,7 +469,9 @@ class SocketArmInput(ArmInput):
         self._sender = None
         self._sender_at = None
         self._foreign = {}
-        self._foreign_episode = None
+        self._rejects.reset()
+        self._flood_at = None
+        self._flooded = False
 
     def poll(self):
         sock = self._sock
@@ -344,21 +485,11 @@ class SocketArmInput(ArmInput):
             # once frame_stale_ms has passed (CONTRACT.md).
             self._sender = None
             self._sender_at = None
-        # Close out the foreign-sender rejection EPISODE once nothing
-        # foreign has been rejected, from ANY address, for stale_ms (item
-        # 10, strengthened round 3 item 5: one summary line per episode
-        # however many distinct addresses were involved, not one per
-        # address -- see _foreign_episode's own comment).
-        ep = self._foreign_episode
-        if ep is not None and (now - ep["at"]) * 1000.0 > self._stale_ms:
-            self._foreign_episode = None
-            if ep["count"] > 1:
-                n_addrs = len(ep["addrs"])
-                self._event("arm-link",
-                            f"arm frames from another sender ({n_addrs} "
-                            f"distinct source address"
-                            f"{'es' if n_addrs != 1 else ''}) stopped "
-                            f"after {ep['count']} rejected in a row")
+        # Close out every rejection EPISODE that has been quiet for
+        # EPISODE_QUIET_S (item 10, round 3 item 5, round 4 item C: one
+        # summary line per reason per episode, however many distinct
+        # addresses were involved and however the datagrams were spaced).
+        self._rejects.sweep(now, self._closing_line)
         # Separately, drop any per-address AND-clear tracking that has gone
         # stale -- this never touches the journal, only which `wanted`
         # vectors are still ANDed in below.
@@ -366,6 +497,7 @@ class SocketArmInput(ArmInput):
                     if (now - e["at"]) * 1000.0 > self._stale_ms]:
             del self._foreign[addr]
         best = None
+        n_read = 0
         for _ in range(DRAIN_PER_TICK):
             try:
                 data, addr = sock.recvfrom(65535)
@@ -377,11 +509,20 @@ class SocketArmInput(ArmInput):
                 continue
             except OSError:
                 break
+            n_read += 1
             addr = tuple(addr[:2])
             try:
                 wanted, seq, names = link.decode_arm(data, self._n, self._key)
             except link.LinkError as e:
-                self._event("arm-link", f"arm frame rejected: {e}")
+                # Round 4, item C: this used to journal one line per
+                # datagram -- no key needed, ~39,000 lines in 5 s, enough
+                # to push "show program stopped answering" out of the
+                # bounded journal queue behind a blocked console.
+                msg = str(e)
+                self._rejects.note(
+                    "decode:" + _decode_reason(msg), now, addr,
+                    f"arm frame rejected: {msg[:120]} (from {addr[0]}:"
+                    f"{addr[1]}).")
                 continue
             if self._sender is None:
                 self._sender = addr
@@ -394,10 +535,42 @@ class SocketArmInput(ArmInput):
                 self._note_foreign(addr, wanted, now)
                 continue
             self._sender_at = now
-            best = ArmAssertion(wanted, seq, names)
+            best = ArmAssertion(wanted, seq, names, sender=addr)
+        if n_read > FLOOD_DATAGRAMS_PER_POLL:
+            # Round 4, item B: see FLOOD_DATAGRAMS_PER_POLL.  Counted over
+            # EVERY datagram, keyed or not: a flood of garbage crowds the
+            # real deck out of the receive buffer just as well as a keyed
+            # one, and either way no honest sender produced it.
+            self._flood_at = now
+            self._rejects.note(
+                "flood", now, ("*", 0),
+                f"arm link flooded: {n_read} datagrams were waiting in one "
+                f"poll (an honest deck sends a few). No group can be newly "
+                f"armed while this lasts, nor until it has stopped for "
+                f"{self._stale_ms} ms; a group already armed stays armed "
+                f"only as long as its own input stays live.")
+        self._flooded = (self._flood_at is not None and
+                         (now - self._flood_at) * 1000.0 <= self._stale_ms)
         if best is not None:
             best = self._apply_foreign_clears(best, now)
         return best
+
+    def _closing_line(self, reason, addrs, count):
+        if reason == "another sender":
+            return (f"arm frames from another sender ({addrs}) stopped "
+                    f"after {count} rejected in a row")
+        if reason == "flood":
+            return (f"arm link flood ended after {count} flooded "
+                    f"poll{'s' if count != 1 else ''}")
+        return (f"arm frames rejected for '{reason[len('decode:'):]}' "
+                f"({addrs}) stopped after {count} rejected")
+
+    @property
+    def flooded(self):
+        """True while a flood (FLOOD_DATAGRAMS_PER_POLL) has been seen
+        inside stale_ms, as of the last poll().  The service passes this
+        to composer.note_arm_link_flooded every tick (round 4, item B)."""
+        return self._flooded
 
     def _note_foreign(self, addr, wanted, now):
         # AND-clear tracking: per-address, since each foreign sender's own
@@ -410,25 +583,18 @@ class SocketArmInput(ArmInput):
             e["wanted"] = tuple(bool(w) for w in wanted)
             e["at"] = now
         # Journal rate-limiting: by REASON, across every address, not per
-        # address (round 3, item 5 -- see _foreign_episode's own comment:
-        # keying this on the address, even indirectly via "is this address
-        # new", is exactly what a rogue varying its own source port defeats).
-        ep = self._foreign_episode
-        if ep is None:
-            self._foreign_episode = {"at": now, "count": 1, "addrs": {addr}}
-            self._event("arm-link",
-                        f"arm frame rejected: another sender ({addr[0]}:"
-                        f"{addr[1]} is not the locked sender "
-                        f"{self._sender[0]}:{self._sender[1]}); its "
-                        f"disarm bits still apply. Further rejections for "
-                        f"this same reason -- from this or any other "
-                        f"source address -- will not be logged "
-                        f"individually until it stops for {self._stale_ms} "
-                        f"ms.")
-        else:
-            ep["at"] = now
-            ep["count"] += 1
-            ep["addrs"].add(addr)
+        # address (round 3, item 5: keying this on the address, even
+        # indirectly via "is this address new", is exactly what a rogue
+        # varying its own source port defeats).
+        # Round 4 (item C): the same _RejectJournal every other arm-link
+        # rejection now goes through, with its longer quiet window and its
+        # per-minute cap.
+        self._rejects.note(
+            "another sender", now, addr,
+            f"arm frame rejected: another sender ({addr[0]}:{addr[1]} is "
+            f"not the locked sender {self._sender[0]}:{self._sender[1]}); "
+            f"its disarm bits still apply, and no group can be newly armed "
+            f"while it is on the link.")
 
     def _apply_foreign_clears(self, assertion, now):
         """AND every still-fresh foreign sender's `wanted` into `assertion`,
@@ -465,7 +631,7 @@ class SocketArmInput(ArmInput):
         if not changed:
             return assertion
         return ArmAssertion(wanted, assertion.seq, assertion.names,
-                            forced=forced)
+                            forced=forced, sender=assertion.sender)
 
     def close(self):
         sock, self._sock = self._sock, None
@@ -477,7 +643,9 @@ class SocketArmInput(ArmInput):
         self._sender = None
         self._sender_at = None
         self._foreign = {}
-        self._foreign_episode = None
+        self._rejects.reset()
+        self._flood_at = None
+        self._flooded = False
 
     @property
     def foreign_count(self):
