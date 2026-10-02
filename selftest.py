@@ -26374,5 +26374,13 @@ if __name__ == "__main__":
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Job logs cannot always be fetched (a cloud session's proxy
+            # blocks the log store); annotations can, so each failure is
+            # also written as one.
+            for f in FAILS[:20]:
+                msg = (str(f)[:1500].replace("%", "%25")
+                       .replace("\r", "%0D").replace("\n", "%0A"))
+                print(f"::error title=selftest failure::{msg}")
         sys.exit(1)
     print(f"all checks passed in {time.time()-t0:.1f}s")
