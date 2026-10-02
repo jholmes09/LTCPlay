@@ -1168,6 +1168,7 @@ class Controller:
         # so a status frame that disagrees can be caught even if a rogue
         # sender briefly won the arm link's own lock (arminput.py).
         self._spoof_alarm = ""
+        self._spoof_category = ""  # round 3, item 5: the STABLE dedup key
         self._spoof_since = None
         self._spoof_last_seq = 0
         self._spoof_grace_until = 0.0
@@ -1177,6 +1178,37 @@ class Controller:
             self._journal(text, **kw)
         except Exception:
             pass
+
+    def reset_on_reconnect(self):
+        """Called by run_forever right after a (re)connect, once arm.open()
+        has already reset ArmSocket's own `wanted`/seq to a clean slate
+        (module docstring, failure mode 2). Clears every hold-start
+        timestamp and the last-seen key snapshot this controller keeps
+        BETWEEN main-loop passes, so none of it can survive the gap and be
+        checked against wall-clock time that passed while the deck was
+        unplugged.
+
+        Round 3 of the safety review, item 2: tick() runs unconditionally
+        on every main-loop pass (round 2's own fix) and checks hold
+        completion with `self._prev_keys[gk] and self._arm_holds[i].fired
+        (now)` -- against state that this method did not used to clear.  A
+        key held down when the deck unplugged, then physically released
+        WHILE it was unplugged, left `_prev_keys` still showing it down and
+        `_arm_holds[i]._down_at` still the original press time once the
+        deck reconnected.  If the hardware reports a key's state only on
+        change (nothing to report, since nothing has changed since before
+        the gap), run_once() may see no snapshot at all on the first pass
+        after reconnecting, so tick() is the only thing that runs -- and it
+        found a hold that had long since "reached" its own duration purely
+        because real time kept passing during the outage, firing an arm (or
+        an Abort) the operator never actually held down. A reconnect must
+        read as a clean start for key state too, the same as it already
+        does for `wanted`: every group starts OFF, every key starts
+        released, and the operator re-presses for real."""
+        self._prev_keys = [False] * 6
+        self._abort_hold.release()
+        for h in self._arm_holds:
+            h.release()
 
     def _latched_now(self):
         if self.conductor is not None:
@@ -1480,20 +1512,33 @@ class Controller:
         once per key snapshot: updates the spoof alarm (item 1's second
         line of defence) independent of how many key transitions this
         pass processed."""
-        reason = self._spoof_reason()
+        category, reason = self._spoof_reason()
         if reason:
-            self._raise_spoof_alarm(reason)
+            self._raise_spoof_alarm(category, reason)
         else:
             self._clear_spoof_alarm()
 
     def _spoof_reason(self):
-        """"" normally; a sentence once flamesafe's reported arm state
-        keeps diverging from what THIS deck actually sent (item 1, safety
-        review of PR #31): the sender lock in arminput.py stops a forged
-        frame from being ACCEPTED once this deck is locked in, but this is
-        the second line of defence for the race at (re)connect or the
-        lock's own staleness window -- this deck should never see state on
-        the wire that it did not set and does not expect."""
+        """(category, sentence): ("", "") normally; once flamesafe's
+        reported arm state keeps diverging from what THIS deck actually
+        sent (item 1, safety review of PR #31), `sentence` is the full,
+        human-readable line, and `category` is a short, STABLE name for
+        the KIND of problem -- it never includes a number that changes on
+        its own.  The sender lock in arminput.py stops a forged frame from
+        being ACCEPTED once this deck is locked in, but this is the second
+        line of defence for the race at (re)connect or the lock's own
+        staleness window -- this deck should never see state on the wire
+        that it did not set and does not expect.
+
+        `category` exists only so _raise_spoof_alarm can dedupe correctly
+        (round 3 of the safety review, item 5: a PROVEN bug, flagged once
+        before and never actually fixed -- the arm-seq-ahead sentence
+        below embeds this deck's OWN seq, which ArmSocket advances on
+        every single send, so the full sentence was a new string every
+        tick and `self._spoof_alarm == reason` never once matched while
+        the condition persisted, journaling the alarm every main-loop
+        pass instead of once). `sentence` still carries the live numbers
+        for the person reading it; only the dedup key leaves them out."""
         now = self._clock()
         if self.arm.seq < self._spoof_last_seq:
             # ArmSocket.open() reset our own counter (a reconnect):
@@ -1504,20 +1549,39 @@ class Controller:
             self._spoof_grace_until = now + RECONNECT_GRACE_S
         self._spoof_last_seq = self.arm.seq
         if now < self._spoof_grace_until:
-            return ""
+            return "", ""
         st = self.status.last
         if st is None or self.status.stale(self._clock):
-            return ""
+            return "", ""
         arm_input = st.get("arm_input") or {}
         if arm_input.get("state") != "live":
-            return ""
+            return "", ""
         seq = arm_input.get("seq")
+        foreign = arm_input.get("foreign_senders")
+        category = reason = ""
         if isinstance(seq, int) and not isinstance(seq, bool) \
                 and seq > self.arm.seq:
+            category = "arm-seq-ahead"
             reason = (f"flamesafe reports arm seq {seq}, ahead of the "
                       f"{self.arm.seq} this deck has sent")
+        elif isinstance(foreign, int) and not isinstance(foreign, bool) \
+                and foreign > 0:
+            # Item 6, round 3 of the safety review: this deck could
+            # previously go a whole rogue episode with NO alarm at all --
+            # the foreign-disarm AND (arminput.py) can leave `wanted`
+            # looking exactly like what this deck itself expects (the
+            # rogue is only clearing bits this deck already has clear, or
+            # the mismatch has not reached SPOOF_GRACE_S yet), and the seq
+            # check above only fires if the rogue's own counter races ahead
+            # of this deck's. flamesafe now says outright whether anyone
+            # else is on the link; this deck trusts that over its own
+            # necessarily incomplete view of the effect.
+            category = "foreign-senders"
+            reason = (f"flamesafe reports {foreign} other sender"
+                      f"{'s' if foreign != 1 else ''} currently "
+                      f"interacting with the arm link -- this deck is not "
+                      f"the only one talking to it")
         else:
-            reason = ""
             by_name = {g.get("name"): g for g in (st.get("groups") or [])
                       if isinstance(g, dict)}
             for i, name in enumerate(self.names):
@@ -1526,26 +1590,29 @@ class Controller:
                     continue
                 want = g.get("wanted")
                 if isinstance(want, bool) and want != self.arm.wanted[i]:
+                    category = f"wanted-mismatch:{name}"
                     reason = (f"flamesafe reports {name} wanted={want}, "
                               f"but this deck last sent "
                               f"wanted={self.arm.wanted[i]}")
                     break
         if not reason:
             self._spoof_since = None
-            return ""
+            return "", ""
         if self._spoof_since is None:
             self._spoof_since = now
         if (now - self._spoof_since) < SPOOF_GRACE_S:
             # A one-tick lag between this deck sending and flamesafe's
             # status catching up is normal, not a spoof; only a mismatch
             # that PERSISTS is.
-            return ""
-        return reason
+            return "", ""
+        return category, reason
 
-    def _raise_spoof_alarm(self, reason):
-        if self._spoof_alarm == reason:
-            return    # already alarming for this exact reason; no spam
-        self._spoof_alarm = reason
+    def _raise_spoof_alarm(self, category, reason):
+        self._spoof_alarm = reason      # always the LATEST text, for draw()
+        if self._spoof_category == category:
+            return    # already alarming for this exact CATEGORY; no spam,
+                      # even though `reason`'s own numbers keep moving
+        self._spoof_category = category
         self._log(f"Stream Deck ALARM: {reason}. Flamesafe is honouring "
                   f"an arm signal this deck did not send; treat every "
                   f"group's displayed state as untrustworthy until this "
@@ -1564,6 +1631,7 @@ class Controller:
                       "flamesafe's reported state matches what this deck "
                       "is sending again.", action="spoof-alarm")
         self._spoof_alarm = ""
+        self._spoof_category = ""
 
     def status_for(self, name):
         """The real per-group status dict for `name`, or None if no status
@@ -1693,8 +1761,14 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     told to stop. Reconnects on DeckDisconnected: every reconnect goes
     through controller.arm.open() again first, which resets `wanted` to
     all-false and the seq counter to 0 before anything is sent (module
-    docstring, failure mode 2) -- the operator sees every group read OFF
-    and re-arms by pressing it, same as after any other interruption."""
+    docstring, failure mode 2), AND controller.reset_on_reconnect(), which
+    clears every hold-start timestamp and the last-seen key snapshot
+    (round 3 of the safety review, item 2: those used to survive a
+    disconnect, so a hold in progress when the deck unplugged could read
+    as already complete, purely from wall-clock time passing during the
+    outage, the instant it reconnected) -- the operator sees every group
+    read OFF and every key released, and re-arms by pressing it for real,
+    same as after any other interruption."""
     journal = journal or (lambda text, **kw: None)
     fonts = Fonts()
     chase = 0
@@ -1709,9 +1783,10 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
             continue
         controller.arm.close()
         controller.arm.open()
+        controller.reset_on_reconnect()
         journal("Stream Deck connected. Every group starts OFF until "
                "pressed; nothing on this machine remembers what was armed "
-               "before.", action="deck")
+               "or held before.", action="deck")
         try:
             while True:
                 t0 = clock()

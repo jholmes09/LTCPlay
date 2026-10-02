@@ -23570,14 +23570,16 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     section("Stream Deck: tick() advances the abort-hold and every group's "
             "arm-hold on EVERY main-loop pass, even when keys_down() "
             "reports a key's state only on CHANGE and hands back nothing "
-            "while it is held (item 2, round 2 of the safety review -- the "
-            "regression test that would have caught it). run_forever()'s "
-            "own loop body is mirrored here rather than called directly: "
-            "it also opens real hardware and draws real images (PIL), "
-            "which is the hardware glue this file's own closing section "
-            "says is 'exercised on the bench, not in selftest.py'; "
-            "everything exercised here (run_once, tick()) is the same "
-            "pure logic that loop calls, unit-testable with fakes.")
+            "while it is held (item 2, round 2 of the safety review). "
+            "Round 3 of the safety review found the regression test added "
+            "for this mirrored run_forever()'s OWN loop body instead of "
+            "calling it -- so a regression that removed the tick() call "
+            "from run_forever entirely would NOT have been caught. This "
+            "version calls the REAL sd.run_forever() with a fake deck and "
+            "a fake clock/sleep (no hardware, no PIL fonts needed): only "
+            "Fonts.text_block is stubbed out, since drawing needs a real "
+            "font file this CI box does not have, and that is hardware-"
+            "adjacent rendering, not the logic under test.")
     from ltcplay import streamdeck as sd
 
     names = ["front row", "cat-walk", "wave flamer"]
@@ -23596,62 +23598,187 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     c._abort_hold = sd.AbortHold(hold_s=2.0)
     c._arm_holds = [sd.AbortHold(hold_s=2.0) for _ in names]
 
+    class _StopTest(Exception):
+        """Not a DeckDisconnected: run_forever() does not catch this, so
+        raising it from keys_down() is how this test ends a loop that is
+        otherwise infinite by design."""
+
+    down_all_false = [False] * 6
+    press_group0 = list(down_all_false)
+    press_group0[sd.GROUP_KEYS[0]] = True
+    press_abort = list(down_all_false)
+    press_abort[sd.TOP_ABORT] = True
+    results = {}
+
     class _ChangeOnlyDeck:
-        """A fake Deck.keys_down(): hands back the new 6-key snapshot
-        exactly once, on the pass it actually changes, and an EMPTY list on
-        every other pass -- what the safety review believed the real
-        Stream Deck Mini hardware does, and the more demanding of the two
-        possibilities (module docstring, "What NOT to do": this test
-        covers it without settling the hardware question either way). A
-        caller that only checks hold completion inside run_once() -- which
-        this fake would never call again between the press and the
-        release -- could never see the hold complete."""
+        """Deck.keys_down(): hands back a new 6-key snapshot exactly once,
+        on the pass it actually changes, and an EMPTY list on every other
+        pass -- what the safety review believed the real Stream Deck Mini
+        hardware does, and the more demanding of the two possibilities
+        (module docstring, "What NOT to do": this test covers it without
+        settling the hardware question either way). A caller that only
+        checks hold completion inside run_once() -- which this fake would
+        never call again between the press and the release -- could never
+        see the hold complete. The checks themselves run INSIDE
+        keys_down(), at the pass index where the right number of tick()
+        calls (driven by the real run_forever(), not this test) have
+        already happened: that is the only place this test can read state
+        mid-run, since run_forever() does not return until it raises."""
 
         def __init__(self):
-            self._pending = []
-
-        def press(self, k):
-            d = [False] * 6
-            d[k] = True
-            self._pending.append(d)
-
-        def release(self):
-            self._pending.append([False] * 6)
+            self.i = 0
 
         def keys_down(self):
-            out, self._pending = self._pending, []
-            return out
+            i, self.i = self.i, self.i + 1
+            if i == 0:
+                return [press_group0]            # start the arm-hold
+            if i == 50:                          # 50 passes @ 0.05 s = 2.5 s
+                results["armed_from_tick_alone"] = list(arm.wanted)
+                return [list(down_all_false)]    # release
+            if i == 51:
+                return [press_abort]             # start the abort-hold
+            if i == 101:                         # another 50 passes
+                results["disarmed_from_tick_alone"] = list(arm.wanted)
+                return [list(down_all_false)]    # release
+            if i >= 102:
+                raise _StopTest()
+            return []
 
-    def run_passes(deck, n, dt=0.05):
-        """run_forever()'s own loop body, minus the hardware (no deck
-        image draw, no real sleep): every snapshot keys_down() hands back
-        goes through run_once(), then tick() runs UNCONDITIONALLY, exactly
-        once per pass, whether or not keys_down() returned anything."""
-        for _ in range(n):
-            for down in deck.keys_down():
-                c.run_once(down)
-            c.tick()
-            t[0] += dt
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
 
     deck = _ChangeOnlyDeck()
-    deck.press(sd.GROUP_KEYS[0])
-    run_passes(deck, 50, dt=0.05)        # 2.5 s of passes, no new snapshots
-    check(arm.wanted == [True, False, False],
-          f"a 2 s arm-hold completes from tick() alone, even though "
-          f"keys_down() never reported anything after the initial press: "
-          f"{arm.wanted}")
-    deck.release()
-    run_passes(deck, 1)
+    orig_text_block = sd.Fonts.text_block
+    sd.Fonts.text_block = lambda self, *a, **kw: None  # see section() above
+    try:
+        sd.run_forever(c, deck_factory=lambda: deck,
+                       journal=lambda t_, **kw: events.append((t_, kw)),
+                       sleep=lambda s: t.__setitem__(0, t[0] + s),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        sd.Fonts.text_block = orig_text_block
 
-    # The Abort-hold: same shape. front row is still armed from above, so
-    # there is something real for Abort to do.
-    deck.press(sd.TOP_ABORT)
-    run_passes(deck, 50, dt=0.05)        # 2.5 s, no new snapshots either
+    check(results.get("armed_from_tick_alone") == [True, False, False],
+          f"a 2 s arm-hold completes from tick() alone, inside the REAL "
+          f"run_forever() loop, even though keys_down() never reported "
+          f"anything after the initial press: "
+          f"{results.get('armed_from_tick_alone')}")
+    check(results.get("disarmed_from_tick_alone") == [False, False, False],
+          f"a 2 s Abort-hold ALSO completes from tick() alone, inside the "
+          f"REAL run_forever() loop, under the same condition: "
+          f"{results.get('disarmed_from_tick_alone')}")
+
+
+def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
+    section("Stream Deck: a reconnect clears every hold-start timestamp "
+            "and the last-seen key snapshot, not only ArmSocket's own "
+            "`wanted`/seq (item 2, round 3 of the safety review -- a "
+            "PROVEN bug: a group key mid-hold when the deck unplugs, "
+            "released while it is unplugged, used to fire the arm on the "
+            "very FIRST pass after reconnecting, purely because real time "
+            "kept passing during the outage -- tick() runs unconditionally "
+            "every pass and checked the hold's elapsed time against a "
+            "press timestamp from before the gap that nothing had ever "
+            "cleared). This calls the REAL sd.run_forever() across a real "
+            "DeckDisconnected/reconnect cycle, with two fake decks.")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    # A short hold for this test: run_forever's own reconnect path sleeps a
+    # full second on a DeckDisconnected before trying again, which alone
+    # is already many times a short hold's own duration -- exactly the gap
+    # this fix has to survive, with no dependency on the real ARM_HOLD_S.
+    c._arm_holds = [sd.AbortHold(hold_s=0.1) for _ in names]
+
+    class _StopTest(Exception):
+        """Not a DeckDisconnected: run_forever() does not catch this."""
+
+    down_all_false = [False] * 6
+    press_group0 = list(down_all_false)
+    press_group0[sd.GROUP_KEYS[0]] = True
+
+    class _Deck1:
+        """The real deck: reports front row's key going down once, then
+        unplugs (DeckDisconnected) on its very next read -- disconnected
+        with the key held down mid-hold."""
+
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            self.i += 1
+            if self.i == 1:
+                return [press_group0]
+            raise sd.DeckDisconnected("unplugged mid-hold")
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+
+    class _Deck2:
+        """The reconnect. The operator physically released the key WHILE
+        the deck was unplugged (module docstring, failure mode 2's own
+        scenario) -- real hardware reports a key's state only on change,
+        and from ITS point of view nothing has changed since before the
+        gap (it never reported anything then either), so keys_down() hands
+        back nothing at all, pass after pass: the worst, most demanding
+        case, matching this file's own established choice for the other
+        tick() test above."""
+
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            self.i += 1
+            if self.i > 5:
+                raise _StopTest()
+            return []
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+
+    decks = [_Deck1(), _Deck2()]
+
+    def deck_factory():
+        return decks.pop(0)
+
+    orig_text_block = sd.Fonts.text_block
+    sd.Fonts.text_block = lambda self, *a, **kw: None
+    try:
+        sd.run_forever(c, deck_factory=deck_factory,
+                       journal=lambda t_, **kw: events.append((t_, kw)),
+                       sleep=lambda s: t.__setitem__(0, t[0] + s),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        sd.Fonts.text_block = orig_text_block
+
     check(arm.wanted == [False, False, False],
-          f"a 2 s Abort-hold ALSO completes from tick() alone under the "
-          f"same condition: {arm.wanted}")
-    deck.release()
-    run_passes(deck, 1)
+          f"a hold in progress when the deck unplugged, released WHILE it "
+          f"was unplugged, must NOT fire on reconnect just because real "
+          f"time kept passing during the outage: {arm.wanted}")
+    check(not any(kw.get("action") == "arm" for _text, kw in events),
+          f"no arm line was journaled for a press that never really "
+          f"happened after the reconnect: {events}")
 
 
 def test_streamdeck_abort_same_pass_as_arm_hold_completion():
@@ -23913,6 +24040,103 @@ def test_streamdeck_spoof_alarm():
           "right after a reconnect, a stale-looking status is not an "
           "alarm even after the debounce window: RECONNECT_GRACE_S "
           "covers it")
+
+
+def test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone():
+    section("Stream Deck: flamesafe reporting a foreign sender interacting "
+            "with the arm link raises this deck's own alarm even when the "
+            "deck's OWN view of `wanted` happens to match (round 3 of the "
+            "safety review, item 6: the review found the deck usually "
+            "raised NO alarm at all while a rogue held the lock, because "
+            "the foreign-disarm AND (arminput.py) can leave `wanted` "
+            "looking exactly like what the deck itself expects, and the "
+            "seq check only fires if the rogue's own counter races ahead "
+            "of this deck's)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def status_doc(seq, wanted, foreign):
+        return {"arm_input": {"state": "live", "seq": seq,
+                              "foreign_senders": foreign},
+               "groups": [{"name": n, "wanted": w}
+                          for n, w in zip(names, wanted)]}
+
+    arm.send(names)      # arm.seq == 1
+    # The deck's own wanted ([False]*3) matches exactly what flamesafe
+    # reports, and the seq is not ahead either: by the two OLD checks
+    # alone, nothing here would ever alarm.
+    status.set(status_doc(1, [False, False, False], foreign=0))
+    c.check_links()
+    check(not c._spoof_alarm, "nothing foreign reported: no alarm")
+
+    status.set(status_doc(1, [False, False, False], foreign=1))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a fresh foreign-sender report does not alarm on the very first "
+          "sighting: the debounce clock has only just started")
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm and "other sender" in c._spoof_alarm,
+          f"but the SAME foreign-sender report, still there after "
+          f"SPOOF_GRACE_S, raises the alarm even though wanted and seq "
+          f"both still look fine: {c._spoof_alarm!r}")
+    check(any("ALARM" in t_ for t_, kw in events),
+          f"and it is journaled: {events}")
+
+    status.set(status_doc(1, [False, False, False], foreign=0))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "clears once flamesafe reports nobody else is on the link")
+
+
+def test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number():
+    section("Stream Deck: the spoof/divergence alarm logs ONCE for a "
+            "PERSISTENT condition, even though the arm-seq-ahead reason's "
+            "own text embeds this deck's own seq, which ArmSocket advances "
+            "on every single send (round 3 of the safety review, item 5 -- "
+            "a PROVEN bug, flagged once already and never actually fixed: "
+            "the dedup compared the FULL sentence, which was a brand new "
+            "string every main-loop pass, so the alarm line repeated once "
+            "per pass for as long as the condition lasted)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    for _ in range(5):
+        arm.send(names)                      # arm.seq is now 5
+    status.set({"arm_input": {"state": "live", "seq": 99999}, "groups": []})
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+
+    before = len(events)
+    for i in range(30):
+        arm.send(names)                      # arm.seq keeps climbing
+        status.set({"arm_input": {"state": "live", "seq": 99999 + i},
+                   "groups": []})
+        c.check_links()
+    alarms = [e for e in events[before:] if "ALARM" in e[0]]
+    check(len(alarms) == 1,
+          f"30 passes of a PERSISTENT arm-seq-ahead condition, with this "
+          f"deck's own seq and flamesafe's reported seq both changing "
+          f"every pass, still produce exactly ONE alarm line, not 30: "
+          f"{len(alarms)}")
 
 
 def test_streamdeck_arm_socket_logs_failed_sends_once():
@@ -24453,11 +24677,14 @@ if __name__ == "__main__":
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
+    test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
     test_streamdeck_refractory_also_starts_at_reset()
     test_streamdeck_draw_latched_shows_real_state_not_flat_off()
     test_streamdeck_spoof_alarm()
+    test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
+    test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()
     test_streamdeck_arm_socket_logs_failed_sends_once()
     test_streamdeck_local_schedule_never_blocks_the_main_loop()
     test_streamdeck_local_schedule_operator_reverts_when_server_drops()

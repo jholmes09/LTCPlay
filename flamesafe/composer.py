@@ -70,6 +70,16 @@ class Composer:
         self._arm_live = False
         self._link_live = False         # ltcplay's frames fresh last tick
         self._link_lost_at = None       # tick clock when the link went stale
+        # Round 3 of the safety review, item 6: how many OTHER senders
+        # SocketArmInput is currently tracking on the arm link (fresh
+        # inside its own stale_ms), as of the last note_foreign_arm_senders
+        # call. Zero for every input that never has one (NullArmInput,
+        # ScriptedArmInput). Carried in the status frame so the deck can
+        # raise its own alarm the instant a foreign sender is interacting
+        # with the link at all, not only once a divergence it can actually
+        # observe (a forced bit that happens to already match what this
+        # deck expects leaves nothing else to notice).
+        self._foreign_arm_senders = 0
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -105,7 +115,7 @@ class Composer:
 
     # ------------------------------------------------------------ arm input
 
-    def assert_arm(self, wanted, seq, names=None):
+    def assert_arm(self, wanted, seq, names=None, forced=None):
         """The arm input says: I want these groups armed, and my liveness
         counter is `seq`.  Returns True if the assertion was well formed.
 
@@ -114,6 +124,17 @@ class Composer:
         assertion is rejected unless they match the config exactly, in
         order, so a deck built against a different group map cannot arm
         the wrong head.
+
+        `forced` (added round 3 of the safety review, item 1) is optional:
+        one bool per group, True where this call's False bit is not a
+        genuine report from the input -- SocketArmInput sets it where its
+        own foreign-disarm AND (arminput.py's FOREIGN DISARM section)
+        cleared a bit that the locked sender itself was not asking to
+        clear.  A forced low still disarms this tick (that is the entire
+        point of letting a foreign frame clear a bit), but it must never
+        be read as the operator's own down edge: see the consent loop
+        below.  None (every other input) means nothing is forced, exactly
+        like an all-False vector.
 
         Never raises.  A malformed assertion is rejected and counted; the
         staleness rule then disarms within arm_stale_ms if nothing well
@@ -125,6 +146,12 @@ class Composer:
                 raise ValueError("wanted")
             if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
                 raise ValueError("seq")
+            if forced is None:
+                f = [False] * self.n
+            else:
+                f = list(forced)
+                if len(f) != self.n or any(not isinstance(x, bool) for x in f):
+                    raise ValueError("forced")
             if names is not None:
                 want_names = [g.name for g in self.groups]
                 if list(names) != want_names:
@@ -205,14 +232,45 @@ class Composer:
         for i in range(self.n):
             if not w[i]:
                 if self._wanted[i]:
-                    # The operator disarmed this group.  The dwell applies.
+                    # Something disarmed this group (the operator, or a
+                    # foreign sender's forced clear).  The dwell applies
+                    # either way: a value that just went to zero must not
+                    # bounce straight back up, forced or not.
                     self._disarmed_at[i] = t
-                self._seen_down[i] = consent_ok
+                # Round 3 of the safety review (item 1): seen_down is the
+                # "the operator pulled this down for real" flag a future
+                # True consumes as consent (just below).  A FORCED low --
+                # this bit went to False only because a foreign sender's
+                # AND cleared it, never because the locked sender itself
+                # reported it -- must never set that flag: it is not the
+                # operator cycling anything, and letting it count is
+                # exactly how a foreign False-then-True sequence used to
+                # forge a consent edge while the locked sender's own report
+                # never changed. A forced low also CLEARS any seen_down a
+                # genuine low already set: the bit the composer is looking
+                # at right now did not come from the locked sender, so
+                # there is nothing left here that proves the operator did
+                # anything, forced or not.
+                self._seen_down[i] = consent_ok and not f[i]
                 self._latched[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
             self._wanted[i] = w[i]
         return True
+
+    def note_foreign_arm_senders(self, count):
+        """How many OTHER senders the arm input is currently tracking on
+        the link (round 3 of the safety review, item 6).  Called by the
+        service every tick, independent of whether assert_arm was also
+        called this tick (a locked sender that goes briefly quiet must not
+        make this number look stale just because nothing else moved).
+        Never raises: a bad value is simply not counted, which is the safe
+        side -- the deck losing this one extra signal is never worse than
+        the deck crashing."""
+        try:
+            self._foreign_arm_senders = max(0, int(count))
+        except (TypeError, ValueError):
+            pass
 
     def _reset_latches(self, why, journal=True):
         # journal=False clears just the same but neither counts nor writes
@@ -630,6 +688,7 @@ class Composer:
                           else "live" if live else "stale"),
                 "seq": self._arm_seq,
                 "age_ms": arm_age,
+                "foreign_senders": self._foreign_arm_senders,
             },
             "frames": {
                 "state": ("never" if self._frame_at is None

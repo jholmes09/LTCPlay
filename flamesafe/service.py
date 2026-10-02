@@ -180,11 +180,21 @@ class Service:
             self._event("arm-input", f"the arm input raised "
                                      f"{type(e).__name__}: {e}")
             return
+        # Round 3 of the safety review, item 6: this runs whether or not
+        # poll() itself had a fresh assertion to return, so the status
+        # frame's foreign-sender count never goes stale just because the
+        # locked sender was briefly quiet this tick.
+        try:
+            self.composer.note_foreign_arm_senders(
+                getattr(self.arm_input, "foreign_count", 0))
+        except Exception:                               # noqa: BLE001
+            pass
         if a is None:
             return
         try:
             self.composer.assert_arm(a.wanted, a.seq,
-                                     names=getattr(a, "names", None))
+                                     names=getattr(a, "names", None),
+                                     forced=getattr(a, "forced", None))
         except Exception as e:                          # noqa: BLE001
             # assert_arm's own contract is "never raises" (composer.py); if
             # it ever does anyway, that is a bug in the composer, and the

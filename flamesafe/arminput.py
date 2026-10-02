@@ -71,6 +71,28 @@ the nominal lock. This does not and cannot re-arm anything, does not
 change seq or names (those still come from the locked sender, so consent
 in the composer is unaffected), and a foreign sender still never becomes
 the lock holder by sending this way.
+
+FORCED-EDGE TRACKING (added after a FOURTH safety review, round 3): the
+foreign-disarm AND above closes "a rogue can mask an Abort", but it opened
+a different hole, proven by running the actual attack: a foreign sender
+that sends a group's `wanted` False for a while and then True again puts a
+False-then-True sequence in front of the composer -- and the composer's
+own consent rule (rule 6) reads ANY False-then-True sequence on a counter
+it already trusts as "the operator cycled the arm", because it has no way
+to tell a FORCED low (the real deck never stopped asking for True; this
+file's AND just clipped the bit for a while) from a GENUINE one (the real
+deck's own key actually went up then down). The locked sender's own report
+never changed through the whole attack, so the composer armed a group the
+operator never touched. poll() now reports, per group, whether its False
+bit in the returned ArmAssertion was forced here rather than genuinely
+asserted by the locked sender (`ArmAssertion.forced`, see its docstring);
+composer.assert_arm uses that to refuse to treat a forced low as proof of
+anything -- a group that was only ever forced low must stay disarmed/held
+until the LOCKED sender ITSELF reports a fresh, un-forced low-to-high
+transition. This is additive: it changes nothing about which bits reach
+the composer (still the same AND as round 2, a foreign sender can still
+only ever clear a bit, never set one), only what the composer is allowed
+to infer from a bit that got cleared this way.
 """
 
 from __future__ import annotations
@@ -94,13 +116,26 @@ DEFAULT_STALE_MS = 500
 
 class ArmAssertion:
     """What an input currently asserts.  `names` is optional and, when
-    given, must match the composer's group names in order."""
-    __slots__ = ("wanted", "seq", "names")
+    given, must match the composer's group names in order.
 
-    def __init__(self, wanted, seq, names=None):
+    `forced` (added round 3 of the safety review, item 1) is optional: one
+    bool per group, True where THIS assertion's False bit was produced by
+    the foreign-disarm AND below, not actually reported as False by the
+    locked sender itself.  None (the default) means "nothing forced",
+    exactly like a plain False vector -- every driver except
+    SocketArmInput (when a foreign sender is interfering) leaves this
+    unset.  The composer uses it to tell a FORCED low from a genuine one:
+    only a genuine low may ever set up a future consent edge (see
+    composer.assert_arm and the module docstring's FORCED-EDGE section
+    below)."""
+    __slots__ = ("wanted", "seq", "names", "forced")
+
+    def __init__(self, wanted, seq, names=None, forced=None):
         self.wanted = tuple(bool(w) for w in wanted)
         self.seq = int(seq)
         self.names = None if names is None else tuple(str(n) for n in names)
+        self.forced = (None if forced is None
+                       else tuple(bool(f) for f in forced))
 
 
 class ArmInput:
@@ -117,6 +152,20 @@ class ArmInput:
     def close(self):
         pass
 
+    @property
+    def foreign_count(self):
+        """How many OTHER senders this input is currently tracking as
+        still fresh (round 3 of the safety review, item 6).  Zero for
+        every input that has no concept of one; only SocketArmInput
+        overrides this.  The service reads it every tick, independent of
+        poll()'s own return value, and feeds it to the composer's status
+        frame so the deck can raise its own alarm the instant a foreign
+        sender is interacting with the link at all -- even on a tick where
+        the AND happens to leave `wanted` looking exactly like what the
+        deck itself expects, which is the case the second line of defence
+        (streamdeck.py's _spoof_reason) could not see without this."""
+        return 0
+
 
 class NullArmInput(ArmInput):
     """Never asserts anything.  Every group stays disarmed.  What flamesafe
@@ -132,6 +181,8 @@ class ScriptedArmInput(ArmInput):
         self.n = n
         self.names = None if names is None else tuple(names)
         self.wanted = [False] * n
+        self.forced = [False] * n   # test-only: which bits to mark forced
+                                   # on the NEXT poll() (round 3, item 1)
         self.seq = 0
         self.alive = True        # advance the counter on each poll
         self.silent = False      # return None on each poll
@@ -140,6 +191,14 @@ class ScriptedArmInput(ArmInput):
     def set(self, *groups, on=True):
         for g in groups:
             self.wanted[g] = on
+
+    def set_forced(self, *groups, on=True):
+        """Test-only: mark `groups` as forced on the next poll(), simulating
+        what SocketArmInput's foreign-disarm AND would report. Never clears
+        itself; the test sets it back to off once the simulated foreign
+        interference stops."""
+        for g in groups:
+            self.forced[g] = on
 
     def set_all(self, on):
         self.wanted = [bool(on)] * self.n
@@ -161,7 +220,8 @@ class ScriptedArmInput(ArmInput):
             return None
         if self.alive:
             self.seq += 1
-        return ArmAssertion(self.wanted, self.seq, self.names)
+        return ArmAssertion(self.wanted, self.seq, self.names,
+                            forced=self.forced)
 
 
 class SocketArmInput(ArmInput):
@@ -244,10 +304,21 @@ class SocketArmInput(ArmInput):
                                   # it has been accepted inside stale_ms
         self._sender_at = None    # our own clock, last accepted datagram
         # Foreign-disarm tracking (round 2 of the safety review): addr ->
-        # {"wanted": tuple, "at": our clock, "count": rejections this
-        # episode, "logged": bool}. Never the lock holder; only ever ANDed
-        # (bits cleared, never set) into whatever this poll() call returns.
+        # {"wanted": tuple, "at": our clock}. Never the lock holder; only
+        # ever ANDed (bits cleared, never set) into whatever this poll()
+        # call returns. Purely for that AND -- journaling is tracked
+        # separately below (round 3, item 5).
         self._foreign = {}
+        # Journal rate-limiting for "another sender" rejections (round 3 of
+        # the safety review, item 5): one line per REASON per episode, with
+        # a running count, not one per rejecting ADDRESS. Round 2's own
+        # fix (the per-address dict above) still logged once per NEW
+        # address the first time it was seen, which a rogue varying its own
+        # source port on every single frame turns back into a flood (a
+        # real attack proved this: ~26,000 lines in 5 s from 4,000 ports).
+        # {"at": our clock, "count": total rejections, "addrs": set()} or
+        # None between episodes.
+        self._foreign_episode = None
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -259,6 +330,7 @@ class SocketArmInput(ArmInput):
         self._sender = None
         self._sender_at = None
         self._foreign = {}
+        self._foreign_episode = None
 
     def poll(self):
         sock = self._sock
@@ -272,18 +344,27 @@ class SocketArmInput(ArmInput):
             # once frame_stale_ms has passed (CONTRACT.md).
             self._sender = None
             self._sender_at = None
-        # Close out any foreign sender's rejection episode once it has gone
-        # quiet for stale_ms (item 10: one summary line, not one per
-        # datagram -- a flood from a misconfigured or rogue sender must not
-        # push other lines out of flamesafe's bounded journal queue).
+        # Close out the foreign-sender rejection EPISODE once nothing
+        # foreign has been rejected, from ANY address, for stale_ms (item
+        # 10, strengthened round 3 item 5: one summary line per episode
+        # however many distinct addresses were involved, not one per
+        # address -- see _foreign_episode's own comment).
+        ep = self._foreign_episode
+        if ep is not None and (now - ep["at"]) * 1000.0 > self._stale_ms:
+            self._foreign_episode = None
+            if ep["count"] > 1:
+                n_addrs = len(ep["addrs"])
+                self._event("arm-link",
+                            f"arm frames from another sender ({n_addrs} "
+                            f"distinct source address"
+                            f"{'es' if n_addrs != 1 else ''}) stopped "
+                            f"after {ep['count']} rejected in a row")
+        # Separately, drop any per-address AND-clear tracking that has gone
+        # stale -- this never touches the journal, only which `wanted`
+        # vectors are still ANDed in below.
         for addr in [a for a, e in self._foreign.items()
                     if (now - e["at"]) * 1000.0 > self._stale_ms]:
-            e = self._foreign.pop(addr)
-            if e["count"] > 1:
-                self._event("arm-link",
-                            f"arm frames from {addr[0]}:{addr[1]} (another "
-                            f"sender) stopped after {e['count']} rejected "
-                            f"in a row")
+            del self._foreign[addr]
         best = None
         for _ in range(DRAIN_PER_TICK):
             try:
@@ -319,29 +400,58 @@ class SocketArmInput(ArmInput):
         return best
 
     def _note_foreign(self, addr, wanted, now):
+        # AND-clear tracking: per-address, since each foreign sender's own
+        # `wanted` vector has to be ANDed in separately (round 2).
         e = self._foreign.get(addr)
         if e is None:
             self._foreign[addr] = {"wanted": tuple(bool(w) for w in wanted),
-                                   "at": now, "count": 1}
+                                   "at": now}
+        else:
+            e["wanted"] = tuple(bool(w) for w in wanted)
+            e["at"] = now
+        # Journal rate-limiting: by REASON, across every address, not per
+        # address (round 3, item 5 -- see _foreign_episode's own comment:
+        # keying this on the address, even indirectly via "is this address
+        # new", is exactly what a rogue varying its own source port defeats).
+        ep = self._foreign_episode
+        if ep is None:
+            self._foreign_episode = {"at": now, "count": 1, "addrs": {addr}}
             self._event("arm-link",
                         f"arm frame rejected: another sender ({addr[0]}:"
                         f"{addr[1]} is not the locked sender "
                         f"{self._sender[0]}:{self._sender[1]}); its "
-                        f"disarm bits still apply. Further rejections from "
-                        f"this sender will not be logged individually "
-                        f"until it stops for {self._stale_ms} ms.")
+                        f"disarm bits still apply. Further rejections for "
+                        f"this same reason -- from this or any other "
+                        f"source address -- will not be logged "
+                        f"individually until it stops for {self._stale_ms} "
+                        f"ms.")
         else:
-            e["wanted"] = tuple(bool(w) for w in wanted)
-            e["at"] = now
-            e["count"] += 1
+            ep["at"] = now
+            ep["count"] += 1
+            ep["addrs"].add(addr)
 
     def _apply_foreign_clears(self, assertion, now):
         """AND every still-fresh foreign sender's `wanted` into `assertion`,
         bit for bit: a foreign False forces that group False in the result,
         a foreign True never sets anything (the locked sender's own value
         stands). seq and names are always the locked sender's own; only the
-        wanted vector can be narrowed here."""
+        wanted vector can be narrowed here.
+
+        Round 3 of the safety review (item 1): also records, per group,
+        whether THIS call actually forced that bit from True to False --
+        the `forced` vector on the returned ArmAssertion.  A third review
+        found that round 2's AND-only-ever-clears fix, by itself, was
+        exploitable the other way: a foreign sender sending a group's bit
+        False for a while and then True again put a False-then-True
+        sequence in front of the composer that looks exactly like the
+        operator cycling the arm, even though the locked sender (the real
+        deck) never stopped asking for True the whole time.  The composer
+        cannot tell a forced low from a genuine one unless this file says
+        so; `forced` is that signal, and it must never be set for a group
+        whose False came from the locked sender's own report (there is
+        nothing to force in that case: the AND changes nothing)."""
         wanted = list(assertion.wanted)
+        forced = [False] * len(wanted)
         changed = False
         for e in self._foreign.values():
             if (now - e["at"]) * 1000.0 > self._stale_ms:
@@ -350,10 +460,12 @@ class SocketArmInput(ArmInput):
             for i in range(min(len(wanted), len(fw))):
                 if not fw[i] and wanted[i]:
                     wanted[i] = False
+                    forced[i] = True
                     changed = True
         if not changed:
             return assertion
-        return ArmAssertion(wanted, assertion.seq, assertion.names)
+        return ArmAssertion(wanted, assertion.seq, assertion.names,
+                            forced=forced)
 
     def close(self):
         sock, self._sock = self._sock, None
@@ -365,6 +477,16 @@ class SocketArmInput(ArmInput):
         self._sender = None
         self._sender_at = None
         self._foreign = {}
+        self._foreign_episode = None
+
+    @property
+    def foreign_count(self):
+        """How many other senders are currently tracked as still fresh
+        (round 3 of the safety review, item 6), as of the last poll()'s own
+        cleanup.  Reading this right after poll() (as service.py does,
+        every tick) means it reflects THIS tick's own view, whether or not
+        poll() itself had anything new to decode and return."""
+        return len(self._foreign)
 
     def _event(self, kind, msg):
         if self._log is None:

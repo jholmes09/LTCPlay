@@ -110,7 +110,8 @@ class Rig:
                 self.frame(self.cue)
             a = self.inp.poll()
             if a is not None:
-                self.c.assert_arm(a.wanted, a.seq, names=a.names)
+                self.c.assert_arm(a.wanted, a.seq, names=a.names,
+                                  forced=a.forced)
             self.out = self.c.tick()
         return self.out
 
@@ -1400,6 +1401,151 @@ def test_socket_arm_input_foreign_sender_episode_logged_once():
     rogue.close()
 
 
+def test_socket_arm_input_foreign_flood_from_varying_source_ports_logged_once():
+    section("SocketArmInput: a foreign sender varying its OWN source port "
+            "on every single frame still produces only ONE opening "
+            "journal line and one closing summary for the whole episode, "
+            "never one per address (round 3 of the safety review, item 5 "
+            "-- a PROVEN attack: round 2's own rate limit, just above, "
+            "keyed off whether an ADDRESS was already being tracked, "
+            "which a rogue defeats by simply never reusing one; an "
+            "independent review ran this for real and produced ~26,000 "
+            "journal lines in 5 s from about 4,000 distinct source ports)")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.002)
+
+    send(deck, 1, [False] * 6)
+    inp.poll()
+
+    n_rogues = 40
+    rogues = []
+    for i in range(n_rogues):
+        r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        r.bind(("127.0.0.1", 0))         # a BRAND NEW source port every time
+        rogues.append(r)
+        send(r, i + 1, [False] * 6)
+        inp.poll()
+
+    rejections = [m for k, m in log.events
+                 if k == "arm-link" and "another sender" in m]
+    check(len(rejections) == 1,
+          f"{n_rogues} rejections, every one from a DIFFERENT source "
+          f"port, still produce exactly ONE journal line, not {n_rogues}: "
+          f"{len(rejections)}")
+
+    # Once every one of them has gone quiet for stale_ms, the episode
+    # closes with ONE summary line naming the total count AND how many
+    # distinct addresses were actually involved.
+    t[0] += 0.3
+    send(deck, 2, [False] * 6)
+    inp.poll()
+    closers = [m for k, m in log.events
+              if k == "arm-link" and "stopped after" in m]
+    check(len(closers) == 1 and f"{n_rogues} rejected" in closers[0]
+          and f"{n_rogues} distinct source address" in closers[0],
+          f"a single closing line gives the running count and the "
+          f"distinct-address count, not {n_rogues} separate lines: "
+          f"{closers}")
+
+    inp.close()
+    deck.close()
+    for r in rogues:
+        r.close()
+
+
+def test_socket_arm_input_foreign_count_tracks_live_foreign_senders():
+    section("SocketArmInput.foreign_count: how many OTHER senders are "
+            "currently tracked as fresh, read right after poll() (round 3 "
+            "of the safety review, item 6) -- the composer's status frame "
+            "carries this so the deck can raise an alarm the instant "
+            "anyone else is on the link, even on a tick where the AND "
+            "happens to leave `wanted` looking exactly like what the deck "
+            "itself expects")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+    rogue1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue1.bind(("127.0.0.1", 0))
+    rogue2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue2.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    send(deck, 1, [True] * 6)
+    inp.poll()
+    check(inp.foreign_count == 0, "nobody else has ever sent a frame")
+
+    send(rogue1, 1, [False] * 6)
+    inp.poll()
+    check(inp.foreign_count == 1, f"one foreign sender is now tracked: "
+                                  f"{inp.foreign_count}")
+
+    send(rogue2, 1, [False] * 6)
+    inp.poll()
+    check(inp.foreign_count == 2, f"and a second, distinct one: "
+                                  f"{inp.foreign_count}")
+
+    # Once both have gone quiet for stale_ms, poll()'s own cleanup drops
+    # them, and the count reads zero again without anyone re-locking.
+    t[0] += 0.3
+    send(deck, 2, [True] * 6)
+    inp.poll()
+    check(inp.foreign_count == 0,
+          f"both foreign episodes have closed out: {inp.foreign_count}")
+
+    inp.close()
+    deck.close()
+    rogue1.close()
+    rogue2.close()
+
+
+def test_composer_status_carries_foreign_arm_senders():
+    section("composer status: arm_input.foreign_senders carries what the "
+            "service last reported from the arm input, independent of "
+            "whether assert_arm was ALSO called that tick (round 3 of the "
+            "safety review, item 6)")
+    r = armed_rig()
+    check(r.group(0)["armed"] == "armed", "setup: group 0 is armed")
+    check(r.out.status["arm_input"]["foreign_senders"] == 0,
+          f"nothing foreign has ever been reported: "
+          f"{r.out.status['arm_input']}")
+    r.c.note_foreign_arm_senders(3)
+    r.step()
+    check(r.out.status["arm_input"]["foreign_senders"] == 3,
+          f"the composer carries whatever the service last told it: "
+          f"{r.out.status['arm_input']}")
+    # A bad value is never counted, and never raises: this is a display
+    # signal, not a safety one, and must not be able to crash a tick.
+    r.c.note_foreign_arm_senders("not a number")
+    r.step()
+    check(r.out.status["arm_input"]["foreign_senders"] == 3,
+          f"a bad value is ignored, not crashed on: "
+          f"{r.out.status['arm_input']}")
+    r.c.note_foreign_arm_senders(0)
+    r.step()
+    check(r.out.status["arm_input"]["foreign_senders"] == 0,
+          "and it can be told the episode has ended")
+
+
 def test_service_journals_a_raising_assert_arm():
     section("service: if assert_arm ever raised (it must not, by its own "
             "contract), the service journals it instead of dropping it in "
@@ -1520,6 +1666,200 @@ def test_socket_arm_input_really_arms_a_group_end_to_end():
     finally:
         svc.close()
         deck.close()
+        ltc_tx.close()
+        node.close()
+        ltc_status.close()
+
+
+def test_socket_arm_input_reports_which_bits_were_forced():
+    section("SocketArmInput: poll() reports, per group, which bits in "
+            "`wanted` it forced False by the foreign-disarm AND, versus "
+            "genuinely reported by the locked sender (round 3 of the "
+            "safety review, item 1) -- composer.assert_arm needs this to "
+            "tell a FORCED low from a real one, which is the whole fix: "
+            "see test_round3_foreign_forced_edge_is_not_consent_end_to_end "
+            "for why that distinction matters")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    send(deck, 1, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.forced is None,
+          f"nothing is forced yet: forced is None, exactly like a driver "
+          f"that never forces anything: {a.forced}")
+
+    send(rogue, 1, [False, True, True, True, True, True])
+    a = inp.poll()
+    check(a is None, "the rogue's own frame is rejected outright: it is "
+                     "not the locked sender")
+    send(deck, 2, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (False, True, True, True, True, True),
+          f"the foreign False clips group 0 in the result, exactly as "
+          f"round 2 already proved: {a.wanted}")
+    check(a.forced == (True, False, False, False, False, False),
+          f"and ONLY group 0 is reported forced -- the locked sender's own "
+          f"report for every other group was already True and was never "
+          f"touched by the AND: {a.forced}")
+
+    # The rogue flips its OWN forged bit back to True: the clip stops at
+    # once (no need to wait out stale_ms), and nothing is forced any more.
+    send(rogue, 2, [True] * 6)
+    send(deck, 3, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (True,) * 6 and a.forced is None,
+          f"once the rogue stops forcing, forced reads None again: "
+          f"wanted={a.wanted} forced={a.forced}")
+
+    inp.close()
+    deck.close()
+    rogue.close()
+
+
+def test_round3_foreign_forced_edge_is_not_consent_end_to_end():
+    section("round 3 of the safety review, item 1 (the proven attack, run "
+            "here against the real Service/SocketArmInput/Composer): a "
+            "foreign sender that forces a group's wanted bit False for a "
+            "while, then lets it go True again, must NOT read as the "
+            "operator cycling the arm -- even though the LOCKED sender "
+            "(the real deck) never stopped asking for True the whole "
+            "time. Round 2's foreign-disarm fix made a foreign frame able "
+            "to only ever CLEAR a bit, specifically so a rogue holding "
+            "the lock could not mask a real Abort; this is the attack "
+            "that fix opened back up (an independent review ran it for "
+            "real and the group ended up ARMED with no operator action).")
+    node = _udp()
+    ltc_status = _udp()
+    listen_port = _udp()
+    lp = listen_port.getsockname()[1]
+    listen_port.close()
+    arm_port_sock = _udp()
+    ap = arm_port_sock.getsockname()[1]
+    arm_port_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "arm_port": ap, "key": KEY})
+    t = [0.0]
+    log = Log()
+    arm_input = arminput.SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
+                                        cfg.link_key, cfg.n, log=log,
+                                        stale_ms=cfg.arm_stale_ms,
+                                        clock=lambda: t[0])
+    svc = Service(cfg, arm_input, clock=lambda: t[0], log=log)
+    svc.open()
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ltc_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def tick():
+        t[0] += cfg.tick_period_s
+        time.sleep(0.002)
+        return svc.run_once()
+
+    def send_arm(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY), ("127.0.0.1", ap))
+        time.sleep(0.005)
+
+    fseq = [0]
+
+    def keep_flame_alive():
+        fseq[0] += 1
+        ltc_tx.sendto(link.encode_flame(fseq[0], "00:00:00:01", t[0], 1,
+                                        [0] * 512, KEY), ("127.0.0.1", lp))
+        time.sleep(0.002)
+
+    def status():
+        return link.decode_status(_drain(ltc_status)[-1], KEY)
+
+    want0 = [True] + [False] * (cfg.n - 1)
+    all_false = [False] * cfg.n
+    dseq = [0]
+
+    def deck_send(wanted):
+        dseq[0] += 1
+        send_arm(deck, dseq[0], wanted)
+
+    dwell_ticks = int(cfg.min_arm_dwell_ms / 1000.0 / cfg.tick_period_s) + 3
+    try:
+        # Setup: a genuine cycle really arms group 0, with the deck as the
+        # only sender that has ever touched the arm link.
+        keep_flame_alive(); deck_send(all_false); tick()
+        keep_flame_alive(); deck_send(all_false); tick()
+        keep_flame_alive(); deck_send(all_false); tick()
+        keep_flame_alive(); deck_send(want0); tick()
+        for _ in range(dwell_ticks):
+            keep_flame_alive(); deck_send(want0); tick()
+        s = status()
+        check(s["groups"][0]["armed"] == "armed",
+              f"setup: a genuine cycle really arms the group: "
+              f"{s['groups'][0]}")
+
+        # THE ATTACK. A rogue on this machine (a brand new source port --
+        # no sender lock has ever been contested) forces the bit False for
+        # one assertion, then flips its OWN forged bit back to True. The
+        # real deck never once stops asking for True.
+        rseq = [0]
+
+        def rogue_send(wanted):
+            rseq[0] += 1
+            send_arm(rogue, rseq[0], wanted)
+
+        rogue_send(all_false)
+        keep_flame_alive(); deck_send(want0); tick()
+        s = status()
+        check(s["groups"][0]["armed"] != "armed",
+              f"the forced False really disarms the output on the wire -- "
+              f"round 2's fix, unweakened by this one: {s['groups'][0]}")
+
+        rogue_send(want0)              # stops forcing; never ARMS by itself
+        keep_flame_alive(); deck_send(want0); tick()
+        # Enough ticks for the dwell window to fully clear, so what this
+        # proves is about CONSENT, not a dwell countdown still running.
+        for _ in range(dwell_ticks):
+            keep_flame_alive(); deck_send(want0); tick()
+        s = status()
+        check(s["groups"][0]["armed"] != "armed"
+              and s["groups"][0]["reason"] == "cycle the arm",
+              f"round 3 fix: a foreign sender forcing a False-then-True "
+              f"sequence through the arm link must NOT read as the "
+              f"operator cycling the arm, no matter how long the dwell "
+              f"window has had to clear -- the locked sender's own report "
+              f"never actually changed, so there is nothing here to call "
+              f"consent: {s['groups'][0]}")
+
+        # The fix must not be a one-way ratchet: a REAL cycle from the
+        # locked sender itself still arms the group afterwards.
+        deck_send(all_false); keep_flame_alive(); tick()
+        for _ in range(2):
+            deck_send(all_false); keep_flame_alive(); tick()
+        deck_send(want0); keep_flame_alive(); tick()
+        for _ in range(dwell_ticks):
+            deck_send(want0); keep_flame_alive(); tick()
+        s = status()
+        check(s["groups"][0]["armed"] == "armed",
+              f"a REAL cycle from the locked sender itself still arms the "
+              f"group afterwards -- the fix only refuses a FORCED edge, "
+              f"never a genuine one: {s['groups'][0]}")
+    finally:
+        svc.close()
+        deck.close()
+        rogue.close()
         ltc_tx.close()
         node.close()
         ltc_status.close()
@@ -2760,8 +3100,13 @@ if __name__ == "__main__":
     test_socket_arm_input_sender_lock()
     test_socket_arm_input_foreign_sender_can_still_disarm()
     test_socket_arm_input_foreign_sender_episode_logged_once()
+    test_socket_arm_input_foreign_flood_from_varying_source_ports_logged_once()
+    test_socket_arm_input_foreign_count_tracks_live_foreign_senders()
+    test_composer_status_carries_foreign_arm_senders()
     test_service_journals_a_raising_assert_arm()
     test_socket_arm_input_really_arms_a_group_end_to_end()
+    test_socket_arm_input_reports_which_bits_were_forced()
+    test_round3_foreign_forced_edge_is_not_consent_end_to_end()
     test_link_sequence_and_clock_rules()
     test_rule9_only_the_writer()
     test_rule10_compose_never_raises()
