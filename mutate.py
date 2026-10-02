@@ -4050,13 +4050,6 @@ def build():
   '''        self._latched = [False] * self.n
         self.stats["disarm_all"] += 1'''),
 
- ("flamelink: disarm_all starts no re-arm dwell",
-  "flamesafe/composer.py",
-  '''            if was_up[i]:
-                self._disarmed_at[i] = t
-            self._aborted[i] = True''',
-  '''            self._aborted[i] = True'''),
-
  ("flamelink: the lamp never says the show's Abort disarmed it",
   "flamesafe/composer.py",
   '''            if self._aborted[i]:

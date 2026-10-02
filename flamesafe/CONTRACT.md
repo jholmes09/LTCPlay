@@ -473,10 +473,12 @@ liveness or carry any fire values: only flame frames do those.
 
 **What it does, and all it does.** On the tick it arrives in (the service
 drains the flame link before it composes): every group's latch is cleared,
-every pending consent edge is cleared, every group that was up or latched
-gets the re-arm dwell from now, and the safety slot of every group is zero
-on that tick's packet. It never sets a latch, never sets a consent edge
-and never touches `wanted`. So:
+every pending consent edge is cleared, and the safety slot of every group
+is zero on that tick's packet. It never sets a latch, never sets a consent
+edge and never touches `wanted`. The re-arm dwell needs no help from it:
+the low half of the fresh cycle below is a True-to-False report for any
+group that was armed, and that starts the dwell, so no safety slot rises
+again within `min_arm_dwell_ms` of the Abort. So:
 
 - **It cannot arm anything.** There is no code path from it to a latch.
 - **Each group needs a fresh, genuine arm cycle from the Stream Deck

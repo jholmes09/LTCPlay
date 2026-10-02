@@ -421,12 +421,17 @@ class Composer:
         disarmed every group), so it is refused.
 
         What it does, and all it does: every latch and every pending
-        consent edge (`_seen_down`) is cleared, and every group that was up
-        or latched gets the re-arm dwell from now.  It never sets a latch,
-        never sets `_seen_down`, never touches `_wanted`: a group comes
-        back only through a fresh, genuine, un-forced low-to-high cycle
-        from the arm input AFTER this message (assert_arm, rule 6), and
-        then only once the dwell has passed.  It does not refresh the flame
+        consent edge (`_seen_down`) is cleared.  It never sets a latch,
+        never sets `_seen_down`, never touches `_wanted` or the dwell: a
+        group comes back only through a fresh, genuine, un-forced
+        low-to-high cycle from the arm input AFTER this message (assert_arm,
+        rule 6), and the low half of that cycle starts the re-arm dwell
+        itself (an armed group's `wanted` was True, so the operator's low is
+        a True-to-False report), so the safety slot cannot rise again within
+        min_arm_dwell_ms of the Abort.  An earlier draft also set the dwell
+        here; mutation testing proved that unobservable (the operator's own
+        low always restarts it later) and it was removed rather than kept
+        as code nothing can tell is there.  It does not refresh the flame
         link's liveness or its fire values (it carries none)."""
         try:
             if not isinstance(msg, DisarmAll):
@@ -452,8 +457,6 @@ class Composer:
         was_up = [self._latched[i] or self._last_sent[i] != DISARM
                   for i in range(self.n)]
         for i in range(self.n):
-            if was_up[i]:
-                self._disarmed_at[i] = t
             self._aborted[i] = True
         self._latched = [False] * self.n
         self._seen_down = [False] * self.n

@@ -3587,8 +3587,9 @@ def test_disarm_all_disarms_every_group_and_needs_a_fresh_cycle():
 
 
 def test_disarm_all_dwell_and_pending_edges():
-    section("disarm_all: the re-arm dwell runs from the Abort, and a consent "
-            "edge begun before the Abort cannot complete after it")
+    section("disarm_all: a cycle straight after the Abort still waits out "
+            "the re-arm dwell, and a consent edge begun before the Abort "
+            "cannot complete after it")
     r = _two_armed()
     _disarm(r)
     r.step()
@@ -3739,15 +3740,30 @@ def test_flame_link_rejections_journal_once_per_episode():
     check(len(rej) == 5 and any("stopped after 30" in m for m in rej)
           and any("stopped after 2" in m for m in rej),
           f"closing lines only for kinds that repeated: {rej}")
-    # Reasons a sender controls cannot open unbounded kinds.
+    # Reasons a sender controls cannot open unbounded kinds. Quoted text
+    # and numbers are blanked, but a sender still shapes the rest: a `v`
+    # nested in lists to a different depth each time is a different reason
+    # after blanking, straight out of the real decoder.
+    r.wait(0.7)
     r.log.events.clear()
-    for i in range(100):
-        r.c.reject_frame(f"wrong message type 'junk{i}'")
-        r.c.reject_frame(f"word{i} other{i} more{i} text{i}")
+    kinds = set()
+    for depth in range(1, 61):
+        bad = json.dumps({"v": json.loads("[" * depth + "]" * depth),
+                          "k": KEY, "t": "flame"}).encode()
+        try:
+            link.decode_from_ltcplay(bad, 1, KEY)
+        except link.LinkError as e:
+            kinds.add(composer._reject_kind(str(e)))
+            r.c.reject_frame(str(e))
+    check(len(kinds) > composer.REJECT_KINDS_MAX,
+          f"the decoder really does yield more kinds than the cap: "
+          f"{len(kinds)}")
     rej = [m for k, m in r.log.events if k == "link-reject"]
-    check(len(rej) <= composer.REJECT_KINDS_MAX + 1,
-          f"at most {composer.REJECT_KINDS_MAX} kinds plus 'other': "
-          f"{len(rej)} lines")
+    check(len(rej) == composer.REJECT_KINDS_MAX + 1
+          and len(r.c._reject_episodes) == composer.REJECT_KINDS_MAX + 1,
+          f"at most {composer.REJECT_KINDS_MAX} kinds plus 'other' are "
+          f"written and tracked: {len(rej)} lines, "
+          f"{len(r.c._reject_episodes)} tracked")
 
 
 def test_disarm_all_over_loopback():
