@@ -1156,8 +1156,6 @@ class Conductor:
         self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
                    self.show.flames_zero)
         if look == DARK and fade > 0:
-            # "Fade" is the interface's word; ConductorDevices blanks at
-            # once (beyond.py allows only 0 or 100), so the line says so.
             self._step(gen, "lasers", BLACK, "lasers blanked", progress,
                        self.devices.lasers_fade_out, fade)
         else:

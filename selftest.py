@@ -24329,6 +24329,13 @@ def test_conductor_generation_guard_stops_a_stale_effect():
     check(c.snapshot()["applied"]["lasers"] == "black",
           f"and the record says dark, not the restore's lit: "
           f"{c.snapshot()['applied']}")
+    # The restore returned after the Abort's blank: its "lit" must not
+    # overwrite the newer record (finding D), or the Abort's effect would
+    # think its blank had not landed and blank again.
+    check(rig.count("lasers_blank") == 1 and
+          any("lasers blanked at the press" in t for t, _f in lines),
+          f"the Abort's own blank stands; nothing had to blank again: "
+          f"{rig.names()}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
     C = _cond_mod()
@@ -25455,6 +25462,27 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         c.close()
         link.close()
 
+    # 1b) The same, with a Hold: its blank waits its turn on the executor,
+    #     but the restore stops before its next packet all the same (the
+    #     conductor's restore guard), so no 100 starts after the press.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+        check(c.wait_idle(5), "the Hold finished")
+        time.sleep(0.5)
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"no unblank packet was started after the Hold press: "
+              f"{[(e[2], round(e[3] - t0, 3)) for e in log if e[0] == 'beyond']}")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+    finally:
+        c.close()
+        link.close()
+
     # 2) A laser gate that takes 500 ms: the Abort's fade does not wait.
     def slow_gate():
         time.sleep(0.5)
@@ -25558,7 +25586,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
 
     # A stalled sender: the Link's worker is stuck behind another job.
     saved = C.VIDEO_STALL_S
-    C.VIDEO_STALL_S = 0.1
+    C.VIDEO_STALL_S = 0.4
     c, rig, log, lines, link, bey = _rt_rig()
     stuck = threading.Event()
     try:
@@ -25566,9 +25594,16 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
         check(c.wait_idle(5), "show start done")
         time.sleep(0.1)
         link._submit(lambda: stuck.wait(3.0), wait=False)
+        t0 = time.perf_counter()
         c.hold("Andy", "rack screen")
         check(c.wait_idle(5), "hold done")
-        time.sleep(C.HOLD_FADE_S + 0.3)
+        early = c.snapshot()["applied"]["video"]
+        check(time.perf_counter() - t0 > C.HOLD_FADE_S + 0.4 or
+              early == C.UNKNOWN,
+              f"a fade MadMapper has not sent yet is not recorded black: "
+              f"{early}")
+        time.sleep(max(0.0, t0 + C.HOLD_FADE_S + 0.4 + 0.3
+                       - time.perf_counter()))
         snap = c.snapshot()
         check(snap["applied"]["video"] == C.UNKNOWN and any(
             f and "has not sent it yet" in t for t, f in lines),
@@ -25579,6 +25614,34 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
         C.VIDEO_STALL_S = saved
         c.close()
         link.close()
+
+    # Only the latest video command's success counts: a Hold's fade that
+    # goes out after a Resume asked for the video back up does not make
+    # the record say black.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    g1, g2 = threading.Event(), threading.Event()
+    link._submit(lambda: g1.wait(3.0), wait=False)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    hold_ran = threading.Event()          # queued right after the Hold's
+    link._submit(hold_ran.set, wait=False)
+    link._submit(lambda: g2.wait(3.0), wait=False)
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          "neither command has gone out yet: UNKNOWN")
+    g1.set()
+    check(hold_ran.wait(2.0), "the Hold's video command has run")
+    time.sleep(0.05)
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          f"the Hold's fade went out, but the Resume's is the latest: not "
+          f"black: {c.snapshot()['applied']}")
+    g2.set()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["video"] == C.LIT,
+          f"and once the Resume's goes out, lit: {c.snapshot()['applied']}")
+    link.close()
 
     # And when it all goes out, the record says so (and only then).
     c, rig, log, lines, link, bey = _rt_rig()
