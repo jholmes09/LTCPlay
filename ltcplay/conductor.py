@@ -95,11 +95,30 @@ pieces, each small enough to prove:
    wants them dark, whatever the record says (ALWAYS_RESENT): BEYOND never
    confirms anything, so "already dark" is never taken on trust.
 
-Abort's flame cut does not wait for the executor at all: abort() bumps the
-generation and zeroes and disarms the flames on the calling thread, inside
-`_lock`. The worst it can wait for is one device call already in progress.
-A second Abort while latched does nothing: no new generation, no second
-fade.
+Abort's flame cut AND laser blank do not wait for the executor at all
+(independent review of PR #29, finding D): abort() bumps the generation,
+zeroes and disarms the flames and stops any video fade where it is, all
+inside `_lock`, and then blanks the lasers on the calling thread, outside
+it. Only ltcplay's own outputs (flames, music, pixels: ShowOutputs) and
+MadMapper's queueing calls (which never wait for MadMapper) are made with
+`_lock` held. BEYOND is called OUTSIDE it, so a slow or stalled BEYOND
+socket never holds up an Abort's flame cut, and a laser restore cannot
+outrun an Abort's blank: it is cut short by beyond.Beyond itself (a blank
+from any thread stops an unblank before its next packet) and by the
+conductor's restore guard (the restore stops once a newer request has
+been accepted). The laser gate and the announcement player are asked on
+helper threads, never on the executor's, so neither can delay an Abort
+either. A second Abort while latched starts no new generation and no
+second fade, but sends the laser blank again (finding B): a blank only
+makes things darker.
+
+MadMapper's sends happen later, on its Link's worker (wait=False). Their
+real outcome comes back through ConductorDevices' report (finding A): a
+send that fails, or a worker that has not finished in time, is a fault,
+and the video record goes to UNKNOWN. The record only says black, lit or
+stopped once MadMapper's Link says the packets went out. Abort never
+trusts it anyway: it always fades the video from wherever it is now
+(finding C).
 """
 import threading
 import time
@@ -115,6 +134,10 @@ CONFIRM_S = 0.5           # beyond the fade, how long the clock has to say
                           # it froze (Hold) or is moving again (Resume)
 POLL_S = 0.02             # how often the clock is asked while waiting
 SLOW_CALL_S = 0.1         # a device call slower than this is a fault
+GATE_TIMEOUT_S = 1.0      # a laser gate that has not answered by then is
+                          # a no: the lasers stay dark
+VIDEO_STALL_S = 1.0       # MadMapper's worker not done this long after a
+                          # command's own length: a fault, video UNKNOWN
 
 PRODUCTION = "production"
 REHEARSAL = "rehearsal"
@@ -149,6 +172,12 @@ MUSIC_PLAYING, MUSIC_HELD, MUSIC_STOPPED = "playing", "held", "stopped"
 ALWAYS_RESENT = frozenset((("lasers", BLACK),))
 AGAIN = "(re-sent, already dark)"
 
+# Device outputs called WITHOUT the conductor's lock held: BEYOND's sends
+# block (3 packets, 20 ms apart, or far longer on a stalled socket), and an
+# Abort must never wait for one (finding D). A restore is still safe: see
+# Conductor._restore_wanted and beyond.Beyond's blank epoch.
+UNLOCKED_OUTPUTS = frozenset(("lasers",))
+
 # Scheduler states in which the lasers may be lit (schedule.py's names),
 # plus the rehearsal page's own. Anything else, None included, is dark.
 LASER_STATES = frozenset(("SHOW", "PAUSED", "REHEARSAL"))
@@ -181,17 +210,44 @@ class DeviceOutputs:
       - return promptly, well under SLOW_CALL_S (0.1 s). A fade is STARTED
         and runs on the device layer's own thread; the method never sleeps
         through it. (madmapper.Link: pass wait=False. beyond.Beyond's 3
-        retries 20 ms apart are fine.) The conductor holds its lock across
-        each call, so a slow call delays an Abort; it is journaled as a fault.
+        retries 20 ms apart are fine.) A slow call is journaled as a fault.
+        The laser calls are made WITHOUT the conductor's lock (an Abort
+        must never wait for one); the video calls with it, so they must
+        never wait for the device.
       - let the latest command to an output supersede any fade still running
         on it (madmapper.Link's ramp generation already does this).
       - be safe to repeat: the conductor re-sends after a failure.
+      - be safe to call from two threads at once: Abort blanks the lasers
+        on the pressing thread while the executor may be in another call.
+
+    Optional, all set or read by the Conductor when present:
+      async_outputs  outputs whose good Result only means "queued"; their
+                     real outcome comes later through report(). The
+                     conductor records them UNKNOWN until it does.
+      report         set by the Conductor: report(output, ok, value,
+                     sentence, seq). ok False is a fault and sets the
+                     output UNKNOWN; ok True sets it to `value` (one of
+                     this module's LIT, BLACK, STOPPED) if `seq` is still
+                     the device's latest command for it (video_seq).
+      video_seq      the number of the latest video command or cancel.
+      restore_guard  set by the Conductor: () -> True while a laser
+                     restore is still wanted. lasers_restore() checks it
+                     before every packet and stops once it is not.
+      video_cancel() stop any video fade at once, leaving the level where
+                     it is (an Abort's or Hold's first video step).
 
     Nothing here decides WHEN; the conductor does. Nothing here may light the
     lasers except lasers_restore(), and the conductor only calls that after
     its laser gate says yes."""
 
     wired = True
+    async_outputs = frozenset()
+    report = None
+    restore_guard = None
+    video_seq = 0
+
+    def video_cancel(self):
+        return done("No video fade to stop.")
 
     def lasers_blank(self):
         """Lasers dark at once (BEYOND brightness 0; never BlackOut, never
@@ -213,11 +269,14 @@ class DeviceOutputs:
 
     def video_fade_out(self, seconds):
         """Every MadMapper surface's opacity to 0 over `seconds` (0 means at
-        once). madmapper.Link.fade_surfaces(1, 0, seconds, wait=False)."""
+        once), starting from wherever the opacity is now, never from a
+        fixed 1.0 (finding C: a fade from 1.0 flashes the picture up
+        first)."""
         raise NotImplementedError
 
     def video_restore(self, seconds):
-        """Opacity back to 1 over `seconds` (0 means at once)."""
+        """Opacity back to 1 over `seconds` (0 means at once), from
+        wherever it is now."""
         raise NotImplementedError
 
     def video_stop(self):
@@ -283,14 +342,36 @@ class ConductorDevices(DeviceOutputs):
     wait=False and run on the Link's own worker; a newer one supersedes
     the old (the Link's ramp generation). beyond.py's blank() and
     unblank() send 3 packets 20 ms apart and return after them, about
-    40 ms, so the lasers are dark before the conductor's next call."""
+    40 ms, so the lasers are dark before the conductor's next call.
+
+    Video outcomes come back later (finding A). Each video command gets a
+    number (video_seq) and an on_done from the Link's worker: a failed
+    send is reported at once (fault, video UNKNOWN), a good one only if it
+    is still the latest command. A timer reports a worker that has not
+    finished VIDEO_STALL_S after the command's own length.
+
+    Every video fade starts from the current level (finding C): this
+    object keeps each ramp's start level, end level, length and start
+    time, and a new fade starts from the estimated level now, or from the
+    level the Link last actually sent if that is further along the new
+    fade's direction, so the picture never jumps the wrong way."""
 
     def __init__(self, madmapper=None, beyond=None, *, show=None,
-                 journal=None):
+                 journal=None, clock=None):
         self.mm = madmapper
         self.beyond = beyond
         self.show = show
         self._journal = journal
+        # The Link's own clock, so the level estimate runs on the same time
+        # as the ramps it estimates.
+        self._clock = clock or getattr(madmapper, "_clock", None) or \
+            time.perf_counter
+        self.async_outputs = (frozenset(("video",)) if madmapper is not None
+                              else frozenset())
+        self._vlock = threading.RLock()
+        self.video_seq = 0
+        self._ramp = None            # (start, end, seconds, started at)
+        self._open = set()           # video command numbers not yet done
         self.wired = madmapper is not None and beyond is not None
         if beyond is None:
             _device_note(journal, "No BEYOND is configured for this show: the "
@@ -341,47 +422,175 @@ class ConductorDevices(DeviceOutputs):
         answer: the conductor calls this only after the gate said yes
         (conductor.Conductor._restore_lasers), and beyond.unblank() still
         refuses anything but the real bool True on its own."""
-        return self._beyond("Laser restore", "unblank",
-                            "The lasers stay dark.", in_show=True)
+        kw = {"in_show": True}
+        if self.restore_guard is not None:
+            # Checked by beyond.Beyond before every packet: a restore
+            # overtaken by a newer request (an Abort above all) stops.
+            kw["still_wanted"] = self.restore_guard
+        r = self._beyond("Laser restore", "unblank",
+                         "The lasers stay dark.", **kw)
+        if not r.ok and getattr(self.beyond, "last_result", None) == "cut":
+            return failed("Laser restore stopped part way: a newer request "
+                          "came in first.")
+        return r
 
     # -- video: madmapper.py -------------------------------------------------
-    def _madmapper(self, what, send):
+    def _madmapper(self, what, send, value=None, seconds=0.0):
+        """Queue one MadMapper command. `send(on_done)` queues it on the
+        Link with that callback; `value` is what the conductor records
+        once the Link says it went out. Returns at once."""
         if self.mm is None:
             return done(f"{what}: no MadMapper is configured for this show.")
         if getattr(self.mm, "_closed", False):
             return failed(f"{what}: the MadMapper link is closed, so nothing "
                           f"was sent.")
-        try:
-            send()
-        except Exception as e:
-            return failed(f"{what} failed: {type(e).__name__}: {e}.")
-        return done(f"{what}: sent to MadMapper.")
+        with self._vlock:
+            self.video_seq += 1
+            seq = self.video_seq
+            self._open.add(seq)
+        timer = threading.Timer(max(seconds, 0.0) + self._behind() +
+                                VIDEO_STALL_S,
+                                self._video_stalled, (seq, what))
+        timer.daemon = True
+        timer.start()
 
-    def _surfaces(self, start, end, seconds):
-        if seconds <= 0:
-            # At once: stop any ramp still running (it checks the Link's
-            # generation before every step), then one level. The level is
-            # queued behind that ramp's job on the Link's single worker, so
-            # it always lands after the ramp's last step, never under it.
-            self.mm.cancel()
-            self.mm.set_surfaces(end, wait=False)
+        def on_done(ok, why):
+            timer.cancel()
+            self._video_done(seq, what, value, ok, why)
+        try:
+            send(on_done)
+        except Exception as e:
+            timer.cancel()
+            with self._vlock:
+                self._open.discard(seq)
+            return failed(f"{what} failed: {type(e).__name__}: {e}.")
+        return done(f"{what}: queued for MadMapper.")
+
+    def _behind(self):
+        """Seconds the running ramp still has to go: a command queued now
+        runs after it on the Link's one worker."""
+        with self._vlock:
+            ramp = self._ramp
+        if ramp is None:
+            return 0.0
+        _s, _e, seconds, t0 = ramp
+        return max(0.0, t0 + seconds - self._clock())
+
+    def _tell(self, ok, value, sentence, seq):
+        if self.report is not None:
+            try:
+                self.report("video", ok, value, sentence, seq)
+                return
+            except Exception:
+                pass
+        if not ok:
+            _device_note(self._journal, sentence, action="video",
+                         outcome="failed", fault=True)
+
+    def _video_done(self, seq, what, value, ok, why):
+        """On the Link's worker, once the command has run."""
+        with self._vlock:
+            self._open.discard(seq)
+        if not ok:
+            why = why or "no reason given"
+            self._tell(False, None, f"{what}: not sent to MadMapper ({why})."
+                       f" The video may not be where the conductor asked.",
+                       seq)
+        elif value is not None:
+            self._tell(True, value, f"{what}: sent to MadMapper.", seq)
+
+    def _video_stalled(self, seq, what):
+        """On a timer thread: the Link's worker has not run this command
+        in time. Reported whatever happens to it later."""
+        with self._vlock:
+            if seq not in self._open:
+                return
+        self._tell(False, None, f"{what}: MadMapper's sender has not sent "
+                   f"it yet, well past when it should have. It may be stuck; "
+                   f"the video may not be where the conductor asked.", seq)
+
+    def video_level(self):
+        """The surfaces' opacity now, estimated from the last ramp asked
+        for (its start, end, length and start time, and the show's video
+        curve), or None before any."""
+        with self._vlock:
+            ramp = self._ramp
+        if ramp is None:
+            return None
+        start, end, seconds, t0 = ramp
+        if seconds <= 0 or start == end:
+            return end
+        frac = min(1.0, max(0.0, (self._clock() - t0) / seconds))
+        curve = getattr(getattr(self.mm, "cfg", None), "video_curve",
+                        "linear")
+        if curve == "perceptual":
+            # madmapper._shape_perceptual, by time rather than by step.
+            if start > end:
+                return end + (1.0 - frac) ** 2 * (start - end)
+            return start + (1.0 - (1.0 - frac) ** 2) * (end - start)
+        return start + (end - start) * frac
+
+    def _from_level(self, end):
+        """Where a new fade to `end` starts: the estimated level now, or the
+        level the Link last actually sent, whichever is nearer `end`. So a
+        fade down never starts above the picture, nor a fade up below it.
+        Unknown (nothing sent yet): the far end, as before this fix."""
+        levels = [v for v in (self.video_level(),
+                              getattr(self.mm, "surfaces_level", None))
+                  if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if not levels:
+            return 1.0 if end <= 0.0 else 0.0
+        return min(levels) if end <= 0.0 else max(levels)
+
+    def _surfaces(self, end, seconds, on_done):
+        # Stop any ramp still running first (it checks the Link's
+        # generation before every step), then start from where it got to.
+        # Everything is queued behind that ramp's job on the Link's single
+        # worker, so it always lands after the ramp's last step.
+        self.mm.cancel()
+        start = self._from_level(end)
+        with self._vlock:
+            self._ramp = (start, end, max(seconds, 0.0), self._clock())
+        if seconds <= 0 or start == end:
+            # One level, at once, still cancellable by a newer command.
+            self.mm.fade_surfaces(end, end, seconds=0.0, steps=1,
+                                  wait=False, on_done=on_done)
         else:
-            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False)
+            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False,
+                                  on_done=on_done)
+
+    def video_cancel(self):
+        """Stop any video fade at once, where it is (an Abort's or a Hold's
+        first video step, on the pressing thread). Never waits."""
+        if self.mm is None:
+            return done("Video: no MadMapper is configured for this show.")
+        try:
+            self.mm.cancel()
+        except Exception as e:
+            return failed(f"Stopping the video fade failed: "
+                          f"{type(e).__name__}: {e}.")
+        level = self.video_level()
+        with self._vlock:
+            self.video_seq += 1      # no older command's success counts now
+            if level is not None:
+                self._ramp = (level, level, 0.0, self._clock())
+        return done("Video fade stopped where it was.")
 
     def video_fade_out(self, seconds):
         return self._madmapper(
             f"Video fade to black over {seconds:g} s",
-            lambda: self._surfaces(1.0, 0.0, seconds))
+            lambda cb: self._surfaces(0.0, seconds, cb), BLACK, seconds)
 
     def video_restore(self, seconds):
         return self._madmapper(
             f"Video back up over {seconds:g} s",
-            lambda: self._surfaces(0.0, 1.0, seconds))
+            lambda cb: self._surfaces(1.0, seconds, cb), LIT, seconds)
 
     def video_stop(self):
         return self._madmapper(
             "Video stop",
-            lambda: self.mm.stop_bank(self.mm.cfg.show_bank, wait=False))
+            lambda cb: self.mm.stop_bank(self.mm.cfg.show_bank, wait=False,
+                                         on_done=cb), STOPPED)
 
 
 class ShowOutputs:
@@ -512,6 +721,12 @@ class Conductor:
         self._applied = {"flames": UNKNOWN, "lasers": UNKNOWN,
                          "video": UNKNOWN, "pixels": UNKNOWN,
                          "music": UNKNOWN, "disarmed": False}
+        # Bumped on every write to an output's record, so a laser call made
+        # outside the lock only records its outcome if nothing newer has.
+        self._ver = dict.fromkeys(self._applied, 0)
+        self._restore_gen = None     # the generation a laser restore is for
+        self._async_seq = {}         # output -> the device's latest seq
+        self._async = frozenset(getattr(devices, "async_outputs", ()) or ())
         self.faults = 0
         self.journal_errors = 0
         self.lines = []            # the last few lines, for the page
@@ -522,6 +737,14 @@ class Conductor:
             self._note("The lasers and video are not connected in this "
                        "build: Hold, Resume and Abort do not reach BEYOND or "
                        "MadMapper.", fault=True, action="devices")
+        # The device layer's ways back in (DeviceOutputs, "Optional").
+        for name, fn in (("report", self._device_report),
+                         ("restore_guard", self._restore_wanted)):
+            if hasattr(devices, name):
+                try:
+                    setattr(devices, name, fn)
+                except Exception:
+                    pass
         if threaded:
             self._thread = threading.Thread(target=self._executor,
                                             name="ltcplay-conductor",
@@ -534,15 +757,22 @@ class Conductor:
             refused = self._refuse_if_latched("Hold")
             if refused:
                 return refused
-            if self._look in HOLDING_LOOKS:
-                return done("Already on hold. Nothing was changed.")
-            if not self._playing():
-                return done("Nothing is playing, so the rig was left as it "
-                            "is.")
-            fade = self._fade(HOLD_FADE_S)
-            self._accept("Hold", HELD, who, screen, fade_s=fade)
-            return done(f"Hold: flames to zero and lasers blanked, then the "
-                        f"music fades over {fade:g} s and the show freezes.")
+            held = self._look in HOLDING_LOOKS
+            if not held:
+                if not self._playing():
+                    return done("Nothing is playing, so the rig was left as "
+                                "it is.")
+                fade = self._fade(HOLD_FADE_S)
+                # Stop a video fade-up (a Resume's) where it is, now, so
+                # the picture never rises after the press (finding C).
+                self._video_cancel()
+                self._accept("Hold", HELD, who, screen, fade_s=fade)
+                return done(f"Hold: flames to zero and lasers blanked, then "
+                            f"the music fades over {fade:g} s and the show "
+                            f"freezes.")
+        # Already on hold: nothing new starts, but the lasers are blanked
+        # again, on this thread (finding B): a blank only makes it darker.
+        return done(f"Already on hold. {self._reblank('Hold')}")
 
     def resume(self, who="", screen=""):
         with self._lock:
@@ -582,34 +812,70 @@ class Conductor:
         cues to zero and the lasers blanked with a real command, so "no
         lasers during intermission" does not depend on how the last show
         ended. For the scheduler to call on leaving SHOW or PAUSED. While
-        aborted it changes nothing: the rig is already dark, and a new
-        request must not cut the Abort's fade short."""
+        aborted it starts nothing new (a new request must not cut the
+        Abort's fade short), but it does send the laser blank again, on
+        this thread (finding B): an Abort whose blank did not get out is
+        not left that way until Reset."""
         with self._lock:
-            if self._latched:
-                return done("The show is aborted, so the rig is already "
+            latched = self._latched
+            if not latched:
+                self._accept("Intermission", BETWEEN, who, screen,
+                             fade_s=0.0)
+                return done("Out of the show: flame cues zero, lasers "
                             "dark.")
-            self._accept("Intermission", BETWEEN, who, screen, fade_s=0.0)
-            return done("Out of the show: flame cues zero, lasers dark.")
+        return done(f"The show is aborted, so nothing else changes until "
+                    f"Reset. {self._reblank('Intermission')}")
 
     def abort(self, who="", screen=""):
         with self._lock:
-            if self._latched:
-                # Idempotent: no new generation, no second fade.
-                return done("Already aborted. Press Reset to carry on.")
-            if not self._playing():
-                return self._refused("Abort", "nothing is playing, so there "
-                                     "is nothing to abort.")
-            self._latched = True
-            self._latch_who = who
-            # The flames do not wait for the executor, or even for the
-            # journal line: cut them here, on the pressing thread, inside
-            # the lock, so no stale step can land between the cut and the
-            # new generation that makes every older step stale.
-            self._flames_cut()
-            self._accept("Abort", ABORTED, who, screen, fade_s=ABORT_FADE_S)
-            return done(f"Abort: flames zeroed and disarm sent; lasers, "
-                        f"video, pixels and music fade to black over "
-                        f"{ABORT_FADE_S:g} s. Press Reset to carry on.")
+            latched = self._latched
+            if not latched:
+                if not self._playing():
+                    return self._refused("Abort", "nothing is playing, so "
+                                         "there is nothing to abort.")
+                self._latched = True
+                self._latch_who = who
+                # The flames do not wait for the executor, or even for the
+                # journal line: cut them here, on the pressing thread,
+                # inside the lock, so no stale step can land between the
+                # cut and the new generation that makes every older step
+                # stale. The video fade, if one is running, stops where it
+                # is (finding C). Neither call waits for a device.
+                self._flames_cut()
+                self._video_cancel()
+                blanked = threading.Event()
+                line = self._accept("Abort", ABORTED, who, screen,
+                                    fade_s=ABORT_FADE_S, blanked=blanked,
+                                    quiet=True)
+                ver = self._ver["lasers"]
+        if latched:
+            # No new generation, no second fade (finding B: but the blank
+            # again, in case the first one never got out).
+            return done(f"Already aborted. {self._reblank('Abort')} Press "
+                        f"Reset to carry on.")
+        # The lasers, on this thread, at once, outside the lock (finding D):
+        # never queued behind the executor, never behind a BEYOND call the
+        # executor is making. A restore under way stops before its next
+        # packet (beyond.Beyond's blank epoch, and _restore_wanted).
+        try:
+            # lasers_fade_out: Jeff's Abort is a brightness ramp; the real
+            # device layer blanks at once (beyond.py allows only 0 or 100)
+            # and journals that it did. Either way it starts here, now.
+            r = self._call("lasers blanked", self.devices.lasers_fade_out,
+                           ABORT_FADE_S)
+            with self._lock:
+                if self._ver["lasers"] == ver:
+                    self._set("lasers", BLACK if r.ok else UNKNOWN)
+        finally:
+            with self._lock:
+                blanked.set()
+                self._cv.notify_all()
+        self._note(*line[0], **line[1])
+        lasers = ("lasers blanked" if r.ok else "the laser blank did NOT "
+                  "get out and is being tried again")
+        return done(f"Abort: flames zeroed, disarm sent, {lasers}; video, "
+                    f"pixels and music fade to black over {ABORT_FADE_S:g} "
+                    f"s. Press Reset to carry on.")
 
     def reset(self, who="", screen=""):
         with self._lock:
@@ -665,8 +931,11 @@ class Conductor:
                 # keeps the look it already had (re-reconciling it sends
                 # nothing already sent, except the lasers' blank, which is
                 # always re-sent: ALWAYS_RESENT), and the announcement plays
-                # at once.
-                look = self._look
+                # at once. After an Abort and its Reset that look is no
+                # longer ABORTED (finding E: re-running the Abort would
+                # journal "Latched until Reset" with nothing latched): it
+                # is out of the show, dark.
+                look = BETWEEN if self._look == ABORTED else self._look
             self._announcing = ann
             self._accept("Announcement", look, who, screen,
                          fade_s=self._fade(ANNOUNCE_FADE_S), announce=ann)
@@ -742,7 +1011,10 @@ class Conductor:
     def _refused(self, what, why):
         return failed(f"{what} was refused: {why}")
 
-    def _accept(self, label, look, who, screen, **params):
+    def _accept(self, label, look, who, screen, quiet=False, **params):
+        """Make this the latest request. With `quiet`, its journal line is
+        returned as ((text,), fields) for the caller to write later
+        (Abort: after the lasers are dark, not before)."""
         if self._announcing is not None and \
                 params.get("announce") is not self._announcing:
             # An announcement accepted but not yet started never plays once
@@ -756,9 +1028,75 @@ class Conductor:
         want.update(params)
         self._want = want
         self._look = look
-        self._note(f"{label}, asked for by {self._who(who, screen)}.",
-                   action=label.lower(), who=who, screen=screen)
+        line = ((f"{label}, asked for by {self._who(who, screen)}.",),
+                dict(action=label.lower(), who=who, screen=screen))
+        if not quiet:
+            self._note(*line[0], **line[1])
         self._cv.notify_all()
+        return line
+
+    def _set(self, output, value):
+        """Write an output's record. Called with the lock held."""
+        self._applied[output] = value
+        self._ver[output] += 1
+
+    def _video_cancel(self):
+        """Stop a running video fade where it is (Abort, Hold), with the
+        lock held: video_cancel() never waits for MadMapper. The level is
+        then not known for sure, so the record says UNKNOWN."""
+        fn = getattr(self.devices, "video_cancel", None)
+        if fn is None:
+            return
+        self._call("video fade stopped where it is", fn)
+        self._set("video", UNKNOWN)
+        self._async_seq["video"] = getattr(self.devices, "video_seq", None)
+
+    def _reblank(self, what):
+        """A laser blank, sent again on the pressing thread, outside the
+        lock, and the sentence that says how the lasers stand now (finding
+        B). Used where a press starts nothing new (already aborted,
+        already on hold): a blank only ever makes the rig darker, so it is
+        safe even part way through an Abort's fade."""
+        with self._lock:
+            ver = self._ver["lasers"]
+        r = self._call(f"lasers blanked again ({what})",
+                       self.devices.lasers_blank)
+        with self._lock:
+            if self._ver["lasers"] == ver:
+                self._set("lasers", BLACK if r.ok else UNKNOWN)
+            now = self._applied["lasers"]
+        self._note(f"{what} pressed again: the laser blank was sent again"
+                   f"{'' if r.ok else ' and did NOT get out'}.",
+                   fault=False, action="lasers",
+                   outcome="reblanked" if r.ok else "failed")
+        if now == BLACK:
+            return "The laser blank was sent again: the lasers are dark."
+        if now == LIT:
+            return ("The laser blank was sent again, but the lasers are "
+                    "recorded as lit.")
+        return ("The laser blank was sent again but did not get out: the "
+                "lasers may still be lit.")
+
+    def _restore_wanted(self):
+        """The laser restore guard (DeviceOutputs.restore_guard), asked by
+        beyond.Beyond before every unblank packet, from the executor's
+        thread, without the lock: plain reads. False once any newer
+        request is accepted, or once aborted."""
+        return (self._restore_gen is not None
+                and self._restore_gen == self._gen
+                and not self._latched and not self._closed)
+
+    def _device_report(self, output, ok, value, sentence, seq=None):
+        """DeviceOutputs.report: a device's real outcome, arriving later on
+        its own thread (finding A). Never blocks on a device."""
+        with self._lock:
+            if not ok:
+                self._set(output, UNKNOWN)
+            elif seq is None or seq == self._async_seq.get(output):
+                self._set(output, value)
+        if not ok:
+            self._note(f"Not done: {sentence}", fault=True, action="output",
+                       outcome="failed")
 
     @staticmethod
     def _who(who, screen):
@@ -818,7 +1156,9 @@ class Conductor:
         self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
                    self.show.flames_zero)
         if look == DARK and fade > 0:
-            self._step(gen, "lasers", BLACK, "lasers faded", progress,
+            # "Fade" is the interface's word; ConductorDevices blanks at
+            # once (beyond.py allows only 0 or 100), so the line says so.
+            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
                        self.devices.lasers_fade_out, fade)
         else:
             self._step(gen, "lasers", BLACK, "lasers blanked", progress,
@@ -908,22 +1248,40 @@ class Conductor:
             if not self._applied["disarmed"]:
                 self._disarm()
         faded = False
-        faded |= self._step(gen, "lasers", BLACK, "lasers faded", progress,
-                            self.devices.lasers_fade_out, fade)
+        # Always, whatever the record says (finding C): the fade starts
+        # from wherever the picture is now, and if it is already black
+        # that is one more 0 sent, never a flash.
         faded |= self._step(gen, "video", BLACK, "video faded", progress,
-                            self.devices.video_fade_out, fade,
-                            only_from=(LIT, UNKNOWN))
+                            self.devices.video_fade_out, fade, force=True)
         faded |= self._step(gen, "pixels", BLACK, "pixels faded", progress,
                             self.show.pixels_fade_out, fade)
         faded |= self._step(gen, "music", MUSIC_STOPPED, "music faded",
                             progress, self.show.music_halt, fade)
+        # The lasers were blanked on the pressing thread (abort()), at the
+        # same time as the fades above began. Once that call has returned
+        # (normally long since), send the blank again here only if it did
+        # not get out.
+        blanked = want.get("blanked")
+        if blanked is not None:
+            self._await(gen, blanked.is_set, fade)
+        with self._lock:
+            lasers_dark = blanked is not None and blanked.is_set() and \
+                self._applied["lasers"] == BLACK
+        if lasers_dark:
+            progress.append("lasers blanked at the press")
+        else:
+            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
+                       self.devices.lasers_blank)
         if faded:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video stopped", progress,
-                   self.devices.video_stop)
+                   self.devices.video_stop, force=True)
         if progress:
-            self._note(f"Abort finished: {', '.join(progress)}. Latched "
-                       f"until Reset.", action="abort", outcome="done")
+            with self._lock:
+                latched = self._latched
+            self._note(f"Abort finished: {', '.join(progress)}."
+                       + (" Latched until Reset." if latched else ""),
+                       action="abort", outcome="done")
 
     def _run_announce(self, gen, want, progress):
         ann_id, who, screen = want["announce"]
@@ -935,14 +1293,26 @@ class Conductor:
             # is not a hazard, and it has its own Stop).
             self._check(gen)
             self._announcing = None
+        if self.threaded:
+            # announce.play reads the file before it returns: on its own
+            # thread, so the executor is free at once and an Abort's fade
+            # never waits behind a file read (finding D).
+            threading.Thread(target=self._play, args=(ann_id, who, screen),
+                             name="ltcplay-conductor-announce",
+                             daemon=True).start()
+            progress.append("announcement starting")
+        elif self._play(ann_id, who, screen):
+            progress.append("announcement playing")
+
+    def _play(self, ann_id, who, screen):
         try:
             self.announcer(ann_id, who, screen)
         except Exception as e:
             self._note(f"The {ann_id} announcement did not play: {e}",
                        fault=not isinstance(e, ValueError),
                        action="announce", outcome="refused")
-            return
-        progress.append("announcement playing")
+            return False
+        return True
 
     def _restore_lasers(self, gen, progress):
         """The ONLY way the lasers are lit. The gate says no, raises, or
@@ -951,13 +1321,14 @@ class Conductor:
         assumed: lasers left lit by an earlier look are blanked too.
         The gate is asked OUTSIDE the conductor's lock: it may take the
         scheduler's, and the scheduler may call in here with its own held.
+        It is asked on a helper thread (finding D), and the executor waits
+        for it the way it waits for anything, waking at once for a newer
+        press, so a slow gate never holds up an Abort's fade. A gate that
+        has not answered within GATE_TIMEOUT_S is a no.
         _step re-checks the generation before the call."""
         with self._lock:
             self._check(gen)
-        try:
-            why = self.laser_gate()
-        except Exception as e:
-            why = f"the laser gate failed ({type(e).__name__}: {e})"
+        why = self._ask_gate(gen)
         if why is not None:
             self._note(f"The lasers stay dark: {why}", action="lasers",
                        outcome="refused")
@@ -967,35 +1338,90 @@ class Conductor:
         self._step(gen, "lasers", LIT, "lasers back", progress,
                    self.devices.lasers_restore)
 
+    def _ask_gate(self, gen):
+        """The laser gate's answer: None (lasers may light) or why not."""
+        def ask():
+            try:
+                return self.laser_gate()
+            except Exception as e:
+                why = f"the laser gate failed ({type(e).__name__}: {e})"
+                return why
+        if not self.threaded:
+            return ask()
+        box = []
+
+        def run():
+            v = ask()
+            with self._lock:
+                box.append(v)
+                self._cv.notify_all()
+        threading.Thread(target=run, name="ltcplay-conductor-gate",
+                         daemon=True).start()
+        if self._await(gen, lambda: bool(box), GATE_TIMEOUT_S):
+            return box[0]
+        return (f"the laser gate did not answer within "
+                f"{GATE_TIMEOUT_S:g} s")
+
     # -- steps and waits ---------------------------------------------------------
     def _check(self, gen):
         if self._gen != gen or self._closed:
             raise _Superseded()
 
     def _step(self, gen, output, value, label, progress, fn, *args,
-              only_from=None):
+              only_from=None, force=False):
         """Check the generation and make one call, as one locked step.
         Returns True if a command was sent. Skips an output already at
         `value` (UNKNOWN never is), or not in `only_from` when given,
-        EXCEPT lasers dark (ALWAYS_RESENT): see that constant."""
+        EXCEPT lasers dark (ALWAYS_RESENT): see that constant, and anything
+        with `force`.
+
+        The lasers (UNLOCKED_OUTPUTS) are the exception to "one locked
+        step": the generation is checked under the lock, the call is made
+        after it is released, and its outcome is recorded only if nothing
+        newer has written the lasers' record since (finding D). A restore
+        stays safe without the lock: _restore_wanted turns false the
+        moment a newer request is accepted, and BEYOND stops the unblank
+        before its next packet.
+
+        An async output (the video through ConductorDevices) is UNKNOWN
+        until the device reports what really happened (finding A)."""
         with self._lock:
             self._check(gen)
             now = self._applied[output]
             again = now == value
-            if again and (output, value) not in ALWAYS_RESENT:
+            if again and not force and (output, value) not in ALWAYS_RESENT:
                 return False
             if only_from is not None and now not in only_from:
                 return False
-            r = self._call(label, fn, *args)
-            self._applied[output] = value if r.ok else UNKNOWN
+            unlocked = output in UNLOCKED_OUTPUTS
+            if not unlocked:
+                r = self._call(label, fn, *args)
+                if output in self._async:
+                    self._set(output, UNKNOWN)
+                    self._async_seq[output] = getattr(self.devices,
+                                                      "video_seq", None)
+                else:
+                    self._applied[output] = value if r.ok else UNKNOWN
+                    self._ver[output] += 1
+            else:
+                if value == LIT:
+                    self._restore_gen = gen
+                ver = self._ver[output]
+        if unlocked:
+            r = self._call(label, fn, *args, gen=gen)
+            with self._lock:
+                if self._ver[output] == ver:
+                    self._set(output, value if r.ok else UNKNOWN)
         if again:
             label = f"{label} {AGAIN}"
         progress.append(label if r.ok else f"{label} (FAILED)")
         return True
 
-    def _call(self, label, fn, *args):
+    def _call(self, label, fn, *args, gen=None):
         """One output call. Never raises; anything but a good Result is a
-        failure, written down as a fault with its sentence."""
+        failure, written down as a fault with its sentence, unless `gen`
+        is given and a newer request has come in since (a laser restore
+        cut short by an Abort is what the Abort wanted, not a fault)."""
         t0 = self._clock()
         try:
             r = fn(*args)
@@ -1010,8 +1436,12 @@ class Conductor:
                        f"must return at once; a slow one delays Abort.",
                        fault=True, action="output", outcome="slow")
         if not r.ok:
-            self._note(f"Not done: {r.sentence}", fault=True,
-                       action="output", outcome="failed")
+            if gen is not None and gen != self._gen:
+                self._note(f"Stopped: {r.sentence}", action="output",
+                           outcome="superseded")
+            else:
+                self._note(f"Not done: {r.sentence}", fault=True,
+                           action="output", outcome="failed")
         return r
 
     def _ask(self, label, fn):

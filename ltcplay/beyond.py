@@ -108,9 +108,11 @@ The facts that shape this module:
   close() blanks before it closes the socket, so tearing a link down never
   leaves the lasers live by omission.
 """
+import ipaddress
 import math
 import socket
 import struct
+import threading
 import time
 
 # Deliberately NOT `from . import madmapper`: this module has its own tiny
@@ -201,6 +203,18 @@ class BeyondConfig:
         _obj(doc, where, what)
         _no_typos(doc, cls.KEYS, where, what)
         host = _str(doc, "host", where, what, DEFAULT_HOST, required=True)
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            # A name is looked up again on every one of the 3 packets in a
+            # blank. On a show network whose name server is unreachable each
+            # lookup can take seconds, so a blank could take seconds too.
+            raise BeyondConfigError(
+                f"{where}: {what}.host has to be an IP address like "
+                f"127.0.0.2 or 192.168.1.20, not the name {host!r}. A name "
+                f"is looked up on every laser blank, and on a show network "
+                f"without a working name server that can delay the blank "
+                f"by seconds.") from None
         port = _port(doc, "port", where, what, DEFAULT_PORT)
         if port == 8000:
             raise BeyondConfigError(
@@ -296,24 +310,30 @@ class _Socket:
         self.last_error = ""
         self.last_error_at = None
         self.last_ok_at = None
+        # A blank may be sent from the pressing thread while the
+        # conductor's executor is part way through an unblank (Beyond's
+        # own docstring), so two threads can reach this socket at once.
+        # Only opening is guarded; sendto() itself is never held up.
+        self._open_lock = threading.Lock()
 
     @staticmethod
     def _default_socket():
         return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def _ensure(self, now, force=False):
-        if self._sock is not None:
+        with self._open_lock:
+            if self._sock is not None:
+                return self._sock
+            if not force and self._last_open is not None and \
+                    now - self._last_open < self.REOPEN_BACKOFF_S:
+                return None
+            self._last_open = now
+            try:
+                self._sock = self._factory()
+            except OSError as e:
+                self._fail(now, f"open: {e}")
+                return None
             return self._sock
-        if not force and self._last_open is not None and \
-                now - self._last_open < self.REOPEN_BACKOFF_S:
-            return None
-        self._last_open = now
-        try:
-            self._sock = self._factory()
-        except OSError as e:
-            self._fail(now, f"open: {e}")
-            return None
-        return self._sock
 
     def _fail(self, now, msg):
         self.send_errors += 1
@@ -375,7 +395,21 @@ class Beyond:
     least one of the 3 got out, False if all 3 failed -- and only ever
     journals the calm "blanked"/"unblanked" sentence when it actually
     succeeded; a failure gets its own sentence, flagged as a fault, never
-    silently reported as done."""
+    silently reported as done.
+
+    A blank always wins over an unblank already under way, from any
+    thread (independent review of PR #29, finding D). The conductor's
+    Abort blanks on the pressing thread, never queued behind whatever the
+    conductor's executor is doing, and that may be an unblank part way
+    through its 3 packets. So every blank() bumps `_blank_epoch` before
+    its first packet, and an unblank checks it before EVERY one of its
+    packets and stops once it has moved. A 100 packet that was already on
+    its way out when the blank began is followed by one more 0 from the
+    unblank itself, so 0 is always the last word BEYOND hears. Nothing
+    here ever holds a lock across a send, so a slow socket never makes a
+    blank wait for an unblank. unblank()'s `still_wanted` lets the caller
+    stop it the same way before a blank has even started (the conductor
+    passes "is this still the latest request")."""
 
     def __init__(self, cfg, socket_factory=None, clock=time.perf_counter,
                 sleep=time.sleep, journal=None):
@@ -384,8 +418,10 @@ class Beyond:
         self._sleep = sleep
         self._osc = _Socket(cfg.host, cfg.port, socket_factory=socket_factory,
                             clock=clock, on_fail=self._on_send_fail)
+        self._lock = threading.Lock()
+        self._blank_epoch = 0
         self.last_command = None       # "blank" or "unblank"
-        self.last_result = None        # "ok" or "failed"
+        self.last_result = None        # "ok", "failed", "refused" or "cut"
 
     def _on_send_fail(self, msg):
         self._note(f"A BEYOND command failed: {msg}.", action="command",
@@ -422,11 +458,48 @@ class Beyond:
                 self._sleep(RETRY_INTERVAL_S)
         return ok
 
+    @staticmethod
+    def _wanted(still_wanted):
+        if still_wanted is None:
+            return True
+        try:
+            return still_wanted() is True
+        except Exception:
+            return False
+
+    def _unblank_retried(self, still_wanted):
+        """_send_retried(UNBLANK_VALUE), but cut short by any blank (from
+        any thread) or by `still_wanted` turning false. Returns (ok, cut).
+        See the class docstring."""
+        with self._lock:
+            epoch = self._blank_epoch
+        ok = False
+        for i in range(RETRY_COUNT):
+            with self._lock:
+                if self._blank_epoch != epoch or \
+                        not self._wanted(still_wanted):
+                    return ok, True
+            if self._send(BRIGHTNESS_ADDR, UNBLANK_VALUE, force=True):
+                ok = True
+            with self._lock:
+                late = self._blank_epoch != epoch
+            if late:
+                # A blank began while this 100 was on its way out: one
+                # more 0, after it, so BEYOND's last word is dark.
+                self._send(BRIGHTNESS_ADDR, BLANK_VALUE, force=True)
+                return ok, True
+            if i < RETRY_COUNT - 1:
+                self._sleep(RETRY_INTERVAL_S)
+        return ok, False
+
     def blank(self, show=None):
         """A real blank command: brightness to 0. The timeline and the
         timecode input both keep running (bench B8.3) -- this never stops
         or pauses anything on BEYOND's side, only dims its output dark.
-        Returns True if at least one of the 3 packets got out."""
+        Returns True if at least one of the 3 packets got out. Stops any
+        unblank under way on another thread (class docstring)."""
+        with self._lock:
+            self._blank_epoch += 1
         ok = self._send_retried(BLANK_VALUE)
         self.last_command = "blank"
         self.last_result = "ok" if ok else "failed"
@@ -441,7 +514,7 @@ class Beyond:
                 outcome="failed", show=show, fault=True)
         return ok
 
-    def unblank(self, show=None, *, in_show):
+    def unblank(self, show=None, *, in_show, still_wanted=None):
         """Send brightness 100 -- but ONLY when `in_show` is the real bool
         True. unblank() is a public primitive, callable directly (there is
         no other way to reach BEYOND from outside this module), so this is
@@ -468,7 +541,10 @@ class Beyond:
         journal for the sanctioned path.
 
         Returns True if at least one of the 3 packets got out, False if
-        all 3 failed OR the unblank was refused for in_show=False."""
+        all 3 failed OR the unblank was refused for in_show=False, OR it
+        was cut short: by a blank on another thread, or by `still_wanted`
+        (a function, checked before every packet) no longer returning
+        True. A cut unblank never sends another 100 (class docstring)."""
         if not isinstance(in_show, bool):
             raise TypeError(
                 f"unblank() needs in_show=True or in_show=False, not "
@@ -483,8 +559,15 @@ class Beyond:
                 f"intermission).", action="unblank", outcome="refused",
                 show=show)
             return False
-        ok = self._send_retried(UNBLANK_VALUE)
+        ok, cut = self._unblank_retried(still_wanted)
         self.last_command = "unblank"
+        if cut:
+            self.last_result = "cut"
+            self._note(
+                f"BEYOND unblank{_for_show(show)} stopped part way: a blank "
+                f"or a newer request came in first.",
+                action="unblank", outcome="cut", show=show)
+            return False
         self.last_result = "ok" if ok else "failed"
         if ok:
             self._note(f"BEYOND unblanked{_for_show(show)}.",

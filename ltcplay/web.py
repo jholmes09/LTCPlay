@@ -919,8 +919,9 @@ class _BeyondRoutes:
         return 404, {"error": "no such thing here"}
 
 
-def _beyond_journal(httpd_schedule):
-    """A real journal for beyond.py's fault lines, so a failed blank/unblank
+def _device_journal(httpd_schedule):
+    """A real journal for beyond.py's and madmapper.py's fault lines (both
+    links, and the MadMapper watchdog), so a failed blank/unblank or video
     goes SOMEWHERE rather than nowhere (beyond.build() with no `journal` at
     all is exactly what silently drops them -- see beyond.py's own
     docstring: "a false 'the lasers are down' report is worse than no
@@ -940,6 +941,9 @@ def _beyond_journal(httpd_schedule):
         if httpd_schedule is not None:
             httpd_schedule._journal_line("system", text, **extra)
     return journal
+
+
+_beyond_journal = _device_journal      # its earlier name
 
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
@@ -1071,7 +1075,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if madmapper is not None:
         from . import madmapper as madmapper_mod
         if isinstance(madmapper, madmapper_mod.MadMapperConfig):
-            madmapper = madmapper_mod.build(madmapper)
+            # A real journal for the Link and watchdog too (independent
+            # review of PR #29, finding A): a failed MadMapper send must
+            # land somewhere a person reads, never nowhere.
+            madmapper = madmapper_mod.build(
+                madmapper, journal=_device_journal(httpd_schedule))
             madmapper[1].start()      # the watchdog's own listener thread
             _built_madmapper = True
         httpd.madmapper = madmapper
@@ -1081,7 +1089,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         from . import beyond as beyond_mod
         if isinstance(beyond, beyond_mod.BeyondConfig):
             beyond = beyond_mod.build(beyond,
-                                      journal=_beyond_journal(httpd_schedule))
+                                      journal=_device_journal(httpd_schedule))
             _built_beyond = True
         httpd.beyond = beyond
     if _built_madmapper or _built_beyond:

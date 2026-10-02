@@ -573,6 +573,8 @@ class Link:
         self._closed = False
         self._gen_lock = threading.Lock()
         self._gen = 0
+        self._job_errors = None        # the running job's failed sends
+        self.surfaces_level = None     # the last opacity actually sent
         # An instance attribute, not just the module constant, so a test
         # can shorten it and force a real timeout in well under a second
         # rather than waiting out the real SUBMIT_TIMEOUT_S.
@@ -598,22 +600,51 @@ class Link:
             job = self._q.get()
             if job is None:
                 return
-            fn, done = job
+            fn, done, on_done = job
+            self._job_errors = []
             try:
                 fn()
             except Exception as e:
+                self._job_errors.append(f"{type(e).__name__}: {e}")
                 self._note(f"A MadMapper command raised "
                           f"{type(e).__name__}: {e}.", action="command",
                           outcome="error", fault=True)
             finally:
+                errors, self._job_errors = self._job_errors, None
+                if on_done is not None:
+                    # A ramp that cannot send fails every step the same
+                    # way: say each distinct reason once.
+                    seen = list(dict.fromkeys(errors))
+                    why = "; ".join(seen[:3]) + (
+                        f"; and {len(seen) - 3} more" if len(seen) > 3
+                        else "")
+                    if len(errors) > 1:
+                        why += f" ({len(errors)} packets not sent)"
+                    self._tell(on_done, not errors, why)
                 if done is not None:
                     done.set()
 
-    def _submit(self, fn, wait=True):
+    @staticmethod
+    def _tell(on_done, ok, why):
+        try:
+            on_done(ok, why)
+        except Exception:
+            pass
+
+    def _submit(self, fn, wait=True, on_done=None):
+        """`on_done(ok, why)`, when given, is called once the job has run,
+        on this Link's worker thread: ok is True only if every packet the
+        job tried to send got out (a ramp stopped early by a newer one
+        still counts as ok). It is how a caller that does not wait still
+        learns that a send failed (the conductor: independent review of
+        PR #29, finding A). Called at once with ok False on a closed
+        Link. It must return promptly; it never raises into the worker."""
         if self._closed:
+            if on_done is not None:
+                self._tell(on_done, False, "the MadMapper link is closed")
             return
         done = threading.Event() if wait else None
-        self._q.put((fn, done))
+        self._q.put((fn, done, on_done))
         if wait:
             got = done.wait(self._submit_timeout_s)
             if not got:
@@ -651,7 +682,16 @@ class Link:
 
     # -- raw transport, always via the worker ------------------------------
     def _send(self, address, *args):
-        self._osc.send(address, args)
+        ok = self._osc.send(address, args)
+        if not ok:
+            if self._job_errors is not None:
+                self._job_errors.append(
+                    f"{address}: {self._osc.last_error or 'not sent'}")
+        elif address.startswith("/surfaces/") and args:
+            # The level the surfaces were last actually sent, so a new
+            # fade can start from where the picture really is.
+            self.surfaces_level = float(args[0])
+        return ok
 
     @staticmethod
     def _bank_addr(name, tail):
@@ -661,7 +701,7 @@ class Link:
         self._submit(lambda: self._send(self._bank_addr(name, "select"),
                                         True), wait=wait)
 
-    def stop_bank(self, name, wait=True):
+    def stop_bank(self, name, wait=True, on_done=None):
         """On a non-chasing bank (the intermission), this is a PAUSE, not
         a rewind (bench B14): the playhead stays exactly where it stopped.
         A later play() resumes from there, not from zero -- to actually
@@ -669,7 +709,7 @@ class Link:
         never play() after stop_bank()."""
         self._submit(
             lambda: self._send(self._bank_addr(name, "conductor/stop")),
-            wait=wait)
+            wait=wait, on_done=on_done)
 
     def play(self, name, wait=True):
         """Resumes wherever the bank's playhead currently sits -- see
@@ -752,7 +792,7 @@ class Link:
                     wait=wait)
 
     def fade_surfaces(self, start, end, seconds=None, steps=None, wait=True,
-                      curve=None):
+                      curve=None, on_done=None):
         """`curve` defaults to the show file's own `madmapper.video_curve`
         (CURVE_PERCEPTUAL unless configured otherwise -- see
         shape_values()); pass CURVE_LINEAR explicitly to bypass it for one
@@ -763,7 +803,7 @@ class Link:
         gen = self._bump_gen()
         self._submit(lambda: self._ramp(self._surface_addrs(), start, end,
                                         seconds, steps, gen, curve=curve),
-                    wait=wait)
+                    wait=wait, on_done=on_done)
 
     def fade_all(self, start, end, seconds=None, steps=None, wait=True,
                 surface_curve=None):

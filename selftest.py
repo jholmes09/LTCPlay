@@ -24073,12 +24073,15 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     T.t = 200.0
     r = c.abort("Andy", "rack screen")
     check(r.ok, f"Abort accepted: {r}")
-    # Before the executor has run at all: the flames are already cut.
-    check(rig.names() == ["flames_zero", "flames_disarm_all"],
-          f"Abort cuts and disarms the flames before it returns, and "
-          f"nothing else yet: {rig.names()}")
+    # Before the executor has run at all: the flames are already cut, and
+    # the lasers blanked on the pressing thread (independent review of PR
+    # #29, finding D: never queued behind the executor).
+    check(rig.names() == ["flames_zero", "flames_disarm_all",
+                          "lasers_fade_out"],
+          f"Abort cuts and disarms the flames, then sends the lasers dark, "
+          f"before it returns, and nothing else yet: {rig.names()}")
     check(all(t == 200.0 for _n, _a, t in rig.calls),
-          "the flame cut has zero delay")
+          "the flame cut and the lasers' dark command have zero delay")
     check(c.latched, "Abort latches at once")
     c.run_pending()
     for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
@@ -24088,6 +24091,11 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
               f"{name} starts at the press, over 1 s: {got}")
     check(rig.count("lasers_blank") == 0,
           "Abort ramps the lasers (BEYOND brightness), not an instant blank")
+    check(rig.count("lasers_fade_out") == 1,
+          "the executor does not send the lasers dark again once the "
+          "press's command got out")
+    check(any("lasers blanked at the press" in t for t, _f in lines),
+          "the journal says the lasers were blanked at the press")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
           f"the video stops once the 1 s fade is done: {stop}")
@@ -24123,8 +24131,9 @@ def test_conductor_double_abort_is_idempotent():
     c.abort("Andy", "rack screen")
     gen = c._gen
     r2 = c.abort("Jeff", "Stream Deck")
-    check(r2.ok and "Already aborted" in r2.sentence,
-          f"a second Abort is a calm no-op: {r2}")
+    check(r2.ok and "Already aborted" in r2.sentence
+          and "blank was sent again" in r2.sentence,
+          f"a second Abort starts nothing new but blanks again: {r2}")
     check(c._gen == gen, "a second Abort starts no new effect")
     resets = []
     T.at(300.5, lambda: resets.append(c.reset("Andy", "rack screen")))
@@ -24136,6 +24145,12 @@ def test_conductor_double_abort_is_idempotent():
                  "video_stop"):
         check(rig.count(name) == 1, f"{name} sent exactly once for three "
                                     f"Abort presses ({rig.count(name)})")
+    # Finding B: each press while latched sends the laser blank again (a
+    # blank only makes it darker), so a blank that did not get out the
+    # first time is not stuck that way until Reset.
+    check(rig.count("lasers_blank") == 2,
+          f"each later Abort press sends the laser blank again "
+          f"({rig.count('lasers_blank')})")
     check(resets and not resets[0].ok and "still fading" in
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
     check(c.latched, "a refused Reset leaves it latched")
@@ -24161,13 +24176,15 @@ def test_conductor_abort_mid_hold_fade_wins():
 
     def press():
         seen["r"] = c.abort("Andy", "rack screen")
-        seen["cut"] = rig.names()[-2:]
+        seen["cut"] = rig.names()[-3:]
     T.at(400.1, press)
     check(c.hold("Andy", "rack screen").ok, "Hold accepted")
     c.run_pending()
     check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
-    check(seen.get("cut") == ["flames_zero", "flames_disarm_all"],
-          f"the flames were cut inside the press itself: {seen.get('cut')}")
+    check(seen.get("cut") == ["flames_zero", "flames_disarm_all",
+                              "lasers_fade_out"],
+          f"the flames were cut and the lasers sent dark inside the press "
+          f"itself: {seen.get('cut')}")
     hold = rig.first("music_hold")
     check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
           f"the Hold had started its 0.25 s fade: {hold}")
@@ -24184,8 +24201,8 @@ def test_conductor_abort_mid_hold_fade_wins():
           f"music_halt starts the moment Abort lands, not after the Hold's "
           f"fade: {halt}")
     # The Hold blanked the lasers; Abort sends their dark command again
-    # anyway (conductor.ALWAYS_RESENT: BEYOND never confirms, so "already
-    # dark" is never trusted), at its press and before the music fade.
+    # anyway (BEYOND never confirms, so "already dark" is never trusted),
+    # on the pressing thread, before the music fade.
     check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
     las = rig.first("lasers_fade_out")
     check(las is not None and abs(las[2] - 400.1) < 1e-9
@@ -24193,11 +24210,15 @@ def test_conductor_abort_mid_hold_fade_wins():
           < rig.names().index("music_halt"),
           f"Abort sends the lasers dark again at its press, before "
           f"anything else it fades: {las} {rig.names()}")
-    check(any(_cond_mod().AGAIN in t for t, _f in lines),
-          "the journal says the blank was a re-send to lasers already dark")
-    check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
-          == 1, "Abort does not re-send video or pixels: the Hold's fade "
-          "already left them black")
+    # Finding C: Abort fades the video again, from wherever the Hold's fade
+    # had got to, never trusting a record that says black. Pixels are
+    # ltcplay's own and their record is the truth.
+    vf = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+    check(len(vf) == 2 and vf[1][1] == (1.0,)
+          and abs(vf[1][2] - 400.1) < 1e-9,
+          f"Abort fades the video again at its press, over 1 s: {vf}")
+    check(rig.count("pixels_fade_out") == 1,
+          "Abort does not re-send pixels: the Hold's fade left them black")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
           f"Abort's own 1 s runs from its press: {stop}")
@@ -24245,9 +24266,11 @@ def test_conductor_resume_before_the_hold_fade_finishes():
     n, gen = len(rig.calls), c._gen
     r = c.hold("Jeff", "Stream Deck")
     check(r.ok and "Already on hold" in r.sentence and c._gen == gen,
-          f"a double Hold is a no-op: {r}")
+          f"a double Hold starts nothing new: {r}")
     c.run_pending()
-    check(len(rig.calls) == n, "a double Hold sends nothing")
+    check(rig.names(n) == ["lasers_blank"],
+          f"a double Hold sends only the laser blank again (finding B): "
+          f"{rig.names(n)}")
     print("  ok")
 
 
@@ -24286,10 +24309,13 @@ def test_conductor_generation_guard_stops_a_stale_effect():
           rig.count("flames_release") == 0,
           f"no step of a superseded effect runs after the press: "
           f"{rig.names()}")
-    las = rig.first("lasers_fade_out")
-    check(las is not None and rig.calls.index(las) >
-          rig.calls.index(rig.first("lasers_restore")),
+    ri = rig.calls.index(rig.first("lasers_restore"))
+    check(any(cl[0] in ("lasers_blank", "lasers_fade_out")
+              for cl in rig.calls[ri + 1:]),
           "and Abort takes the lasers that did come up back down")
+    check(c.snapshot()["applied"]["lasers"] == "black",
+          f"and the record says dark, not the restore's lit: "
+          f"{c.snapshot()['applied']}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
     C = _cond_mod()
@@ -24791,11 +24817,22 @@ def test_conductor_on_real_threads():
         check(all(v[2] is not None for v in cut.values()),
               "the flames were disarmed before either press returned")
         check(c.wait_idle(5), "the Abort finished")
-        for name in ("lasers_blank", "video_fade_out", "pixels_fade_out",
+        for name in ("pixels_fade_out",
                      "music_halt", "video_stop", "flames_disarm_all"):
             check(rig.count(name) == 1, f"{name} once for two presses "
                                         f"({rig.count(name)})")
-        vf = rig.first("video_fade_out")
+        # The Hold's blank, then one per Abort press (finding B); the
+        # Hold's video fade, then Abort's own from where it got to (C).
+        check(rig.count("lasers_fade_out") == 1 and
+              rig.count("lasers_blank") == 2,
+              f"lasers blanked by the Hold, sent dark by the first Abort "
+              f"press and blanked again by the second "
+              f"({rig.count('lasers_fade_out')}, "
+              f"{rig.count('lasers_blank')})")
+        vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+        check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
+                             f"({len(vfs)})")
+        vf = vfs[-1] if vfs else None
         check(vf is not None and vf[2] - pressed < 0.15,
               f"Abort's fade started at once, not after the Hold's "
               f"({(vf[2] - pressed) if vf else None})")
@@ -24898,6 +24935,13 @@ def _cd_idx(calls, kind):
     return [i for i, e in enumerate(calls) if e[0] == kind]
 
 
+def _cd_sends(calls):
+    """The log without the Link's cancel() calls. A cancel sends nothing:
+    it only stops a fade still running where it is, at a Hold's or an
+    Abort's press (independent review of PR #29, finding C)."""
+    return [e for e in calls if e[:2] != ("mm_call", ("cancel",))]
+
+
 def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     section("conductor + devices: a Hold sends BEYOND a real blank, and it "
             "is out before the music or the video starts to fade; "
@@ -24912,9 +24956,12 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     _cd_live(c, rig, link)
     T.t = 300.0
     check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    check(rig.calls and rig.calls[0][:2] == ("mm_call", ("cancel",)),
+          f"the press stops any video fade where it is, sending nothing: "
+          f"{rig.calls[:1]}")
     c.run_pending()
     _mm_flush(link)
-    ev = rig.calls
+    ev = _cd_sends(rig.calls)
     names = [e[0] for e in ev]
     b = _cd_idx(ev, "beyond")
     m = _cd_idx(ev, "mm")
@@ -24953,6 +25000,10 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     check(not any(f for t, f in lines),
           f"no fault, and no slow call: {[t for t, f in lines if f]}")
     check(c.snapshot()["applied"]["lasers"] == "black", "lasers black")
+    # Finding A: the video is recorded black only once the Link says the
+    # packets went out (it has: flushed above).
+    check(c.snapshot()["applied"]["video"] == "black",
+          f"video black, as reported by the Link: {c.snapshot()['applied']}")
     link.close()
 
     # Rehearsal: still a real blank first, but the video freezes in place.
@@ -24962,7 +25013,7 @@ def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
     c.hold("Andy", "rack screen")
     c.run_pending()
     _mm_flush(link)
-    ev = rig.calls
+    ev = _cd_sends(rig.calls)
     check([e[1][1] for e in ev if e[0] == "beyond"]
           == [B.BLANK_VALUE] * B.RETRY_COUNT,
           f"a rehearsal Hold blanks BEYOND too: {ev}")
@@ -24994,12 +25045,18 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
     del rig.calls[:]
     T.t = 400.0
     check(c.abort("Andy", "rack screen").ok, "Abort accepted")
-    check([e[0] for e in rig.calls] == ["flames_zero", "flames_disarm_all"],
-          f"the flames are cut on the press, before anything else: "
+    pressed = _cd_sends(rig.calls)
+    check([e[0] for e in pressed][:2] == ["flames_zero", "flames_disarm_all"]
+          and [e[1][1] for e in pressed[2:]]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the flames are cut on the press, before anything else, and "
+          f"BEYOND is blanked before the press returns (finding D): "
           f"{rig.calls}")
+    check(("mm_call", ("cancel",), 400.0) in rig.calls,
+          "and any video fade is stopped where it is, at the press")
     c.run_pending()
     _mm_flush(link)
-    ev = rig.calls
+    ev = _cd_sends(rig.calls)
     names = [e[0] for e in ev]
     b = _cd_idx(ev, "beyond")
     m = _cd_idx(ev, "mm")
@@ -25048,23 +25105,25 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
     c.abort("Andy", "rack screen")
     c.run_pending()
     _mm_flush(link)
-    ev = rig.calls
+    ev = _cd_sends(rig.calls)
     names = [e[0] for e in ev]
     b = _cd_idx(ev, "beyond")
     check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
           f"Abort after a Hold sends BEYOND the blank again: {ev}")
     check(b and max(b) < names.index("music_halt"),
           f"and still before the music: {names}")
-    check(any(C.AGAIN in t for t, _f in lines),
-          "the journal says it was a re-send to lasers already dark")
     mm_ev = [e[1] for e in ev if e[0] == "mm"]
-    check([e[1][0] for e in ev if e[0] == "mm_call"] == ["stop_bank"]
+    check([e[1][0] for e in ev if e[0] == "mm_call"]
+          == ["fade_surfaces", "stop_bank"]
           and names.index("mm_call") > max(b),
-          f"after the blank, MadMapper is only told to stop: {names}")
-    check(mm_ev == [(f"/timelines/{link.cfg.show_bank}/conductor/stop",
-                     None)],
-          f"the video the Hold already faded is not faded again, only "
-          f"stopped: {mm_ev}")
+          f"after the blank, MadMapper is told black again, then stop: "
+          f"{names}")
+    stop = (f"/timelines/{link.cfg.show_bank}/conductor/stop", None)
+    check(mm_ev == [("/surfaces/Quad-1/opacity", 0.0),
+                    ("/surfaces/Quad-2/opacity", 0.0), stop],
+          f"the video the Hold already faded is not faded up and down "
+          f"again (finding C: it starts where it is, black, so one 0 per "
+          f"surface), then stopped: {mm_ev}")
     link.close()
     print("  ok")
 
