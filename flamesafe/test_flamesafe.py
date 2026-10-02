@@ -2115,9 +2115,16 @@ def test_round4_decode_rejections_are_throttled_per_reason():
             inp.poll()
             t[0] += arminput.EPISODE_QUIET_S + 0.1
         n = len(lines()) - before
-        check(n <= 3 * arminput.LINES_PER_MINUTE,
-              f"30 widely spaced rejections over ~150 s write at most "
-              f"{arminput.LINES_PER_MINUTE} lines a minute: {n}")
+        # Literal numbers, not the module's constants: a test that reads
+        # the constant moves along with it when someone changes it.
+        check(arminput.LINES_PER_MINUTE == 4
+              and arminput.EPISODE_QUIET_S == 5.0,
+              f"the throttle is 4 lines a minute per reason and a 5 s quiet "
+              f"window: {arminput.LINES_PER_MINUTE}, "
+              f"{arminput.EPISODE_QUIET_S}")
+        check(n <= 12,
+              f"30 widely spaced rejections over ~150 s write at most 4 "
+              f"lines a minute (12 in 3 minutes), not 30: {n}")
         check(any("went unlogged" in m for m in lines()[before:]),
               "and a line after the cap says how many went unlogged")
     finally:
