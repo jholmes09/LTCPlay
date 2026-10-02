@@ -103,10 +103,12 @@ it. Only ltcplay's own outputs (flames, music, pixels: ShowOutputs) and
 MadMapper's queueing calls (which never wait for MadMapper) are made with
 `_lock` held. BEYOND is called OUTSIDE it, so a slow or stalled BEYOND
 socket never holds up an Abort's flame cut, and a laser restore cannot
-outrun an Abort's blank: it is cut short by beyond.Beyond itself (a blank
-from any thread stops an unblank before its next packet) and by the
-conductor's restore guard (the restore stops once a newer request has
-been accepted). The laser gate and the announcement player are asked on
+outrun an Abort's blank: it is cut short by the conductor's restore guard
+(the restore stops before its next packet once a newer request has been
+accepted, and the guard turns false before the Abort's blank is sent) and
+by beyond.Beyond itself (a blank stops an unblank that has already
+started counting blanks before its next packet; see that class's
+docstring for the one window only the restore guard closes). The laser gate and the announcement player are asked on
 helper threads, never on the executor's, so neither can delay an Abort
 either. A second Abort while latched starts no new generation and no
 second fade, but sends the laser blank again (finding B): a blank only

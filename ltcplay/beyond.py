@@ -204,17 +204,21 @@ class BeyondConfig:
         _no_typos(doc, cls.KEYS, where, what)
         host = _str(doc, "host", where, what, DEFAULT_HOST, required=True)
         try:
-            ipaddress.ip_address(host)
+            ipaddress.IPv4Address(host)
         except ValueError:
             # A name is looked up again on every one of the 3 packets in a
             # blank. On a show network whose name server is unreachable each
             # lookup can take seconds, so a blank could take seconds too.
+            # IPv4 only: the socket below is AF_INET, so an IPv6 address
+            # would be accepted here and then every blank would fail to
+            # send (review round 3).
             raise BeyondConfigError(
-                f"{where}: {what}.host has to be an IP address like "
-                f"127.0.0.2 or 192.168.1.20, not the name {host!r}. A name "
-                f"is looked up on every laser blank, and on a show network "
-                f"without a working name server that can delay the blank "
-                f"by seconds.") from None
+                f"{where}: {what}.host has to be an IPv4 address like "
+                f"127.0.0.2 or 192.168.1.20, not {host!r}. A name is looked "
+                f"up on every laser blank, and on a show network without a "
+                f"working name server that can delay the blank by seconds. "
+                f"An IPv6 address cannot be reached at all: ltcplay talks "
+                f"to BEYOND over IPv4.") from None
         port = _port(doc, "port", where, what, DEFAULT_PORT)
         if port == 8000:
             raise BeyondConfigError(
@@ -397,19 +401,31 @@ class Beyond:
     succeeded; a failure gets its own sentence, flagged as a fault, never
     silently reported as done.
 
-    A blank always wins over an unblank already under way, from any
-    thread (independent review of PR #29, finding D). The conductor's
-    Abort blanks on the pressing thread, never queued behind whatever the
+    A blank cuts short an unblank already under way on another thread
+    (independent review of PR #29, finding D). The conductor's Abort
+    blanks on the pressing thread, never queued behind whatever the
     conductor's executor is doing, and that may be an unblank part way
     through its 3 packets. So every blank() bumps `_blank_epoch` before
     its first packet, and an unblank checks it before EVERY one of its
     packets and stops once it has moved. A 100 packet that was already on
-    its way out when the blank began is followed by one more 0 from the
-    unblank itself, so 0 is always the last word BEYOND hears. Nothing
-    here ever holds a lock across a send, so a slow socket never makes a
-    blank wait for an unblank. unblank()'s `still_wanted` lets the caller
-    stop it the same way before a blank has even started (the conductor
-    passes "is this still the latest request")."""
+    its way out when the blank began is followed by the 0 again from the
+    unblank itself, with the same 3 tries as a blank. Nothing here ever
+    holds a lock across a send, so a slow socket never makes a blank wait
+    for an unblank.
+
+    What this does NOT cover on its own (review round 3, probe b2 a): an
+    unblank that has been entered but is paused before it reads
+    `_blank_epoch` for the first time. A blank that lands in that window
+    bumps the counter before the unblank has noted it, so the unblank
+    then reads the new value as its starting point and sends all three
+    100s after the blank's 0s; the lasers end up lit. Inside this module
+    nothing closes that window. In production it is closed by the
+    conductor: it passes unblank()'s `still_wanted` ("is this restore
+    still the latest request"), and it makes that false, under its own
+    lock, BEFORE it calls blank(). still_wanted is asked before every
+    packet, the first one included, so an unblank paused anywhere stops
+    before any 100. A caller that calls unblank() and blank() from two
+    threads without a still_wanted gets no such promise."""
 
     def __init__(self, cfg, socket_factory=None, clock=time.perf_counter,
                 sleep=time.sleep, journal=None):
@@ -468,9 +484,10 @@ class Beyond:
             return False
 
     def _unblank_retried(self, still_wanted):
-        """_send_retried(UNBLANK_VALUE), but cut short by any blank (from
-        any thread) or by `still_wanted` turning false. Returns (ok, cut).
-        See the class docstring."""
+        """_send_retried(UNBLANK_VALUE), but cut short by a blank that
+        starts after the epoch read below, or by `still_wanted` turning
+        false. Returns (ok, cut). See the class docstring, including the
+        window before that first read which only still_wanted closes."""
         with self._lock:
             epoch = self._blank_epoch
         ok = False
@@ -484,9 +501,13 @@ class Beyond:
             with self._lock:
                 late = self._blank_epoch != epoch
             if late:
-                # A blank began while this 100 was on its way out: one
-                # more 0, after it, so BEYOND's last word is dark.
-                self._send(BRIGHTNESS_ADDR, BLANK_VALUE, force=True)
+                # A blank began while this 100 was on its way out: the 0
+                # again, after it, so BEYOND's last word is dark. Sent with
+                # the same 3 tries as a blank (review round 3): the blank
+                # itself may already have returned True, so a single 0
+                # lost on its way out would leave the lasers lit while
+                # everything above this module believes they are dark.
+                self._send_retried(BLANK_VALUE)
                 return ok, True
             if i < RETRY_COUNT - 1:
                 self._sleep(RETRY_INTERVAL_S)
@@ -496,8 +517,10 @@ class Beyond:
         """A real blank command: brightness to 0. The timeline and the
         timecode input both keep running (bench B8.3) -- this never stops
         or pauses anything on BEYOND's side, only dims its output dark.
-        Returns True if at least one of the 3 packets got out. Stops any
-        unblank under way on another thread (class docstring)."""
+        Returns True if at least one of the 3 packets got out. Stops an
+        unblank under way on another thread before its next packet, with
+        one exception the caller's still_wanted has to cover (class
+        docstring)."""
         with self._lock:
             self._blank_epoch += 1
         ok = self._send_retried(BLANK_VALUE)

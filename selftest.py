@@ -18619,10 +18619,15 @@ def test_beyond_osc_bytes_and_config_refusals():
     # can take seconds. Only an IP address is taken, refused at load.
     for name in ("beyond-pc", "localhost", "beyond-pc.invalid",
                  "127.0.0.1.nip.io", "192.168.1"):
-        refused({"host": name}, "has to be an IP address")
-    for ip in ("127.0.0.2", "192.168.1.20", "::1"):
+        refused({"host": name}, "has to be an IPv4 address")
+    for ip in ("127.0.0.2", "192.168.1.20"):
         check(B.BeyondConfig.parse({"host": ip}).host == ip,
               f"an IP address is taken: {ip}")
+    # Review round 3: the socket is IPv4 (AF_INET), so an IPv6 address was
+    # accepted here and then every blank failed with "address family not
+    # supported". Refused at load instead, saying why.
+    for ip in ("::1", "fe80::1", "::ffff:127.0.0.2"):
+        refused({"host": ip}, "IPv6 address cannot be reached")
     print("  ok")
 
 
@@ -25422,6 +25427,90 @@ def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
     check(r is False and [e[2] for e in log2] == [100.0]
           and bey2.last_result == "cut",
           f"still_wanted turning false stops the unblank: {log2}")
+
+    # Review round 3: a blank that lands in the 20 ms gap between two
+    # unblank packets, with NO still_wanted, means no further 100 is sent.
+    # Both ways round: the unblank wakes while the blank is still sending
+    # its 0s (catches a blank that counts itself only after its packets),
+    # and after the blank has finished (catches an unblank that takes a
+    # fresh count before every packet, so never sees a blank at all).
+    for mid in (True, False):
+        log3 = []
+        in_gap, go = threading.Event(), threading.Event()
+
+        def sleeper(s, mid=mid, in_gap=in_gap, go=go):
+            who = threading.current_thread().name
+            if who == "unblanker" and not in_gap.is_set():
+                in_gap.set()             # after the first 100: the gap
+                go.wait(2.0)
+                return
+            if who == "blanker" and mid and not go.is_set():
+                go.set()                 # wake the unblank mid blank
+                time.sleep(0.15)
+                return
+            time.sleep(s)
+        bey3 = B.Beyond(B.BeyondConfig.parse({}),
+                        socket_factory=lambda log3=log3: _RTSock("beyond",
+                                                                 log3),
+                        sleep=sleeper)
+        got3 = {}
+        u = threading.Thread(target=lambda: got3.setdefault(
+            "r", bey3.unblank(in_show=True)), name="unblanker")
+        u.start()
+        check(in_gap.wait(2.0), "the unblank reached its first gap")
+        bt = threading.Thread(target=bey3.blank, name="blanker")
+        bt.start()
+        bt.join(2)
+        go.set()
+        u.join(2)
+        when = "while the blank was sending" if mid else \
+            "after the blank had finished"
+        seq = sorted(log3, key=lambda e: e[3])
+        first0 = next((e[3] for e in seq if e[2] == 0.0), None)
+        late100 = [e for e in seq if e[2] == 100.0 and first0 is not None
+                   and e[3] >= first0]
+        check(first0 is not None and not late100,
+              f"an unblank woken {when} sends no further 100: "
+              f"{[e[2] for e in seq]}")
+        out = [e[2] for e in sorted(log3, key=lambda e: e[4])]
+        check(out.count(100.0) == 1 and out[-1] == 0.0,
+              f"one 100 before the blank, and 0 last ({when}): {out}")
+        check(got3.get("r") is False and bey3.last_result in ("cut", "ok"),
+              f"the cut unblank does not report success ({when}): {got3}")
+
+    # Review round 3: the 0 that follows a 100 caught on its way out is
+    # retried like any blank. The blank has already returned True by then,
+    # so a single lost 0 left BEYOND lit with everything above it sure the
+    # lasers were dark.
+    log4 = []
+    release4 = threading.Event()
+    lost = []
+
+    class StallThenLose(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            v = MM.decode_float(pkt)[1]
+            if threading.current_thread().name == "unblanker4":
+                if v == 100.0:
+                    release4.wait(2.0)
+                elif v == 0.0 and not lost:
+                    lost.append(1)
+                    raise OSError("the first 0 after the 100 is lost")
+            _RTSock.sendto(self, pkt, addr)
+
+    bey4 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: StallThenLose("beyond", log4))
+    u4 = threading.Thread(target=lambda: bey4.unblank(in_show=True),
+                          name="unblanker4")
+    u4.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    check(bey4.blank(), "the blank itself got out")
+    release4.set()
+    u4.join(2)
+    out4 = [e[2] for e in sorted(log4, key=lambda e: e[4])]
+    check(lost and out4 and out4[-1] == 0.0,
+          f"one lost 0 after the late 100 does not leave BEYOND lit: "
+          f"{out4}")
     print("  ok")
 
 
@@ -25513,6 +25602,35 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               f"({(px[0][2] - t0) * 1000 if px else None} ms)")
         check(not _rt_vals(log, "beyond", since=t0, value=100.0),
               "the gate's late yes lit nothing")
+    finally:
+        c.close()
+        link.close()
+
+    # 2b) Review round 3: a laser gate that hangs past GATE_TIMEOUT_S and
+    #     only then says yes. No Abort this time: the timeout itself has to
+    #     be a no, and the late yes must light nothing.
+    def hung_gate():
+        time.sleep(C.GATE_TIMEOUT_S + 0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=hung_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        t0 = time.perf_counter()
+        c.resume("Andy", "rack screen")
+        check(c.wait_idle(C.GATE_TIMEOUT_S + 3), "the Resume finished")
+        time.sleep(0.8)                  # past the gate's late yes
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
+              f"{[e[2] for e in _rt_vals(log, 'beyond', since=t0)]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"and the lasers are recorded dark: "
+              f"{c.snapshot()['applied']['lasers']}")
+        check(any("did not answer within" in t for t, _f in lines),
+              f"the journal says the gate did not answer: "
+              f"{[t for t, _f in lines if 'gate' in t]}")
     finally:
         c.close()
         link.close()
@@ -25770,6 +25888,56 @@ def test_conductor_video_never_rises_after_abort_or_hold():
             finally:
                 c.close()
                 link.close()
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
+    section("conductor: a rehearsal Hold that stops a Resume's video fade-up "
+            "part way leaves the video recorded unknown, not lit, and the "
+            "next Resume brings it back up (review round 3)")
+    C = _cond_mod()
+    # The Hold has to land inside a 0.25 s fade-up. On a loaded machine it
+    # may land after the fade has finished; that run proves nothing, so the
+    # setup is tried again (up to 3 times) rather than passed or failed.
+    for attempt in range(3):
+        c, rig, log, lines, link, bey = _rt_rig()
+        rig.move_s = 0.3
+        try:
+            c.show_starting("Andy", "rack screen")
+            check(c.wait_idle(5), "show start done")
+            c.hold("Andy", "rack screen")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(0.5)
+            c.resume("Andy", "rack screen")        # a production fade-up
+            time.sleep(0.06)
+            c.set_mode(C.REHEARSAL)
+            check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(1.5)   # the stopped fade's own report has arrived
+            q1 = [e for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity"]
+            last = q1[-1][2] if q1 else None
+            if last is not None and not 0.0 < last < 1.0 and attempt < 2:
+                continue                 # the Hold missed the fade
+            rec = c.snapshot()["applied"]["video"]
+            # video_cancel() has to make the stopped fade's success stale:
+            # if it does not, that report lands after the Hold and records
+            # the video lit at whatever level the fade had reached.
+            check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
+                  f"the fade stopped part way ({last}) and the video is "
+                  f"not recorded lit: {rec}")
+            t1 = time.perf_counter()
+            c.resume("Andy", "rack screen")
+            check(c.wait_idle(5), "rehearsal Resume done")
+            time.sleep(1.0)
+            up = [e[2] for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= t1]
+            check(up and up[-1] == 1.0,
+                  f"the next Resume brings the video back to full: {up}")
+            break
+        finally:
+            c.close()
+            link.close()
     print("  ok")
 
 
@@ -26168,6 +26336,7 @@ if __name__ == "__main__":
     test_conductor_hears_about_madmapper_failures_and_stalls()
     test_conductor_a_failed_abort_blank_can_be_sent_again()
     test_conductor_video_never_rises_after_abort_or_hold()
+    test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
     test_conductor_announcement_after_abort_and_reset()
     test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
