@@ -9508,8 +9508,10 @@ def test_schedule_late_rule():
         start = _den(S, 18, 0)
         waiting = _Night(S, rule)
         waiting.boot(start - timedelta(seconds=120))
-        check(waiting.m.state == S.IDLE, "two minutes before the first show "
-                                         "the scheduler waits in IDLE")
+        check(waiting.m.state == S.STANDBY, "two minutes before the first "
+                                            "show the intermission loop is "
+                                            "already running (within the "
+                                            "30 minute preshow lead)")
         idle = waiting.m
         fired, fired_boot = [], []
         for off in range(-60, 601):
@@ -10026,7 +10028,9 @@ def test_schedule_hold_between_shows_delays():
           f"MISSED: {n.m.slot(4).reason!r}")
     n.audit("two delayed")
 
-    # A delayed show keeps the night open, until midnight.
+    # A delayed show keeps the night open past midnight: it is never
+    # auto-missed or auto-closed, only Start now or Close for the night
+    # ends it (Jeff, 2026-10-01).
     n = _Night(S, rule)
     n.boot(_den(S, 21, 30))
     n.op(S.HOLD_ON, _den(S, 21, 35))
@@ -10036,10 +10040,16 @@ def test_schedule_hold_between_shows_delays():
     check(n.m.state == S.STANDBY and n.m.slot(12).status == S.DELAYED,
           "the last show delayed keeps the night open for Start now")
     n.tick(_den(S, 0, 0, 0, d=(2026, 11, 15)))
-    check(n.m.slot(12).status == S.MISSED
-          and "midnight" in n.m.slot(12).reason and n.m.state == S.CLOSING,
-          f"at midnight it is MISSED and the night closes: "
-          f"{n.m.slot(12).reason!r} {n.m.state}")
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          f"midnight does not miss it or close the night: "
+          f"{n.m.slot(12).status} {n.m.state}")
+    n.tick(_den(S, 9, 0, 0, d=(2026, 11, 15)))
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          "it stays open however long it takes, not just past midnight")
+    o = n.op(S.START_NOW, _den(S, 9, 5, 0, d=(2026, 11, 15)))
+    check(_fired(o, S) == [12] and
+          n.m.slot(12).reason == "DELAYED START (operator hold)",
+          f"Start now still starts it, long after midnight: {o.refused}")
     # End night skips a delayed show too; Skip next skips it first.
     n = _Night(S, rule)
     n.boot(_den(S, 18, 5))
@@ -10943,7 +10953,7 @@ def test_schedule_restart_keeps_tonight():
     c = _svc(S, work, now)
     c.state_dir = blocker
     c.start(thread=False)
-    check(c.machine.state == S.IDLE and "could not be saved" in
+    check(c.machine.state == S.STANDBY and "could not be saved" in
           (c.persist_error or ""),
           f"a failed save is a sentence and the night goes on: "
           f"{c.persist_error!r}")
@@ -11036,8 +11046,9 @@ def test_schedule_clock_check_never_delays_a_show():
     svc.TICK_S = 0.02
     try:
         svc.start()
-        check(svc.machine is not None and svc.machine.state == S.IDLE,
-              "the first tick happens at start, before the clock check")
+        check(svc.machine is not None and svc.machine.state == S.STANDBY,
+              "the first tick happens at start, before the clock check "
+              "(within the preshow lead, so the intermission is running)")
         check(wait_for(lambda: svc.machine.state == S.SHOW, timeout=2.5),
               f"18:00 must start at 18:00 while the clock check is still "
               f"waiting, got {svc.machine.state} {svc.machine.slot(1).reason!r}")
@@ -20000,10 +20011,32 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
+    # By now the night's last show, 21:40, has gone by during the Hold and
+    # is DELAYED. A delayed show keeps last night open across midnight
+    # (Jeff, 2026-10-01): it is not swept away just because the date
+    # changed, so neither pruning nor the new night's file happen yet.
+    check(svc.machine.delayed() is not None and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.state == S.HOLD,
+          f"a delayed show keeps last night open past midnight, got "
+          f"{svc.machine.date} {svc.machine.state} "
+          f"{svc.machine.delayed()}")
+    check(there("2026-07-17") and not there("2026-11-15"),
+          "so pruning's floor does not move another day and the new "
+          "night's file does not appear while a delayed show still waits")
+    # Once the operator actually closes the delayed night, midnight's own
+    # pruning and the day rollover both catch up on the very next tick.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF, "Close for the night finally closes "
+                                      "the delayed night")
+    now[0] = _den(S, 0, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-15",
+          "and now the new night starts")
     check(not there("2026-07-17") and there("2026-07-18"),
-          "and prunes again when the next night begins")
+          "and prunes again once the delayed night actually closes")
     check(there("2026-11-15"),
-          "after midnight the lines go to the new night's file")
+          "and the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
     # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
@@ -20025,9 +20058,10 @@ def test_journal_rotation_and_pruning_across_dst():
           "and after 10 minutes prunes, keeping the newest 120 nights even "
           "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
-    check(os.path.exists(sp14) and "written at midnight" in
+    check(os.path.exists(sp14) and "Close for the night" in
           open(sp14, encoding="utf-8").read(),
-          "and the night that never closed gets its summary at midnight")
+          "and the delayed night's summary, once it is actually closed, "
+          "says who closed it")
     print("  ok")
 
 
@@ -21448,14 +21482,20 @@ def test_journal_a_show_past_midnight_keeps_its_night():
     print("  ok")
 
 
-def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
-    section("scheduler: the hold epoch bumps when midnight sweeps away a "
-            "night left on Hold, not only when an operator's own Hold or "
-            "Resume crosses that line during the night (merge with #14, "
-            "2026-09-26: _ensure_night's own end-of-night write_summary "
-            "touches the same crossing hold_for_announcement's epoch "
-            "depends on, and that crossing happens by direct assignment, "
-            "not through _apply's own before/after check)")
+def test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight():
+    section("scheduler: a delayed show keeps a held night open across "
+            "midnight instead of letting it be swept away (Jeff, "
+            "2026-10-01), and the hold epoch does not move just because "
+            "the calendar date did (this test used to be named for the "
+            "opposite: midnight sweeping a held night away. Before this "
+            "decision a Hold spanning a show's time, carried past "
+            "midnight, was always swept; now a delayed show always "
+            "keeps it from being swept, so that case can no longer "
+            "happen -- the epoch must still only move on a real "
+            "Hold/Resume crossing, never on the date alone. merge with "
+            "#14, 2026-09-26: _ensure_night's own end-of-night "
+            "write_summary touches the same crossing "
+            "hold_for_announcement's epoch depends on)")
     S = _sched()
     if S is None:
         return
@@ -21473,12 +21513,23 @@ def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
     check(epoch_before > 0, "setup: Hold already bumped the epoch once")
     now[0] = _den(S, 3, 0, d=(2026, 11, 15))
     svc.tick()
-    check(svc.machine.state != S.HOLD,
-          f"setup: midnight replaced the held night: {svc.machine.state}")
-    check(svc.hold_epoch != epoch_before,
-          f"the epoch must bump on this crossing too: an announcement's "
-          f"Hold claim from last night must never still look current after "
-          f"midnight swept the night it was claimed on. Stayed at "
+    check(svc.machine.state == S.HOLD and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.delayed() is not None,
+          f"a delayed show keeps the held night open, on its own date, "
+          f"past midnight: {svc.machine.date} {svc.machine.state} "
+          f"{svc.machine.delayed()}")
+    check(svc.hold_epoch == epoch_before,
+          f"nothing crossed a Hold/Resume boundary, so an announcement's "
+          f"earlier Hold claim is still current: the epoch must not move "
+          f"just because the calendar date did. Was {epoch_before}, now "
+          f"{svc.hold_epoch}")
+    # Actually closing the delayed night IS a Hold/Resume crossing (HOLD to
+    # CLOSING), so that still bumps the epoch, through _apply's ordinary
+    # before/after check -- no special case needed for it.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF and svc.hold_epoch != epoch_before,
+          f"closing the delayed night for real does bump the epoch: "
           f"{svc.hold_epoch}")
     print("  ok")
 
@@ -25246,6 +25297,91 @@ def _mm_values(socks):
     return out
 
 
+def test_schedule_drives_the_show_conductor():
+    section("scheduler: Hold, Resume, Abort, a show starting and "
+            "intermission reach the show conductor, instead of only ever "
+            "being journaled as a dry run")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    check(svc.machine.state == S.STANDBY,
+          f"setup: within the preshow lead, the intermission is already "
+          f"running: {svc.machine.state}")
+    check(c.snapshot()["look"] == "BETWEEN",
+          f"the INTERMISSION effect reached the conductor as its BETWEEN "
+          f"look, instead of only being journaled as not performed: "
+          f"{c.snapshot()}")
+    rows = [r for r in svc.journal if r.get("action") == "intermission"]
+    check(rows and "Not performed, dry run" not in rows[0]["text"],
+          f"the journal says it was sent to the conductor, not that it "
+          f"was not performed: {rows}")
+
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    check(svc.machine.state == S.SHOW, "show 1 starts on schedule")
+    c.run_pending()
+    check(c.snapshot()["look"] == "PLAYING",
+          f"START_SHOW reached the conductor as a show start: "
+          f"{c.snapshot()}")
+
+    now[0] = _den(S, 18, 1)
+    out = svc._apply(_op(S, S.HOLD_ON))
+    check(out.accepted and svc.machine.state == S.PAUSED,
+          f"Hold during the show pauses it: {out.refused}")
+    c.run_pending()
+    check(c.snapshot()["look"] == "HELD",
+          f"the Hold effects (ZERO_FLAME_CUES, BLANK_LASERS, FREEZE_SHOW, "
+          f"FADE_MUSIC_OUT) reached the conductor as a Hold: {c.snapshot()}")
+
+    now[0] = _den(S, 18, 2)
+    out = svc._apply(_op(S, S.RESUME))
+    check(out.accepted and svc.machine.state == S.SHOW,
+          f"Resume carries the show on: {out.refused}")
+    c.run_pending()
+    check(c.snapshot()["look"] == "PLAYING",
+          f"the Resume effects (RESUME_SHOW, FADE_MUSIC_IN, UNBLANK_LASERS) "
+          f"reached the conductor as a Resume: {c.snapshot()}")
+
+    now[0] = _den(S, 18, 3)
+    out = svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(out.accepted and svc.machine.state == S.STANDBY,
+          f"Abort stops the show: {out.refused}")
+    c.run_pending()
+    check(c.latched and c.snapshot()["look"] == "ABORTED",
+          f"the Abort bundle reached the conductor as an Abort, STOP_"
+          f"CONDUCTOR (MadMapper's own stop) included: {c.snapshot()}")
+
+    # Closing's own effects (the pixel fade and blackout) are not something
+    # conductor.py implements, so they are still only journaled: the
+    # conductor is never asked to do something it has no method for.
+    now[0] = _den(S, 22, 0, 1)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF, "End night still closes normally")
+    rows = [r for r in svc.journal if r.get("action") == "BLACKOUT"]
+    check(rows and "Not performed, dry run" in rows[0]["text"],
+          f"closing's own effects are still only journaled, not claimed "
+          f"by the conductor: {rows}")
+
+    # Without a conductor attached (every build before PR #17's device
+    # layer, and the GPL path), nothing changes from before this existed:
+    # every effect is still only journaled as a dry run.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 17, 55)]
+    plain = _svc(S, work2, now2)
+    plain.tick()
+    rows = [r for r in plain.journal if r.get("action") == "INTERMISSION"]
+    check(rows and "Not performed, dry run" in rows[0]["text"],
+          f"with no conductor attached, effects are only journaled, "
+          f"exactly as before: {rows}")
+    print("  ok")
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
@@ -25443,7 +25579,7 @@ if __name__ == "__main__":
     test_journal_a_torn_last_line_after_a_power_cut()
     test_journal_a_repeating_fault_does_not_flood()
     test_journal_a_show_past_midnight_keeps_its_night()
-    test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night()
+    test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight()
     test_journal_waiting_lines_are_capped_and_counted()
     test_journal_a_clean_stop_reads_as_one()
     test_journal_screens_come_from_a_list()
@@ -25594,6 +25730,7 @@ if __name__ == "__main__":
     test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
     test_conductor_devices_failures_missing_links_and_speed()
     test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_schedule_drives_the_show_conductor()
     test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
         test_real_show(arg)
