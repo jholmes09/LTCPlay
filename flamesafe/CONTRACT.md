@@ -248,9 +248,35 @@ had: while a datagram has been accepted from one (ip, port) inside
 `arm_stale_ms` of another, a datagram from anywhere else is rejected as
 `another sender` and journaled, changing nothing. Once nothing has been
 accepted for `arm_stale_ms` the lock releases, so a restarted deck on a
-new port still takes over -- the window in which a genuinely different
-sender could slip in is never wider than the window in which a
-disconnect would have disarmed every group anyway. This lock lives in
+new port still takes over. **This does NOT bound how long a rogue can
+hold the lock once it is in.** An earlier draft of this section claimed
+"the window in which a genuinely different sender could slip in is never
+wider than the window in which a disconnect would have disarmed every
+group anyway" -- that is false, and a third safety review (round 2) found
+the gap it was hiding: the lock only ever decides whether a SECOND sender
+is accepted while a FIRST one is already live; it says nothing about how
+that first one got there. If the real deck is silent for `arm_stale_ms`
+(a reconnect, a restart, ordinary boot ordering before the real deck has
+sent its first frame), a rogue racing it can become the locked sender
+itself, for real, and arm groups the operator never asked for -- and it
+then holds that lock for as long as it keeps re-asserting faster than
+`arm_stale_ms`, which is indefinite, not bounded by anything. Worse, the
+real deck's own Abort, once it reconnects, is then rejected as "another
+sender" and does nothing: an Abort that visibly fails to disarm what the
+rogue armed.
+
+The actual fix (round 2) is in `SocketArmInput.poll()`: a datagram from
+any sender OTHER than the currently-locked one can still never ARM
+anything, but it can always DISARM. `poll()` tracks each foreign sender's
+last-reported `wanted` vector (while it keeps re-asserting inside its own
+`arm_stale_ms`) and ANDs every tracked foreign vector, bit for bit, into
+whatever assertion it returns: a foreign sender saying a group is
+`wanted=false` forces that group's bit false in the result no matter what
+the locked sender is asking for. This is what actually restores "a
+foreign frame can only ever disarm, never arm" even while a rogue holds
+the nominal lock -- the lock by itself only ever answered "is this the
+sender I already trust", never "should an ARM from a rogue be trusted",
+and never claimed to. This mechanism lives entirely in
 `flamesafe/arminput.py`'s `SocketArmInput`, not in the composer: every
 consent, dwell, chatter and edge-quiet rule is unchanged by this fix, and
 the lock holder still has to prove consent (rule 6 below) all over again.
@@ -259,7 +285,10 @@ line of defence, not the only one: the deck compares flamesafe's reported
 arm counter and per-group `wanted` states against what it itself last
 sent, and raises a visible alarm the moment they diverge, because it
 should never see state on the wire that it did not set and does not
-expect.
+expect -- and, as of round 2, that alarm (and any group flamesafe is
+still actually reporting armed) stays visible on the deck's screen even
+after an Abort has latched it: a latched screen must never paint a flat
+OFF over a group that is still really armed.
 
 **This frame says only what the deck wants.** It decides nothing: every
 rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,
@@ -421,3 +450,20 @@ sender is now rejected as `another sender`, journaled), and a group-name
 mismatch the composer rejects is now journaled too. No field's name, type
 or wire meaning changed; a deck and a flamesafe that already spoke build
 step 7b's arm frame correctly see no difference at all.
+
+Version 2, 2026-10-02 (third safety review, round 2 of PR #31): the
+sender lock above closed one hole and quietly left another -- a rogue
+that becomes the locked sender while the real deck is briefly quiet holds
+that lock indefinitely, and the real deck's own Abort is then rejected as
+"another sender" once it reconnects. A rejected foreign datagram's
+`wanted` is now tracked and ANDed (bits cleared, never set) into whatever
+`SocketArmInput.poll()` returns, so a foreign disarm always takes effect;
+no field's name, type or wire meaning changed. Also fixed the same round:
+an Abort and an in-progress arm-hold completing in the same Stream Deck
+main-loop pass could re-arm a group right after the Abort that was meant
+to clear it (streamdeck.py only, no wire change); a latched Stream Deck
+screen no longer paints a flat OFF over a group flamesafe is still
+actually reporting armed, nor hides the spoof/divergence alarm, while
+latched; a `confirmed: false` config now shows the real per-group state
+with an added caveat instead of blanking it (CONTRACT.md's own "show it"
+was always about an overlay, never a replacement).

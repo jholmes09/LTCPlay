@@ -1920,8 +1920,18 @@ MUTATIONS = [
  # the link
  ("flamesafe: a frame with the wrong contract version is accepted",
   "flamesafe/link.py",
-  '    if obj.get("v") != CONTRACT_VERSION:',
-  "    if False:"),
+  '    if obj.get("v") != CONTRACT_VERSION:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":',
+  '    if False:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a frame that is not 512 values is accepted",
   "flamesafe/link.py",
@@ -1981,8 +1991,12 @@ MUTATIONS = [
  # finding 1: any local process could fire an armed head with one datagram
  ("flamesafe: a frame with the wrong key is accepted",
   "flamesafe/link.py",
-  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:',
-  "    if False:"),
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":',
+  '    if False:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a second sender's frames are taken while the link is live",
   "flamesafe/composer.py",
@@ -2084,7 +2098,8 @@ MUTATIONS = [
 
  ("flamesafe: the flame universe may be sent to a link port",
   "flamesafe/config.py",
-  "            c.destination_port in (c.link_listen_port, c.link_status_port):",
+  "            c.destination_port in (c.link_listen_port, c.link_status_port,\n"
+  "                                   c.link_arm_port):",
   "            False:"),
 
  ("flamesafe: wrong group names in an assertion are accepted",

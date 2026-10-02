@@ -637,17 +637,37 @@ def test_rule6_consent():
     # like a malformed shape); it is now its own journal line, naming the
     # names it got and what it expected. The other four malformed shapes
     # above are driver bugs, not a group-map mismatch, and stay uncounted
-    # here on purpose: only the two name mismatches should have written
-    # anything.
+    # here on purpose: only the name-mismatch rejections should have
+    # written anything.
+    #
+    # Round 2 of the safety review, item 10: a sustained mismatch (a
+    # misconfigured deck asserting 10+ Hz) used to write one line PER
+    # assertion, which could flood flamesafe's bounded (1000-line) journal
+    # queue and push other lines out. It is now logged once for the whole
+    # continuous episode -- the SECOND mismatch here, even though its
+    # names differ from the first, is still the same ongoing episode (the
+    # reason, "names do not match", has not cleared in between) -- with a
+    # running count, and a single recovery line once a good assertion
+    # finally arrives.
     name_lines = [m for k, m in r7.log.events if k == "arm-link"]
-    check(len(name_lines) == 2
-          and all("do not match this config's" in m for m in name_lines)
+    check(len(name_lines) == 1
+          and "do not match this config's" in name_lines[0]
           and repr(list(NAMES[::-1])) in name_lines[0]
-          and repr(list(NAMES[:5])) in name_lines[1],
-          f"both group-name mismatches are journaled, saying which names "
-          f"and that they do not match: {name_lines}")
+          and "not be logged individually" in name_lines[0],
+          f"only the FIRST group-name mismatch opens the episode and is "
+          f"journaled, naming the names and that they do not match: "
+          f"{name_lines}")
+    check(r7.c.stats["arm_rejected"] == 6,
+          "both mismatches (and the other four malformed shapes) still "
+          "count in stats even though only one opened the journal line")
     check(r7.c.assert_arm([True] * 6, before + 1, names=NAMES),
           "the same assertion with the right names is accepted")
+    recovery_lines = [m for k, m in r7.log.events if k == "arm-link"
+                      and "matching this config's group names again" in m]
+    check(len(recovery_lines) == 1 and "2 rejected" in recovery_lines[0],
+          f"and closes the episode with one recovery line naming the "
+          f"total rejected (2, the two name mismatches above): "
+          f"{recovery_lines}")
 
 
 # =========================================================================
@@ -1253,6 +1273,128 @@ def test_socket_arm_input_sender_lock():
     a = inp.poll()
     check(a is not None and a.seq == 1,
           f"after the lock goes stale a new sender is taken: {a}")
+    inp.close()
+    deck.close()
+    rogue.close()
+
+
+def test_socket_arm_input_foreign_sender_can_still_disarm():
+    section("SocketArmInput: once a rogue holds the lock (the real deck "
+            "was briefly quiet), the real deck's own Abort is rejected as "
+            "'another sender' but still forces every group it says False "
+            "for to False in whatever poll() returns -- a foreign frame "
+            "can only ever disarm, never arm, even while it is NOT the "
+            "locked sender (round 2 of the safety review, item 1: the "
+            "sender lock alone left this hole -- a rogue that becomes the "
+            "lock holder while the real deck is quiet for stale_ms can "
+            "hold it indefinitely, and the real deck's own Abort used to "
+            "be rejected outright, doing nothing)")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.01)
+
+    # The real deck is quiet past stale_ms (a reconnect, a restart, boot
+    # ordering): the rogue sends first and becomes the LOCKED sender, for
+    # real -- exactly as a real deck reconnecting later would.
+    send(rogue, 1, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (True,) * 6,
+          f"the rogue is accepted as the sender (nothing has locked it out "
+          f"yet) and arms every group: {a}")
+
+    # The real deck reconnects and sends Abort (all False). Its frame is
+    # rejected as "another sender" -- the rogue already holds the lock --
+    # but its disarm must still take effect.
+    send(deck, 1, [False] * 6)
+    a = inp.poll()
+    check(a is None, "the real deck's Abort is rejected outright as "
+                     "'another sender': it is not the locked sender")
+    check(any(k == "arm-link" and "another sender" in m
+              and "disarm bits still apply" in m for k, m in log.events),
+          f"the rejection is journaled, and says its disarm still counts: "
+          f"{log.events}")
+
+    # The rogue keeps re-asserting True to hold the lock and mask the
+    # Abort. Without the fix this is exactly how an Abort gets masked.
+    send(rogue, 2, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (False,) * 6,
+          f"the rogue's own next frame is accepted (it is still the "
+          f"locked sender, seq={a.seq if a else None}), but the real "
+          f"deck's tracked foreign False is ANDed in: every group reads "
+          f"False, not the rogue's True: {a}")
+    check(a.seq == 2, "seq still comes from the locked (rogue) sender: "
+                      "the composer's own consent/liveness math is "
+                      "untouched by the foreign AND")
+
+    # The real deck's foreign assertion goes stale after stale_ms with no
+    # further frames from it: the AND then stops applying, since there is
+    # nothing left to honestly track.
+    t[0] += 0.3
+    send(rogue, 3, [True] * 6)
+    a = inp.poll()
+    check(a is not None and a.wanted == (True,) * 6,
+          f"once the real deck's foreign assertion has gone stale, the "
+          f"rogue's True is no longer clipped: {a}")
+
+    inp.close()
+    deck.close()
+    rogue.close()
+
+
+def test_socket_arm_input_foreign_sender_episode_logged_once():
+    section("SocketArmInput: a sustained foreign-sender flood logs once "
+            "for the episode plus a running count, not once per datagram "
+            "(item 10, round 2 of the safety review)")
+    t = [0.0]
+    log = Log()
+    inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=log,
+                                  stale_ms=200, clock=lambda: t[0])
+    inp.open()
+    port = inp._sock.getsockname()[1]
+    deck = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    deck.bind(("127.0.0.1", 0))
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue.bind(("127.0.0.1", 0))
+
+    def send(sock, seq, wanted):
+        sock.sendto(link.encode_arm(seq, wanted, NAMES, KEY),
+                   ("127.0.0.1", port))
+        time.sleep(0.005)
+
+    send(deck, 1, [False] * 6)
+    inp.poll()
+    for s in range(2, 22):
+        send(rogue, s, [False] * 6)
+        inp.poll()
+    rejections = [m for k, m in log.events
+                 if k == "arm-link" and "another sender" in m]
+    check(len(rejections) == 1,
+          f"20 rejections from the same foreign sender produce ONE "
+          f"journal line while it keeps re-asserting, not 20: "
+          f"{len(rejections)}")
+    # Once it has gone quiet for stale_ms, the episode closes with a
+    # summary line naming how many were rejected.
+    t[0] += 0.3
+    send(deck, 2, [False] * 6)
+    inp.poll()
+    closers = [m for k, m in log.events
+              if k == "arm-link" and "stopped after" in m]
+    check(len(closers) == 1 and "20 rejected" in closers[0],
+          f"and a single closing line gives the running count once the "
+          f"foreign sender goes quiet: {closers}")
     inp.close()
     deck.close()
     rogue.close()
@@ -2616,6 +2758,8 @@ if __name__ == "__main__":
     test_arm_link_rejects_malformed_datagrams_and_round_trips()
     test_socket_arm_input_is_the_real_build_step_7b_driver()
     test_socket_arm_input_sender_lock()
+    test_socket_arm_input_foreign_sender_can_still_disarm()
+    test_socket_arm_input_foreign_sender_episode_logged_once()
     test_service_journals_a_raising_assert_arm()
     test_socket_arm_input_really_arms_a_group_end_to_end()
     test_link_sequence_and_clock_rules()

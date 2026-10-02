@@ -1867,7 +1867,7 @@ def main(argv=None):
                         "where one is connected")
     dk.add_argument("--flamesafe-config", required=True,
                     help="the flamesafe config this deck talks to")
-    dk.add_argument("--ltcplay-url", default="http://127.0.0.1:8080",
+    dk.add_argument("--ltcplay-url", default="http://127.0.0.1:7878",
                     help="ltcplay's own local web server, for the chosen "
                     "operator and the show's state")
     dk.set_defaults(func=cmd_deck)

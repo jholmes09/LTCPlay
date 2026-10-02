@@ -88,6 +88,8 @@ class Composer:
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
         self._fire_refused = [False] * self.n
+        self._name_mismatch_logging = False   # item 10: once per episode
+        self._name_mismatch_count = 0
         self._last_tick = None
         self._fault = ""
         self._fault_at = None
@@ -133,13 +135,33 @@ class Composer:
                     # night journal never said why. Named here instead, so
                     # it says which names, and against what.
                     self.stats["arm_rejected"] += 1
-                    self._event("arm-link",
-                                f"arm assertion rejected: its group names "
-                                f"{list(names)!r} do not match this "
-                                f"config's {want_names!r}; a deck built "
-                                f"against a different group map cannot "
-                                f"arm the wrong head")
+                    self._name_mismatch_count += 1
+                    if not self._name_mismatch_logging:
+                        # Round 2 of the safety review, item 10: logged once
+                        # per continuous episode, with a running count, not
+                        # once per assertion -- at 10 Hz or faster a
+                        # misconfigured deck would otherwise flood the
+                        # bounded journal queue (1000 lines) within a
+                        # couple of minutes, pushing out everything else.
+                        self._name_mismatch_logging = True
+                        self._event(
+                            "arm-link",
+                            f"arm assertion rejected: its group names "
+                            f"{list(names)!r} do not match this config's "
+                            f"{want_names!r}; a deck built against a "
+                            f"different group map cannot arm the wrong "
+                            f"head. Further rejections for this same "
+                            f"reason will not be logged individually "
+                            f"until it stops.")
                     return False
+                elif self._name_mismatch_logging:
+                    self._name_mismatch_logging = False
+                    self._event(
+                        "arm-link",
+                        f"arm assertions are matching this config's group "
+                        f"names again, after {self._name_mismatch_count} "
+                        f"rejected for a mismatch")
+                    self._name_mismatch_count = 0
         except Exception:                               # noqa: BLE001
             self.stats["arm_rejected"] += 1
             return False

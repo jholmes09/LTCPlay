@@ -48,6 +48,29 @@ from anywhere else is rejected as "another sender" and journaled, exactly
 like the flame-frame link's own lock (composer.ingest_frame). The lock
 lives in this file, not in the composer: consent (rule 2 below) still has
 to be proved by whoever holds it, unchanged.
+
+FOREIGN DISARM (added after a THIRD safety review, round 2): the lock
+above closes the obvious hole -- a rogue cannot be ACCEPTED as the sender
+once one is locked in -- but it left open a worse one: if the real deck
+is silent for arm_stale_ms (a reconnect, a restart, ordinary startup
+ordering before the real deck has sent its first frame), a rogue can take
+the lock itself, for real, and arm groups the operator never asked for.
+When the real deck then reconnects and sends Abort, ITS frames are the
+ones now rejected as "another sender" -- so the Abort visibly fails to
+disarm what the rogue armed, which is exactly the MASKED-Abort failure
+the lock was supposed to prevent, just with the roles swapped. So: a
+frame from any sender OTHER than the currently-locked one may still never
+ARM anything, but it must always be able to DISARM. poll() now tracks
+each foreign sender's last-reported `wanted` vector (while it keeps
+re-asserting inside its own stale_ms) and ANDs every tracked foreign
+vector, bit for bit, into whatever assertion this call returns: a foreign
+sender saying a group is wanted=False forces that group's bit to False in
+the result no matter what the locked sender is asking for, restoring "a
+foreign frame can only ever disarm, never arm" even while a rogue holds
+the nominal lock. This does not and cannot re-arm anything, does not
+change seq or names (those still come from the locked sender, so consent
+in the composer is unaffected), and a foreign sender still never becomes
+the lock holder by sending this way.
 """
 
 from __future__ import annotations
@@ -187,15 +210,25 @@ class SocketArmInput(ArmInput):
     datagram from anywhere else is rejected as `another sender` and
     journaled, and changes nothing here or in the composer. Once nothing
     has been accepted for `stale_ms`, the lock releases and the next
-    sender to decode cleanly takes it over -- `stale_ms` defaults to the
-    config's own `arm_stale_ms` (__main__.py passes it), the same value
-    that already disarms every group on silence, so the window in which a
-    genuinely different sender could slip in is never wider than the
-    window in which a disconnect would have disarmed every group anyway.
-    This lock lives entirely in this file, never in composer.py: every
-    arm/disarm/dwell/chatter/consent rule there is unchanged by this fix on
-    purpose, and the lock holder still has to prove consent (rule 6) all
-    over again, exactly as before."""
+    sender to decode cleanly takes it over. **This does NOT bound how long
+    a rogue can hold the lock once it is in**: a rogue that keeps
+    re-asserting faster than `stale_ms` holds the lock indefinitely, same
+    as the real deck would. The lock only ever disallows a SECOND sender
+    from being accepted while a first one is live; it says nothing about
+    how the first one got there. A third safety review found this the hard
+    way (round 2): if the real deck goes quiet for `stale_ms` -- a
+    reconnect, a restart, ordinary boot ordering -- a rogue racing it can
+    become the locked sender itself, for real, and arm groups the operator
+    never asked for; the real deck's own Abort then arrives as "another
+    sender" and is rejected outright. See the module docstring's FOREIGN
+    DISARM section for the fix: a rejected foreign frame can still force a
+    group's `wanted` bit to False in whatever this call returns, which is
+    what actually closes that hole; the lock by itself only ever answered
+    "is this the sender I already trust", never "should a rogue's ARM be
+    trusted", and never claimed to. This lock lives entirely in this file,
+    never in composer.py: every arm/disarm/dwell/chatter/consent rule there
+    is unchanged by this fix on purpose, and the lock holder still has to
+    prove consent (rule 6) all over again, exactly as before."""
 
     def __init__(self, listen_ip, listen_port, key, n, log=None,
                 stale_ms=DEFAULT_STALE_MS, clock=time.perf_counter):
@@ -210,6 +243,11 @@ class SocketArmInput(ArmInput):
         self._sender = None       # (ip, port) locked while a datagram from
                                   # it has been accepted inside stale_ms
         self._sender_at = None    # our own clock, last accepted datagram
+        # Foreign-disarm tracking (round 2 of the safety review): addr ->
+        # {"wanted": tuple, "at": our clock, "count": rejections this
+        # episode, "logged": bool}. Never the lock holder; only ever ANDed
+        # (bits cleared, never set) into whatever this poll() call returns.
+        self._foreign = {}
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -220,6 +258,7 @@ class SocketArmInput(ArmInput):
         self._sock = sock
         self._sender = None
         self._sender_at = None
+        self._foreign = {}
 
     def poll(self):
         sock = self._sock
@@ -233,6 +272,18 @@ class SocketArmInput(ArmInput):
             # once frame_stale_ms has passed (CONTRACT.md).
             self._sender = None
             self._sender_at = None
+        # Close out any foreign sender's rejection episode once it has gone
+        # quiet for stale_ms (item 10: one summary line, not one per
+        # datagram -- a flood from a misconfigured or rogue sender must not
+        # push other lines out of flamesafe's bounded journal queue).
+        for addr in [a for a, e in self._foreign.items()
+                    if (now - e["at"]) * 1000.0 > self._stale_ms]:
+            e = self._foreign.pop(addr)
+            if e["count"] > 1:
+                self._event("arm-link",
+                            f"arm frames from {addr[0]}:{addr[1]} (another "
+                            f"sender) stopped after {e['count']} rejected "
+                            f"in a row")
         best = None
         for _ in range(DRAIN_PER_TICK):
             try:
@@ -254,14 +305,55 @@ class SocketArmInput(ArmInput):
             if self._sender is None:
                 self._sender = addr
             elif addr != self._sender:
-                self._event("arm-link", f"arm frame rejected: another "
-                            f"sender ({addr[0]}:{addr[1]} is not the "
-                            f"locked sender {self._sender[0]}:"
-                            f"{self._sender[1]})")
+                # Round 2 of the safety review (item 1): rejected for every
+                # purpose EXCEPT disarming -- this sender never becomes the
+                # lock holder, never advances seq/names/consent -- but its
+                # `wanted` is remembered so a real "disarm" from it still
+                # takes effect below, even while a rogue holds the lock.
+                self._note_foreign(addr, wanted, now)
                 continue
             self._sender_at = now
             best = ArmAssertion(wanted, seq, names)
+        if best is not None:
+            best = self._apply_foreign_clears(best, now)
         return best
+
+    def _note_foreign(self, addr, wanted, now):
+        e = self._foreign.get(addr)
+        if e is None:
+            self._foreign[addr] = {"wanted": tuple(bool(w) for w in wanted),
+                                   "at": now, "count": 1}
+            self._event("arm-link",
+                        f"arm frame rejected: another sender ({addr[0]}:"
+                        f"{addr[1]} is not the locked sender "
+                        f"{self._sender[0]}:{self._sender[1]}); its "
+                        f"disarm bits still apply. Further rejections from "
+                        f"this sender will not be logged individually "
+                        f"until it stops for {self._stale_ms} ms.")
+        else:
+            e["wanted"] = tuple(bool(w) for w in wanted)
+            e["at"] = now
+            e["count"] += 1
+
+    def _apply_foreign_clears(self, assertion, now):
+        """AND every still-fresh foreign sender's `wanted` into `assertion`,
+        bit for bit: a foreign False forces that group False in the result,
+        a foreign True never sets anything (the locked sender's own value
+        stands). seq and names are always the locked sender's own; only the
+        wanted vector can be narrowed here."""
+        wanted = list(assertion.wanted)
+        changed = False
+        for e in self._foreign.values():
+            if (now - e["at"]) * 1000.0 > self._stale_ms:
+                continue
+            fw = e["wanted"]
+            for i in range(min(len(wanted), len(fw))):
+                if not fw[i] and wanted[i]:
+                    wanted[i] = False
+                    changed = True
+        if not changed:
+            return assertion
+        return ArmAssertion(wanted, assertion.seq, assertion.names)
 
     def close(self):
         sock, self._sock = self._sock, None
@@ -272,6 +364,7 @@ class SocketArmInput(ArmInput):
                 pass
         self._sender = None
         self._sender_at = None
+        self._foreign = {}
 
     def _event(self, kind, msg):
         if self._log is None:
