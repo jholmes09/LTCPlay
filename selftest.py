@@ -23598,6 +23598,42 @@ class _FakeStatus:
         pass
 
 
+def _deck_draw_stubs(sd):
+    """For a test that drives the REAL sd.run_forever(): stub the drawing
+    it does on every pass, which is hardware-adjacent rendering, not the
+    logic under test. Fonts.text_block is always stubbed (no font file on
+    CI). Where Pillow itself is missing, as on the CI runners, which never
+    install it, Fonts and Controller.draw are stubbed too: Fonts() calls
+    _import_pil(), which raises SystemExit without Pillow. Before this
+    (found in round 5) that SystemExit ended the whole suite at the first
+    of these tests on every OS since round 3, so none of the Stream Deck
+    tests after it ever ran in CI. Returns a function that undoes it all."""
+    real_fonts, real_draw = sd.Fonts, sd.Controller.draw
+    real_text_block = real_fonts.text_block
+    real_fonts.text_block = lambda self, *a, **kw: None
+    try:
+        import PIL.Image  # noqa: F401
+        have_pillow = True
+    except Exception:                     # noqa: BLE001
+        have_pillow = False
+    if not have_pillow:
+        class _Img:
+            def crop(self, box):
+                return self
+
+        class _NoPillowFonts:
+            Image = None
+
+        sd.Fonts = _NoPillowFonts
+        sd.Controller.draw = lambda self, fonts, blink_on, chase: _Img()
+
+    def restore():
+        sd.Fonts = real_fonts
+        sd.Controller.draw = real_draw
+        real_fonts.text_block = real_text_block
+    return restore
+
+
 def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     section("Stream Deck: tick() advances the abort-hold and every group's "
             "arm-hold on EVERY main-loop pass, even when keys_down() "
@@ -23684,8 +23720,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
             pass
 
     deck = _ChangeOnlyDeck()
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None  # see section() above
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=lambda: deck,
                        journal=lambda t_, **kw: events.append((t_, kw)),
@@ -23694,7 +23729,7 @@ def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
     check(results.get("armed_from_tick_alone") == [True, False, False],
           f"a 2 s arm-hold completes from tick() alone, inside the REAL "
@@ -23794,8 +23829,7 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
     def deck_factory():
         return decks.pop(0)
 
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=deck_factory,
                        journal=lambda t_, **kw: events.append((t_, kw)),
@@ -23804,7 +23838,7 @@ def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
     check(arm.wanted == [False, False, False],
           f"a hold in progress when the deck unplugged, released WHILE it "
@@ -24406,7 +24440,7 @@ def _round4_run_forever(c, decks, t, on_sleep=None, journal=None):
     fake deck object, or None for "deck_factory raises DeckDisconnected"
     (no deck plugged in), or an Exception instance deck_factory raises
     as-is (round 5). Ends when the list runs out. Fake clock/sleep;
-    Fonts.text_block stubbed (no font file on CI), as the tests above."""
+    drawing stubbed by _deck_draw_stubs, as the tests above."""
     from ltcplay import streamdeck as sd
 
     class _StopTest(BaseException):
@@ -24422,8 +24456,7 @@ def _round4_run_forever(c, decks, t, on_sleep=None, journal=None):
             raise d             # round 5: any other error opening the deck
         return d
 
-    orig_text_block = sd.Fonts.text_block
-    sd.Fonts.text_block = lambda self, *a, **kw: None
+    restore_drawing = _deck_draw_stubs(sd)
     try:
         sd.run_forever(c, deck_factory=deck_factory,
                        journal=journal or (lambda t_, **kw: None),
@@ -24433,7 +24466,7 @@ def _round4_run_forever(c, decks, t, on_sleep=None, journal=None):
     except _StopTest:
         pass
     finally:
-        sd.Fonts.text_block = orig_text_block
+        restore_drawing()
 
 
 class _Round4Deck:

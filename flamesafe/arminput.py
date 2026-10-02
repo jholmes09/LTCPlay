@@ -138,6 +138,15 @@ FLOOD_DATAGRAMS_PER_POLL = 50
 # one is a flood.
 FLOOD_BYTES_PER_POLL = 64 * 1024
 ARM_RCVBUF_BYTES = 4 * 1024 * 1024
+# What the kernel grants for ARM_RCVBUF_BYTES varies: Linux caps it at
+# net.core.rmem_max (212,992 on a stock install) and reports double that,
+# macOS allows it, Windows grants it (its default is 64 KiB), and any of
+# them may refuse.  So the byte limit actually used is never more than a
+# quarter of the buffer really granted (SocketArmInput.flood_bytes): a
+# flood still reads as one well before it can fill a small buffer.  Never
+# below FLOOD_BYTES_FLOOR, which is still several times what a deck
+# stalled for a whole second puts there.
+FLOOD_BYTES_FLOOR = 4096
 
 # Journal throttling for every arm-link rejection (round 4 of the safety
 # review, item C).  One line per REASON when an episode starts, one closing
@@ -167,6 +176,14 @@ _DECODE_REASONS = ("not bytes", "datagram too long", "not valid JSON",
                    "not a JSON object", "wrong contract version",
                    "wrong key", "wrong message type", "seq is not",
                    "wanted is not", "names is not")
+
+
+def flood_bytes_for(rcvbuf):
+    """The per-poll byte limit for a socket granted `rcvbuf` bytes of
+    receive buffer (None: unknown).  See FLOOD_BYTES_FLOOR."""
+    if not isinstance(rcvbuf, int) or rcvbuf <= 0:
+        return FLOOD_BYTES_FLOOR
+    return max(FLOOD_BYTES_FLOOR, min(FLOOD_BYTES_PER_POLL, rcvbuf // 4))
 
 
 def _decode_reason(msg):
@@ -489,6 +506,7 @@ class SocketArmInput(ArmInput):
         self._flood_at = None
         self._flooded = False
         self.rcvbuf = None        # what the kernel really gave open() (r5)
+        self.flood_bytes = FLOOD_BYTES_PER_POLL
 
     def open(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -507,6 +525,7 @@ class SocketArmInput(ArmInput):
             self.rcvbuf = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         except OSError:
             self.rcvbuf = None
+        self.flood_bytes = flood_bytes_for(self.rcvbuf)
         self._sock = sock
         self._sender = None
         self._sender_at = None
@@ -581,7 +600,7 @@ class SocketArmInput(ArmInput):
             self._sender_at = now
             best = ArmAssertion(wanted, seq, names, sender=addr)
         if n_read > FLOOD_DATAGRAMS_PER_POLL or \
-                n_bytes > FLOOD_BYTES_PER_POLL:
+                n_bytes > self.flood_bytes:
             # Round 4, item B: see FLOOD_DATAGRAMS_PER_POLL.  Counted over
             # EVERY datagram, keyed or not: a flood of garbage crowds the
             # real deck out of the receive buffer just as well as a keyed

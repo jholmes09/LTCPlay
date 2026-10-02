@@ -2071,25 +2071,54 @@ def test_round4_socket_arm_input_flags_a_flood():
 def test_round5_flood_thresholds_are_pinned_in_datagrams_and_bytes():
     section("round 5, item 4: a flood is MORE than 50 datagrams or MORE "
             "than 64 KiB in one poll (the kernel buffer fills by bytes: 12 "
-            "maximum-size frames filled the default one, far under 50 "
-            "datagrams), and the arm socket asks for a 4 MiB receive "
-            "buffer")
+            "maximum-size frames filled Linux's default one, far under 50 "
+            "datagrams); the arm socket asks for a 4 MiB receive buffer, and "
+            "where the kernel grants less the byte limit drops to a quarter "
+            "of what it did grant, so a flood still shows before a small "
+            "buffer fills.  Only 8 KiB datagrams here: macOS refuses to "
+            "send a UDP datagram over 9216 bytes by default")
     # Literal numbers, not the module's constants: a test that reads the
     # constant moves along with it when someone changes it.
     check(arminput.FLOOD_DATAGRAMS_PER_POLL == 50
           and arminput.FLOOD_BYTES_PER_POLL == 65536
+          and arminput.FLOOD_BYTES_FLOOR == 4096
           and arminput.ARM_RCVBUF_BYTES == 4 * 1024 * 1024,
           f"thresholds: {arminput.FLOOD_DATAGRAMS_PER_POLL} datagrams, "
-          f"{arminput.FLOOD_BYTES_PER_POLL} bytes, receive buffer "
+          f"{arminput.FLOOD_BYTES_PER_POLL} bytes (floor "
+          f"{arminput.FLOOD_BYTES_FLOOR}), receive buffer "
           f"{arminput.ARM_RCVBUF_BYTES}")
+    check(arminput.flood_bytes_for(4 * 1024 * 1024) == 65536
+          and arminput.flood_bytes_for(425984) == 65536
+          and arminput.flood_bytes_for(65536) == 16384
+          and arminput.flood_bytes_for(8192) == 4096
+          and arminput.flood_bytes_for(None) == 4096,
+          "the byte limit: 64 KiB where the buffer is 256 KiB or more, a "
+          "quarter of the buffer below that, never under 4 KiB, and 4 KiB "
+          "when the buffer size is unknown")
 
-    def one_poll(sizes):
-        """A fresh input; send datagrams of these sizes from one rogue,
-        poll once, and say whether that poll read as a flood."""
+    def chunks(total):
+        """`total` bytes as datagrams of at most 8 KiB."""
+        out = []
+        while total > 0:
+            out.append(min(8192, total))
+            total -= out[-1]
+        return out
+
+    def one_poll(sizes, rcvbuf=None):
+        """A fresh input (asking for `rcvbuf` instead of the usual 4 MiB
+        if given); send datagrams of these sizes from one rogue, poll
+        once, and return (flooded, granted buffer, byte limit)."""
         t = [0.0]
-        inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6, log=Log(),
-                                      stale_ms=200, clock=lambda: t[0])
-        inp.open()
+        saved = arminput.ARM_RCVBUF_BYTES
+        if rcvbuf is not None:
+            arminput.ARM_RCVBUF_BYTES = rcvbuf
+        try:
+            inp = arminput.SocketArmInput("127.0.0.1", 0, KEY, 6,
+                                          log=Log(), stale_ms=200,
+                                          clock=lambda: t[0])
+            inp.open()
+        finally:
+            arminput.ARM_RCVBUF_BYTES = saved
         rogue = _udp()
         try:
             port = inp._sock.getsockname()[1]
@@ -2097,26 +2126,42 @@ def test_round5_flood_thresholds_are_pinned_in_datagrams_and_bytes():
                 rogue.sendto(b"\xff" * n, ("127.0.0.1", port))
             time.sleep(0.05)
             inp.poll()
-            return inp.flooded, inp.rcvbuf
+            return inp.flooded, inp.rcvbuf, inp.flood_bytes
         finally:
             inp.close()
             rogue.close()
 
-    f50, _ = one_poll([20] * 50)
-    f51, _ = one_poll([20] * 51)
+    f50, _, _ = one_poll([20] * 50)
+    f51, _, _ = one_poll([20] * 51)
     check(not f50, "exactly 50 small datagrams in one poll: not a flood")
     check(f51, "51 small datagrams in one poll: a flood")
-    fb, _ = one_poll([16384] * 4)
-    fb1, _ = one_poll([16384] * 4 + [1])
-    check(not fb, "four 16 KiB datagrams (exactly 64 KiB) in one poll: not "
-                  "a flood")
-    check(fb1, "64 KiB and one byte, in only 5 datagrams: a flood")
-    fv, _ = one_poll([16384] * 12)
-    check(fv, "the round-5 review's 12 maximum-size frames: a flood")
+
+    _, granted, limit = one_poll([])
+    check(limit == arminput.flood_bytes_for(granted),
+          f"the byte limit follows the buffer this kernel granted "
+          f"({granted}): {limit}")
+    at, _, _ = one_poll(chunks(limit))
+    over, _, _ = one_poll(chunks(limit) + [1])
+    check(not at, f"exactly the byte limit ({limit}) in one poll: not a "
+                  f"flood")
+    check(over, f"the byte limit and one byte, in only "
+                f"{len(chunks(limit)) + 1} datagrams: a flood")
+    big, _, _ = one_poll([8192] * 24)
+    check(big, "the round-5 review's 12 maximum-size frames' worth of bytes "
+               "(196 KiB, sent as 8 KiB datagrams): a flood")
+
+    # A buffer the kernel caps or refuses: ask for only 16 KiB.  The limit
+    # drops with it, and a flood well inside that small buffer still shows.
+    _, small, small_limit = one_poll([], rcvbuf=16384)
+    check(small_limit <= max(arminput.FLOOD_BYTES_FLOOR, small // 4),
+          f"with a {small}-byte buffer the byte limit is at most a quarter "
+          f"of it: {small_limit}")
+    fs, _, _ = one_poll(chunks(small_limit) + [1], rcvbuf=16384)
+    check(fs, f"and {small_limit + 1} bytes, which fit in that buffer "
+              f"several times over, read as a flood")
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        plain = probe.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
                              4 * 1024 * 1024)
@@ -2125,11 +2170,10 @@ def test_round5_flood_thresholds_are_pinned_in_datagrams_and_bytes():
         asked = probe.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
     finally:
         probe.close()
-    _, got = one_poll([])
-    check(got == asked and (asked > plain or asked >= 4 * 1024 * 1024),
-          f"the arm socket's receive buffer is what this kernel gives a "
-          f"socket that asks for 4 MiB ({asked}), more than a plain "
-          f"socket's {plain}: {got}")
+    check(granted == asked,
+          f"the arm socket asks for 4 MiB of receive buffer: it got what "
+          f"this kernel gives any socket that asks for 4 MiB ({asked}): "
+          f"{granted}")
 
 
 def test_round5_arm_link_lines_have_a_global_ceiling():

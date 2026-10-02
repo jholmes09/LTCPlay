@@ -3911,7 +3911,7 @@ def build():
  ("round4: SocketArmInput never reports a flood",
   "flamesafe/arminput.py",
   "        if n_read > FLOOD_DATAGRAMS_PER_POLL or \\\n"
-  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
+  "                n_bytes > self.flood_bytes:\n",
   "        if False:\n"),
 
  ("round4: SocketArmInput stops naming the locked sender",
@@ -4127,18 +4127,24 @@ def build():
 
  ("round5: a flood is counted in datagrams only, never bytes",
   "flamesafe/arminput.py",
-  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
+  "                n_bytes > self.flood_bytes:\n",
   "                False:\n"),
 
  ("round5: the flood byte threshold is off by one (>=)",
   "flamesafe/arminput.py",
-  "                n_bytes > FLOOD_BYTES_PER_POLL:\n",
-  "                n_bytes >= FLOOD_BYTES_PER_POLL:\n"),
+  "                n_bytes > self.flood_bytes:\n",
+  "                n_bytes >= self.flood_bytes:\n"),
 
  ("round5: the flood byte threshold doubles",
   "flamesafe/arminput.py",
   "FLOOD_BYTES_PER_POLL = 64 * 1024\n",
   "FLOOD_BYTES_PER_POLL = 128 * 1024\n"),
+
+ ("round5: the byte limit ignores a small receive buffer (a flood can "
+  "fill a capped or refused buffer without ever reading as one)",
+  "flamesafe/arminput.py",
+  "    return max(FLOOD_BYTES_FLOOR, min(FLOOD_BYTES_PER_POLL, rcvbuf // 4))\n",
+  "    return FLOOD_BYTES_PER_POLL\n"),
 
  ("round5: the arm socket keeps the kernel's default receive buffer",
   "flamesafe/arminput.py",
