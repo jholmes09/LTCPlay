@@ -547,6 +547,12 @@ _SHORT_REASON = {
     # link. Hand-copied: this module never imports flamesafe.
     "Another sender is on the arm link: a cycle cannot arm until it "
     "stops. Cycle the arm again once it has gone.": "OTHER SENDER",
+    # Second-copy guard (2026-10-03, flamesafe/composer.py's
+    # FLAME_OTHER_SENDER): the same refusal, for a second sender on the
+    # show program's flame link, or that link just changing hands.
+    "Another sender is on the show program link, or it just changed "
+    "hands: a cycle cannot arm until that has settled. Cycle the arm "
+    "again once it has.": "OTHER SENDER",
     # The show's Abort from the rack screen or phone (flamesafe's
     # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
     "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
@@ -2068,6 +2074,26 @@ def main(argv=None):
                     "on, so the operator gate and journal routing silently "
                     "never reached the real server by default)")
     args = ap.parse_args(argv)
+    # Second-copy guard (2026-10-03, onlyone.py): one deck process per
+    # machine. A second `ltc deck` would be a second sender on the arm link:
+    # the round-4 veto would refuse every cycle while both ran, and the two
+    # would fight over the hardware.
+    from . import onlyone
+    try:
+        only = onlyone.only_copy(
+            onlyone.DECK_LOCK,
+            f"ltc deck for {os.path.abspath(args.flamesafe_config)}, "
+            f"started {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    except onlyone.AlreadyRunning as e:
+        print(f"error: {onlyone.refusal(onlyone.DECK_LOCK, e.holder)}")
+        return 2
+    try:
+        return _main(args)
+    finally:
+        only.release()
+
+
+def _main(args):
     try:
         arm_ip, arm_port, status_ip, status_port, key, names = \
             load_flamesafe_link(args.flamesafe_config)
