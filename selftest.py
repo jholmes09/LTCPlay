@@ -30982,10 +30982,18 @@ class _FiSession:
 
 
 class _FiFlames:
-    """A flame link, for the day there is one: records zero and release."""
+    """Stands in for flamelink.FlameLink: records zero, release and the
+    Abort's disarm_all."""
 
-    def __init__(self, calls, T):
+    def __init__(self, calls, T, disarm_ok=True):
         self.calls, self.T = calls, T
+        self.disarm_ok = disarm_ok
+        self.reasons = []
+
+    def disarm_all(self, reason):
+        self.reasons.append(reason)
+        self.calls.append(("flames_disarm", (), self.T.now()))
+        return self.disarm_ok
 
     def zero(self):
         self.calls.append(("flames_zero", (), self.T.now()))
@@ -31120,11 +31128,25 @@ def test_fire_ice_show_outputs():
     check(not r.ok and "cannot disarm" in r.sentence and
           "CONTRACT.md" in r.sentence and show.flames == C.ZERO,
           f"the disarm fails loudly and the cues are zero: {r}")
+    # With the flame link (PR #34): the disarm goes through its disarm_all,
+    # which zeroes the cues itself, and is done only when it went out.
     fl = _FiFlames(calls, T)
     show2 = F.FireIceShow(control, journal=journal, flame_link=fl)
+    show2.flames_release()
     r = show2.flames_disarm_all("Abort")
-    check(not r.ok and calls[-1][0] == "flames_zero",
-          "with a flame link the disarm still zeroes and still fails")
+    check(r.ok and calls[-1][0] == "flames_disarm" and
+          fl.reasons == ["Abort"] and show2.flames == C.ZERO and
+          "Sent is not confirmed" in r.sentence,
+          f"with a flame link the disarm goes through it, and says sent "
+          f"is not confirmed: {r}")
+    fl.disarm_ok = False
+    r = show2.flames_disarm_all("Abort")
+    check(not r.ok and "could NOT be sent" in r.sentence,
+          f"a disarm that did not go out is a failure: {r}")
+    fl.disarm_all = lambda reason: 1 / 0
+    r = show2.flames_disarm_all("Abort")
+    check(not r.ok, f"a flame link that raises is a failure, never a "
+                    f"crash: {r}")
     print("  ok")
 
 
@@ -31253,6 +31275,11 @@ def _fi_log(calls):
                                       else f" {args[0]:g} ms"))
         else:
             e = ("flames", kind[7:])
+        if e == ("video", "cancel"):
+            # A cancel of a fade that may or may not be running (PR #29's
+            # fix rounds send one before every new fade): not an output
+            # change, so not part of the order these tests check.
+            continue
         if not out or out[-1] != e or e[0] != "lasers":
             out.append(e)
     return out
@@ -31284,31 +31311,41 @@ def test_fire_ice_night_end_to_end():
     # Show start, on schedule.
     n.now[0] = _den(S, 18, 0)
     svc.tick()
-    c.run_pending()
+    _settle(svc, c)
     _mm_flush(n.link)
     check(svc.machine.state == S.SHOW, "show 1 starts on schedule")
     start = _fi_log(n.calls)
-    check(start == [("video", "select_bank"), ("music", "play"),
-                    ("video", "cancel"), ("video", "set_surfaces"),
-                    ("lasers", "lit"), ("flames", "release")],
-          f"show start: the show bank, then the show audio, then video up, "
-          f"lasers lit through the gate, flame cues last: {start}")
-    check(c.laser_gate() is None, "in the show the gate allows the lasers")
-    rows = [r for r in svc.journal if r.get("action") == "show start"]
-    check(rows and rows[-1]["outcome"] == "done", f"journaled: {rows}")
+    check(start == [("video", "select_bank"), ("music", "play")],
+          f"show start: the show bank, then the show audio, and nothing "
+          f"else until the timecode is seen moving: {start}")
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "done",
+          f"the automatic start is journaled: {rows}")
     n.w.runner.poll()
+    _settle(svc, c)
     check(svc.machine.slot(svc.machine.running).confirmed_at is None,
           "not confirmed before the timecode moves")
+    check(_fi_log(n.calls) == start,
+          "the conductor is not told a show started before it is confirmed")
     n.sess.clock._last_frame = 30
     n.w.runner.poll()
+    _settle(svc, c)
+    _mm_flush(n.link)
     check(svc.machine.slot(svc.machine.running).confirmed_at is not None,
           "confirmed once the timecode moves")
+    start = _fi_log(n.calls)
+    check(start == [("video", "select_bank"), ("music", "play"),
+                    ("video", "fade 1 to 1"),
+                    ("lasers", "lit"), ("flames", "release")],
+          f"once confirmed: video up, lasers lit through the gate, flame "
+          f"cues last: {start}")
+    check(c.laser_gate() is None, "in the show the gate allows the lasers")
     del n.calls[:]
     # Hold.
     n.now[0] = _den(S, 18, 1)
     T.t = 300.0
     out = svc._apply(_op(S, S.HOLD_ON))
-    c.run_pending()
+    _settle(svc, c)
     _mm_flush(n.link)
     hold = _fi_log(n.calls)
     check(svc.machine.state == S.PAUSED and c.snapshot()["look"] == "HELD",
@@ -31324,7 +31361,7 @@ def test_fire_ice_night_end_to_end():
     # Resume.
     n.now[0] = _den(S, 18, 2)
     out = svc._apply(_op(S, S.RESUME))
-    c.run_pending()
+    _settle(svc, c)
     _mm_flush(n.link)
     res = _fi_log(n.calls)
     check(svc.machine.state == S.SHOW, "Resume: back in the show")
@@ -31342,18 +31379,18 @@ def test_fire_ice_night_end_to_end():
     n.now[0] = _den(S, 18, 3)
     T.t = 400.0
     out = svc._apply(_op(S, S.ABORT, confirmed=True))
-    c.run_pending()
+    _settle(svc, c)
     _mm_flush(n.link)
     ab = _fi_log(n.calls)
     check(svc.machine.state == S.STANDBY and c.latched,
           f"Abort: {svc.machine.state}, latched {c.latched}")
-    # The cut, then the disarm on the pressing thread (which zeroes again
-    # and fails), then the executor tries the disarm once more because it
-    # never succeeded: three zeros, two fault lines, before anything else.
-    check(ab[:3] == [("flames", "zero")] * 3,
-          f"Abort zeroes the flame cues first, and each disarm attempt "
-          f"zeroes them again: {ab}")
-    check(ab[3:] == [("lasers", "dark"), ("video", "fade 1 to 0"),
+    # The cut first, then the disarm through the flame link, on the
+    # pressing thread, before anything else; it went out, so the executor
+    # does not send it again.
+    check(ab[:2] == [("flames", "zero"), ("flames", "disarm")],
+          f"Abort zeroes the flame cues, then disarms every group through "
+          f"the flame link, first: {ab}")
+    check(ab[2:] == [("lasers", "dark"), ("video", "fade 1 to 0"),
                      ("pixels", "blackout"), ("music", "halt 1000 ms"),
                      ("video", "stop_bank")],
           f"then lasers dark, video, pixels and music fade over 1 s, then "
@@ -31363,8 +31400,8 @@ def test_fire_ice_night_end_to_end():
     check(stop and abs(stop[0] - 401.0) < 1e-6,
           f"the video stops after the 1 s fade: {stop}")
     faults = [t for t, f in n.lines if f and "cannot disarm" in t]
-    check(len(faults) == 2, "the Abort's disarm is written down as a fault: a screen "
-                  "Abort cannot disarm flame groups")
+    check(not faults, f"with a flame link the Abort's disarm is no fault: "
+                      f"{faults}")
     # The runner reports nothing for an aborted show.
     before = len(svc.journal)
     n.w.runner.poll()
@@ -31373,12 +31410,15 @@ def test_fire_ice_night_end_to_end():
     del n.calls[:]
     n.now[0] = _den(S, 18, 20)
     svc.tick()
-    c.run_pending()
+    _settle(svc, c)
     check(not any(k == "music_play" for k, _a, _t in n.calls),
           f"latched: the next show's audio is not started: {n.calls}")
     n.w.runner.poll()
-    check(svc.machine.state == S.STANDBY,
-          f"and the start is reported failed: {svc.machine.state}")
+    s2 = [x for x in svc.machine.slots if x.n == 2]
+    check(svc.machine.state == S.STANDBY and s2 and
+          s2[0].status == S.MISSED,
+          f"and the scheduler misses it (aborted, not Reset): "
+          f"{svc.machine.state} {s2}")
     c.close()
     n.link.close()
     print("  ok")
@@ -31395,9 +31435,10 @@ def test_fire_ice_runner_reports_the_show():
     svc.tick()
     n.now[0] = _den(S, 18, 0)
     svc.tick()
-    c.run_pending()
+    _settle(svc, c)
     n.sess.clock._last_frame = 5
     n.w.runner.poll()
+    _settle(svc, c)
     # Past the show's length the clock no longer ends it: the audio does.
     n.now[0] = _den(S, 18, 10)
     svc.tick()
@@ -31406,6 +31447,7 @@ def test_fire_ice_runner_reports_the_show():
     n.sess.clock.playing = False
     n.sess.clock.last_ended = "Show finished"
     n.w.runner.poll()
+    _settle(svc, c)
     check(svc.machine.state == S.STANDBY,
           f"the show ends when its audio does: {svc.machine.state}")
     done = [s for s in svc.machine.slots if s.n == 1]
@@ -31413,10 +31455,11 @@ def test_fire_ice_runner_reports_the_show():
     # A cue that stops before its timecode ever moved did not start.
     n.now[0] = _den(S, 18, 20)
     svc.tick()
-    c.run_pending()
+    _settle(svc, c)
     check(svc.machine.state == S.SHOW, "show 2 starts")
     n.sess.clock.playing = False
     n.w.runner.poll()
+    _settle(svc, c)
     s2 = [s for s in svc.machine.slots if s.n == 2]
     check(svc.machine.state == S.STANDBY and s2 and s2[0].status == S.FAULT,
           f"a cue that never moved is a failed start, not an ended show: "
@@ -31425,24 +31468,27 @@ def test_fire_ice_runner_reports_the_show():
     n.control.session = None
     n.now[0] = _den(S, 18, 40)
     svc.tick()
-    rows = [r for r in svc.journal if r.get("action") == "show start"]
-    check(rows and rows[-1]["outcome"] == "failed" and
+    _settle(svc, c)
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "refused" and
           "Run has not been pressed" in rows[-1]["text"],
           f"no Run: the start is refused in words: {rows[-1:]}")
     n.w.runner.poll()
+    _settle(svc, c)
     s3 = [s for s in svc.machine.slots if s.n == 3]
     check(svc.machine.state == S.STANDBY and s3 and s3[0].status == S.FAULT,
           f"and reported as a failed start: {svc.machine.state} {s3}")
     # Closing: End night, then the runner closes and reports it done.
     n.control.session = n.sess
     out = svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    _settle(svc, c)
     check(svc.machine.state == S.CLOSING,
           f"performing: closing waits for its report: {svc.machine.state}")
     rows = [r for r in svc.journal if r.get("action") == "BLACKOUT"]
     check(rows and "Not performed: nothing in this build" in rows[-1]["text"],
           f"an effect nothing performs says so, not 'dry run': {rows[-1:]}")
     n.w.runner.poll()
-    c.run_pending()
+    _settle(svc, c)
     check(svc.machine.state == S.OFF, f"closing done: {svc.machine.state}")
     check(n.sess.player.override == "blackout", "pixels black at closing")
     c.close()
@@ -31465,6 +31511,204 @@ def test_fire_ice_runner_reports_the_show():
           "a dry run still ends the show on the scheduler's clock")
     d.c.close()
     d.link.close()
+    print("  ok")
+
+
+_FI_NETWORKS = """<?xml version="1.0" encoding="UTF-8"?>
+<Networks computer="test">
+  <Controller Id="1" Name="Pixels A" Type="Ethernet" IP="127.0.0.1" ActiveState="Active">
+    <network NetworkType="ArtNET" ComPort="127.0.0.1" BaudRate="1" MaxChannels="510" Enabled="Yes" />
+  </Controller>
+  <Controller Id="2" Name="Flames" Type="Ethernet" IP="10.0.0.9" ActiveState="{state}">
+    <network NetworkType="E131" ComPort="10.0.0.9" BaudRate="7" MaxChannels="512" Enabled="Yes" />
+  </Controller>
+</Networks>
+"""
+
+
+def _fi_flame_files(work, state="Inactive", port=None):
+    """A flamesafe config (its example, on a free port) and a show folder
+    whose xlights_networks.xml has an inactive "Flames" controller at
+    channels 511 to 1022."""
+    import json as _json
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "flamesafe", "flamesafe.example.json"),
+              encoding="utf-8") as fh:
+        doc = _json.load(fh)
+    doc["link"]["listen_port"] = port or _free_udp_port()
+    fs = os.path.join(work, "flamesafe.json")
+    with open(fs, "w", encoding="utf-8") as fh:
+        _json.dump(doc, fh)
+    show = os.path.join(work, "show")
+    os.makedirs(show, exist_ok=True)
+    with open(os.path.join(show, "xlights_networks.xml"), "w",
+              encoding="utf-8") as fh:
+        fh.write(_FI_NETWORKS.replace("{state}", state))
+    return fs, show, doc
+
+
+def _free_udp_port():
+    import socket as _s
+    k = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    k.bind(("127.0.0.1", 0))
+    p = k.getsockname()[1]
+    k.close()
+    return p
+
+
+def test_fire_ice_flame_link_from_flamesafe_config():
+    section("fire & ice: the flame link is built from flamesafe's own "
+            "config, its cues are the show's flame universe only while the "
+            "flame controller is Inactive in xLights, and a screen Abort's "
+            "disarm goes out through it")
+    import json as _json
+    import socket as _s
+    import tempfile
+    import types
+    F = _fi_mod()
+    from ltcplay import conductor as C
+    work = tempfile.mkdtemp()
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    # The config: refusals first.
+    for doc, want in (({"auto_start": "yes"}, "auto_start"),
+                      ({"flame_controller": "Flames"}, "flamesafe_config"),
+                      ({"flamesafe_config": ""}, "flamesafe_config"),
+                      ({"flamesafe_config": "x.json", "flame_controller": 3},
+                       "flame_controller")):
+        try:
+            F.FireIceConfig.parse(doc, os.path.join(work, F.CONFIG_FILE))
+            check(False, f"{doc} must be refused")
+        except F.FireIceConfigError as e:
+            check(want in str(e), f"{doc} refused naming {want}: {e}")
+    cfg = F.FireIceConfig.parse({"flamesafe_config": "flamesafe.json",
+                                 "flame_controller": "Flames"},
+                                os.path.join(work, F.CONFIG_FILE))
+    check(cfg.flamesafe_config == os.path.join(work, "flamesafe.json"),
+          f"a relative flamesafe_config is beside the Fire & Ice config: "
+          f"{cfg.flamesafe_config}")
+    check(cfg.auto_start == "when_run_pressed",
+          "auto_start defaults to PR #32's reading: once Run is pressed")
+    # The flame channels.
+    fs, show, fsdoc = _fi_flame_files(work)
+    check(F.flame_channels(os.path.join(show, "xlights_networks.xml"),
+                           "Flames") == (511, 512),
+          "the flame controller's channels, walked in xLights' order")
+    _fi_flame_files(work, state="Active")
+    try:
+        F.flame_channels(os.path.join(show, "xlights_networks.xml"),
+                         "Flames")
+        check(False, "an Active flame controller must be refused")
+    except F.FlameControllerError as e:
+        check("Inactive" in str(e) and "around" in str(e),
+              f"an Active flame controller is refused, saying why: {e}")
+    # FlameCues, on a fake running session.
+    buf = bytearray(1022)
+    for i in range(512):
+        buf[510 + i] = (i * 7) % 256
+    sess = types.SimpleNamespace(running=True,
+                                 tl=types.SimpleNamespace(show_dir=show),
+                                 player=types.SimpleNamespace(_buf=buf))
+    control = types.SimpleNamespace(session=sess)
+    cues = F.FlameCues(control, "Flames", journal)
+    check(cues("01:00:00:00") is None and
+          any(f and "Inactive" in t for t, f in lines),
+          "Active controller: all zeros, and a fault line")
+    n_faults = sum(1 for _t, f in lines if f)
+    cues("01:00:00:01")
+    check(sum(1 for _t, f in lines if f) == n_faults,
+          "the same refusal is journaled once, not every frame")
+    fs, show, fsdoc = _fi_flame_files(work, state="Inactive")
+    sess.tl = types.SimpleNamespace(show_dir=show + os.sep + ".")
+    vals = cues("01:00:00:02")
+    check(vals == [(i * 7) % 256 for i in range(512)],
+          "Inactive controller: the flame universe out of the frame")
+    check(F.FlameCues(control, "Nope", journal)("x") is None,
+          "a controller that is not there: all zeros")
+    sess.running = False
+    check(cues("01:00:00:03") is None, "nothing running: all zeros")
+    sess.running = True
+    # build_flame_link: the real FlameLink, key and port from flamesafe's
+    # own file, and the Abort's disarm reaches the wire.
+    show_out = F.FireIceShow(control, journal=journal, flame_link=None)
+    link = F.build_flame_link(F.FireIceConfig(flamesafe_config=fs,
+                                              flame_controller="Flames"),
+                              control, show_out, journal)
+    try:
+        check(link.cfg.key == fsdoc["link"]["key"] and
+              link.cfg.port == fsdoc["link"]["listen_port"] and
+              link.cfg.frame_stale_ms == fsdoc["frame_stale_ms"],
+              "key, port and frame_stale_ms come from flamesafe's config")
+        check(any("Stream Deck" in t for t, _ in lines),
+              "it says it cannot see flamesafe's status frames itself")
+        rx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        rx.bind(("127.0.0.1", link.cfg.port))
+        rx.settimeout(2.0)
+        try:
+            link.open()
+            show_out.flame_link = link
+            r = show_out.flames_disarm_all("Abort pressed on the rack screen")
+            check(r.ok, f"the screen Abort's disarm went out: {r}")
+            kinds = []
+            try:
+                for _ in range(6):
+                    kinds.append(_json.loads(rx.recv(70000))["t"])
+            except _s.timeout:
+                pass
+            check("flame" in kinds and "disarm_all" in kinds,
+                  f"a zero frame, then disarm_all, on the wire: {kinds}")
+        finally:
+            rx.close()
+    finally:
+        link.stop()
+    # Missing flamesafe config: serve refuses to start, in words.
+    try:
+        F.build_flame_link(F.FireIceConfig(
+            flamesafe_config=os.path.join(work, "nope.json")), control,
+            show_out, journal)
+        check(False, "a flamesafe_config that cannot be read must refuse")
+    except F.FireIceConfigError as e:
+        check("nope.json" in str(e), f"refused naming the file: {e}")
+    _ = C
+    print("  ok")
+
+
+def test_fire_ice_auto_start_off_and_start_now():
+    section("fire & ice: auto_start off never starts a scheduled show by "
+            "itself, Start now still does, and every start is journaled")
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    n.w.runner.cfg.auto_start = "off"
+    svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(not any(k == "music_play" for k, _a, _t in n.calls),
+          "auto_start off: the show that came due is not started")
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "refused" and
+          "auto_start is off" in rows[-1]["text"],
+          f"and the refusal is journaled in words: {rows[-1:]}")
+    n.w.runner.poll()
+    _settle(svc, c)
+    s1 = [x for x in svc.machine.slots if x.n == 1]
+    check(s1 and s1[0].status == S.FAULT,
+          f"reported as a failed start: {s1}")
+    del n.calls[:]
+    out = svc._apply(_op(S, S.START_NOW))
+    _settle(svc, c)
+    check(any(k == "music_play" for k, _a, _t in n.calls),
+          f"Start now still starts the show: {out.refused if out else ''} "
+          f"{n.calls}")
+    rows = [r for r in svc.journal if r.get("action") == "start now"]
+    check(rows and rows[-1]["outcome"] == "done" and "Andy" in
+          rows[-1]["text"], f"Start now is journaled with who: {rows[-1:]}")
+    c.close()
+    n.link.close()
     print("  ok")
 
 
@@ -32930,15 +33174,29 @@ def test_the_gpl_path_never_loads_the_flame_link():
             if re.search(r"\bflamelink\b", line) and \
                     re.match(r"\s*(from|import)\s", line):
                 top.append(f"{name}:{i}")
+    # The one import allowed (show-assembly, 2026-10-03): fire_ice.py, which
+    # is itself loaded only for Fire & Ice (test_the_gpl_path_never_loads_
+    # the_conductor), imports it inside build_flame_link() only, so even
+    # loading fire_ice.py loads no flame link (checked below).
+    allowed = []
+    for i, line in enumerate(open(os.path.join(here, "ltcplay",
+                                               "fire_ice.py"),
+                                  encoding="utf-8"), 1):
+        if re.search(r"\bflamelink\b", line) and \
+                re.match(r"(from|import)\s", line):
+            allowed.append(f"fire_ice.py:{i} (at the top level)")
+    top = [t for t in top if not t.startswith("fire_ice.py:")] + allowed
     check(not top, f"the flame link is imported by the program: {top}")
     r = _sp.run([sys.executable, "-c",
                  "import sys; sys.path.insert(0, sys.argv[1]); "
                  "import ltcplay.session, ltcplay.web, ltcplay.cli; "
-                 "print('ltcplay.flamelink' in sys.modules)", here],
+                 "a = 'ltcplay.flamelink' in sys.modules; "
+                 "import ltcplay.fire_ice; "
+                 "print(a, 'ltcplay.flamelink' in sys.modules)", here],
                 capture_output=True, text=True, timeout=60)
-    check(r.stdout.strip() == "False",
-          f"loading the program loads no flame link: {r.stdout!r} "
-          f"{r.stderr[-300:]!r}")
+    check(r.stdout.strip() == "False False",
+          f"loading the program (and even fire_ice.py) loads no flame link: "
+          f"{r.stdout!r} {r.stderr[-300:]!r}")
     print("  ok")
 
 
@@ -33326,6 +33584,8 @@ if __name__ == "__main__":
     test_audio_master_per_call_fade()
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
+    test_fire_ice_flame_link_from_flamesafe_config()
+    test_fire_ice_auto_start_off_and_start_now()
     test_ltc_serve_gpl_builds_no_conductor()
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()

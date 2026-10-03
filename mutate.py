@@ -6237,6 +6237,84 @@ def build():
   "                                    if self._resume_fade_ms is None\n"
   "                                    else self._resume_fade_ms)",
   "        fade = self._sa.fade_frames(self.audio.hold_fade_ms)"),
+
+ # -- show-assembly (2026-10-03): the performer on #30's ordered line, the
+ # auto_start gate, and the flame link built from flamesafe's config.
+ ('show-assembly: the performer starts a show in a dry run',
+  'ltcplay/schedule_service.py',
+  '        if sch.START_SHOW in kinds and not self.dry_run and \\\n',
+  '        if sch.START_SHOW in kinds and \\\n'),
+
+ ('show-assembly: an Abort no longer supersedes a waiting show start',
+  'ltcplay/schedule_service.py',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")'),
+
+ ('show-assembly: the show start goes to the conductor, not the runner',
+  'ltcplay/schedule_service.py',
+  '            if call.method == "start_show":\n                # The Fire',
+  '            if call.method == "start_shoe":\n                # The Fire'),
+
+ ('show-assembly: a refused automatic start is not journaled as refused',
+  'ltcplay/schedule_service.py',
+  '                    outcome="done" if ok else "refused",',
+  '                    outcome="done",'),
+
+ ('show-assembly: auto_start off is ignored',
+  'ltcplay/fire_ice.py',
+  '        if auto and self.cfg.auto_start == "off":',
+  '        if auto and self.cfg.auto_start == "never":'),
+
+ ("show-assembly: an operator's Start now counts as automatic",
+  'ltcplay/fire_ice.py',
+  '        auto = who == "the scheduler"',
+  '        auto = True'),
+
+ ('show-assembly: an Active flame controller is accepted',
+  'ltcplay/fire_ice.py',
+  '            if a.get("ActiveState", "Active") == "Active":',
+  '            if a.get("ActiveState", "Active") == "Never":'),
+
+ ('show-assembly: flame channels are counted from 0',
+  'ltcplay/fire_ice.py',
+  '    import xml.etree.ElementTree as ET\n    root = ET.parse(networks_xml).getroot()\n    chan = 1',
+  '    import xml.etree.ElementTree as ET\n    root = ET.parse(networks_xml).getroot()\n    chan = 0'),
+
+ ('show-assembly: flame cues read while nothing is running',
+  'ltcplay/fire_ice.py',
+  '        if s is None or not getattr(s, "running", False):\n            return None\n        p = getattr(s, "player", None)',
+  '        if s is None:\n            return None\n        p = getattr(s, "player", None)'),
+
+ ('show-assembly: the flame cue refusal is journaled every frame',
+  'ltcplay/fire_ice.py',
+  '            if text != self._problem:',
+  '            if True:'),
+
+ ("show-assembly: the screen Abort's disarm skips the flame link",
+  'ltcplay/fire_ice.py',
+  '        if self.flame_link is not None:\n            self.flames = C.ZERO\n            try:\n                ok = self.flame_link.disarm_all(reason)',
+  '        if False:\n            self.flames = C.ZERO\n            try:\n                ok = self.flame_link.disarm_all(reason)'),
+
+ ('show-assembly: a disarm that did not go out counts as done',
+  'ltcplay/fire_ice.py',
+  '            return C.done(f"{reason}: {DISARM_SENT}") if ok is True else \\',
+  '            return C.done(f"{reason}: {DISARM_SENT}") if True else \\'),
+
+ ("show-assembly: the flame link key is not flamesafe's own",
+  'ltcplay/fire_ice.py',
+  '        return flamelink.FlameLinkConfig.from_flamesafe_config(\n            cfg.flamesafe_config)',
+  '        c = flamelink.FlameLinkConfig.from_flamesafe_config(\n            cfg.flamesafe_config)\n        c.key = c.key[::-1]\n        return c'),
+
+ ('show-assembly: closing does not zero and stop the flame link',
+  'ltcplay/fire_ice.py',
+  '            if fl is not None and hasattr(fl, "stop"):',
+  '            if False:'),
+
+ ('show-assembly: flame_controller allowed without a flame link',
+  'ltcplay/fire_ice.py',
+  '            if fs is None:\n                raise FireIceConfigError(',
+  '            if False:\n                raise FireIceConfigError('),
+
 ]
 
 

@@ -1281,6 +1281,7 @@ def _cmd_serve(args):
         try:
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
+            fire_ice_mod.flame_link_config(fire_ice)
         except ValueError as e:
             return _err(str(e))
     announce = None

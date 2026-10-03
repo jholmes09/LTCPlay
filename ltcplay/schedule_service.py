@@ -1216,7 +1216,7 @@ class Service:
             if call.method == "start_show":
                 # The Fire & Ice show runner, not the conductor (see
                 # _drive_conductor).
-                r = self.performer.start_show(call.show)
+                r = self.performer.start_show(call.show, who=call.who)
             else:
                 r = getattr(self.conductor, call.method)(call.who,
                                                          call.screen)
@@ -1243,10 +1243,12 @@ class Service:
                 # A refused start is the runner's to report, as SHOW_FAILED
                 # (one report, from one place); this only says what happened.
                 # An automatic start is always journaled, done or not.
+                what = ("Automatic show start" if call.who ==
+                        "the scheduler" else f"Start now by {call.who}")
                 self._journal_line(
-                    "system", f"Automatic show start, show {call.show}: "
-                              f"{said}".strip(),
-                    action="automatic start",
+                    "system", f"{what}, show {call.show}: {said}".strip(),
+                    action="automatic start" if call.who == "the scheduler"
+                    else "start now",
                     outcome="done" if ok else "refused",
                     reason=said or ("done" if ok else "refused"),
                     show=call.show or None, fault=not ok)

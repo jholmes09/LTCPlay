@@ -17,13 +17,20 @@ What it builds, from conductor.py's own integration notes:
     pixels      the existing pixel output path: the player's override, the
                 same "blackout" the page's Blackout button sets. It has no
                 fade, so "fade to black" is black at once, journaled as such.
-    flames      ltcplay has no flame link to flamesafe in this build: it
-                sends no flame cue frames at all (flamesafe/CONTRACT.md
-                describes ltcplay's side; nothing implements it yet). So
-                zero and release reach nothing, and say so, and
-                flames_disarm_all FAILS LOUDLY: the contract has no disarm
-                message, and this module does not invent one. A
-                `flame_link` with zero()/release() can be handed in later.
+    flames      ltcplay's flame link (flamelink.FlameLink, PR #34), built
+                here when this config names "flamesafe_config": its key,
+                port, universe and frame_stale_ms come from flamesafe's own
+                config file (FlameLinkConfig.from_flamesafe_config), so the
+                two programs cannot disagree. zero, release and the
+                Abort's disarm_all go through it. The cue values are the
+                show's own flame universe, read from the frame the pixel
+                output is rendering (FlameCues), and only when this config
+                names the flame controller in xlights_networks.xml AND that
+                controller is Inactive there, so the pixel output never
+                sends fire values to the flame node itself, around
+                flamesafe. Anything else: all zeros. Without
+                "flamesafe_config" there is no flame link: zero and release
+                reach nothing, and a screen Abort's disarm FAILS LOUDLY.
   DeviceOutputs conductor.ConductorDevices on web.serve's own MadMapper and
                 BEYOND links, built from this config's "madmapper" and
                 "beyond" blocks; either may be absent, and the conductor then
@@ -45,8 +52,23 @@ import threading
 from . import conductor as C
 
 CONFIG_FILE = "ltcplay_fire_ice.json"
-KEYS = frozenset(("scheduler_performs", "show_cue", "madmapper", "beyond",
-                  "notes"))
+KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
+                  "madmapper", "beyond", "flamesafe_config",
+                  "flame_controller", "notes"))
+
+# "auto_start": the ONE setting that decides whether the scheduler, once it
+# performs, starts a scheduled show by itself (an open question for Jeff,
+# PR #32 Q5: is "Run pressed" enough to start a show, and light the lasers
+# through the conductor, with no other confirmation?).
+#   "when_run_pressed"  PR #32's reading, the default: a show that comes due
+#                       is started on the show audio once Run has been
+#                       pressed on the page.
+#   "off"               the scheduler never starts a show by itself: a show
+#                       that comes due is refused by the runner and reported
+#                       as a failed start (which disarms every flame group);
+#                       an operator's Start now still starts one.
+# Every start, automatic or Start now, is journaled either way.
+AUTO_START = ("when_run_pressed", "off")
 
 
 class FireIceConfigError(ValueError):
@@ -64,12 +86,17 @@ class FireIceConfig:
     scheduler, no MadMapper, no BEYOND."""
 
     def __init__(self, scheduler_performs=False, show_cue=None,
-                 madmapper=None, beyond=None, path=None):
+                 madmapper=None, beyond=None, path=None,
+                 auto_start="when_run_pressed", flamesafe_config=None,
+                 flame_controller=None):
         self.scheduler_performs = scheduler_performs
+        self.auto_start = auto_start
         self.show_cue = show_cue
         self.madmapper = madmapper
         self.beyond = beyond
         self.path = path
+        self.flamesafe_config = flamesafe_config
+        self.flame_controller = flame_controller
 
     @classmethod
     def parse(cls, doc, where=CONFIG_FILE):
@@ -95,6 +122,33 @@ class FireIceConfig:
             raise FireIceConfigError(
                 f"{where}: 'show_cue' is the name of the show's cue in the "
                 f"show file, or leave it out for the first cue.")
+        auto = doc.get("auto_start", "when_run_pressed")
+        if auto not in AUTO_START:
+            raise FireIceConfigError(
+                f"{where}: 'auto_start' has to be one of "
+                f"{', '.join(repr(a) for a in AUTO_START)}, not {auto!r}.")
+        fs = doc.get("flamesafe_config")
+        if fs is not None:
+            if not isinstance(fs, str) or not fs.strip():
+                raise FireIceConfigError(
+                    f"{where}: 'flamesafe_config' is the path of flamesafe's "
+                    f"own config file, or leave it out for no flame link.")
+            fs = fs.strip()
+            if not os.path.isabs(fs):
+                base = os.path.dirname(os.path.abspath(where)) \
+                    if where != CONFIG_FILE else os.getcwd()
+                fs = os.path.join(base, fs)
+        fc = doc.get("flame_controller")
+        if fc is not None:
+            if not isinstance(fc, str) or not fc.strip():
+                raise FireIceConfigError(
+                    f"{where}: 'flame_controller' is the exact name of the "
+                    f"flame controller in xlights_networks.xml.")
+            if fs is None:
+                raise FireIceConfigError(
+                    f"{where}: 'flame_controller' needs 'flamesafe_config': "
+                    f"flame cues only ever go to flamesafe.")
+            fc = fc.strip()
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -102,7 +156,9 @@ class FireIceConfig:
         if "beyond" in doc:
             from . import beyond as beyond_mod
             bey = beyond_mod.BeyondConfig.parse(doc["beyond"], where)
-        return cls(performs, cue.strip() if cue else None, mm, bey, where)
+        return cls(performs, cue.strip() if cue else None, mm, bey, where,
+                   auto_start=auto, flamesafe_config=fs,
+                   flame_controller=fc)
 
     @classmethod
     def load(cls, path):
@@ -119,8 +175,15 @@ class FireIceConfig:
         return cls.parse(doc, path)
 
     def summary(self):
-        return ("scheduler performs" if self.scheduler_performs
-                else "scheduler dry run") + \
+        return ("scheduler performs" + (
+                    ", starts shows by itself once Run is pressed"
+                    if self.auto_start == "when_run_pressed" else
+                    ", never starts a show by itself (auto_start off)")
+                if self.scheduler_performs else "scheduler dry run") + \
+            (f", flame link from {self.flamesafe_config}"
+             + (f", flame cues from controller {self.flame_controller!r}"
+                if self.flame_controller else ", flame cues all zero")
+             if self.flamesafe_config else ", no flame link") + \
             (f", MadMapper {self.madmapper.summary()}" if self.madmapper
              else ", no MadMapper") + \
             (", BEYOND " + self.beyond.summary() if self.beyond
@@ -132,6 +195,10 @@ class FireIceConfig:
 NO_FLAME_LINK = (
     "ltcplay has no flame link to flamesafe in this build: it sends no flame "
     "cue frames at all, so the conductor's flame cue commands reach nothing.")
+DISARM_SENT = (
+    "a disarm was sent to every flame group through the flame link. Sent "
+    "is not confirmed: flamesafe's status frames go to the Stream Deck "
+    "program, and the Stream Deck shows whether each group disarmed.")
 NO_DISARM = (
     "A screen-initiated Abort cannot disarm the flame groups: flamesafe's "
     "link contract (flamesafe/CONTRACT.md, version 2) has no disarm message "
@@ -327,12 +394,167 @@ class FireIceShow(C.ShowOutputs):
             C.failed("Flame cues release did not go out.")
 
     def flames_disarm_all(self, reason):
-        """Never a quiet success: the cues go to zero, and the answer is a
-        failure carrying NO_DISARM, which the conductor writes down as a
-        fault, every time."""
+        """With a flame link: its disarm_all (cues to zero, a zero frame,
+        then the disarm, repeated past frame_stale_ms), done when it went
+        out. Without one, never a quiet success: the cues go to zero, and
+        the answer is a failure carrying NO_DISARM, which the conductor
+        writes down as a fault, every time."""
+        if self.flame_link is not None:
+            self.flames = C.ZERO
+            try:
+                ok = self.flame_link.disarm_all(reason)
+            except Exception as e:
+                return C.failed(f"{reason}: the disarm failed: {e}")
+            return C.done(f"{reason}: {DISARM_SENT}") if ok is True else \
+                C.failed(f"{reason}: the disarm could NOT be sent to "
+                         f"flamesafe (it is retried every frame). Disarm "
+                         f"with the Stream Deck's Abort or its group keys.")
         z = self.flames_zero()
         tail = "" if z.ok else f" Zeroing the cues also failed: {z.sentence}"
         return C.failed(f"{reason}: {NO_DISARM}{tail}")
+
+
+# ------------------------------------------------------------ flame cues --
+
+class FlameControllerError(ValueError):
+    """The flame controller in xlights_networks.xml cannot be used, in a
+    sentence."""
+
+
+def flame_channels(networks_xml, name):
+    """(first absolute channel, count) of the controller called `name` in
+    xlights_networks.xml, walked in the same order netmap.load() and
+    xLights use, so the channels are the ones the FSEQ renders for it.
+    Refused unless that controller is Inactive: an active one is in the
+    pixel output's map, and the pixel output would send its fire values
+    straight to the flame node, around flamesafe. Count is at most 512."""
+    import xml.etree.ElementTree as ET
+    root = ET.parse(networks_xml).getroot()
+    chan = 1
+    for c in root:
+        if c.tag != "Controller":
+            continue
+        a = c.attrib
+        nets = [n for n in c if n.tag == "network"]
+        span = sum(max(0, int(n.attrib.get("MaxChannels", "0") or 0))
+                   for n in nets)
+        if a.get("Name", "") == name:
+            if a.get("ActiveState", "Active") == "Active":
+                raise FlameControllerError(
+                    f"The flame controller {name!r} is Active in "
+                    f"{networks_xml}, so the pixel output would send its "
+                    f"fire values straight to the flame node, around "
+                    f"flamesafe. Set it Inactive in xLights (it keeps its "
+                    f"channels). Until then every flame cue is zero.")
+            if span <= 0:
+                raise FlameControllerError(
+                    f"The flame controller {name!r} in {networks_xml} has "
+                    f"no channels.")
+            return chan, min(span, 512)
+        chan += span
+    raise FlameControllerError(f"There is no controller called {name!r} in "
+                               f"{networks_xml}. Every flame cue is zero.")
+
+
+class FlameCues:
+    """flamelink's cue provider: the show's flame universe, read from the
+    frame the pixel output is rendering right now (the player's buffer
+    holds the whole show's channels, the Inactive flame controller's
+    included; nothing sends those). The timecode FlameLink passes is the
+    frame the show audio last sent, which is what the player renders.
+    None (all zeros) whenever there is no running player, or the show
+    file's folder has no usable flame controller. Never raises."""
+
+    def __init__(self, control, name, journal=None):
+        self.control = control
+        self.name = name
+        self._journal = journal
+        self._folder = None
+        self._span = None
+        self._problem = ""
+
+    def _note(self, text, **f):
+        if self._journal is not None:
+            try:
+                self._journal(text, **f)
+            except Exception:
+                pass
+
+    def _locate(self, session):
+        folder = getattr(getattr(session, "tl", None), "show_dir", None)
+        if folder == self._folder:
+            return self._span
+        self._folder, self._span = folder, None
+        try:
+            if not folder:
+                raise FlameControllerError("The running show has no show "
+                                           "folder.")
+            self._span = flame_channels(
+                os.path.join(folder, "xlights_networks.xml"), self.name)
+            self._problem = ""
+            self._note(f"Flame cues: from controller {self.name!r}, "
+                       f"channels {self._span[0]} to "
+                       f"{self._span[0] + self._span[1] - 1} of the show.",
+                       action="flames", outcome="cues_found")
+        except Exception as e:
+            text = str(e)
+            if text != self._problem:
+                self._problem = text
+                self._note(f"Flame cues are zero: {text}", fault=True,
+                           action="flames", outcome="cues_refused")
+        return self._span
+
+    def __call__(self, tc):
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return None
+        p = getattr(s, "player", None)
+        buf = getattr(p, "_buf", None)
+        if buf is None:
+            return None
+        span = self._locate(s)
+        if span is None:
+            return None
+        start, count = span
+        vals = list(bytes(buf[start - 1:start - 1 + count]))
+        return vals + [0] * (512 - len(vals))
+
+
+def flame_link_config(cfg):
+    """The FlameLinkConfig read from flamesafe's own config, or None when
+    the Fire & Ice config names none. `ltc serve` calls this before it
+    binds anything, so a flamesafe config it cannot read stops it in one
+    sentence. Raises FireIceConfigError."""
+    if not cfg.flamesafe_config:
+        return None
+    from . import flamelink
+    try:
+        return flamelink.FlameLinkConfig.from_flamesafe_config(
+            cfg.flamesafe_config)
+    except flamelink.FlameLinkConfigError as e:
+        raise FireIceConfigError(str(e))
+
+
+def build_flame_link(cfg, control, show, journal=None):
+    """The FlameLink for this config, started, or None when the config
+    names no flamesafe config. Raises FireIceConfigError for a config file
+    that cannot be read, so serve refuses to start rather than run without
+    the link it was told to have."""
+    if not cfg.flamesafe_config:
+        return None
+    from . import flamelink
+    lcfg = flame_link_config(cfg)
+    cues = (FlameCues(control, cfg.flame_controller, journal)
+            if cfg.flame_controller else flamelink.zero_cues)
+    link = flamelink.FlameLink(
+        lcfg, cues=cues, show_state=flamelink.audio_master_state(show._clock),
+        journal=journal)
+    if journal is not None:
+        journal("Flame link: flamesafe's status frames go to the Stream Deck "
+                "program, so this program cannot see flamesafe confirm a "
+                "disarm, or raise the lock alarm itself; the Stream Deck "
+                "shows both.", action="flame_link", outcome="no_status")
+    return link
 
 
 # ------------------------------------------------------------- the runner --
@@ -384,11 +606,22 @@ class ShowRunner:
             except Exception:
                 pass
 
-    def start_show(self, n):
-        """Called by the scheduler inside its own step, before the conductor
-        is told a show started. Returns a conductor Result at once."""
+    def start_show(self, n, who="the scheduler"):
+        """Called on the scheduler's ordered line of conductor requests,
+        off its lock, after tonight is saved; the conductor is told a show
+        started only once it is confirmed. Returns a conductor Result at
+        once. `who` is "the scheduler" for a show that came due, or the
+        operator who pressed Start now."""
         clk = self.show._clock()
         s = self.show._session()
+        auto = who == "the scheduler"
+        if auto and self.cfg.auto_start == "off":
+            why = ("auto_start is off in ltcplay_fire_ice.json, so the "
+                   "scheduler does not start a show by itself; press Start "
+                   "now to start it")
+            with self._lock:
+                self._cue = {"show": n, "failed": why}
+            return C.failed(f"Show {n} was not started: {why}.")
         if s is None or clk is None or self.conductor.latched:
             why = ("Run has not been pressed, so nothing may reach the rig"
                    if s is None else
@@ -501,16 +734,27 @@ class ShowRunner:
 class Wiring:
     """What attach() built, for web.serve to keep and close."""
 
-    def __init__(self, conductor, show, devices, runner):
+    def __init__(self, conductor, show, devices, runner, flame_link=None):
         self.conductor = conductor
         self.show = show
         self.devices = devices
         self.runner = runner
+        self.flame_link = flame_link
 
     def close(self):
-        if self.runner is not None:
-            self.runner.close()
-        self.conductor.close()
+        try:
+            if self.runner is not None:
+                self.runner.close()
+            self.conductor.close()
+        finally:
+            # Last: zero frames until the end. flamesafe disarms every
+            # group once it stops hearing it.
+            fl = self.flame_link
+            if fl is not None and hasattr(fl, "stop"):
+                try:
+                    fl.zero()
+                finally:
+                    fl.stop()
 
 
 def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
@@ -521,7 +765,22 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     already reaches the conductor. `threaded` False and `conductor_kw`
     (clock, waiter) are the selftest's: nothing runs on its own then."""
     link = madmapper[0] if madmapper is not None else None
-    show = FireIceShow(control, journal=journal, flame_link=flame_link)
+    built_link = None
+    if flame_link is None and cfg.flamesafe_config:
+        # Built before the show outputs so they have it from the start; the
+        # clock it reads is looked up through the show on every frame.
+        holder = {}
+        show = FireIceShow(control, journal=journal,
+                           flame_link=_LinkSlot(holder))
+        built_link = build_flame_link(cfg, control, show, journal)
+        holder["link"] = built_link
+        show.flame_link = built_link
+        if threaded:
+            built_link.start()
+        else:
+            built_link.open()
+    else:
+        show = FireIceShow(control, journal=journal, flame_link=flame_link)
     devices = C.ConductorDevices(link, beyond, journal=journal)
 
     def state():
@@ -544,4 +803,13 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     if journal is not None:
         journal(f"Fire & Ice show conductor built: {cfg.summary()}.",
                 action="fire_ice", outcome="built")
-    return Wiring(conductor, show, devices, runner)
+    return Wiring(conductor, show, devices, runner, built_link)
+
+
+class _LinkSlot:
+    """Stands in for the flame link only while it is being built, so
+    FireIceShow does not journal "no flame link" for a link that is about
+    to exist."""
+
+    def __init__(self, holder):
+        self.holder = holder
