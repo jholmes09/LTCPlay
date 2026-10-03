@@ -20,6 +20,15 @@ from pathlib import Path
 
 QUEUE_MAX = 1000
 
+# Round 5 of the safety review, item 5: lines of these kinds are noise an
+# outsider can provoke (arm-link rejections: wrong key, garbage, another
+# sender, a flood, a group-name mismatch).  They are dropped, and counted,
+# once the queue is half full, so however many there are behind a blocked
+# console the other half stays free for the lines that matter: "show
+# program stopped answering", arm and disarm, faults.
+LOW_PRIORITY_KINDS = ("arm-link",)
+LOW_PRIORITY_MAX = QUEUE_MAX // 2
+
 
 class Journal:
 
@@ -49,6 +58,10 @@ class Journal:
             self.lines.append(line)
             if len(self.lines) > 500:
                 del self.lines[:-500]
+            if kind in LOW_PRIORITY_KINDS and \
+                    self._q.qsize() >= LOW_PRIORITY_MAX:
+                self.dropped += 1
+                return
             try:
                 self._q.put_nowait(line)
             except queue.Full:
