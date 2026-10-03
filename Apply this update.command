@@ -158,6 +158,28 @@ fi
 chmod +x "$DEST"/*.command 2>/dev/null
 [ -e "$DEST/ltc" ] && chmod +x "$DEST/ltc" 2>/dev/null
 
+# The Stream Deck program needs Pillow and hidapi in the install's Python
+# environment. An update never rebuilds that environment, so an install made
+# before the Stream Deck existed is missing them. Add them here if they are
+# absent. Best effort: offline is not a reason to refuse the update, the show
+# does not need them. Keep this list the same as Install ltcplay.command.
+DECK_NOTE=""
+if ! "$DEST/.venv/bin/python" -c "import hid, PIL" >/dev/null 2>&1; then
+  echo
+  echo "Adding the Stream Deck libraries (Pillow and hidapi)."
+  if "$DEST/.venv/bin/pip" install --only-binary :all: pillow hidapi \
+       >/dev/null 2>&1 \
+     && "$DEST/.venv/bin/python" -c "import hid, PIL" >/dev/null 2>&1; then
+    echo "  done"
+  else
+    echo "  could not be added (are you online?). The update goes ahead."
+    DECK_NOTE="
+The Stream Deck libraries (Pillow and hidapi) could not be added. The show
+does not need them. To add them, get online and double-click
+'Install ltcplay.command' in the install folder."
+  fi
+fi
+
 echo
 echo "Proving it, about 35 seconds."
 echo
@@ -211,4 +233,4 @@ bye "Updated:
     $DEST
 
 Your show file, sequences, saved input and Python environment were not
-touched. Nothing needs reinstalling."
+touched. Nothing needs reinstalling.$DECK_NOTE"
