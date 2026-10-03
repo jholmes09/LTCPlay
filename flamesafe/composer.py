@@ -35,6 +35,12 @@ OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
                 "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
+# Second-copy guard (Jeff, 2026-10-03): why a cycle is not being accepted
+# while a second sender is on the FLAME link, or the flame link has just
+# changed hands.  Steady amber: cycling now would not count.
+FLAME_OTHER_SENDER = ("Another sender is on the show program link, or it "
+                      "just changed hands: a cycle cannot arm until that "
+                      "has settled. Cycle the arm again once it has.")
 # The words on the ARMED lamp of a group the show program's Abort disarmed
 # (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
 # and the only one.  Shown until that group latches again.
@@ -120,6 +126,20 @@ class Composer:
         self._frame_mono = None
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
+        # Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10,
+        # review probe p2 s5), the flame link's own copy of the arm link's
+        # round-4 consent veto.  A second sender with the key on the flame
+        # link (a second copy of ltcplay, or an old one still running) means
+        # nobody can newly arm a group, whichever of the two holds the lock:
+        #   _flame_foreign   {sender: our clock} for every keyed, well-formed
+        #                    datagram refused as "another sender"; a sender
+        #                    counts until it has been quiet frame_stale_ms.
+        #   _flame_changed_at  our clock when the lock last passed to a
+        #                    sender other than the one that held it before;
+        #                    for frame_stale_ms after that the newcomer has
+        #                    not yet proved it is the only sender.
+        self._flame_foreign = {}
+        self._flame_changed_at = None
         self._last_reject = ""
         # Rejection journaling, the arm link's own throttle (see
         # _FLAME_REASONS).  Written as kind "link-reject".
@@ -308,8 +328,17 @@ class Composer:
         # The cost: a genuine cycle made while another sender is on the
         # link does not count, and the operator cycles again once it has
         # gone (CONTRACT.md, the arm link).
+        #
+        # Second-copy guard (2026-10-03): and nobody else is on the FLAME
+        # link, and the flame link has not just changed hands.  Probe p2 s5:
+        # a second sender with the key took the flame link in an ltcplay
+        # restart gap, the real ltcplay came back and was refused, and the
+        # deck re-armed every group while the other sender supplied the fire
+        # values.  Now the real ltcplay, still sending, is the other sender,
+        # so no cycle counts for as long as both are running.
         disturbed = (self._foreign_arm_senders != 0
-                     or self._arm_link_flooded)
+                     or self._arm_link_flooded
+                     or self._flame_link_disturbed(t))
         consent_ok = advanced and was_live and not disturbed
         # Fix round 1 of PR #34, item 2: inside min_arm_dwell_ms of an
         # accepted disarm_all, a low that was already going on at the Abort
@@ -418,6 +447,7 @@ class Composer:
             fresh = self._frame_is_fresh(t)
             if fresh:
                 if sender != self._frame_sender:
+                    self._flame_foreign[sender] = t
                     raise ValueError("another sender")
                 # While the link is live, frames must arrive in order and the
                 # sender's own clock must not go backwards.  Once the link
@@ -427,6 +457,22 @@ class Composer:
                                      f"{self._frame_seq}")
                 if frame.mono < self._frame_mono:
                     raise ValueError("sender clock went backwards")
+            elif self._frame_sender is not None and \
+                    sender != self._frame_sender:
+                # The lock passes to a different sender (second-copy guard,
+                # 2026-10-03).  Every ltcplay restart does this too (a new
+                # socket is a new port), and link loss has already disarmed
+                # every group; the newcomer must now be the only sender for
+                # frame_stale_ms before any cycle counts.
+                self._flame_changed_at = t
+                self._reset_latches("show program link changed sender")
+                self._event("link",
+                            f"show program link taken by "
+                            f"{_addr(sender)}, which is not "
+                            f"{_addr(self._frame_sender)} that held it "
+                            f"before: no group can be newly armed until it "
+                            f"has been the only sender for "
+                            f"{self.cfg.frame_stale_ms} ms")
             self._frame = bytes(frame.values)
             self._frame_at = t
             self._frame_seq = frame.seq
@@ -487,6 +533,9 @@ class Composer:
             if not self._frame_is_fresh(t):
                 raise ValueError("no live flame link to accept it from")
             if sender != self._frame_sender:
+                # A keyed disarm_all from a second sender is a second
+                # sender on the link (second-copy guard, 2026-10-03).
+                self._flame_foreign[sender] = t
                 raise ValueError("another sender")
             if msg.seq <= self._frame_seq:
                 raise ValueError(f"out of order: seq {msg.seq} after "
@@ -545,8 +594,11 @@ class Composer:
                      else "")
             if len(why) > 200:          # sender-chosen text, kept short
                 why = why[:200] + "..."
+            more = (" No group can be newly armed while it is on the link."
+                    if reason.endswith("another sender") else "")
             self._rejects.note(reason, self._clock(), sender,
-                               f"flame link datagram rejected{where}: {why}.")
+                               f"flame link datagram rejected{where}: "
+                               f"{why}.{more}")
         except Exception:                               # noqa: BLE001
             pass
 
@@ -575,6 +627,28 @@ class Composer:
     def _fire_is_live(self, t):
         return (self._frame_at is not None and
                 (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)
+
+    def _flame_foreign_count(self, t):
+        """How many OTHER keyed senders have been refused on the flame link
+        inside the last frame_stale_ms (second-copy guard, 2026-10-03).
+        Older entries are dropped here."""
+        win = self.cfg.frame_stale_ms
+        for s in [s for s, at in self._flame_foreign.items()
+                  if (t - at) * 1000.0 > win]:
+            del self._flame_foreign[s]
+        return len(self._flame_foreign)
+
+    def _flame_new_sender(self, t):
+        """True for frame_stale_ms after the flame link's lock passed to a
+        different sender: the newcomer has not yet been the only sender for
+        that long."""
+        return (self._flame_changed_at is not None and
+                (t - self._flame_changed_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
+    def _flame_link_disturbed(self, t):
+        """No cycle counts while this is True (assert_arm)."""
+        return self._flame_foreign_count(t) != 0 or self._flame_new_sender(t)
 
     def _arm_is_live(self, t):
         return (self._arm_fresh_at is not None and
@@ -682,6 +756,7 @@ class Composer:
         self._link_live = link_live
 
         # 4. The safety slots.
+        flame_disturbed = self._flame_link_disturbed(t)
         want = [live and link_live and self._wanted[i] and self._latched[i]
                 for i in range(self.n)]
         values = []
@@ -690,7 +765,8 @@ class Composer:
             prev = self._last_sent[i]
             if not want[i]:
                 values.append(DISARM)
-                held.append(self._why_not(i, live, link_live))
+                held.append(self._why_not(i, live, link_live,
+                                          flame_disturbed))
                 continue
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
@@ -807,7 +883,7 @@ class Composer:
                               live, frame_fresh, fire_live)
         return Output(bytes(buf), status, fault)
 
-    def _why_not(self, i, live, link_live):
+    def _why_not(self, i, live, link_live, flame_disturbed=False):
         """Why a group the input wants armed is not: (reason, amber mode).
         Flashing amber means cycling the arm is the fix.  Steady amber means
         wait, or fix something else; cycling would only restart the dwell."""
@@ -827,6 +903,9 @@ class Composer:
             # of flashing "cycle the arm" at an operator whose cycle is
             # being refused.
             return (OTHER_SENDER, "steady")
+        if not self._latched[i] and flame_disturbed:
+            # Second-copy guard (2026-10-03): the same, for the flame link.
+            return (FLAME_OTHER_SENDER, "steady")
         if not self._latched[i]:
             if self._aborted[i]:
                 return (ABORT_DISARMED, "flashing")
@@ -941,6 +1020,11 @@ class Composer:
                 "accepted": self.stats["frames_accepted"],
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
+                # Second-copy guard (2026-10-03): other keyed senders refused
+                # inside frame_stale_ms, and whether the lock changed hands
+                # inside frame_stale_ms.  Either one: no cycle counts.
+                "foreign_senders": self._flame_foreign_count(t),
+                "new_sender": self._flame_new_sender(t),
             },
             "disarm_all": {
                 "accepted": self._disarm_count,
@@ -962,6 +1046,13 @@ class Composer:
             self._log.event(kind, msg)
         except Exception:                               # noqa: BLE001
             pass
+
+
+def _addr(sender):
+    """(ip, port) as ip:port for the journal; anything else as it is."""
+    if isinstance(sender, tuple) and len(sender) == 2:
+        return f"{sender[0]}:{sender[1]}"
+    return str(sender)
 
 
 def _flame_reason(why):

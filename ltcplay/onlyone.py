@@ -178,3 +178,48 @@ class OutputLock:
 
     def __exit__(self, *a):
         self.release()
+
+
+# ---------------------------------------------------------------- one copy
+#
+# Second-copy guard (Jeff, 2026-10-03). The show machines are dedicated and
+# the flame and arm links bind 127.0.0.1 only, so the realistic second
+# sender on those links is a second copy of this program: a launcher
+# double-clicked twice, autostart plus a manual launch, an old copy still
+# running after a restart. So the show process (`ltc run` and `ltc serve`,
+# one lock between them) and the Stream Deck process (`ltc deck`) each take
+# a lock for their whole life and refuse to start while another copy holds
+# it. Same mechanism as the output lock above, in the same folder: the
+# kernel drops the lock when the holder dies, however it dies, so a crashed
+# copy never blocks a restart.
+
+SHOW_LOCK = "ltcplay_show.lock"
+DECK_LOCK = "ltcplay_deck.lock"
+
+# What each lock is called in the refusal.
+_WHAT = {SHOW_LOCK: "ltcplay's show program", DECK_LOCK: "ltc deck"}
+
+
+def instance_path(filename):
+    """Beside the output lock: one per user on this machine, whichever
+    folder the program was started from."""
+    return os.path.join(os.path.dirname(path()), filename)
+
+
+def only_copy(filename, note):
+    """Take this program's one-copy lock and hold it until release() or
+    the process ends. Raises AlreadyRunning, carrying the running copy's
+    own note, if another copy holds it."""
+    return OutputLock(where=instance_path(filename), note=note).acquire()
+
+
+def refusal(filename, holder):
+    """The plain sentence a refused second copy prints."""
+    what = _WHAT.get(filename, "This program")
+    here = "computer" if WINDOWS else "Mac"
+    said = f"\nThe copy that is running says: {holder}" if holder else ""
+    return (f"{what} is already running on this {here}, so this copy has "
+            f"stopped. Only one copy may run at a time: two copies would "
+            f"both talk to the rig and the flame safety program."
+            f"{said}\nUse the window that is already open, or stop that "
+            f"copy first and then start this one again.")
