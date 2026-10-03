@@ -722,14 +722,28 @@ class Soak:
         return [sys.executable, os.path.join(HERE, entry)]
 
     def start_program(self, name):
-        args = {"flamesafe": [self.fs_cfg],
-                "engine": ["serve", "--folder", self.show_dir, "--port",
-                           str(PORT), "--no-browser",
-                           # BENCH BUILD ONLY: the scheduler and the Fire &
-                           # Ice conductor, on the bench schedule.
-                           "--schedule", self.rule_path],
-                "deck": ["--flamesafe-config", self.deck_cfg,
-                         "--ltcplay-url", f"http://127.0.0.1:{PORT}"]}[name]
+        # The engine and the deck are started exactly as the installed LTC
+        # Player starts them in showpc.json's "fire_ice" show mode (the
+        # supervisor's own wanted_args), with this soak's show folder,
+        # schedule and port; only the flamesafe configs are the soak's own
+        # (they route flamesafe and the deck through this test's relays).
+        import supervisor as sup
+        want = sup.wanted_args({
+            "show_folder": self.show_dir, "flamesafe_config": self.fs_cfg,
+            "port": PORT, "run_flamesafe": True, "run_deck": True,
+            "show_mode": "fire_ice", "schedule": self.rule_path})
+        engine, why = want["engine"]
+        if engine is None or "--schedule" not in engine:
+            raise RuntimeError(f"the supervisor's fire_ice mode did not give "
+                               f"the engine its schedule: {why or engine}")
+        deck = want["deck"][0] or []
+        if f"http://127.0.0.1:{PORT}" not in deck:
+            raise RuntimeError(f"the supervisor's fire_ice mode did not give "
+                               f"the deck the engine's address: {want['deck']}")
+        deck = ["--flamesafe-config", self.deck_cfg] + \
+            deck[deck.index("--ltcplay-url"):]
+        args = {"flamesafe": [self.fs_cfg], "engine": engine,
+                "deck": deck}[name]
         out = open(os.path.join(self.dir, f"{name}.log"), "a",
                    encoding="utf-8")
         # Each program shares this window's console (its output goes to a
@@ -1262,6 +1276,8 @@ class Soak:
             f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
             f"minutes from 02:00 to midnight ({getattr(self, 'tz_name', '')}"
             f"), started by the scheduler itself",
+            "Show mode: fire_ice, the engine and the deck started exactly as "
+            "the installed LTC Player starts them in that mode",
             f"flamesafe config: copied from {self.fs_source}, sACN forced "
             f"to 127.0.0.1",
             "",
