@@ -1081,21 +1081,27 @@ class Service:
                          frozenset((sch.START_SHOW,)), shows[0]))
         return plan
 
+    def _reworded(self, le):
+        """A log event as this engine says it: with a show conductor
+        attached, the engine's "nothing was disarmed" sentence is replaced
+        by what the conductor does (it disarms)."""
+        if self.conductor is not None and le.action == sch.ABORT and \
+                sch.NOTHING_DISARMED in le.text:
+            # The engine never disarms; the conductor's abort() does.
+            le = replace(le, text=le.text.replace(
+                sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
+        if self.conductor is not None and \
+                le.action == sch.SHOW_FAILED and \
+                sch.FAILED_START_NOT_DISARMED in le.text:
+            # Jeff, 2026-10-03: the conductor's failed_start() disarms.
+            le = replace(le, text=le.text.replace(
+                sch.FAILED_START_NOT_DISARMED,
+                self.CONDUCTOR_DISARMS_FAILED_START))
+        return le
+
     def _record(self, out, now, plan=()):
         for le in out.log:
-            if self.conductor is not None and le.action == sch.ABORT and \
-                    sch.NOTHING_DISARMED in le.text:
-                # The engine never disarms; the conductor's abort() does.
-                le = replace(le, text=le.text.replace(
-                    sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
-            if self.conductor is not None and \
-                    le.action == sch.SHOW_FAILED and \
-                    sch.FAILED_START_NOT_DISARMED in le.text:
-                # Jeff, 2026-10-03: the conductor's failed_start() disarms.
-                le = replace(le, text=le.text.replace(
-                    sch.FAILED_START_NOT_DISARMED,
-                    self.CONDUCTOR_DISARMS_FAILED_START))
-            self._record_logevent(le)
+            self._record_logevent(self._reworded(le))
         claimed = set()
         for entry in plan:
             label, method, kinds = entry[:3]
@@ -2778,7 +2784,10 @@ class Service:
                                         confirmed=bool(confirmed)))
         if out.refused:
             return {"ok": False, "text": out.refused}
-        text = " ".join(le.text for le in out.log if le.text)
+        # The answer the page, the iPad and the deck see says what the
+        # journal says (fix round 2, E: it said "nothing was disarmed"
+        # while the conductor did disarm).
+        text = " ".join(self._reworded(le).text for le in out.log if le.text)
         return {"ok": True, "text": text or "Done."}
 
     def journal_press(self, who, screen, action, outcome, text,

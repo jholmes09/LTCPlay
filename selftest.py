@@ -10119,6 +10119,10 @@ def test_abort_and_hold_never_refused_for_who_or_where():
     check(r["ok"] and n.c.latched,
           f"operator_press: an Abort with no operator chosen latches the "
           f"conductor: {r}")
+    check("nothing was disarmed" not in r["text"] and
+          "sends a disarm to every flame group" in r["text"],
+          f"and its answer says the conductor disarms, not that nothing was "
+          f"(fix round 2, E): {r['text']}")
     n.c.close()
     n.link.close()
     _ = m
@@ -26104,8 +26108,19 @@ def test_streamdeck_controller_with_fakes():
     down8 = [False] * 6
     down8[sd.TOP_ABORT] = True
     c3.run_once(down8)
+    check(cond.calls[-1] == ("abort", "Andy", "Stream Deck")
+          and ("reset", "Andy", "Stream Deck") not in cond.calls,
+          f"the Abort key pressed while latched never Resets (fix round 2, "
+          f"C): {cond.calls}")
+    c3.run_once(down7)
+    down9 = [False] * 6
+    down9[sd.TOP_HOLD] = True
+    c3.run_once(down9)
+    t[0] += sd.RESET_HOLD_S + 0.01
+    c3.tick()
     check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
-          f"Reset while latched reaches the real conductor: {cond.calls}")
+          f"Reset (the HOLD key held {sd.RESET_HOLD_S:g} s) while latched "
+          f"reaches the real conductor: {cond.calls}")
 
 
 class _FakeStatus:
@@ -26511,9 +26526,12 @@ def test_streamdeck_refractory_also_starts_at_reset():
     t[0] += sd.REARM_REFRACTORY_S + 5.0
     down_reset = [False] * 6
     c.run_once(down_reset)              # release
-    down_reset[sd.TOP_ABORT] = True
-    c.run_once(down_reset)              # Reset (instant, an edge, no hold)
+    down_reset[sd.TOP_HOLD] = True
+    c.run_once(down_reset)              # Reset: the HOLD key, held
+    t[0] += sd.RESET_HOLD_S + 0.01
+    c.tick()
     check(c._latched_now() is False, "Reset cleared the latch")
+    c.run_once([False] * 6)
 
     # A press right immediately after THIS Reset -- long after Abort's own
     # timestamp would have expired -- must still be refused.
@@ -32482,6 +32500,32 @@ def test_fire_ice_review_hand_mutations():
           "a cue the runner did not start never confirms the show")
     n.c.close()
     n.link.close()
+    # Fix round 2, E: a Preshow (or any) look chosen on the page before the
+    # show does not stay on all show.
+    n.c.close()
+    n.link.close()
+    n = _fi_night()
+    n.svc.tick()
+    n.sess.player.override = "preshow"
+    r = n.w.runner.start_show(9, who="Andy")
+    check(r.ok and n.sess.player.override is None,
+          f"a look chosen before the show is cleared when it starts: "
+          f"{n.sess.player.override!r} {r}")
+    n.sess.player.override = None
+    n.w.show._pix_ours, n.w.show._pix_prev = True, "preshow"
+    n.sess.player.override = "blackout"
+    n.w.runner.start_show(10, who="Andy")
+    check(n.sess.player.override == "blackout" and
+          n.w.show._pix_prev is None,
+          "the conductor's own black stays until the show is confirmed, "
+          "and what was under it is forgotten")
+    n.sess.player.override = "preshow"      # the page, over that black
+    n.w.runner.start_show(11, who="Andy")
+    check(n.sess.player.override == "blackout" and
+          n.w.show._pix_prev is None,
+          f"a look the page put over the conductor's black goes back to "
+          f"that black, to be lifted on confirmation: "
+          f"{n.sess.player.override!r}")
     # H12: closing zeroes the flames, blanks the lasers, blacks the pixels.
     n = _fi_night()
     n.svc.tick()
@@ -35098,8 +35142,18 @@ def test_live_show_refuses_the_page_transport():
             check(st == 409 and "show is live" in str(out),
                   f"live show: {route} from the machine's own page is "
                   f"refused: {st} {out}")
-        st, _h, out = _ask(R.httpd, "POST", "/api/go", {}, client=loop)
-        check(st == 409, f"GO from the machine's own page, by name: {st}")
+        # By name, not only by iterating the list (the second review's
+        # R2-H1 to H4 dropped routes from the list itself).
+        for route, body in (("/api/go", {}), ("/api/skip", {}),
+                            ("/api/override", {"look": "blackout"}),
+                            ("/api/override", {"look": "preshow"}),
+                            ("/api/stop", {}),
+                            ("/api/start", {"timeline": "x.json"}),
+                            ("/api/showdir", {}), ("/api/reinput", {}),
+                            ("/api/reload", {}), ("/api/release", {})):
+            st, _h, out = _ask(R.httpd, "POST", route, body, client=loop)
+            check(st == 409 and "show is live" in str(out),
+                  f"live show: {route} {body} refused, by name: {st}")
         R.sign_in()
         st, _h, out = R.ask("POST", "/api/go", {})
         # Since #39's fix round (F1) the network never reaches these routes
@@ -35119,8 +35173,25 @@ def test_live_show_refuses_the_page_transport():
         R.settle()
         check(R.svc.machine.state not in (S.SHOW, S.PAUSED),
               f"Abort still works: {R.svc.machine.state}")
+        # Aborted, not yet Reset (fix round 2, E): nothing on the page may
+        # bring the rig back up; Stop and Blackout still work.
+        for route, body in (("/api/go", {}),
+                            ("/api/override", {"look": None}),
+                            ("/api/override", {"look": "preshow"}),
+                            ("/api/release", {}),
+                            ("/api/start", {"timeline": "x.json"})):
+            st, _h, out = _ask(R.httpd, "POST", route, body, client=loop)
+            check(st == 409 and "aborted" in str(out),
+                  f"aborted, not Reset: {route} {body} refused: {st} {out}")
+        for route, body in (("/api/override", {"look": "blackout"}),
+                            ("/api/stop", {})):
+            st, _h, out = _ask(R.httpd, "POST", route, body, client=loop)
+            check(st != 409, f"aborted: {route} {body} still works: {st}")
+        r = R.svc.reset_conductor("Jeff", "Rack screen")
+        R.settle()
+        check(r.get("ok"), f"setup: Reset: {r}")
         st, _h, out = _ask(R.httpd, "POST", "/api/go", {}, client=loop)
-        check(st != 409, f"aborted: GO is not refused for it: {st} {out}")
+        check(st != 409, f"after Reset GO is not refused for it: {st} {out}")
     finally:
         R.close()
     print("  ok")
@@ -35271,6 +35342,157 @@ def test_deck_presses_reach_the_engine_conductor():
         eng.stop()
         R.httpd.shutdown()
         R.close()
+    print("  ok")
+
+
+def test_deck_fix_round_2_abort_reset_and_disarm():
+    section("Stream Deck (PR #43 fix round 2, C to E): the arm link goes "
+            "false before the engine is asked to Abort; while aborted the "
+            "Abort key never Resets, a group key still disarms, and Reset is "
+            "the HOLD key held; a deck Abort never waits behind another "
+            "press; an engine that did not take a press shows on the deck")
+    import threading
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [100.0]
+    events = []
+
+    class Cond(_FakeConductor):
+        def abort(self, who, screen):
+            # R2-H5: what the arm link said when the engine was asked.
+            if not hasattr(self, "seen"):
+                self.seen = (list(arm.wanted), len(arm.sends))
+            return super().abort(who, screen)
+    cond = Cond()
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, conductor=cond,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    arm.set_group(0, True)
+    down = [False] * 6
+    down[sd.TOP_ABORT] = True
+    c.run_once(down)
+    t[0] += sd.ABORT_HOLD_S + 0.01
+    c.tick()
+    check(cond.seen == ([False, False, False], 1),
+          f"the deck's own disarm went out before the engine was asked to "
+          f"Abort (R2-H5): {cond.seen}")
+    c.run_once([False] * 6)
+    # An Abort from another screen: the deck reads latched.
+    del cond.calls[:]
+    arm.set_group(1, True)          # say the deck still wants cat-walk
+    sends0 = len(arm.sends)
+    down = [False] * 6
+    down[sd.TOP_ABORT] = True
+    c.run_once(down)                # a reflexive "make sure" tap
+    c.run_once([False] * 6)
+    check(not any(x[0] == "reset" for x in cond.calls) and cond._latched,
+          f"while aborted, the Abort key never Resets: {cond.calls}")
+    check(arm.wanted == [False, False, False] and len(arm.sends) > sends0,
+          f"it sends every group false again: {arm.wanted}")
+    arm.set_group(2, True)
+    down = [False] * 6
+    down[sd.GROUP_KEYS[2]] = True
+    c.run_once(down)
+    c.run_once([False] * 6)
+    check(arm.wanted[2] is False,
+          "while aborted, a group key still drops that group's arm request "
+          "(disarm is never behind any gate)")
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    c.run_once(down)
+    t[0] += sd.ARM_HOLD_S + 0.5
+    c.tick()
+    c.run_once([False] * 6)
+    check(arm.wanted == [False, False, False],
+          "and nothing can be armed while aborted")
+    # Reset: the HOLD key held RESET_HOLD_S; let go early and nothing.
+    down = [False] * 6
+    down[sd.TOP_HOLD] = True
+    c.run_once(down)
+    t[0] += sd.RESET_HOLD_S - 0.5
+    c.tick()
+    c.run_once([False] * 6)
+    t[0] += 1.0
+    c.tick()
+    check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
+          "the HOLD key let go before RESET_HOLD_S resets nothing")
+    c.run_once(down)
+    t[0] += sd.RESET_HOLD_S + 0.01
+    c.tick()
+    check(not cond._latched and cond.calls[-1][0] == "reset",
+          f"the HOLD key held {sd.RESET_HOLD_S:g} s is Reset: {cond.calls}")
+    c.run_once([False] * 6)
+
+    # D: a deck Abort never waits behind a slow press.
+    started = {}
+    hold_gate = threading.Event()
+
+    def poster(path, body):
+        started[path] = time.perf_counter()
+        if path.endswith("/hold"):
+            hold_gate.wait(3)
+        return True, "ok"
+    e = sd.EngineConductor("http://127.0.0.1:1", poster=poster,
+                           fetcher=lambda path: None, poll_hz=50.0)
+    e.start()
+    try:
+        e.hold("Andy")
+        deadline = time.time() + 2
+        while "/api/remote/hold" not in started and time.time() < deadline:
+            time.sleep(0.01)
+        t0 = time.perf_counter()
+        e.abort("Andy")
+        deadline = time.time() + 2
+        while "/api/remote/abort" not in started and time.time() < deadline:
+            time.sleep(0.01)
+        lag = started.get("/api/remote/abort", t0 + 99.0) - t0
+        check(lag < 0.5, f"the Abort went to the engine at once while a Hold "
+                         f"was still waiting on it: {lag:.3f} s")
+        hold_gate.set()
+    finally:
+        e.stop()
+
+    # E: an engine that did not take a press shows on the deck.
+    clock = [0.0]
+    e2 = sd.EngineConductor("http://127.0.0.1:1",
+                            poster=lambda path, body: (False, "unreachable"),
+                            fetcher=lambda path: None, poll_hz=50.0,
+                            clock=lambda: clock[0])
+    e2.start()
+    try:
+        e2.abort("Andy")
+        deadline = time.time() + 2
+        while not e2.fault and time.time() < deadline:
+            time.sleep(0.01)
+        check("unreachable" in e2.fault,
+              f"the failed Abort is the deck's engine fault: {e2.fault!r}")
+        clock[0] = 3.0
+        check(e2.unreachable(), "an engine that never answers reads "
+                                "unreachable after 2 s")
+    finally:
+        e2.stop()
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        print("  note: Pillow is not installed here, so the deck's ENGINE "
+              "FAULT key is not checked on this machine.")
+        print("  ok")
+        return
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None
+    c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True, conductor=e2,
+                       clock=lambda: t[0])
+    canvas = c2.draw(fonts, blink_on=True, chase=0)
+    box = sd.face_box(sd.TOP_START)
+    px = {canvas.getpixel((x, y)) for x in range(box[0], box[2], 3)
+          for y in range(box[1], box[3], 3)}
+    check(sd.RED in px, f"the deck shows ENGINE FAULT on its Start key: "
+                        f"{sorted(px)[:4]}")
     print("  ok")
 
 
@@ -37047,6 +37269,7 @@ if __name__ == "__main__":
     test_remote_lockout_holds_under_a_concurrent_burst()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
+    test_deck_fix_round_2_abort_reset_and_disarm()
     test_deck_presses_reach_the_engine_conductor()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()

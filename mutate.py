@@ -1825,9 +1825,9 @@ MUTATIONS = [
   '        put("config.json", js({"note": "none"} if config is not None else'),
 
  ("the scheduler's own lines stay in memory only, as before",
-  "ltcplay/schedule_service.py",
-  '            self._record_logevent(le)\n        claimed = set()',
-  '            self.journal.append(le.to_dict())\n        claimed = set()'),
+  'ltcplay/schedule_service.py',
+  '            self._record_logevent(self._reworded(le))\n        claimed = set()',
+  '            self.journal.append(self._reworded(le).to_dict())\n        claimed = set()'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
   '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
@@ -5712,10 +5712,10 @@ def build():
   "            call.done.set()\n"
   "        if not call.done.wait(wait_s):"),
 
- ("scheduler fix round: the Abort line still says nothing was disarmed",
-  "ltcplay/schedule_service.py",
-  "            if self.conductor is not None and le.action == sch.ABORT and \\",
-  "            if False and \\"),
+ ('scheduler fix round: the Abort line still says nothing was disarmed',
+  'ltcplay/schedule_service.py',
+  '        if self.conductor is not None and le.action == sch.ABORT and \\',
+  '        if False and \\'),
 
  ("scheduler fix round: effects the conductor does not perform are "
   "journaled as performed",
@@ -6293,13 +6293,10 @@ def build():
   "        if any(p[1] == \"abort\" for p in plan):",
   "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
 
- ("failed start disarms: the journal never says why the flames were "
-  "disarmed",
-  "ltcplay/schedule_service.py",
-  "                le = replace(le, text=le.text.replace(\n"
-  "                    sch.FAILED_START_NOT_DISARMED,\n"
-  "                    self.CONDUCTOR_DISARMS_FAILED_START))",
-  "                pass"),
+ ('failed start disarms: the journal never says why the flames were disarmed',
+  'ltcplay/schedule_service.py',
+  '            le = replace(le, text=le.text.replace(\n                sch.FAILED_START_NOT_DISARMED,\n                self.CONDUCTOR_DISARMS_FAILED_START))',
+  '            pass'),
 
  ("failed start disarms: a cut show disarms too",
   "ltcplay/schedule_service.py",
@@ -6835,10 +6832,10 @@ def build():
   '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
   '        if engine is not None:'),
 
- ("fix round 1: an engine refusal of a deck press is not a fault",
+ ('fix round 1: an engine refusal of a deck press is not a fault',
   'ltcplay/streamdeck.py',
-  '                self._journal(line, fault=not ok, action=name,',
-  '                self._journal(line, fault=False, action=name,'),
+  '            self._journal(line, fault=not ok, action=name,',
+  '            self._journal(line, fault=False, action=name,'),
 
 
  ('fix round 1: the background show log writes on the caller',
@@ -6977,6 +6974,72 @@ def build():
   'ltcplay/web.py',
   '            if isinstance(extra, dict):\n                kw.update(extra)',
   '            if False:\n                kw.update(extra)'),
+
+
+ ("fix round 2: the deck's Abort key Resets while aborted",
+  'ltcplay/streamdeck.py',
+  '                    self._do_abort(again=True)',
+  '                    self._do_reset()'),
+
+ ('fix round 2: a group key does nothing while aborted',
+  'ltcplay/streamdeck.py',
+  '                    if self.arm.wanted[i]:\n                        self._do_disarm(i)',
+  '                    if False:\n                        self._do_disarm(i)'),
+
+ ('fix round 2: Reset needs no hold',
+  'ltcplay/streamdeck.py',
+  '                    self._reset_hold.press(now)',
+  '                    self._do_reset()'),
+
+ ('fix round 2: a deck Abort waits in line behind other presses',
+  'ltcplay/streamdeck.py',
+  '            body["confirmed"] = True\n            # Abort never waits',
+  '            body["confirmed"] = True\n        if False:\n            # Abort never waits'),
+
+ ('R2-H5 the deck asks the engine to Abort before it disarms its own groups',
+  'ltcplay/streamdeck.py',
+  '        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        who = self.operator_provider() or ""\n        if again:',
+  '        who = self.operator_provider() or ""\n        if not again and self.conductor is not None:\n            self.conductor.abort(who=who, screen="Stream Deck")\n        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        if again:'),
+
+ ("fix round 2: an engine that did not take a press is not shown on the deck",
+  'ltcplay/streamdeck.py',
+  '        self.fault = "" if ok else f"{name.title()}: {text}"',
+  '        self.fault = ""'),
+
+ ('fix round 2: the page can bring the rig up while an Abort stands',
+  'ltcplay/web.py',
+  '                self._abort_latched():\n            return self._send(409, {"error": LATCHED_REFUSAL})',
+  '                False:\n            return self._send(409, {"error": LATCHED_REFUSAL})'),
+
+ ("fix round 2: a press's answer says nothing was disarmed",
+  'ltcplay/schedule_service.py',
+  '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
+  '        text = " ".join(le.text for le in out.log if le.text)'),
+
+ ('fix round 2: a look chosen before the show stays on',
+  'ltcplay/fire_ice.py',
+  '        self._clear_look(s, n)\n',
+  ''),
+
+ ("R2-H1 the page's Blackout/Preshow (override) is not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/stop", "/api/override", "/api/reload",',
+  '"/api/stop", "/api/reload",'),
+
+ ("R2-H2 the page's Stop is not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/stop", "/api/override", "/api/reload",',
+  '"/api/override", "/api/reload",'),
+
+ ("R2-H3 the page's Run (/api/start) is not refused during a live show",
+  'ltcplay/web.py',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/go",',
+  'LIVE_SHOW_REFUSED = ("/api/go",'),
+
+ ("R2-H4 the page's showdir/reinput are not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/showdir", "/api/reinput", "/api/input",',
+  '"/api/input",'),
 
 ]
 

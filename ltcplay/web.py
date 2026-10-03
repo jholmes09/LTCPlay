@@ -56,6 +56,13 @@ LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
                      "/api/showdir", "/api/reinput", "/api/input",
                      "/api/trigger", "/api/autoreload", "/api/find")
 LIVE_SHOW_STATES = ("SHOW", "PAUSED")
+# After an Abort, until Reset (PR #43 fix round 2, E): the same routes are
+# refused, except Stop and a Blackout, which only make the rig darker. The
+# page used to bring the show's pixels back up while the Abort stood.
+LATCHED_ALLOWED = ("/api/stop",)
+LATCHED_REFUSAL = ("The show was aborted. Nothing on this page may bring "
+                   "the rig back up until someone presses Reset; Stop and "
+                   "Blackout still work.")
 LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
                      "work during a show; this waits until the show has "
                      "ended or been aborted.")
@@ -944,6 +951,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
         return self._send(404, {"error": "no such thing here"})
 
+    def _abort_latched(self):
+        """True while an Abort stands (the scheduler's latch, or the show
+        conductor's), until Reset."""
+        svc = getattr(self.server, "schedule", None)
+        if svc is None:
+            return False
+        m = getattr(svc, "machine", None)
+        cond = getattr(svc, "conductor", None)
+        return bool(getattr(m, "abort_latched", False) or
+                    getattr(cond, "latched", False))
+
     def _scheduled_show_live(self):
         svc = getattr(self.server, "schedule", None)
         m = getattr(svc, "machine", None) if svc is not None else None
@@ -990,6 +1008,11 @@ class Handler(BaseHTTPRequestHandler):
         # just clears the slot; the next state() call rebuilds, lazily, once.
         c._state_cache = None
         body = self._body()
+        if route in LIVE_SHOW_REFUSED and route not in LATCHED_ALLOWED and \
+                not (route == "/api/override" and
+                     (body or {}).get("look") == "blackout") and \
+                self._abort_latched():
+            return self._send(409, {"error": LATCHED_REFUSAL})
         if route == "/api/schedule" or route.startswith("/api/schedule/"):
             # Kept apart from the show's routes: a refused edit to tonight's
             # list is not the show's last error and must not appear as one.

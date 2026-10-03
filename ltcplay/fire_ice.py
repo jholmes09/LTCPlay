@@ -1071,6 +1071,7 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": why}
             return C.failed(f"Show {n} was not started: {why}.")
+        self._clear_look(s, n)
         if self.mm is not None:
             try:
                 self.mm.select_bank(self.mm.cfg.show_bank, wait=False)
@@ -1103,6 +1104,34 @@ class ShowRunner:
                          "played": clk.cues_played, "confirmed": False,
                          "failed": None}
         return C.done(f"Show {n}: {pick.name} started on the show audio.")
+
+    def _clear_look(self, s, n):
+        """A look the page chose before the show (Preshow, Blackout, any
+        override) does not stay on through the scheduled show: the 409 gate
+        then keeps anyone from clearing it, and the flame cues stay zero
+        all show (PR #43 fix round 2, E). The show conductor's own black
+        (between shows) is its to lift on SHOW_CONFIRMED; only what was
+        under it is forgotten."""
+        p = getattr(s, "player", None)
+        if p is None:
+            return
+        show = self.show
+        look = getattr(p, "override", None)
+        if getattr(show, "_pix_ours", False):
+            # The conductor's black: it stays until SHOW_CONFIRMED lifts it,
+            # and the look under it is forgotten. A look the page put over
+            # it is taken back to that black.
+            show._pix_prev = None
+            if look == "blackout":
+                return
+            p.override = "blackout"
+        elif look is None:
+            return
+        else:
+            p.override = None
+        self._note(f"Show {n}: the page's {look} look was cleared so the "
+                   f"show plays as rendered.", action="pixels",
+                   outcome="look_cleared")
 
     def poll(self):
         sch = self.svc.machine
