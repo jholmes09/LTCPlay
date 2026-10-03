@@ -16,6 +16,7 @@ Everything it decides goes to the night journal and the machine log
 (journal.py), written together from the same event, with the last lines
 kept in memory for the page.
 """
+import collections
 import json
 import os
 import socket
@@ -43,7 +44,9 @@ CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 # Which screens an operator can press things from. Beside the operator list,
 # and checked the same way, so the journal never names a screen nobody has.
 SCREENS_FILE = "ltcplay_screens.json"
-DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone")
+# "iPad": the show-network remote page (ltcplay/remote.py) signs a device in
+# under one of these names, so a list written fresh already has it.
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.
@@ -91,6 +94,98 @@ def tonight_path(d, folder=None):
     the edits, the statuses and when the last show ended."""
     return os.path.join(folder or data_dir(),
                         f"{TONIGHT_PREFIX}{d.isoformat()}.json")
+
+
+def set_aside_path(path):
+    """Where a saved night that could not be used is moved to."""
+    return path[:-5] + ".unreadable.json"
+
+
+# The Abort latch, in a file of its own (fix round 3 of #30, 2026-10-03).
+# While this file EXISTS, an Abort has not been Reset, and a start with a
+# show conductor attached is latched and dark. Only Reset removes it. What
+# is written inside it is for a person reading the folder; nothing reads it
+# back, so a file left empty by a power cut, or by a disk too full to take
+# its words, still latches. That is the point of keeping it apart from
+# tonight's list:
+#   - creating an empty file needs no room for data, so it usually still
+#     lands on a disk too full to save tonight's list;
+#   - it is never held open by the program that has tonight's list open;
+#   - it has no date, so a night file for the wrong date (a clock that ran
+#     ahead) or none at all cannot hide it;
+#   - no older ltcplay knows its name, so a downgrade that sets tonight's
+#     list aside leaves it where it is.
+LATCH_FILE = "ltcplay_abort_latch.json"
+
+
+def latch_path(folder=None):
+    return os.path.join(folder or data_dir(), LATCH_FILE)
+
+
+def _fsync_folder(folder):
+    """Make a new or removed name in `folder` survive a power cut. Windows
+    cannot open a folder this way and does not need to."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def create_latch_marker(path, words):
+    """Create the latch file if it is not there. The name is what counts:
+    once the file exists it is done, even if the words could not be
+    written. Raises OSError only when the file could not be created.
+    True when it was created just now.
+
+    Nothing is flushed to disk here: every flush before the show conductor
+    hears the Abort is time the flames are still lit, and a slow disk can
+    take 300 ms a flush. Tonight's list is flushed next, as before, and the
+    caller flushes the folder (sync_latch_marker), which makes the NAME
+    survive a power cut, once the conductor has been asked. The words are
+    never flushed on their own: nothing reads them."""
+    if os.path.exists(path):
+        return False
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, (json.dumps(words, indent=2) + "\n").encode("utf-8"))
+    except OSError:
+        pass                            # a full disk: the name still counts
+    finally:
+        os.close(fd)
+    return True
+
+
+def sync_latch_marker(path):
+    """Flush the latch file's folder, so its name survives a power cut."""
+    _fsync_folder(os.path.dirname(os.path.abspath(path)))
+
+
+def remove_latch_marker(path, sleep_fn=None, tries=5):
+    """Remove the latch file, patiently while Windows says another program
+    has it open. Raises OSError if it is still there after that."""
+    sleep_fn = sleep_fn or _time.sleep
+    for i in range(tries):
+        try:
+            os.remove(path)
+            break
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            sleep_fn(0.1 * (i + 1))
+    _fsync_folder(os.path.dirname(os.path.abspath(path)))
 
 
 def operators_path(folder=None):
@@ -433,6 +528,164 @@ def _utc_now():
     return datetime.now(timezone.utc)
 
 
+class _ConductorCall:
+    """One request to the show conductor, as the scheduler decided it."""
+
+    def __init__(self, label, method, who, screen, seq=0):
+        self.label, self.method = label, method
+        self.who, self.screen = who, screen
+        self.seq = seq
+        self.ok, self.sentence = None, ""
+        self.done = threading.Event()
+
+
+class _ConductorCalls:
+    """Every show conductor request, in the order the scheduler decided
+    them, made on ONE thread of its own, never with the scheduler's lock
+    held. One FIFO and one thread is what keeps Hold, Resume and Abort in
+    order now that they no longer run inside the lock: two requests can
+    never be made at once or overtake each other. A conductor request that
+    is slow (its lock is held across a device call) holds up only the
+    requests behind it, never a tick or a status poll.
+
+    With ONE exception: an Abort never waits more than URGENT_WAIT_S behind
+    another request. If the line has not reached it by then (the request
+    in front of it is stuck, or the line's thread has died), it is taken
+    out of the line and made at once on a thread of its own. The requests
+    still waiting in front of it that the Abort supersedes (a Hold, a
+    Resume, a show start, and above all a Reset, which was pressed before
+    this Abort and must not clear it) are not sent at all; intermission and
+    show_stopped stay in the line (they only ever take the rig dark, and
+    the conductor ignores them while latched; failed_start too, for the
+    same reason). Requests decided after the
+    Abort stay in the line, in order.
+
+    The thread starts with the first request, so a Service with no
+    conductor never has one."""
+
+    URGENT_WAIT_S = 0.25
+    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")
+
+    def __init__(self, run_one, overtaken=None, clock=None):
+        self._run_one = run_one
+        self._overtaken = overtaken or (lambda *a: None)
+        self._clock = clock or _time.monotonic
+        self._q = collections.deque()
+        self._cv = threading.Condition()
+        self._busy = False
+        self._current = None        # the call the line is making now
+        self._since = None          # since when, on self._clock
+        self._side = {}             # Aborts sent beside the line: start time
+        self._thread = None
+
+    def put(self, call):
+        with self._cv:
+            self._q.append(call)
+            if self._thread is None:
+                self._start()
+            self._cv.notify_all()
+            urgent = call.method == "abort" and (
+                self._busy or len(self._q) > 1 or not self._alive())
+        if urgent:
+            threading.Thread(target=self._mind, args=(call,), daemon=True,
+                             name="ltcplay-conductor-abort").start()
+
+    def _start(self):
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="ltcplay-conductor-calls")
+        self._thread.start()
+
+    def _alive(self):
+        return self._thread is None or self._thread.is_alive()
+
+    def _loop(self):
+        while True:
+            with self._cv:
+                while not self._q:
+                    self._cv.wait()
+                call = self._q.popleft()
+                self._busy = True
+                self._current, self._since = call, self._clock()
+                self._cv.notify_all()
+            try:
+                self._run_one(call)
+            except BaseException:       # never kill the only caller
+                pass
+            finally:
+                call.done.set()
+                with self._cv:
+                    self._busy = False
+                    self._current = self._since = None
+                    self._cv.notify_all()
+
+    def _mind(self, call):
+        """An Abort that found the line busy: give the line URGENT_WAIT_S to
+        reach it, then make it here instead."""
+        with self._cv:
+            if self._cv.wait_for(lambda: call not in self._q,
+                                 self.URGENT_WAIT_S):
+                return                  # the line reached it in time
+            self._q.remove(call)
+            ahead = self._current
+            age = (self._clock() - self._since) if ahead is not None else 0.0
+            dropped = [c for c in self._q if c.seq < call.seq and
+                       c.method in self.SUPERSEDED_BY_ABORT]
+            for c in dropped:
+                self._q.remove(c)
+            self._side[call] = self._clock()
+        try:
+            self._overtaken(call, ahead, age, dropped)
+        except Exception:
+            pass
+        try:
+            self._run_one(call)
+        except BaseException:
+            pass
+        finally:
+            call.done.set()
+            with self._cv:
+                self._side.pop(call, None)
+                self._cv.notify_all()
+
+    def health(self):
+        """{"alive", "stuck", "age_s", "waiting"}: whether the line's thread
+        is running, the request that has gone longest without an answer
+        (the line's, or an Abort sent beside it) and for how long."""
+        with self._cv:
+            now = self._clock()
+            running = list(self._side.items())
+            if self._current is not None:
+                running.append((self._current, self._since))
+            stuck, age = None, 0.0
+            for c, since in running:
+                if now - since >= age:
+                    stuck, age = c, now - since
+            return {"alive": self._alive(), "stuck": stuck, "age_s": age,
+                    "waiting": len(self._q)}
+
+    def aborts_beside(self):
+        """The Aborts sent beside the line that have not answered yet."""
+        with self._cv:
+            return [c for c in self._side if c.method == "abort"]
+
+    def revive(self):
+        """Start the line again if its thread has died. True if it had."""
+        with self._cv:
+            if self._alive():
+                return False
+            self._busy = False
+            self._current = self._since = None
+            self._start()
+            self._cv.notify_all()
+            return True
+
+    def flush(self, timeout):
+        with self._cv:
+            return self._cv.wait_for(
+                lambda: not self._q and not self._busy and not self._side,
+                timeout)
+
+
 class Service:
     """One scheduler, ticking, with the answers the page needs.
 
@@ -447,9 +700,26 @@ class Service:
 
     def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
                  clock_limit_s=CLOCK_CHECK_LIMIT_S, log_dir=None,
-                 flame_provider=None, logbook=None, perf_counter=None):
+                 flame_provider=None, logbook=None, perf_counter=None,
+                 conductor=None):
         self.path = path
         self.clock = clock or _utc_now
+        # The Fire & Ice show conductor (ltcplay.conductor.Conductor), or
+        # None (the GPL path, and every build before PR #17's device layer
+        # lands). See _drive_conductor: without one, every effect is only
+        # journaled as not performed, exactly as before this was added.
+        self.conductor = conductor
+        # Requests to it, in order, off the scheduler's lock. See
+        # _ConductorCalls and _queue_conductor.
+        self._calls = _ConductorCalls(self._run_conductor_call,
+                                      overtaken=self._abort_overtook)
+        # Every conductor request gets the next number, so a Reset can tell
+        # whether an Abort was decided after it was pressed.
+        self._call_seq = 0
+        self._abort_seq = 0
+        # A stuck or dead line of conductor requests, once it has been
+        # journaled as a fault: {"key", "text"}. See _watch_conductor.
+        self._conductor_trouble = None
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -461,6 +731,15 @@ class Service:
         self.state_dir = state_dir or data_dir()
         self.clock_limit_s = clock_limit_s
         self.persist_error = ""
+        # The Abort latch on disk (fix round 3): the loud line said while it
+        # is not safely saved, a Reset's removal of the latch file still to
+        # do, when to try either again, and the night whose saved list could
+        # not be read this run (which latches, see _boot_latch).
+        self._latch_trouble = None
+        self._marker_clear_pending = False
+        self._latch_retry_at = None
+        self._latch_unsynced = False
+        self._unreadable_night = None
         self.lock = threading.RLock()
         # Depth of this thread's own nesting of _locked() (tonight_view()
         # and state_view() both call tick() while already holding the
@@ -679,24 +958,430 @@ class Service:
             screen=(le.screen.strip() or "unnamed screen") if op else None,
             fault=le.outcome in self.FAULT_OUTCOMES)
 
-    def _record(self, out, now):
+    # Effect-kind bundles schedule.py always emits together for one show
+    # conductor action (see its module docstring, and entry_effects and
+    # _abort_effects). Checked by subset, most specific first, so the
+    # abort and closing bundles -- which both carry ZERO_FLAME_CUES and
+    # STOP_CONDUCTOR -- are never confused: closing never also carries
+    # BLANK_LASERS or FADE_MUSIC_OUT, but the check order makes that true
+    # by construction rather than by relying on it.
+    _HOLD_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                               sch.FREEZE_SHOW, sch.FADE_MUSIC_OUT))
+    _RESUME_EFFECTS = frozenset((sch.RESUME_SHOW, sch.FADE_MUSIC_IN,
+                                 sch.UNBLANK_LASERS))
+    _ABORT_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                                sch.FADE_MUSIC_OUT, sch.FADE_VIDEO_OUT,
+                                sch.FADE_PIXELS, sch.STOP_CONDUCTOR))
+    # Of the closing bundle, the conductor's intermission() performs only
+    # the flame cue zero (and blanks the lasers, which closing does not
+    # list). STOP_CONDUCTOR, FADE_PIXELS and BLACKOUT have no conductor
+    # method, so they stay "not performed".
+    _CLOSING_CLAIMS = frozenset((sch.ZERO_FLAME_CUES,))
+
+    def _drive_conductor(self, out, ev):
+        """What the show conductor (conductor.Conductor) is to be asked to
+        do for this outcome: a list of (label, method, claimed effect
+        kinds), in order, possibly empty. Nothing is CALLED here: _apply
+        queues these only after tonight is saved and the journal written
+        (schedule.py's effects contract, rule 1), and _ConductorCalls calls
+        them in order, on its own thread, outside the scheduler's lock.
+
+        Empty without a conductor (every build before PR #17's device layer
+        lands, and the GPL path, which never even passes a schedule), and
+        for a refused outcome.
+
+        Matched mostly by which effect KINDS came back (schedule.py's
+        contract for whatever performs its effects), with three
+        exceptions that the kinds alone cannot tell apart:
+          - the Abort bundle is an Abort only when the operator pressed
+            Abort. A failed start fades the same way but goes to
+            failed_start(): dark, every flame group disarmed, no latch
+            (Jeff, 2026-10-03). A show cut by a restart goes to
+            show_stopped(): dark, no disarm, no latch.
+          - START_SHOW is NOT the conductor's: it brings the rig up only
+            for a show cue that is playing (show_starting refuses "no show
+            cue is playing" otherwise). It is told once the show is
+            confirmed running, on SHOW_CONFIRMED, and only if the show is
+            not paused by then.
+          - every way out of a show tells it so, the last show of the
+            night and Close for the night included (CLOSING), not only the
+            intermission: intermission() zeroes the flame cues and blanks
+            the lasers.
+          - a start (BOOT_DONE) that leaves the rig dark sends the dark
+            sequence again, show_stopped(), whatever happened before.
+        `claimed` is only the effects the conductor really performs; the
+        rest are journaled as not performed."""
+        if self.conductor is None or out.refused:
+            return []
+        kinds = {e.kind for e in out.effects}
+        plan = []
+        if kinds >= self._HOLD_EFFECTS:
+            plan.append(("Hold", "hold", self._HOLD_EFFECTS))
+        elif kinds >= self._RESUME_EFFECTS:
+            plan.append(("Resume", "resume", self._RESUME_EFFECTS))
+        elif kinds >= self._ABORT_EFFECTS:
+            if ev.kind == sch.ABORT:
+                plan.append(("Abort", "abort", self._ABORT_EFFECTS))
+            elif ev.kind == sch.SHOW_FAILED:
+                plan.append(("Failed start", "failed_start",
+                             self._ABORT_EFFECTS))
+            else:
+                plan.append(("Show stopped", "show_stopped",
+                             self._ABORT_EFFECTS))
+        if sch.BLACKOUT in kinds:
+            plan.append(("Out of the show", "intermission",
+                         self._CLOSING_CLAIMS))
+        elif sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
+            plan.append(("Out of the show", "intermission", frozenset()))
+        if ev.kind == sch.SHOW_CONFIRMED and \
+                out.machine.state == sch.SHOW:
+            plan.append(("Show start", "show_starting", frozenset()))
+        if ev.kind == sch.BOOT_DONE and out.machine.dark and \
+                not any(p[1] in ("show_stopped", "failed_start")
+                        for p in plan):
+            # A start (or a restart) while the rig is meant to be dark: the
+            # dark sequence it was sent before may never have gone out (the
+            # process can die after the Abort or failed start was saved but
+            # before the conductor call ran), and a fresh conductor knows
+            # nothing of it. So it is always sent again.
+            plan.append((self.DARK_AGAIN, "show_stopped", frozenset()))
+        return plan
+
+    def _record(self, out, now, plan=()):
         for le in out.log:
+            if self.conductor is not None and le.action == sch.ABORT and \
+                    sch.NOTHING_DISARMED in le.text:
+                # The engine never disarms; the conductor's abort() does.
+                le = replace(le, text=le.text.replace(
+                    sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
+            if self.conductor is not None and \
+                    le.action == sch.SHOW_FAILED and \
+                    sch.FAILED_START_NOT_DISARMED in le.text:
+                # Jeff, 2026-10-03: the conductor's failed_start() disarms.
+                le = replace(le, text=le.text.replace(
+                    sch.FAILED_START_NOT_DISARMED,
+                    self.CONDUCTOR_DISARMS_FAILED_START))
             self._record_logevent(le)
-        for eff in out.effects:
-            desc = eff.kind + (f" show {eff.show}" if eff.show else "") + \
-                (f" over {eff.seconds:g} s" if eff.seconds else "")
+        claimed = set()
+        for label, method, kinds in plan:
+            mine = [e for e in out.effects if e.kind in kinds]
+            claimed |= set(kinds)
+            what = (f": {', '.join(self._desc(e) for e in mine)}"
+                    if mine else "")
+            extra = self.CONDUCTOR_SAYS.get(
+                label, self.CONDUCTOR_SAYS.get(method, ""))
             self._journal_line(
-                "system", f"Not performed, dry run: {desc}.",
+                "system", f"Sent to the show conductor, {label}{what}."
+                          f"{extra} Its own line says what it did.",
+                action="conductor", outcome="sent",
+                reason=f"{method} asked of the show conductor")
+        for eff in out.effects:
+            if eff.kind in claimed:
+                continue
+            self._journal_line(
+                "system", f"Not performed, dry run: {self._desc(eff)}.",
                 action=eff.kind, outcome="not performed",
                 reason="dry run, no transport in this build",
                 show=eff.show or None)
 
+    CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
+                         "flame group; its own line says whether it went.")
+    CONDUCTOR_DISARMS_FAILED_START = (
+        "The flames are disarmed because the show failed to start: the show "
+        "conductor sends a disarm to every flame group, and its own line "
+        "says whether it went. Each group has to be armed again by hand "
+        "(off, then on) before flames can fire.")
+    DARK_AGAIN = "Dark again after the start"
+    CONDUCTOR_SAYS = {
+        DARK_AGAIN: (" ltcplay started while the rig was meant to be dark "
+                     "(after an Abort, a failed start or a cut show), so the "
+                     "dark sequence is sent again: flame cues zero, lasers "
+                     "blanked, video, pixels and music down. This does not "
+                     "disarm anything; an Abort not yet Reset stays latched "
+                     "here until Reset."),
+        "show_stopped": (" The rig goes dark and stays dark until an "
+                         "operator presses Start now or the next show "
+                         "starts. No flame group is disarmed and nothing "
+                         "is latched, so no Reset is needed."),
+        "failed_start": (" The show failed to start, so every flame group "
+                         "is disarmed while it is looked at (Jeff, "
+                         "2026-10-03), and the rig goes dark until an "
+                         "operator presses Start now or the next show "
+                         "starts. Nothing is latched, so no Reset is "
+                         "needed; each flame group has to be armed again "
+                         "by hand (off, then on) before flames can fire."),
+        "intermission": (" Out of the show: flame cues to zero and the "
+                         "lasers blanked."),
+    }
+
+    @staticmethod
+    def _desc(eff):
+        return eff.kind + (f" show {eff.show}" if eff.show else "") + \
+            (f" over {eff.seconds:g} s" if eff.seconds else "")
+
+    # -- the show conductor's calls, in order, off the scheduler's lock -------
+    def _queue_conductor(self, plan, ev):
+        if not plan:
+            return
+        op = ev.actor == "operator"
+        who = ev.who if op else "the scheduler"
+        screen = ev.screen if op else ""
+        for label, method, _kinds in plan:
+            call = self._new_call(label, method, who, screen)
+            if method == "abort":
+                self._abort_seq = call.seq
+            self._calls.put(call)
+
+    def _new_call(self, label, method, who, screen):
+        self._call_seq += 1
+        return _ConductorCall(label, method, who, screen, self._call_seq)
+
+    def _abort_overtook(self, call, ahead, age, dropped):
+        """On the Abort's own thread: it was sent ahead of a request that
+        had not answered, and the requests in `dropped`, decided before it
+        and superseded by it, are not sent at all."""
+        with self._locked():
+            what = (f"{ahead.label}, which had not answered for {age:.1f} s"
+                    if ahead is not None else
+                    "the requests in front of it, because the line of "
+                    "requests to the show conductor was not moving")
+            others = [c.label for c in dropped if c.method != "reset"]
+            self._journal_line(
+                "system", f"Abort was sent to the show conductor at once, "
+                f"ahead of {what}."
+                + (f" Not sent, because the Abort supersedes them: "
+                   f"{', '.join(others)}." if others else ""),
+                action="conductor", outcome="sent ahead")
+            for r in dropped:
+                r.ok = False
+                r.sentence = f"{r.label} was not sent: an Abort overtook it."
+                if r.method == "reset":
+                    r.sentence = ("Reset was not sent: an Abort was pressed "
+                                  "after it. Press Reset again once the rig "
+                                  "is dark.")
+                    self._log(self.logbook.record, actor="operator",
+                              action="reset", outcome="refused",
+                              reason=r.sentence,
+                              text=f"{r.who}'s Reset on the {r.screen} was "
+                                   f"not sent. {r.sentence}",
+                              state=self._state_name(), night=self._night(),
+                              who=r.who, screen=r.screen)
+                r.done.set()
+
+    def _run_conductor_call(self, call):
+        """On _ConductorCalls' thread. One conductor request, whatever it
+        does or raises, then one journal line for it. Anything but a good
+        Result is a fault, raised on the scheduler so the page shows it."""
+        try:
+            r = getattr(self.conductor, call.method)(call.who, call.screen)
+            ok = getattr(r, "ok", None) is True
+            said = str(getattr(r, "sentence", "") or "")
+            if not hasattr(r, "ok"):
+                said = (f"it returned {r!r}, not a Result, so it counts as "
+                        f"not done")
+        except BaseException as e:      # SystemExit too: never the thread
+            ok, said = False, f"it raised {type(e).__name__}: {e}"
+        with self._locked():
+            if call.method == "reset":
+                ok, said = self._after_reset(call, ok, said)
+            call.ok, call.sentence = ok, said
+            if call.method == "reset":
+                self._log(self.logbook.record, actor="operator",
+                          action="reset", outcome="done" if ok else "refused",
+                          reason=said or "Reset",
+                          text=f"{call.who} pressed Reset on the "
+                               f"{call.screen}. {said}".strip(),
+                          state=self._state_name(), night=self._night(),
+                          who=call.who, screen=call.screen)
+            elif ok:
+                self._journal_line(
+                    "system", f"Show conductor, {call.label}: {said}".strip(),
+                    action="conductor", outcome="done", reason=said or "done")
+            else:
+                what = (f"The show conductor did not carry out "
+                        f"{call.label}: {said}")
+                if self.machine is not None:
+                    self._apply(sch.Event(sch.FAULT_RAISED, "system",
+                                          detail=what))
+                else:
+                    self._journal_line("system", what, action="conductor",
+                                       outcome="failed", fault=True)
+
+    def _after_reset(self, call, ok, said):
+        """The scheduler's own Abort latch (saved in tonight's file) after
+        the conductor answered a Reset. Cleared by a Reset that worked, and
+        also by one the conductor refused only because it has nothing
+        latched (ltcplay restarted since the Abort, so this conductor never
+        saw it, or the Abort never reached it): the operator's Reset is
+        what ends the Abort either way. Never cleared by a Reset pressed
+        before the latest Abort was decided."""
+        m = self.machine
+        if m is None or not m.abort_latched:
+            return ok, said
+        if self._calls.aborts_beside():
+            # The reverse race (review round 3, r7): an Abort sent beside a
+            # stuck line is itself waiting on the conductor, and this
+            # Reset, pressed after it, got there first. The Abort lands
+            # next and latches the conductor again, so this Reset ends
+            # nothing: the scheduler keeps its latch.
+            return False, self.RESET_BEFORE_ABORT_LANDED
+        try:
+            still = bool(getattr(self.conductor, "latched", False))
+        except Exception:
+            still = True
+        if not ok and still:
+            return ok, said             # e.g. the Abort is still fading
+        if call.seq < self._abort_seq:
+            return False, ("Reset was pressed before the latest Abort, so "
+                           "that Abort is still in force. Press Reset "
+                           "again.")
+        if not ok:
+            ok, said = True, ("Reset. The show conductor had nothing "
+                              "latched (ltcplay restarted since the Abort, "
+                              "or the Abort never reached it), so the "
+                              "scheduler's own Abort latch is what was "
+                              "cleared. The rig stays dark until a show "
+                              "starts.")
+        self.machine = replace(m, abort_latched=False)
+        self._unreadable_night = None
+        self._marker_clear_pending = True
+        if self._save_tonight():
+            self._clear_latch_files(m.date)
+        else:
+            said += (" The cleared latch could not be saved, so if ltcplay "
+                     "restarts before it is, the rig starts dark again and "
+                     "needs Reset again.")
+        return ok, said
+
+    RESET_BEFORE_ABORT_LANDED = (
+        "Reset was refused: the Abort pressed before it has not reached the "
+        "show conductor yet (it was sent on its own, past a request that has "
+        "not answered), so there is nothing to Reset yet. Press Reset again "
+        "once the Abort has gone through.")
+
+    def _clear_latch_files(self, d):
+        """After a Reset whose cleared latch is saved in tonight's file: the
+        latch file goes, and a set-aside night file for tonight is renamed so
+        it no longer latches a restart. Kept, not deleted, for the morning
+        read. Said in the journal if either cannot be done."""
+        path = latch_path(self.state_dir)
+        try:
+            remove_latch_marker(path)
+            self._marker_clear_pending = False
+        except OSError as e:
+            self._journal_line(
+                "system", f"Reset is done, but the Abort latch file {path} "
+                f"could not be removed ({e.strerror or e}). If ltcplay "
+                f"restarts while it is there, the rig starts dark and needs "
+                f"Reset again. ltcplay keeps trying.",
+                action="reset", outcome="latch file kept", fault=True)
+        aside = set_aside_path(tonight_path(d, self.state_dir))
+        if os.path.exists(aside):
+            stamp = self.clock().astimezone(self._tz()).strftime("%H%M%S")
+            done = aside[:-5] + f".reset-{stamp}.json"
+            try:
+                os.replace(aside, done)
+            except OSError as e:
+                self._journal_line(
+                    "system", f"Reset is done, but {aside} could not be "
+                    f"renamed ({e.strerror or e}), so a restart tonight "
+                    f"starts dark again and needs Reset again.",
+                    action="reset", outcome="set aside kept", fault=True)
+
+    def flush_conductor(self, timeout=5.0):
+        """True once every conductor call queued so far has been made and
+        journaled. For tests, and for stop()."""
+        return self._calls.flush(timeout)
+
+    def reset_conductor(self, who, screen, wait_s=2.0):
+        """The operator's Reset, for the Abort latch: the same
+        Conductor.reset() an operator's own Reset press calls, queued
+        behind every conductor call already decided, so it can never land
+        before the Abort it is meant to clear. It also clears the
+        scheduler's own Abort latch, saved in tonight's file (see
+        _after_reset). Journaled with who and which screen.
+
+        Returns {"ok", "text"}: ok False, with the conductor's sentence,
+        when there is nothing to Reset or the Abort is still fading, and
+        when no answer has come back within wait_s. Raises ValueError with
+        a sentence, written to the journal as a refused press like every
+        other press's refusal, when no conductor is attached or the
+        operator or screen is blank or not on its list."""
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        if self.conductor is None:
+            self._refuse_reset(who, screen, "There is no show conductor "
+                               "attached, so there is nothing to Reset.")
+        if not who or not screen:
+            self._refuse_reset(who, screen, "Reset has to say who pressed it "
+                               "and which screen it came from. Nothing was "
+                               "reset.")
+        names = {n.lower(): n for n in self.operators}
+        if who.lower() not in names:
+            self._refuse_reset(who, screen, f"{who!r} is not on the operator "
+                               f"list ({', '.join(self.operators)}). Nothing "
+                               f"was reset.")
+        screen = self._check_screen(screen, who, "reset", "Reset")
+        with self._locked():
+            call = self._new_call("Reset", "reset", names[who.lower()],
+                                  screen)
+            self._calls.put(call)
+        if not call.done.wait(wait_s):
+            return {"ok": False, "text": "Reset is queued behind the show "
+                                         "conductor's earlier work and has "
+                                         "not answered yet."}
+        return {"ok": call.ok, "text": call.sentence}
+
+    def _refuse_reset(self, who, screen, sentence):
+        with self._locked():
+            self._log(self.logbook.record, actor="operator", action="reset",
+                      outcome="refused", reason=sentence,
+                      text=f"{who or 'An unnamed operator'}'s Reset was "
+                           f"refused. {sentence}",
+                      state=self._state_name(), night=self._night(),
+                      who=who or "unnamed operator",
+                      screen=screen or "unnamed screen")
+        raise ValueError(sentence)
+
+    def _aborted(self):
+        """An operator's Abort was sent to the show conductor (or is still
+        on its way to it) and nobody has pressed Reset: the scheduler's own
+        latch, saved in tonight's file so a restart keeps it, or the
+        conductor's. Never with no conductor."""
+        if self.conductor is None:
+            return False
+        if self.machine is not None and self.machine.abort_latched:
+            return True
+        try:
+            return bool(getattr(self.conductor, "latched", False))
+        except Exception:
+            return False
+
+    # Events the Abort latch changes: a show coming due (TICK, BOOT_DONE),
+    # Start now, and a Hold or Resume (which must not bring a look back
+    # while aborted).
+    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,
+                    sch.RESUME)
+
     def _apply(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
+        if ev.kind in self.LATCH_EVENTS and self._aborted():
+            # Jeff: after an Abort the rig stays dark until the operator
+            # acts, and Reset is that act. The engine misses a show that
+            # comes due, refuses Start now, and keeps a Hold or Resume dark
+            # until then.
+            ev = replace(ev, latched=True)
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
-        self._record(out, now)
+        plan = self._drive_conductor(out, ev)
+        if any(p[1] == "abort" for p in plan):
+            # The latch is saved with the Abort itself, before the conductor
+            # is asked, so a restart in between still knows (and only a
+            # Reset clears it, see _after_reset).
+            self.machine = replace(self.machine, abort_latched=True)
+            self._marker_clear_pending = False
+        self._record(out, now, plan)
         if DRY_RUN and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
@@ -705,6 +1390,14 @@ class Service:
             self._record(out2, now)
         if self.machine is not before:
             self._save_tonight()
+        # Only now, saved and journaled, is the conductor asked for
+        # anything: a conductor that raises or hangs can no longer lose
+        # the save or the "Show N started" line, which is what keeps a
+        # restart inside the grace from starting the same show twice.
+        self._queue_conductor(plan, ev)
+        # A latch file created by this save is made to survive a power cut
+        # only now, once the conductor has the Abort (fix round 3).
+        self._sync_latch_marker()
         # Bumped every time the machine crosses INTO or OUT OF a held or
         # paused state, whoever does it: an operator's own Hold or Resume,
         # or an announcement's hold_for_announcement. hold_still_claimed
@@ -833,11 +1526,15 @@ class Service:
                                 "ltcplay was running")
 
     # -- tonight on disk --------------------------------------------------
-    def _save_tonight(self):
+    def _save_tonight(self, tries=5):
         m = self.machine
+        latched = self.conductor is not None and m.abort_latched
+        # The latch file first: it is the one a full disk or a held file is
+        # least likely to stop, and the one every restart reads.
+        marker_error = self._write_latch_marker(m) if latched else None
         path = tonight_path(m.date, self.state_dir)
         try:
-            write_json_atomic(path, sch.machine_to_doc(m))
+            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)
         except OSError as e:
             msg = (f"Tonight's list could not be saved to {path}: "
                    f"{e.strerror or e}. The schedule carries on, but a "
@@ -847,21 +1544,113 @@ class Service:
                 self._journal_line("system", msg, action="save tonight",
                                    outcome="failed", fault=True)
             self.persist_error = msg
+            if latched:
+                self._say_latch_saved(marker_error, False)
             return False
         if self.persist_error:
             self._journal_line("system", f"Tonight's list is being saved "
                                f"to {path} again.", action="save tonight")
         self.persist_error = ""
+        if latched:
+            self._say_latch_saved(marker_error, True)
         return True
 
-    def _load_tonight(self, d, now):
+    def _write_latch_marker(self, m):
+        """Create the latch file, trying twice. None once it is there, or
+        the sentence for why it is not."""
+        path = latch_path(self.state_dir)
+        words = {"what": "An Abort was pressed and nobody has pressed Reset. "
+                         "While this file is here, ltcplay starts dark and "
+                         "starts no show. Reset removes it.",
+                 "night": m.date.isoformat(),
+                 "written": self.clock().isoformat()}
+        err = None
+        for _ in range(2):
+            try:
+                if create_latch_marker(path, words):
+                    self._latch_unsynced = True
+                return None
+            except OSError as e:
+                err = e
+        return f"{path}: {err.strerror or err}"
+
+    def _sync_latch_marker(self):
+        """The folder flush a just created latch file still needs: after
+        the conductor has been asked, never before (see
+        create_latch_marker)."""
+        if self._latch_unsynced:
+            self._latch_unsynced = False
+            sync_latch_marker(latch_path(self.state_dir))
+
+    LATCH_LOST = ("The Abort latch could not be saved; if ltcplay restarts "
+                  "tonight the next show would start: press nothing, fix the "
+                  "disk. Neither the latch file nor tonight's list could be "
+                  "written ({why}). The Abort itself went to the show "
+                  "conductor and the rig is dark in this run; ltcplay keeps "
+                  "trying to save the latch every few seconds.")
+    LATCH_HALF = ("The Abort latch file could not be written ({why}). "
+                  "Tonight's list holds the latch, so a restart tonight still "
+                  "starts dark, but a damaged list would lose it. Fix the "
+                  "disk. ltcplay keeps trying every few seconds.")
+    LATCH_SAVED = ("The Abort latch is saved now ({path}). A restart starts "
+                   "dark and starts no show until Reset.")
+
+    def _say_latch_saved(self, marker_error, list_saved):
+        """One loud line when the Abort latch is not safely on disk, and one
+        when it is again."""
+        if marker_error is None:
+            text = None
+        elif list_saved:
+            text = self.LATCH_HALF.format(why=marker_error)
+        else:
+            text = self.LATCH_LOST.format(why=marker_error)
+        if text == self._latch_trouble:
+            return
+        if text is not None:
+            self._journal_line("system", text, action="save abort latch",
+                               outcome="failed", fault=True)
+        else:
+            self._journal_line(
+                "system", self.LATCH_SAVED.format(
+                    path=latch_path(self.state_dir)),
+                action="save abort latch", outcome="saved")
+        self._latch_trouble = text
+
+    # How often a latch that could not be saved is tried again.
+    LATCH_RETRY_S = 2.0
+
+    def _keep_latch_on_disk(self):
+        """Once per tick, with the lock held: while the Abort latch is not
+        safely on disk (the latch file or tonight's list could not be
+        written), or a Reset's removal of the latch file did not go through,
+        try again, every LATCH_RETRY_S, once and without waiting, so a full
+        disk or a held file never stalls the tick."""
+        m = self.machine
+        if self.conductor is None or m is None:
+            return
+        if m.abort_latched:
+            if self._latch_trouble is None and not self.persist_error:
+                return
+        elif not self._marker_clear_pending:
+            return
+        t = _time.monotonic()
+        if self._latch_retry_at is not None and t < self._latch_retry_at:
+            return
+        self._latch_retry_at = t + self.LATCH_RETRY_S
+        if self._save_tonight(tries=1) and not m.abort_latched:
+            self._clear_latch_files(m.date)
+
+    def _load_tonight(self, d, now, set_aside=True):
         """Tonight's saved machine, or a fresh one from the rule with a
         sentence saying why. The show length, guard, grace and zone always
         come from the rule file; the saved list only says what happened
         tonight, and it is checked before it is believed. A file that fails
         the checks is set aside, never overwritten, so the morning read can
         still see it. If the rule changed since the list was saved, tonight
-        is rebuilt from the new rule and only what already happened is kept."""
+        is rebuilt from the new rule and only what already happened is kept.
+        With set_aside False (an earlier night being picked up again, see
+        _open_night_before) a file that fails the checks raises instead and
+        is left exactly where it is."""
         path = tonight_path(d, self.state_dir)
         if not os.path.exists(path):
             self._journal_line(
@@ -874,6 +1663,8 @@ class Service:
                 m = sch.machine_from_doc(json.load(fh), self.rule, d, now,
                                          notes)
         except (OSError, ValueError, sch.RuleError) as e:
+            if not set_aside:
+                raise
             return self._set_aside(path, e, d, now)
         for text in notes:
             self._journal_line("system", text, action="load tonight",
@@ -893,7 +1684,9 @@ class Service:
         return m
 
     def _set_aside(self, path, e, d, now):
-        aside = path[:-5] + ".unreadable.json"
+        aside = set_aside_path(path)
+        # Whatever was in it, an Abort may have been: see _boot_latch.
+        self._unreadable_night = d
         try:
             os.replace(path, aside)
             where = f"It was set aside as {aside}."
@@ -914,54 +1707,271 @@ class Service:
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
-        return now.astimezone(self.rule.tz).date()
+        """The night `now` belongs to: the local date from the nightly
+        reset on, the day before until then (sch.night_of, Jeff,
+        2026-10-03)."""
+        return sch.night_of(now, self.rule.tz)
+
+    # How many days back a start looks for a night left open (a delayed
+    # show waiting, or a show running) to close it, see _open_night_before.
+    OPEN_NIGHT_LOOK_BACK = 7
 
     def _ensure_night(self, now):
+        """The night the scheduler is on, loaded or moved on at the
+        nightly reset. A night runs until sch.NIGHT_RESET (2 AM local) on
+        the next calendar day, always (Jeff, 2026-10-03): until then a
+        delayed show waits for Start now or Close for the night (Jeff,
+        2026-10-01); at it the night closes and a show still delayed is
+        MISSED, out loud (_still_open). Only a show running or paused at
+        the reset keeps its night open, until it ends.
+
+        On start it first looks for a night the last run left open
+        (_open_night_before): it is past its reset by then, so it is picked
+        up only to be closed out loud, a show that was running cut (the rig
+        dark) and a delayed show MISSED, rather than left behind without a
+        word."""
         if self.rule is None:
             return False
         d = self._tonight(now)
-        m = self.machine
-        if m is not None and m.date != d:
-            # A new day. Settle yesterday first: a show still on its list
-            # (the machine was asleep across it) is marked MISSED in the
-            # journal rather than dropped without a word.
-            self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            if self.machine.state in (sch.SHOW, sch.PAUSED):
-                # Never replace a running night: a show started by hand at
-                # 23:58 finishes on yesterday's list.
-                return True
-            if str(self.machine.date) not in self._summarised and \
-                    self.machine.slots:
-                self._write_summary("written at midnight; the night was "
-                                    "never closed", self.machine)
-            # Yesterday's summary was just seen to; no looking back needed.
-            self._looked_back = True
-            # This assignment, not _apply(), is what actually drops a night
-            # left on Hold at midnight (PAUSED and SHOW already returned
-            # above; only a genuinely running show is never swept). It
-            # bypasses _apply's own before/after bump, because by the time
-            # BOOT_DONE below runs _apply again, `before` is already
-            # tomorrow's fresh machine, not tonight's HOLD one -- so the
-            # crossing has to be bumped here, by hand, or an announcement's
-            # claim from tonight could otherwise still look current after
-            # midnight swept the night it was claimed on (merge with #14,
-            # 2026-09-26: _ensure_night's own end-of-night write_summary
-            # touches this same crossing).
-            if self.machine.state == sch.HOLD:
-                self.hold_epoch += 1
-            self.machine = None
         if self.machine is None:
-            self.machine = replace(self._load_tonight(d, now),
-                                   operators=self.operators)
+            old = self._open_night_before(d, now)
+            if old is None:
+                fresh = not os.path.exists(tonight_path(d, self.state_dir))
+                m = self._load_tonight(d, now)
+                if fresh and self._latched_before(d):
+                    m = replace(m, abort_latched=True)
+                m = self._boot_latch(m)
+                self.machine = replace(m, operators=self.operators)
+                self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+                return True
+            # The open night boots exactly as tonight's would after a
+            # restart: a show that was running is cut (FAULT, the rig goes
+            # dark, nothing resumes), a delayed show keeps waiting. Then it
+            # goes through the same nightly reset rule as a live run, which
+            # closes it.
+            old = self._boot_latch(old)
+            self.machine = replace(old, operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
+        if self.machine.date == d:
+            return True
+        # A new day. Settle yesterday first: a show still on its list
+        # (the machine was asleep across it) is marked MISSED in the
+        # journal rather than dropped without a word.
+        self._apply(sch.Event(sch.TICK, "scheduler"), now)
+        how = self._still_open(now, d)
+        if how is None:
+            return True
+        if str(self.machine.date) not in self._summarised and \
+                self.machine.slots:
+            self._write_summary(how, self.machine)
+        # Yesterday's summary was just seen to; no looking back needed.
+        self._looked_back = True
+        # This assignment, not _apply(), is what actually drops a night
+        # left on Hold (SHOW and PAUSED are never dropped; see
+        # _still_open). It bypasses _apply's own before/after bump, because
+        # by the time BOOT_DONE below runs _apply again, `before` is
+        # already the new night's fresh machine, not this HOLD one -- so
+        # the crossing has to be bumped here, by hand, or an announcement's
+        # claim from this night could still look current after it was
+        # dropped (merge with #14, 2026-09-26). Reached by a held night
+        # at the nightly reset, with or without a delayed show waiting.
+        if self.machine.state == sch.HOLD:
+            self.hold_epoch += 1
+        # An Abort nobody has Reset outlives its night, exactly as the
+        # conductor's own latch does in a run that never restarts.
+        latched = self.machine.abort_latched
+        m = self._load_tonight(d, now)
+        if latched and not m.abort_latched:
+            m = replace(m, abort_latched=True)
+            self._journal_line(
+                "system", self.LATCH_CARRIED.format(night=self.machine.date),
+                action="load tonight", outcome="still aborted")
+        m = self._boot_latch(m)
+        self.machine = replace(m, operators=self.operators)
+        self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
+
+    LATCH_CARRIED = ("The night of {night} ended with an Abort that nobody "
+                     "has Reset, so tonight starts dark: no show starts and "
+                     "Start now is refused until an operator presses Reset.")
+    LATCH_FILE_FOUND = ("The Abort latch file {path} is there: an Abort was "
+                        "pressed and nobody has pressed Reset. ltcplay "
+                        "starts dark: no show starts and Start now is "
+                        "refused until an operator presses Reset.")
+    LATCH_UNREADABLE = ("Tonight's saved list ({night}) could not be read "
+                        "this time or an earlier time tonight (it is set "
+                        "aside as {aside}), so ltcplay cannot tell whether "
+                        "an Abort was pressed tonight. To be safe it starts "
+                        "dark, as if one was: no show starts and Start now "
+                        "is refused until an operator presses Reset.")
+    LATCH_EARLIER_UNREADABLE = (
+        "The saved list for {night}, the last night before this one, could "
+        "not be read, so ltcplay cannot tell whether that night ended with "
+        "an Abort nobody Reset. To be safe it starts dark, as if it did: no "
+        "show starts and Start now is refused until an operator presses "
+        "Reset.")
+
+    def _boot_latch(self, m):
+        """`m`, latched, when the disk says an Abort may not have been Reset
+        and its own list does not already say so (fix round 3 of #30), each
+        reason said in the journal. Only with a show conductor attached:
+          - the latch file is there;
+          - this night's saved list could not be read, now or earlier
+            tonight (it was set aside): it may have held an Abort, and an
+            older ltcplay that set a format 4 list aside and wrote its own
+            leaves exactly this behind."""
+        if self.conductor is None:
+            return m
+        whys = []
+        marker = latch_path(self.state_dir)
+        if os.path.exists(marker) and not m.abort_latched:
+            whys.append((self.LATCH_FILE_FOUND.format(path=marker), False))
+        aside = set_aside_path(tonight_path(m.date, self.state_dir))
+        if self._unreadable_night == m.date or os.path.exists(aside):
+            whys.append((self.LATCH_UNREADABLE.format(night=m.date,
+                                                      aside=aside), True))
+        for why, fault in whys:
+            self._journal_line("system", why, action="load tonight",
+                               outcome="still aborted", fault=fault)
+        return replace(m, abort_latched=True) if whys else m
+
+    def _latched_before(self, d):
+        """True when the most recent night saved before `d` ended with an
+        Abort nobody Reset (its file says abort_latched), whatever its age:
+        a run that never restarted would still be latched too. Said in the
+        journal. With a show conductor attached, a most recent file that
+        cannot be read counts as latched too, and says so (fix round 3).
+        The latch file (_boot_latch) is what normally carries the latch;
+        this is for a list saved before it existed."""
+        try:
+            names = os.listdir(self.state_dir)
+        except OSError:
+            return False
+        dates = []
+        for name in names:
+            if not (name.startswith(TONIGHT_PREFIX) and
+                    name.endswith(".json")):
+                continue
+            try:
+                y = datetime.strptime(name[len(TONIGHT_PREFIX):-5],
+                                      "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if y < d:
+                dates.append(y)
+        if not dates:
+            return False
+        y = max(dates)
+        try:
+            with open(tonight_path(y, self.state_dir),
+                      encoding="utf-8-sig") as fh:
+                latched = json.load(fh).get("abort_latched") is True
+        except (OSError, ValueError, AttributeError):
+            if self.conductor is None:
+                return False
+            # Fix round 3: it may have held an Abort nobody Reset.
+            self._journal_line(
+                "system", self.LATCH_EARLIER_UNREADABLE.format(night=y),
+                action="load tonight", outcome="still aborted", fault=True)
+            return True
+        if latched:
+            self._journal_line("system", self.LATCH_CARRIED.format(night=y),
+                               action="load tonight",
+                               outcome="still aborted")
+        return latched
+
+    def _still_open(self, now, d):
+        """None while the night on the machine (a date other than `d`)
+        must stay open; otherwise the words for its summary, once it may
+        be set aside.
+
+        A running or paused show is never set aside: it is not cut by the
+        reset, and the night closes once it has ended. Otherwise the night
+        closes at the nightly reset (Jeff, 2026-10-03): a delayed show
+        still waiting is MISSED, with a fault line naming it and saying it
+        was still waiting at the reset, and the night is set aside. Before
+        its reset (only a clock set back gets here) it stays."""
+        m = self.machine
+        if m.state in (sch.SHOW, sch.PAUSED):
+            return None
+        words = sch.reset_words()
+        if m.delayed() is None:
+            return (f"written at the {words} nightly reset; the night was "
+                    f"never closed")
+        if now < sch.night_reset(m.date, m.tz):
+            return None
+        n = m.delayed().n
+        out = sch.close_at_reset(m, now)
+        self.machine = out.machine
+        self._record(out, now)
+        self._save_tonight()
+        return (f"closed at the {words} nightly reset; the delayed show {n} "
+                f"never started")
+
+    def _open_night_before(self, d, now):
+        """The most recent night saved before `d`, picked up again if it
+        was left open (a delayed show waiting, or a show running or paused),
+        or None. Every night before `d` is past its nightly reset, so it is
+        picked up only to be closed by _still_open's rule, out loud: before
+        2026-10-03 (the next-night-preshow rule) it could be picked up and
+        run days later. Journaled. An unreadable file is left where it is
+        and said out loud; tonight's list then starts as it always did."""
+        for back in range(1, self.OPEN_NIGHT_LOOK_BACK + 1):
+            y = d - timedelta(days=back)
+            path = tonight_path(y, self.state_dir)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    doc = json.load(fh)
+                state = doc["state"]
+                slots = [(x["n"], x["status"]) for x in doc["slots"]]
+            except (OSError, ValueError, TypeError, KeyError) as e:
+                self._journal_line(
+                    "system", f"The saved list for {y}, {path}, could not "
+                    f"be read to see whether that night was left open "
+                    f"({type(e).__name__}: {e}). It is left as it is, and "
+                    f"{d} starts from its own list.",
+                    action="load tonight", outcome="failed", fault=True)
+                return None
+            # A show that was running counts only from the day before: it
+            # is cut either way, and older than that the look-back summary
+            # (_look_back) is how that night is closed, as it always was.
+            waiting = [f"show {n} is delayed and waits for Start now"
+                       for n, st in slots if st == sch.DELAYED] + \
+                      [f"show {n} was running" for n, st in slots
+                       if st == sch.RUNNING and back == 1]
+            if state in (sch.CLOSING, sch.OFF) or not waiting:
+                return None
+            try:
+                m = self._load_tonight(y, now, set_aside=False)
+            except (OSError, ValueError, sch.RuleError) as e:
+                self._journal_line(
+                    "system", f"The night of {y} was left open ("
+                    f"{'; '.join(waiting)}), but its saved list {path} "
+                    f"could not be used: {str(e).rstrip('.')}. It is left "
+                    f"as it is, and {d} starts from its own list.",
+                    action="load tonight", outcome="failed", fault=True)
+                return None
+            self._journal_line(
+                "system", f"ltcplay started on the night of {d}, and the "
+                f"night of {y} was left open when it stopped: "
+                f"{'; '.join(waiting)}. That night ended at the "
+                f"{sch.reset_words()} nightly reset on "
+                f"{y + timedelta(days=1)}, so it is picked up only to close "
+                f"it: nothing from it will run.",
+                action="load tonight", outcome="closing open night")
+            return m
+        return None
 
     def tick(self):
         with self._locked():
             now = self.clock()
             self._watch_clock(now)
+            self._watch_conductor()
             if not self._ensure_night(now):
                 return None
+            self._keep_latch_on_disk()
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
@@ -971,9 +1981,75 @@ class Service:
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
+            self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
+
+    # A conductor request with no answer after this long is a fault: they
+    # are meant to return at once (the conductor does its fades on its own
+    # thread), so this is a hang, not a slow fade.
+    CONDUCTOR_STUCK_S = 3.0
+
+    def _watch_conductor(self):
+        """Once per tick, with the lock held: a show conductor request that
+        has gone CONDUCTOR_STUCK_S without an answer, or a line of requests
+        whose thread has died, is a fault, written once, on the page
+        (the fault flag and state_view's "conductor") and in the journal,
+        and a line says when it is over. A dead line is started again at
+        once. Before 2026-10-02 both were silent: every request behind a
+        hung one (an Abort included) just waited, and a Reset answered
+        "queued" forever."""
+        if self.conductor is None:
+            return
+        h = self._calls.health()
+        problem = None
+        if not h["alive"]:
+            self._calls.revive()
+            problem = ("dead", (
+                f"The line of requests to the show conductor stopped: its "
+                f"thread ended, with {h['waiting']} request(s) waiting. "
+                f"ltcplay started it again; anything that was waiting goes "
+                f"out now, in order. That is a bug in ltcplay."))
+        elif h["stuck"] is not None and \
+                h["age_s"] >= self.CONDUCTOR_STUCK_S:
+            c = h["stuck"]
+            problem = (("stuck", id(c)), (
+                f"The show conductor has not answered {c.label} for "
+                f"{h['age_s']:.0f} s. Every request behind it is waiting "
+                f"({h['waiting']} so far); an Abort does not wait, it is "
+                f"sent on its own after {_ConductorCalls.URGENT_WAIT_S:g} "
+                f"s. Check the lasers, video and flame link, and the "
+                f"conductor's own lines."))
+        was = self._conductor_trouble
+        if problem is not None:
+            if was is not None and was["key"] == problem[0]:
+                return
+            self._conductor_trouble = {"key": problem[0],
+                                       "text": problem[1]}
+            if self.machine is not None:
+                self._apply(sch.Event(sch.FAULT_RAISED, "system",
+                                      detail=problem[1]))
+            else:
+                self._journal_line("system", problem[1], action="conductor",
+                                   outcome="failed", fault=True)
+            return
+        if was is not None:
+            self._conductor_trouble = None
+            self._journal_line(
+                "system", "The show conductor is answering again; the "
+                "requests that were waiting have gone out in order.",
+                action="conductor", outcome="recovered")
+
+    def conductor_view(self):
+        """For the page: whether a conductor is attached, whether an Abort
+        has not been Reset, and what is wrong with the line of requests to
+        it, if anything."""
+        with self._locked():
+            t = self._conductor_trouble
+            return {"attached": self.conductor is not None,
+                    "aborted": self._aborted(),
+                    "trouble": t["text"] if t else None}
 
     def check_clock(self):
         level, text, offset = check_clock(self.ntp_query,
@@ -1258,6 +2334,9 @@ class Service:
         for t in (self._thread, self._sample_thread):
             if t is not None:
                 t.join(timeout=1)
+        # The conductor's last requests (a closing, an Abort) get their
+        # journal line before the journal closes, within a second.
+        self._calls.flush(1.0)
         # From here no line is written in this thread's time; close()
         # writes what is left within its own time limit.
         self.logbook.begin_close()
@@ -1343,6 +2422,7 @@ class Service:
                                 if self.machine else None),
                    "save_error": self.persist_error or None,
                    "logging": self.logbook.health(),
+                   "conductor": self.conductor_view(),
                    "journal": list(self.journal)[-int(journal):][::-1]}
             if self.machine is not None:
                 out.update(sch.machine_view(self.machine, now))
@@ -1546,15 +2626,88 @@ class Service:
                 raise ValueError(f"The current operator could not be saved: "
                                  f"{e}. Nothing was changed.") from None
             self.current_operator = name
+            # The reason used to be "", which the journal refuses (a reason
+            # is never blank), so this line was lost and only a "could not
+            # be written" fault was journaled. Found by the remote's tests.
+            text = (f"{self._who_text(screen)} chose {name} as the "
+                    f"operator." if name else
+                    f"{self._who_text(screen)} cleared the operator "
+                    f"selection.")
             self._log(self.logbook.record, actor="operator", action="operator",
-                      outcome="done", reason="",
-                      text=(f"{self._who_text(screen)} chose {name} as the "
-                            f"operator." if name else
-                            f"{self._who_text(screen)} cleared the operator "
-                            f"selection."),
+                      outcome="done", reason=text, text=text,
                       state=self._state_name(), night=self._night(),
-                      who=name or "unnamed operator", screen=screen)
+                      who=name or "unnamed operator",
+                      screen=screen or "unnamed screen")
         return self.operator_view()
+
+    # The operator presses the remote page sends (ltcplay/remote.py), by its
+    # route name. These are the engine's own operator events: the same
+    # schedule.step every other press goes through, journaled by the engine
+    # with who and which screen, the Abort latch saved before the conductor
+    # is asked (see _apply). Reset is reset_conductor, under its own name.
+    PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
+               "resume": sch.RESUME, "abort": sch.ABORT}
+
+    def operator_press(self, what, who, screen, confirmed=False):
+        """One operator press from a screen: Start now, Hold, Resume or
+        Abort. `who` must be on the operator list and `screen` on the
+        screen list; anything else is refused in the journal and raised as
+        ValueError with the sentence. Abort needs confirmed=True (the
+        engine refuses it otherwise, as it always has). Returns {"ok",
+        "text"}: ok False with the engine's own refusal sentence."""
+        kind = self.PRESSES.get(what)
+        if kind is None:
+            raise ValueError(f"{what!r} is not a press this program knows. "
+                             f"Nothing was changed.")
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        names = {n.lower(): n for n in self.operators}
+        if what == "abort" and not who:
+            # Abort is never gated on a chosen operator, the same rule the
+            # Stream Deck keeps: a press that only reduces risk must never
+            # wait on a picker. The journal says nobody was named.
+            names[""] = ""
+        if who.lower() not in names:
+            sentence = (f"{who or 'Nobody'!r} is not on the operator list "
+                        f"({', '.join(self.operators)}). Nothing was "
+                        f"changed.")
+            self.journal_press(who, screen, what, "refused",
+                               f"{what} was refused. {sentence}")
+            raise ValueError(sentence)
+        who = names[who.lower()]
+        screen = self._check_screen(screen, who, what, what)
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                sentence = (self.error or "There is no schedule loaded, so "
+                            "there is no show to press anything on.")
+                self.journal_press(who, screen, what, "refused",
+                                   f"{who}'s {what} was refused. {sentence}")
+                return {"ok": False, "text": sentence}
+            out = self._apply(sch.Event(kind, "operator", who=who,
+                                        screen=screen,
+                                        confirmed=bool(confirmed)))
+        if out.refused:
+            return {"ok": False, "text": out.refused}
+        text = " ".join(le.text for le in out.log if le.text)
+        return {"ok": True, "text": text or "Done."}
+
+    def journal_press(self, who, screen, action, outcome, text,
+                      fault=False):
+        """One journal line for a press that is not a schedule event (the
+        remote page's disarm-all, a sign-in), with who and which screen."""
+        if fault:
+            return self._log(self.logbook.fault, "operator", text,
+                             action=action, outcome=outcome,
+                             state=self._state_name(), night=self._night(),
+                             who=who or "unnamed operator",
+                             screen=screen or "unnamed screen")
+        return self._log(self.logbook.record, actor="operator",
+                         action=action, outcome=outcome, reason=text,
+                         text=text, state=self._state_name(),
+                         night=self._night(),
+                         who=who or "unnamed operator",
+                         screen=screen or "unnamed screen")
 
     @staticmethod
     def _who_text(screen):

@@ -36,7 +36,61 @@ USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web", "index.html")
+REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+WILDCARD = ("0.0.0.0", "::", "")
+
+# What a device on the show network may load before it has signed in: the
+# remote page (which is the sign-in form until it has a session), the logo,
+# and the sign-in route itself. Everything else needs a PIN session.
+OPEN_GETS = ("/", "/index.html", "/remote", "/api/brand",
+             "/api/remote/whoami")
+OPEN_POSTS = ("/api/remote/login", "/api/remote/logout")
+
+
+def normalize_bind(bind):
+    """The address bind() will really use, written plainly: "127.0.0.1"
+    for any loopback spelling, "0.0.0.0" (refused by serve) for any
+    every-interface spelling, else the address itself. A name that does
+    not resolve is left as it is, for bind() to refuse."""
+    import ipaddress
+    import socket as _socket
+    text = str(bind if bind is not None else "").strip()
+    if text in ("", "::", "0.0.0.0"):
+        return "0.0.0.0" if text != "::" else "::"
+    try:
+        # inet_aton reads every IPv4 spelling the operating system does
+        # ("0", "0.0", "000.000.000.000"); getaddrinfo the rest.
+        addrs = {ipaddress.ip_address(_socket.inet_ntoa(
+            _socket.inet_aton(text)))}
+    except (OSError, ValueError):
+        try:
+            infos = _socket.getaddrinfo(text.strip("[]"), None,
+                                        type=_socket.SOCK_STREAM)
+        except (OSError, UnicodeError):
+            return text
+        addrs = {ipaddress.ip_address(i[4][0].split("%")[0])
+                 for i in infos}
+    if any(a.is_unspecified for a in addrs):
+        return "0.0.0.0"
+    if addrs and all(a.is_loopback for a in addrs):
+        return "127.0.0.1"
+    if len(addrs) == 1:
+        return str(next(iter(addrs)))
+    return text
+
+
+def network_may_reach(route):
+    """Fix round 1 of #39, F1: what a request from the network may reach
+    at all, signed in or not. The remote page and its own routes, the
+    logo, and nothing else: the operator page's API (Stop, Start, GO, the
+    input, the show folder) and the scheduler's routes (choosing the
+    operator, the Stream Deck's journal lines) are the machine's own, and
+    a network session reaching them bypassed every rule /api/remote/*
+    keeps (who pressed, no scrubbing during a show). Loopback is unchanged."""
+    return (route in ("/", "/index.html", "/remote", "/api/brand")
+            or route.startswith("/brand/")
+            or route == "/api/remote" or route.startswith("/api/remote/"))
 
 
 # Bumped whenever the page needs something this module did not have. The
@@ -651,20 +705,75 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass                      # the show log is the log; this is noise
 
-    def _authorised(self):
-        token = self.server.token
-        if not token:
-            return True
-        host = self.client_address[0]
-        if host in LOOPBACK:
-            return True
-        q = urllib.parse.urlparse(self.path).query
-        given = urllib.parse.parse_qs(q).get("t", [None])[0]
-        if given is None:
-            given = self.headers.get("X-ltcplay-token")
-        return secrets.compare_digest(str(given or ""), token)
+    def _local(self):
+        """The request came from this machine itself. The one thing a proxy
+        or tunnel on the show machine would fake, which is why _refusal()
+        turns away anything that looks forwarded, loopback included."""
+        return self.client_address[0] in LOOPBACK
 
-    def _send(self, code, body, ctype="application/json"):
+    def _ctx(self):
+        ctx = getattr(self, "_ctx_cache", None)
+        if ctx is None:
+            remote = getattr(self.server, "remote", None)
+            if remote is None:
+                from . import remote as remote_mod
+                ctx = remote_mod.Ctx(self._local(), self.client_address[0])
+            else:
+                ctx = remote.context(self._local(), self.client_address[0],
+                                     self.headers.get("Cookie"))
+            self._ctx_cache = ctx
+        return ctx
+
+    def _authorised(self):
+        """Loopback, as before: the operator's own machine. Anything else
+        needs an operator's PIN session (ltcplay/remote.py)."""
+        if self._local():
+            return True
+        return self._ctx().session is not None
+
+    def _refusal(self, post=False):
+        """A sentence when this request must be turned away before any
+        route sees it: forwarded by a proxy or tunnel, addressed to another
+        host name, or posted from another site's page."""
+        from . import remote as remote_mod
+        h = remote_mod.looks_proxied(self.headers)
+        if h:
+            return (f"This request came through a proxy or tunnel ({h}). "
+                    f"The show engine refuses those: remove the remote "
+                    f"access software or port forward from the show "
+                    f"machine.")
+        bind = getattr(self.server, "bind_address", "127.0.0.1")
+        port = self.server.server_address[1]
+        if not remote_mod.host_ok(self.headers.get("Host"), self._local(),
+                                  bind, port):
+            return "This page has to be opened by the show machine's address."
+        if post:
+            # Fix round 1 of #39, F2: a sandboxed iframe or a data: page on
+            # this machine sends Origin "null", and a text/plain or bodiless
+            # POST is a "simple" request a browser sends cross-site with no
+            # preflight. So: Origin null is cross-site; any Origin must be
+            # this host; a browser's Sec-Fetch-Site must say same-origin
+            # (or none: typed by the user); and the body must be declared
+            # JSON, which no cross-site page can send without a preflight
+            # this server never answers.
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                o = urllib.parse.urlparse(origin)
+                if origin.strip().lower() == "null" or \
+                        o.netloc.lower() != str(self.headers.get("Host") or
+                                                "").lower():
+                    return "A press from another site's page was refused."
+            sfs = self.headers.get("Sec-Fetch-Site")
+            if sfs is not None and sfs.strip().lower() not in ("same-origin",
+                                                               "none"):
+                return "A press from another site's page was refused."
+            ctype = str(self.headers.get("Content-Type") or "")
+            if ctype.split(";")[0].strip().lower() != "application/json":
+                return ("A press has to be sent as JSON by the ltcplay page. "
+                        "Nothing was done.")
+        return None
+
+    def _send(self, code, body, ctype="application/json", headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
@@ -673,6 +782,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -687,7 +799,15 @@ class Handler(BaseHTTPRequestHandler):
         if not n:
             return {}
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
+            raw = self.rfile.read(n)
+        except OSError:
+            raw = b""
+        if len(raw) < n:
+            # The connection went before the body arrived: nothing is done
+            # on half a request (the remote routes answer None with 400).
+            return None if "/api/remote/" in self.path else {}
+        try:
+            return json.loads(raw or b"{}")
         except ValueError:
             return {}
 
@@ -706,14 +826,34 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routes -----------------------------------------------------------
     def do_GET(self):
+        self._ctx_cache = None          # one connection carries many requests
         route = urllib.parse.urlparse(self.path).path
-        if not self._authorised():
-            return self._send(403, {"error": "This machine is serving on the "
-                                             "network, so a token is needed. "
-                                             "It is printed where the server "
-                                             "started."})
+        why = self._refusal()
+        if why:
+            return self._send(403, {"error": why})
+        if not self._local() and not network_may_reach(route):
+            return self._send(403, {"error": "Not from the network. Only "
+                                             "the remote page's own routes "
+                                             "answer here."})
+        authorised = self._authorised()
+        if not authorised and not (route in OPEN_GETS
+                                   or route.startswith("/brand/")):
+            return self._send(401, {"error": "Sign in with your operator "
+                                             "PIN first."})
         c = self.server.control
         try:
+            if route == "/remote" or (route in ("/", "/index.html")
+                                      and not self._local()):
+                # The show network gets the remote page: the sign-in form
+                # until it has a session, then the touch controls.
+                with open(REMOTE_PAGE, "rb") as fh:
+                    return self._send(200, fh.read(),
+                                      "text/html; charset=utf-8")
+            if route == "/api/remote" or route.startswith("/api/remote/"):
+                remote = getattr(self.server, "remote", None)
+                if remote is None:
+                    return self._send(404, {"error": "no such thing here"})
+                return self._send(*remote.get(route, self._ctx()))
             if route in ("/", "/index.html"):
                 with open(PAGE, "rb") as fh:
                     return self._send(200, fh.read(), "text/html; charset=utf-8")
@@ -755,9 +895,35 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "no such thing here"})
 
     def do_POST(self):
+        self._ctx_cache = None          # one connection carries many requests
         route = urllib.parse.urlparse(self.path).path
-        if not self._authorised():
-            return self._send(403, {"error": "token required"})
+        why = self._refusal(post=True)
+        if why:
+            return self._send(403, {"error": why})
+        if not self._local() and not network_may_reach(route):
+            return self._send(403, {"error": "Not from the network. Only "
+                                             "the remote page's own routes "
+                                             "answer here."})
+        if not self._authorised() and route not in OPEN_POSTS:
+            return self._send(401, {"error": "Sign in with your operator "
+                                             "PIN first."})
+        if route == "/api/remote" or route.startswith("/api/remote/"):
+            remote = getattr(self.server, "remote", None)
+            if remote is None:
+                return self._send(404, {"error": "no such thing here"})
+            # Read the whole body before anything is done: a page that
+            # drops mid-request has pressed nothing.
+            body = self._body()
+            if body is None:
+                return self._send(400, {"error": "The request did not "
+                                                 "arrive whole. Nothing was "
+                                                 "done."})
+            self.server.control._state_cache = None
+            try:
+                code, out, headers = remote.post(route, body, self._ctx())
+            except Exception as e:
+                return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+            return self._send(code, out, headers=headers)
         c = self.server.control
         # An operator action (Start, Stop, GO, autoreload, override, ...) must
         # never be hidden behind a stale cached /api/state answer: the whole
@@ -855,7 +1021,8 @@ class _NoAnnounce:
 
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
-          token=None, on_ready=None, schedule=None, announce=None):
+          token=None, on_ready=None, schedule=None, announce=None,
+          remote_folder=None, flamesafe_config=None, flame_disarm=None):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -921,19 +1088,54 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                        action="show length check",
                                        outcome="warning")
         httpd_schedule = schedule
+    # Fix round 1 of #39, F4: "0", "0.0" and "000.000.000.000" are all
+    # 0.0.0.0 to the operating system. Resolve the address the way bind()
+    # will, and refuse it if ANY form of it means every interface.
+    bind = normalize_bind(bind)
     on_network = bind not in LOOPBACK
-    if on_network and token is None:
-        # Anyone who can reach this port can black out the rig. On a venue
-        # network that is not a theoretical concern, so serving off loopback
-        # gets a token whether or not anybody asked for one.
-        token = secrets.token_urlsafe(9)
+    if on_network and bind in WILDCARD:
+        # Every interface means the venue's network and anything else this
+        # machine is on, not just the show Wi-Fi. One address, or none.
+        raise ValueError(
+            f"{bind or 'every interface'} would serve the engine on every "
+            f"network this machine is on. Set its show Wi-Fi address on the "
+            f"page (Show network), then start Web ltcplay on the show "
+            f"network.")
+    # The old shared link token is gone: over the network every operator
+    # signs in with their own PIN (ltcplay/remote.py). `token` is accepted
+    # and ignored so an old caller does not break.
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.control = control
-    httpd.token = token if on_network else None
+    httpd.token = None
+    httpd.bind_address = bind
     httpd.daemon_threads = True
     httpd.schedule = None
     if httpd_schedule is not None:
         httpd.schedule = httpd_schedule.start()
+    from . import remote as remote_mod
+    fstatus = None
+    if flamesafe_config:
+        try:
+            fstatus = remote_mod.FlameStatus.from_config(
+                flamesafe_config).start()
+        except (OSError, ValueError, KeyError) as e:
+            print(f"The flame lamps on the remote page are off: {e}")
+    httpd.remote = remote_mod.Remote(control, httpd.schedule,
+                                     folder=remote_folder,
+                                     flame_status=fstatus,
+                                     flame_disarm=flame_disarm)
+    httpd.loopback = None
+    if on_network:
+        # The machine itself keeps its own door on loopback, trusted as
+        # before, beside the one show-network address.
+        lb = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        lb.control, lb.token, lb.bind_address = control, None, "127.0.0.1"
+        lb.daemon_threads = True
+        lb.schedule, lb.remote = httpd.schedule, httpd.remote
+        httpd.loopback = lb
+        threading.Thread(target=lb.serve_forever,
+                         kwargs={"poll_interval": 0.2}, daemon=True,
+                         name="ltcplay-web-loopback").start()
     httpd.announce = None
     if announce is not None:
         if isinstance(announce, str):
@@ -960,6 +1162,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+    if httpd.loopback is not None:
+        httpd.loopback.announce = httpd.announce
     if on_ready:
         on_ready(httpd, control, token)
     return httpd

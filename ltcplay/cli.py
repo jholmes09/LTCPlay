@@ -1233,10 +1233,28 @@ def cmd_serve(args):
         from . import announce as announce_mod
         announce = os.path.abspath(os.path.expanduser(
             args.announce or announce_mod.default_config_path()))
+    flamesafe_config = getattr(args, "flamesafe_config", None)
+    if getattr(args, "network", False):
+        # The show network: one address, saved on the page (Show network),
+        # on the fixed port. Never every interface.
+        from . import remote as remote_mod
+        try:
+            rs = remote_mod.load_settings()
+        except ValueError as e:
+            return _err(str(e))
+        if not rs["show_network_address"]:
+            return _err("The show network address is not set yet. Start Web "
+                        "ltcplay normally, open the page on this machine, "
+                        "set it under Show network, then start it on the "
+                        "show network again.")
+        args.bind = rs["show_network_address"]
+        args.port = remote_mod.FIXED_PORT
+        flamesafe_config = flamesafe_config or rs["flamesafe_config"]
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
-                              announce=announce)
+                              announce=announce,
+                              flamesafe_config=flamesafe_config)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1246,13 +1264,10 @@ def cmd_serve(args):
         # and found shorter (Jeff, 2026-09-26): nothing was bound or
         # started. See web.serve and clock.derive_show_length_in_folder.
         return _err(str(e))
-    token = httpd.token
     host = "127.0.0.1" if args.bind in web_mod.LOOPBACK else args.bind
-    if host in ("0.0.0.0", "::"):
-        # "serve on every interface" is not an address anybody can open.
-        # Print the one the phone has to type. Round 3, 2026-09-13.
-        host = _lan_address() or host
-    url = f"http://{host}:{args.port}/" + (f"?t={token}" if token else "")
+    if ":" in host:
+        host = f"[{host}]"
+    url = f"http://{host}:{args.port}/"
     from . import brand as brand_mod
     _b = brand_mod.load()
     print(f"{_b['product']}  {brand_mod.contact_line(_b)}\n")
@@ -1267,10 +1282,12 @@ def cmd_serve(args):
         av = httpd.announce
         print(f"Announcements: {av.config_path}")
         print("  " + (av.error or f"Loaded, on {av.device_name}."))
-    if token:
-        print(f"\nServing on the network, so the page needs the token in that "
-              f"link.\nAnyone who can reach {host}:{args.port} and has it can "
-              f"black out the rig.")
+    if httpd.loopback is not None:
+        print(f"\nServing on the show network at {host}:{args.port}, and on "
+              f"this machine at\nhttp://127.0.0.1:{args.port}/ . Each operator "
+              f"signs in with their own PIN on an iPad.\nNever put remote "
+              f"access software, a tunnel or a port forward on this machine.")
+        url = f"http://127.0.0.1:{args.port}/"
     print("\nLeave this window open. It is the engine; the page is only a "
           "window onto it,\nso closing the browser does not stop a running "
           "show. Ctrl-C here does.")
@@ -1328,6 +1345,13 @@ def _shutdown(httpd):
             httpd.schedule.stop()
         except Exception as e:
             print(f"The scheduler did not stop cleanly: {e}")
+    lb = getattr(httpd, "loopback", None)
+    if lb is not None:
+        try:
+            lb.shutdown()
+            lb.server_close()
+        except Exception:
+            pass
     httpd.server_close()
 
 
@@ -1806,9 +1830,16 @@ def main(argv=None):
                                      "(default: this folder)")
     sv.add_argument("--port", type=int, default=7878)
     sv.add_argument("--bind", default="127.0.0.1",
-                    help="0.0.0.0 to reach it from a phone or iPad on the "
-                         "same network; a token is then required")
-    sv.add_argument("--token", help="use this token instead of a generated one")
+                    help="one address of this machine to serve on besides "
+                         "loopback (never 0.0.0.0); prefer --network")
+    sv.add_argument("--token", help=argparse.SUPPRESS)
+    sv.add_argument("--network", action="store_true",
+                    help="serve on the show network address saved on the "
+                         "page (ltcplay_remote.json), port 7878; every "
+                         "operator signs in with their own PIN")
+    sv.add_argument("--flamesafe-config", dest="flamesafe_config",
+                    help="flamesafe's config, for the flame lamps on the "
+                         "remote page (needs link.status_mirror_port)")
     sv.add_argument("--no-browser", action="store_true", dest="no_browser")
     sv.add_argument("--schedule", nargs="?", const="", default=None,
                     metavar="FILE",
