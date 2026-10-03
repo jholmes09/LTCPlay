@@ -21,3 +21,11 @@
 
 # -- macOS only
 windows | the app runs from the wrong folder | only compiling and running the macOS C launcher catches it; that cannot run on Windows
+
+# -- beyond.py: two guard layers by design (S5), so removing one alone is
+# not independently observable while the other still refuses the same
+# input the same way. Kept deliberately, not an untested gap: a future
+# change that bypasses one layer still meets the other, which is the
+# whole point of having both.
+all | the allow-list no longer checks for OSC special characters | the exact-match check right after it already excludes every string that could contain one (BRIGHTNESS_ADDR itself has none), so no input exists today where removing this specific check changes the function's answer; kept as an explicit, self-documenting rule for a future BRIGHTNESS_ADDR that might not be so simple
+all | _send()'s guard is removed, so anything can reach the socket | _Socket.send() enforces the identical allow-list one layer down and is never bypassed by this mutation, so every caller still sees the same refusal; test_beyond_lowest_level_socket_also_enforces_allow_list proves that lower layer directly
