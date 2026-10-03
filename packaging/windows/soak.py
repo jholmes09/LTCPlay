@@ -1,36 +1,46 @@
 """ltcplay-soak.exe: the bench soak test. A PC-only stress test of the show PC
 and of the software, with NO lasers, flames or lights connected.
 
-It runs the real programs from this install (ltcplay.exe, flamesafe.exe, and
-ltcplay-deck.exe when a Stream Deck is plugged in) playing a generated show
-on a loop, for 1, 8 or 24 hours, and measures them from the outside the whole
-time. A plain-language report is rewritten every minute (so a crash still
-leaves one) and finished at the end, on the Desktop and in the logs folder.
+BENCH BUILD ONLY (branch bench-build): this runs the WHOLE Fire & Ice stack
+the way show night does, from the real programs in this install:
+
+  - ltcplay.exe as `ltc serve` with the scheduler and the Fire & Ice show
+    conductor (fire_ice.py): a bench schedule starts a show every few
+    minutes on its own (scheduler_performs, auto_start when_run_pressed),
+    once this program has pressed Run;
+  - each show plays its audio through the show audio player on the show's
+    interface (picked by exact name; never the Windows default), which is
+    the clock: Art-Net timecode to MadMapper's address and the pixels follow
+    it; the conductor brings the lasers (BEYOND) and the video (MadMapper)
+    up through their real links, and takes them down between shows;
+  - the flame link (flamelink.FlameLink, built from flamesafe's config)
+    sends the show's flame universe to the real flamesafe.exe; no group can
+    arm (nothing presses the Stream Deck), so flamesafe's sACN, forced to
+    127.0.0.1, must stay all zeros;
+  - ltcplay-deck.exe too, when a Stream Deck Mini is plugged in.
+
+Every output goes to 127.0.0.1, where this program listens and times it:
+Art-Net pixels and timecode (6454), BEYOND (its OSC port), MadMapper (its
+OSC port), the flame link (through a relay that forwards every frame to
+flamesafe unchanged), flamesafe's sACN (5568) and its status frames. Nothing
+leaves this PC.
+
+A plain-language report is rewritten every minute (so a crash still leaves
+one) and finished at the end, on the Desktop and in the logs folder. It
+keeps "nothing attached, expected" separate from real faults.
 
     ltcplay-soak.exe                 asks how long (1, 8 or 24 hours; Enter = 8)
     ltcplay-soak.exe --hours 8
-    ltcplay-soak.exe --minutes 3 --no-wait      (the CI run)
     ltcplay-soak.exe --audio-device "Focusrite USB ASIO"
+    ltcplay-soak.exe --minutes 6 --no-wait --fake-audio   (the CI run: a
+        runner has no audio interface, so the engine's show audio uses the
+        test suite's stand-in device and the report says so in capitals)
 
-What is real and what is not, said in the report too:
-  - The engine is the real ltcplay.exe, running a generated four-cue show on
-    its own clock (GO), sending real Art-Net pixel frames to 127.0.0.1, where
-    this program listens and times every frame.
-  - flamesafe is the real flamesafe.exe, with a soak copy of the config whose
-    sACN destination is forced to 127.0.0.1 (this program listens there:
-    every packet must be zero). Nothing can reach a flame node.
-  - The flame link is ltcplay's real FlameLink sender, run inside this
-    program, because the engine does not send flame frames yet in this
-    build. flamesafe's own status frames say whether it ever saw the link
-    go stale.
-  - Audio: a silent test stream on the show's audio interface (picked by
-    exact name, never the Windows default), opened the way the show audio
-    opens it (ASIO first, never Windows' shared mixer). It is not the show
-    audio player itself.
-  - Not exercised: BEYOND, MadMapper and Art-Net timecode (nothing in the
-    running engine sends them in this build), and real LTC input.
+Not exercised: Hold, Resume and Abort (no page route presses them in this
+build; they come with the iPad remote, PR #39), announcements, real LTC
+input, and anything actually lighting up.
 """
-import csv
+import csvimport csv
 import json
 import os
 import socket
@@ -48,7 +58,24 @@ PORT = 7878
 ARTNET_PORT = 6454
 SACN_PORT = 5568
 DECK_STATUS_RELAY = 5579
-LOOP_S = 240.0             # the generated show is about 3 min 45 s
+FLAME_RELAY = 5581         # the engine's flame link sends here; relayed on
+MM_PORT = 8010             # MadMapper's OSC port, as the bench config says
+BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
+SHOW_S = 100               # each generated show's length
+SHOW_EVERY_MIN = 3         # the bench schedule: a show every 3 minutes
+TC_PERIOD_MS = 1000.0 / 30  # Art-Net timecode, one packet per frame at 30
+TC_GAP_MS = 100.0          # this soak: inside a show, never 3 frames missing
+SHOW_GAP_S = 1.0           # timecode silent this long: between two shows
+FAKE_AUDIO_ENV = "LTCPLAY_BENCH_FAKE_AUDIO"
+# Fault lines that only mean "nothing is attached on this bench". Each is
+# (what to look for in the line, what it means). Anything else is real.
+EXPECTED_FAULTS = (
+    ("heartbeat", "MadMapper is not running, so its heartbeat never "
+                  "arrives"),
+    ("madmapper", "MadMapper is not running"),
+    ("example key", "the bench uses flamesafe's example key"),
+    ("unconfirmed", "flamesafe's example group map is unconfirmed"),
+)
 SAMPLE_S = 5.0
 REPORT_EVERY_S = 60.0
 
@@ -151,6 +178,17 @@ def udp_listener(port, handle, name):
 STOP = threading.Event()
 NOTES = []        # (time, sentence): the run's events, for the report
 
+NETWORKS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<Networks computer="bench">
+  <Controller Id="1" Name="Pixels" Type="Ethernet" IP="127.0.0.1" ActiveState="Active">
+    <network NetworkType="ArtNET" ComPort="127.0.0.1" BaudRate="1" MaxChannels="510" Enabled="Yes" />
+  </Controller>
+  <Controller Id="2" Name="Flames" Type="Ethernet" IP="127.0.0.9" ActiveState="Inactive">
+    <network NetworkType="E131" ComPort="127.0.0.9" BaudRate="1" MaxChannels="512" Enabled="Yes" />
+  </Controller>
+</Networks>
+"""
+
 
 def note(text):
     NOTES.append((time.time(), text))
@@ -178,8 +216,25 @@ class Soak:
         self.pixel_streams = {}
         self.pixel_quiet_until = float("inf")   # nothing timed before GO
         self.stopping = False
-        self.link = None
+        self.fake_audio = False
+        self.audio_device = audio_device
         self.link_gaps = Intervals(1000.0 / 40, None, LINK_GAP_MS)
+        self.flame_frames = 0
+        self.flame_nonzero = 0
+        self.flame_disarms = 0
+        self.tc = Intervals(TC_PERIOD_MS, None, TC_GAP_MS)
+        self.tc_last = None
+        self.show_starts = 0
+        self.beyond_cmds = []     # (time, "blank"/"unblank")
+        self.beyond_lit_outside = 0
+        self.mm_packets = 0
+        self.mm_addresses = {}
+        self.audio_snap = {}
+        self.audio_worst = {}
+        self.slots = {}
+        self.journal_real = []
+        self.journal_expected = {}
+        self.engine_env_dir = None
         self.sacn = Intervals(25.0, None, SACN_LATE_MS)
         self.sacn_nonzero = 0
         self.sacn_terminated = 0
@@ -269,26 +324,121 @@ class Soak:
                                 f"awake while it runs, but set it to Never.")
 
     def make_show(self):
-        import tempfile
+        """The bench show, generated: one 100 s cue whose FSEQ covers a
+        pixel controller (Art-Net to 127.0.0.1) and an Inactive "Flames"
+        controller (the flame universe, which only the flame link reads),
+        a 48 kHz 24-bit stereo WAV (a quiet tone), the show file with the
+        show audio as the clock, the bench schedule, and the Fire & Ice
+        settings beside it."""
+        import math
+        import struct as _st
+        import wave
         import test_show_fixtures as fx
-        self.fx = fx
-        saved, tempfile.tempdir = tempfile.tempdir, self.dir
-        try:
-            show = fx.synthetic_show_dir()
-            self.fixture_dir = show
-        finally:
-            tempfile.tempdir = saved
-        cues = [("01:00:00:00", "GPL 2026_Set 1_Opener.fseq"),
-                ("01:01:00:00", "GPL 2026_Set 1_Munsters.fseq"),
-                ("01:01:30:00", "GPL 2026_Set 1_Ending.fseq"),
-                ("01:02:10:00", "GPL 2026_Set 2_Ghostbusters.fseq")]
-        doc = {"fps": 30, "show_dir": show, "on_lost": "freerun",
-               "cues": [{"tc": tc, "fseq": f} for tc, f in cues]}
         self.show_dir = os.path.join(self.dir, "show")
         os.makedirs(self.show_dir, exist_ok=True)
-        with open(os.path.join(self.show_dir, "soak.json"), "w",
+        with open(os.path.join(self.show_dir, "xlights_networks.xml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(NETWORKS_XML)
+        fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
+                      frame_count=SHOW_S * 40, channel_count=1022,
+                      step_ms=25, compression="zlib", block_frames=400,
+                      fill=lambda i: (i * 3) & 0xFF, media_file="bench.wav")
+        n = SHOW_S * 48000
+        amp = int(0.03 * 8388607)
+        with wave.open(os.path.join(self.show_dir, "bench.wav"), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(3)
+            w.setframerate(48000)
+            step = 48000
+            for start in range(0, n, step):
+                frames = bytearray()
+                for k in range(start, min(n, start + step)):
+                    v = int(amp * math.sin(2 * math.pi * 440 * k / 48000))
+                    b = _st.pack("<i", v)[:3]
+                    frames += b + b
+                w.writeframes(bytes(frames))
+        self.audio_name = self.pick_audio_device()
+        doc = {"fps": 30, "show_dir": self.show_dir, "on_lost": "freerun",
+               "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
+                         "name": "Show"}],
+               "clock": {"source": "audio_master",
+                         "artnet": {"nodes": {"MadMapper": "127.0.0.1"}},
+                         "audio": {"device": self.audio_name or "none found",
+                                   "channels": 2,
+                                   "cues": {"show": {
+                                       "cue": "Show",
+                                       "stems": [{"file": "bench.wav",
+                                                  "channels": [1, 2]}]}}}}}
+        with open(os.path.join(self.show_dir, "bench.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(doc, fh, indent=1)
+
+    def pick_audio_device(self):
+        """The show audio interface's exact name: --audio-device, else the
+        input LTC Player has saved, else a Focusrite or Scarlett output
+        offered through ASIO. Only listed, never opened here (ASIO lets one
+        program have it, and that is the engine). None when there is none."""
+        if self.fake_audio:
+            return self.audio_device or "Bench stand-in device"
+        try:
+            from ltcplay import showaudio, settings as settings_mod
+            sd = showaudio.import_sounddevice()
+            outs = [d for d in sd.query_devices()
+                    if d.get("max_output_channels", 0) > 0]
+            apis = [a.get("name", "") for a in sd.query_hostapis()]
+            names = [str(d.get("name", "")) for d in outs]
+            self.audio_outputs = sorted(set(names))
+            if self.audio_device:
+                return self.audio_device
+            saved = settings_mod.load().get("device")
+            if saved and saved in names:
+                return saved
+            for d in outs:
+                h = d.get("hostapi", -1)
+                api = apis[h] if 0 <= h < len(apis) else ""
+                n = str(d.get("name", ""))
+                if api == "ASIO" and any(w in n.lower() for w in
+                                         ("focusrite", "scarlett")):
+                    return n
+        except Exception as e:
+            note(f"could not list the audio outputs: {e}")
+        return None
+
+    def make_schedule(self):
+        """A show every SHOW_EVERY_MIN minutes, all day, every day, in UTC,
+        for today and the next two days, and the Fire & Ice settings that
+        make the scheduler perform, with BEYOND and MadMapper on this PC."""
+        import datetime as _dt
+        self.sched_dir = os.path.join(self.dir, "schedule")
+        os.makedirs(self.sched_dir, exist_ok=True)
+        today = _dt.datetime.now(_dt.timezone.utc).date()
+        night = {"first_start": "00:00", "interval_min": SHOW_EVERY_MIN,
+                 "last_end": "23:59"}
+        rule = {"timezone": "UTC",
+                "season": {"first_date": (today - _dt.timedelta(days=1))
+                           .isoformat(),
+                           "last_date": (today + _dt.timedelta(days=2))
+                           .isoformat()},
+                "weekly": {d: dict(night) for d in
+                           ("mon", "tue", "wed", "thu", "fri", "sat",
+                            "sun")},
+                "exceptions": {}, "show_len_s": SHOW_S + 5, "guard_s": 30,
+                "late_grace_s": 15}
+        self.rule_path = os.path.join(self.sched_dir,
+                                      "ltcplay_schedule.json")
+        with open(self.rule_path, "w", encoding="utf-8") as fh:
+            json.dump(rule, fh, indent=1)
+        fi = {"scheduler_performs": True, "auto_start": "when_run_pressed",
+              "show_cue": "Show",
+              "madmapper": {"host": "127.0.0.1", "port": MM_PORT,
+                            "show_bank": "Bank-1", "surfaces": ["Quad-1"]},
+              "beyond": {"host": "127.0.0.1", "port": BEYOND_PORT},
+              "flamesafe_config": self.engine_fs_cfg,
+              "flame_controller": "Flames",
+              "notes": "BENCH ONLY, written by the soak test"}
+        with open(os.path.join(self.sched_dir, "ltcplay_fire_ice.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(fi, fh, indent=1)
 
     def flamesafe_config(self):
         """A soak copy of flamesafe's config: the user's if there is one
@@ -314,6 +464,15 @@ class Soak:
         self.fs_cfg = os.path.join(self.dir, "flamesafe-soak.json")
         with open(self.fs_cfg, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=1)
+        # The engine's copy: its flame link sends to the relay, which
+        # forwards every frame to flamesafe's own port from one socket.
+        eng = json.loads(json.dumps(cfg))
+        eng["link"]["listen_port"] = FLAME_RELAY
+        self.engine_fs_cfg = os.path.join(self.dir,
+                                          "flamesafe-soak-engine.json")
+        with open(self.engine_fs_cfg, "w", encoding="utf-8") as fh:
+            json.dump(eng, fh, indent=1)
+        self.flamesafe_port = int(cfg["link"]["listen_port"])
         deck_cfg = json.loads(json.dumps(cfg))
         deck_cfg["link"]["status_port"] = DECK_STATUS_RELAY
         self.deck_cfg = os.path.join(self.dir, "flamesafe-soak-deck.json")
@@ -339,7 +498,11 @@ class Soak:
             return
         if len(b) < 18 or b[:8] != b"Art-Net\0":
             return
-        if struct.unpack_from("<H", b, 8)[0] != 0x5000:
+        op = struct.unpack_from("<H", b, 8)[0]
+        if op == 0x9700:
+            self.on_timecode(t)
+            return
+        if op != 0x5000:
             return
         uni = struct.unpack_from("<H", b, 14)[0]
         # One stream per sending socket and universe: the engine's frame
@@ -357,6 +520,68 @@ class Soak:
         st.tick(t)
         if st.longest > before and self.go_wall is not None:
             st.longest_loop_s = t - self.go_wall
+
+    def on_timecode(self, t):
+        """Art-Net timecode: a silence over SHOW_GAP_S is the gap between
+        two shows, not a fault; inside a show, every frame is timed."""
+        if self.tc_last is None or t - self.tc_last > SHOW_GAP_S:
+            self.show_starts += 1
+            self.tc.reset_gap()
+            self.go_wall = t
+            # The first seconds of each show (the engine starting the cue)
+            # are not timed for the pixels.
+            self.pixel_quiet_until = t + 5.0
+        else:
+            self.tc.tick(t)
+        if self.tc.last is None:
+            self.tc.last = t
+        self.tc_last = t
+
+    def on_flame(self, b, t, addr=None):
+        """The engine's flame link, relayed to flamesafe unchanged."""
+        try:
+            self.flame_sock.sendto(b, ("127.0.0.1", self.flamesafe_port))
+        except OSError:
+            pass
+        if self.stopping:
+            return
+        try:
+            doc = json.loads(b.decode("utf-8"))
+        except Exception:
+            return
+        kind = doc.get("t")
+        if kind == "flame":
+            self.link_gaps.tick(t)
+            self.flame_frames += 1
+            if any(doc.get("values") or ()):
+                self.flame_nonzero += 1
+        elif kind == "disarm_all":
+            self.flame_disarms += 1
+
+    def on_beyond(self, b, t, addr=None):
+        from ltcplay import madmapper as MM
+        try:
+            address, _ = MM._read_osc_string(b, 0)
+            f = MM.decode_float(b)
+        except Exception:
+            return
+        v = None if f is None else f[1]
+        what = "blank" if v in (0, 0.0) else "unblank"
+        self.beyond_cmds.append((time.time(), what, address))
+        if what == "unblank" and (self.tc_last is None or
+                                  t - self.tc_last > SHOW_GAP_S + 2):
+            # Lasers asked up with no show timecode moving: a real fault.
+            self.beyond_lit_outside += 1
+
+    def on_madmapper(self, b, t, addr=None):
+        from ltcplay import madmapper as MM
+        self.mm_packets += 1
+        try:
+            address, _ = MM._read_osc_string(b, 0)
+        except Exception:
+            address = "?"
+        key = "/".join(address.split("/")[:3])
+        self.mm_addresses[key] = self.mm_addresses.get(key, 0) + 1
 
     @property
     def pixels(self):
@@ -394,7 +619,8 @@ class Soak:
             self.fs_stale_events += 1
             note("flamesafe says the flame link went STALE")
         self.fs_state = state or self.fs_state
-        if self.link is not None and self.link.note_status(st):
+        if (st.get("frames") or {}).get("seq") is None and \
+                self.flame_frames:
             self.fs_lock_alarms += 1
 
     # ---------------------------------------------------------- audio ---
@@ -481,7 +707,10 @@ class Soak:
     def start_program(self, name):
         args = {"flamesafe": [self.fs_cfg],
                 "engine": ["serve", "--folder", self.show_dir, "--port",
-                           str(PORT), "--no-browser"],
+                           str(PORT), "--no-browser",
+                           # BENCH BUILD ONLY: the scheduler and the Fire &
+                           # Ice conductor, on the bench schedule.
+                           "--schedule", self.rule_path],
                 "deck": ["--flamesafe-config", self.deck_cfg,
                          "--ltcplay-url", f"http://127.0.0.1:{PORT}"]}[name]
         out = open(os.path.join(self.dir, f"{name}.log"), "a",
@@ -490,10 +719,21 @@ class Soak:
         # log file) in a process group of its own, so Ctrl-Break reaches
         # it alone, and closing this window stops it cleanly too.
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if ltcwin.WINDOWS else 0
+        env = dict(os.environ)
+        if name == "engine":
+            # The engine's own files (tonight's list, the night journal, its
+            # lock and saved settings) in the soak's folder, never the show
+            # account's real ones.
+            self.engine_env_dir = os.path.join(self.dir, "engine-data")
+            os.makedirs(self.engine_env_dir, exist_ok=True)
+            env["LOCALAPPDATA"] = self.engine_env_dir
+            env["XDG_STATE_HOME"] = self.engine_env_dir
+            if self.fake_audio:
+                env[FAKE_AUDIO_ENV] = self.audio_name or "1"
         p = subprocess.Popen(self.program_cmd(name) + args,
                              stdin=subprocess.DEVNULL, stdout=out,
                              stderr=subprocess.STDOUT, cwd=self.dir,
-                             creationflags=flags)
+                             creationflags=flags, env=env)
         old = self.procs.get(name)
         self.procs[name] = {"p": p, "out": out, "started": time.time(),
                             "restarts": (old["restarts"] + 1) if old else 0,
@@ -539,28 +779,21 @@ class Soak:
             return {"error": f"{type(e).__name__}: {e}"}
 
     def start_show(self):
+        """Press Run on the show file, once: from then on the scheduler
+        starts every show itself."""
         deadline = time.time() + 60
         while time.time() < deadline:
             if "error" not in self.engine("/api/state"):
                 break
             time.sleep(0.5)
-        r = self.engine("/api/start", {"timeline": "soak.json"}, timeout=30)
+        r = self.engine("/api/start", {"timeline": "bench.json"}, timeout=30)
         if r.get("error"):
             note(f"the engine refused Run: {r['error']}")
             return False
-        self.go()
-        return True
-
-    def go(self):
-        r = self.engine("/api/go", {"at": "01:00:00:00"})
-        if r.get("error"):
-            note(f"the engine refused GO: {r['error']}")
-            return
-        self.go_wall = time.perf_counter()
+        note("Run pressed on the bench show; the scheduler starts each show "
+             "from here on")
         self.loops += 1
-        # The first seconds after a GO (the engine loading the top of the
-        # show) are not timed; every frame after them is.
-        self.pixel_quiet_until = time.perf_counter() + 5.0
+        return True
 
     # --------------------------------------------------------- sample ---
     def sample(self, hours):
@@ -598,7 +831,21 @@ class Soak:
                 self.engine_first = snap
             self.engine_last = snap
             nowc = st.get("now") or {}
-            if self.go_wall is not None and st.get("state") == "FREERUN" \
+            aud = ((st.get("clock") or {}).get("audio") or {})
+            if aud:
+                self.audio_snap = aud
+                for k in ("underflows", "losses", "render_errors",
+                          "respawns", "clipped", "outliers"):
+                    v = aud.get(k)
+                    if isinstance(v, (int, float)) and \
+                            v > self.audio_worst.get(k, 0):
+                        if self.audio_worst.get(k, 0) == 0 or True:
+                            note(f"show audio {k}: {v}") \
+                                if k in ("underflows", "losses",
+                                         "render_errors", "respawns") \
+                                else None
+                        self.audio_worst[k] = v
+            if False and st.get("state") == "FREERUN" \
                     and st.get("playing"):
                 try:
                     h, m, s, f = (int(x) for x in st["playing"].replace(
@@ -618,6 +865,11 @@ class Soak:
             _ = nowc
         elif self.engine_last is not None and "error" in st:
             self.engine_errors.append((time.time(), st["error"]))
+        tn = self.engine("/api/schedule/tonight")
+        for sl in (tn.get("slots") or tn.get("tonight", {}).get("slots")
+                   or []) if isinstance(tn, dict) else []:
+            if isinstance(sl, dict) and "n" in sl:
+                self.slots[sl["n"]] = (sl.get("status"), sl.get("reason"))
         if psutil is not None:
             try:
                 fr = psutil.cpu_freq()
@@ -655,33 +907,33 @@ class Soak:
         note("Stream Deck Mini " + ("found: the deck program runs too" if
                                     self.deck else "not plugged in: the "
                                     "deck program is not run"))
+        self.make_schedule()
         self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.flame_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         socks = [udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
                  udp_listener(SACN_PORT, self.on_sacn, "sacn"),
-                 udp_listener(self.status_port, self.on_status, "status")]
-        self.start_audio()
+                 udp_listener(self.status_port, self.on_status, "status"),
+                 udp_listener(FLAME_RELAY, self.on_flame, "flame relay"),
+                 udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
+                 udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
+        if self.fake_audio:
+            note("AUDIO IS FAKE: --fake-audio, so the engine's show audio "
+                 "plays to the test suite's stand-in device, not a real "
+                 "interface (a CI runner has none)")
+        elif self.audio_name:
+            note(f"show audio interface: {self.audio_name}")
+        else:
+            note("NO show audio interface found: the shows cannot start. "
+                 "Outputs on this PC: "
+                 + ", ".join(getattr(self, "audio_outputs", [])))
         self.start_program("flamesafe")
         time.sleep(2)
-        from ltcplay import flamelink
-
-        soak = self
-
-        class TimedLink(flamelink.FlameLink):
-            def send_frame(self):
-                r = super().send_frame()
-                soak.link_gaps.tick()
-                return r
-        lcfg = flamelink.FlameLinkConfig.from_flamesafe_config(self.fs_cfg)
-        self.link = TimedLink(lcfg, journal=lambda text, **kw: note(
-            "flame link: " + text) if kw.get("fault") else None)
-        self.link.start()
         self.start_program("engine")
         if self.deck:
             self.start_program("deck")
         self.start_show()
         t0 = time.perf_counter()
         next_sample = next_report = t0
-        last_loop = time.perf_counter()
         last_wall = time.time()
         try:
             while time.perf_counter() - t0 < self.seconds:
@@ -701,10 +953,6 @@ class Soak:
                         self.start_program(name)
                         if name == "engine":
                             self.start_show()
-                            last_loop = time.perf_counter()
-                if time.perf_counter() - last_loop >= LOOP_S:
-                    self.go()
-                    last_loop = time.perf_counter()
                 hours = (time.perf_counter() - t0) / 3600.0
                 if time.perf_counter() >= next_sample:
                     self.sample(hours)
@@ -720,28 +968,51 @@ class Soak:
             self.engine("/api/stop", {})
             for name in ("deck", "engine"):
                 self.stop_program(name)
-            self.link.stop()
             time.sleep(1)
             self.stop_program("flamesafe")
             time.sleep(1)
             STOP.set()
             for s in socks:
                 s.close()
-            st = getattr(self, "audio_stream", None)
-            if st is not None:
-                try:
-                    st.stop()
-                    st.close()
-                except Exception:
-                    pass
+            self.read_journal()
             self.power_events()
             self.finished = True
             self.write_report()
             self.samples.close()
-            import shutil
-            shutil.rmtree(getattr(self, "fixture_dir", ""),
-                          ignore_errors=True)
         return self.passed
+
+    def read_journal(self):
+        """Every fault line the engine's night journal wrote, sorted into
+        "nothing attached, expected" and real."""
+        root = self.engine_env_dir
+        if not root:
+            return
+        for d, _dirs, names in os.walk(root):
+            if os.path.basename(d) != "nights":
+                continue
+            for n in sorted(names):
+                try:
+                    lines = open(os.path.join(d, n), encoding="utf-8",
+                                 errors="replace").read().splitlines()
+                except OSError:
+                    continue
+                for ln in lines:
+                    try:
+                        rec = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict) or not rec.get("fault"):
+                        continue
+                    text = str(rec.get("text") or rec.get("reason") or "")
+                    low = text.lower()
+                    why = next((w for k, w in EXPECTED_FAULTS if k in low),
+                               None)
+                    if why:
+                        self.journal_expected[why] = \
+                            self.journal_expected.get(why, 0) + 1
+                    else:
+                        self.journal_real.append(
+                            (str(rec.get("at", ""))[:19], text[:300]))
 
     def power_events(self):
         """Sleep, wake and restarts Windows logged during the run."""
@@ -793,7 +1064,7 @@ class Soak:
                            f"show loop" if px.longest_loop_s
                            is not None else "") +
                         f" ({px.over_gap} over {PIXEL_GAP_MS:g} ms, limit 0). "
-                        f"The 5 s after each GO back to the top are not timed."))
+                        f"The first 5 s of each show are not timed."))
         e0, e1 = self.engine_first or {}, self.engine_last or {}
         if e1:
             d = {k: (e1.get(k) or 0) - (e0.get(k) or 0)
@@ -807,18 +1078,69 @@ class Soak:
         else:
             out.append(("FAIL", "Engine's own error counters",
                         "the engine never answered with a running show"))
-        out.append(("PASS" if self.drift_worst <= DRIFT_MS else "FAIL",
-                    "Show position against the wall clock",
-                    f"worst {self.drift_worst:.0f} ms beyond what the page's "
-                    f"0.2 s cache and whole frames allow (limit "
-                    f"{DRIFT_MS:g} ms)" + (f", at "
-                    f"{now_text(self.drift_worst_at)}" if self.drift_worst_at
-                    else "") + ". Free-running on this PC's clock: there is "
-                    "no LTC input on the bench."))
+        done = sum(1 for st, _r in self.slots.values() if st == "DONE")
+        failed = [(n, r) for n, (st, r) in sorted(self.slots.items())
+                  if st == "FAULT"]
+        out.append(("PASS" if done and not failed else "FAIL",
+                    "Scheduled shows (the scheduler starting each show)",
+                    f"{done} show(s) played to the end, {len(failed)} failed "
+                    f"to start (limit 0)" + (": " + "; ".join(
+                        f"show {n}: {r}" for n, r in failed[:5])
+                        if failed else "") + f"; {self.show_starts} show "
+                    f"start(s) seen on the timecode"))
+        tc = self.tc
+        ok = tc.n > 10 and tc.over_gap == 0 and \
+            abs(tc.mean() - TC_PERIOD_MS) <= 3.0
+        out.append(("PASS" if ok else "FAIL",
+                    "Art-Net timecode (from the show audio, to MadMapper's "
+                    "address)",
+                    f"{tc.events} packets in {self.show_starts} show(s), "
+                    f"mean {tc.mean():.2f} ms (target {TC_PERIOD_MS:.2f} "
+                    f"+/- 3), worst {tc.worst_dev:.1f} ms off, longest gap "
+                    f"inside a show {tc.longest:.1f} ms ({tc.over_gap} over "
+                    f"{TC_GAP_MS:g} ms, limit 0)"))
+        a = self.audio_worst
+        snap = self.audio_snap
+        what = ("FAKE stand-in device (CI)" if self.fake_audio
+                else (snap.get("via") or self.audio_name or "none"))
+        if not snap:
+            out.append(("FAIL", "Show audio player",
+                        f"the engine never reported its show audio "
+                        f"(device {self.audio_name!r})"))
+        else:
+            bad = {k: a.get(k, 0) for k in ("underflows", "losses",
+                                            "render_errors", "respawns")}
+            ok = not any(bad.values()) and not snap.get("fault")
+            out.append(("PASS" if ok else "FAIL", "Show audio player",
+                        f"{what}: " + ", ".join(f"{k} {v}" for k, v in
+                                                bad.items())
+                        + f" (limit 0 each); clipped {a.get('clipped', 0)}"
+                        + (f"; fault: {snap.get('fault')}"
+                           if snap.get("fault") else "")
+                        + (". AUDIO WAS FAKE: this proves the player, not "
+                           "an interface." if self.fake_audio else "")))
+        ups = sum(1 for _t, w, _a in self.beyond_cmds if w == "unblank")
+        downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
+        ok = (self.show_starts == 0 or ups > 0) and \
+            self.beyond_lit_outside == 0
+        out.append(("PASS" if ok else "FAIL",
+                    "Lasers (BEYOND commands, to this PC only)",
+                    f"{ups} unblank and {downs} blank command packets; "
+                    f"{self.beyond_lit_outside} unblank(s) with no show "
+                    f"running (limit 0)"))
+        out.append(("PASS" if self.mm_packets and self.show_starts else
+                    "FAIL" if self.show_starts else "NOT TESTED",
+                    "Video (MadMapper commands, to this PC only)",
+                    f"{self.mm_packets} OSC packets: " + ", ".join(
+                        f"{k} x{v}" for k, v in
+                        sorted(self.mm_addresses.items())[:8])))
         lg = self.link_gaps
         out.append(("PASS" if lg.n > 10 and lg.over_gap == 0 else "FAIL",
-                    "Flame link frames (ltcplay's FlameLink to flamesafe)",
-                    f"{lg.events} frames, mean {lg.mean():.1f} ms, longest gap "
+                    "Flame link frames (the engine's flame link to "
+                    "flamesafe, timed through a relay)",
+                    f"{lg.events} frames ({self.flame_nonzero} carrying the "
+                    f"show's flame cues), mean {lg.mean():.1f} ms, longest "
+                    f"gap "
                     f"{lg.longest:.1f} ms at {now_text(lg.longest_at)}; "
                     f"{lg.over_gap} gaps over {LINK_GAP_MS:g} ms (CONTRACT.md: "
                     f"never more than 50 ms)"))
@@ -835,16 +1157,14 @@ class Soak:
                     f"longest gap {sc.longest:.1f} ms (limit "
                     f"{SACN_LATE_MS:g}, flamesafe's overrun_ms), "
                     f"{self.sacn_nonzero} packets not all zero (limit 0)"))
-        if self.audio_desc:
-            ok = self.audio_underflows == 0 and self.audio_gaps.over_gap == 0
-            out.append(("PASS" if ok else "FAIL", "Audio interface",
-                        f"{self.audio_desc}: {self.audio_callbacks} "
-                        f"callbacks, {self.audio_underflows} underruns, "
-                        f"{self.audio_gaps.over_gap} callback gaps over 3 "
-                        f"blocks (longest {self.audio_gaps.longest:.1f} ms). "
-                        f"A silent test stream, not the show audio player."))
-        else:
-            out.append(("NOT TESTED", "Audio interface", self.audio_why_not))
+        out.append(("PASS" if not self.journal_real else "FAIL",
+                    "Real faults in the engine's night journal",
+                    f"{len(self.journal_real)} (limit 0)" + (": " + " | ".join(
+                        f"{at} {t}" for at, t in self.journal_real[:8])
+                        if self.journal_real else "")))
+        out.append(("INFO", "Nothing attached, expected (not faults)",
+                    "; ".join(f"{w}: {n} line(s)" for w, n in
+                              self.journal_expected.items()) or "none"))
         crashes = sum(len(c["crashes"]) for c in self.procs.values())
         out.append(("PASS" if crashes == 0 else "FAIL", "Crashes and restarts",
                     "; ".join(f"{n}: {len(c['crashes'])} crash(es)"
@@ -911,7 +1231,11 @@ class Soak:
             f"{self.hours():.2f} of {self.seconds / 3600:g} hour(s).",
             f"Program: {ltcwin.version_line('LTC Player')}",
             f"Stream Deck: {'Mini plugged in, deck program running' if self.deck else 'not plugged in, deck program not run'}",
-            f"Audio device: {self.audio_desc or 'none (see Audio interface below)'}",
+            "Show audio: " + ("FAKE stand-in device (CI run)"
+                              if self.fake_audio else
+                              (self.audio_name or "NO interface found")),
+            f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
+            f"minutes, started by the scheduler itself",
             f"flamesafe config: copied from {self.fs_source}, sACN forced "
             f"to 127.0.0.1",
             "",
@@ -925,10 +1249,10 @@ class Soak:
             lines.append(f"    {detail}")
         lines += ["", "What happened, in order:"]
         lines += [f"  {now_text(t)}  {s}" for t, s in NOTES[-200:]]
-        lines += ["", "Not exercised by this test: BEYOND, MadMapper and "
-                  "Art-Net timecode (nothing in the running engine sends "
-                  "them in this build), real LTC input, and the show audio "
-                  "player itself.", "",
+        lines += ["", "Not exercised by this test: Hold, Resume and Abort "
+                  "(no page route presses them in this build), "
+                  "announcements, real LTC input, and anything actually "
+                  "lighting up (every output goes to this PC only).", "",
                   f"Every 5 s sample: {os.path.join(self.dir, 'samples.csv')}",
                   f"Program logs: {self.dir}"]
         text = "\r\n".join(lines) + "\r\n"
@@ -1009,6 +1333,7 @@ def main(argv=None):
     wait = "--no-wait" not in argv
     seconds = None
     device = None
+    fake = False
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1021,9 +1346,11 @@ def main(argv=None):
         elif a == "--audio-device":
             device = argv[i + 1]
             i += 1
+        elif a == "--fake-audio":
+            fake = True
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
-                  f"--audio-device NAME, --no-wait")
+                  f"--audio-device NAME, --no-wait, --fake-audio")
             return 2
         i += 1
     if seconds is None:
@@ -1062,6 +1389,7 @@ def main(argv=None):
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
     soak = Soak(seconds, device)
+    soak.fake_audio = fake
     ok = False
     try:
         ok = soak.run()
