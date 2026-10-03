@@ -31300,7 +31300,7 @@ def test_fire_ice_night_end_to_end():
     check(c.wired, "BEYOND and MadMapper both given: the conductor is wired")
     # Preshow: within the lead the scheduler is already in intermission.
     svc.tick()
-    c.run_pending()
+    _settle(svc, c)
     check(svc.machine.state == S.STANDBY, f"preshow: {svc.machine.state}")
     check(c.laser_gate() is not None,
           "the laser gate is the scheduler's: no lasers in intermission")
