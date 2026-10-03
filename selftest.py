@@ -29401,6 +29401,20 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
                             "seen": R.seen()}, client=("127.0.0.1", 5000))
         check(st == 200 and R.svc.current_operator == "Jeff",
               f"locally any listed operator is picked: {st} {out}")
+        # On the machine itself the page names who presses: someone off the
+        # operator list is refused by the scheduler, journaled, and nothing
+        # happens.
+        state0 = R.svc.machine.state
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/hold",
+                           {"who": "Mallory", "screen": "Rack screen"},
+                           client=("127.0.0.1", 5000))
+        R.settle()
+        check(st == 400 and "not on the operator list" in out["error"] and
+              R.svc.machine.state == state0,
+              f"a press from someone off the list is refused: {st} {out}")
+        check(any(r.get("outcome") == "refused" and
+                  "Mallory" in r.get("text", "") for r in R.svc.journal),
+              "and journaled")
         # No disarm path connected: refused loudly, never "done".
         R.remote._flame_disarm = None
         cond = R.svc.conductor
@@ -29984,6 +29998,15 @@ def test_flame_link_seek_guard():
     check(not any(v[0] for t, v in got),
           "a loop wrap into the middle of cue A does not fire it")
     check(link.seeks >= 4, f"every jump was seen as one: {link.seeks}")
+    # Even a small step backwards (0.1 s) is a seek: a timecode that goes
+    # back has been moved, and a cue under way is held to zero again.
+    run(30.0, 31.0)
+    check(any(v[2] for t, v in run(31.0, 31.1)), "setup: cue D is firing")
+    s0 = link.seeks
+    got = run(31.0, 31.4)                   # stepped back from 31.1 to 31.0
+    check(link.seeks == s0 + 1 and not any(v[2] for t, v in got),
+          f"a 0.1 s step back is a seek and holds cue D at zero: "
+          f"{link.seeks - s0}")
     # A pause and a resume is not a seek, but it settles again.
     run(12.5, 13.1)
     n = link.seeks
