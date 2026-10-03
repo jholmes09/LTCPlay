@@ -24139,6 +24139,10 @@ def test_schedule_abort_latch_outlives_the_night():
     check(svc.machine.state == S.OFF and svc.machine.abort_latched,
           f"setup: Saturday closed with the Abort not Reset: "
           f"{svc.machine.state} {svc.machine.abort_latched}")
+    # Fix round 3: as if the latch file could not be written (a full
+    # disk), so only the run's own memory carries the latch past midnight.
+    from ltcplay import schedule_service as SV
+    os.remove(SV.latch_path(work))
     now[0] = _den(S, 10, 0, d=(2026, 11, 15))
     svc.tick()
     _settle(svc)
@@ -25020,13 +25024,17 @@ def test_schedule_conductor_line_round3_details():
           f"{rec.names()}")
     svc.stop()
 
-    # The line's thread is dead: the Abort goes on its own at once.
+    # The line's thread is dead: the Abort goes on its own at once. (A
+    # fresh line whose thread has ended: the old line's thread would still
+    # be serving its own queue.)
     svc, rec, now, work = showing()
     _confirm(S, svc)
     _settle(svc)
     dead = _th.Thread(target=lambda: None)
     dead.start()
     dead.join()
+    svc._calls = SV._ConductorCalls(svc._run_conductor_call,
+                                    overtaken=svc._abort_overtook)
     svc._calls._thread = dead
     now[0] = _den(S, 18, 1)
     svc._apply(_op(S, S.ABORT, confirmed=True))
