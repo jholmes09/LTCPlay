@@ -684,11 +684,11 @@ def task_xml(user):
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
-      <UserId>{_xml(user)}</UserId>
       <Repetition>
         <Interval>PT1M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
+      <UserId>{_xml(user)}</UserId>
     </LogonTrigger>
   </Triggers>
   <Principals>
