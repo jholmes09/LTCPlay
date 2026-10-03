@@ -690,6 +690,10 @@ class Slot:
     paused_s: float = 0.0    # time spent paused, which moves its end later
 
 
+# The presses that are taken whoever pressed them and wherever: see step().
+ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))
+
+
 @dataclass(frozen=True)
 class Event:
     kind: str
@@ -923,6 +927,14 @@ class _Tx:
 
 def _operator_name(ev):
     return ev.who or "The operator"
+
+
+def _pressed(ev, what):
+    """"Andy pressed Abort on the Rack screen", or, with no operator chosen,
+    "Abort pressed on the Rack screen with no operator chosen"."""
+    if ev.who.strip():
+        return f"{ev.who.strip()} pressed {what}{_screen(ev)}"
+    return f"{what} pressed{_screen(ev)} with no operator chosen"
 
 
 def _refuse(m, ev, now, sentence):
@@ -1540,7 +1552,7 @@ def _hold(m, ev, now):
                     f"for it: flame cues zeroed, lasers blanked, music "
                     f"fading out. Resume carries on from there.")
         else:
-            text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)} during "
+            text = (f"{_pressed(ev, 'Hold')} during "
                     f"show {n}. The show is paused at its current frame: "
                     f"flame cues zeroed, lasers blanked, music fading out. "
                     f"Resume carries on from there.")
@@ -1557,7 +1569,7 @@ def _hold(m, ev, now):
                 f"itself until Resume; a show whose time passes meanwhile "
                 f"is delayed and waits for Start now.")
     else:
-        text = (f"{_operator_name(ev)} pressed Hold{_screen(ev)}. No show "
+        text = (f"{_pressed(ev, 'Hold')}. No show "
                 f"starts by itself until Resume; a show whose time passes "
                 f"meanwhile is delayed and waits for Start now.")
     if ev.latched:
@@ -1753,7 +1765,7 @@ def _abort(m, ev, now):
     n = m.running
     return _show_stopped(
         m, ev, now, ABORTED, "ABORTED (operator)",
-        f"{_operator_name(ev)} pressed Abort{_screen(ev)} during show {n}. "
+        f"{_pressed(ev, 'Abort')} during show {n}. "
         f"Flame cues zeroed and lasers blanked; music, video and pixels "
         f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
         f"{NOTHING_DISARMED}",
@@ -1990,7 +2002,15 @@ def step(m, ev, now):
     log line, and the machine unchanged."""
     _check_event(ev)
     now = _utc(_aware(now))
-    if ev.actor == "operator" and not (ev.who.strip() and ev.screen.strip()):
+    # Abort and Hold are never refused for who pressed them or where (the
+    # coordinator for Jeff, 2026-10-03, PR #43 fix round 1): no operator
+    # chosen, a blank screen or a name not on the list still stops the
+    # show, and the journal says so. Start now, Resume, Reset and every
+    # edit still name someone on the list and a screen.
+    if ev.actor == "operator" and ev.kind in ALWAYS_TAKEN:
+        pass
+    elif ev.actor == "operator" and not (ev.who.strip() and
+                                         ev.screen.strip()):
         missing = " and ".join(x for x, v in (("who pressed it", ev.who),
                                              ("which screen it came from",
                                               ev.screen)) if not v.strip())
@@ -2000,8 +2020,8 @@ def step(m, ev, now):
                        f"action names the operator and the screen, so the "
                        f"night journal can say who did what. Nothing was "
                        f"changed.")
-    if ev.actor == "operator" and ev.who.strip().lower() not in \
-            {n.lower() for n in m.operators}:
+    if ev.actor == "operator" and ev.kind not in ALWAYS_TAKEN and \
+            ev.who.strip().lower() not in {n.lower() for n in m.operators}:
         return _refuse(m, ev, now,
                        f"{ev.who.strip()!r} is not on the operator list "
                        f"({', '.join(m.operators) or 'empty'}). Pick a name "

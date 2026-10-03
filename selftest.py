@@ -10077,6 +10077,54 @@ def _matrix_fixtures(S):
     return fx
 
 
+def test_abort_and_hold_never_refused_for_who_or_where():
+    section("scheduler: Abort and Hold are taken with no operator chosen, a "
+            "name not on the list, or no screen, and journaled so; Start "
+            "now, Resume and edits still need an operator (PR #43 fix round "
+            "1)")
+    S = _sched()
+    if S is None:
+        return
+    import types
+    m = types.SimpleNamespace()
+    n = _fi_night()
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    live = n.svc.machine
+    check(live.state == S.SHOW, "setup: a show is running")
+    now = _den(S, 18, 0, 5)
+    for who, screen in (("", "Stream Deck"), ("Bob", "Rack screen"),
+                        ("", ""), ("Andy", "")):
+        for kind, word in ((S.ABORT, "Abort"), (S.HOLD_ON, "Hold")):
+            o = S.step(live, S.Event(kind, "operator", who=who, screen=screen,
+                                     confirmed=True), now)
+            text = " ".join(le.text for le in o.log)
+            check(o.accepted, f"{word} by {who!r} on {screen!r} is taken: "
+                              f"{o.refused!r}")
+            if not who:
+                want = (f"{word} pressed" + (f" on the {screen}" if screen
+                                             else "")
+                        + " with no operator chosen")
+                check(want in text, f"journaled as {want!r}: {text!r}")
+    for kind in (S.START_NOW, S.RESUME):
+        o = S.step(live, S.Event(kind, "operator", who="",
+                                 screen="Rack screen", confirmed=True), now)
+        check(not o.accepted and "who pressed it" in o.refused,
+              f"{kind} with no operator is still refused: {o.refused!r}")
+    # Through the service, as every screen presses it.
+    r = n.svc.operator_press("abort", "", "Stream Deck", confirmed=True)
+    _settle(n.svc, n.c)
+    check(r["ok"] and n.c.latched,
+          f"operator_press: an Abort with no operator chosen latches the "
+          f"conductor: {r}")
+    n.c.close()
+    n.link.close()
+    _ = m
+    print("  ok")
+
+
 def test_schedule_state_machine_every_state_every_event():
     section("scheduler: every state times every event")
     S = _sched()
@@ -10143,9 +10191,12 @@ def test_schedule_state_machine_every_state_every_event():
         (E(S.EDIT_ADD, "operator", at="21:55"), same_live),
         (E(S.EDIT_REMOVE, "operator", show=15), same_live),
         # An operator event that does not say who and where, or names
-        # someone not on the operator list, is refused everywhere.
+        # someone not on the operator list, is refused everywhere; but a
+        # Hold (and an Abort) is taken whoever pressed it and wherever (PR
+        # #43 fix round 1).
         (S.Event(S.START_NOW, "operator", screen="rack screen"), {}),
-        (S.Event(S.HOLD_ON, "operator", who="Andy"), {}),
+        (S.Event(S.HOLD_ON, "operator", who="Andy"),
+         {I: (H, [INT]), SB: (H, [INT]), SD: (H, [INT]), SH: (P, PAUSE)}),
         (S.Event(S.START_NOW, "operator", who="Bob",
                  screen="rack screen"), {}),
     ]
@@ -10190,8 +10241,12 @@ def test_schedule_state_machine_every_state_every_event():
     check(cells == len(table) * len(labels) and len(labels) == 10,
           "the matrix did not run every cell")
 
-    # Operator events must name someone on the list, and a screen.
-    for kind in [k for k, a in S.EVENT_ACTORS.items() if "operator" in a]:
+    # Operator events must name someone on the list, and a screen: all but
+    # Abort and Hold, which are taken whoever pressed them and wherever
+    # (PR #43 fix round 1; tested in test_abort_and_hold_never_refused_for_
+    # who_or_where).
+    for kind in [k for k, a in S.EVENT_ACTORS.items() if "operator" in a
+                 and k not in S.ALWAYS_TAKEN]:
         for fxl in labels:
             m, now = fx[fxl]
             for who, screen, must in (("", "rack screen", "who pressed it"),
@@ -10214,8 +10269,8 @@ def test_schedule_state_machine_every_state_every_event():
                                 screen="rack screen"), now).accepted,
               f"{who!r} is on the default list")
     other = S.replace(m, operators=("Casey",))
-    check(not S.step(other, E(S.HOLD_ON, "operator"), now).accepted
-          and S.step(other, E(S.HOLD_ON, "operator", who="Casey"),
+    check(not S.step(other, E(S.START_NOW, "operator"), now).accepted
+          and S.step(other, E(S.START_NOW, "operator", who="Casey"),
                      now).accepted,
           "the list in force is the machine's, not a fixed pair")
 
@@ -20245,8 +20300,10 @@ def test_journal_every_event_is_complete():
                   ((18, 7, 20), None), ((18, 30), None)):
         now[0] = _den(S, *t)
         svc.tick() if ev is None else svc._apply(ev)
-    svc._apply(_op(S, S.HOLD_ON, who="  ", screen="rack screen"))  # refused
-    svc._apply(_op(S, S.HOLD_ON, who="", screen=""))       # refused
+    # Refused for not naming who (Resume: Hold and Abort are taken from
+    # anyone, PR #43 fix round 1).
+    svc._apply(_op(S, S.RESUME, who="  ", screen="rack screen"))  # refused
+    svc._apply(_op(S, S.RESUME, who="", screen=""))       # refused
     svc_path = os.path.join(svc_dir, "nights",
                             J.machine_name("2026-11-14"))
     rows = _jsonl_rows(svc_path)
@@ -34937,24 +34994,23 @@ def test_deck_presses_reach_the_engine_conductor():
                  "the deck to read the hold")
         eng.resume("Jeff", "Stream Deck")
         wait_for(lambda: R.svc.machine.state == S.SHOW, "Resume")
-        # No operator chosen: the scheduler refuses an operator event that
-        # names nobody (schedule.step), Abort included, so the deck's
-        # Abort reaches only the arm link, and the deck says so as a fault.
-        # Reported to Jeff as a conflict with remote.py's "Abort is never
-        # gated" (fix round 1 notes); not changed here.
+        # No operator chosen: an Abort is never refused (PR #43 fix round
+        # 1, for Jeff: the safe default is that Abort always works).
+        del R.rig.calls[:]
         eng.abort("", "Stream Deck")
-        for _ in range(200):
-            if any("did NOT take it" in x for x, _k in lines):
-                break
-            time.sleep(0.02)
-        check(any("did NOT take it" in x and "who pressed it" in x and
-                  k.get("fault") for x, k in lines),
-              f"an unnamed deck Abort the engine refuses is a fault line "
-              f"naming why: {lines[-1:]}")
-        del lines[:]
-        eng.abort("Jeff", "Stream Deck")
         wait_for(lambda: R.c.latched and R.svc.machine.abort_latched,
-                 "the deck's Abort to latch the engine's conductor")
+                 "the deck's Abort with no operator chosen to latch the "
+                 "engine's conductor")
+        R.c.run_pending()
+        names = R.rig.names()
+        check(all(x in names for x in ("flames_disarm_all", "lasers_fade_out",
+                                       "video_fade_out", "music_halt")),
+              f"a deck Abort with no operator chosen reaches the conductor: "
+              f"flames disarmed, lasers blanked, video and music down: "
+              f"{names}")
+        check(any("Abort pressed on the Stream Deck with no operator "
+                  "chosen" in str(r.get("text")) for r in R.svc.journal),
+              "journaled as an Abort with no operator chosen")
         wait_for(lambda: eng.snapshot()["latched"],
                  "the deck to read the engine latched")
         check(any("lasers" in str(c) for c in R.rig.calls),
@@ -35067,10 +35123,12 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
               f"locally any listed operator is picked: {st} {out}")
         # On the machine itself the page names who presses: someone off the
         # operator list is refused by the scheduler, journaled, and nothing
-        # happens.
+        # happens (Resume: Hold and Abort are taken from anyone since PR
+        # #43's fix round 1).
         state0 = R.svc.machine.state
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/hold",
-                           {"who": "Mallory", "screen": "Rack screen"},
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/resume",
+                           {"who": "Mallory", "screen": "Rack screen",
+                            "seen": R.seen()},
                            client=("127.0.0.1", 5000))
         R.settle()
         check(st == 400 and "not on the operator list" in out["error"] and
@@ -35815,6 +35873,7 @@ if __name__ == "__main__":
     test_schedule_expands_the_season()
     test_schedule_late_rule()
     test_schedule_state_machine_every_state_every_event()
+    test_abort_and_hold_never_refused_for_who_or_where()
     test_schedule_restart_guard_and_hold()
     test_schedule_hold_pauses_a_show()
     test_schedule_hold_between_shows_delays()

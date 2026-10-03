@@ -2746,11 +2746,12 @@ class Service:
         who = str(who or "").strip()
         screen = str(screen or "").strip()
         names = {n.lower(): n for n in self.operators}
-        if what == "abort" and not who:
-            # Abort is never gated on a chosen operator, the same rule the
-            # Stream Deck keeps: a press that only reduces risk must never
-            # wait on a picker. The journal says nobody was named.
-            names[""] = ""
+        always = kind in sch.ALWAYS_TAKEN
+        if always and who.lower() not in names:
+            # Abort and Hold are never refused for who pressed them (PR #43
+            # fix round 1): no operator chosen, or a name not on the list,
+            # still stops the show; the journal says which (schedule.step).
+            names[who.lower()] = who
         if who.lower() not in names:
             sentence = (f"{who or 'Nobody'!r} is not on the operator list "
                         f"({', '.join(self.operators)}). Nothing was "
@@ -2759,7 +2760,11 @@ class Service:
                                f"{what} was refused. {sentence}")
             raise ValueError(sentence)
         who = names[who.lower()]
-        screen = self._check_screen(screen, who, what, what)
+        if always:
+            screen = {x.lower(): x for x in self.screens}.get(
+                screen.lower(), screen)
+        else:
+            screen = self._check_screen(screen, who, what, what)
         with self._locked():
             self.tick()
             if self.machine is None:
