@@ -24,7 +24,7 @@ import time
 
 from . import rules
 from .composer import Composer, now
-from .link import LinkError, decode_flame, encode_status
+from .link import DisarmAll, LinkError, decode_from_ltcplay, encode_status
 from .sacn import build_packet
 
 # Datagrams drained per tick.  A flood beyond this waits for the next tick
@@ -95,6 +95,7 @@ class Service:
     # -------------------------------------------------------------- sockets
 
     def open(self):
+        self.arm_input.open()
         rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # On Windows SO_REUSEADDR would let a second program bind our port
         # and take the frames; SO_EXCLUSIVEADDRUSE forbids that.  On POSIX a
@@ -164,12 +165,18 @@ class Service:
             except OSError:
                 return
             try:
-                frame = decode_flame(data, self.cfg.universe,
-                                     self.cfg.link_key)
+                msg = decode_from_ltcplay(data, self.cfg.universe,
+                                          self.cfg.link_key)
             except LinkError as e:
-                self.composer.reject_frame(str(e))
+                self.composer.reject_frame(str(e), sender=tuple(addr[:2]))
                 continue
-            self.composer.ingest_frame(frame, sender=tuple(addr[:2]))
+            if isinstance(msg, DisarmAll):
+                # The show program's Abort (CONTRACT.md, disarm_all).
+                # Applied here, before this tick composes, so every group
+                # is off the wire on the tick it arrived in.
+                self.composer.disarm_all(msg, sender=tuple(addr[:2]))
+                continue
+            self.composer.ingest_frame(msg, sender=tuple(addr[:2]))
 
     def _poll_arm(self):
         try:
@@ -179,13 +186,42 @@ class Service:
             self._event("arm-input", f"the arm input raised "
                                      f"{type(e).__name__}: {e}")
             return
+        # Round 3 of the safety review, item 6: this runs whether or not
+        # poll() itself had a fresh assertion to return, so the status
+        # frame's foreign-sender count never goes stale just because the
+        # locked sender was briefly quiet this tick.
+        try:
+            self.composer.note_foreign_arm_senders(
+                getattr(self.arm_input, "foreign_count", 0))
+        except Exception:                               # noqa: BLE001
+            pass
+        # Round 4, item B: a flood blocks consent too (composer.assert_arm).
+        # Also before assert_arm, so the very tick that saw it is covered.
+        try:
+            self.composer.note_arm_link_flooded(
+                bool(getattr(self.arm_input, "flooded", False)))
+        except Exception:                               # noqa: BLE001
+            self.composer.note_arm_link_flooded(True)
         if a is None:
             return
         try:
             self.composer.assert_arm(a.wanted, a.seq,
-                                     names=getattr(a, "names", None))
-        except Exception:                               # noqa: BLE001
+                                     names=getattr(a, "names", None),
+                                     forced=getattr(a, "forced", None),
+                                     sender=getattr(a, "sender", None))
+        except Exception as e:                          # noqa: BLE001
+            # assert_arm's own contract is "never raises" (composer.py); if
+            # it ever does anyway, that is a bug in the composer, and the
+            # old code here dropped the assertion with nothing but a
+            # counter bumped (safety review of PR #31, item 6: named
+            # alongside composer.py's own silent drop of a name mismatch,
+            # because both left the same kind of rejection invisible).
             self.input_errors += 1
+            self._event("arm-input", f"assert_arm raised "
+                                     f"{type(e).__name__}: {e}; this is a "
+                                     f"bug in the composer, which must "
+                                     f"never raise here. The assertion "
+                                     f"was dropped.")
 
     def run_once(self):
         """One tick.  Returns the composer's Output."""
