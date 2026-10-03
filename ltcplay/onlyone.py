@@ -196,10 +196,6 @@ class OutputLock:
 SHOW_LOCK = "ltcplay_show.lock"
 DECK_LOCK = "ltcplay_deck.lock"
 
-# What each lock is called in the refusal.
-_WHAT = {SHOW_LOCK: "ltcplay's show program", DECK_LOCK: "ltc deck"}
-
-
 def instance_path(filename):
     """Beside the output lock: one per user on this machine, whichever
     folder the program was started from."""
@@ -214,12 +210,32 @@ def only_copy(filename, note):
 
 
 def refusal(filename, holder):
-    """The plain sentence a refused second copy prints."""
-    what = _WHAT.get(filename, "This program")
+    """The plain sentences a refused second copy prints: what is running,
+    and how to stop it. Fix round 1 of PR #40: the app and the autostart
+    engine have no window, so "use the window that is already open" told
+    the operator nothing."""
     here = "computer" if WINDOWS else "Mac"
     said = f"\nThe copy that is running says: {holder}" if holder else ""
-    return (f"{what} is already running on this {here}, so this copy has "
-            f"stopped. Only one copy may run at a time: two copies would "
-            f"both talk to the rig and the flame safety program."
-            f"{said}\nUse the window that is already open, or stop that "
-            f"copy first and then start this one again.")
+    if filename == DECK_LOCK:
+        return (f"ltc deck is already running on this {here}, so this copy "
+                f"has stopped. Only one copy may run at a time: two would "
+                f"both send on the Stream Deck's arm link, and flamesafe "
+                f"would refuse every arm cycle while both were there."
+                f"{said}\nThat copy is already driving the Stream Deck. To "
+                f"start this one instead, stop that one first (Ctrl-C where "
+                f"it is running, or end the process with the pid above), "
+                f"then start this one again.")
+    return (f"ltcplay's show program is already running on this {here}, so "
+            f"this copy has stopped. Only one copy may run at a time: two "
+            f"copies would both talk to the rig and the flame safety "
+            f"program.{said}\nIt is the LTC Player app, the autostart "
+            f"engine, or a Run or Web window. To use it: for the app, "
+            f"autostart or a Web window, open its page in a browser at "
+            f"http://127.0.0.1 and the port in the line above; for a Run "
+            f"window, go to that window. To run this copy "
+            f"instead, stop that one first: quit the LTC Player app, turn "
+            f"autostart off (Autostart ltcplay.command, then R), or press "
+            f"Ctrl-C in the window it runs in.\nRehearse (option 5 in Run "
+            f"ltcplay.command) is a copy too, so it is refused while the "
+            f"app or autostart is running. Stop that first, as above, and "
+            f"then rehearse.")

@@ -6166,15 +6166,59 @@ def build():
 
  ("second-copy: a refused flame frame's sender is never remembered",
   "flamesafe/composer.py",
-  "                    self._flame_foreign[sender] = t\n"
+  "                    self._second_sender(sender, t)\n"
   "                    raise ValueError(\"another sender\")\n",
   "                    raise ValueError(\"another sender\")\n"),
 
  ("second-copy: a refused disarm_all's sender is never remembered",
   "flamesafe/composer.py",
-  "                self._flame_foreign[sender] = t\n"
+  "                self._second_sender(sender, t)\n"
   "                raise ValueError(\"another sender\")\n",
   "                raise ValueError(\"another sender\")\n"),
+
+ # Fix round 1 of PR #40 (the review's hand mutations H1 to H3, and
+ # item 4: a second sender disarms every group; the flood flag).
+ ("second-copy: a second sender is remembered from its first datagram "
+  "only (setdefault)",
+  "flamesafe/composer.py",
+  "        self._flame_foreign[sender] = t\n",
+  "        self._flame_foreign.setdefault(sender, t)\n"),
+
+ ("second-copy: the flame veto blocks consent but no longer clears a down "
+  "edge seen before it",
+  "flamesafe/composer.py",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded\n"
+  "                     or self._flame_link_disturbed(t))\n"
+  "        consent_ok = advanced and was_live and not disturbed\n",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded)\n"
+  "        consent_ok = (advanced and was_live and not disturbed\n"
+  "                      and not self._flame_link_disturbed(t))\n"),
+
+ ("second-copy: a second sender only blocks new arming again, armed "
+  "groups stay armed",
+  "flamesafe/composer.py",
+  "        self._latched = [False] * self.n\n"
+  "        self._seen_down = [False] * self.n\n"
+  "        if first:\n",
+  "        if first:\n"),
+
+ ("second-copy: the second-sender line is written for every datagram",
+  "flamesafe/composer.py",
+  "        first = self._flame_foreign_count(t) == 0\n",
+  "        first = True\n"),
+
+ ("second-copy: the service never flags a flood on the flame link",
+  "flamesafe/service.py",
+  "                n_read > FLAME_FLOOD_DATAGRAMS_PER_TICK\n",
+  "                False and n_read > FLAME_FLOOD_DATAGRAMS_PER_TICK\n"),
+
+ ("second-copy: a flood on the flame link no longer blocks consent",
+  "flamesafe/composer.py",
+  "                or self._flame_new_sender(t)\n"
+  "                or self._flame_flooded(t))\n",
+  "                or self._flame_new_sender(t))\n"),
 
  ("second-copy: another flame sender is remembered for ever",
   "flamesafe/composer.py",

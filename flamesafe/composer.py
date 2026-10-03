@@ -35,12 +35,20 @@ OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
                 "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
-# Second-copy guard (Jeff, 2026-10-03): why a cycle is not being accepted
-# while a second sender is on the FLAME link, or the flame link has just
-# changed hands.  Steady amber: cycling now would not count.
+# Second-copy guard (Jeff, 2026-10-03): why a group is disarmed and a
+# cycle is not being accepted while a second sender is on the FLAME link,
+# the flame link has just changed hands, or it has been flooded.  Steady
+# amber: cycling now would not count.
 FLAME_OTHER_SENDER = ("Another sender is on the show program link, or it "
-                      "just changed hands: a cycle cannot arm until that "
-                      "has settled. Cycle the arm again once it has.")
+                      "just changed hands: every group is disarmed and a "
+                      "cycle cannot arm until that has settled. Cycle the "
+                      "arm again once it has.")
+# More datagrams than this, or more bytes, waiting on the flame link in one
+# tick is a flood (fix round 1 of PR #40, the arm link's own rule).  An
+# honest ltcplay sends one frame per 25 ms, about 2 KB each, plus a few
+# disarm_all copies after an Abort.
+FLAME_FLOOD_DATAGRAMS_PER_TICK = 50
+FLAME_FLOOD_BYTES_PER_TICK = 256 * 1024
 # The words on the ARMED lamp of a group the show program's Abort disarmed
 # (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
 # and the only one.  Shown until that group latches again.
@@ -130,7 +138,8 @@ class Composer:
         # review probe p2 s5), the flame link's own copy of the arm link's
         # round-4 consent veto.  A second sender with the key on the flame
         # link (a second copy of ltcplay, or an old one still running) means
-        # nobody can newly arm a group, whichever of the two holds the lock:
+        # every group is disarmed (fix round 1 of PR #40) and nobody can newly
+        # arm one, whichever of the two holds the lock:
         #   _flame_foreign   {sender: our clock} for every keyed, well-formed
         #                    datagram refused as "another sender"; a sender
         #                    counts until it has been quiet frame_stale_ms.
@@ -140,6 +149,10 @@ class Composer:
         #                    not yet proved it is the only sender.
         self._flame_foreign = {}
         self._flame_changed_at = None
+        # Fix round 1 of PR #40: our clock at the last tick that found a
+        # flood on the flame link (Service._drain).  No cycle counts for
+        # frame_stale_ms after it.
+        self._flame_flood_at = None
         self._last_reject = ""
         # Rejection journaling, the arm link's own throttle (see
         # _FLAME_REASONS).  Written as kind "link-reject".
@@ -184,6 +197,7 @@ class Composer:
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
             "link_lost", "disarm_all", "disarm_all_rejected",
+            "second_sender_disarms", "flame_link_floods",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -447,7 +461,7 @@ class Composer:
             fresh = self._frame_is_fresh(t)
             if fresh:
                 if sender != self._frame_sender:
-                    self._flame_foreign[sender] = t
+                    self._second_sender(sender, t)
                     raise ValueError("another sender")
                 # While the link is live, frames must arrive in order and the
                 # sender's own clock must not go backwards.  Once the link
@@ -535,7 +549,7 @@ class Composer:
             if sender != self._frame_sender:
                 # A keyed disarm_all from a second sender is a second
                 # sender on the link (second-copy guard, 2026-10-03).
-                self._flame_foreign[sender] = t
+                self._second_sender(sender, t)
                 raise ValueError("another sender")
             if msg.seq <= self._frame_seq:
                 raise ValueError(f"out of order: seq {msg.seq} after "
@@ -628,6 +642,61 @@ class Composer:
         return (self._frame_at is not None and
                 (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)
 
+    def _second_sender(self, sender, t):
+        """A keyed, well-formed datagram from a sender other than the
+        flame link's live, locked one (second-copy guard).
+
+        Fix round 1 of PR #40 (Jeff, 2026-10-03): this DISARMS every group,
+        on the tick it arrives in, not only blocks new arming.  With one
+        copy of ltcplay per machine (ltcplay/onlyone.py), two keyed senders
+        at once means something is wrong.  It can only ever take arm away:
+        every latch and every pending consent edge is cleared, nothing is
+        set.  The sender is remembered for frame_stale_ms (refreshed by
+        every datagram it sends), and while it is, no cycle counts.
+        Journaled once per episode."""
+        first = self._flame_foreign_count(t) == 0
+        self._flame_foreign[sender] = t
+        up = [g.name for i, g in enumerate(self.groups)
+              if self._latched[i] or self._last_sent[i] != DISARM]
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        if first:
+            self.stats["second_sender_disarms"] += 1
+            armed = ("disarmed: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("second-sender",
+                        f"a second sender ({_addr(sender)}) is on the show "
+                        f"program link while {_addr(self._frame_sender)} "
+                        f"holds it: every group disarmed ({armed}). No "
+                        f"group can be armed again until only one sender "
+                        f"has been on the link for "
+                        f"{self.cfg.frame_stale_ms} ms; then cycle the arm. "
+                        f"Only one copy of ltcplay should ever be running.")
+
+    def note_flame_link_flooded(self, flooded, count=0, size=0):
+        """Whether Service._drain found a flood on the flame link this tick
+        (fix round 1 of PR #40).  Blocks consent for frame_stale_ms, like the
+        arm link's flood flag.  Never raises."""
+        try:
+            if not flooded:
+                return
+            t = self._clock()
+            if not self._flame_flooded(t):
+                self.stats["flame_link_floods"] += 1
+                self._event("flame-flood",
+                            f"show program link flooded: {count} datagrams "
+                            f"({size} bytes) waiting in one tick. No group "
+                            f"can be newly armed until it has stopped for "
+                            f"{self.cfg.frame_stale_ms} ms.")
+            self._flame_flood_at = t
+        except Exception:                               # noqa: BLE001
+            self._flame_flood_at = self._clock()
+
+    def _flame_flooded(self, t):
+        return (self._flame_flood_at is not None and
+                (t - self._flame_flood_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
     def _flame_foreign_count(self, t):
         """How many OTHER keyed senders have been refused on the flame link
         inside the last frame_stale_ms (second-copy guard, 2026-10-03).
@@ -648,7 +717,9 @@ class Composer:
 
     def _flame_link_disturbed(self, t):
         """No cycle counts while this is True (assert_arm)."""
-        return self._flame_foreign_count(t) != 0 or self._flame_new_sender(t)
+        return (self._flame_foreign_count(t) != 0
+                or self._flame_new_sender(t)
+                or self._flame_flooded(t))
 
     def _arm_is_live(self, t):
         return (self._arm_fresh_at is not None and
@@ -1025,6 +1096,7 @@ class Composer:
                 # inside frame_stale_ms.  Either one: no cycle counts.
                 "foreign_senders": self._flame_foreign_count(t),
                 "new_sender": self._flame_new_sender(t),
+                "flooded": self._flame_flooded(t),
             },
             "disarm_all": {
                 "accepted": self._disarm_count,
