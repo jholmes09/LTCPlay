@@ -2608,8 +2608,8 @@ MUTATIONS = [
   "                self.hold_epoch += 1"),
 
  # Reachable again (fix round of #30): a night still on Hold is set aside
- # when the next night's preshow lead begins, and the epoch has to move.
- # test_schedule_delayed_night_gives_way_to_the_next_nights_preshow.
+ # at the 2 AM nightly reset, and the epoch has to move.
+ # test_schedule_delayed_night_closes_at_the_2am_reset.
  ("midnight sweeping a held night never bumps the hold epoch",
   "ltcplay/schedule_service.py",
   "        if self.machine.state == sch.HOLD:\n"
@@ -3340,7 +3340,7 @@ def build():
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
-  "        self._disarm()",
+  "        self._disarm(reason)",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN"),
 
  ("conductor: a failed disarm is never sent again",
@@ -3670,25 +3670,20 @@ def build():
   "            self._pause(gen, fade)\n"
   "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
 
- # Item 4: a delayed night across midnight.
- ("scheduler fix round: a delayed night never gives way to the next night",
+ # Item 4: a delayed night across midnight (since 2026-10-03 it closes at
+ # the 2 AM nightly reset; see the "2 AM reset" mutations at the end).
+ ("scheduler fix round: a delayed night never closes at the 2 AM reset",
   "ltcplay/schedule_service.py",
-  "        if lead is None or now < lead:\n"
+  "        if now < sch.night_reset(m.date, m.tz):\n"
   "            return None",
   "        if True:\n"
   "            return None"),
 
- ("scheduler fix round: the delayed show is not missed when its night gives "
-  "way",
+ ("scheduler fix round: the delayed show is not missed when its night "
+  "closes at the reset",
   "ltcplay/schedule.py",
-  "    tx.set_slot(d.n, status=MISSED, reason=NEXT_NIGHT_MISSED)",
+  "    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)",
   "    pass"),
-
- ("scheduler fix round: the next night's lead ignores its own midnight",
-  "ltcplay/schedule.py",
-  "    return max(opens, _utc(plan.starts[0]) - "
-  "timedelta(seconds=PRESHOW_LEAD_S))",
-  "    return _utc(plan.starts[0]) - timedelta(seconds=PRESHOW_LEAD_S)"),
 
  ("scheduler fix round: a start after midnight never picks up last night",
   "ltcplay/schedule_service.py",
@@ -3701,13 +3696,11 @@ def build():
   "                       if st == sch.RUNNING and back == 1]",
   "                       if False]"),
 
- ("scheduler fix round: last night is picked up even after the next night's "
-  "preshow began",
-  "ltcplay/schedule_service.py",
-  "            if lead is not None and now >= lead:\n"
-  "                # Too late",
-  "            if False:\n"
-  "                # Too late"),
+ ("scheduler fix round: the 2 AM reset miss is written quietly, not as a "
+  "fault",
+  "ltcplay/schedule.py",
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED, text, show=d.n,",
+  "    tx.note(\"miss\", \"done\", RESET_MISSED, text, show=d.n,"),
 
  # Item 5: a restart after a stopped show stays dark.
  ("scheduler fix round: a restart after a stopped show brings the "
@@ -3942,12 +3935,12 @@ def build():
   "        if faded:\n            self._pause(gen, fade)\n"
   "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
 
- ("scheduler fix round 2: the next-night miss is not on the night's fault "
+ ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault "
   "list",
   "ltcplay/schedule.py",
   "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n"
-  "    tx.note(\"miss\", \"fault\", NEXT_NIGHT_MISSED",
-  "    tx.note(\"miss\", \"fault\", NEXT_NIGHT_MISSED"),
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED",
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED"),
 
  ("scheduler fix round 2: every conductor call is made as the scheduler",
   "ltcplay/schedule_service.py",
@@ -4121,6 +4114,101 @@ def build():
   "    for k in sorted(TONIGHT_OPTIONAL):\n"
   "        if not isinstance(doc.get(k, False), bool):",
   "    for k in sorted(TONIGHT_OPTIONAL):\n        if False:"),
+
+ # Jeff's decisions, 2026-10-03: the 2 AM nightly reset.
+ ("scheduler 2 AM reset: the nightly reset is at 3 AM",
+  "ltcplay/schedule.py",
+  "NIGHT_RESET = time(2, 0)", "NIGHT_RESET = time(3, 0)"),
+
+ ("scheduler 2 AM reset: the nightly reset is at 1 AM",
+  "ltcplay/schedule.py",
+  "NIGHT_RESET = time(2, 0)\n", "NIGHT_RESET = time(1, 0)\n"),
+
+ ("scheduler 2 AM reset: 02:00 itself still belongs to last night (<=)",
+  "ltcplay/schedule.py",
+  "    if local.time() < NIGHT_RESET:",
+  "    if local.time() <= NIGHT_RESET:"),
+
+ ("scheduler 2 AM reset: the night is read on UTC, not the local clock",
+  "ltcplay/schedule.py",
+  "    local = _utc(_aware(now)).astimezone(tz)",
+  "    local = _utc(_aware(now))"),
+
+ ("scheduler 2 AM reset: a night ends at its own date's reset, not the "
+  "next day's",
+  "ltcplay/schedule.py",
+  "    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
+  "    return _utc(datetime.combine(d, NIGHT_RESET,"),
+
+ ("scheduler 2 AM reset: the service moves on at midnight (calendar date)",
+  "ltcplay/schedule_service.py",
+  "        return sch.night_of(now, self.rule.tz)",
+  "        return now.astimezone(self.rule.tz).date()"),
+
+ ("scheduler 2 AM reset: a first show before 2 AM is accepted",
+  "ltcplay/schedule.py",
+  "    if first < NIGHT_RESET:",
+  "    if False:"),
+
+ ("scheduler 2 AM reset: a show running at the reset is cut by it",
+  "ltcplay/schedule_service.py",
+  "        if m.state in (sch.SHOW, sch.PAUSED):\n"
+  "            return None\n"
+  "        words = sch.reset_words()",
+  "        words = sch.reset_words()"),
+
+ # Jeff's decisions, 2026-10-03: a failed start disarms every flame group.
+ ("failed start disarms: the scheduler sends show_stopped (no disarm)",
+  "ltcplay/schedule_service.py",
+  "            elif ev.kind == sch.SHOW_FAILED:",
+  "            elif False:"),
+
+ ("failed start disarms: the conductor only zeroes the cues at once",
+  "ltcplay/conductor.py",
+  "            self._flames_cut(self.FAILED_START)",
+  "            self.show.flames_zero()"),
+
+ ("failed start disarms: the disarm is never sent at all",
+  "ltcplay/conductor.py",
+  "            self._flames_cut(self.FAILED_START)\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
+  "                         fade_s=ABORT_FADE_S, disarm=self.FAILED_START)",
+  "            self.show.flames_zero()\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
+  "                         fade_s=ABORT_FADE_S)"),
+
+ ("failed start disarms: a failed disarm is never sent again",
+  "ltcplay/conductor.py",
+  "                if not self._applied[\"disarmed\"]:\n"
+  "                    self._disarm(why)",
+  "                if False:\n"
+  "                    self._disarm(why)"),
+
+ ("failed start disarms: the conductor latches a failed start",
+  "ltcplay/conductor.py",
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
+  "            self._latched = True\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
+
+ ("failed start disarms: the scheduler latches a failed start",
+  "ltcplay/schedule_service.py",
+  "        if any(p[1] == \"abort\" for p in plan):",
+  "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
+
+ ("failed start disarms: the journal never says why the flames were "
+  "disarmed",
+  "ltcplay/schedule_service.py",
+  "                le = replace(le, text=le.text.replace(\n"
+  "                    sch.FAILED_START_NOT_DISARMED,\n"
+  "                    self.CONDUCTOR_DISARMS_FAILED_START))",
+  "                pass"),
+
+ ("failed start disarms: a cut show disarms too",
+  "ltcplay/schedule_service.py",
+  "                plan.append((\"Show stopped\", \"show_stopped\",\n"
+  "                             self._ABORT_EFFECTS))",
+  "                plan.append((\"Failed start\", \"failed_start\",\n"
+  "                             self._ABORT_EFFECTS))"),
 ]
 
 
