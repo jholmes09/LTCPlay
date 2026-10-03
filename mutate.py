@@ -4342,8 +4342,71 @@ def build():
 
  ("fix1: a failing sender reads as fine",
   "ltcplay/flamelink.py",
-  '''                                   and sender not in ("failing", "dead")),''',
-  '''                                   ),'''),
+  '''                               and sender not in ("failing", "dead",
+                                                  "stalled")),''',
+  '''                               and sender not in ("dead",
+                                                  "stalled")),'''),
+
+ # -- fix round 2 of PR #34 ------------------------------------------------
+ ("fix2: flamesafe's frame_stale_ms is not read from its config",
+  "ltcplay/flamelink.py",
+  '''                          "frame_stale_ms": doc.get("frame_stale_ms")},''',
+  '''                          },'''),
+
+ ("fix2: a flame_link block without frame_stale_ms quietly defaults to 500",
+  "ltcplay/flamelink.py",
+  '''        stale = doc.get("frame_stale_ms")''',
+  '''        stale = doc.get("frame_stale_ms", 500)'''),
+
+ ("fix2: a config built in code assumes a short frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "FRAME_STALE_MS_DEFAULT = STALE_MS_MAX",
+  "FRAME_STALE_MS_DEFAULT = 500"),
+
+ ("fix2: a stalled sender reads as running",
+  "ltcplay/flamelink.py",
+  '''        if self._stalled_now():
+            return "stalled"''',
+  '''        if False:
+            return "stalled"'''),
+
+ ("fix2: a stalled sender reads as sending fine",
+  "ltcplay/flamelink.py",
+  '''                               and sender not in ("failing", "dead",
+                                                  "stalled")),''',
+  '''                               and sender not in ("failing", "dead")),'''),
+
+ ("fix2: a stall is never journaled",
+  "ltcplay/flamelink.py",
+  "                if stalled and not self._stall_noted:",
+  "                if False:"),
+
+ ("fix2: a stall is journaled over and over",
+  "ltcplay/flamelink.py",
+  "                    self._stall_noted = True\n",
+  "                    self._stall_noted = False\n"),
+
+ ("fix2: a sender is stalled only after the whole frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "        return self.cfg.frame_stale_ms / 2000.0",
+  "        return self.cfg.frame_stale_ms / 1000.0"),
+
+ ("fix2: disarm_all does not invalidate a frame read before it",
+  "ltcplay/flamelink.py",
+  "                self.zeroed = True\n                self._zero_gen += 1\n"
+  "                self._send_zero_frame()\n                self.abort_id",
+  "                self.zeroed = True\n"
+  "                self._send_zero_frame()\n                self.abort_id"),
+
+ ("fix2: repeat copies do not restart the post-Abort window",
+  "flamesafe/composer.py",
+  "        self._disarm_at = t\n        if new_abort:\n",
+  "        if new_abort:\n            self._disarm_at = t\n"),
+
+ ("fix2: the deck's arm-hold grows past the post-Abort window",
+  "ltcplay/streamdeck.py",
+  "ARM_HOLD_S = 0.6\n",
+  "ARM_HOLD_S = 0.8\n"),
 
  ("fix1: an exception whose str() raises escapes the error handling",
   "ltcplay/flamelink.py",
