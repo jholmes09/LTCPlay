@@ -1,6 +1,7 @@
 #!/bin/bash
 # Run this once. It builds a private Python environment beside these files and
-# installs the three libraries ltcplay needs into it. Nothing is installed
+# installs the libraries ltcplay needs into it (numpy, sounddevice, zstandard,
+# and for the Stream Deck: Pillow and hidapi). Nothing is installed
 # system-wide and nothing outside this folder is touched. Safe to run again.
 cd "$(dirname "$0")" || exit 1
 
@@ -78,6 +79,28 @@ fi
 ./.venv/bin/pip install numpy sounddevice zstandard \
   || fail "Installing the libraries failed. Are you online?"
 
+# The Stream Deck program (ltc deck) needs two more: Pillow draws the button
+# images and hidapi (which provides the "hid" module) talks to the deck over
+# USB. Both ship as ready-made wheels for macOS arm64 and x86_64 with the
+# native code inside, so nothing else has to be installed on the Mac.
+# --only-binary means a Python with no wheel stops here with a plain message
+# instead of trying to compile and failing mid-install.
+# Versions are left unpinned, like the three above: pip picks the newest wheel
+# that suits this Python (the Command Line Tools python is 3.9, which gets an
+# older Pillow). This is not fatal: the show runs without a Stream Deck.
+DECK_OK=yes
+./.venv/bin/pip install --only-binary :all: pillow hidapi || DECK_OK=""
+if [ -n "$DECK_OK" ]; then
+  ./.venv/bin/python -c "import hid, PIL" 2>/dev/null || DECK_OK=""
+fi
+if [ -z "$DECK_OK" ]; then
+  echo
+  echo "NOTE: the Stream Deck libraries (Pillow and hidapi) did not install."
+  echo "Everything else is fine and the show runs without a Stream Deck."
+  echo "To add them later, get online and double-click this file again."
+  echo
+fi
+
 cat > "$LAUNCHER" <<'LAUNCH'
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
@@ -111,6 +134,18 @@ except Exception as e:
     print("  Everything else is installed, but nothing can read timecode until")
     print("  this works. Try:")
     print("    ./.venv/bin/pip install --force-reinstall sounddevice")
+CHECK
+
+echo
+echo "Checking the Stream Deck libraries:"
+./.venv/bin/python - <<'CHECK'
+for mod, pkg in (("PIL", "Pillow"), ("hid", "hidapi")):
+    try:
+        __import__(mod)
+        print(f"  ok, {pkg}")
+    except Exception as e:
+        print(f"  {pkg} will not load: {e}")
+        print("  ltc deck needs it. Double-click this installer again while online.")
 CHECK
 
 echo

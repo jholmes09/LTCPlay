@@ -243,10 +243,12 @@ def _import_hid():
         return hid
     except Exception as e:
         raise SystemExit(
-            "The hidapi package is not installed, so the Stream Deck "
-            "cannot be opened.\n"
+            "The Stream Deck program needs the 'hidapi' library (it provides "
+            "the 'hid' module), and it cannot be loaded here, so the "
+            "Stream Deck cannot be opened.\n"
             f"  {e}\n"
-            "Run the installer again, or: pip install hidapi")
+            "Fix: get online and double-click 'Install ltcplay.command' in "
+            "this folder. It adds hidapi and Pillow.")
 
 
 def _import_pil():
@@ -255,10 +257,12 @@ def _import_pil():
         return Image, ImageDraw, ImageFont
     except Exception as e:
         raise SystemExit(
-            "The Pillow package is not installed, so the Stream Deck's key "
+            "The Stream Deck program needs the 'Pillow' library (it provides "
+            "the 'PIL' module), and it cannot be loaded here, so the key "
             "artwork cannot be drawn.\n"
             f"  {e}\n"
-            "Run the installer again, or: pip install pillow")
+            "Fix: get online and double-click 'Install ltcplay.command' in "
+            "this folder. It adds Pillow and hidapi.")
 
 
 class DeckDisconnected(Exception):

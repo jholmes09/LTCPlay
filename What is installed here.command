@@ -78,6 +78,34 @@ if not shows:
     print("  SHOW      no show file in this folder")
 
 print()
+# Which libraries the install's Python can load. The first three run the show;
+# Pillow and hidapi are only for the Stream Deck (ltc deck).
+import importlib.util
+from importlib import metadata
+def _lib(mod, pkg):
+    try:
+        found = importlib.util.find_spec(mod) is not None
+    except Exception:
+        found = False
+    if not found:
+        return "%s: MISSING" % pkg
+    try:
+        return "%s %s" % (pkg, metadata.version(pkg))
+    except Exception:
+        return "%s: installed" % pkg
+core = [_lib("numpy", "numpy"), _lib("sounddevice", "sounddevice"),
+        _lib("zstandard", "zstandard")]
+deck = [_lib("PIL", "pillow"), _lib("hid", "hidapi")]
+print("  LIBRARIES %s" % ", ".join(core))
+print("            Stream Deck: %s" % ", ".join(deck))
+if any("MISSING" in x for x in deck):
+    print("            ltc deck will not start until both are installed.")
+    print("            Double-click 'Install ltcplay.command' while online.")
+if any("MISSING" in x for x in core):
+    print("            The show needs all three. Double-click")
+    print("            'Install ltcplay.command' while online.")
+
+print()
 app = os.path.join(here, "LTC Player.app")
 if not os.path.isdir(app):
     print("  APP       not built here yet")
