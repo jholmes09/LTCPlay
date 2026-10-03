@@ -31665,6 +31665,7 @@ def test_fire_ice_flame_link_from_flamesafe_config():
               link.cfg.port == fsdoc["link"]["listen_port"] and
               link.cfg.frame_stale_ms == fsdoc["frame_stale_ms"],
               "key, port and frame_stale_ms come from flamesafe's config")
+        link.journal_line.flush()
         check(any("Stream Deck" in t for t, _ in lines),
               "it says it cannot see flamesafe's status frames itself")
         rx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
@@ -31845,6 +31846,123 @@ def test_fire_ice_start_rules_on_the_ordered_line():
     check(order == ["conductor", "zero", "stop"],
           f"closing: the conductor first, then flame zeros, then the link "
           f"stops: {order}")
+    print("  ok")
+
+
+def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
+    section("fire & ice: the show-end burst (lasers blanked, video faded, "
+            "flame cues zeroed, journal lines) with every device and the "
+            "journal taking 200 ms per call never holds up a flame frame: "
+            "the flame link's own journal lines are written off its sender "
+            "thread, and its frames keep CONTRACT.md's 50 ms floor")
+    import json as _json
+    import socket as _s
+    import tempfile
+    import threading
+    import types
+    F = _fi_mod()
+    from ltcplay import conductor as C
+    work = tempfile.mkdtemp()
+    fs, show, doc = _fi_flame_files(work)
+    slow = 0.2
+    journal_threads = set()
+
+    def slow_journal(text, **f):
+        journal_threads.add(threading.current_thread().name)
+        time.sleep(slow)
+
+    # The show: a timecode that moves, then stops (the show's end), then
+    # jumps (the next show's start), so the link writes its episode lines.
+    st = {"tc": None, "live": False}
+    control = types.SimpleNamespace(session=None)
+    show_out = F.FireIceShow(control, journal=None, flame_link=None)
+    link = F.build_flame_link(F.FireIceConfig(flamesafe_config=fs),
+                              control, show_out, slow_journal)
+    link.show_state = lambda: (st["tc"], st["live"])
+    show_out.flame_link = link
+
+    class SlowDevices(C.DeviceOutputs):
+        def _slow(self, what):
+            time.sleep(slow)
+            slow_journal(what)
+            return C.done(what)
+
+        def lasers_blank(self):
+            return self._slow("lasers blanked")
+
+        def lasers_fade_out(self, seconds):
+            return self._slow("lasers faded")
+
+        def lasers_restore(self):
+            return self._slow("lasers back")
+
+        def video_fade_out(self, seconds):
+            return self._slow("video faded")
+
+        def video_restore(self, seconds):
+            return self._slow("video back")
+
+        def video_stop(self):
+            return self._slow("video stopped")
+    cond = C.Conductor(SlowDevices(), show_out, lambda: None,
+                       journal=slow_journal, threaded=True)
+    rx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", link.cfg.port))
+    rx.settimeout(0.2)
+    got = []
+    stop = threading.Event()
+
+    def listen():
+        while not stop.is_set():
+            try:
+                b = rx.recv(70000)
+            except _s.timeout:
+                continue
+            except OSError:
+                return
+            if _json.loads(b).get("t") == "flame":
+                got.append(time.perf_counter())
+    lt = threading.Thread(target=listen, daemon=True)
+    lt.start()
+    try:
+        link.start()
+        t0 = time.perf_counter()
+        frame = 0
+        while time.perf_counter() - t0 < 1.0:      # the show, moving
+            frame += 1
+            st.update(tc=f"01:00:{frame // 30 % 60:02d}:{frame % 30:02d}",
+                      live=True)
+            time.sleep(1 / 30)
+        base = len(got)
+        # The show's end: the timecode stops, the conductor's intermission
+        # burst runs, the flame cues are zeroed, and the next show's
+        # timecode lands somewhere else entirely.
+        cond.intermission("the scheduler", "")
+        time.sleep(0.6)
+        st.update(tc="01:05:00:00")
+        time.sleep(0.4)
+        cond.show_starting("the scheduler", "")
+        time.sleep(0.6)
+    finally:
+        stop.set()
+        link.stop()
+        cond.close()
+        rx.close()
+        lt.join(2)
+    gaps = [(b - a) * 1000.0 for a, b in zip(got, got[1:])]
+    worst = max(gaps[base:] or [0.0])
+    print(f"  note: {len(got)} flame frames, worst gap {worst:.1f} ms "
+          f"through the burst ({max(gaps[:base] or [0.0]):.1f} ms before it)")
+    check("ltcplay-flame-link" not in journal_threads,
+          f"no journal line is ever written on the flame link's sender "
+          f"thread: {sorted(journal_threads)}")
+    link.journal_line.flush()
+    check(any(n == "ltcplay-flame-journal" for n in journal_threads),
+          f"the flame link's lines are written by its own journal thread: "
+          f"{sorted(journal_threads)}")
+    check(len(got) > 40, f"the flame link kept sending: {len(got)} frames")
+    check(worst < 50.0, f"no gap of 50 ms or more between flame frames "
+                        f"through the burst (CONTRACT.md): {worst:.1f} ms")
     print("  ok")
 
 
@@ -34931,6 +35049,7 @@ if __name__ == "__main__":
     test_fire_ice_flame_link_from_flamesafe_config()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
+    test_fire_ice_show_end_burst_never_holds_up_the_flame_link()
     test_fire_ice_status_mirror_reaches_the_flame_link()
     test_ltc_serve_gpl_builds_no_conductor()
     test_the_gpl_path_never_loads_the_conductor()

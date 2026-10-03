@@ -528,6 +528,68 @@ class FlameCues:
         return vals + [0] * (512 - len(vals))
 
 
+class OffThreadJournal:
+    """A journal that never makes its caller wait: each line is queued and
+    written in order by a thread of its own. Up to MAX lines may wait; past
+    that the newest are dropped and counted, and the count is written as a
+    fault once the line is moving again. Never raises."""
+
+    MAX = 500
+
+    def __init__(self, journal):
+        import collections
+        self._journal = journal
+        self._q = collections.deque()
+        self._cv = threading.Condition()
+        self._busy = False
+        self.dropped = 0
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="ltcplay-flame-journal")
+        self._thread.start()
+
+    def __call__(self, text, **fields):
+        with self._cv:
+            if len(self._q) >= self.MAX:
+                self.dropped += 1
+                return None
+            self._q.append((text, fields))
+            self._cv.notify_all()
+        return None
+
+    def _run(self):
+        while True:
+            with self._cv:
+                while not self._q:
+                    self._cv.wait()
+                text, fields = self._q.popleft()
+                dropped, self.dropped = self.dropped, 0
+                self._busy = True
+            try:
+                if dropped:
+                    self._write(f"Flame link: {dropped} journal line(s) "
+                                f"were dropped because the journal was not "
+                                f"keeping up.",
+                                {"fault": True, "action": "flame_link",
+                                 "outcome": "journal_dropped"})
+                self._write(text, fields)
+            finally:
+                with self._cv:
+                    self._busy = False
+                    self._cv.notify_all()
+
+    def _write(self, text, fields):
+        try:
+            self._journal(text, **fields)
+        except Exception:
+            pass
+
+    def flush(self, timeout=5.0):
+        """Wait until every queued line is written (tests, and closing)."""
+        with self._cv:
+            return self._cv.wait_for(lambda: not self._q and not self._busy,
+                                     timeout)
+
+
 def flame_link_config(cfg):
     """The FlameLinkConfig read from flamesafe's own config, or None when
     the Fire & Ice config names none. `ltc serve` calls this before it
@@ -552,11 +614,19 @@ def build_flame_link(cfg, control, show, journal=None):
         return None
     from . import flamelink
     lcfg = flame_link_config(cfg)
+    # The flame link's own sender thread writes its journal lines (a
+    # timecode that stopped at a show's end, a seek, a refused flame
+    # controller) at the very moments the rest of the show is busiest. A
+    # journal line is never written on that thread: it is handed to a line
+    # of its own, so nothing the night journal or the console does can
+    # hold up a flame frame (CONTRACT.md's 50 ms floor).
+    journal = OffThreadJournal(journal) if journal is not None else None
     cues = (FlameCues(control, cfg.flame_controller, journal)
             if cfg.flame_controller else flamelink.zero_cues)
     link = flamelink.FlameLink(
         lcfg, cues=cues, show_state=flamelink.audio_master_state(show._clock),
         journal=journal)
+    link.journal_line = journal
     if journal is not None and not _has_status_mirror(cfg.flamesafe_config):
         journal("Flame link: flamesafe's status frames go to the Stream Deck "
                 "program and flamesafe's config has no link.status_mirror_port"
