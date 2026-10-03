@@ -126,7 +126,7 @@ jobs:
 
       - name: Keep the installer on this run's page
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: LTC Player Setup ${{ steps.ver.outputs.version }}
           path: dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe

@@ -237,6 +237,10 @@ def none_running():
 
 # ---------------------------------------------------------------- main ---
 def main(installer):
+    # Logs from Setup and the programs carry UTF-8 (and a BOM); the
+    # runner's console code page cannot print them.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     installer = os.path.abspath(installer)
     tmp = os.environ.get("RUNNER_TEMP") or os.path.dirname(installer)
     shows = os.path.join(tmp, "LTC Shows")
