@@ -757,6 +757,191 @@ class LocalSchedule:
             return self._show_running
 
 
+ENGINE_POST_TIMEOUT_S = 3.0
+ENGINE_QUEUE_MAX = 50
+
+
+class EngineResult:
+    """What a press handed to EngineConductor answers at once: Controller
+    journals `sentence`, as a fault when `ok` is False."""
+
+    def __init__(self, ok, sentence):
+        self.ok = ok
+        self.sentence = sentence
+
+
+class EngineConductor:
+    """The engine's show conductor, for Controller, reached over this
+    machine's loopback (PR #43 review, finding 8: `ltc deck` passed
+    conductor=None, so the deck's Abort only disarmed flames while lasers,
+    video and music carried on, and Hold, Resume and Reset did nothing).
+
+    Duck-typed like conductor.Conductor as Controller uses it: hold(),
+    resume(), abort() and reset() with who and screen, and snapshot().
+
+    Each press is POSTed to `ltc serve`'s own loopback remote routes
+    (/api/remote/hold, resume, abort, reset): the same scheduler and
+    conductor path every other screen's press takes, journaled by the
+    engine with the operator and "Stream Deck". The POST runs on a
+    BACKGROUND thread, never the main loop (the same rule as LocalSchedule
+    and DeckJournal: a slow or hung web server must not delay a key read
+    or an arm frame), so a press returns at once saying it was sent; the
+    engine's answer is journaled when it comes, a refusal or no answer as
+    a fault. The deck's own Abort has already sent every group's wanted
+    state false on the arm link before this is asked anything.
+
+    snapshot() never touches the network and never raises: a background
+    poll caches GET /api/conductor. "latched" is the newer of this deck's
+    own last Abort or Reset and the engine's last answer, so the deck
+    reads latched from the moment its Abort is pressed, and falls back to
+    its own presses alone while the engine cannot be reached (an unknown
+    engine never turns the Abort key into Reset by itself)."""
+
+    def __init__(self, base_url, journal=None, poll_hz=POLL_HZ,
+                 clock=time.monotonic, wall=time.time, poster=None,
+                 fetcher=None):
+        self.base_url = base_url.rstrip("/")
+        self._journal = journal or (lambda text, **kw: None)
+        self._period = 1.0 / poll_hz
+        self._clock = clock
+        self._wall = wall
+        self._poster = poster or self._http_post
+        self._fetch = fetcher or self._http_get
+        self._lock = threading.Lock()
+        self._engine = None        # (snapshot dict, monotonic time it came)
+        self._local = (False, None)   # (latched, monotonic time of press)
+        self._q = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
+        self._stop = threading.Event()
+        self._threads = []
+        self.dropped = 0
+
+    def start(self):
+        if self._threads:
+            return
+        self._stop.clear()
+        for target, name in ((self._post_loop, "ltcplay-deck-engine-press"),
+                             (self._poll_loop, "ltcplay-deck-engine-poll")):
+            t = threading.Thread(target=target, daemon=True, name=name)
+            t.start()
+            self._threads.append(t)
+
+    def stop(self):
+        self._stop.set()
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
+
+    # -- presses ------------------------------------------------------------
+    def hold(self, who="", screen="Stream Deck"):
+        return self._press("hold", who, screen)
+
+    def resume(self, who="", screen="Stream Deck"):
+        return self._press("resume", who, screen)
+
+    def abort(self, who="", screen="Stream Deck"):
+        with self._lock:
+            self._local = (True, self._clock())
+        return self._press("abort", who, screen)
+
+    def reset(self, who="", screen="Stream Deck"):
+        with self._lock:
+            self._local = (False, self._clock())
+        return self._press("reset", who, screen)
+
+    def _press(self, name, who, screen):
+        body = {"who": who, "screen": screen or "Stream Deck",
+                "seen": int(self._wall() * 1000)}
+        if name == "abort":
+            body["confirmed"] = True
+        try:
+            self._q.put_nowait((name, body))
+        except queue.Full:
+            self.dropped += 1
+            return EngineResult(False, f"{name} could NOT be sent to the "
+                                       f"engine's show conductor: too many "
+                                       f"presses are waiting for it.")
+        return EngineResult(True, f"{name} sent to the engine's show "
+                                  f"conductor; the engine's journal says "
+                                  f"what it did.")
+
+    def _post_loop(self):
+        while not self._stop.is_set():
+            item = self._q.get()
+            if item is None:
+                return
+            name, body = item
+            try:
+                ok, text = self._poster("/api/remote/" + name, body)
+            except Exception as e:
+                ok, text = False, f"{type(e).__name__}: {e}"
+            if ok:
+                line = f"Stream Deck {name.title()}: the engine says: {text}"
+            else:
+                line = (f"Stream Deck {name.title()}: the engine's show "
+                        f"conductor did NOT take it: {text}")
+            try:
+                self._journal(line, fault=not ok, action=name,
+                              who=body.get("who") or "",
+                              screen=body.get("screen") or "Stream Deck")
+            except Exception:
+                pass
+
+    def _http_post(self, path, body):
+        """(ok, sentence) for one blocking POST, from the press thread."""
+        req = urllib.request.Request(
+            self.base_url + path, data=json.dumps(body).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
+                doc = json.loads(r.read().decode("utf-8") or "{}")
+            return bool(doc.get("ok", True)), str(doc.get("text") or "done")
+        except urllib.error.HTTPError as e:
+            try:
+                doc = json.loads(e.read().decode("utf-8") or "{}")
+                why = doc.get("text") or doc.get("error") or str(e)
+            except Exception:
+                why = str(e)
+            return False, str(why)
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            return False, (f"ltc serve could not be reached at "
+                           f"{self.base_url} ({e})")
+
+    # -- what the engine says -----------------------------------------------
+    def _poll_loop(self):
+        while not self._stop.is_set():
+            got = self._fetch("/api/conductor")
+            snap = got.get("conductor") if isinstance(got, dict) else None
+            with self._lock:
+                self._engine = ((snap, self._clock())
+                                if isinstance(snap, dict) else None)
+            self._stop.wait(self._period)
+
+    def _http_get(self, path):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(self.base_url + path,
+                             timeout=FETCH_TIMEOUT_S) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+
+    def snapshot(self):
+        """{"latched", "look"}: never the network, never raises."""
+        with self._lock:
+            engine, (local, pressed_at) = self._engine, self._local
+        if engine is not None and (pressed_at is None or
+                                   engine[1] > pressed_at):
+            snap = engine[0]
+            return {"latched": bool(snap.get("latched")),
+                    "look": snap.get("look") or ""}
+        return {"latched": local, "look": ""}
+
+
 JOURNAL_QUEUE_MAX = 1000
 JOURNAL_POST_TIMEOUT_S = 2.0
 
@@ -2114,14 +2299,18 @@ def _main(args):
     status = StatusSocket(status_ip, status_port, key)
     status.open()
 
+    # PR #43 review, finding 8: Abort, Hold, Resume and Reset reach the
+    # engine's own show conductor over loopback, on background threads.
+    engine = EngineConductor(args.ltcplay_url, journal=journal)
+    engine.start()
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
-                            conductor=None, journal=journal)
+                            conductor=engine, journal=journal)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
-         f"reading flamesafe's status on {status_ip}:{status_port}. No "
-         f"show conductor is connected in this build: Start Now, Hold and "
-         f"Resume will journal a refusal. Ctrl-C to stop.")
+         f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
+         f"Hold, Resume and Reset go to the show conductor in ltc serve at "
+         f"{args.ltcplay_url}; Start Now journals a refusal. Ctrl-C to stop.")
     try:
         run_forever(controller, journal=journal)
     except KeyboardInterrupt:
@@ -2130,6 +2319,7 @@ def _main(args):
         arm.close()
         status.close()
         sched.stop()
+        engine.stop()
     return 0
 
 

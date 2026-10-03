@@ -34393,6 +34393,155 @@ def test_live_show_refuses_the_page_transport():
     print("  ok")
 
 
+def test_deck_presses_reach_the_engine_conductor():
+    section("Stream Deck: Abort, Hold, Resume and Reset reach the engine's "
+            "show conductor over loopback, off the deck's main loop, and the "
+            "deck reads latched from its own Abort at once (PR #43 review, "
+            "item 8)")
+    import threading
+    from ltcplay import streamdeck as sd
+    # The class on its own: fakes for the engine.
+    t = [100.0]
+    posted, lines = [], []
+    answer = {"v": (True, "Abort done.")}
+    got_one = threading.Event()
+
+    def poster(path, body):
+        posted.append((path, dict(body)))
+        got_one.set()
+        return answer["v"]
+    engine_view = {"v": None}
+    e = sd.EngineConductor("http://127.0.0.1:1", journal=lambda x, **k:
+                           lines.append((x, k)), poster=poster,
+                           fetcher=lambda path: engine_view["v"],
+                           clock=lambda: t[0], wall=lambda: 1_800_000_000.0,
+                           poll_hz=200.0)
+    e.start()
+    try:
+        check(e.snapshot() == {"latched": False, "look": ""},
+              "nothing known: not latched")
+        r = e.abort("Andy", "Stream Deck")
+        check(r.ok and e.snapshot()["latched"],
+              "the deck reads latched from its own Abort at once, before "
+              "the engine has answered")
+        check(got_one.wait(3) and posted[0][0] == "/api/remote/abort" and
+              posted[0][1]["confirmed"] is True and
+              posted[0][1]["screen"] == "Stream Deck" and
+              posted[0][1]["who"] == "Andy",
+              f"the Abort is the engine's own confirmed remote Abort: "
+              f"{posted}")
+        # The engine's answer, older than the press, does not undo it.
+        engine_view["v"] = {"conductor": {"latched": False,
+                                          "look": "PLAYING"}}
+        time.sleep(0.1)
+        check(e.snapshot()["latched"],
+              "an engine answer from before the press does not undo it")
+        t[0] += 1.0
+        time.sleep(0.1)
+        check(e.snapshot() == {"latched": False, "look": "PLAYING"},
+              f"a newer engine answer is what the deck reads: "
+              f"{e.snapshot()}")
+        engine_view["v"] = None
+        got_one.clear()
+        answer["v"] = (False, "nothing is playing")
+        e.hold("Andy", "Stream Deck")
+        check(got_one.wait(3), "Hold posted")
+        for _ in range(100):
+            if any("did NOT take it" in x for x, _k in lines):
+                break
+            time.sleep(0.02)
+        check(any("did NOT take it" in x and k.get("fault")
+                  for x, k in lines),
+              f"an engine refusal is journaled as a fault: {lines}")
+        check(posted[-1][0] == "/api/remote/hold" and
+              "seen" in posted[-1][1], "Hold carries the page's freshness")
+        # Unreachable engine: the deck's own presses alone.
+        e.reset("Andy", "Stream Deck")
+        t[0] += 1.0
+        time.sleep(0.05)
+        check(e.snapshot()["latched"] is False,
+              "with the engine unreachable, Reset alone clears the deck")
+        # A slow engine never holds up the press.
+        slow = threading.Event()
+        e._poster = lambda path, body: (slow.wait(3), (True, "ok"))[1]
+        t0 = time.perf_counter()
+        e.abort("Andy", "Stream Deck")
+        check(time.perf_counter() - t0 < 0.05,
+              "a press returns at once, whatever the engine is doing")
+        slow.set()
+    finally:
+        e.stop()
+
+    # End to end: a real engine web server with a scheduler and conductor.
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    R.httpd.conductor = R.c          # as web.serve sets it for Fire & Ice
+    th = threading.Thread(target=R.httpd.serve_forever,
+                          kwargs={"poll_interval": 0.05}, daemon=True)
+    th.start()
+    port = R.httpd.server_address[1]
+    lines = []
+    eng = sd.EngineConductor(f"http://127.0.0.1:{port}",
+                             journal=lambda x, **k: lines.append((x, k)),
+                             wall=lambda: R.wall[0], poll_hz=50.0)
+    eng.start()
+
+    def wait_for(pred, what):
+        for _ in range(200):
+            R.settle()
+            if pred():
+                return True
+            time.sleep(0.02)
+        check(False, f"timed out waiting for {what}: {lines[-3:]}")
+        return False
+    try:
+        _live_show(R)
+        eng.hold("Jeff", "Stream Deck")
+        if wait_for(lambda: R.svc.machine.state == S.PAUSED, "Hold"):
+            check(any(r.get("screen") == "Stream Deck" and
+                      r.get("who") == "Jeff" for r in R.svc.journal),
+                  "the deck's Hold is the scheduler's own, journaled with "
+                  "who and the Stream Deck")
+        wait_for(lambda: eng.snapshot()["look"] in ("HELD", "DARK"),
+                 "the deck to read the hold")
+        eng.resume("Jeff", "Stream Deck")
+        wait_for(lambda: R.svc.machine.state == S.SHOW, "Resume")
+        # No operator chosen: the scheduler refuses an operator event that
+        # names nobody (schedule.step), Abort included, so the deck's
+        # Abort reaches only the arm link, and the deck says so as a fault.
+        # Reported to Jeff as a conflict with remote.py's "Abort is never
+        # gated" (fix round 1 notes); not changed here.
+        eng.abort("", "Stream Deck")
+        for _ in range(200):
+            if any("did NOT take it" in x for x, _k in lines):
+                break
+            time.sleep(0.02)
+        check(any("did NOT take it" in x and "who pressed it" in x and
+                  k.get("fault") for x, k in lines),
+              f"an unnamed deck Abort the engine refuses is a fault line "
+              f"naming why: {lines[-1:]}")
+        del lines[:]
+        eng.abort("Jeff", "Stream Deck")
+        wait_for(lambda: R.c.latched and R.svc.machine.abort_latched,
+                 "the deck's Abort to latch the engine's conductor")
+        wait_for(lambda: eng.snapshot()["latched"],
+                 "the deck to read the engine latched")
+        check(any("lasers" in str(c) for c in R.rig.calls),
+              "the deck's Abort reached the rig through the conductor")
+        eng.reset("Jeff", "Stream Deck")
+        wait_for(lambda: not R.c.latched and
+                 not R.svc.machine.abort_latched, "the deck's Reset")
+        check(not any(k.get("fault") for _x, k in lines),
+              f"no press was refused: {[x for x, k in lines if k.get('fault')]}")
+    finally:
+        eng.stop()
+        R.httpd.shutdown()
+        R.close()
+    print("  ok")
+
+
 def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
     section("iPad remote: Start now, Hold, Resume, Abort, Reset, disarm and "
             "the operator go through the scheduler and conductor paths every "
@@ -35514,6 +35663,7 @@ if __name__ == "__main__":
     test_remote_wrong_pin_refused_and_throttled()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
+    test_deck_presses_reach_the_engine_conductor()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
     test_remote_stale_state_refused_and_banner()

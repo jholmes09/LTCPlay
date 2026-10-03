@@ -6653,6 +6653,27 @@ def build():
   'def _has_status_mirror(path):\n    try:',
   'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
 
+
+ ("fix round 1: the deck does not read latched from its own Abort",
+  'ltcplay/streamdeck.py',
+  '        with self._lock:\n            self._local = (True, self._clock())\n        return self._press("abort", who, screen)',
+  '        return self._press("abort", who, screen)'),
+
+ ("fix round 1: the deck's Abort to the engine is not confirmed",
+  'ltcplay/streamdeck.py',
+  '        if name == "abort":\n            body["confirmed"] = True',
+  '        if name == "abort":\n            pass'),
+
+ ("fix round 1: an engine answer older than the deck's press wins",
+  'ltcplay/streamdeck.py',
+  '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
+  '        if engine is not None:'),
+
+ ("fix round 1: an engine refusal of a deck press is not a fault",
+  'ltcplay/streamdeck.py',
+  '                self._journal(line, fault=not ok, action=name,',
+  '                self._journal(line, fault=False, action=name,'),
+
 ]
 
 
