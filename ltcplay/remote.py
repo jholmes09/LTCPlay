@@ -386,6 +386,30 @@ class Throttle:
         self._fails = {}
         self._until = {}
         self._lock = threading.Lock()
+        self._key_locks = {}
+
+    def serial(self, keys):
+        """Fix round 1 of #39, F3: one PIN check at a time per device
+        address and per name. Without it, 24 overlapping guesses all read
+        "not locked out" before any of them recorded a failure, and 20 were
+        checked. Held across the whole check-verify-record, so the lock-out
+        is seen by the very next guess. The locks are taken in a fixed
+        order, so two keys can never deadlock."""
+        import contextlib
+        with self._lock:
+            locks = [self._key_locks.setdefault(k, threading.Lock())
+                     for k in sorted(keys)]
+
+        @contextlib.contextmanager
+        def held():
+            for lk in locks:
+                lk.acquire()
+            try:
+                yield
+            finally:
+                for lk in reversed(locks):
+                    lk.release()
+        return held()
 
     def wait_s(self, keys):
         now = self.clock()
@@ -732,6 +756,22 @@ class Remote:
             return 400, {"error": "Pick this device's name from the list."}, {}
         who, device = names[who.lower()], screens[device.lower()]
         keys = (("ip", ctx.ip), ("who", who.lower()))
+        with self.throttle.serial(keys):
+            refused = self._check_pin(who, device, pin, keys, ctx)
+            if refused is not None:
+                return refused
+            self.throttle.succeed(keys)
+        tok = self.sessions.create(who, device, ctx.ip)
+        self._journal(who, device, "sign in", "done",
+                      f"{who} signed in on the {device} ({ctx.ip}).")
+        cookie = (f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; "
+                  f"Max-Age={SESSION_MAX_S}")
+        return 200, {"ok": True, "who": who, "device": device}, \
+            {"Set-Cookie": cookie}
+
+    def _check_pin(self, who, device, pin, keys, ctx):
+        """None when the PIN is right; else the refusal to send. Called
+        only with throttle.serial(keys) held."""
         wait = self.throttle.wait_s(keys)
         if wait > 0:
             self._journal(who, device, "sign in", "refused",
@@ -747,22 +787,17 @@ class Remote:
             self._journal(who, device, "sign in", "refused",
                           f"{who} tried to sign in from {ctx.ip} but has no "
                           f"PIN set. Set one on the show machine.")
-            return 403, {"error": f"{who} has no PIN yet. Set one on the "
-                                  f"show machine first."}, {}
+            # The same answer as a wrong PIN: the network is never told
+            # which operators have a PIN (fix round 1, A10b). The journal
+            # on the show machine says the truth.
+            return 403, {"error": "That PIN is not right."}, {}
         if not self.pins.verify(who, pin):
             self.throttle.fail(keys)
             self._journal(who, device, "sign in", "refused",
                           f"A wrong PIN for {who} from {ctx.ip} "
                           f"({device}).")
             return 403, {"error": "That PIN is not right."}, {}
-        self.throttle.succeed(keys)
-        tok = self.sessions.create(who, device, ctx.ip)
-        self._journal(who, device, "sign in", "done",
-                      f"{who} signed in on the {device} ({ctx.ip}).")
-        cookie = (f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; "
-                  f"Max-Age={SESSION_MAX_S}")
-        return 200, {"ok": True, "who": who, "device": device}, \
-            {"Set-Cookie": cookie}
+        return None
 
     def logout(self, ctx):
         s = ctx.session
