@@ -1899,8 +1899,17 @@ def test_no_clock_is_ever_mixed_with_another():
                            "--seconds", "1.5"])
         check(rc == 0, "generating the test LTC WAV failed")
         log_path = os.path.join(work, "run.log")
-        rc = cli_mod.main(["run", tlp, "--networks", net, "--wav", wav,
-                           "--no-output", "--quiet", "--log", log_path])
+        # The show program's one-copy lock goes in this test's own folder,
+        # not the machine's: selftest must pass while the show program
+        # (or autostart) is running on the same machine.
+        from ltcplay import onlyone as _oo
+        _real_lock_path = _oo.path
+        _oo.path = lambda: os.path.join(work, _oo.FILENAME)
+        try:
+            rc = cli_mod.main(["run", tlp, "--networks", net, "--wav", wav,
+                               "--no-output", "--quiet", "--log", log_path])
+        finally:
+            _oo.path = _real_lock_path
         check(rc == 0, "cmd_run itself failed under the injected clock offset")
         logged = (open(log_path, encoding="utf-8").read()
                  if os.path.exists(log_path) else "")
@@ -5039,10 +5048,19 @@ def test_a_read_only_folder_is_a_sentence():
                 os.environ["LOCALAPPDATA"] = saved_local
         os.makedirs(log_p, exist_ok=True)
         run_env = dict(os.environ, LOCALAPPDATA=fake_local)
+    else:
+        # The show program's one-copy lock lives under HOME on a Mac (and
+        # here); give the run a HOME of its own so this test passes while
+        # the show program or autostart is running on this machine. On
+        # Windows the LOCALAPPDATA above already does the same.
+        fake_home = tempfile.mkdtemp()
+        run_env = dict(os.environ, HOME=fake_home)
     r = subprocess.run([sys.executable, "-m", "ltcplay.cli", "run", tlp,
                         "--wav", wav, "--no-output", "--quiet"],
                        capture_output=True, text=True, cwd=here, timeout=60,
                        env=run_env)
+    if sys.platform != "win32":
+        shutil.rmtree(fake_home, ignore_errors=True)
     out = r.stdout + r.stderr
     check("Traceback" not in out,
           f"a run in a folder it cannot write to printed a stack trace:\n"
@@ -6959,8 +6977,19 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
     from ltcplay import cli, onlyone as oo, streamdeck as sd
     root = os.path.dirname(os.path.abspath(__file__))
     work = tempfile.mkdtemp()
+    # The state folder a subprocess with HOME and LOCALAPPDATA set to `work`
+    # uses on a Mac, on Windows and here alike; this process uses it too.
+    lockdir = os.path.join(work, "ltcplay")
+    os.makedirs(lockdir)
     real_path = oo.path
-    oo.path = lambda: os.path.join(work, oo.FILENAME)
+    oo.path = lambda: os.path.join(lockdir, oo.FILENAME)
+    # `ltc serve` writes its operator, screen and tonight files beside the
+    # launcher, so every serve below runs from a copy of the program in a
+    # scratch folder, never from this one.
+    prog = tempfile.mkdtemp()
+    shutil.copytree(os.path.join(root, "ltcplay"),
+                    os.path.join(prog, "ltcplay"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
     procs = []
 
     def free_port():
@@ -6975,12 +7004,32 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
                 "from ltcplay.onlyone import OutputLock;"
                 "OutputLock(%r, %r).acquire(); print('held', flush=True);"
                 "time.sleep(120)"
-                % (root, os.path.join(work, lockname), note))
+                % (root, os.path.join(lockdir, lockname), note))
         p = subprocess.Popen([sys.executable, "-c", code],
                              stdout=subprocess.PIPE, text=True)
         procs.append(p)
         p.stdout.readline()
         return p
+
+    def serve_proc(port, home):
+        p = subprocess.Popen(
+            [sys.executable, "-m", "ltcplay.cli", "serve", "--no-browser",
+             "--port", str(port), "--folder", home],
+            cwd=prog, env=dict(os.environ, HOME=home, LOCALAPPDATA=home,
+                               PYTHONUNBUFFERED="1"),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        procs.append(p)
+        return p
+
+    def finish(p, secs):
+        # A copy that should have been refused but runs is stopped here,
+        # within `secs`, and reads as a failure, never as a hang.
+        try:
+            out, _ = p.communicate(timeout=secs)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, _ = p.communicate()
+        return p.returncode, out
 
     def quiet(fn, *a):
         out, err = io.StringIO(), io.StringIO()
@@ -7019,8 +7068,7 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
         hp = holder(oo.SHOW_LOCK, "pid 1: ltc serve on port 7878, started "
                                   "earlier")
         port = free_port()
-        rc, said = quiet(cli.main, ["serve", "--no-browser", "--port",
-                                    str(port), "--folder", work])
+        rc, said = finish(serve_proc(port, work), 30)
         check(rc == 2 and "already running" in said
               and "ltc serve on port 7878" in said
               and "—" not in said and "–" not in said,
@@ -7089,7 +7137,8 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
             if p.poll() is None:
                 p.kill()
                 p.wait()
-            p.stdout.close()
+            if p.stdout:
+                p.stdout.close()
         oo.path = real_path
         shutil.rmtree(work, ignore_errors=True)
 
@@ -7097,18 +7146,10 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
     # HOME and LOCALAPPDATA point both at a scratch folder so the lock lands
     # there on a Mac, on Windows and here alike.
     work = tempfile.mkdtemp()
-    env = dict(os.environ, HOME=work, LOCALAPPDATA=work,
-               PYTHONUNBUFFERED="1")
     procs = []
 
     def serve():
-        p = subprocess.Popen(
-            [sys.executable, "-m", "ltcplay.cli", "serve", "--no-browser",
-             "--port", str(free_port()), "--folder", work],
-            cwd=root, env=env, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True)
-        procs.append(p)
-        return p
+        return serve_proc(free_port(), work)
 
     def wait_running(p, secs=30):
         lock = os.path.join(work, "ltcplay", oo.SHOW_LOCK)
@@ -7126,11 +7167,7 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
         first = serve()
         check(wait_running(first), "the first ltc serve starts")
         second = serve()
-        try:
-            out, _ = second.communicate(timeout=60)
-        except subprocess.TimeoutExpired:
-            second.kill()
-            out, _ = second.communicate()
+        _rc, out = finish(second, 60)
         check(second.returncode == 2 and "already running" in out
               and "ltc serve on port" in out and "pid " in out,
               f"a second ltc serve process exits at once, naming the first: "
@@ -7155,6 +7192,7 @@ def test_second_copy_guard_one_show_and_one_deck_per_machine():
             if p.stdout:
                 p.stdout.close()
         shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(prog, ignore_errors=True)
     print("  ok")
 
 
@@ -33231,7 +33269,9 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         check(s is not None, f"and a fresh cycle afterwards re-arms as "
                              f"before: {latest()['groups'][0]}")
 
-        # A foreign sender with the right key: refused, journaled once.
+        # A foreign sender with the right key: refused as the show's Abort,
+        # journaled once; and since fix round 1 of PR #40 a second keyed
+        # sender on the flame link disarms every group (second-copy guard).
         rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
         for i in range(20):
             rogue.sendto(fl.encode_disarm_all(10 ** 7 + i, 1e9, 99, "rogue",
@@ -33239,9 +33279,19 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
             time.sleep(0.005)
         time.sleep(0.2)
         s = latest()
-        check(armed(s, 0) and "another sender" in s["frames"]["last_reject"],
-              f"a disarm_all from another socket is refused: "
+        check(not armed(s, 0) and "another sender" in s["frames"]["last_reject"]
+              and s["disarm_all"]["last_id"] == link.abort_id,
+              f"a disarm_all from another socket is refused as an Abort, and "
+              f"the second sender disarms every group: "
               f"{s['frames']['last_reject']!r} {s['groups'][0]['armed']}")
+        # Once it has gone, a fresh cycle re-arms group 0 for what follows.
+        time.sleep(0.6)
+        deck["wanted"] = [False, True, False]
+        time.sleep(0.4)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0), 3.0)
+        check(s is not None, f"re-armed by a fresh cycle once the other "
+                             f"socket has gone: {latest()['groups'][0]}")
         # The wrong key and the wrong version, from the locked socket itself.
         for i in range(10):
             link._sock.sendto(fl.encode_disarm_all(
@@ -33271,12 +33321,29 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         # The sender stops: flamesafe fails safe inside frame_stale_ms.
         t_stop = time.perf_counter()
         link.stop()
+        t_stopped = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["fire"] == "zeroed", 1.0)
         t_fire = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["state"] == "stale", 2.0)
         t_stale = time.perf_counter() - t_stop
+        # Where the time went, for a failure on a slow machine: how long
+        # stop() itself took, when the first "zeroed" status arrived and how
+        # old flamesafe said the last frame was in it, and the largest gap
+        # between status frames (40 Hz expected) since the stop.
+        after = [(t_ - t_stop, x) for t_, x in list(statuses)
+                 if t_ >= t_stop - 0.05]
+        first_zero = next(((dt, x) for dt, x in after
+                           if x["frames"]["fire"] == "zeroed"), None)
+        gaps = [b[0] - a[0] for a, b in zip(after, after[1:])]
+        where = (f"stop() took {t_stopped:.3f} s; first zeroed status "
+                 f"received {first_zero[0]:.3f} s after the stop, "
+                 f"frames.age_ms {first_zero[1]['frames']['age_ms']}"
+                 if first_zero else f"stop() took {t_stopped:.3f} s; no "
+                 f"zeroed status")
         check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
-                                   f"sender stopped (fire_hold_ms 100)")
+                                   f"sender stopped (fire_hold_ms 100): "
+                                   f"{where}; largest gap between status "
+                                   f"frames {max(gaps or [0]):.3f} s")
         check(s is not None and t_stale < 0.5 + 0.2
               and all(g["sent_safety"] == 0 for g in s["groups"]),
               f"link stale and every group disarmed {t_stale:.3f} s after "

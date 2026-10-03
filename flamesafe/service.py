@@ -23,7 +23,8 @@ import sys
 import time
 
 from . import rules
-from .composer import Composer, now
+from .composer import (Composer, now, FLAME_FLOOD_BYTES_PER_TICK,
+                       FLAME_FLOOD_DATAGRAMS_PER_TICK)
 from .link import DisarmAll, LinkError, decode_from_ltcplay, encode_status
 from .sacn import build_packet
 
@@ -155,6 +156,18 @@ class Service:
         rx = self._rx
         if rx is None:
             return
+        # Fix round 1 of PR #40: count what is waiting, keyed or not, so a
+        # flood blocks consent the way it does on the arm link.
+        counts = [0, 0]
+        try:
+            self._drain_into(rx, counts)
+        finally:
+            n_read, n_bytes = counts
+            self.composer.note_flame_link_flooded(
+                n_read > FLAME_FLOOD_DATAGRAMS_PER_TICK
+                or n_bytes > FLAME_FLOOD_BYTES_PER_TICK, n_read, n_bytes)
+
+    def _drain_into(self, rx, counts):
         for _ in range(DRAIN_PER_TICK):
             try:
                 data, addr = rx.recvfrom(65535)
@@ -165,6 +178,8 @@ class Service:
                 continue
             except OSError:
                 return
+            counts[0] += 1
+            counts[1] += len(data)
             try:
                 msg = decode_from_ltcplay(data, self.cfg.universe,
                                           self.cfg.link_key)

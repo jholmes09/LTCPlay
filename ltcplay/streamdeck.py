@@ -548,11 +548,13 @@ _SHORT_REASON = {
     "Another sender is on the arm link: a cycle cannot arm until it "
     "stops. Cycle the arm again once it has gone.": "OTHER SENDER",
     # Second-copy guard (2026-10-03, flamesafe/composer.py's
-    # FLAME_OTHER_SENDER): the same refusal, for a second sender on the
-    # show program's flame link, or that link just changing hands.
+    # FLAME_OTHER_SENDER): a second sender on the show program's flame link
+    # (every group disarmed), that link just changing hands (which every
+    # normal ltcplay restart does, so this shows for about half a second
+    # after one), or a flood on it.
     "Another sender is on the show program link, or it just changed "
-    "hands: a cycle cannot arm until that has settled. Cycle the arm "
-    "again once it has.": "OTHER SENDER",
+    "hands: every group is disarmed and a cycle cannot arm until that has "
+    "settled. Cycle the arm again once it has.": "OTHER SENDER",
     # The show's Abort from the rack screen or phone (flamesafe's
     # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
     "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
