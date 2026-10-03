@@ -3420,6 +3420,11 @@ def _run():
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
     if not run_suite():
+        for _l in _LAST_FAILS:
+            print("  " + _l)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print("::error title=mutate baseline::" + " | ".join(
+                _LAST_FAILS)[:900].replace("%", "%25").replace("\n", "%0A"))
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
