@@ -15,6 +15,14 @@ the right key is rejected before anything else is looked at.  ltcplay reads
 the same value from its own config and must reject status frames without
 it.  The composer adds a second guard, the sender lock: while the link is
 live, only the first accepted sender's address is accepted.
+
+Build step 7b (2026-10-01) adds a third frame, `"t": "arm"`, from the
+Stream Deck (part of ltcplay's own process, see ltcplay/streamdeck.py) to
+flamesafe's `link.arm_port`.  It carries the same key and a strict shape
+(decode_arm), but no sender lock: there is exactly one Stream Deck, the key
+already keeps out anything that has not read flamesafe's config, and the
+composer's own consent and liveness rules (arminput.py, rules.py) are what
+actually decide whether a group arms, not this module.
 """
 
 from __future__ import annotations
@@ -112,6 +120,62 @@ def encode_flame(seq, timecode, mono, universe, values, key):
         "v": CONTRACT_VERSION, "k": key, "t": "flame", "seq": int(seq),
         "tc": timecode, "mono": float(mono), "universe": int(universe),
         "values": [int(v) for v in values],
+    }, separators=(",", ":")).encode("utf-8")
+
+
+def decode_arm(data, expect_n, key):
+    """Bytes off the wire to (wanted, seq, names), or LinkError with the
+    reason.  One arm frame from the Stream Deck (build step 7b): it says
+    only what the deck WANTS right now, continuously, exactly like
+    arminput.ArmAssertion.  Every consent, dwell, chatter and edge rule
+    still runs in the composer afterwards, unchanged; this function only
+    gets a well-formed assertion onto arminput's interface.
+
+    `names` is required on this frame, unlike arminput.ArmAssertion where
+    it is optional: a deck that does not say which groups it means must
+    never be trusted to mean the right ones."""
+    if not isinstance(data, (bytes, bytearray)):
+        raise LinkError("not bytes")
+    if len(data) > MAX_DATAGRAM:
+        raise LinkError(f"datagram too long: {len(data)} bytes")
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise LinkError("not valid JSON") from None
+    if not isinstance(obj, dict):
+        raise LinkError("not a JSON object")
+    if obj.get("v") != CONTRACT_VERSION:
+        raise LinkError(f"wrong contract version {obj.get('v')!r}, "
+                        f"this program speaks {CONTRACT_VERSION}")
+    if not isinstance(obj.get("k"), str) or obj.get("k") != key:
+        raise LinkError("wrong key")
+    if obj.get("t") != "arm":
+        raise LinkError(f"wrong message type {obj.get('t')!r}")
+    seq = obj.get("seq")
+    if not _is_int(seq) or seq < 0:
+        raise LinkError("seq is not a whole number at or above 0")
+    wanted = obj.get("wanted")
+    if not isinstance(wanted, list) or len(wanted) != expect_n \
+            or any(not isinstance(w, bool) for w in wanted):
+        raise LinkError(f"wanted is not a list of exactly {expect_n} "
+                        f"true/false values")
+    names = obj.get("names")
+    if not isinstance(names, list) or len(names) != expect_n \
+            or any(not isinstance(n, str) for n in names):
+        raise LinkError(f"names is not a list of exactly {expect_n} group "
+                        f"names")
+    return tuple(wanted), seq, tuple(names)
+
+
+def encode_arm(seq, wanted, names, key):
+    """An arm frame as the Stream Deck driver sends it.  Used by the tests
+    and by the test driver only; the real driver (ltcplay/streamdeck.py)
+    writes its own encoder from CONTRACT.md, the same way ltcplay's flame
+    frames are written -- this module is never imported across the wall."""
+    return json.dumps({
+        "v": CONTRACT_VERSION, "k": key, "t": "arm", "seq": int(seq),
+        "wanted": [bool(w) for w in wanted],
+        "names": [str(n) for n in names],
     }, separators=(",", ":")).encode("utf-8")
 
 
