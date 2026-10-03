@@ -31735,6 +31735,81 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
     print("  ok")
 
 
+def test_fire_ice_start_rules_on_the_ordered_line():
+    section("fire & ice: a dry run never asks the performer to start a "
+            "show; an Abort decided before a waiting show start supersedes "
+            "it; the runner refuses while the conductor is latched; closing "
+            "zeroes and stops the flame link last")
+    import threading
+    import types
+    from ltcplay import schedule_service as SV
+    # A dry run, with a performer attached anyway: never asked.
+    d = _fi_night(performs=False)
+    if d.S is None:
+        return
+    S = d.S
+    asked = []
+    d.svc.performer = types.SimpleNamespace(
+        start_show=lambda n, who="": asked.append(n))
+    d.svc.tick()
+    d.now[0] = _den(S, 18, 0)
+    d.svc.tick()
+    _settle(d.svc, d.c)
+    check(d.svc.machine.state == S.SHOW and not asked,
+          f"a dry run starts its show without the performer: {asked}")
+    d.c.close()
+    d.link.close()
+    # The ordered line: a show start still waiting when an Abort is decided
+    # is never sent.
+    ran, gate = [], threading.Event()
+
+    def run_one(call):
+        if call.method == "hold":
+            gate.wait(5)
+        ran.append(call.method)
+    line = SV._ConductorCalls(run_one)
+    calls = [SV._ConductorCall("Hold", "hold", "x", "", 1),
+             SV._ConductorCall("Start the show", "start_show", "x", "", 2),
+             SV._ConductorCall("Abort", "abort", "x", "", 3)]
+    for c in calls:
+        line.put(c)
+    check(calls[2].done.wait(3), "the Abort went out beside the stuck line")
+    gate.set()
+    line.flush(5)
+    check("abort" in ran and "start_show" not in ran,
+          f"the waiting show start was superseded by the Abort: {ran}")
+    # The runner itself: latched conductor, no start.
+    n = _fi_night()
+    S = n.S
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    n.sess.clock._last_frame = 9
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(n.svc, n.c)
+    del n.calls[:]
+    r = n.w.runner.start_show(7, who="Andy")
+    check(not r.ok and "latched" in r.sentence and
+          not any(k == "music_play" for k, _a, _t in n.calls),
+          f"while the conductor is latched the runner starts nothing: {r}")
+    n.c.close()
+    n.link.close()
+    # Closing: the flame link is zeroed, then stopped, after the rest.
+    F = _fi_mod()
+    order = []
+    fl = types.SimpleNamespace(zero=lambda: order.append("zero"),
+                               stop=lambda: order.append("stop"))
+    cond = types.SimpleNamespace(close=lambda: order.append("conductor"))
+    F.Wiring(cond, None, None, None, flame_link=fl).close()
+    check(order == ["conductor", "zero", "stop"],
+          f"closing: the conductor first, then flame zeros, then the link "
+          f"stops: {order}")
+    print("  ok")
+
+
 def test_fire_ice_auto_start_off_and_start_now():
     section("fire & ice: auto_start off never starts a scheduled show by "
             "itself, Start now still does, and every start is journaled")
@@ -34788,6 +34863,7 @@ if __name__ == "__main__":
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
     test_fire_ice_auto_start_off_and_start_now()
+    test_fire_ice_start_rules_on_the_ordered_line()
     test_fire_ice_status_mirror_reaches_the_flame_link()
     test_ltc_serve_gpl_builds_no_conductor()
     test_the_gpl_path_never_loads_the_conductor()

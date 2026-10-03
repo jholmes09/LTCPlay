@@ -6341,14 +6341,13 @@ def build():
   "        self.svc.report(\"CLOSING_DONE\",",
   "        (lambda *a: None)(\"CLOSING_DONE\","),
 
+ # (show-assembly: #32's show start now runs on #30's ordered line, so this
+ # one targets where the conductor is told a show started: only once it is
+ # confirmed, never at the start.)
  ("fire & ice: the conductor is told a show started before its audio is",
   "ltcplay/schedule_service.py",
-  "                started = self.performer.start_show(shows[0])\n"
-  "                if not started.ok:\n"
-  "                    return \"Show start\", started",
-  "                r = self.conductor.show_starting(who, screen)\n"
-  "                started = self.performer.start_show(shows[0])\n"
-  "                return \"Show start\", r"),
+  "        if ev.kind == sch.SHOW_CONFIRMED and \\\n",
+  "        if (ev.kind == sch.SHOW_CONFIRMED or sch.START_SHOW in kinds) and \\\n"),
 
  ("fire & ice: a performing scheduler still ends shows on its own clock",
   "ltcplay/schedule_service.py",
@@ -6446,11 +6445,6 @@ def build():
   'ltcplay/fire_ice.py',
   '        if s is None or not getattr(s, "running", False):\n            return None\n        p = getattr(s, "player", None)',
   '        if s is None:\n            return None\n        p = getattr(s, "player", None)'),
-
- ('show-assembly: the flame cue refusal is journaled every frame',
-  'ltcplay/fire_ice.py',
-  '            if text != self._problem:',
-  '            if True:'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
