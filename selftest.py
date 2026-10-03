@@ -31952,6 +31952,15 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
         rows = [r for r in svc.journal
                 if r.get("outcome") == "status_mirror"]
         check(rows, "it says it reads flamesafe through the status mirror")
+        # Review H7: serve starts the link's sender thread, not only opens
+        # it: frames go out on their own.
+        sent0 = link.sent
+        deadline = time.time() + 3
+        while time.time() < deadline and link.sent < sent0 + 5:
+            time.sleep(0.02)
+        check(link.sender_state() == "running" and link.sent >= sent0 + 5,
+              f"ltc serve started the flame link's sender: "
+              f"{link.sender_state()} {link.sent - sent0} frames")
         r = httpd.remote.disarm_all("Andy", "rack screen")
         check(getattr(link, "abort_state")() ==
               "sent, not yet confirmed by flamesafe",
@@ -31959,6 +31968,18 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
               f"flame link: {r} {link.abort_state()}")
         tx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
         try:
+            # Review H4: a frame keyed with anything but flamesafe's key
+            # never reaches the flame link (it could confirm a disarm).
+            forged = {"v": 2, "t": "status", "k": "not-flamesafes-key",
+                      "frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": link.abort_id}}
+            for _ in range(10):
+                tx.sendto(_json.dumps(forged).encode(),
+                          ("127.0.0.1", doc["link"]["status_mirror_port"]))
+                time.sleep(0.05)
+            check(link.abort_state() != "confirmed by flamesafe",
+                  f"a status frame with another key confirms nothing: "
+                  f"{link.abort_state()}")
             frame = {"v": 2, "t": "status", "k": doc["link"]["key"],
                      "frames": {"seq": link.seq},
                      "disarm_all": {"last_id": link.abort_id}}
@@ -32145,6 +32166,111 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
         sys.stdout = real_stdout
         # Leave the logger the way a GPL run has it.
         showlog.ShowLog(os.path.join(work, "last.log"))
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_review_hand_mutations():
+    section("fire & ice: the runner starts the show it was told, confirms "
+            "only the cue it started, closes the night for real; a release "
+            "that did not go out is not done; ltc serve checks flamesafe's "
+            "config before it binds anything (PR #43 review, item 10: H5, "
+            "H6, H9, H10, H12)")
+    import tempfile
+    import types
+    import json as _json
+    F = _fi_mod()
+    # H6: the show number reaches the runner.
+    n = _fi_night()
+    if n.S is None:
+        return
+    S = n.S
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    want = n.svc.machine.running
+    cue = n.w.runner._cue or {}
+    check(want and cue.get("show") == want,
+          f"the runner started show {want}, not {cue.get('show')!r}")
+    # H5: another cue on the show audio is not the one it started.
+    n.sess.clock.cues_played += 1
+    n.sess.clock._last_frame = 9
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    check(not any(r.get("action") == "SHOW_CONFIRMED"
+                  for r in n.svc.journal),
+          "a cue the runner did not start never confirms the show")
+    n.c.close()
+    n.link.close()
+    # H12: closing zeroes the flames, blanks the lasers, blacks the pixels.
+    n = _fi_night()
+    n.svc.tick()
+    reported = []
+    n.svc.report = lambda *a, **k: reported.append(a)
+    real = n.svc.machine
+    n.svc.machine = types.SimpleNamespace(state="CLOSING")
+    del n.calls[:]
+    n.w.runner.poll()
+    n.c.run_pending()
+    n.svc.machine = real
+    kinds = [k for k, _a, _t in n.calls]
+    check("flames_zero" in kinds and n.sess.player.override == "blackout"
+          and any(k == "beyond" or "laser" in str(k) for k in kinds)
+          and reported and reported[0][0] == "CLOSING_DONE",
+          f"closing: flames zero, lasers blanked, pixels black, then "
+          f"CLOSING_DONE: {kinds} {reported}")
+    n.c.close()
+    n.link.close()
+    # H9: a release on a link that is not open is not done.
+    show = F.FireIceShow(types.SimpleNamespace(session=None),
+                         flame_link=types.SimpleNamespace(
+                             release=lambda: False))
+    r = show.flames_release()
+    check(not r.ok, f"a release that did not go out is reported: {r}")
+    # H10: ltc serve refuses a flamesafe config it cannot read before it
+    # binds anything.
+    from ltcplay import cli as cli_mod, web as web_mod
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    bad = os.path.join(work, "broken_flamesafe.json")
+    with open(bad, "w") as fh:
+        fh.write("{ not json")
+    rule = os.path.join(work, SV.RULE_FILE)
+    SV.save_rule(rule, _sched_doc())
+    with open(F.config_path_for(rule), "w") as fh:
+        _json.dump({"flamesafe_config": bad}, fh)
+    served = []
+    real_serve = web_mod.serve
+
+    def no_serve(*a, **k):
+        served.append(a)
+        raise RuntimeError("serve was reached")
+    web_mod.serve = no_serve
+    try:
+        def serve_with(path):
+            del served[:]
+            with open(F.config_path_for(rule), "w") as fh:
+                _json.dump({"flamesafe_config": path}, fh)
+            args = types.SimpleNamespace(
+                folder=work, schedule=rule, announce=None, port=0,
+                bind="127.0.0.1", token=None, no_browser=True, network=False,
+                flamesafe_config=None)
+            try:
+                return cli_mod._cmd_serve(args)
+            except Exception as e:
+                return f"raised {type(e).__name__}: {e}"
+        good, _sh, _doc = _fi_flame_files(work)
+        rc = serve_with(good)
+        check(served, f"setup: a good flamesafe config gets as far as "
+                      f"binding: {rc!r}")
+        rc = serve_with(bad)
+        check(rc not in (0, None) and not served,
+              f"ltc serve stops on flamesafe's config before binding: "
+              f"{rc!r} served={bool(served)}")
+    finally:
+        web_mod.serve = real_serve
+        import shutil
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
@@ -35746,6 +35872,7 @@ if __name__ == "__main__":
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
+    test_fire_ice_review_hand_mutations()
     test_fire_ice_show_log_is_written_off_the_logging_threads()
     test_fire_ice_abort_and_hold_before_the_show_is_confirmed()
     test_fire_ice_show_end_burst_never_holds_up_the_flame_link()

@@ -6695,6 +6695,51 @@ def build():
   '                                   background=self.log_background)',
   '                                   background=False)'),
 
+
+ # -- PR #43 independent review, fix round 1, item 10: the reviewer's hand
+ # mutations that survived the full suite.
+ ('review H4: the status mirror feeds the flame link frames with ANY key',
+  'ltcplay/web.py',
+  '            obj = remote_mod.decode_status(data, fstatus.key)',
+  '            import json as _j\n            try:\n                obj = _j.loads(data)\n            except ValueError:\n                obj = None'),
+
+ ('review H5: the runner confirms/ends on a cue that is not the one it started',
+  'ltcplay/fire_ice.py',
+  '        mine = clk.playing and clk.cues_played == cue["played"]',
+  '        mine = clk.playing'),
+
+ ("review H6: the show number never reaches the runner's start_show",
+  'ltcplay/schedule_service.py',
+  '            if len(entry) > 3:\n                call.show = entry[3]\n',
+  ''),
+
+ ('review H7: ltc serve opens the flame link but never starts its sender thread',
+  'ltcplay/fire_ice.py',
+  '        if threaded:\n            built_link.start()\n        else:\n            built_link.open()',
+  '        built_link.open()'),
+
+ ('review H9: a release on a closed flame link counts as done',
+  'ltcplay/fire_ice.py',
+  '        return C.done("Flame cues released.") if ok is True else \\\n            C.failed("Flame cues release did not go out.")',
+  '        return C.done("Flame cues released.")'),
+
+ ("review H10: ltc serve no longer checks flamesafe's config before binding",
+  'ltcplay/cli.py',
+  '            fire_ice_mod.flame_link_config(fire_ice)\n',
+  ''),
+
+ ('review H11: a flame controller with no ActiveState attribute',
+  'ltcplay/fire_ice.py',
+  '            if a.get("ActiveState", "Active") == "Active":',
+  '            if a.get("ActiveState", "Inactive") == "Active":'),
+
+ ('review H12: closing reports done without zeroing flames, blanking lasers or blacking the pixels',
+  'ltcplay/fire_ice.py',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close()\n            return',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self.svc.report("CLOSING_DONE", "x")\n            return'),
+
+
+
 ]
 
 
