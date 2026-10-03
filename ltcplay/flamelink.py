@@ -35,7 +35,12 @@ The values in each frame are ALL ZEROS unless every one of these holds:
      trusted: a timecode that has not changed for TC_STILL_S (0.1 s) is
      zeros, journaled once per episode (fix round 1 of PR #34, item 5: a
      stalled clock thread kept its last frame and a cue at that frame went
-     out for as long as it stayed stalled);
+     out for as long as it stayed stalled). Design note (fix round 2): it
+     means CHANGED, not ADVANCING. A source stuck bouncing between two
+     frames, or stepping backwards, still reads as moving here (review
+     probe p9b); this rule catches a clock that has stopped, not one that
+     is wrong. Telling a wrong clock from a seek is the clock's job;
+
   3. the cue provider answered with exactly 512 whole numbers 0 to 255 for
      that timecode, without raising. Anything else is zeros for that frame,
      journaled once per episode.
@@ -97,7 +102,9 @@ same as streamdeck.ArmSocket. A provider that raises or answers garbage:
 one line per episode. An exception anywhere in the sender thread's loop:
 one line when it starts and one when it clears, and the loop carries on;
 snapshot() says the sender is failing, or dead if the thread ever stops
-without stop() (fix round 1, item 6). A key still equal to the repo's
+without stop() (fix round 1, item 6), or stalled if no frame has gone out
+for more than half of frame_stale_ms without anything raising (a provider
+or the journal blocking; fix round 2, item 2), journaled once per episode. A key still equal to the repo's
 example key: a fault line at open. note_status() takes flamesafe's status
 frames (from whoever reads `link.status_port`; see the PR) and raises the
 contract's lock alarm when the last accepted frame is not one of ours for
@@ -123,8 +130,12 @@ SEND_HZ_MAX = 100
 DISARM_COPIES = 3           # one Abort, a few datagrams at once...
 ABORT_REPEAT_MIN_S = 0.75   # ...then one per frame for at least this long
 ABORT_REPEAT_MARGIN_S = 0.25  # and always this much past frame_stale_ms
-FRAME_STALE_MS_DEFAULT = 500  # flamesafe's example config, and the show's
 STALE_MS_MIN, STALE_MS_MAX = 100, 2500   # flamesafe's own bounds
+# Fix round 2, item 1: parse() REQUIRES flamesafe's frame_stale_ms (a
+# flame_link block without it is refused). Only a FlameLinkConfig built
+# directly in code falls back to this, the largest value flamesafe accepts,
+# so a missing copy can only make the Abort repeat longer, never too short.
+FRAME_STALE_MS_DEFAULT = STALE_MS_MAX
 TC_STILL_S = 0.1            # a timecode unchanged this long is not moving
 LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
@@ -185,9 +196,13 @@ class FlameLinkConfig:
     def parse(cls, doc, where="flame_link"):
         """A "flame_link" block: {"ip": "127.0.0.1", "port": 5571,
         "universe": 1, "key": "<flamesafe's link.key>", "send_hz": 40,
-        "frame_stale_ms": 500}. `ip`, `send_hz` and `frame_stale_ms`
-        (flamesafe's, used only to decide how long an Abort is repeated)
-        may be left out."""
+        "frame_stale_ms": 500}. `ip` and `send_hz` may be left out.
+        `frame_stale_ms` may not (fix round 2, item 1): it must be
+        flamesafe's own, because it decides how long an Abort is repeated,
+        and a copy that defaulted to 500 while flamesafe ran 2500 left a
+        1 s junk burst able to lose every copy with the link still up
+        (review probe p11). Prefer from_flamesafe_config, which reads it
+        from the one file flamesafe itself reads."""
         if not isinstance(doc, dict):
             raise FlameLinkConfigError(f"{where}: it has to be one JSON "
                                        f"object.")
@@ -223,7 +238,7 @@ class FlameLinkConfig:
                 f"{where}: 'send_hz' has to be a whole number "
                 f"{SEND_HZ_MIN} to {SEND_HZ_MAX}; flamesafe disarms a "
                 f"sender slower than {SEND_HZ_MIN} Hz.")
-        stale = doc.get("frame_stale_ms", FRAME_STALE_MS_DEFAULT)
+        stale = doc.get("frame_stale_ms")
         if not _is_int(stale) or not STALE_MS_MIN <= stale <= STALE_MS_MAX:
             raise FlameLinkConfigError(
                 f"{where}: 'frame_stale_ms' has to be flamesafe's own "
@@ -423,6 +438,15 @@ class FlameLink:
         self._run_fail_since = None
         self._run_fail_count = 0
         self._run_dead = ""         # why the thread stopped without stop()
+        # Fix round 2, item 2: a sender that stops sending WITHOUT raising
+        # (a provider or the journal blocking) is "stalled" once no frame
+        # has gone out for half of frame_stale_ms. A small watch thread
+        # journals it once per episode; snapshot() works it out from the
+        # clock, so it is right even while the journal itself is stuck.
+        self._started_at = None
+        self._last_frame_at = None  # clock after each send_frame's send
+        self._watch = None
+        self._stall_noted = False
         # from flamesafe's status frames (note_status)
         self.lock_alarm = ""
         self._not_ours_since = None
@@ -470,19 +494,68 @@ class FlameLink:
         if self._thread is None:
             self._stop.clear()
             self._run_dead = ""
+            self._started_at = self._clock()
+            self._stall_noted = False
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="ltcplay-flame-link")
             self._thread.start()
+            self._watch = threading.Thread(target=self._watch_run,
+                                           daemon=True,
+                                           name="ltcplay-flame-link-watch")
+            self._watch.start()
         return self
+
+    def stall_s(self):
+        """No frame for longer than this (half of flamesafe's
+        frame_stale_ms) and a running sender is stalled."""
+        return self.cfg.frame_stale_ms / 2000.0
+
+    def _stalled_now(self):
+        last = self._last_frame_at
+        if last is None:
+            last = self._started_at
+        if last is None:
+            return False
+        try:
+            return self._clock() - last > self.stall_s()
+        except Exception:
+            return True
+
+    def _watch_run(self):
+        """Journals a stall once when it starts and once when it ends.
+        Never sends anything and never touches the link's locks."""
+        while not self._stop.wait(0.05):
+            try:
+                stalled = self.sender_state() == "stalled"
+                if stalled and not self._stall_noted:
+                    self._stall_noted = True
+                    self._note(f"Flame link: no flame frame has gone to "
+                               f"flamesafe for more than "
+                               f"{self.stall_s():g} s, though the sender "
+                               f"has not failed (something it waits on is "
+                               f"stuck). flamesafe disarms every group "
+                               f"after {self.cfg.frame_stale_ms} ms of "
+                               f"this. This line will not repeat until it "
+                               f"recovers.", fault=True,
+                               action="flame_link", outcome="sender_stalled")
+                elif not stalled and self._stall_noted:
+                    self._stall_noted = False
+                    self._note("Flame link: flame frames are going to "
+                               "flamesafe again after a stall.",
+                               action="flame_link",
+                               outcome="sender_unstalled")
+            except Exception:
+                pass
 
     def stop(self):
         """Stop sending. flamesafe then disarms every group within its own
         frame_stale_ms, exactly as if ltcplay had died."""
         self._stop.set()
-        t = self._thread
-        if t is not None and t is not threading.current_thread():
-            t.join(2.0)
+        for t in (self._thread, self._watch):
+            if t is not None and t is not threading.current_thread():
+                t.join(2.0)
         self._thread = None
+        self._watch = None
         with self._lock:
             s, self._sock = self._sock, None
         if s is not None:
@@ -692,6 +765,7 @@ class FlameLink:
             self.last_values_nonzero = any(values)
             ok = self._send(encode_flame(seq, tc, mono, self.cfg.universe,
                                          values, self.cfg.key))
+            self._last_frame_at = self._clock()
             self._repeat_abort()
             return ok
 
@@ -849,8 +923,10 @@ class FlameLink:
             return self.lock_alarm
 
     def sender_state(self):
-        """"running", "failing" (passes raising, still trying), "dead" (the
-        thread ended without stop()), "stopped", or "not started"."""
+        """"running", "failing" (passes raising, still trying), "stalled"
+        (no frame for more than half of frame_stale_ms without anything
+        raising: something it waits on is stuck), "dead" (the thread ended
+        without stop()), "stopped", or "not started"."""
         t = self._thread
         if self._run_dead or (t is not None and not t.is_alive()
                               and not self._stop.is_set()):
@@ -859,6 +935,8 @@ class FlameLink:
             return "stopped" if self._stop.is_set() else "not started"
         if self._run_fail_since is not None:
             return "failing"
+        if self._stalled_now():
+            return "stalled"
         return "running"
 
     def abort_state(self):
@@ -879,18 +957,21 @@ class FlameLink:
         sends fail, while the sender thread's passes fail, and once that
         thread has died (fix round 1, item 6)."""
         sender = self.sender_state()
-        with self._lock:
-            return {"open": self._sock is not None,
-                    "seq": self.seq, "sent": self.sent,
-                    "send_errors": self.send_errors,
-                    "sender": sender,
-                    "run_errors": self.run_errors,
-                    "sending_ok": (self._fail_since is None
-                                   and sender not in ("failing", "dead")),
-                    "zeroed": self.zeroed,
-                    "nonzero": self.last_values_nonzero,
-                    "cue_problem": self._cue_problem,
-                    "lock_alarm": self.lock_alarm,
-                    "abort_id": self.abort_id,
-                    "abort": self.abort_state(),
-                    "disarm_unconfirmed": self._abort_unconfirmed}
+        # No lock (fix round 2, item 2): this must answer while the sender
+        # is stuck, and a stuck journal call can be holding the link lock.
+        # Every field is one plain read.
+        return {"open": self._sock is not None,
+                "seq": self.seq, "sent": self.sent,
+                "send_errors": self.send_errors,
+                "sender": sender,
+                "run_errors": self.run_errors,
+                "sending_ok": (self._fail_since is None
+                               and sender not in ("failing", "dead",
+                                                  "stalled")),
+                "zeroed": self.zeroed,
+                "nonzero": self.last_values_nonzero,
+                "cue_problem": self._cue_problem,
+                "lock_alarm": self.lock_alarm,
+                "abort_id": self.abort_id,
+                "abort": self.abort_state(),
+                "disarm_unconfirmed": self._abort_unconfirmed}

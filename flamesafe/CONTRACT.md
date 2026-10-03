@@ -89,6 +89,14 @@ reason.
 | `universe` | integer | must equal flamesafe's configured flame universe |
 | `values` | list of exactly 512 integers, each 0 to 255 | the whole flame universe, slot 1 first |
 
+**ltcplay's side: when values may be non-zero.** ltcplay sends non-zero
+values only while a show is released, live, and its timecode is moving
+(`ltcplay/flamelink.py`). Design note (PR #34, fix rounds 1 and 2):
+"moving" means the timecode CHANGED within the last 0.1 s, not that it
+advanced. A source stuck bouncing between two frames, or stepping
+backwards, still counts as moving (review probe p9b). The rule catches a
+clock that has stopped, not one that is wrong.
+
 Rejected, with the reason in the next status frame's `frames.last_reject`:
 not JSON, not an object, longer than 16384 bytes, wrong `v`, wrong or
 missing `k`, wrong `t`, any field missing or of the wrong type, a `seq` at
@@ -532,11 +540,28 @@ again within `min_arm_dwell_ms` of the Abort. So:
   `min_arm_dwell_ms` has passed since the last accepted disarm_all, a low
   that began before it does not count; a low that begins after it (a
   `true`-to-`false` report) counts as before. The deck's hold is 0.6 s and
-  the dwell is never under 1 s, so every hold begun before the Abort
+  the dwell is never under 1 s, so a hold begun before the Abort normally
   completes inside this window and is refused: the group reads `held`
   with the Abort sentence until it is cycled. Every copy of an Abort
   restarts the window, so after a screen Abort an arm-hold has to complete
-  about 1.75 s later (0.75 s of copies, then the 1 s dwell) or more. A group the deck keeps asking for reads `held`,
+  at least `max(0.75 s, frame_stale_ms + 0.25 s)` (the copies) plus
+  `min_arm_dwell_ms` after it: about 1.75 s with `frame_stale_ms` 500 and
+  a 1 s dwell, 3.75 s with `frame_stale_ms` 2500.
+
+  **The edge** (fix round 2, review probe p12). That guarantee assumes the
+  window is measured from copies that arrive. In the worst case only the
+  three immediate copies arrive (every repeat lost, with the link itself
+  still up) AND the deck delivers nothing for about 0.45 s right after the
+  Abort (a stall shorter than `arm_stale_ms`, so not itself a disarm),
+  then finishes a 0.6 s hold timed from when it got the press: the hold's
+  `true` then lands just past the 1 s window and arms (measured: a stall of
+  0.40 s was refused, 0.45 s armed at +1.05 s). With the repeat copies
+  arriving, the same 0.45 s stall is refused. The deck's 0.6 s hold is
+  therefore a safety constant: selftest fails if it plus 0.3 s of deck
+  lateness no longer fits inside the shortest dwell flamesafe allows (a
+  2.0 s hold armed at +1.9 s after an Abort).
+
+  A group the deck keeps asking for reads `held`,
   flashing amber, reason `Disarmed by the show's Abort. Cycle the arm to
   re-arm.` until it is cycled; the deck shows it as ABORTED.
 - The status frame's top-level `disarm_all` says what flamesafe took:
@@ -703,3 +728,9 @@ trailing newline is refused, digits are ASCII only). On ltcplay's side,
 one Abort is repeated after every flame frame past `frame_stale_ms`, seq
 and ids start at a random large number, and only an equal `last_id`
 confirms an Abort. No field's name, type or meaning changed.
+
+Version 2, 2026-10-03 (fix round 2 of PR #34): documentation of the
+post-Abort window's real length and its edge, and of what "timecode
+moving" means; on ltcplay's side, its copy of `frame_stale_ms` is
+required (read from flamesafe's own config) and a stuck sender reports
+itself. No wire change.

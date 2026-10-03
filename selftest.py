@@ -25168,11 +25168,12 @@ def test_flame_link_unit():
     key = _fl_key()
 
     # Config. Every refusal is a sentence; the key is read, never built in.
-    good = {"port": 5571, "universe": 1, "key": key}
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
     c = fl.FlameLinkConfig.parse(good)
-    check((c.ip, c.port, c.universe, c.key, c.send_hz)
-          == ("127.0.0.1", 5571, 1, key, 40), "a minimal block parses")
+    check((c.ip, c.port, c.universe, c.key, c.send_hz, c.frame_stale_ms)
+          == ("127.0.0.1", 5571, 1, key, 40, 500), "a minimal block parses")
     for bad in ({**good, "ip": "10.0.0.5"}, {**good, "ip": "localhost"},
+                {k: v for k, v in good.items() if k != "frame_stale_ms"},
                 {**good, "port": 0}, {**good, "port": True},
                 {**good, "universe": 0}, {**good, "key": "short"},
                 {**good, "key": "has a space in it ok"},
@@ -25195,6 +25196,31 @@ def test_flame_link_unit():
           and ex.key == fl.EXAMPLE_KEY,
           "flamesafe's own example config gives the link's address, "
           "universe and key, read as plain JSON")
+    # Fix round 2, item 1 (the review's p11): flamesafe's OWN frame_stale_ms
+    # is carried through, so the Abort repeats long enough for the real
+    # flamesafe; and a flame_link block without it is refused above.
+    import json as _json
+    import tempfile as _tf
+    exd = _json.load(open(os.path.join(here, "flamesafe",
+                                       "flamesafe.example.json"),
+                          encoding="utf-8"))
+    exd["frame_stale_ms"] = 2500
+    tmpd = _tf.mkdtemp()
+    try:
+        p = os.path.join(tmpd, "flamesafe.json")
+        _json.dump(exd, open(p, "w", encoding="utf-8"))
+        c25 = fl.FlameLinkConfig.from_flamesafe_config(p)
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpd, ignore_errors=True)
+    check(c25.frame_stale_ms == 2500 and c25.abort_repeat_s == 2.75,
+          f"flamesafe's frame_stale_ms 2500 is read from its config: the "
+          f"Abort repeats {c25.abort_repeat_s} s")
+    check(ex.frame_stale_ms == 500,
+          f"and the example config's 500: {ex.frame_stale_ms}")
+    check(fl.FlameLinkConfig("127.0.0.1", 5571, 1, key).frame_stale_ms
+          == 2500, "a config built in code without it assumes the largest "
+                   "frame_stale_ms flamesafe accepts, never a short one")
     src = open(os.path.join(here, "ltcplay", "flamelink.py"),
                encoding="utf-8").read()
     check(src.count(fl.EXAMPLE_KEY) == 1 and "EXAMPLE_KEY = " in src,
@@ -25491,7 +25517,7 @@ def test_flame_link_fix_round_1():
     import threading
     from ltcplay import flamelink as fl
     key = _fl_key()
-    good = {"port": 5571, "universe": 1, "key": key}
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
     fire = [0] * 512
     fire[410] = 200
 
@@ -25788,6 +25814,185 @@ def test_flame_link_fix_round_1():
     print("  ok")
 
 
+def test_flame_link_fix_round_2():
+    section("flame link, fix round 2 of PR #34: a sender stuck without "
+            "raising reads as stalled and says so once; an Abort voids a "
+            "frame read before it; a resume is not a stuck timecode")
+    import json
+    import threading
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    fire = [0] * 512
+    fire[410] = 200
+
+    def settle(cond, secs=2.0):
+        end = time.perf_counter() + secs
+        while time.perf_counter() < end and not cond():
+            time.sleep(0.01)
+        return cond()
+
+    # -- item 2: a provider that blocks without raising (the review's p13)
+    gate = threading.Event()
+    hang = {"on": False}
+    n = {"i": 0}
+
+    def state():
+        if hang["on"]:
+            gate.wait(5.0)
+        n["i"] += 1
+        return (f"00:00:{n['i'] // 25 % 60:02d}:{n['i'] % 25:02d}", True)
+    j = _FlJournal()
+    lk = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state,
+                      journal=j)
+    lk._sock = _FlSock()
+    check(lk.stall_s() == 0.25, f"stalled after half of frame_stale_ms: "
+                                f"{lk.stall_s()}")
+    lk.start()
+    try:
+        check(settle(lambda: len(lk._sock.sent) > 3)
+              and lk.snapshot()["sender"] == "running", "running at first")
+        hang["on"] = True
+        check(settle(lambda: lk.snapshot()["sender"] == "stalled"),
+              f"a provider blocking without raising: stalled: "
+              f"{lk.snapshot()['sender']}")
+        check(not lk.snapshot()["sending_ok"], "and sending_ok is False")
+        time.sleep(0.6)
+        check(j.outcomes().count("sender_stalled") == 1
+              and any("no flame frame" in t for t in j.faults()),
+              f"journaled once for the episode, as a fault: {j.outcomes()}")
+        hang["on"] = False
+        gate.set()
+        check(settle(lambda: lk.snapshot()["sender"] == "running")
+              and settle(lambda: "sender_unstalled" in j.outcomes()),
+              f"frames again: running, and that is a line: {j.outcomes()}")
+    finally:
+        hang["on"] = False
+        gate.set()
+        lk.stop()
+
+    # The journal itself blocking (a stuck console or file write): the
+    # snapshot still answers at once, and says stalled.
+    block = threading.Event()
+    release = threading.Event()
+
+    def stuck_journal(text, **kw):
+        if block.is_set() and "cues are zero" in text:
+            release.wait(5.0)
+    m = {"i": 0}
+
+    def state2():
+        m["i"] += 1
+        return (f"00:00:01:{m['i'] % 25:02d}", True)
+    lk2 = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state2,
+                       cues=lambda tc: "garbage" if block.is_set() else None,
+                       journal=stuck_journal)
+    lk2._sock = _FlSock()
+    lk2.start()
+    lk2.release()
+    try:
+        time.sleep(0.15)
+        block.set()
+        time.sleep(0.5)
+        t0 = time.perf_counter()
+        snap = lk2.snapshot()
+        dt = time.perf_counter() - t0
+        check(snap["sender"] == "stalled" and not snap["sending_ok"]
+              and dt < 0.1,
+              f"a journal call stuck in the sender: the snapshot answers in "
+              f"{dt * 1000:.0f} ms and says {snap['sender']!r}")
+    finally:
+        release.set()
+        lk2.stop()
+
+    # -- item 3 (R33): a disarm_all landing while a frame's cues are read
+    # voids that frame, even if a release() follows it.
+    t3 = [0.0]
+    st3 = {"n": 0, "abort_inside": False}
+
+    def state3():
+        st3["n"] += 1
+        return (f"00:00:{st3['n'] // 25 % 60:02d}:{st3['n'] % 25:02d}",
+                True)
+
+    def cues3(tc):
+        if st3["abort_inside"]:
+            st3["abort_inside"] = False
+            lk3.disarm_all("Abort")
+            lk3.release()
+        return fire
+    lk3 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t3[0],
+                       show_state=state3, cues=cues3)
+    lk3._sock = _FlSock()
+    lk3.release()
+    lk3.send_frame()
+    st3["abort_inside"] = True
+    n0 = len(lk3._sock.sent)
+    lk3.send_frame()
+    flames = [json.loads(d) for d, _a in lk3._sock.sent[n0:]]
+    flames = [x for x in flames if x["t"] == "flame"]
+    check(len(flames) == 2 and not any(flames[-1]["values"]),
+          "a frame whose cues were read before an Abort landed goes out as "
+          "zeros, even if a release() followed it")
+
+    # A resume is not a stuck timecode: with the timecode moving through
+    # the hold, the first live frame after it carries its cue.
+    t4 = [0.0]
+    st4 = {"n": 0, "live": False}
+
+    def state4():
+        return (f"00:00:{st4['n'] // 25 % 60:02d}:{st4['n'] % 25:02d}",
+                st4["live"])
+    lk4 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t4[0],
+                       show_state=state4, cues=lambda tc: fire)
+    lk4._sock = _FlSock()
+    lk4.release()
+    for _ in range(40):            # a second of a held show, clock moving
+        t4[0] += 0.025
+        st4["n"] += 1
+        lk4.send_frame()
+    st4["live"] = True             # resume: same moment, timecode moving
+    t4[0] += 0.025
+    st4["n"] += 1
+    lk4.send_frame()
+    check(json.loads(lk4._sock.sent[-1][0])["values"][410] == 200,
+          "the first frame after a resume carries the cue")
+    print("  ok")
+
+
+# How long a Stream Deck may take, beyond its arm-hold, to deliver the
+# hold's "wanted" after a press it began before a screen Abort, and still
+# be refused by flamesafe's post-Abort window (fix round 2, item 4; the
+# review's probe p12 found the edge at a 0.45 s deck stall).
+DECK_LATENCY_SLACK_S = 0.3
+
+
+def test_the_deck_arm_hold_fits_inside_the_post_abort_window():
+    section("the Stream Deck's arm-hold is shorter than flamesafe's "
+            "post-Abort window, with room for the deck to be late")
+    # flamesafe refuses, for min_arm_dwell_ms after the last copy of a
+    # screen Abort, a low that was already going on at it. A hold begun
+    # before the Abort completes at most ARM_HOLD_S after it, so it is
+    # refused only while ARM_HOLD_S (plus the deck's own lateness) is
+    # under the SHORTEST dwell flamesafe allows. Read from both files as
+    # text: this process never imports flamesafe (the wall).
+    import re as _re
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_src = open(os.path.join(here, "flamesafe", "config.py"),
+                   encoding="utf-8").read()
+    mm = _re.search(r"^DWELL_MS_MIN, DWELL_MS_MAX = (\d+), (\d+)", cfg_src,
+                    _re.M)
+    check(mm is not None, "flamesafe/config.py still states DWELL_MS_MIN")
+    dwell_min_s = int(mm.group(1)) / 1000.0 if mm else 0.0
+    check(sd.ARM_HOLD_S + DECK_LATENCY_SLACK_S <= dwell_min_s,
+          f"the deck's arm-hold ({sd.ARM_HOLD_S} s) plus "
+          f"{DECK_LATENCY_SLACK_S} s for the deck to be late must fit in "
+          f"flamesafe's shortest re-arm dwell ({dwell_min_s} s), or a hold "
+          f"begun before a screen Abort can arm after it")
+    print("  ok")
+
+
 def test_flame_link_sends_at_its_rate_on_one_socket():
     section("flame link: a real socket, at send_hz, all from one source "
             "port, zeros when idle")
@@ -25799,7 +26004,7 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     rx.settimeout(0.5)
     cfg = fl.FlameLinkConfig.parse({"port": rx.getsockname()[1],
                                     "universe": 1, "key": _fl_key(),
-                                    "send_hz": 40})
+                                    "send_hz": 40, "frame_stale_ms": 500})
     link = fl.FlameLink(cfg).start()
     got, srcs = [], set()
     end = time.perf_counter() + 1.0
@@ -26572,6 +26777,8 @@ if __name__ == "__main__":
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
     test_flame_link_fix_round_1()
+    test_flame_link_fix_round_2()
+    test_the_deck_arm_hold_fits_inside_the_post_abort_window()
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
     test_the_gpl_path_never_loads_the_flame_link()

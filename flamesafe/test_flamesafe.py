@@ -3919,6 +3919,21 @@ def test_disarm_all_dwell_and_pending_edges():
     r.step(n=2)
     check(r.safety(2) == ARM,
           f"a press after the window arms as usual: {r.group(2)}")
+    # Fix round 2 of PR #34, item 3: every repeat copy of an Abort restarts
+    # the window (ltcplay repeats one Abort after every frame for
+    # frame_stale_ms + 0.25 s).  A high landing 1.3 s after the FIRST copy
+    # but 0.6 s after a repeat is still inside the window, and refused.
+    r = Rig()
+    r.prove_alive()
+    check(_disarm(r, abort_id=7) == "", "the first copy is taken")
+    r.wait(0.7)
+    check(_disarm(r, abort_id=7) == "", "a repeat copy is taken")
+    r.wait(0.6)
+    r.inp.set(2)
+    r.wait(2.0)
+    check(r.safety(2) == 0 and r.group(2)["reason"] == composer.ABORT_DISARMED,
+          f"a repeat copy restarts the window: a hold completing 0.6 s after "
+          f"it is refused, 1.3 s after the first: {r.group(2)}")
 
 
 def test_disarm_all_sequence_and_liveness():
