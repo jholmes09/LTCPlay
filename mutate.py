@@ -2571,6 +2571,336 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ # -- madmapper.py: device layer (OSC transport, watchdog) --
+
+ ("a cancelled ramp keeps sending anyway", "ltcplay/madmapper.py",
+  "            if self._gen_current() != gen:\n"
+  "                break",
+  "            pass"),
+
+ ("restore_levels never touches the surfaces, only the audio",
+  "ltcplay/madmapper.py",
+  "        self.set_audio(1.0, wait=wait)\n"
+  "        self.set_surfaces(1.0, wait=wait)",
+  "        self.set_audio(1.0, wait=wait)"),
+
+ ("the watchdog counts MadMapper's stale re-sent value at bank select "
+  "as a real position again (S1)", "ltcplay/madmapper.py",
+  "            if self._awaiting_start:\n"
+  "                near_start = (show_len_s is not None\n"
+  "                             and isinstance(value, (int, float))\n"
+  "                             and not math.isnan(value)\n"
+  "                             and value * show_len_s <= START_WINDOW_S)\n"
+  "                if not near_start:\n"
+  "                    return\n"
+  "                self._awaiting_start = False",
+  "            if self._awaiting_start:\n"
+  "                self._awaiting_start = False"),
+
+ ("a NaN heartbeat value is read as zero drift", "ltcplay/madmapper.py",
+  "            bad = not isinstance(value, (int, float)) or "
+  "math.isnan(value)",
+  "            bad = False"),
+
+ ("the heartbeat listener can be bound off loopback by accident",
+  "ltcplay/madmapper.py",
+  "        if not _is_loopback(bind) and not allow_non_loopback:",
+  "        if False:"),
+
+ ("a heartbeat bind failure crashes instead of naming the heartbeat "
+  "port", "ltcplay/madmapper.py",
+  "        try:\n"
+  "            self._sock = self._factory()\n"
+  "        except OSError as e:\n"
+  "            # Its own sentence, naming the heartbeat port "
+  "specifically:\n"
+  "            # a bind failure here must never read as the web "
+  "server's own\n"
+  "            # port being unavailable, which is a different problem "
+  "with a\n"
+  "            # different fix.\n"
+  "            self.bind_error = (",
+  "        self._sock = self._factory()\n"
+  "        if False:\n"
+  "            self.bind_error = ("),
+
+ ("a MadMapper command can hang _submit() forever again",
+  "ltcplay/madmapper.py",
+  "            got = done.wait(self._submit_timeout_s)",
+  "            done.wait()\n"
+  "            got = True"),
+
+ # -- beyond.py: the laser blank/unblank device layer --
+
+ ("the allow-list accepts any brightness value, not only 0.0/100.0",
+  "ltcplay/beyond.py",
+  "    return any(value == v for v in ALLOWED_VALUES)",
+  "    return True"),
+
+ ("the allow-list no longer checks for OSC special characters",
+  "ltcplay/beyond.py",
+  "    if any(c in _SPECIAL_CHARS for c in address):\n"
+  "        return False\n"
+  "    if address != BRIGHTNESS_ADDR:",
+  "    if address != BRIGHTNESS_ADDR:"),
+
+ ("_send()'s guard is removed, so anything can reach the socket",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py refuses to send {address!r} with value \"\n"
+  "                f\"{value!r}: only the brightness address, with 0.0 or \"\n"
+  "                f\"100.0, is ever allowed (S5), and BlackOut/MasterPause \"\n"
+  "                f\"are refused by name as well (BlackOut restarts "
+  "BEYOND's \"\n"
+  "                f\"own core and needs a manual recovery; MasterPause \"\n"
+  "                f\"freezes the beams, a static-beam hazard).\")\n"
+  "        return self._osc.send(address, value, force=force)",
+  "        return self._osc.send(address, value, force=force)"),
+
+ ("the socket's own send() no longer enforces the allow-list at all",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py's socket layer refuses to send {address!r} \"\n"
+  "                f\"with value {value!r}: only the brightness address, \"\n"
+  "                f\"with 0.0 or 100.0, is ever allowed off this module "
+  "(S5).\")\n"
+  "        now = self._clock()",
+  "        now = self._clock()"),
+
+ ("blank() only sends the packet once, not 3 times", "ltcplay/beyond.py",
+  "        for i in range(RETRY_COUNT):",
+  "        for i in range(1):"),
+
+ ("a failed blank is still reported and journaled as a success",
+  "ltcplay/beyond.py",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\" if ok else \"failed\"\n"
+  "        if ok:",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\"\n"
+  "        ok = True\n"
+  "        if ok:"),
+
+ ("build() no longer blanks at construction", "ltcplay/beyond.py",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)\n"
+  "    link.blank()",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)"),
+
+ ("close() no longer blanks before closing the socket",
+  "ltcplay/beyond.py",
+  "        try:\n"
+  "            self.blank()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        self._osc.close()",
+  "        self._osc.close()"),
+
+ ("BEYOND's port 8000 clash with MadMapper is no longer refused",
+  "ltcplay/beyond.py",
+  "        if port == 8000:",
+  "        if False:"),
+
+ ("unblank()'s in_show type check is removed, so a truthy value like "
+  "\"STANDBY\" or 1 unblanks the lasers during intermission",
+  "ltcplay/beyond.py",
+  "        if not isinstance(in_show, bool):\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")",
+  "        if False:\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")"),
+
+ ("unblank() ignores in_show=False and unblanks BEYOND during "
+  "intermission anyway", "ltcplay/beyond.py",
+  "        if in_show is not True:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\"",
+  "        if False:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\""),
+
+ ("unblank(in_show=False)'s refusal is never journalled, a silent skip "
+  "instead", "ltcplay/beyond.py",
+  "            self.last_result = \"refused\"\n"
+  "            self._note(\n"
+  "                f\"BEYOND stays blanked{_for_show(show)}: unblank() "
+  "was \"\n"
+  "                f\"called with in_show=False (no lasers during \"\n"
+  "                f\"intermission).\", action=\"unblank\", "
+  "outcome=\"refused\",\n"
+  "                show=show)\n"
+  "            return False",
+  "            self.last_result = \"refused\"\n"
+  "            return False"),
+
+ ("the first heartbeat after a recovery is judged for drift again "
+  "(bench B14)", "ltcplay/madmapper.py",
+  "            if self._settle_count > 0:\n"
+  "                self._settle_count -= 1\n"
+  "                skip_drift = True",
+  "            pass"),
+
+ ("the perceptual video curve fades down the same as up (no longer "
+  "mirrored)", "ltcplay/madmapper.py",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (1 - (1 - frac) ** 2) * (end - start)",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (frac ** 2) * (end - start)"),
+
+ # -- madmapper.py: fade_all() -- audio and surfaces ramped TOGETHER,
+ # in one worker job (devices.on_abort's own fade) --
+
+ ("fade_all()'s cancellation check is removed, so a superseded ramp "
+  "keeps sending anyway", "ltcplay/madmapper.py",
+  "                if self._gen_current() != gen:\n"
+  "                    break\n"
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))"),
+
+ ("fade_all()'s surfaces are no longer shaped by the configured video "
+  "curve, only plain linear", "ltcplay/madmapper.py",
+  "            surface_values = shape_values(ramp_values(start, end, steps),\n"
+  "                                          start, end, surface_curve)",
+  "            surface_values = ramp_values(start, end, steps)"),
+
+ ("fade_all() stops sending the master audio level, only the surfaces",
+  "ltcplay/madmapper.py",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))\n"
+  "                for addr in addrs:",
+  "                for addr in addrs:"),
+
+ # -- devices.py: on_hold()/on_resume()/on_abort(), composing madmapper.py
+ # and beyond.py's own primitives with the handoff's ordering built in --
+
+ ("on_hold() no longer blanks BEYOND, only fades the music",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_hold() fades the music UP instead of down", "ltcplay/devices.py",
+  "madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_resume() ignores in_show and unblanks BEYOND during intermission "
+  "too", "ltcplay/devices.py",
+  "        if in_show is True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:",
+  "        if True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:"),
+
+ ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
+  "unblanks the lasers during intermission", "ltcplay/devices.py",
+  "    if not isinstance(in_show, bool):\n"
+  "        raise TypeError(",
+  "    if False:\n"
+  "        raise TypeError("),
+
+ ("on_resume() checks in_show's type but unblanks on anything truthy",
+  "ltcplay/devices.py",
+  "        if in_show is True:\n",
+  "        if in_show or True:\n"),
+
+ ("on_hold() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return blanked",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return True"),
+
+ ("on_abort() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return blanked",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return True"),
+
+ ("on_resume()'s intermission refusal is never journalled, a silent "
+  "skip instead", "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND stays blanked{_for_show(show)} (re-sent "
+  "as \"\n"
+  "                     f\"a defensive check): Resume is between shows "
+  "(no \"\n"
+  "                     f\"lasers during intermission), not during a "
+  "show.\",\n"
+  "                     action=\"unblank\", outcome=\"refused\", "
+  "show=show)",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if False:\n"
+  "                pass"),
+
+ ("on_resume()'s defensive re-blank is sent but a FAILED re-blank is "
+  "never journalled as a fault, only the calm refusal wording",
+  "ltcplay/devices.py",
+  "            else:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND was told to stay blanked{_for_show(show)} "
+  "\"\n"
+  "                     f\"(Resume is between shows, no lasers during \"\n"
+  "                     f\"intermission), but the defensive re-blank "
+  "FAILED: \"\n"
+  "                     f\"no packet got out. The lasers may still be "
+  "live \"\n"
+  "                     f\"through intermission.\", action=\"unblank\",\n"
+  "                     outcome=\"refused\", show=show, fault=True)\n"
+  "            return reblanked",
+  "            return reblanked"),
+
+ ("on_resume(in_show=False) no longer re-sends a defensive blank at all",
+  "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:",
+  "            reblanked = True\n"
+  "            if reblanked:"),
+
+ ("on_abort() no longer blanks BEYOND, only fades MadMapper",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}",
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}"),
+
+ ("on_abort() fades everything UP to full instead of down to black",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)",
+  "        madmapper.fade_all(0.0, 1.0, **kwargs)"),
+
+ ("on_abort() ignores an explicit fade_seconds override", "ltcplay/devices.py",
+  "        if fade_seconds is not None:\n"
+  "            kwargs[\"seconds\"] = fade_seconds",
+  "        if False:\n"
+  "            kwargs[\"seconds\"] = fade_seconds"),
+
  ("show length no longer follows the show's own media when nothing is "
   "configured", "ltcplay/clock.py",
   "        if show_len is None:\n"
@@ -3310,6 +3640,511 @@ def build():
   '        removed, problems, stale = [], [], []\n'
   '        with threading.Lock():\n'),
 
+ # -- the show conductor (ltcplay/conductor.py). Every name starts with
+ # "conductor:" so `mutate.py conductor:` runs just these.
+ ("conductor: a step no longer checks it is still the current generation",
+  "ltcplay/conductor.py",
+  "        with self._lock:\n            self._check(gen)\n"
+  "            now = self._applied[output]",
+  "        with self._lock:\n            now = self._applied[output]"),
+
+ ("conductor: a wait no longer wakes for a newer press",
+  "ltcplay/conductor.py",
+  "            while True:\n                self._check(gen)\n"
+  "                left = end - self._clock()",
+  "            while True:\n                left = end - self._clock()"),
+
+ ("conductor: an announcement plays without checking it was superseded",
+  "ltcplay/conductor.py",
+  "            self._check(gen)\n            self._announcing = None\n",
+  "            self._announcing = None\n"),
+
+ ("conductor: Abort's flame cut waits for the executor",
+  "ltcplay/conductor.py",
+  "            self._flames_cut()\n            self._accept(\"Abort\"",
+  "            self._accept(\"Abort\""),
+
+ ("conductor: Abort no longer disarms the flames at once",
+  "ltcplay/conductor.py",
+  "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
+  "        self._disarm()",
+  "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN"),
+
+ ("conductor: a failed disarm is never sent again",
+  "ltcplay/conductor.py",
+  "            if not self._applied[\"disarmed\"]:\n                self._disarm()",
+  "            if False:\n                self._disarm()"),
+
+ ("conductor: a second Abort starts a second fade",
+  "ltcplay/conductor.py",
+  "            if self._latched:\n                # Idempotent:",
+  "            if False:\n                # Idempotent:"),
+
+ ("conductor: the Abort latch no longer refuses other presses",
+  "ltcplay/conductor.py",
+  "        if self._latched:\n            return self._refused(what,",
+  "        if False:\n            return self._refused(what,"),
+
+ ("conductor: Reset is taken while the Abort is still fading",
+  "ltcplay/conductor.py",
+  "                    and self._done_gen != self._gen:\n",
+  "                    and False:\n"),
+
+ ("conductor: Abort is taken with nothing playing",
+  "ltcplay/conductor.py",
+  "            if not self._playing():\n                return self._refused(\"Abort\",",
+  "            if False:\n                return self._refused(\"Abort\","),
+
+ ("conductor: Abort blanks the lasers instead of ramping them",
+  "ltcplay/conductor.py",
+  "\"lasers faded\", progress,\n                            self.devices.lasers_fade_out, fade)",
+  "\"lasers faded\", progress,\n                            self.devices.lasers_blank)"),
+
+ ("conductor: Abort never stops the video",
+  "ltcplay/conductor.py",
+  "        self._step(gen, \"video\", STOPPED, \"video stopped\", progress,\n"
+  "                   self.devices.video_stop)",
+  "        pass"),
+
+ ("conductor: the Abort fade is not 1 s",
+  "ltcplay/conductor.py",
+  "ABORT_FADE_S = 1.0 ",
+  "ABORT_FADE_S = 0.5 "),
+
+ ("conductor: the production Hold fade is not 0.25 s",
+  "ltcplay/conductor.py",
+  "HOLD_FADE_S = 0.25 ",
+  "HOLD_FADE_S = 1.0 "),
+
+ ("conductor: an announcement waits no time in the dark",
+  "ltcplay/conductor.py",
+  "            self._pause(gen, ANNOUNCE_DARK_S)",
+  "            self._pause(gen, 0.0)"),
+
+ ("conductor: rehearsal Hold still fades",
+  "ltcplay/conductor.py",
+  "        return 0.0 if self._mode == REHEARSAL else production_s",
+  "        return production_s"),
+
+ ("conductor: a production Hold fades the lasers instead of blanking them",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:",
+  "        if fade > 0:"),
+
+ ("conductor: an announcement leaves the video and pixels up",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if fade > 0:\n            faded |="),
+
+ ("conductor: a production Hold leaves the video and pixels up instead of "
+  "fading them",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if look == DARK:\n            faded |="),
+
+ ("conductor: a production Hold and an unfaded Hold both leave the video "
+  "and pixels up",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if False:\n            faded |="),
+
+ ("conductor: a rehearsal Hold fades the video and pixels out instead of "
+  "freezing them",
+  "ltcplay/conductor.py",
+  "        if look == DARK or fade > 0:\n            faded |=",
+  "        if look == DARK or fade >= 0:\n            faded |="),
+
+ ("conductor: Hold does not wait for the clock to freeze",
+  "ltcplay/conductor.py",
+  "lambda: self.show.music_frozen() is True,",
+  "lambda: True,"),
+
+ ("conductor: Resume releases lasers and flames before the timecode moves",
+  "ltcplay/conductor.py",
+  "lambda: self.show.music_frozen() is False,",
+  "lambda: True,"),
+
+ ("conductor: a Resume that never sees the timecode move lights the rig "
+  "anyway",
+  "ltcplay/conductor.py",
+  "                return\n            progress.append(\"timecode moving\")",
+  "                pass\n            progress.append(\"timecode moving\")"),
+
+ ("conductor: a clock that never freezes is not a fault",
+  "ltcplay/conductor.py",
+  "timecode may still be moving.\", fault=True,",
+  "timecode may still be moving.\", fault=False,"),
+
+ ("conductor: the laser gate is ignored",
+  "ltcplay/conductor.py",
+  "        if why is not None:\n            self._note(f\"The lasers stay dark",
+  "        if False:\n            self._note(f\"The lasers stay dark"),
+
+ ("conductor: a laser gate that raises lets the lasers light",
+  "ltcplay/conductor.py",
+  "            why = f\"the laser gate failed ({type(e).__name__}: {e})\"",
+  "            why = None"),
+
+ ("conductor: an unknown show state lets the lasers light",
+  "ltcplay/conductor.py",
+  "        if state in LASER_STATES:\n            return None",
+  "        if state in LASER_STATES or not state:\n            return None"),
+
+ ("conductor: a show state that cannot be read lets the lasers light",
+  "ltcplay/conductor.py",
+  "            return (f\"the show state could not be read",
+  "            return None\n            return (f\"the show state could not be read"),
+
+ ("conductor: an output that raises stops the effect",
+  "ltcplay/conductor.py",
+  "        try:\n            r = fn(*args)\n        except Exception as e:\n"
+  "            r = failed(f\"{label}: {type(e).__name__}: {e}\")",
+  "        r = fn(*args)"),
+
+ ("conductor: an output that returns nothing counts as done",
+  "ltcplay/conductor.py",
+  "        if not isinstance(r, Result):\n",
+  "        if not isinstance(r, Result) and r is not None:\n"
+  "            pass\n        elif r is None:\n            r = done()\n"
+  "        if False:\n"),
+
+ ("conductor: a failed command is recorded as done",
+  "ltcplay/conductor.py",
+  "            self._applied[output] = value if r.ok else UNKNOWN",
+  "            self._applied[output] = value"),
+
+ ("conductor: a slow output call is not reported",
+  "ltcplay/conductor.py",
+  "        if took > SLOW_CALL_S:",
+  "        if False:"),
+
+ ("conductor: a press does not cancel an announcement that has not started",
+  "ltcplay/conductor.py",
+  "            self._announcing = None\n        self._gen += 1",
+  "        self._gen += 1"),
+
+ ("conductor: a second Hold starts a new effect",
+  "ltcplay/conductor.py",
+  "            if self._look in HOLDING_LOOKS:\n                return done(",
+  "            if False:\n                return done("),
+
+ ("conductor: Resume is taken when nothing is held",
+  "ltcplay/conductor.py",
+  "            if self._look not in HOLDING_LOOKS:\n",
+  "            if False:\n"),
+
+ ("conductor: a show start does not mark the music as playing",
+  "ltcplay/conductor.py",
+  "            self._applied[\"music\"] = MUSIC_PLAYING\n",
+  ""),
+
+ ("conductor: a broken journal stops the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n            self._journal(text, fault=fault, **fields)\n"
+  "        except Exception:\n            self.journal_errors += 1",
+  "        self._journal(text, fault=fault, **fields)"),
+
+ ("conductor: the stand-in device layer does not say it is one",
+  "ltcplay/conductor.py",
+  "        if not self.wired:\n",
+  "        if False:\n"),
+
+ ("conductor: the flame cues are released before the lasers",
+  "ltcplay/conductor.py",
+  "        self._restore_lasers(gen, progress)\n"
+  "        self._step(gen, \"flames\", LIVE, \"flame cues released\", progress,\n"
+  "                   self.show.flames_release)",
+  "        self._step(gen, \"flames\", LIVE, \"flame cues released\", progress,\n"
+  "                   self.show.flames_release)\n"
+  "        self._restore_lasers(gen, progress)"),
+
+ ("conductor: a Hold never zeroes the flame cues",
+  "ltcplay/conductor.py",
+  "        a = self._applied\n        self._step(gen, \"flames\", ZERO, \"flame cues zeroed\", progress,\n"
+  "                   self.show.flames_zero)\n",
+  "        a = self._applied\n"),
+
+ ("conductor: a laser gate that says no leaves lit lasers lit",
+  "ltcplay/conductor.py",
+  "                       outcome=\"refused\")\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n",
+  "                       outcome=\"refused\")\n"),
+
+ ("conductor: leaving the show does not blank the lasers",
+  "ltcplay/conductor.py",
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked for intermission\",\n"
+  "                   progress, self.devices.lasers_blank)\n",
+  ""),
+
+ ("conductor: intermission cuts an Abort's fade short",
+  "ltcplay/conductor.py",
+  "            if self._latched:\n                return done(\"The show is aborted, so",
+  "            if False:\n                return done(\"The show is aborted, so"),
+
+ # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
+ # the lasers-dark re-send that keeps devices.py's "never assume a blank
+ # landed" rule). Still "conductor:", so `mutate.py conductor:` runs them.
+ ("conductor: lasers already dark are trusted and not blanked again",
+  "ltcplay/conductor.py",
+  "            if again and (output, value) not in ALWAYS_RESENT:",
+  "            if again:"),
+
+ ("conductor: a laser blank re-sent to lasers already dark earns another "
+  "0.5 s in the dark",
+  "ltcplay/conductor.py",
+  "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
+  "        want[\"changed\"] = bool(progress)"),
+
+ ("conductor: Abort fades the video before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        faded |= self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                            self.devices.lasers_fade_out, fade)\n"
+  "        faded |= self._step(gen, \"video\", BLACK, \"video faded\", progress,\n"
+  "                            self.devices.video_fade_out, fade,\n"
+  "                            only_from=(LIT, UNKNOWN))\n",
+  "        faded |= self._step(gen, \"video\", BLACK, \"video faded\", progress,\n"
+  "                            self.devices.video_fade_out, fade,\n"
+  "                            only_from=(LIT, UNKNOWN))\n"
+  "        faded |= self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                            self.devices.lasers_fade_out, fade)\n"),
+
+ ("conductor: a Hold fades the music before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n",
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n"
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers faded\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"),
+
+ ("conductor: the real device layer says it is wired without BEYOND or "
+  "MadMapper",
+  "ltcplay/conductor.py",
+  "        self.wired = madmapper is not None and beyond is not None",
+  "        self.wired = True"),
+
+ ("conductor: a BEYOND command that never got out is reported as sent",
+  "ltcplay/conductor.py",
+  "        if ok is True:\n            return done(f\"{what}: sent to BEYOND.\")",
+  "        if True:\n            return done(f\"{what}: sent to BEYOND.\")"),
+
+ ("conductor: a broken BEYOND raises into the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n"
+  "            ok = getattr(self.beyond, method)(show=self.show, **kw)\n"
+  "        except Exception as e:\n"
+  "            return failed(f\"{what} failed: {type(e).__name__}: {e}. \"\n"
+  "                          f\"{failed_means}\")\n",
+  "        ok = getattr(self.beyond, method)(show=self.show, **kw)\n"),
+
+ ("conductor: the Abort's instant laser blank is not journaled as not a fade",
+  "ltcplay/conductor.py",
+  "        if self.beyond is not None and r.ok:\n            _device_note(",
+  "        if False:\n            _device_note("),
+
+ ("conductor: the Abort's laser command lights the lasers instead",
+  "ltcplay/conductor.py",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
+  "                         in_show=True)"),
+
+ ("conductor: a Resume never lights the lasers through the real device layer",
+  "ltcplay/conductor.py",
+  "        return self._beyond(\"Laser restore\", \"unblank\",\n"
+  "                            \"The lasers stay dark.\", in_show=True)",
+  "        return self._beyond(\"Laser restore\", \"blank\",\n"
+  "                            \"The lasers stay dark.\")"),
+
+ ("conductor: the video fade blocks the conductor until it ends",
+  "ltcplay/conductor.py",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False)",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=True)"),
+
+ ("conductor: an instant video level does not stop a fade still running",
+  "ltcplay/conductor.py",
+  "            self.mm.cancel()\n            self.mm.set_surfaces(end, wait=False)",
+  "            self.mm.set_surfaces(end, wait=False)"),
+
+ ("conductor: Abort stops the intermission bank instead of the show's",
+  "ltcplay/conductor.py",
+  "self.mm.stop_bank(self.mm.cfg.show_bank, wait=False))",
+  "self.mm.stop_bank(self.mm.cfg.intermission_bank, wait=False))"),
+
+ ("conductor: a closed MadMapper link is reported as sent",
+  "ltcplay/conductor.py",
+  "        if getattr(self.mm, \"_closed\", False):",
+  "        if False:"),
+
+ ("conductor: the video fade to black fades up instead",
+  "ltcplay/conductor.py",
+  "            lambda: self._surfaces(1.0, 0.0, seconds))",
+  "            lambda: self._surfaces(0.0, 1.0, seconds))"),
+
+
+
+
+ # -- Fire & Ice: fire_ice.py's ShowOutputs and runner, the per-call
+ # AudioMaster fade it needs, and where `ltc serve` builds the conductor.
+ ("fire & ice: the Hold's fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.pause(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.pause())"),
+
+ ("fire & ice: Abort's music fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.halt(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.halt())"),
+
+ ("fire & ice: frozen is read from the Hold request, not the clock",
+  "ltcplay/fire_ice.py",
+  "        if self._clock() is None:\n            return None\n"
+  "        return self._frozen",
+  "        if self._clock() is None:\n            return None\n"
+  "        return bool(self._clock()._paused or self._hooked is not None)"),
+
+ ("fire & ice: chaining on_pause drops the session's own hard park",
+  "ltcplay/fire_ice.py",
+  "                try:\n                    if before_p is not None:\n"
+  "                        before_p()",
+  "                try:\n                    pass"),
+
+ ("fire & ice: an Abort's disarm reports success it did not have",
+  "ltcplay/fire_ice.py",
+  "        return C.failed(f\"{reason}: {NO_DISARM}{tail}\")",
+  "        return C.done(f\"{reason}: {NO_DISARM}{tail}\")"),
+
+ ("fire & ice: an Abort's disarm does not zero the flame cues",
+  "ltcplay/fire_ice.py",
+  "        z = self.flames_zero()\n",
+  "        z = C.done('')\n"),
+
+ ("fire & ice: pixels restore over the operator's own look",
+  "ltcplay/fire_ice.py",
+  "            if p.override != \"blackout\":",
+  "            if False:"),
+
+ ("fire & ice: pixels restore to auto, not the look from before",
+  "ltcplay/fire_ice.py",
+  "            p.override = self._pix_prev",
+  "            p.override = None"),
+
+ ("fire & ice: scheduler_performs accepts anything truthy",
+  "ltcplay/fire_ice.py",
+  "        if performs is not True and performs is not False:",
+  "        performs = bool(performs)\n        if False:"),
+
+ ("fire & ice: the dry run ends without the switch",
+  "ltcplay/fire_ice.py",
+  "    if cfg.scheduler_performs:\n        runner = ShowRunner(",
+  "    if True:\n        runner = ShowRunner("),
+
+ ("fire & ice: a show starts before Run is pressed",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is not None and clk is None:"),
+
+ ("fire & ice: a show starts while the conductor is still aborted",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is None or clk is None:"),
+
+ ("fire & ice: an unconfirmed cue that stops is reported as ended",
+  "ltcplay/fire_ice.py",
+  "            self.svc.report(\"SHOW_ENDED\" if cue[\"confirmed\"]\n"
+  "                            else \"SHOW_FAILED\", how, show=n)",
+  "            self.svc.report(\"SHOW_ENDED\", how, show=n)"),
+
+ ("fire & ice: the show is confirmed before the timecode moves",
+  "ltcplay/fire_ice.py",
+  "        if not cue[\"confirmed\"] and mine and \\\n"
+  "                getattr(clk, \"_last_frame\", None) not in (None, 0):",
+  "        if not cue[\"confirmed\"] and mine:"),
+
+ ("fire & ice: the laser gate does not follow the scheduler",
+  "ltcplay/fire_ice.py",
+  "        devices, show, C.laser_gate_for(state),",
+  "        devices, show, lambda: None,"),
+
+ ("fire & ice: closing is never reported done",
+  "ltcplay/fire_ice.py",
+  "        self.svc.report(\"CLOSING_DONE\",",
+  "        (lambda *a: None)(\"CLOSING_DONE\","),
+
+ ("fire & ice: the conductor is told a show started before its audio is",
+  "ltcplay/schedule_service.py",
+  "                started = self.performer.start_show(shows[0])\n"
+  "                if not started.ok:\n"
+  "                    return \"Show start\", started",
+  "                r = self.conductor.show_starting(who, screen)\n"
+  "                started = self.performer.start_show(shows[0])\n"
+  "                return \"Show start\", r"),
+
+ ("fire & ice: a performing scheduler still ends shows on its own clock",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run and m.state == sch.SHOW and \\",
+  "            if m.state == sch.SHOW and \\"),
+
+ ("fire & ice: a performing scheduler still finishes closing by itself",
+  "ltcplay/schedule_service.py",
+  "        if self.dry_run and self.machine.state == sch.CLOSING:",
+  "        if self.machine.state == sch.CLOSING:"),
+
+ ("fire & ice: a report is applied during a dry run",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run or self.machine is None:\n"
+  "                return None\n            ev = sch.Event(",
+  "            if self.machine is None:\n"
+  "                return None\n            ev = sch.Event("),
+
+ ("fire & ice: GPL serve builds the conductor too",
+  "ltcplay/cli.py",
+  "    fire_ice = None\n    if schedule is not None:\n",
+  "    fire_ice = None\n    if True:\n"),
+
+ ("fire & ice: the scheduler is never given the conductor's config",
+  "ltcplay/cli.py",
+  "                              announce=announce, fire_ice=fire_ice)",
+  "                              announce=announce)"),
+
+ ("audio_master per-call fade: pause ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.hold_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.hold_fade_ms"),
+
+ ("audio_master per-call fade: halt ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.abort_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.abort_fade_ms"),
+
+ ("audio_master per-call fade: a resume's fade is left for the next one",
+  "ltcplay/clock.py",
+  "            self._resume_fade_ms = fade_ms\n",
+  "            if fade_ms is not None:\n"
+  "                self._resume_fade_ms = fade_ms\n"),
+
+ ("audio_master per-call fade: resume ignores the fade it is given",
+  "ltcplay/clock.py",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms\n"
+  "                                    if self._resume_fade_ms is None\n"
+  "                                    else self._resume_fade_ms)",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms)"),
 ]
 
 
