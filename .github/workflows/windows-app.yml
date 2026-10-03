@@ -151,7 +151,7 @@ jobs:
           tag="bench-$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           gh release create "$tag" "$FILE" --prerelease --target "$GITHUB_SHA" \
             --title "LTC Player BENCH ONLY, not for shows ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})" \
-            --notes "BENCH ONLY, NOT FOR SHOWS. A PC-only stress test build for the Windows show PC, with NO lasers, flames or lights connected. Built from the throwaway branch bench-build: windows-app merged with flame-link (#31, #34), device-conductor-integration (#29), scheduler-conductor-wiring (#30) and second-copy-guard (#40), none of them merged to main or reviewed together. Run Start menu, LTC Player bench soak test. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway."
+            --notes "BENCH ONLY, NOT FOR SHOWS. A PC-only stress test build for the Windows show PC, with NO lasers, flames or lights connected. Built from the throwaway branch bench-build: the Windows app (#38) on top of the full show assembly (#43: #29, #30, #31, #34, #32, #39, #40), none of it merged to main or reviewed together. Start menu, LTC Player bench soak test runs the whole Fire & Ice stack (scheduler, conductor, show audio on the Scarlett, Art-Net timecode, pixels, BEYOND, MadMapper, flame link to flamesafe) with every output to this PC only. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway."
           echo "::notice title=BENCH pre-release::https://github.com/${GITHUB_REPOSITORY}/releases/tag/$tag"
 
       - name: Attach the installer to the GitHub Release

@@ -59,6 +59,7 @@ ARTNET_PORT = 6454
 SACN_PORT = 5568
 DECK_STATUS_RELAY = 5579
 FLAME_RELAY = 5581         # the engine's flame link sends here; relayed on
+STATUS_MIRROR = 5583       # flamesafe's status copy for the engine (PR #39)
 MM_PORT = 8010             # MadMapper's OSC port, as the bench config says
 BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
 SHOW_S = 100               # each generated show's length
@@ -465,6 +466,9 @@ class Soak:
         with open(used, encoding="utf-8-sig") as fh:
             cfg = json.load(fh)
         cfg["destination"] = {"ip": "127.0.0.1", "port": SACN_PORT}
+        # flamesafe's copy of its status for the engine (PR #39), so the
+        # engine's flame link sees flamesafe confirm a disarm.
+        cfg["link"]["status_mirror_port"] = STATUS_MIRROR
         cfg["groups"] = cfg.get("groups", [])[:3]
         cfg["log_dir"] = os.path.join(self.dir, "flamesafe-journal")
         self.fs_cfg_doc = cfg
@@ -1074,8 +1078,8 @@ class Soak:
                     f"{done} show(s) played to the end, {len(failed)} failed "
                     f"to start (limit 0)" + (": " + "; ".join(
                         f"show {n}: {r}" for n, r in failed[:5])
-                        if failed else "") + f"; {self.show_starts} show "
-                    f"start(s) seen on the timecode"))
+                        if failed else "") + f"; {self.show_starts} timecode "
+                    f"run(s) seen (a silence over 1 s starts a new one)"))
         tc = self.tc
         ok = tc.n > 10 and tc.over_gap == 0 and \
             abs(tc.mean() - TC_PERIOD_MS) <= 3.0

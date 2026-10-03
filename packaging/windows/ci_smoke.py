@@ -254,8 +254,11 @@ def soak_check():
     printed as warnings. A missing report, a crash, or an item with nothing
     measured is an error."""
     import glob
-    rc, out = run([os.path.join(APP, "ltcplay-soak.exe"), "--minutes", "3",
-                   "--no-wait"], timeout=600)
+    # BENCH BUILD: the full stack, scheduler included. 7 minutes holds at
+    # least one whole 100 s show (one every 3 minutes, 02:00 to midnight in
+    # the runner's clock). The runner has no audio interface: --fake-audio.
+    rc, out = run([os.path.join(APP, "ltcplay-soak.exe"), "--minutes", "7",
+                   "--no-wait", "--fake-audio"], timeout=1200)
     reports = sorted(glob.glob(os.path.join(LOCAL, "soak", "*",
                                             "LTC Player soak report *.txt")))
     if not check(reports, f"the soak test wrote no report (exit {rc})"):
@@ -266,10 +269,19 @@ def soak_check():
     for i, ln in enumerate(lines):
         if ln.startswith("[FAIL]"):
             detail = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            hard = ("Crashes" in ln or "frames arrived" in detail or
-                    "never answered" in detail or "not all zero" in detail
-                    and not detail.endswith("0 packets not all zero "
-                                            "(limit 0)"))
+            # A timecode stall on a shared runner is timing, not a fault in
+            # the program: warned. Any other real fault line is an error.
+            parts = detail.split(" | ")
+            timing_only = ("Real faults" in ln and
+                           all("has not moved" in x for x in parts))
+            hard = not timing_only and (
+                "Crashes" in ln or "frames arrived" in detail or
+                "never answered" in detail or "Scheduled shows" in ln or
+                "Show audio player" in ln or "Lasers" in ln or
+                "Video" in ln or "Real faults" in ln or
+                "never saw the link go stale" in ln or
+                ("not all zero" in detail and not detail.endswith(
+                    "0 packets not all zero (limit 0)")))
             msg = f"soak: {ln[7:]}: {detail}"
             if hard:
                 error(msg)
@@ -278,14 +290,16 @@ def soak_check():
                       flush=True)
     for need in ("[PASS] Engine's own error counters",
                  "flamesafe output (sACN, sent to this PC only)",
-                 "Flame link frames"):
+                 "Flame link frames", "Scheduled shows", "Art-Net timecode",
+                 "Show audio player", "Lasers (BEYOND", "Video (MadMapper"):
         check(need in text, f"the soak report has no '{need}' item")
     check(wait(all_running, 90), "LTC Player did not come back after the "
                                  "soak test")
     body = "%0A".join(x.replace("%", "%25") for x in lines[:60])
-    print(f"::notice title=Soak report (3 minutes on a CI runner)::{body}",
-          flush=True)
-    NOTES.append(f"soak test ran 3 minutes and wrote {reports[-1]}")
+    print(f"::notice title=Soak report (7 minutes, full stack, fake audio, "
+          f"CI runner)::{body}", flush=True)
+    NOTES.append(f"full-stack soak test ran 7 minutes and wrote "
+                 f"{reports[-1]}")
 
 
 # ---------------------------------------------------------------- main ---
