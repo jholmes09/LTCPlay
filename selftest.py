@@ -20294,8 +20294,10 @@ def test_journal_every_event_is_complete():
                   ((18, 7, 20), None), ((18, 30), None)):
         now[0] = _den(S, *t)
         svc.tick() if ev is None else svc._apply(ev)
-    svc._apply(_op(S, S.HOLD_ON, who="  ", screen="rack screen"))  # refused
-    svc._apply(_op(S, S.HOLD_ON, who="", screen=""))       # refused
+    # Refused for not naming who (Resume: Hold and Abort are taken from
+    # anyone, PR #43 fix round 1).
+    svc._apply(_op(S, S.RESUME, who="  ", screen="rack screen"))  # refused
+    svc._apply(_op(S, S.RESUME, who="", screen=""))       # refused
     svc_path = os.path.join(svc_dir, "nights",
                             J.machine_name("2026-11-14"))
     rows = _jsonl_rows(svc_path)
@@ -35115,10 +35117,12 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
               f"locally any listed operator is picked: {st} {out}")
         # On the machine itself the page names who presses: someone off the
         # operator list is refused by the scheduler, journaled, and nothing
-        # happens.
+        # happens (Resume: Hold and Abort are taken from anyone since PR
+        # #43's fix round 1).
         state0 = R.svc.machine.state
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/hold",
-                           {"who": "Mallory", "screen": "Rack screen"},
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/resume",
+                           {"who": "Mallory", "screen": "Rack screen",
+                            "seen": R.seen()},
                            client=("127.0.0.1", 5000))
         R.settle()
         check(st == 400 and "not on the operator list" in out["error"] and
