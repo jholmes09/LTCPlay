@@ -472,6 +472,7 @@ class FlameCues:
         self._folder = None
         self._span = None
         self._problem = ""
+        self.link = None     # the FlameLink, for the seek guard's frame rate
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -515,6 +516,13 @@ class FlameCues:
         span = self._locate(s)
         if span is None:
             return None
+        link = getattr(self, "link", None)
+        fps = getattr(getattr(s, "tl", None), "fps", None)
+        if link is not None and isinstance(fps, (int, float)) and fps > 0 \
+                and link.tc_fps != float(fps):
+            # The seek guard turns HH:MM:SS:FF into seconds at the show's
+            # own frame rate.
+            link.tc_fps = float(fps)
         start, count = span
         vals = list(bytes(buf[start - 1:start - 1 + count]))
         return vals + [0] * (512 - len(vals))
@@ -549,12 +557,26 @@ def build_flame_link(cfg, control, show, journal=None):
     link = flamelink.FlameLink(
         lcfg, cues=cues, show_state=flamelink.audio_master_state(show._clock),
         journal=journal)
-    if journal is not None:
+    if journal is not None and not _has_status_mirror(cfg.flamesafe_config):
         journal("Flame link: flamesafe's status frames go to the Stream Deck "
-                "program, so this program cannot see flamesafe confirm a "
-                "disarm, or raise the lock alarm itself; the Stream Deck "
-                "shows both.", action="flame_link", outcome="no_status")
+                "program and flamesafe's config has no link.status_mirror_port"
+                ", so this program cannot see flamesafe confirm a disarm, or "
+                "raise the lock alarm itself; the Stream Deck shows both. Set "
+                "status_mirror_port to give this program its own copy.",
+                action="flame_link", outcome="no_status")
+    # The seek guard (PR #39) counts frames at the show file's own rate.
+    if hasattr(link, "tc_fps") and isinstance(cues, FlameCues):
+        cues.link = link
     return link
+
+
+def _has_status_mirror(path):
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        return "status_mirror_port" in (doc.get("link") or {})
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 # ------------------------------------------------------------- the runner --
