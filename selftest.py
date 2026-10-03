@@ -22392,6 +22392,945 @@ def test_journal_summary_is_written_however_the_night_closes():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The show conductor (ltcplay/conductor.py): Hold, Resume, Abort, Reset and
+# announcements on the rig. Driven on a fake clock, single threaded, so every
+# "arrives mid fade" case lands at an exact, repeatable instant; one test at
+# the end does the same on real threads and real time.
+# ---------------------------------------------------------------------------
+
+def _cond_mod():
+    from ltcplay import conductor
+    return conductor
+
+
+class _CondTime:
+    """A fake perf_counter. The conductor's waits advance it, and a test can
+    schedule a press at an exact time: it fires inside the wait that spans
+    it, which is exactly where a real press would land."""
+
+    def __init__(self, t=100.0):
+        self.t = t
+        self.events = []
+
+    def now(self):
+        return self.t
+
+    def at(self, when, fn):
+        self.events.append((when, fn))
+
+    def wait(self, left):
+        target = self.t + left
+        due = [e for e in self.events if e[0] <= target + 1e-12]
+        if due:
+            e = min(due, key=lambda x: x[0])
+            self.events.remove(e)
+            self.t = max(self.t, e[0])
+            e[1]()
+        else:
+            self.t = target
+
+
+class _CondRig:
+    """Both sides at once: DeviceOutputs (lasers, video) and ShowOutputs
+    (clock, pixels, flames). Records every call with the fake time. The
+    clock freezes `fade` after music_hold and moves `move_s` after
+    music_resume, like AudioMaster; either can be told never to."""
+
+    def __init__(self, time_fn):
+        self.now = time_fn
+        self.calls = []
+        self.cue = True
+        self.frozen_at = None
+        self.moving_at = None
+        self.frozen = False
+        self.move_s = 0.05
+        self.never_freeze = False
+        self.never_move = False
+        self.fail = set()
+        self.raise_on = set()
+        self.bad = set()
+        self.slow = {}
+        self.slow_by = None
+        self.on_call = {}      # name -> fn: a press landing mid call
+
+    def _rec(self, name, *args):
+        self.calls.append((name, args, self.now()))
+        hook = self.on_call.pop(name, None)
+        if hook is not None:
+            hook()
+        if name in self.slow and self.slow_by is not None:
+            self.slow_by(self.slow[name])
+        if name in self.raise_on:
+            raise OSError(f"{name} exploded")
+        if name in self.bad:
+            return None
+        C = _cond_mod()
+        if name in self.fail:
+            return C.failed(f"{name} could not be sent")
+        return C.done()
+
+    def names(self, since=0):
+        return [c[0] for c in self.calls[since:]]
+
+    def first(self, name, since=0):
+        for c in self.calls[since:]:
+            if c[0] == name:
+                return c
+        return None
+
+    def count(self, name):
+        return sum(1 for c in self.calls if c[0] == name)
+
+    # DeviceOutputs
+    def lasers_blank(self):
+        return self._rec("lasers_blank")
+
+    def lasers_fade_out(self, s):
+        return self._rec("lasers_fade_out", s)
+
+    def lasers_restore(self):
+        return self._rec("lasers_restore")
+
+    def video_fade_out(self, s):
+        return self._rec("video_fade_out", s)
+
+    def video_restore(self, s):
+        return self._rec("video_restore", s)
+
+    def video_stop(self):
+        return self._rec("video_stop")
+
+    # ShowOutputs
+    def playing(self):
+        return self.cue
+
+    def music_hold(self, fade):
+        r = self._rec("music_hold", fade)
+        self.frozen_at = None if self.never_freeze else self.now() + fade
+        self.moving_at = None
+        return r
+
+    def music_resume(self, fade):
+        r = self._rec("music_resume", fade)
+        self.moving_at = None if self.never_move else self.now() + self.move_s
+        return r
+
+    def music_halt(self, fade):
+        return self._rec("music_halt", fade)
+
+    def music_frozen(self):
+        t = self.now()
+        if self.moving_at is not None and t >= self.moving_at:
+            return False
+        if self.moving_at is None and self.frozen_at is not None \
+                and t >= self.frozen_at:
+            return True
+        # Held but not yet frozen reads False; resuming but not yet moving
+        # still reads True (the timecode is still frozen).
+        return self.moving_at is not None
+
+    def pixels_fade_out(self, s):
+        return self._rec("pixels_fade_out", s)
+
+    def pixels_restore(self, s):
+        return self._rec("pixels_restore", s)
+
+    def flames_zero(self):
+        return self._rec("flames_zero")
+
+    def flames_release(self):
+        return self._rec("flames_release")
+
+    def flames_disarm_all(self, reason):
+        return self._rec("flames_disarm_all", reason)
+
+
+def _cond(gate=None, hold_gate=None, announcer=None, devices=None, **kw):
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    c = C.Conductor(devices or rig, rig,
+                    gate if gate is not None else (lambda: None),
+                    hold_gate=hold_gate, announcer=announcer,
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False, **kw)
+    return c, rig, T, lines
+
+
+def _cond_live(c, rig):
+    """A show running with everything up, and the call log cleared."""
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
+    section("conductor: Abort zeroes and disarms the flames at once, fades "
+            "lasers, video, pixels and music together over 1 s, and latches")
+    C = _cond_mod()
+    check(C.HOLD_FADE_S == 0.25, "production Hold fades over 0.25 s")
+    check(C.ABORT_FADE_S == 1.0, "Abort fades over 1 s")
+    check(C.ANNOUNCE_DARK_S == 0.5, "an announcement waits 0.5 s in the dark")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 200.0
+    r = c.abort("Andy", "rack screen")
+    check(r.ok, f"Abort accepted: {r}")
+    # Before the executor has run at all: the flames are already cut.
+    check(rig.names() == ["flames_zero", "flames_disarm_all"],
+          f"Abort cuts and disarms the flames before it returns, and "
+          f"nothing else yet: {rig.names()}")
+    check(all(t == 200.0 for _n, _a, t in rig.calls),
+          "the flame cut has zero delay")
+    check(c.latched, "Abort latches at once")
+    c.run_pending()
+    for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
+                 "music_halt"):
+        got = rig.first(name)
+        check(got is not None and got[1] == (1.0,) and got[2] == 200.0,
+              f"{name} starts at the press, over 1 s: {got}")
+    check(rig.count("lasers_blank") == 0,
+          "Abort ramps the lasers (BEYOND brightness), not an instant blank")
+    stop = rig.first("video_stop")
+    check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
+          f"the video stops once the 1 s fade is done: {stop}")
+    check(rig.count("lasers_restore") == 0 and rig.count("flames_release")
+          == 0, "nothing comes back up after an Abort")
+    # Latched: nothing else responds.
+    for what, fn in (("Hold", lambda: c.hold("Andy", "rack screen")),
+                     ("Resume", lambda: c.resume("Andy", "rack screen")),
+                     ("Show start", lambda: c.show_starting()),
+                     ("an announcement", lambda: c.announce("delayed")),
+                     ("a mode change", lambda: c.set_mode(C.REHEARSAL))):
+        r = fn()
+        check(not r.ok and "Reset" in r.sentence,
+              f"{what} is refused while aborted, saying to Reset: {r}")
+    n = len(rig.calls)
+    c.run_pending()
+    check(len(rig.calls) == n, "a refused press sends nothing")
+    r = c.reset("Andy", "rack screen")
+    check(r.ok and not c.latched, f"one Reset press clears the latch: {r}")
+    c.run_pending()
+    check(len(rig.calls) == n, "Reset leaves the rig dark")
+    check(not c.reset().ok, "a second Reset has nothing to reset")
+    check(any("Reset" in t for t, _f in lines), "Reset is journaled")
+    print("  ok")
+
+
+def test_conductor_double_abort_is_idempotent():
+    section("conductor: a second Abort does nothing, Reset waits for the "
+            "fade, and Abort needs something playing")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 300.0
+    c.abort("Andy", "rack screen")
+    gen = c._gen
+    r2 = c.abort("Jeff", "Stream Deck")
+    check(r2.ok and "Already aborted" in r2.sentence,
+          f"a second Abort is a calm no-op: {r2}")
+    check(c._gen == gen, "a second Abort starts no new effect")
+    resets = []
+    T.at(300.5, lambda: resets.append(c.reset("Andy", "rack screen")))
+    c.run_pending()
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    for name in ("flames_zero", "flames_disarm_all", "lasers_fade_out",
+                 "video_fade_out", "pixels_fade_out", "music_halt",
+                 "video_stop"):
+        check(rig.count(name) == 1, f"{name} sent exactly once for three "
+                                    f"Abort presses ({rig.count(name)})")
+    check(resets and not resets[0].ok and "still fading" in
+          resets[0].sentence, f"Reset during the fade is refused: {resets}")
+    check(c.latched, "a refused Reset leaves it latched")
+    check(c.reset().ok, "Reset once the fade is done")
+    # Nothing playing: nothing to abort.
+    c2, rig2, _T2, _l2 = _cond()
+    rig2.cue = False
+    r = c2.abort("Andy", "rack screen")
+    check(not r.ok and "nothing is playing" in r.sentence,
+          f"Abort with nothing playing is refused: {r}")
+    check(rig2.calls == [] and not c2.latched,
+          "a refused Abort cuts nothing and latches nothing")
+    print("  ok")
+
+
+def test_conductor_abort_mid_hold_fade_wins():
+    section("conductor: Abort during a Hold's fade takes over at once and "
+            "the Hold never finishes")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 400.0
+    seen = {}
+
+    def press():
+        seen["r"] = c.abort("Andy", "rack screen")
+        seen["cut"] = rig.names()[-2:]
+    T.at(400.1, press)
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    c.run_pending()
+    check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
+    check(seen.get("cut") == ["flames_zero", "flames_disarm_all"],
+          f"the flames were cut inside the press itself: {seen.get('cut')}")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
+          f"the Hold had started its 0.25 s fade: {hold}")
+    # The Hold's own video and pixels fade (Jeff 2026-09-30) had already
+    # gone out at the press, over the Hold's 0.25 s, before Abort landed.
+    for name in ("video_fade_out", "pixels_fade_out"):
+        got = rig.first(name)
+        check(got is not None and abs(got[2] - 400.0) < 1e-9
+              and got[1] == (0.25,),
+              f"{name} went with the Hold at the press: {got}")
+    halt = rig.first("music_halt")
+    check(halt is not None and abs(halt[2] - 400.1) < 1e-9
+          and halt[1] == (1.0,),
+          f"music_halt starts the moment Abort lands, not after the Hold's "
+          f"fade: {halt}")
+    check(rig.count("lasers_fade_out") == 0 and rig.count("lasers_blank")
+          == 1, "the lasers the Hold already blanked are not sent again")
+    check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
+          == 1, "Abort does not re-send video or pixels: the Hold's fade "
+          "already left them black")
+    stop = rig.first("video_stop")
+    check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
+          f"Abort's own 1 s runs from its press: {stop}")
+    check(any("Hold stopped part way because Abort" in t for t, _f in lines),
+          "the journal says the Hold was cut short by Abort")
+    check(c.snapshot()["look"] == "ABORTED", "the look is Abort's")
+    print("  ok")
+
+
+def test_conductor_resume_before_the_hold_fade_finishes():
+    section("conductor: Resume during a Hold's fade undoes exactly what the "
+            "Hold did, lasers and flames only once the timecode moves")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.move_s = 0.3
+    T.t = 500.0
+    T.at(500.1, lambda: c.resume("Andy", "rack screen"))
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    names = rig.names()
+    check(names[:5] == ["flames_zero", "lasers_blank", "music_hold",
+                        "video_fade_out", "pixels_fade_out"],
+          f"Hold: flames, lasers, the music fade, then video and pixels "
+          f"fade to black with it (Jeff 2026-09-30): {names}")
+    res = rig.first("music_resume")
+    check(res is not None and abs(res[2] - 500.1) < 1e-9,
+          f"the music resumes at the Resume press: {res}")
+    las = rig.first("lasers_restore")
+    fl = rig.first("flames_release")
+    check(las is not None and las[2] >= 500.4 - 1e-9,
+          f"the lasers come back only once the timecode moves: {las}")
+    check(fl is not None and fl[2] >= 500.4 - 1e-9,
+          f"the flame cues are released only once the timecode moves: {fl}")
+    check(names.index("flames_release") > names.index("lasers_restore"),
+          "flame cues last")
+    snap = c.snapshot()
+    check(snap["look"] == "PLAYING" and snap["applied"]["flames"] == "live"
+          and snap["applied"]["lasers"] == "lit", f"back to playing: {snap}")
+    # Resume when nothing is held is refused.
+    r = c.resume("Andy", "rack screen")
+    check(not r.ok and "not on hold" in r.sentence, f"{r}")
+    # A second Hold press while held changes nothing.
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    n, gen = len(rig.calls), c._gen
+    r = c.hold("Jeff", "Stream Deck")
+    check(r.ok and "Already on hold" in r.sentence and c._gen == gen,
+          f"a double Hold is a no-op: {r}")
+    c.run_pending()
+    check(len(rig.calls) == n, "a double Hold sends nothing")
+    print("  ok")
+
+
+def test_conductor_generation_guard_stops_a_stale_effect():
+    section("conductor: a superseded effect never applies its last steps")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.move_s = 0.3
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    T.t = 600.0
+    # Resume is waiting for the timecode to move (it will at 600.3); Abort
+    # lands at 600.1. The Resume's last two steps must never happen.
+    T.at(600.1, lambda: c.abort("Andy", "rack screen"))
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0,
+          "a stale Resume never lights the lasers after an Abort")
+    check(rig.count("flames_release") == 0,
+          "a stale Resume never releases the flames after an Abort")
+    a = c.snapshot()["applied"]
+    check(a["flames"] == "zero" and a["lasers"] == "black",
+          f"the rig ends as Abort left it: {a}")
+    check(any("Resume stopped part way because Abort" in t
+              for t, _f in lines), "the journal says so")
+    # A press landing DURING a step: the step itself happened (the lasers
+    # came up), but the Resume's next step, releasing the flames, must not.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    rig.on_call["lasers_restore"] = lambda: c.abort("Andy", "rack screen")
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 1 and
+          rig.count("flames_release") == 0,
+          f"no step of a superseded effect runs after the press: "
+          f"{rig.names()}")
+    las = rig.first("lasers_fade_out")
+    check(las is not None and rig.calls.index(las) >
+          rig.calls.index(rig.first("lasers_restore")),
+          "and Abort takes the lasers that did come up back down")
+    # Straight at the guard: a step or an announcement for an older
+    # generation does nothing at all.
+    C = _cond_mod()
+    played = []
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: played.append(a))
+    stale = c._gen
+    c._gen += 1
+    n = len(rig.calls)
+    for what, fn in (
+            ("a step", lambda: c._step(stale, "lasers", "lit", "x", [],
+                                       rig.lasers_restore)),
+            ("an announcement", lambda: c._run_announce(
+                stale, {"announce": ("delayed", "Andy", "rack"),
+                        "look": "DARK", "changed": False}, []))):
+        try:
+            fn()
+            check(False, f"{what} for an older generation must be refused")
+        except C._Superseded:
+            pass
+    check(len(rig.calls) == n and played == [],
+          "and it sent nothing and played nothing")
+    # The same for an announcement waiting in the dark.
+    plays = []
+    gate_calls = []
+
+    def hold_gate(who, screen, detail):
+        gate_calls.append((who, screen, detail))
+        return None, 1
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    T.t = 700.0
+    T.at(700.4, lambda: c.abort("Andy", "rack screen"))
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(plays == [], "an announcement superseded in the dark never plays")
+    halt = rig.first("music_halt")
+    check(halt is not None and abs(halt[2] - 700.4) < 1e-9,
+          f"the wait in the dark wakes for the Abort at once: {halt}")
+    check(any("delayed announcement did not play: Abort" in t
+              for t, _f in lines), "and the journal says why")
+    # Superseded before its effect even started: the claim is released.
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    c.announce("delayed", "Andy", "rack screen")
+    c.resume("Jeff", "Stream Deck")
+    c.run_pending()
+    check(plays == [], "a Resume before the announcement started cancels it")
+    r = c.announce("cancellation", "Andy", "rack screen")
+    check(r.ok, f"the cancelled claim does not block the next one: {r}")
+    c.run_pending()
+    check(plays == [("cancellation", "Andy", "rack screen")],
+          f"the next announcement plays: {plays}")
+    print("  ok")
+
+
+def _in_the_dark(played_at, dark_at):
+    """Played 0.5 s after the rig went dark, give or take the conductor's
+    own polling of the clock (POLL_S)."""
+    C = _cond_mod()
+    late = played_at - dark_at - C.ANNOUNCE_DARK_S
+    return -1e-9 <= late <= C.POLL_S + 1e-9
+
+
+def test_conductor_announcements_hold_go_dark_then_play():
+    section("conductor: an announcement holds the show, fades lasers, video "
+            "and pixels to black, waits 0.5 s in the dark, then plays")
+    plays, gates = [], []
+    refusal = [None]
+
+    def hold_gate(who, screen, detail):
+        gates.append((who, screen, detail))
+        return refusal[0], len(gates)
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    T.t = 800.0
+    r = c.announce("delayed", "Andy", "rack screen")
+    check(r.ok, f"accepted: {r}")
+    check(len(gates) == 1 and gates[0][:2] == ("Andy", "rack screen"),
+          f"the scheduler's hold gate is asked once, with who and where: "
+          f"{gates}")
+    r2 = c.announce("cancellation", "Jeff", "Stream Deck")
+    check(not r2.ok and "still starting" in r2.sentence,
+          f"a second announcement while one starts is refused: {r2}")
+    c.run_pending()
+    for name in ("flames_zero", "lasers_fade_out", "music_hold",
+                 "video_fade_out", "pixels_fade_out"):
+        got = rig.first(name)
+        check(got is not None and got[2] == 800.0 and
+              (name == "flames_zero" or got[1] == (0.25,)),
+              f"{name} at the press, fading with the music: {got}")
+    check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
+          f"played 0.5 s after the 0.25 s fade ended: {plays}")
+    # Another announcement once that one has started: already dark, so it
+    # plays at once with nothing sent.
+    n = len(rig.calls)
+    T.t = 810.0
+    c.announce("cancellation", "Andy", "rack screen")
+    c.run_pending()
+    check(len(rig.calls) == n, "already dark: nothing more is sent")
+    check(plays[-1][3] == 810.0, "and it plays at once")
+    # Resume from the dark: everything comes back.
+    T.t = 820.0
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    for name in ("music_resume", "video_restore", "pixels_restore",
+                 "lasers_restore", "flames_release"):
+        check(rig.first(name, n) is not None, f"Resume sends {name}")
+    # During a production Hold: a production Hold already faded video and
+    # pixels to black with the lasers (Jeff 2026-09-30), so there is
+    # nothing left for the announcement to send, and it plays at once
+    # rather than waiting 0.5 s in a dark that is already there.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("video_fade_out") is not None and
+          rig.first("pixels_fade_out") is not None,
+          "the Hold itself already faded video and pixels to black")
+    n = len(rig.calls)
+    T.t = 900.0
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(rig.names(n) == [],
+          f"an announcement during a Hold sends nothing: already dark: "
+          f"{rig.names(n)}")
+    check(plays[-1][3] == 900.0,
+          f"and it plays at once, with nothing left to fade: {plays[-1]}")
+    # A Hold pressed during the wait in the dark changes nothing.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    got = []
+    T.t = 1000.0
+    T.at(1000.5, lambda: got.append(c.hold("Jeff", "Stream Deck")))
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(got and got[0].ok and "Already on hold" in got[0].sentence,
+          f"Hold during the announcement's wait: {got}")
+    check(_in_the_dark(plays[-1][3], 1000.25), "and it still plays on time")
+    # The scheduler refuses the Hold: the announcement is refused, nothing
+    # is sent.
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    refusal[0] = "the night is closed"
+    k = len(plays)
+    r = c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    refusal[0] = None
+    check(not r.ok and "the night is closed" in r.sentence,
+          f"the gate's refusal is the announcement's: {r}")
+    check(rig.calls == [] and len(plays) == k, "and nothing happens")
+    # Between shows: no fade, no wait, it just plays.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    rig.cue = False
+    T.t = 1100.0
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(rig.calls == [] and plays[-1][3] == 1100.0,
+          f"between shows it plays at once and touches nothing: "
+          f"{rig.calls}")
+    # No scheduler connected: refused, as announce.py is inert without one.
+    c, rig, T, lines = _cond()
+    r = c.announce("delayed", "Andy", "rack screen")
+    check(not r.ok and "no scheduler" in r.sentence, f"{r}")
+    # A refusal from the player itself is written down, not raised.
+    def refuse(*a):
+        raise ValueError("Delayed is not available: the file is missing.")
+    c, rig, T, lines = _cond(hold_gate=hold_gate, announcer=refuse)
+    _cond_live(c, rig)
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(any("file is missing" in t for t, _f in lines),
+          "the player's refusal reaches the journal")
+    print("  ok")
+
+
+def test_conductor_no_lasers_during_intermission():
+    section("conductor: the lasers are only ever lit through the gate, and "
+            "never in intermission")
+    C = _cond_mod()
+    state = ["SHOW"]
+
+    def boom():
+        raise RuntimeError("scheduler gone")
+    for st, lit in (("SHOW", True), ("PAUSED", True), ("REHEARSAL", True),
+                    ("STANDBY", False), ("HOLD", False), ("IDLE", False),
+                    ("CLOSING", False), (None, False), ("", False),
+                    (boom, False)):
+        gate = C.laser_gate_for(st if callable(st) else (lambda s=st: s))
+        c, rig, T, lines = _cond(gate=gate)
+        c.show_starting("Andy", "rack screen")
+        c.run_pending()
+        check((rig.count("lasers_restore") == 1) == lit,
+              f"show start in state {st!r}: lasers "
+              f"{'lit' if lit else 'dark'} ({rig.names()})")
+        if not lit:
+            check(any("lasers stay dark" in t for t, _f in lines),
+                  f"state {st!r}: the journal says why")
+        check(rig.count("flames_release") == 1,
+              f"state {st!r}: the gate is for lasers only")
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines = _cond(gate=gate)
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0,
+          "a Resume in intermission keeps the lasers dark")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "in those words")
+    check(c.snapshot()["applied"]["lasers"] == "black", "still black")
+    def broken_gate():
+        raise RuntimeError("gate broke")
+    c, rig, T, lines = _cond(gate=broken_gate)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0 and
+          any("laser gate failed" in t for t, _f in lines),
+          "a laser gate that raises keeps the lasers dark")
+    for bad in (None, "yes"):
+        try:
+            C.Conductor(rig, rig, bad)
+            check(False, f"a conductor without a laser gate ({bad!r}) must "
+                         f"be refused")
+        except ValueError:
+            pass
+    # Enforced, not assumed: lasers already lit are blanked when the gate
+    # says no, and leaving the show blanks them whatever the gate says.
+    state[0] = "SHOW"
+    c, rig, T, lines = _cond(gate=gate)
+    _cond_live(c, rig)
+    check(c.snapshot()["applied"]["lasers"] == "lit", "lit in the show")
+    state[0] = "STANDBY"
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_blank") == 1 and
+          c.snapshot()["applied"]["lasers"] == "black",
+          f"a gate that says no blanks lasers left lit: {rig.names()}")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    r = c.intermission("scheduler")
+    c.run_pending()
+    check(r.ok and rig.names() == ["flames_zero", "lasers_blank"],
+          f"leaving the show zeroes the flame cues and blanks the lasers, "
+          f"nothing else: {rig.names()} {r}")
+    a = c.snapshot()["applied"]
+    check(a["lasers"] == "black" and a["flames"] == "zero", f"{a}")
+    check(not c.resume("Andy", "rack screen").ok,
+          "there is nothing to resume in intermission")
+    # While an Abort is fading, intermission must not cut the fade short.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 1300.0
+    got = []
+    T.at(1300.3, lambda: got.append(c.intermission("scheduler")))
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    stop = rig.first("video_stop")
+    check(got and got[0].ok and stop is not None and
+          abs(stop[2] - 1301.0) < 1e-9 and c.latched,
+          f"intermission during Abort's fade leaves it alone: {got} {stop}")
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_is_instant():
+    section("conductor: in rehearsal Hold and Resume are instant; Abort is "
+            "still 1 s")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    check(c.mode == C.PRODUCTION, "production by default")
+    check(not c.set_mode("practice").ok, "an unknown mode is refused")
+    check(c.set_mode(C.REHEARSAL).ok and c.mode == C.REHEARSAL, "rehearsal")
+    _cond_live(c, rig)
+    T.t = 1200.0
+    c.hold("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_hold")[1] == (0.0,), "the music stops at once")
+    check(T.t == 1200.0, f"the Hold took no time: {T.t}")
+    c.resume("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_resume")[1] == (0.0,), "and comes back at once")
+    n = len(rig.calls)
+    plays = []
+    c.hold_gate = lambda *a: (None, 1)
+    c.announcer = lambda *a: plays.append(a)
+    c.announce("delayed", "Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("lasers_blank", n) is not None and
+          rig.first("lasers_fade_out", n) is None and
+          rig.first("video_fade_out", n)[1] == (0.0,),
+          f"a rehearsal announcement goes dark at once: {rig.names(n)}")
+    c.resume("Andy", "rehearsal page")
+    c.run_pending()
+    c.abort("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_halt")[1] == (1.0,), "Abort still fades 1 s")
+    c.reset()
+    check(c.set_mode(C.PRODUCTION).ok, "back to production")
+    c.show_starting()
+    c.run_pending()
+    c.hold()
+    c.run_pending()
+    holds = [x for x in rig.calls if x[0] == "music_hold"]
+    check(holds[-1][1] == (0.25,), f"production fades again: {holds}")
+    print("  ok")
+
+
+def test_conductor_hold_video_pixels_freeze_or_fade():
+    section("conductor: rehearsal Hold leaves video and pixels frozen in "
+            "place; production Hold fades them to black with the lasers "
+            "(Jeff 2026-09-30)")
+    C = _cond_mod()
+    # Rehearsal: video and pixels are never touched, so they hold on
+    # whatever frame they were already showing (frozen, not black).
+    c, rig, T, lines = _cond()
+    check(c.set_mode(C.REHEARSAL).ok, "rehearsal")
+    _cond_live(c, rig)
+    c.hold("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("video_fade_out") is None and
+          rig.first("pixels_fade_out") is None,
+          f"a rehearsal Hold never calls video or pixel fade: "
+          f"{rig.names()}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"neither was ever sent a command, so they stay exactly as they "
+          f"were (lit, showing the frozen frame), not black: {a}")
+    # Production: video and pixels fade out over the same 0.25 s as the
+    # music and the lasers, and land on black.
+    c, rig, T, lines = _cond()
+    check(c.mode == C.PRODUCTION, "production by default")
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    vcall, pcall = rig.first("video_fade_out"), rig.first("pixels_fade_out")
+    check(vcall is not None and vcall[1] == (0.25,),
+          f"a production Hold fades the video out over 0.25 s: {vcall}")
+    check(pcall is not None and pcall[1] == (0.25,),
+          f"and the pixels too: {pcall}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.BLACK and a["pixels"] == C.BLACK,
+          f"both land on black, not merely frozen: {a}")
+    # Resume brings them back either way.
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("video_restore") is not None and
+          rig.first("pixels_restore") is not None,
+          "Resume brings video and pixels back up")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"and they are lit again: {a}")
+    print("  ok")
+
+
+def test_conductor_output_failures_are_loud_and_never_crash_it():
+    section("conductor: a failed, raising, wrong or slow output is a fault "
+            "sentence; the rest still runs and the command is sent again")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.fail = {"lasers_blank"}
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "lasers_blank could not be sent" in t for t, f in lines),
+          "a failed blank is a fault, with the device's sentence")
+    check(rig.count("music_hold") == 1, "the Hold carried on past it")
+    check(c.snapshot()["applied"]["lasers"] == "unknown",
+          "a failed blank is not counted as dark")
+    rig.fail = set()
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_fade_out") == 1,
+          "so the Abort sends the lasers to black again")
+    # A raise, and a return that is not a Result.
+    for mode in ("raise_on", "bad"):
+        c, rig, T, lines = _cond()
+        _cond_live(c, rig)
+        setattr(rig, mode, {"lasers_blank", "flames_zero"})
+        r = c.hold("Andy", "rack screen")
+        c.run_pending()
+        check(r.ok, f"{mode}: the press itself is fine")
+        check(rig.count("music_hold") == 1, f"{mode}: the Hold carried on")
+        a = c.snapshot()["applied"]
+        check(a["lasers"] == "unknown" and a["flames"] == "unknown",
+              f"{mode}: neither counts as done: {a}")
+        check(sum(1 for _t, f in lines if f) >= 2,
+              f"{mode}: both are faults: {lines}")
+        setattr(rig, mode, set())
+        c.abort("Andy", "rack screen")
+        c.run_pending()
+        check(rig.count("flames_zero") == 2,
+              f"{mode}: Abort cuts the flames again")
+    # Abort's inline disarm fails: the executor sends it again.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.fail = {"flames_disarm_all"}
+    c.abort("Andy", "rack screen")
+    rig.fail = set()
+    c.run_pending()
+    check(rig.count("flames_disarm_all") == 2,
+          "a failed disarm is sent again by the Abort's own effect")
+    # A slow call.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.slow = {"lasers_blank": 0.2}
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "took 200 ms" in t for t, f in lines),
+          f"a slow output call is a fault: {lines}")
+    # The clock never freezes: the safety half still stands.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.never_freeze = True
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "did not say it had frozen" in t for t, f in lines),
+          "a Hold the clock never confirms is a fault")
+    a = c.snapshot()["applied"]
+    check(a["flames"] == "zero" and a["lasers"] == "black",
+          f"flames zero and lasers dark anyway: {a}")
+    # The clock never moves again: lasers and flames stay down.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    rig.never_move = True
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0 and
+          rig.count("flames_release") == 0,
+          "no timecode movement: lasers and flame cues stay down")
+    check(any(f and "was moving" in t for t, f in lines),
+          "and that is a fault sentence")
+    # The stand-in device layer says it is one.
+    c, rig, T, lines = _cond(devices=C.NotWiredDevices())
+    check(c.snapshot()["devices_wired"] is False,
+          "the stand-in shows as not wired")
+    check(any(f and "not connected" in t for t, f in lines),
+          "and a fault line says so at start")
+    # A journal that raises never stops a show.
+    def bad_journal(text, **f):
+        raise OSError("disk full")
+    c = C.Conductor(rig, rig, lambda: None, journal=bad_journal,
+                    clock=T.now, waiter=T.wait, threaded=False)
+    rig.cue = True
+    rig.never_freeze = False
+    check(c.show_starting().ok and c.abort().ok,
+          "a broken journal does not stop Abort")
+    c.run_pending()
+    check(c.journal_errors > 0, "its failures are counted")
+    print("  ok")
+
+
+def test_conductor_on_real_threads():
+    section("conductor: real threads and real time, Abort pressed twice at "
+            "once during a Hold")
+    import threading as _th
+    C = _cond_mod()
+    rig = _CondRig(time.perf_counter)
+    c = C.Conductor(rig, rig, lambda: None, clock=time.perf_counter)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        del rig.calls[:]
+        c.hold("Andy", "rack screen")
+        time.sleep(0.08)
+        cut = {}
+        go = _th.Event()
+
+        def press(who):
+            go.wait()
+            t0 = time.perf_counter()
+            r = c.abort(who, "rack screen")
+            cut[who] = (r, t0, rig.first("flames_disarm_all"))
+        ts = [_th.Thread(target=press, args=(w,)) for w in ("Andy", "Jeff")]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        pressed = min(v[1] for v in cut.values())
+        check(all(v[0].ok for v in cut.values()), f"both answered: {cut}")
+        check(all(v[2] is not None for v in cut.values()),
+              "the flames were disarmed before either press returned")
+        check(c.wait_idle(5), "the Abort finished")
+        for name in ("lasers_blank", "video_fade_out", "pixels_fade_out",
+                     "music_halt", "video_stop", "flames_disarm_all"):
+            check(rig.count(name) == 1, f"{name} once for two presses "
+                                        f"({rig.count(name)})")
+        vf = rig.first("video_fade_out")
+        check(vf is not None and vf[2] - pressed < 0.15,
+              f"Abort's fade started at once, not after the Hold's "
+              f"({(vf[2] - pressed) if vf else None})")
+        vs = rig.first("video_stop")
+        check(vs is not None and 0.95 <= vs[2] - vf[2] < 1.5,
+              f"then 1 s of fade ({(vs[2] - vf[2]) if vs else None})")
+        check(rig.count("flames_release") == 0 and
+              rig.count("lasers_restore") == 0, "and nothing came back")
+    finally:
+        c.close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_the_conductor():
+    section("GPL: the conductor is never imported by the program")
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "conductor.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.search(r"\bconductor\b", line) and \
+                    re.match(r"\s*(from|import)\s", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the conductor is imported by the program: {top}")
+    r = _sp.run([sys.executable, "-c",
+                 "import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
+                 "print('ltcplay.conductor' in sys.modules)", here],
+                capture_output=True, text=True, timeout=60)
+    check(r.stdout.strip() == "False",
+          f"loading the program loads no conductor: {r.stdout!r} "
+          f"{r.stderr[-300:]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _TEMPRUN = _TempRun()
@@ -22654,6 +23593,18 @@ if __name__ == "__main__":
     test_tctest_never_touches_session_or_sacn()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
+    test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
+    test_conductor_double_abort_is_idempotent()
+    test_conductor_abort_mid_hold_fade_wins()
+    test_conductor_resume_before_the_hold_fade_finishes()
+    test_conductor_generation_guard_stops_a_stale_effect()
+    test_conductor_announcements_hold_go_dark_then_play()
+    test_conductor_no_lasers_during_intermission()
+    test_conductor_rehearsal_hold_is_instant()
+    test_conductor_hold_video_pixels_freeze_or_fade()
+    test_conductor_output_failures_are_loud_and_never_crash_it()
+    test_conductor_on_real_threads()
+    test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
