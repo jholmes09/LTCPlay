@@ -19446,7 +19446,8 @@ def test_the_gpl_path_never_loads_the_journal():
         "b'{\"who\": \"Andy\", \"screen\": \"rack screen\"}')):\n"
         "    req = urllib.request.Request("
         f"'http://127.0.0.1:{port}' + r, data=body, "
-        "method='POST' if body else 'GET')\n"
+        "method='POST' if body else 'GET', "
+        "headers={'Content-Type': 'application/json'})\n"
         "    try:\n"
         "        urllib.request.urlopen(req, timeout=5)\n"
         "        codes.append(200)\n"
@@ -29071,8 +29072,9 @@ def test_remote_pin_required_over_the_network():
                 ("POST", "/api/remote/disarm-all", {}),
                 ("POST", "/api/schedule/operator", {"who": "Andy"})):
             st, _h, out = R.ask(method, path, body)
-            check(st == 401, f"{method} {path} from the network without a "
-                             f"session is refused: {st} {out}")
+            want = 401 if path.startswith("/api/remote/") else 403
+            check(st == want, f"{method} {path} from the network without a "
+                              f"session is refused: {st} {out}")
         check(not R.lines_for("HOLD_ON") and not R.lines_for("HOLD"),
               "and nothing was held")
         # The remote routes check the session themselves too, not only
@@ -29100,8 +29102,9 @@ def test_remote_pin_required_over_the_network():
               f"whoami says who may sign in, never which PINs exist: {out}")
         st, _h, out = R.ask("POST", "/api/remote/login",
                             {"who": "Andy", "pin": "1234", "device": "iPad"})
-        check(st == 403 and "no PIN" in out["error"],
-              f"an operator with no PIN set cannot sign in: {st} {out}")
+        check(st == 403 and out["error"] == "That PIN is not right.",
+              f"an operator with no PIN set cannot sign in, and the network "
+              f"is not told whether a PIN exists: {st} {out}")
         st, out = R.sign_in("Andy", "2468", "iPad")
         sc = R.cookie
         check(sc.startswith("ltcplay_session=") and len(sc) > 40,
@@ -29122,12 +29125,13 @@ def test_remote_pin_required_over_the_network():
         check(out["signed_in"] and out["who"] == "Andy" and
               out["device"] == "iPad", f"signed in as Andy on the iPad: {out}")
         st, _h, out = R.ask("GET", "/api/state")
-        check(st == 200, f"with the session the engine answers: {st}")
+        check(st == 403, f"even signed in, the operator page's API is not "
+                         f"served to the network: {st}")
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(st == 200 and out["me"]["who"] == "Andy" and
               "served_at" in out, f"and the status: {st}")
         # A forged or someone else's cookie is nobody.
-        st, _h, _o = R.ask("GET", "/api/state", cookie=False,
+        st, _h, _o = R.ask("GET", "/api/remote/status", cookie=False,
                            headers={"Cookie": "ltcplay_session=forged"})
         check(st == 401, f"a forged cookie is refused: {st}")
         # PINs are stored hashed, in the settings folder, never as typed.
@@ -29139,7 +29143,7 @@ def test_remote_pin_required_over_the_network():
         st, hd, out = R.ask("POST", "/api/remote/logout", {})
         check(st == 200 and "Max-Age=0" in (hd.get("set-cookie") or [""])[0],
               f"sign out clears the cookie: {st}")
-        st, _h, _o = R.ask("GET", "/api/state")
+        st, _h, _o = R.ask("GET", "/api/remote/status")
         check(st == 401, f"after sign out the old cookie opens nothing: {st}")
         check(any(r.get("action") == "sign in" and r.get("who") == "Andy"
                   and r.get("screen") == "iPad" for r in R.svc.journal) and
@@ -29158,7 +29162,7 @@ def test_remote_pin_required_over_the_network():
                            client=("127.0.0.1", 5000))
         check(st == 200 and "Andy" in out["pins_set"],
               f"on the machine itself a PIN is set: {st} {out}")
-        st, _h, _o = R.ask("GET", "/api/state")
+        st, _h, _o = R.ask("GET", "/api/remote/status")
         check(st == 401, "and the device signed in with the old PIN is out")
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
                            {"who": "Andy", "pin": "12"},
@@ -29167,13 +29171,196 @@ def test_remote_pin_required_over_the_network():
               f"a PIN is 4 to 8 digits: {out}")
         # Wildcard binds are refused outright.
         from ltcplay import web as web_mod
-        for wild in ("0.0.0.0", "::"):
+        for wild in ("0.0.0.0", "::", "", "0", "0.0", "000.000.000.000"):
             try:
                 h2 = web_mod.serve(R.folder, port=0, bind=wild)
                 h2.server_close()
                 check(False, f"serving on {wild} was allowed")
             except ValueError as e:
                 check("show Wi-Fi" in str(e), f"{wild} refused: {e}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+LEGACY_POSTS = (
+    ("/api/stop", {}), ("/api/start", {"timeline": "x.json"}),
+    ("/api/go", {"at": "00:00:10:00"}), ("/api/skip", {"seconds": 5}),
+    ("/api/release", {}), ("/api/input", {"device": "", "channel": 1}),
+    ("/api/showdir", {"timeline": "x.json", "folder": "/tmp"}),
+    ("/api/reinput", {}), ("/api/trigger", {"on": True}),
+    ("/api/reload", {}), ("/api/override", {"look": "blackout"}),
+    ("/api/autoreload", {"on": True}), ("/api/check", {"timeline": "x"}),
+    ("/api/find", {"seconds": 0.1}),
+    ("/api/schedule/operator", {"who": "Jeff", "screen": "iPad"}),
+    ("/api/schedule/deck-event", {"text": "front row arm pressed by Jeff",
+                                  "who": "Jeff", "action": "arm"}),
+    ("/api/schedule/tonight", {"op": "remove", "show": 5, "who": "Jeff",
+                               "screen": "iPad"}),
+    ("/api/schedule/incident", {"who": "Jeff", "screen": "iPad"}),
+    ("/api/announce/play", {"id": 1}))
+LEGACY_GETS = ("/api/state", "/api/devices", "/api/timelines", "/api/log",
+               "/api/schedule", "/api/schedule/state",
+               "/api/schedule/operator", "/api/schedule/journal",
+               "/api/announce")
+
+
+def test_remote_network_session_reaches_only_remote_routes():
+    section("iPad remote, fix round 1 F1: a signed-in network session "
+            "reaches the remote page's own routes and nothing else; every "
+            "legacy and scheduler route is refused from the network, and "
+            "the Stream Deck's journal route answers only the machine")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        R.sign_in("Andy", "2468", "iPad")
+        op0 = R.svc.current_operator
+        n0 = len(R.svc.journal)
+        for path, body in LEGACY_POSTS:
+            st, _h, out = R.ask("POST", path, dict(body, seen=R.seen()))
+            check(st == 403, f"POST {path} with an iPad session is refused: "
+                             f"{st} {out}")
+        for path in LEGACY_GETS:
+            st, _h, out = R.ask("GET", path)
+            check(st == 403, f"GET {path} with an iPad session is refused: "
+                             f"{st}")
+        check(R.svc.current_operator == op0,
+              f"the operator was not changed behind /api/remote/operator's "
+              f"back: {R.svc.current_operator}")
+        new = list(R.svc.journal)[n0:]
+        check(not any("arm pressed" in r.get("text", "") for r in new) and
+              not any(r.get("action") in ("operator", "deck", "arm")
+                      for r in new),
+              f"no forged deck line or operator change was journaled: "
+              f"{[r.get('text') for r in new][:3]}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(st == 200, "the remote page's own status still answers")
+        st, _h, out = R.ask("GET", "/")
+        check(st == 200 and "ltcplay remote" in str(out),
+              "and the remote page itself")
+        st, _h, out = R.ask("GET", "/brand/logo_small.png")
+        check(st in (200, 404), f"and the logo route: {st}")
+        # The machine itself keeps every route, the deck's journal too.
+        st, _h, out = _ask(R.httpd, "POST", "/api/schedule/deck-event",
+                           {"text": "front row disarm pressed by Andy",
+                            "who": "Andy", "action": "disarm"}, client=loop)
+        check(st == 200, f"the Stream Deck on this machine still posts its "
+                         f"lines: {st} {out}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
+        check(st == 200, "and the machine still reads /api/state")
+        from ltcplay import web as web_mod
+        check(not web_mod.network_may_reach("/api/schedule/deck-event") and
+              not web_mod.network_may_reach("/api/stop") and
+              web_mod.network_may_reach("/api/remote/hold"),
+              "network_may_reach is the remote routes, the page and the logo")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_cross_site_posts_refused_on_loopback():
+    section("iPad remote, fix round 1 F2: on the show machine itself, a "
+            "press from a sandboxed or data: page (Origin null), from "
+            "another site, or not sent as JSON is refused")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        pins0 = R.remote.pins.names()
+        state0 = R.svc.machine.state
+        cases = [("Origin null", {"Origin": "null"}, None),
+                 ("Origin NULL", {"Origin": "NULL"}, None),
+                 ("another site", {"Origin": "http://evil.example"}, None),
+                 ("Sec-Fetch-Site cross-site",
+                  {"Sec-Fetch-Site": "cross-site"}, None),
+                 ("Sec-Fetch-Site same-site",
+                  {"Sec-Fetch-Site": "same-site"}, None),
+                 ("text/plain", {"Content-Type": "text/plain"}, None),
+                 ("form", {"Content-Type":
+                           "application/x-www-form-urlencoded"}, None),
+                 ("no content type", {"Content-Type": None}, None)]
+        for path, body in (("/api/stop", {}),
+                           ("/api/remote/pin", {"who": "Jeff",
+                                                "pin": "4321"}),
+                           ("/api/remote/network",
+                            {"address": "198.51.100.7"}),
+                           ("/api/remote/start-now",
+                            {"confirmed": True, "seen": R.seen(),
+                             "who": "Andy", "screen": "Rack screen"}),
+                           ("/api/schedule/deck-event", {"text": "x"})):
+            for label, hd, _x in cases:
+                st, _h, out = _ask(R.httpd, "POST", path, body,
+                                   client=loop, headers=hd)
+                check(st == 403, f"{path} with {label} from loopback is "
+                                 f"refused: {st} {out}")
+        from ltcplay import remote as RM
+        check(R.remote.pins.names() == pins0, "no PIN was planted")
+        check(RM.load_settings(R.work)["show_network_address"] is None,
+              "no show network address was planted")
+        check(R.svc.machine.state == state0, "nothing was started")
+        # The page's own presses still work: same origin, JSON.
+        port = R.httpd.server_address[1]
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
+                           {"who": "Jeff", "pin": "4321"}, client=loop,
+                           headers={"Origin": f"http://127.0.0.1:{port}",
+                                    "Sec-Fetch-Site": "same-origin"})
+        check(st == 200, f"a same-origin JSON press from the page is "
+                         f"taken: {st} {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "index.html"),
+                    encoding="utf-8").read()
+        check('headers:{"Content-Type":"application/json"}' in page,
+              "the operator page sends its presses as JSON")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_lockout_holds_under_a_concurrent_burst():
+    section("iPad remote, fix round 1 F3: 24 overlapping wrong PINs check "
+            "no more than FREE_TRIES + 1 of them; the rest are refused "
+            "unchecked")
+    S = _sched()
+    if S is None:
+        return
+    import threading
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    try:
+        # A slow enough hash that guesses really overlap.
+        R.remote.pins = RM.PinStore(R.work, iterations=60000)
+        R.remote.pins.set("Andy", "2468")
+        ctx = RM.Ctx(False, "10.20.0.66")
+        codes = []
+        go = threading.Event()
+
+        def one():
+            go.wait()
+            st, out, _h = R.remote.login(
+                {"who": "Andy", "pin": "0000", "device": "iPad"}, ctx)
+            codes.append(st)
+        ts = [threading.Thread(target=one) for _ in range(24)]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(60)
+        checked = codes.count(403)
+        check(len(codes) == 24 and checked <= RM.FREE_TRIES + 1 and
+              codes.count(429) == 24 - checked,
+              f"of 24 overlapping wrong guesses {checked} were checked "
+              f"(at most {RM.FREE_TRIES + 1}): {sorted(codes)}")
+        # A different device and name are not held up by that lock.
+        st, out, _h = R.remote.login({"who": "Jeff", "pin": "1",
+                                      "device": "iPad"},
+                                     RM.Ctx(False, "10.20.0.67"))
+        check(st == 403, f"another name from another device is checked: "
+                         f"{st}")
     finally:
         R.close()
     print("  ok")
@@ -29683,7 +29870,9 @@ def test_remote_has_no_arm_route():
                      "/api/remote/arm-group", "/api/arm"):
             st, _h, out = R.ask("POST", path, {"group": "front row",
                                                 "seen": R.seen()})
-            check(st == 404, f"{path} does not exist: {st}")
+            check(st == (404 if path.startswith("/api/remote/") else 403),
+                  f"{path} does not exist (or is not served to the "
+                  f"network at all): {st}")
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm",
                            {"group": "front row"},
                            client=("127.0.0.1", 5000))
@@ -30990,6 +31179,9 @@ if __name__ == "__main__":
     test_the_gpl_path_never_loads_the_flame_link()
     test_remote_pin_required_over_the_network()
     test_remote_wrong_pin_refused_and_throttled()
+    test_remote_network_session_reaches_only_remote_routes()
+    test_remote_cross_site_posts_refused_on_loopback()
+    test_remote_lockout_holds_under_a_concurrent_burst()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
     test_remote_abort_and_start_need_the_confirm()

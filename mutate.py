@@ -591,6 +591,49 @@ MUTATIONS = [
   "        return self._ctx().session is not None",
   "        return True"),
 
+ # -- fix round 1 of #39 (independent review) --
+ ("remote: a network GET reaches the legacy routes", "ltcplay/web.py",
+  "        if not self._local() and not network_may_reach(route):\n"
+  "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
+  "                                             \"the remote page's own routes \"\n"
+  "                                             \"answer here.\"})\n"
+  "        authorised = self._authorised()",
+  "        authorised = self._authorised()"),
+
+ ("remote: a network POST reaches the legacy routes", "ltcplay/web.py",
+  "        if not self._local() and not network_may_reach(route):\n"
+  "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
+  "                                             \"the remote page's own routes \"\n"
+  "                                             \"answer here.\"})\n"
+  "        if not self._authorised() and route not in OPEN_POSTS:",
+  "        if not self._authorised() and route not in OPEN_POSTS:"),
+
+ ("remote: Origin null counts as this site", "ltcplay/web.py",
+  "            origin = self.headers.get(\"Origin\")\n            if origin is not None:",
+  "            origin = self.headers.get(\"Origin\")\n"
+  "            if origin is not None and origin.strip().lower() != \"null\":"),
+
+ ("remote: Sec-Fetch-Site is ignored", "ltcplay/web.py",
+  "            if sfs is not None and sfs.strip().lower() not in (\"same-origin\",",
+  "            if False and sfs.strip().lower() not in (\"same-origin\","),
+
+ ("remote: a press need not be JSON", "ltcplay/web.py",
+  "            if ctype.split(\";\")[0].strip().lower() != \"application/json\":",
+  "            if False:"),
+
+ ("remote: PIN checks are not serialized", "ltcplay/remote.py",
+  "        with self.throttle.serial(keys):",
+  "        with threading.Lock():"),
+
+ ("remote: login says which operators have no PIN", "ltcplay/remote.py",
+  "            # on the show machine says the truth.\n"
+  "            return 403, {\"error\": \"That PIN is not right.\"}, {}",
+  "            # on the show machine says the truth.\n"
+  "            return 403, {\"error\": f\"{who} has no PIN yet.\"}, {}"),
+
+ ("web: odd spellings of every interface are served", "ltcplay/web.py",
+  "    bind = normalize_bind(bind)", "    bind = bind"),
+
  ("remote: the remote routes skip the session check", "ltcplay/remote.py",
   "        if not ctx.allowed:\n            return 401, {\"error\": \"Sign in "
   "with your PIN first.\"}, {}",
