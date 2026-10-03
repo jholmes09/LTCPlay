@@ -52,6 +52,19 @@ LTC PLAYER'S OWN FILES
     folder, named flamesafe.json. Until it is there, flamesafe and the
     Stream Deck program do not start (the engine and show page still do).
     flamesafe.example.json in the program folder shows the layout.
+[ ] Put the night's schedule in the same folder, named
+    ltcplay_schedule.json, and beside it ltcplay_fire_ice.json. In
+    ltcplay_fire_ice.json, "flamesafe_config" is the full path of
+    flamesafe.json above, and "flame_controller" is the flame controller's
+    name exactly as xLights spells it (capitals and spaces included). Until
+    the schedule is there, the show page says no show is scheduled.
+[ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
+    changed it). That runs the scheduler, the show conductor and the flame
+    link, and starts the Stream Deck program on the engine's own address,
+    so the deck's Abort, Hold, Resume and Reset reach the show. With
+    "plain", the Stream Deck program is not started at all.
+[ ] Check it: open the show page. It shows tonight's shows. On the Stream
+    Deck, the Start key does not say ENGINE FAULT.
 
 
 OTHER
