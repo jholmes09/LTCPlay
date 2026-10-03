@@ -27,7 +27,10 @@ two guards:
    frames only from the (ip, port) of the first accepted sender; a frame
    from anywhere else is rejected with the reason `another sender`. Once the
    link is stale (`frame_stale_ms` without an accepted frame) the lock is
-   released, so a restarted ltcplay on a new port takes it.
+   released, so a restarted ltcplay on a new port takes it. Since
+   2026-10-03 a second sender on the link, or the lock changing hands,
+   also stops any arm cycle counting for a while (see "Second copies"
+   below).
 
 Neither is secrecy in the cryptographic sense; the key lives in two config
 files on one machine. Together they mean that firing a head from this
@@ -46,6 +49,73 @@ What ltcplay must do for the lock to mean anything:
   a program's.
 - A config marked `confirmed` is refused while `link.key` is still the
   example key from the repo.
+
+## Second copies: what was decided and built (Jeff, 2026-10-03)
+
+PR #34's open question 10 (review probe p2 s5): while ltcplay restarted, a
+second sender with the key took the flame link's sender lock; the real
+ltcplay came back and was refused as "another sender"; the operator cycled
+the arm on the Stream Deck and the groups armed, with the other sender
+supplying the fire values and the screen Abort refused.
+
+**Decision.** The show machines are dedicated hardware with nothing else
+installed, and every link binds 127.0.0.1 only. So the realistic second
+sender is a second copy of ltcplay or of `ltc deck` itself: a launcher
+double-clicked twice, autostart plus a manual launch, an old copy still
+running after a restart. Protecting the key (a separate Windows user, a
+config only that user can read) was considered and is **not** built. Two
+cheap guards are:
+
+1. **A consent check on the flame link**, the same rule as the arm link's
+   round-4 veto (below). No arm cycle counts, and every pending down edge is
+   cleared, while either of these is true:
+   - another sender with the key is on the flame link: a well-formed, keyed
+     flame frame or disarm_all from any (ip, port) other than the locked one
+     was refused as `another sender` inside the last `frame_stale_ms`
+     (`frames.foreign_senders` is non-zero);
+   - the flame link's lock changed hands inside the last `frame_stale_ms`:
+     it was taken by a sender other than the one that held it before
+     (`frames.new_sender` is true). Every ltcplay restart does this (a new
+     socket is a new port), and link loss has already disarmed every group;
+     the only cost is that a cycle in the first `frame_stale_ms` after the
+     show program comes back does not count. The first sender flamesafe
+     ever sees, and the same sender coming back, are not a change.
+
+   Once the newcomer has been the only sender for `frame_stale_ms`, nothing
+   re-arms by itself: a group needs a genuine off-then-on from the Stream
+   Deck after that, exactly as after the arm link's veto. A group already
+   armed when another sender turns up stays armed (as on the arm link): the
+   other sender's frames are refused and none of its values reach the wire.
+   A change of hands clears every latch, so nothing armed survives one.
+   While a group is refused for this the lamp is held, steady amber, with
+   `Another sender is on the show program link, or it just changed hands:
+   a cycle cannot arm until that has settled. Cycle the arm again once it
+   has.`, and the journal says so once per episode.
+
+   In the p2 s5 case the real ltcplay, still sending, is the other sender
+   for as long as it runs, so the second sender can hold the link but can
+   never get a group armed. Measured with the review probe: before, groups
+   0 and 1 armed and fired; after, nothing armed and no fire on the wire,
+   and the same for p2 s6 (the flood takeover).
+2. **One copy per machine** (ltcplay side, `ltcplay/onlyone.py`). The show
+   program (`ltc run` and `ltc serve`, one lock between them) and `ltc
+   deck` each take an exclusive lock on a file in ltcplay's state folder
+   for their whole life (`ltcplay_show.lock`, `ltcplay_deck.lock`, beside
+   `ltcplay_output.lock`) and refuse to start while another copy holds it,
+   printing what the running copy says about itself (its process id, the
+   command, the show folder or config, when it started). The lock is a
+   flock on a Mac and a byte-range lock on Windows; the operating system
+   drops it when the holder dies however it dies, so a crashed or killed
+   copy never blocks a restart.
+
+What remains, stated plainly: a program that is NOT ltcplay or `ltc deck`,
+running on the show machine with the key, can still take a link that has
+gone quiet and is then the only sender on it. On the arm link (the deck
+process is down) it can arm a group with an off-then-on of its own. On the
+flame link (ltcplay is down and stays down) it supplies the fire values,
+and a group the operator then cycles on the Stream Deck arms. Jeff accepts
+that: on a dedicated show machine there is no such program, and a second
+copy of ltcplay or `ltc deck` now refuses to start.
 
 ## Ports and addresses
 
@@ -192,6 +262,8 @@ Top level:
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected (a refused disarm_all's reason starts `disarm_all:`) |
+| `frames.foreign_senders` | how many OTHER senders had a keyed, well-formed flame frame or disarm_all refused as `another sender` inside the last `frame_stale_ms` (added 2026-10-03, the second-copy guard). Zero almost always. Non-zero: no consent edge counts (see "Second copies" above) |
+| `frames.new_sender` | true for `frame_stale_ms` after the flame link's lock passed to a different sender (added 2026-10-03). No consent edge counts while it is true |
 | `disarm_all` | what the show program's Abort did: `accepted` (disarm_all datagrams taken, cumulative), `last_id`, `last_reason`, `age_ms` (null before the first). Added 2026-10-02, see "Disarm every group" below |
 | `sacn.sent`, `sacn.errors`, `sacn.status_errors` | packets sent to the node, sends that failed, status sends that failed. Cumulative, never reset; shown in health. A failed send also sets `fault` for 5 s, which is the red |
 | `stats.journal_dropped` | journal lines lost while the console was blocked, cumulative. When the backlog drains the journal writes how many were lost |
@@ -202,8 +274,8 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
-| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true, and also instead of the Abort sentence), `Another sender is on the show program link, or it just changed hands: a cycle cannot arm until that has settled. Cycle the arm again once it has.` (2026-10-03, the second-copy guard: shown the same way while `frames.foreign_senders` is non-zero or `frames.new_sender` is true; the arm link's sentence wins when both apply), `Disarmed by the show's Abort. Cycle the arm to re-arm.` (2026-10-02, disarm_all) |
+| `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`, the Abort sentence); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto, the flame link's included). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `sent_safety` | the SENT safety value this tick: 0 or the arm value |
 | `sent_fire` | the SENT fire values this tick, one per fire slot |
@@ -365,7 +437,13 @@ lock goes to whoever sends next once the locked sender has been quiet for
   residual, not something the link prevents: the key lives in a file that
   any process running as the same user can read. Only when the show
   program itself dies does the show link go too, and link loss disarms
-  every group (section above).
+  every group (section above). **Decided 2026-10-03 (Jeff):** the show
+  machines are dedicated and run nothing else, so the realistic process
+  "holding the key" is a second copy of `ltc deck` or ltcplay. A second
+  `ltc deck` now refuses to start while one is running, and a crashed one
+  never blocks a restart (see "Second copies" above). Protecting the key
+  with a separate user is not built. The residual stands only for a program
+  that is neither, which a dedicated show machine does not have.
 - *The flood.* About 300,000 valid frames in 2 s crowd the real deck's
   frames out of the receive buffer; the deck looks quiet for
   `arm_stale_ms`, the arm input goes stale (every group disarms), and the
@@ -465,7 +543,8 @@ same as a crashed or frozen test driver: silence is silence. The show link
 stays up in that case, and the arm lock lapses after `arm_stale_ms`, so a
 local process holding the key can then take the lock with nothing to
 compete against; it still needs a genuine low then high of its own to arm
-anything (the residual stated under round 4 above). **Reconnecting never re-arms anything by
+anything (the residual stated under round 4 above, and what was decided
+about it on 2026-10-03). **Reconnecting never re-arms anything by
 itself** (rule 6, consent): the deck's own `seq` restarts at 0 on every
 connect and reconnect (rule 3 below), so even a deck that remembered its
 last button states and resent them immediately would fail consent, which
@@ -734,3 +813,11 @@ post-Abort window's real length and its edge, and of what "timecode
 moving" means; on ltcplay's side, its copy of `frame_stale_ms` is
 required (read from flamesafe's own config) and a stuck sender reports
 itself. No wire change.
+
+Version 2, 2026-10-03 (the second-copy guard, PR #34's open question 10):
+no consent edge counts while another keyed sender is on the flame link or
+the flame link's lock has just changed hands (see "Second copies" above).
+The status frame gains `frames.foreign_senders` and `frames.new_sender`
+and one new `reason` sentence; no existing field's name, type or meaning
+changed. On ltcplay's side the show program and `ltc deck` each refuse to
+start while another copy is running.

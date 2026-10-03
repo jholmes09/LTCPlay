@@ -919,7 +919,36 @@ def _ltc_seconds(fr, tl):
     return tc_to_frames(fr.h, fr.m, fr.s, fr.f, tl.count, tl.drop) / tl.fps
 
 
+def _take_only_copy(lockname, note):
+    """(lock, None) when this is the only copy, else (None, the refusal).
+    Second-copy guard, 2026-10-03: see onlyone.py."""
+    from . import onlyone
+    try:
+        return onlyone.only_copy(lockname, note), None
+    except onlyone.AlreadyRunning as e:
+        return None, onlyone.refusal(lockname, e.holder)
+
+
+def _started():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def cmd_run(args):
+    """`ltc run`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc run {os.path.basename(args.timeline)}, started {_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_run(args)
+    finally:
+        lock.release()
+
+
+def _cmd_run(args):
     from .session import Session, SessionError
     try:
         sess = Session(
@@ -1209,6 +1238,23 @@ def cmd_bundle(args):
 
 
 def cmd_serve(args):
+    """`ltc serve`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    folder = os.path.abspath(args.folder or settings_mod.folder())
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc serve on port {args.port}, show folder {folder}, started "
+        f"{_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_serve(args)
+    finally:
+        lock.release()
+
+
+def _cmd_serve(args):
     """Run the engine and serve the page onto it.
 
     The page is a window. The engine lives in this process, so closing the

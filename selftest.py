@@ -6959,6 +6959,219 @@ def test_only_one_player_sends_at_a_time():
     print("  ok")
 
 
+def test_second_copy_guard_one_show_and_one_deck_per_machine():
+    section("second-copy guard (2026-10-03): the show program (ltc run and "
+            "ltc serve, one lock between them) and ltc deck each refuse to "
+            "start while another copy is running, say plainly what is "
+            "running, and a killed copy never blocks a restart")
+    import contextlib
+    import io
+    import shutil
+    import socket as _socket
+    import subprocess
+    import tempfile
+    from ltcplay import cli, onlyone as oo, streamdeck as sd
+    root = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    real_path = oo.path
+    oo.path = lambda: os.path.join(work, oo.FILENAME)
+    procs = []
+
+    def free_port():
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    def holder(lockname, note):
+        code = ("import sys, time; sys.path.insert(0, %r);"
+                "from ltcplay.onlyone import OutputLock;"
+                "OutputLock(%r, %r).acquire(); print('held', flush=True);"
+                "time.sleep(120)"
+                % (root, os.path.join(work, lockname), note))
+        p = subprocess.Popen([sys.executable, "-c", code],
+                             stdout=subprocess.PIPE, text=True)
+        procs.append(p)
+        p.stdout.readline()
+        return p
+
+    def quiet(fn, *a):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = fn(*a)
+        return rc, out.getvalue() + err.getvalue()
+
+    try:
+        check(len({oo.SHOW_LOCK, oo.DECK_LOCK, oo.FILENAME}) == 3
+              and os.path.dirname(oo.instance_path(oo.SHOW_LOCK))
+              == os.path.dirname(oo.path()),
+              "two locks of their own, beside the output lock")
+        for lockname in (oo.SHOW_LOCK, oo.DECK_LOCK):
+            first = oo.only_copy(lockname, "the first copy")
+            try:
+                oo.only_copy(lockname, "the second copy").release()
+                check(False, f"{lockname}: a second copy took the lock")
+            except oo.AlreadyRunning as e:
+                check("the first copy" in e.holder,
+                      f"{lockname}: the refusal carries the running copy's "
+                      f"note: {e.holder!r}")
+            first.release()
+            again = oo.only_copy(lockname, "after a clean stop")
+            again.release()
+        show = oo.only_copy(oo.SHOW_LOCK, "show")
+        try:
+            deck = oo.only_copy(oo.DECK_LOCK, "deck")
+            deck.release()
+            check(True, "")
+        except oo.AlreadyRunning:
+            check(False, "a running show stopped the deck from starting")
+        show.release()
+
+        # Another PROCESS holds the show lock: both ltc run and ltc serve
+        # refuse with the sentence, and serve never binds its port.
+        hp = holder(oo.SHOW_LOCK, "pid 1: ltc serve on port 7878, started "
+                                  "earlier")
+        port = free_port()
+        rc, said = quiet(cli.main, ["serve", "--no-browser", "--port",
+                                    str(port), "--folder", work])
+        check(rc == 2 and "already running" in said
+              and "ltc serve on port 7878" in said
+              and "—" not in said and "–" not in said,
+              f"a second ltc serve is refused, naming what is running: "
+              f"rc={rc} {said!r}")
+        try:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", port))
+            s.close()
+            bound = False
+        except OSError:
+            bound = True
+        check(not bound, "the refused copy never took its web port")
+        rc, said = quiet(cli.main, ["run", os.path.join(work, "nope.json"),
+                                    "--no-output"])
+        check(rc == 2 and "already running" in said
+              and "ltc serve on port 7878" in said,
+              f"a second ltc run is refused too: rc={rc} {said!r}")
+        # Killed, not stopped: the restart still works.
+        hp.kill()
+        hp.wait()
+        rc, said = quiet(cli.main, ["run", os.path.join(work, "nope.json"),
+                                    "--no-output"])
+        check("already running" not in said,
+              f"after the running copy was killed, ltc run starts (and "
+              f"here stops on the missing show file instead): {said!r}")
+        got = oo.only_copy(oo.SHOW_LOCK, "restart")
+        got.release()
+
+        # The same for ltc deck.
+        hp = holder(oo.DECK_LOCK, "pid 2: ltc deck for fs.json, started "
+                                  "earlier")
+        rc, said = quiet(sd.main, ["--flamesafe-config",
+                                   os.path.join(work, "nope.json")])
+        check(rc == 2 and "ltc deck is already running" in said
+              and "ltc deck for fs.json" in said,
+              f"a second ltc deck is refused, naming what is running: "
+              f"rc={rc} {said!r}")
+        hp.kill()
+        hp.wait()
+        seen = []
+        real_main = sd._main
+
+        def probe_main(args):
+            # While the deck runs, its lock is held.
+            try:
+                oo.only_copy(oo.DECK_LOCK, "a second deck").release()
+                seen.append("free")
+            except oo.AlreadyRunning:
+                seen.append("held")
+            return 0
+        sd._main = probe_main
+        try:
+            rc, said = quiet(sd.main, ["--flamesafe-config",
+                                       os.path.join(work, "nope.json")])
+        finally:
+            sd._main = real_main
+        check(rc == 0 and seen == ["held"],
+              f"after the running deck was killed a new one starts, and "
+              f"holds the lock for as long as it runs: rc={rc} {seen} "
+              f"{said!r}")
+        got = oo.only_copy(oo.DECK_LOCK, "after the deck stopped")
+        got.release()
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            p.stdout.close()
+        oo.path = real_path
+        shutil.rmtree(work, ignore_errors=True)
+
+    # End to end, as Jeff would meet it: two real `ltc serve` processes.
+    # HOME and LOCALAPPDATA point both at a scratch folder so the lock lands
+    # there on a Mac, on Windows and here alike.
+    work = tempfile.mkdtemp()
+    env = dict(os.environ, HOME=work, LOCALAPPDATA=work,
+               PYTHONUNBUFFERED="1")
+    procs = []
+
+    def serve():
+        p = subprocess.Popen(
+            [sys.executable, "-m", "ltcplay.cli", "serve", "--no-browser",
+             "--port", str(free_port()), "--folder", work],
+            cwd=root, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True)
+        procs.append(p)
+        return p
+
+    def wait_running(p, secs=30):
+        lock = os.path.join(work, "ltcplay", oo.SHOW_LOCK)
+        end = time.time() + secs
+        while time.time() < end and p.poll() is None:
+            try:
+                if "ltc serve" in open(lock, encoding="utf-8").read():
+                    return True
+            except OSError:
+                pass
+            time.sleep(0.1)
+        return False
+
+    try:
+        first = serve()
+        check(wait_running(first), "the first ltc serve starts")
+        second = serve()
+        try:
+            out, _ = second.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            second.kill()
+            out, _ = second.communicate()
+        check(second.returncode == 2 and "already running" in out
+              and "ltc serve on port" in out and "pid " in out,
+              f"a second ltc serve process exits at once, naming the first: "
+              f"rc={second.returncode} {out[-400:]!r}")
+        check(first.poll() is None, "and the first one is still running")
+        first.kill()
+        first.wait()
+        third = serve()
+        check(wait_running(third),
+              "after the first was killed (no clean stop) a restart runs")
+        third.terminate()
+        try:
+            third.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            third.kill()
+            third.communicate()
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            if p.stdout:
+                p.stdout.close()
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_reload_while_the_show_runs():
     section("swapping in a re-render without stopping the chase")
     # Rehearsal is a loop: change the sequence, render, watch it again. The
@@ -27484,6 +27697,27 @@ def test_streamdeck_round4_other_sender_reason_has_a_label():
           f"drawn as OTHER SENDER, steady: {look}")
 
 
+def test_streamdeck_second_copy_flame_sender_reason_has_a_label():
+    section("Stream Deck: flamesafe's held reason for a second sender on the "
+            "show program's flame link (second-copy guard, 2026-10-03) has "
+            "a short label on the key, and the hand-copied sentence matches "
+            "flamesafe's own, checked in a separate process")
+    import subprocess as _sp
+    from ltcplay import streamdeck as sd
+    r = _sp.run([sys.executable, "-c",
+                 "from flamesafe import composer; "
+                 "print(composer.FLAME_OTHER_SENDER)"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True, text=True, timeout=60)
+    sentence = r.stdout.strip()
+    check(bool(sentence) and sentence in sd._SHORT_REASON,
+          f"the deck knows flamesafe's exact sentence: {sentence!r}")
+    look = sd.group_look({"armed": "held", "reason": sentence,
+                          "amber": "steady", "dwell_s": 0})
+    check(look[:2] == ("OTHER", "SENDER") and look[4] is False,
+          f"drawn as OTHER SENDER, steady: {look}")
+
+
 def _round5_stamped(arm, t):
     """Record (fake time, wanted) of every send while the socket is open."""
     stamps = []
@@ -32130,6 +32364,7 @@ if __name__ == "__main__":
     test_the_input_can_be_changed_mid_show()
     test_a_failed_start_leaves_nothing_running()
     test_only_one_player_sends_at_a_time()
+    test_second_copy_guard_one_show_and_one_deck_per_machine()
     test_machine_data_goes_where_the_os_keeps_it()
     test_reload_while_the_show_runs()
     test_auto_reload_waits_for_the_writer()
@@ -32384,6 +32619,7 @@ if __name__ == "__main__":
     test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
     test_streamdeck_round4_fresh_process_gets_the_reconnect_grace()
     test_streamdeck_round4_other_sender_reason_has_a_label()
+    test_streamdeck_second_copy_flame_sender_reason_has_a_label()
     test_streamdeck_round5_a_long_unplug_never_goes_quiet()
     test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit()
     test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()

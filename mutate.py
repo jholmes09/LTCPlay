@@ -5993,6 +5993,104 @@ def build():
   "                             self._ABORT_EFFECTS))",
   "                plan.append((\"Failed start\", \"failed_start\",\n"
   "                             self._ABORT_EFFECTS))"),
+
+ # Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10). Part 1:
+ # flamesafe's consent check on the flame link.
+ ("second-copy: another sender on the flame link no longer blocks consent",
+  "flamesafe/composer.py",
+  "                     or self._arm_link_flooded\n"
+  "                     or self._flame_link_disturbed(t))\n",
+  "                     or self._arm_link_flooded)\n"),
+
+ ("second-copy: a refused flame frame's sender is never remembered",
+  "flamesafe/composer.py",
+  "                    self._flame_foreign[sender] = t\n"
+  "                    raise ValueError(\"another sender\")\n",
+  "                    raise ValueError(\"another sender\")\n"),
+
+ ("second-copy: a refused disarm_all's sender is never remembered",
+  "flamesafe/composer.py",
+  "                self._flame_foreign[sender] = t\n"
+  "                raise ValueError(\"another sender\")\n",
+  "                raise ValueError(\"another sender\")\n"),
+
+ ("second-copy: another flame sender is remembered for ever",
+  "flamesafe/composer.py",
+  "                  if (t - at) * 1000.0 > win]:\n",
+  "                  if False]:\n"),
+
+ ("second-copy: the flame link changing hands is not noticed",
+  "flamesafe/composer.py",
+  "                self._flame_changed_at = t\n",
+  "                pass\n"),
+
+ ("second-copy: the new-sender wait on the flame link never ends",
+  "flamesafe/composer.py",
+  "                (t - self._flame_changed_at) * 1000.0\n"
+  "                <= self.cfg.frame_stale_ms)\n",
+  "                (t - self._flame_changed_at) * 1000.0\n"
+  "                <= 10 ** 12)\n"),
+
+ ("second-copy: the flame link changing hands keeps what was armed",
+  "flamesafe/composer.py",
+  "                self._reset_latches(\"show program link changed sender\")\n",
+  ""),
+
+ ("second-copy: the lamp does not say another sender is on the flame link",
+  "flamesafe/composer.py",
+  "        if not self._latched[i] and flame_disturbed:\n",
+  "        if False:\n"),
+
+ ("second-copy: the status frame never counts other flame senders",
+  "flamesafe/composer.py",
+  "                \"foreign_senders\": self._flame_foreign_count(t),\n",
+  "                \"foreign_senders\": 0,\n"),
+
+ # Part 2: one copy of the show program and of ltc deck per machine.
+ ("second-copy: ltc run starts beside a running show program",
+  "ltcplay/cli.py",
+  "    if refused:\n        return _err(refused)\n    try:\n"
+  "        return _cmd_run(args)\n",
+  "    if False:\n        return _err(refused)\n    try:\n"
+  "        return _cmd_run(args)\n"),
+
+ ("second-copy: ltc run takes a lock of its own, not the show's",
+  "ltcplay/cli.py",
+  "        onlyone.SHOW_LOCK,\n"
+  "        f\"ltc run {os.path.basename(args.timeline)}",
+  "        \"ltcplay_run.lock\",\n"
+  "        f\"ltc run {os.path.basename(args.timeline)}"),
+
+ ("second-copy: ltc serve starts beside a running show program",
+  "ltcplay/cli.py",
+  "    if refused:\n        return _err(refused)\n    try:\n"
+  "        return _cmd_serve(args)\n",
+  "    if False:\n        return _err(refused)\n    try:\n"
+  "        return _cmd_serve(args)\n"),
+
+ ("second-copy: ltc serve lets go of its lock before it runs",
+  "ltcplay/cli.py",
+  "    try:\n        return _cmd_serve(args)\n    finally:\n"
+  "        lock.release()\n",
+  "    lock.release()\n    return _cmd_serve(args)\n"),
+
+ ("second-copy: ltc deck checks the show's lock instead of its own",
+  "ltcplay/streamdeck.py",
+  "        only = onlyone.only_copy(\n            onlyone.DECK_LOCK,\n",
+  "        only = onlyone.only_copy(\n            onlyone.SHOW_LOCK,\n"),
+
+ ("second-copy: ltc deck lets go of its lock before it runs",
+  "ltcplay/streamdeck.py",
+  "    try:\n        return _main(args)\n    finally:\n"
+  "        only.release()\n",
+  "    only.release()\n    return _main(args)\n"),
+
+ ("second-copy: the refusal does not say what is running",
+  "ltcplay/onlyone.py",
+  "    said = f\"\\nThe copy that is running says: {holder}\" if holder "
+  "else \"\"\n",
+  "    said = \"\"\n"),
+
 ]
 
 
