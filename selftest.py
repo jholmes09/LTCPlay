@@ -30891,13 +30891,917 @@ def test_schedule_conductor_line_round3_details():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Fire & Ice: the real ShowOutputs (fire_ice.FireIceShow), the show runner,
+# and the conductor `ltc serve` builds. The fakes below stand in for the
+# running session, its clock.AudioMaster and its player, and write every
+# call into the same ordered log as the real BEYOND and MadMapper links.
+# ---------------------------------------------------------------------------
+
+class _FiClock:
+    """Stands in for clock.AudioMaster, as FireIceShow and the runner use
+    it. pause/resume/halt record the fade they were given; the freeze and
+    the move come later, through on_pause/on_resume, like the real one."""
+
+    source = "audio_master"
+
+    def __init__(self, calls, T):
+        self.calls, self.T = calls, T
+        self.on_pause = self.on_resume = None
+        self._paused = False
+        self.playing = False
+        self.cues_played = 0
+        self._last_frame = None
+        self.last_ended = ""
+        self.move_s = 0.05
+
+    def _rec(self, name, *a):
+        self.calls.append((name, a, self.T.now()))
+
+    def play(self, label):
+        self._rec("music_play", label)
+        self.playing = True
+        self.cues_played += 1
+        self._last_frame = None
+
+    def pause(self, fade_ms=None):
+        self._rec("music_hold", fade_ms)
+        self.T.at(self.T.t + (fade_ms or 0) / 1000.0, self._freeze)
+
+    def _freeze(self):
+        self._paused = True
+        if self.on_pause:
+            self.on_pause()
+
+    def resume(self, fade_ms=None):
+        self._rec("music_resume", fade_ms)
+        self.T.at(self.T.t + self.move_s, self._move)
+
+    def _move(self):
+        self._paused = False
+        if self.on_resume:
+            self.on_resume()
+
+    def halt(self, fade_ms=None):
+        self._rec("music_halt", fade_ms)
+        self.playing = False
+        self.last_ended = "Show stopped"
+
+
+class _FiPlayer:
+    def __init__(self, calls, T):
+        self.calls, self.T = calls, T
+        self._override = None
+
+    @property
+    def override(self):
+        return self._override
+
+    @override.setter
+    def override(self, v):
+        self._override = v
+        self.calls.append(("pixels", (v,), self.T.now()))
+
+
+class _FiSession:
+    running = True
+    log = None
+
+    def __init__(self, calls, T):
+        self.clock = _FiClock(calls, T)
+        self.player = _FiPlayer(calls, T)
+        self.parks = []
+        # What session.open() sets: the player's hard park.
+        self.clock.on_pause = lambda: self.parks.append(True)
+        self.clock.on_resume = lambda: self.parks.append(False)
+
+    def clock_play(self, cue=None):
+        import types
+        self.clock.play(cue or "Show")
+        return types.SimpleNamespace(name=cue or "Show")
+
+
+class _FiFlames:
+    """Stands in for flamelink.FlameLink: records zero, release and the
+    Abort's disarm_all."""
+
+    def __init__(self, calls, T, disarm_ok=True):
+        self.calls, self.T = calls, T
+        self.disarm_ok = disarm_ok
+        self.reasons = []
+
+    def disarm_all(self, reason):
+        self.reasons.append(reason)
+        self.calls.append(("flames_disarm", (), self.T.now()))
+        return self.disarm_ok
+
+    def zero(self):
+        self.calls.append(("flames_zero", (), self.T.now()))
+        return True
+
+    def release(self):
+        self.calls.append(("flames_release", (), self.T.now()))
+        return True
+
+
+def _fi_mod():
+    from ltcplay import fire_ice
+    return fire_ice
+
+
+def test_fire_ice_config_defaults_and_refusals():
+    section("fire & ice: the config file defaults to today's dry run, and "
+            "anything that is not exactly true or false is refused")
+    import tempfile
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    rule = os.path.join(work, "ltcplay_schedule.json")
+    path = F.config_path_for(rule)
+    check(path == os.path.join(work, "ltcplay_fire_ice.json"),
+          f"the config sits beside the schedule rule file: {path}")
+    cfg = F.FireIceConfig.load(path)
+    check(cfg.scheduler_performs is False and cfg.madmapper is None and
+          cfg.beyond is None and cfg.show_cue is None,
+          "no file: the scheduler stays a dry run, no lasers, no video")
+    for bad in ("true", 1, "yes", None):
+        try:
+            F.FireIceConfig.parse({"scheduler_performs": bad})
+            check(False, f"scheduler_performs {bad!r} was accepted")
+        except F.FireIceConfigError as e:
+            check("true or false" in str(e), f"refused in a sentence: {e}")
+    try:
+        F.FireIceConfig.parse({"scheduler_perform": True})
+        check(False, "a misspelt key was accepted")
+    except F.FireIceConfigError as e:
+        check("scheduler_perform" in str(e), f"names the typo: {e}")
+    with open(path, "w") as fh:
+        fh.write("{not json")
+    try:
+        F.FireIceConfig.load(path)
+        check(False, "a broken file was accepted")
+    except F.FireIceConfigError as e:
+        check(path in str(e), f"a broken file is refused: {e}")
+    cfg = F.FireIceConfig.parse({
+        "scheduler_performs": True, "show_cue": "Show",
+        "madmapper": {"surfaces": ["Quad-1"]}, "beyond": {}})
+    check(cfg.scheduler_performs is True and cfg.show_cue == "Show" and
+          cfg.madmapper is not None and cfg.beyond is not None,
+          f"a full config parses: {cfg.summary()}")
+    print("  ok")
+
+
+def test_fire_ice_show_outputs():
+    section("fire & ice: ShowOutputs drives the real show audio with the "
+            "conductor's own fade, reads 'frozen' from the clock's own "
+            "signal, blacks the pixels out and back, and an Abort's disarm "
+            "fails loudly")
+    import types
+    F, C = _fi_mod(), _cond_mod()
+    T = _CondTime()
+    calls, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    control = types.SimpleNamespace(session=None)
+    show = F.FireIceShow(control, journal=journal)
+    check(any("no flame link" in t and f for t, f in lines),
+          f"no flame link is a fault line at start: {lines}")
+    # Nothing running: nothing is playing, and music refuses in words.
+    check(show.playing() is False, "nothing running: nothing playing")
+    r = show.music_hold(0.25)
+    check(not r.ok and "Run" in r.sentence,
+          f"music with nothing running is refused: {r}")
+    check(show.music_frozen() is None, "no clock: frozen is unknown")
+    check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
+    s = _FiSession(calls, T)
+    control.session = s
+    check(show.playing() is False, "running, no cue: not playing")
+    s.clock_play()
+    check(show.playing() is True, "a cue playing reads as playing")
+    # Hold: the fade the conductor asks for, in ms; frozen only once the
+    # clock says so, not from the request.
+    check(show.music_hold(0.25).ok, "Hold sent")
+    check(calls[-1][:2] == ("music_hold", (250.0,)),
+          f"AudioMaster.pause got the conductor's 0.25 s: {calls[-1]}")
+    check(show.music_frozen() is False,
+          "asked to hold but not frozen yet: frozen is False")
+    T.wait(1.0)
+    check(show.music_frozen() is True, "frozen once on_pause fires")
+    check(s.parks == [True], "the session's own on_pause still runs first")
+    check(show.music_hold(0).ok and calls[-1][:2] == ("music_hold", (0.0,)),
+          f"rehearsal's instant Hold passes 0: {calls[-1]}")
+    check(show.music_resume(0.25).ok and
+          calls[-1][:2] == ("music_resume", (250.0,)),
+          f"Resume passes its fade: {calls[-1]}")
+    check(show.music_frozen() is True, "still frozen until it moves")
+    for _ in range(3):              # one scheduled event per wait
+        T.wait(1.0)
+    check(show.music_frozen() is False and s.parks[-1] is False,
+          "moving once on_resume fires, after the session's own")
+    check(show.music_halt(1.0).ok and calls[-1][:2] == ("music_halt",
+                                                        (1000.0,)),
+          f"Abort's music fade is 1 s: {calls[-1]}")
+    # Pixels: the operator's look before is put back, and a look the
+    # operator picks while the conductor has them black stands.
+    s.player.override = "preshow"
+    check(show.pixels_fade_out(0.25).ok and s.player.override == "blackout",
+          "pixels to black")
+    check(any("not over 0.25 s" in t for t, _ in lines),
+          "black at once is journaled as not a fade")
+    check(show.pixels_restore(0.25).ok and s.player.override == "preshow",
+          "the look from before comes back")
+    show.pixels_fade_out(0)
+    s.player.override = None          # the operator pressed auto
+    check(show.pixels_restore(0).ok and s.player.override is None,
+          "the operator's own look is left alone")
+    s.player.override = "preshow"
+    check(show.pixels_restore(0).ok and s.player.override == "preshow",
+          "restore when the conductor never took them changes nothing")
+    # Flames: no link in this build. Zero and release say so; the disarm
+    # is never a quiet success.
+    check(show.flames_zero().ok, "flame cues zero")
+    del lines[:]
+    check(show.flames_release().ok and
+          any("no flame link" in t for t, _ in lines),
+          f"a release with no flame link is journaled: {lines}")
+    r = show.flames_disarm_all("Abort")
+    check(not r.ok and "cannot disarm" in r.sentence and
+          "CONTRACT.md" in r.sentence and show.flames == C.ZERO,
+          f"the disarm fails loudly and the cues are zero: {r}")
+    # With the flame link (PR #34): the disarm goes through its disarm_all,
+    # which zeroes the cues itself, and is done only when it went out.
+    fl = _FiFlames(calls, T)
+    show2 = F.FireIceShow(control, journal=journal, flame_link=fl)
+    show2.flames_release()
+    r = show2.flames_disarm_all("Abort")
+    check(r.ok and calls[-1][0] == "flames_disarm" and
+          fl.reasons == ["Abort"] and show2.flames == C.ZERO and
+          "Sent is not confirmed" in r.sentence,
+          f"with a flame link the disarm goes through it, and says sent "
+          f"is not confirmed: {r}")
+    fl.disarm_ok = False
+    r = show2.flames_disarm_all("Abort")
+    check(not r.ok and "could NOT be sent" in r.sentence,
+          f"a disarm that did not go out is a failure: {r}")
+    fl.disarm_all = lambda reason: 1 / 0
+    r = show2.flames_disarm_all("Abort")
+    check(not r.ok, f"a flame link that raises is a failure, never a "
+                    f"crash: {r}")
+    print("  ok")
+
+
+def test_audio_master_per_call_fade():
+    section("audio_master: pause, resume and halt take one call's own fade "
+            "(the conductor's), and without one are exactly as before")
+    r = _am_rig(seconds=6.0)
+    am, sim, eng, vc = r["am"], r["sim"], r["eng"], r["vc"]
+    sent = []
+    real_send = eng.send
+    eng.send = lambda msg: (sent.append(msg), real_send(msg))[1]
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.0)
+    del sent[:]
+    am.pause(fade_ms=0)
+    check(sent and sent[0][:2] == ("pause", 0),
+          f"pause(fade_ms=0) stops the audio at once: {sent}")
+    check(len(r["calls"]["pause"]) == 1,
+          "and the clock froze at once (on_pause)")
+    sim.run(vc() + 0.3)
+    del sent[:]
+    am.resume(fade_ms=0)
+    # ("resume", fade, token), or ("play", role, frame, fade, token) when
+    # the audio process had not yet reported holding the cue.
+    check(sent and ((sent[0][0] == "resume" and sent[0][1] == 0) or
+                    (sent[0][0] == "play" and sent[0][3] == 0)),
+          f"resume(fade_ms=0) comes back with no fade: {sent}")
+    sim.run(vc() + 0.5)
+    del sent[:]
+    am.pause()
+    check(sent and sent[0][:2] == ("pause", 12000),
+          f"pause() is still hold_fade_ms, 250 ms: {sent}")
+    sim.run(vc() + 0.6)
+    del sent[:]
+    am.resume()
+    check(sent and sent[0][:2] == ("resume", 12000),
+          f"resume() after a resume(fade_ms=0) is 250 ms again: {sent}")
+    sim.run(vc() + 0.5)
+    del sent[:]
+    am.pause(fade_ms=500.0)
+    check(sent and sent[0][:2] == ("pause", 24000),
+          f"pause(fade_ms=500) fades over 500 ms: {sent}")
+    sim.run(vc() + 0.8)
+    am.resume(fade_ms=100)
+    sim.run(vc() + 0.5)
+    del sent[:]
+    am.halt(fade_ms=500)
+    check(sent and sent[0] == ("level", 0.0, 24000),
+          f"halt(fade_ms=500) fades over 500 ms: {sent}")
+    sim.run(vc() + 1.0)
+    am.play(3600.0, None, "Show")
+    sim.run(vc() + 1.0)
+    del sent[:]
+    am.halt()
+    check(sent and sent[0] == ("level", 0.0, 48000),
+          f"halt() is still abort_fade_ms, 1 s: {sent}")
+    eng.send = real_send
+    am.stop()
+    print("  ok")
+
+
+def _fi_night(performs=True, session=True, flames=True):
+    """A Fire & Ice night: the real scheduler service on a fake wall clock,
+    the real conductor built by fire_ice.attach() on fake time, the real
+    ConductorDevices on real BEYOND and MadMapper links whose sockets write
+    into the shared log, a fake session for music and pixels, and a fake
+    flame link."""
+    import tempfile
+    import types
+    from ltcplay import madmapper as MM, beyond as B
+    S = _sched()
+    F = _fi_mod()
+    T = _CondTime()
+    calls, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    steps = _Steps()
+    link = MM.Link(_mm_cfg(ramp_steps=5),
+                   socket_factory=lambda: _StampSock("mm", calls, T.now),
+                   clock=steps.clock, sleep=steps.sleep, journal=journal)
+    for name in ("fade_surfaces", "set_surfaces", "cancel", "stop_bank",
+                 "select_bank"):
+        def rec(*a, _name=name, _fn=getattr(link, name), **k):
+            calls.append(("mm_call", (_name,) + a, T.now()))
+            return _fn(*a, **k)
+        setattr(link, name, rec)
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _StampSock("beyond", calls, T.now),
+                   clock=steps.clock, sleep=steps.sleep, journal=journal)
+    sess = _FiSession(calls, T) if session else None
+    control = types.SimpleNamespace(session=sess)
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    svc = _svc(S, work, now)
+    cfg = F.FireIceConfig(scheduler_performs=performs)
+    w = F.attach(svc, control, cfg, madmapper=(link, None), beyond=bey,
+                 journal=journal,
+                 flame_link=_FiFlames(calls, T) if flames else None,
+                 threaded=False, clock=T.now, waiter=T.wait)
+    return types.SimpleNamespace(S=S, F=F, T=T, calls=calls, lines=lines,
+                                 link=link, bey=bey, sess=sess,
+                                 control=control, svc=svc, now=now, w=w,
+                                 c=w.conductor, work=work)
+
+
+def _fi_log(calls):
+    """The shared log as (what, value), one entry per command: BEYOND's
+    3 retries of one command collapse to one, MadMapper's own packets are
+    dropped (their CALL is what is ordered, on the conductor's thread)."""
+    from ltcplay import beyond as B
+    out = []
+    for kind, args, _t in calls:
+        if kind == "mm":
+            continue
+        if kind == "beyond":
+            e = ("lasers", "dark" if args[1] == B.BLANK_VALUE else "lit")
+        elif kind == "mm_call":
+            e = ("video", args[0] if args[0] != "fade_surfaces"
+                 else f"fade {args[1]:g} to {args[2]:g}")
+        elif kind == "pixels":
+            e = ("pixels", args[0] or "auto")
+        elif kind.startswith("music_"):
+            e = ("music", kind[6:] + ("" if not args or args[0] is None or
+                                      isinstance(args[0], str)
+                                      else f" {args[0]:g} ms"))
+        else:
+            e = ("flames", kind[7:])
+        if e == ("video", "cancel"):
+            # A cancel of a fade that may or may not be running (PR #29's
+            # fix rounds send one before every new fade): not an output
+            # change, so not part of the order these tests check.
+            continue
+        if not out or out[-1] != e or e[0] != "lasers":
+            out.append(e)
+    return out
+
+
+def test_fire_ice_night_end_to_end():
+    section("fire & ice end to end: a scheduled night with fake devices and "
+            "a fake clock runs preshow, show start, Hold, Resume and Abort, "
+            "and every command to lasers, video, music, pixels and flames "
+            "goes out in order")
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c, T = n.S, n.svc, n.c, n.T
+    check(svc.conductor is c and svc.performer is n.w.runner and
+          svc.dry_run is False,
+          "attach() wires the conductor, the runner, and ends the dry run")
+    check(c.wired, "BEYOND and MadMapper both given: the conductor is wired")
+    # Preshow: within the lead the scheduler is already in intermission.
+    svc.tick()
+    c.run_pending()
+    check(svc.machine.state == S.STANDBY, f"preshow: {svc.machine.state}")
+    check(c.laser_gate() is not None,
+          "the laser gate is the scheduler's: no lasers in intermission")
+    pre = _fi_log(n.calls)
+    check(pre == [("flames", "zero"), ("lasers", "dark")],
+          f"preshow: flame cues zero, lasers blanked, nothing else: {pre}")
+    del n.calls[:]
+    # Show start, on schedule.
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(svc.machine.state == S.SHOW, "show 1 starts on schedule")
+    start = _fi_log(n.calls)
+    check(start == [("video", "select_bank"), ("music", "play")],
+          f"show start: the show bank, then the show audio, and nothing "
+          f"else until the timecode is seen moving: {start}")
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "done",
+          f"the automatic start is journaled: {rows}")
+    n.w.runner.poll()
+    _settle(svc, c)
+    check(svc.machine.slot(svc.machine.running).confirmed_at is None,
+          "not confirmed before the timecode moves")
+    check(_fi_log(n.calls) == start,
+          "the conductor is not told a show started before it is confirmed")
+    n.sess.clock._last_frame = 30
+    n.w.runner.poll()
+    _settle(svc, c)
+    _mm_flush(n.link)
+    check(svc.machine.slot(svc.machine.running).confirmed_at is not None,
+          "confirmed once the timecode moves")
+    start = _fi_log(n.calls)
+    check(start == [("video", "select_bank"), ("music", "play"),
+                    ("video", "fade 1 to 1"),
+                    ("lasers", "lit"), ("flames", "release")],
+          f"once confirmed: video up, lasers lit through the gate, flame "
+          f"cues last: {start}")
+    check(c.laser_gate() is None, "in the show the gate allows the lasers")
+    del n.calls[:]
+    # Hold.
+    n.now[0] = _den(S, 18, 1)
+    T.t = 300.0
+    out = svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    hold = _fi_log(n.calls)
+    check(svc.machine.state == S.PAUSED and c.snapshot()["look"] == "HELD",
+          f"Hold: {svc.machine.state} {c.snapshot()['look']}")
+    check(hold == [("flames", "zero"), ("lasers", "dark"),
+                   ("music", "hold 250 ms"), ("video", "fade 1 to 0"),
+                   ("pixels", "blackout")],
+          f"Hold: flames, lasers, then the 0.25 s music fade, video and "
+          f"pixels to black: {hold}")
+    check(not any("did not say it had frozen" in t for t, _ in n.lines),
+          "the conductor saw the clock freeze, from its own signal")
+    del n.calls[:]
+    # Resume.
+    n.now[0] = _den(S, 18, 2)
+    out = svc._apply(_op(S, S.RESUME))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    res = _fi_log(n.calls)
+    check(svc.machine.state == S.SHOW, "Resume: back in the show")
+    check(res == [("music", "resume 250 ms"), ("video", "fade 0 to 1"),
+                  ("pixels", "auto"), ("lasers", "lit"),
+                  ("flames", "release")],
+          f"Resume: music, video, pixels, then once the timecode moves the "
+          f"lasers, and the flame cues last: {res}")
+    lit = [t for k, a, t in n.calls if k == "beyond"]
+    mus = [t for k, a, t in n.calls if k == "music_resume"]
+    check(lit and mus and min(lit) >= mus[0] + n.sess.clock.move_s - 1e-9,
+          "the lasers came back only after the clock said it moved")
+    del n.calls[:]
+    # Abort.
+    n.now[0] = _den(S, 18, 3)
+    T.t = 400.0
+    out = svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    _mm_flush(n.link)
+    ab = _fi_log(n.calls)
+    check(svc.machine.state == S.STANDBY and c.latched,
+          f"Abort: {svc.machine.state}, latched {c.latched}")
+    # The cut first, then the disarm through the flame link, on the
+    # pressing thread, before anything else; it went out, so the executor
+    # does not send it again.
+    check(ab[:2] == [("flames", "zero"), ("flames", "disarm")],
+          f"Abort zeroes the flame cues, then disarms every group through "
+          f"the flame link, first: {ab}")
+    check(ab[2:] == [("lasers", "dark"), ("video", "fade 1 to 0"),
+                     ("pixels", "blackout"), ("music", "halt 1000 ms"),
+                     ("video", "stop_bank")],
+          f"then lasers dark, video, pixels and music fade over 1 s, then "
+          f"the video stops: {ab}")
+    stop = [t for k, a, t in n.calls if k == "mm_call" and
+            a[0] == "stop_bank"]
+    check(stop and abs(stop[0] - 401.0) < 1e-6,
+          f"the video stops after the 1 s fade: {stop}")
+    faults = [t for t, f in n.lines if f and "cannot disarm" in t]
+    check(not faults, f"with a flame link the Abort's disarm is no fault: "
+                      f"{faults}")
+    # The runner reports nothing for an aborted show.
+    before = len(svc.journal)
+    n.w.runner.poll()
+    check(len(svc.journal) == before, "nothing reported after the Abort")
+    # The next show, while still latched: nothing is started.
+    del n.calls[:]
+    n.now[0] = _den(S, 18, 20)
+    svc.tick()
+    _settle(svc, c)
+    check(not any(k == "music_play" for k, _a, _t in n.calls),
+          f"latched: the next show's audio is not started: {n.calls}")
+    n.w.runner.poll()
+    s2 = [x for x in svc.machine.slots if x.n == 2]
+    check(svc.machine.state == S.STANDBY and s2 and
+          s2[0].status == S.MISSED,
+          f"and the scheduler misses it (aborted, not Reset): "
+          f"{svc.machine.state} {s2}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_fire_ice_runner_reports_the_show():
+    section("fire & ice: when the scheduler performs, a show ends when its "
+            "audio does, a start without Run fails, closing completes, and "
+            "a dry run never asks the performer for anything")
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    n.sess.clock._last_frame = 5
+    n.w.runner.poll()
+    _settle(svc, c)
+    # Past the show's length the clock no longer ends it: the audio does.
+    n.now[0] = _den(S, 18, 10)
+    svc.tick()
+    check(svc.machine.state == S.SHOW,
+          "performing: the show is not ended by the scheduler's clock")
+    n.sess.clock.playing = False
+    n.sess.clock.last_ended = "Show finished"
+    n.w.runner.poll()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY,
+          f"the show ends when its audio does: {svc.machine.state}")
+    done = [s for s in svc.machine.slots if s.n == 1]
+    check(done and done[0].status == S.DONE, f"show 1 DONE: {done}")
+    # A cue that stops before its timecode ever moved did not start.
+    n.now[0] = _den(S, 18, 20)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW, "show 2 starts")
+    n.sess.clock.playing = False
+    n.w.runner.poll()
+    _settle(svc, c)
+    s2 = [s for s in svc.machine.slots if s.n == 2]
+    check(svc.machine.state == S.STANDBY and s2 and s2[0].status == S.FAULT,
+          f"a cue that never moved is a failed start, not an ended show: "
+          f"{svc.machine.state} {s2}")
+    # Run not pressed: the start fails, the conductor is never asked.
+    n.control.session = None
+    n.now[0] = _den(S, 18, 40)
+    svc.tick()
+    _settle(svc, c)
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "refused" and
+          "Run has not been pressed" in rows[-1]["text"],
+          f"no Run: the start is refused in words: {rows[-1:]}")
+    n.w.runner.poll()
+    _settle(svc, c)
+    s3 = [s for s in svc.machine.slots if s.n == 3]
+    check(svc.machine.state == S.STANDBY and s3 and s3[0].status == S.FAULT,
+          f"and reported as a failed start: {svc.machine.state} {s3}")
+    # Closing: End night, then the runner closes and reports it done.
+    n.control.session = n.sess
+    out = svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    _settle(svc, c)
+    check(svc.machine.state == S.CLOSING,
+          f"performing: closing waits for its report: {svc.machine.state}")
+    rows = [r for r in svc.journal if r.get("action") == "BLACKOUT"]
+    check(rows and "Not performed: nothing in this build" in rows[-1]["text"],
+          f"an effect nothing performs says so, not 'dry run': {rows[-1:]}")
+    n.w.runner.poll()
+    _settle(svc, c)
+    check(svc.machine.state == S.OFF, f"closing done: {svc.machine.state}")
+    check(n.sess.player.override == "blackout", "pixels black at closing")
+    c.close()
+    n.link.close()
+    # A dry run (the default): the performer is never attached or asked.
+    d = _fi_night(performs=False)
+    check(d.svc.dry_run is True and d.svc.performer is None and
+          d.w.runner is None,
+          "scheduler_performs false: still a dry run, no performer")
+    d.svc.tick()
+    d.now[0] = _den(S, 18, 0)
+    d.svc.tick()
+    check(not any(k == "music_play" for k, _a, _t in d.calls),
+          "a dry run never starts the show audio")
+    d.svc.report(S.SHOW_ENDED, "x", show=1)
+    check(d.svc.machine.state == S.SHOW, "a report in a dry run is ignored")
+    d.now[0] = _den(S, 18, 10)
+    d.svc.tick()
+    check(d.svc.machine.state != S.SHOW,
+          "a dry run still ends the show on the scheduler's clock")
+    d.c.close()
+    d.link.close()
+    print("  ok")
+
+
+_FI_NETWORKS = """<?xml version="1.0" encoding="UTF-8"?>
+<Networks computer="test">
+  <Controller Id="1" Name="Pixels A" Type="Ethernet" IP="127.0.0.1" ActiveState="Active">
+    <network NetworkType="ArtNET" ComPort="127.0.0.1" BaudRate="1" MaxChannels="510" Enabled="Yes" />
+  </Controller>
+  <Controller Id="2" Name="Flames" Type="Ethernet" IP="10.0.0.9" ActiveState="{state}">
+    <network NetworkType="E131" ComPort="10.0.0.9" BaudRate="7" MaxChannels="512" Enabled="Yes" />
+  </Controller>
+</Networks>
+"""
+
+
+def _fi_flame_files(work, state="Inactive", port=None):
+    """A flamesafe config (its example, on a free port) and a show folder
+    whose xlights_networks.xml has an inactive "Flames" controller at
+    channels 511 to 1022."""
+    import json as _json
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "flamesafe", "flamesafe.example.json"),
+              encoding="utf-8") as fh:
+        doc = _json.load(fh)
+    doc["link"]["listen_port"] = port or _free_udp_port()
+    fs = os.path.join(work, "flamesafe.json")
+    with open(fs, "w", encoding="utf-8") as fh:
+        _json.dump(doc, fh)
+    show = os.path.join(work, "show")
+    os.makedirs(show, exist_ok=True)
+    with open(os.path.join(show, "xlights_networks.xml"), "w",
+              encoding="utf-8") as fh:
+        fh.write(_FI_NETWORKS.replace("{state}", state))
+    return fs, show, doc
+
+
+def _free_udp_port():
+    import socket as _s
+    k = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    k.bind(("127.0.0.1", 0))
+    p = k.getsockname()[1]
+    k.close()
+    return p
+
+
+def test_fire_ice_flame_link_from_flamesafe_config():
+    section("fire & ice: the flame link is built from flamesafe's own "
+            "config, its cues are the show's flame universe only while the "
+            "flame controller is Inactive in xLights, and a screen Abort's "
+            "disarm goes out through it")
+    import json as _json
+    import socket as _s
+    import tempfile
+    import types
+    F = _fi_mod()
+    from ltcplay import conductor as C
+    work = tempfile.mkdtemp()
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    # The config: refusals first.
+    for doc, want in (({"auto_start": "yes"}, "auto_start"),
+                      ({"flame_controller": "Flames"}, "flamesafe_config"),
+                      ({"flamesafe_config": ""}, "flamesafe_config"),
+                      ({"flamesafe_config": "x.json", "flame_controller": 3},
+                       "flame_controller")):
+        try:
+            F.FireIceConfig.parse(doc, os.path.join(work, F.CONFIG_FILE))
+            check(False, f"{doc} must be refused")
+        except F.FireIceConfigError as e:
+            check(want in str(e), f"{doc} refused naming {want}: {e}")
+    cfg = F.FireIceConfig.parse({"flamesafe_config": "flamesafe.json",
+                                 "flame_controller": "Flames"},
+                                os.path.join(work, F.CONFIG_FILE))
+    check(cfg.flamesafe_config == os.path.join(work, "flamesafe.json"),
+          f"a relative flamesafe_config is beside the Fire & Ice config: "
+          f"{cfg.flamesafe_config}")
+    check(cfg.auto_start == "when_run_pressed",
+          "auto_start defaults to PR #32's reading: once Run is pressed")
+    # The flame channels.
+    fs, show, fsdoc = _fi_flame_files(work)
+    check(F.flame_channels(os.path.join(show, "xlights_networks.xml"),
+                           "Flames") == (511, 512),
+          "the flame controller's channels, walked in xLights' order")
+    _fi_flame_files(work, state="Active")
+    try:
+        F.flame_channels(os.path.join(show, "xlights_networks.xml"),
+                         "Flames")
+        check(False, "an Active flame controller must be refused")
+    except F.FlameControllerError as e:
+        check("Inactive" in str(e) and "around" in str(e),
+              f"an Active flame controller is refused, saying why: {e}")
+    # FlameCues, on a fake running session.
+    buf = bytearray(1022)
+    for i in range(512):
+        buf[510 + i] = (i * 7) % 256
+    sess = types.SimpleNamespace(running=True,
+                                 tl=types.SimpleNamespace(show_dir=show),
+                                 player=types.SimpleNamespace(_buf=buf))
+    control = types.SimpleNamespace(session=sess)
+    cues = F.FlameCues(control, "Flames", journal)
+    check(cues("01:00:00:00") is None and
+          any(f and "Inactive" in t for t, f in lines),
+          "Active controller: all zeros, and a fault line")
+    n_faults = sum(1 for _t, f in lines if f)
+    cues("01:00:00:01")
+    check(sum(1 for _t, f in lines if f) == n_faults,
+          "the same refusal is journaled once, not every frame")
+    fs, show, fsdoc = _fi_flame_files(work, state="Inactive")
+    sess.tl = types.SimpleNamespace(show_dir=show + os.sep + ".")
+    vals = cues("01:00:00:02")
+    check(vals == [(i * 7) % 256 for i in range(512)],
+          "Inactive controller: the flame universe out of the frame")
+    check(F.FlameCues(control, "Nope", journal)("x") is None,
+          "a controller that is not there: all zeros")
+    sess.running = False
+    check(cues("01:00:00:03") is None, "nothing running: all zeros")
+    sess.running = True
+    # build_flame_link: the real FlameLink, key and port from flamesafe's
+    # own file, and the Abort's disarm reaches the wire.
+    show_out = F.FireIceShow(control, journal=journal, flame_link=None)
+    link = F.build_flame_link(F.FireIceConfig(flamesafe_config=fs,
+                                              flame_controller="Flames"),
+                              control, show_out, journal)
+    try:
+        check(link.cfg.key == fsdoc["link"]["key"] and
+              link.cfg.port == fsdoc["link"]["listen_port"] and
+              link.cfg.frame_stale_ms == fsdoc["frame_stale_ms"],
+              "key, port and frame_stale_ms come from flamesafe's config")
+        check(any("Stream Deck" in t for t, _ in lines),
+              "it says it cannot see flamesafe's status frames itself")
+        rx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        rx.bind(("127.0.0.1", link.cfg.port))
+        rx.settimeout(2.0)
+        try:
+            link.open()
+            show_out.flame_link = link
+            r = show_out.flames_disarm_all("Abort pressed on the rack screen")
+            check(r.ok, f"the screen Abort's disarm went out: {r}")
+            kinds = []
+            try:
+                for _ in range(6):
+                    kinds.append(_json.loads(rx.recv(70000))["t"])
+            except _s.timeout:
+                pass
+            check("flame" in kinds and "disarm_all" in kinds,
+                  f"a zero frame, then disarm_all, on the wire: {kinds}")
+        finally:
+            rx.close()
+    finally:
+        link.stop()
+    # Missing flamesafe config: serve refuses to start, in words.
+    try:
+        F.build_flame_link(F.FireIceConfig(
+            flamesafe_config=os.path.join(work, "nope.json")), control,
+            show_out, journal)
+        check(False, "a flamesafe_config that cannot be read must refuse")
+    except F.FireIceConfigError as e:
+        check("nope.json" in str(e), f"refused naming the file: {e}")
+    _ = C
+    print("  ok")
+
+
+def test_fire_ice_auto_start_off_and_start_now():
+    section("fire & ice: auto_start off never starts a scheduled show by "
+            "itself, Start now still does, and every start is journaled")
+    n = _fi_night()
+    if n.S is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+    n.w.runner.cfg.auto_start = "off"
+    svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(not any(k == "music_play" for k, _a, _t in n.calls),
+          "auto_start off: the show that came due is not started")
+    rows = [r for r in svc.journal if r.get("action") == "automatic start"]
+    check(rows and rows[-1]["outcome"] == "refused" and
+          "auto_start is off" in rows[-1]["text"],
+          f"and the refusal is journaled in words: {rows[-1:]}")
+    n.w.runner.poll()
+    _settle(svc, c)
+    s1 = [x for x in svc.machine.slots if x.n == 1]
+    check(s1 and s1[0].status == S.FAULT,
+          f"reported as a failed start: {s1}")
+    del n.calls[:]
+    out = svc._apply(_op(S, S.START_NOW))
+    _settle(svc, c)
+    check(any(k == "music_play" for k, _a, _t in n.calls),
+          f"Start now still starts the show: {out.refused if out else ''} "
+          f"{n.calls}")
+    rows = [r for r in svc.journal if r.get("action") == "start now"]
+    check(rows and rows[-1]["outcome"] == "done" and "Andy" in
+          rows[-1]["text"], f"Start now is journaled with who: {rows[-1:]}")
+    c.close()
+    n.link.close()
+    print("  ok")
+
+
+def _serve_spy(argv, extra_files=None):
+    """`ltc serve` in a fresh process, with web.serve wrapped to report
+    what it built and then stop. Returns the report."""
+    import json as _json
+    import subprocess
+    import tempfile
+    root = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    for name, doc in (extra_files or {}).items():
+        with open(os.path.join(work, name), "w") as fh:
+            _json.dump(doc, fh)
+    argv = [a.replace("{work}", work) for a in argv]
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "from ltcplay import cli, web\n"
+        "real = web.serve\n"
+        "def spy(*a, **k):\n"
+        "    h = real(*a, **k)\n"
+        "    out = {'fire_ice': k.get('fire_ice') is not None,\n"
+        "           'conductor': getattr(h, 'conductor', None) is not None,\n"
+        "           'dry_run': getattr(h.schedule, 'dry_run', None),\n"
+        "           'mods': sorted(m for m in sys.modules if m.split('.')[-1]\n"
+        "                in ('conductor', 'devices', 'fire_ice', 'madmapper',\n"
+        "                    'beyond', 'schedule_service'))}\n"
+        "    if h.schedule is not None:\n"
+        "        h.schedule.halt(); h.schedule.stop()\n"
+        "    h.server_close()\n"
+        "    print('SPY ' + json.dumps(out))\n"
+        "    raise SystemExit(0)\n"
+        "web.serve = spy\n"
+        # Tonight's file and the night journal go in the temp folder, never
+        # beside the program.
+        + ("from ltcplay import schedule_service as SV\n"
+           f"SV.data_dir = lambda: {work!r}\n"
+           if "--schedule" in argv else "")
+        + f"cli.main({argv!r})\n")
+    env = dict(os.environ, XDG_STATE_HOME=work, LOCALAPPDATA=work)
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=120, cwd=work, env=env)
+    got = [l for l in (rc.stdout or "").splitlines() if l.startswith("SPY ")]
+    if not got:
+        return {"error": (rc.stdout or "")[-500:] + (rc.stderr or "")[-800:]}
+    return _json.loads(got[-1][4:])
+
+
+def test_ltc_serve_gpl_builds_no_conductor():
+    section("GPL: `ltc serve` with a GPL-style config builds no conductor, "
+            "no devices and no ShowOutputs; with a schedule (Fire & Ice) "
+            "it does")
+    gpl = _serve_spy(["serve", "--folder", "{work}", "--no-browser",
+                      "--port", "0"])
+    check(gpl.get("fire_ice") is False and gpl.get("conductor") is False
+          and gpl.get("mods") == [],
+          f"GPL serve: no fire_ice config, no conductor, and none of "
+          f"conductor, devices, fire_ice, madmapper, beyond or the "
+          f"scheduler even loaded: {gpl}")
+    if _sched() is None:
+        return
+    rule = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                      "interval_min": 20,
+                                      "last_end": "22:00"}}, exceptions={})
+    fi = _serve_spy(["serve", "--folder", "{work}", "--no-browser", "--port", "0",
+                     "--schedule", "{work}/ltcplay_schedule.json"],
+                    {"ltcplay_schedule.json": rule})
+    check(fi.get("fire_ice") is True and fi.get("conductor") is True and
+          fi.get("dry_run") is True and "ltcplay.conductor" in fi["mods"]
+          and "ltcplay.devices" not in fi["mods"],
+          f"Fire & Ice serve: the conductor is built, the scheduler stays a "
+          f"dry run without the switch: {fi}")
+    fi2 = _serve_spy(["serve", "--folder", "{work}", "--no-browser", "--port", "0",
+                      "--schedule", "{work}/ltcplay_schedule.json"],
+                     {"ltcplay_schedule.json": rule,
+                      "ltcplay_fire_ice.json": {"scheduler_performs": True}})
+    check(fi2.get("conductor") is True and fi2.get("dry_run") is False,
+          f"scheduler_performs true: the scheduler performs: {fi2}")
+    print("  ok")
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
     here = os.path.dirname(os.path.abspath(__file__))
     top = []
     for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
-        if not name.endswith(".py") or name == "conductor.py":
+        # fire_ice.py is the one module that builds a conductor, and is
+        # itself imported only by `ltc serve` with a schedule: the
+        # subprocess below proves the program never loads it either.
+        if not name.endswith(".py") or name in ("conductor.py",
+                                                "fire_ice.py"):
             continue
         for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
                                       encoding="utf-8"), 1):
@@ -30908,11 +31812,12 @@ def test_the_gpl_path_never_loads_the_conductor():
     r = _sp.run([sys.executable, "-c",
                  "import sys; sys.path.insert(0, sys.argv[1]); "
                  "import ltcplay.session, ltcplay.web, ltcplay.cli; "
-                 "print('ltcplay.conductor' in sys.modules)", here],
+                 "print('ltcplay.conductor' in sys.modules, "
+                 "'ltcplay.fire_ice' in sys.modules)", here],
                 capture_output=True, text=True, timeout=60)
-    check(r.stdout.strip() == "False",
-          f"loading the program loads no conductor: {r.stdout!r} "
-          f"{r.stderr[-300:]!r}")
+    check(r.stdout.strip() == "False False",
+          f"loading the program loads no conductor and no fire_ice: "
+          f"{r.stdout!r} {r.stderr[-300:]!r}")
     print("  ok")
 
 
@@ -32269,15 +33174,29 @@ def test_the_gpl_path_never_loads_the_flame_link():
             if re.search(r"\bflamelink\b", line) and \
                     re.match(r"\s*(from|import)\s", line):
                 top.append(f"{name}:{i}")
+    # The one import allowed (show-assembly, 2026-10-03): fire_ice.py, which
+    # is itself loaded only for Fire & Ice (test_the_gpl_path_never_loads_
+    # the_conductor), imports it inside build_flame_link() only, so even
+    # loading fire_ice.py loads no flame link (checked below).
+    allowed = []
+    for i, line in enumerate(open(os.path.join(here, "ltcplay",
+                                               "fire_ice.py"),
+                                  encoding="utf-8"), 1):
+        if re.search(r"\bflamelink\b", line) and \
+                re.match(r"(from|import)\s", line):
+            allowed.append(f"fire_ice.py:{i} (at the top level)")
+    top = [t for t in top if not t.startswith("fire_ice.py:")] + allowed
     check(not top, f"the flame link is imported by the program: {top}")
     r = _sp.run([sys.executable, "-c",
                  "import sys; sys.path.insert(0, sys.argv[1]); "
                  "import ltcplay.session, ltcplay.web, ltcplay.cli; "
-                 "print('ltcplay.flamelink' in sys.modules)", here],
+                 "a = 'ltcplay.flamelink' in sys.modules; "
+                 "import ltcplay.fire_ice; "
+                 "print(a, 'ltcplay.flamelink' in sys.modules)", here],
                 capture_output=True, text=True, timeout=60)
-    check(r.stdout.strip() == "False",
-          f"loading the program loads no flame link: {r.stdout!r} "
-          f"{r.stderr[-300:]!r}")
+    check(r.stdout.strip() == "False False",
+          f"loading the program (and even fire_ice.py) loads no flame link: "
+          f"{r.stdout!r} {r.stderr[-300:]!r}")
     print("  ok")
 
 
@@ -32660,6 +33579,14 @@ if __name__ == "__main__":
     test_schedule_abort_latch_survives_a_damaged_disk()
     test_schedule_reset_never_overtakes_an_abort()
     test_schedule_conductor_line_round3_details()
+    test_fire_ice_config_defaults_and_refusals()
+    test_fire_ice_show_outputs()
+    test_audio_master_per_call_fade()
+    test_fire_ice_night_end_to_end()
+    test_fire_ice_runner_reports_the_show()
+    test_fire_ice_flame_link_from_flamesafe_config()
+    test_fire_ice_auto_start_off_and_start_now()
+    test_ltc_serve_gpl_builds_no_conductor()
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
     test_flame_link_fix_round_1()

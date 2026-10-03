@@ -1271,6 +1271,19 @@ def _cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    fire_ice = None
+    if schedule is not None:
+        # A schedule is what makes this Fire & Ice (the GPL launchers never
+        # pass one), so only here is the real show conductor built, from
+        # ltcplay_fire_ice.json beside the rule file. No file: no lasers or
+        # video, and the scheduler stays a dry run. See fire_ice.py.
+        from . import fire_ice as fire_ice_mod
+        try:
+            fire_ice = fire_ice_mod.FireIceConfig.load(
+                fire_ice_mod.config_path_for(schedule))
+            fire_ice_mod.flame_link_config(fire_ice)
+        except ValueError as e:
+            return _err(str(e))
     announce = None
     if getattr(args, "announce", None) is not None:
         # Same rule as the scheduler: only here, and only when asked for,
@@ -1282,7 +1295,7 @@ def _cmd_serve(args):
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
-                              announce=announce)
+                              announce=announce, fire_ice=fire_ice)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1307,8 +1320,14 @@ def _cmd_serve(args):
     if httpd.schedule is not None:
         sv = httpd.schedule
         print(f"Schedule: {sv.path}")
-        print("  " + (sv.error or "Loaded. It decides but does not act: no "
-                      "show is started by it in this build."))
+        print("  " + (sv.error or (
+            "Loaded. It decides but does not act: no show is started by it "
+            "in this build." if sv.dry_run else
+            "Loaded. It performs: it starts the show on schedule once Run "
+            "has been pressed.")))
+    if fire_ice is not None:
+        print(f"Fire & Ice: {fire_ice.path or 'no ltcplay_fire_ice.json'}")
+        print(f"  {fire_ice.summary()}")
     if httpd.announce is not None:
         av = httpd.announce
         print(f"Announcements: {av.config_path}")

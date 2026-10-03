@@ -6091,6 +6091,230 @@ def build():
   "else \"\"\n",
   "    said = \"\"\n"),
 
+
+ # -- Fire & Ice: fire_ice.py's ShowOutputs and runner, the per-call
+ # AudioMaster fade it needs, and where `ltc serve` builds the conductor.
+ ("fire & ice: the Hold's fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.pause(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.pause())"),
+
+ ("fire & ice: Abort's music fade is not passed to the show audio",
+  "ltcplay/fire_ice.py",
+  "lambda c: c.halt(fade_ms=fade_s * 1000.0))",
+  "lambda c: c.halt())"),
+
+ ("fire & ice: frozen is read from the Hold request, not the clock",
+  "ltcplay/fire_ice.py",
+  "        if self._clock() is None:\n            return None\n"
+  "        return self._frozen",
+  "        if self._clock() is None:\n            return None\n"
+  "        return bool(self._clock()._paused or self._hooked is not None)"),
+
+ ("fire & ice: chaining on_pause drops the session's own hard park",
+  "ltcplay/fire_ice.py",
+  "                try:\n                    if before_p is not None:\n"
+  "                        before_p()",
+  "                try:\n                    pass"),
+
+ ("fire & ice: an Abort's disarm reports success it did not have",
+  "ltcplay/fire_ice.py",
+  "        return C.failed(f\"{reason}: {NO_DISARM}{tail}\")",
+  "        return C.done(f\"{reason}: {NO_DISARM}{tail}\")"),
+
+ ("fire & ice: an Abort's disarm does not zero the flame cues",
+  "ltcplay/fire_ice.py",
+  "        z = self.flames_zero()\n",
+  "        z = C.done('')\n"),
+
+ ("fire & ice: pixels restore over the operator's own look",
+  "ltcplay/fire_ice.py",
+  "            if p.override != \"blackout\":",
+  "            if False:"),
+
+ ("fire & ice: pixels restore to auto, not the look from before",
+  "ltcplay/fire_ice.py",
+  "            p.override = self._pix_prev",
+  "            p.override = None"),
+
+ ("fire & ice: scheduler_performs accepts anything truthy",
+  "ltcplay/fire_ice.py",
+  "        if performs is not True and performs is not False:",
+  "        performs = bool(performs)\n        if False:"),
+
+ ("fire & ice: the dry run ends without the switch",
+  "ltcplay/fire_ice.py",
+  "    if cfg.scheduler_performs:\n        runner = ShowRunner(",
+  "    if True:\n        runner = ShowRunner("),
+
+ ("fire & ice: a show starts before Run is pressed",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is not None and clk is None:"),
+
+ ("fire & ice: a show starts while the conductor is still aborted",
+  "ltcplay/fire_ice.py",
+  "        if s is None or clk is None or self.conductor.latched:",
+  "        if s is None or clk is None:"),
+
+ ("fire & ice: an unconfirmed cue that stops is reported as ended",
+  "ltcplay/fire_ice.py",
+  "            self.svc.report(\"SHOW_ENDED\" if cue[\"confirmed\"]\n"
+  "                            else \"SHOW_FAILED\", how, show=n)",
+  "            self.svc.report(\"SHOW_ENDED\", how, show=n)"),
+
+ ("fire & ice: the show is confirmed before the timecode moves",
+  "ltcplay/fire_ice.py",
+  "        if not cue[\"confirmed\"] and mine and \\\n"
+  "                getattr(clk, \"_last_frame\", None) not in (None, 0):",
+  "        if not cue[\"confirmed\"] and mine:"),
+
+ ("fire & ice: the laser gate does not follow the scheduler",
+  "ltcplay/fire_ice.py",
+  "        devices, show, C.laser_gate_for(state),",
+  "        devices, show, lambda: None,"),
+
+ ("fire & ice: closing is never reported done",
+  "ltcplay/fire_ice.py",
+  "        self.svc.report(\"CLOSING_DONE\",",
+  "        (lambda *a: None)(\"CLOSING_DONE\","),
+
+ ("fire & ice: the conductor is told a show started before its audio is",
+  "ltcplay/schedule_service.py",
+  "                started = self.performer.start_show(shows[0])\n"
+  "                if not started.ok:\n"
+  "                    return \"Show start\", started",
+  "                r = self.conductor.show_starting(who, screen)\n"
+  "                started = self.performer.start_show(shows[0])\n"
+  "                return \"Show start\", r"),
+
+ ("fire & ice: a performing scheduler still ends shows on its own clock",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run and m.state == sch.SHOW and \\",
+  "            if m.state == sch.SHOW and \\"),
+
+ ("fire & ice: a performing scheduler still finishes closing by itself",
+  "ltcplay/schedule_service.py",
+  "        if self.dry_run and self.machine.state == sch.CLOSING:",
+  "        if self.machine.state == sch.CLOSING:"),
+
+ ("fire & ice: a report is applied during a dry run",
+  "ltcplay/schedule_service.py",
+  "            if self.dry_run or self.machine is None:\n"
+  "                return None\n            ev = sch.Event(",
+  "            if self.machine is None:\n"
+  "                return None\n            ev = sch.Event("),
+
+ ("fire & ice: GPL serve builds the conductor too",
+  "ltcplay/cli.py",
+  "    fire_ice = None\n    if schedule is not None:\n",
+  "    fire_ice = None\n    if True:\n"),
+
+ ("fire & ice: the scheduler is never given the conductor's config",
+  "ltcplay/cli.py",
+  "                              announce=announce, fire_ice=fire_ice)",
+  "                              announce=announce)"),
+
+ ("audio_master per-call fade: pause ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.hold_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.hold_fade_ms"),
+
+ ("audio_master per-call fade: halt ignores the fade it is given",
+  "ltcplay/clock.py",
+  "            ms = self.audio.abort_fade_ms if fade_ms is None else fade_ms",
+  "            ms = self.audio.abort_fade_ms"),
+
+ ("audio_master per-call fade: a resume's fade is left for the next one",
+  "ltcplay/clock.py",
+  "            self._resume_fade_ms = fade_ms\n",
+  "            if fade_ms is not None:\n"
+  "                self._resume_fade_ms = fade_ms\n"),
+
+ ("audio_master per-call fade: resume ignores the fade it is given",
+  "ltcplay/clock.py",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms\n"
+  "                                    if self._resume_fade_ms is None\n"
+  "                                    else self._resume_fade_ms)",
+  "        fade = self._sa.fade_frames(self.audio.hold_fade_ms)"),
+
+ # -- show-assembly (2026-10-03): the performer on #30's ordered line, the
+ # auto_start gate, and the flame link built from flamesafe's config.
+ ('show-assembly: the performer starts a show in a dry run',
+  'ltcplay/schedule_service.py',
+  '        if sch.START_SHOW in kinds and not self.dry_run and \\\n',
+  '        if sch.START_SHOW in kinds and \\\n'),
+
+ ('show-assembly: an Abort no longer supersedes a waiting show start',
+  'ltcplay/schedule_service.py',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")'),
+
+ ('show-assembly: the show start goes to the conductor, not the runner',
+  'ltcplay/schedule_service.py',
+  '            if call.method == "start_show":\n                # The Fire',
+  '            if call.method == "start_shoe":\n                # The Fire'),
+
+ ('show-assembly: a refused automatic start is not journaled as refused',
+  'ltcplay/schedule_service.py',
+  '                    outcome="done" if ok else "refused",',
+  '                    outcome="done",'),
+
+ ('show-assembly: auto_start off is ignored',
+  'ltcplay/fire_ice.py',
+  '        if auto and self.cfg.auto_start == "off":',
+  '        if auto and self.cfg.auto_start == "never":'),
+
+ ("show-assembly: an operator's Start now counts as automatic",
+  'ltcplay/fire_ice.py',
+  '        auto = who == "the scheduler"',
+  '        auto = True'),
+
+ ('show-assembly: an Active flame controller is accepted',
+  'ltcplay/fire_ice.py',
+  '            if a.get("ActiveState", "Active") == "Active":',
+  '            if a.get("ActiveState", "Active") == "Never":'),
+
+ ('show-assembly: flame channels are counted from 0',
+  'ltcplay/fire_ice.py',
+  '    import xml.etree.ElementTree as ET\n    root = ET.parse(networks_xml).getroot()\n    chan = 1',
+  '    import xml.etree.ElementTree as ET\n    root = ET.parse(networks_xml).getroot()\n    chan = 0'),
+
+ ('show-assembly: flame cues read while nothing is running',
+  'ltcplay/fire_ice.py',
+  '        if s is None or not getattr(s, "running", False):\n            return None\n        p = getattr(s, "player", None)',
+  '        if s is None:\n            return None\n        p = getattr(s, "player", None)'),
+
+ ('show-assembly: the flame cue refusal is journaled every frame',
+  'ltcplay/fire_ice.py',
+  '            if text != self._problem:',
+  '            if True:'),
+
+ ("show-assembly: the screen Abort's disarm skips the flame link",
+  'ltcplay/fire_ice.py',
+  '        if self.flame_link is not None:\n            self.flames = C.ZERO\n            try:\n                ok = self.flame_link.disarm_all(reason)',
+  '        if False:\n            self.flames = C.ZERO\n            try:\n                ok = self.flame_link.disarm_all(reason)'),
+
+ ('show-assembly: a disarm that did not go out counts as done',
+  'ltcplay/fire_ice.py',
+  '            return C.done(f"{reason}: {DISARM_SENT}") if ok is True else \\',
+  '            return C.done(f"{reason}: {DISARM_SENT}") if True else \\'),
+
+ ("show-assembly: the flame link key is not flamesafe's own",
+  'ltcplay/fire_ice.py',
+  '        return flamelink.FlameLinkConfig.from_flamesafe_config(\n            cfg.flamesafe_config)',
+  '        c = flamelink.FlameLinkConfig.from_flamesafe_config(\n            cfg.flamesafe_config)\n        c.key = c.key[::-1]\n        return c'),
+
+ ('show-assembly: closing does not zero and stop the flame link',
+  'ltcplay/fire_ice.py',
+  '            if fl is not None and hasattr(fl, "stop"):',
+  '            if False:'),
+
+ ('show-assembly: flame_controller allowed without a flame link',
+  'ltcplay/fire_ice.py',
+  '            if fs is None:\n                raise FireIceConfigError(',
+  '            if False:\n                raise FireIceConfigError('),
+
 ]
 
 
