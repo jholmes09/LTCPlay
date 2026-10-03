@@ -2571,6 +2571,336 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ # -- madmapper.py: device layer (OSC transport, watchdog) --
+
+ ("a cancelled ramp keeps sending anyway", "ltcplay/madmapper.py",
+  "            if self._gen_current() != gen:\n"
+  "                break",
+  "            pass"),
+
+ ("restore_levels never touches the surfaces, only the audio",
+  "ltcplay/madmapper.py",
+  "        self.set_audio(1.0, wait=wait)\n"
+  "        self.set_surfaces(1.0, wait=wait)",
+  "        self.set_audio(1.0, wait=wait)"),
+
+ ("the watchdog counts MadMapper's stale re-sent value at bank select "
+  "as a real position again (S1)", "ltcplay/madmapper.py",
+  "            if self._awaiting_start:\n"
+  "                near_start = (show_len_s is not None\n"
+  "                             and isinstance(value, (int, float))\n"
+  "                             and not math.isnan(value)\n"
+  "                             and value * show_len_s <= START_WINDOW_S)\n"
+  "                if not near_start:\n"
+  "                    return\n"
+  "                self._awaiting_start = False",
+  "            if self._awaiting_start:\n"
+  "                self._awaiting_start = False"),
+
+ ("a NaN heartbeat value is read as zero drift", "ltcplay/madmapper.py",
+  "            bad = not isinstance(value, (int, float)) or "
+  "math.isnan(value)",
+  "            bad = False"),
+
+ ("the heartbeat listener can be bound off loopback by accident",
+  "ltcplay/madmapper.py",
+  "        if not _is_loopback(bind) and not allow_non_loopback:",
+  "        if False:"),
+
+ ("a heartbeat bind failure crashes instead of naming the heartbeat "
+  "port", "ltcplay/madmapper.py",
+  "        try:\n"
+  "            self._sock = self._factory()\n"
+  "        except OSError as e:\n"
+  "            # Its own sentence, naming the heartbeat port "
+  "specifically:\n"
+  "            # a bind failure here must never read as the web "
+  "server's own\n"
+  "            # port being unavailable, which is a different problem "
+  "with a\n"
+  "            # different fix.\n"
+  "            self.bind_error = (",
+  "        self._sock = self._factory()\n"
+  "        if False:\n"
+  "            self.bind_error = ("),
+
+ ("a MadMapper command can hang _submit() forever again",
+  "ltcplay/madmapper.py",
+  "            got = done.wait(self._submit_timeout_s)",
+  "            done.wait()\n"
+  "            got = True"),
+
+ # -- beyond.py: the laser blank/unblank device layer --
+
+ ("the allow-list accepts any brightness value, not only 0.0/100.0",
+  "ltcplay/beyond.py",
+  "    return any(value == v for v in ALLOWED_VALUES)",
+  "    return True"),
+
+ ("the allow-list no longer checks for OSC special characters",
+  "ltcplay/beyond.py",
+  "    if any(c in _SPECIAL_CHARS for c in address):\n"
+  "        return False\n"
+  "    if address != BRIGHTNESS_ADDR:",
+  "    if address != BRIGHTNESS_ADDR:"),
+
+ ("_send()'s guard is removed, so anything can reach the socket",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py refuses to send {address!r} with value \"\n"
+  "                f\"{value!r}: only the brightness address, with 0.0 or \"\n"
+  "                f\"100.0, is ever allowed (S5), and BlackOut/MasterPause \"\n"
+  "                f\"are refused by name as well (BlackOut restarts "
+  "BEYOND's \"\n"
+  "                f\"own core and needs a manual recovery; MasterPause \"\n"
+  "                f\"freezes the beams, a static-beam hazard).\")\n"
+  "        return self._osc.send(address, value, force=force)",
+  "        return self._osc.send(address, value, force=force)"),
+
+ ("the socket's own send() no longer enforces the allow-list at all",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py's socket layer refuses to send {address!r} \"\n"
+  "                f\"with value {value!r}: only the brightness address, \"\n"
+  "                f\"with 0.0 or 100.0, is ever allowed off this module "
+  "(S5).\")\n"
+  "        now = self._clock()",
+  "        now = self._clock()"),
+
+ ("blank() only sends the packet once, not 3 times", "ltcplay/beyond.py",
+  "        for i in range(RETRY_COUNT):",
+  "        for i in range(1):"),
+
+ ("a failed blank is still reported and journaled as a success",
+  "ltcplay/beyond.py",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\" if ok else \"failed\"\n"
+  "        if ok:",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\"\n"
+  "        ok = True\n"
+  "        if ok:"),
+
+ ("build() no longer blanks at construction", "ltcplay/beyond.py",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)\n"
+  "    link.blank()",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)"),
+
+ ("close() no longer blanks before closing the socket",
+  "ltcplay/beyond.py",
+  "        try:\n"
+  "            self.blank()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        self._osc.close()",
+  "        self._osc.close()"),
+
+ ("BEYOND's port 8000 clash with MadMapper is no longer refused",
+  "ltcplay/beyond.py",
+  "        if port == 8000:",
+  "        if False:"),
+
+ ("unblank()'s in_show type check is removed, so a truthy value like "
+  "\"STANDBY\" or 1 unblanks the lasers during intermission",
+  "ltcplay/beyond.py",
+  "        if not isinstance(in_show, bool):\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")",
+  "        if False:\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")"),
+
+ ("unblank() ignores in_show=False and unblanks BEYOND during "
+  "intermission anyway", "ltcplay/beyond.py",
+  "        if in_show is not True:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\"",
+  "        if False:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\""),
+
+ ("unblank(in_show=False)'s refusal is never journalled, a silent skip "
+  "instead", "ltcplay/beyond.py",
+  "            self.last_result = \"refused\"\n"
+  "            self._note(\n"
+  "                f\"BEYOND stays blanked{_for_show(show)}: unblank() "
+  "was \"\n"
+  "                f\"called with in_show=False (no lasers during \"\n"
+  "                f\"intermission).\", action=\"unblank\", "
+  "outcome=\"refused\",\n"
+  "                show=show)\n"
+  "            return False",
+  "            self.last_result = \"refused\"\n"
+  "            return False"),
+
+ ("the first heartbeat after a recovery is judged for drift again "
+  "(bench B14)", "ltcplay/madmapper.py",
+  "            if self._settle_count > 0:\n"
+  "                self._settle_count -= 1\n"
+  "                skip_drift = True",
+  "            pass"),
+
+ ("the perceptual video curve fades down the same as up (no longer "
+  "mirrored)", "ltcplay/madmapper.py",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (1 - (1 - frac) ** 2) * (end - start)",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (frac ** 2) * (end - start)"),
+
+ # -- madmapper.py: fade_all() -- audio and surfaces ramped TOGETHER,
+ # in one worker job (devices.on_abort's own fade) --
+
+ ("fade_all()'s cancellation check is removed, so a superseded ramp "
+  "keeps sending anyway", "ltcplay/madmapper.py",
+  "                if self._gen_current() != gen:\n"
+  "                    break\n"
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))"),
+
+ ("fade_all()'s surfaces are no longer shaped by the configured video "
+  "curve, only plain linear", "ltcplay/madmapper.py",
+  "            surface_values = shape_values(ramp_values(start, end, steps),\n"
+  "                                          start, end, surface_curve)",
+  "            surface_values = ramp_values(start, end, steps)"),
+
+ ("fade_all() stops sending the master audio level, only the surfaces",
+  "ltcplay/madmapper.py",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))\n"
+  "                for addr in addrs:",
+  "                for addr in addrs:"),
+
+ # -- devices.py: on_hold()/on_resume()/on_abort(), composing madmapper.py
+ # and beyond.py's own primitives with the handoff's ordering built in --
+
+ ("on_hold() no longer blanks BEYOND, only fades the music",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_hold() fades the music UP instead of down", "ltcplay/devices.py",
+  "madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_resume() ignores in_show and unblanks BEYOND during intermission "
+  "too", "ltcplay/devices.py",
+  "        if in_show is True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:",
+  "        if True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:"),
+
+ ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
+  "unblanks the lasers during intermission", "ltcplay/devices.py",
+  "    if not isinstance(in_show, bool):\n"
+  "        raise TypeError(",
+  "    if False:\n"
+  "        raise TypeError("),
+
+ ("on_resume() checks in_show's type but unblanks on anything truthy",
+  "ltcplay/devices.py",
+  "        if in_show is True:\n",
+  "        if in_show or True:\n"),
+
+ ("on_hold() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return blanked",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return True"),
+
+ ("on_abort() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return blanked",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return True"),
+
+ ("on_resume()'s intermission refusal is never journalled, a silent "
+  "skip instead", "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND stays blanked{_for_show(show)} (re-sent "
+  "as \"\n"
+  "                     f\"a defensive check): Resume is between shows "
+  "(no \"\n"
+  "                     f\"lasers during intermission), not during a "
+  "show.\",\n"
+  "                     action=\"unblank\", outcome=\"refused\", "
+  "show=show)",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if False:\n"
+  "                pass"),
+
+ ("on_resume()'s defensive re-blank is sent but a FAILED re-blank is "
+  "never journalled as a fault, only the calm refusal wording",
+  "ltcplay/devices.py",
+  "            else:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND was told to stay blanked{_for_show(show)} "
+  "\"\n"
+  "                     f\"(Resume is between shows, no lasers during \"\n"
+  "                     f\"intermission), but the defensive re-blank "
+  "FAILED: \"\n"
+  "                     f\"no packet got out. The lasers may still be "
+  "live \"\n"
+  "                     f\"through intermission.\", action=\"unblank\",\n"
+  "                     outcome=\"refused\", show=show, fault=True)\n"
+  "            return reblanked",
+  "            return reblanked"),
+
+ ("on_resume(in_show=False) no longer re-sends a defensive blank at all",
+  "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:",
+  "            reblanked = True\n"
+  "            if reblanked:"),
+
+ ("on_abort() no longer blanks BEYOND, only fades MadMapper",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}",
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}"),
+
+ ("on_abort() fades everything UP to full instead of down to black",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)",
+  "        madmapper.fade_all(0.0, 1.0, **kwargs)"),
+
+ ("on_abort() ignores an explicit fade_seconds override", "ltcplay/devices.py",
+  "        if fade_seconds is not None:\n"
+  "            kwargs[\"seconds\"] = fade_seconds",
+  "        if False:\n"
+  "            kwargs[\"seconds\"] = fade_seconds"),
+
  ("show length no longer follows the show's own media when nothing is "
   "configured", "ltcplay/clock.py",
   "        if show_len is None:\n"
