@@ -46,6 +46,19 @@ WILDCARD = ("0.0.0.0", "::", "")
 OPEN_GETS = ("/", "/index.html", "/remote", "/api/brand",
              "/api/remote/whoami")
 OPEN_POSTS = ("/api/remote/login", "/api/remote/logout")
+# The show's own transport and output routes. While a scheduled show is live
+# (the scheduler in SHOW or PAUSED) every one of them is refused, on every
+# door, the machine's own page included: Hold, Resume and Abort are the only
+# presses a live show takes (PR #43 review, finding 2: a GO during a live
+# show moved the pixels and fired a flame cue it jumped into).
+LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip", "/api/release",
+                     "/api/stop", "/api/override", "/api/reload",
+                     "/api/showdir", "/api/reinput", "/api/input",
+                     "/api/trigger", "/api/autoreload", "/api/find")
+LIVE_SHOW_STATES = ("SHOW", "PAUSED")
+LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Hold, Resume and Abort "
+                     "work during a show; this waits until the show has "
+                     "ended or been aborted.")
 
 
 # Bumped whenever the page needs something this module did not have. The
@@ -858,6 +871,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": f"{type(e).__name__}: {e}"})
         return self._send(404, {"error": "no such thing here"})
 
+    def _scheduled_show_live(self):
+        svc = getattr(self.server, "schedule", None)
+        m = getattr(svc, "machine", None) if svc is not None else None
+        return m is not None and getattr(m, "state", None) in \
+            LIVE_SHOW_STATES
+
     def do_POST(self):
         self._ctx_cache = None          # one connection carries many requests
         route = urllib.parse.urlparse(self.path).path
@@ -884,6 +903,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, {"error": f"{type(e).__name__}: {e}"})
             return self._send(code, out, headers=headers)
+        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():
+            return self._send(409, {"error": LIVE_SHOW_REFUSAL})
         c = self.server.control
         # An operator action (Start, Stop, GO, autoreload, override, ...) must
         # never be hidden behind a stale cached /api/state answer: the whole
