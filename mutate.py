@@ -6530,6 +6530,11 @@ def build():
   '        cues.link = link',
   '        pass'),
 
+ ('show-assembly: the flame link journals on its own sender thread',
+  'ltcplay/fire_ice.py',
+  '    journal = OffThreadJournal(journal) if journal is not None else None\n',
+  '    journal = journal\n'),
+
 ]
 
 
