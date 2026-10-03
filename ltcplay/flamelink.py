@@ -43,7 +43,16 @@ The values in each frame are ALL ZEROS unless every one of these holds:
 
   3. the cue provider answered with exactly 512 whole numbers 0 to 255 for
      that timecode, without raising. Anything else is zeros for that frame,
-     journaled once per episode.
+     journaled once per episode;
+
+  4. the seek guard (2026-10-03, programming sessions scrub and loop): the
+     timecode has run steadily for SEEK_SETTLE_S (0.5 s) since the last
+     seek, jump, loop wrap or resume, and, channel by channel, that channel
+     has been seen at zero since the last seek. A timecode that moves by
+     more than SEEK_JUMP_S more or less than the time that passed is a
+     seek; the first timecode ever seen counts as one. So a scrub never
+     fires anything on the way, and a flame cue whose start was jumped
+     over never fires at all: it stays zero until it has ended.
 
 THE CUE PROVIDER IS A STUB IN THIS BUILD. `cues(tc)` is "the flame universe
 for timecode tc": a sequence of 512 ints, or None for all zeros. Handoff
@@ -137,6 +146,17 @@ STALE_MS_MIN, STALE_MS_MAX = 100, 2500   # flamesafe's own bounds
 # so a missing copy can only make the Abort repeat longer, never too short.
 FRAME_STALE_MS_DEFAULT = STALE_MS_MAX
 TC_STILL_S = 0.1            # a timecode unchanged this long is not moving
+# The seek guard (2026-10-03, Jeff: programming sessions scrub and loop).
+# A timecode that moves by more than SEEK_JUMP_S more or less than the
+# time that passed is a seek (a GO, a skip, a loop wrap, a locate on the
+# timecode feed). From a seek on, every flame value is zero until the
+# timecode has run steadily for SEEK_SETTLE_S, and each channel stays zero
+# after that until it has been seen at zero since the seek: a cue whose
+# start was jumped over never fires. The first timecode this link ever
+# sees counts as a seek too (a GO into the middle of a show is a landing).
+SEEK_JUMP_S = 0.25
+SEEK_SETTLE_S = 0.5
+TC_FPS_DEFAULT = 30.0
 LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -399,8 +419,21 @@ class FlameLink:
     raise."""
 
     def __init__(self, cfg, cues=zero_cues, show_state=no_show, journal=None,
-                 clock=time.perf_counter, sleep=time.sleep):
+                 clock=time.perf_counter, sleep=time.sleep,
+                 tc_fps=TC_FPS_DEFAULT, seek_guard=True):
         self.cfg = cfg
+        self.tc_fps = float(tc_fps)
+        # Always on in the program. Only the selftest's tests of the OTHER
+        # rules (moving, released, providers) turn it off, so their cue
+        # values are not held back by a settle they are not about.
+        self.seek_guard = bool(seek_guard)
+        # The seek guard: (seconds, clock) of the last timecode, when the
+        # current steady run began, and the channels still waiting to be
+        # seen at zero since the last seek. All channels wait at first.
+        self._seek_last = None
+        self._steady_since = None
+        self._blocked = set(range(UNIVERSE_SIZE))
+        self.seeks = 0
         self.cues = cues
         self.show_state = show_state
         self._journal = journal
@@ -658,6 +691,7 @@ class FlameLink:
         now = self._clock()
         if tc is not None and tc != self._tc_last:
             self._tc_last, self._tc_moved_at = tc, now
+        settled = self._seek_guard(tc, now) if self.seek_guard else True
         if self.zeroed or live is not True or tc is None:
             self._cue_episode("", "")
             return tc, zeros
@@ -687,7 +721,73 @@ class FlameLink:
                                          f"numbers 0 to 255")
             return tc, zeros
         self._cue_episode("", "")
+        # A channel seen at zero since the last seek may fire again: its
+        # next rise is a cue start this show actually played through.
+        blocked = self._blocked if self.seek_guard else ()
+        if blocked:
+            for i in [i for i in blocked if vals[i] == 0]:
+                blocked.discard(i)
+        if not settled:
+            return tc, zeros
+        if blocked:
+            for i in blocked:
+                vals[i] = 0
         return tc, bytes(vals)
+
+    def _tc_seconds(self, tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        return h * 3600 + m * 60 + s + f / self.tc_fps
+
+    def _seek_guard(self, tc, now):
+        """True once the timecode has run steadily for SEEK_SETTLE_S since
+        the last seek. Called with every frame's timecode, live or not."""
+        if tc is None:
+            return False
+        secs = self._tc_seconds(tc)
+        last = self._seek_last          # (seconds, when it was first seen)
+        if last is None:
+            self._seek_last = (secs, now)
+            self._seek(None, secs)
+            return False
+        dtc = secs - last[0]
+        if dtc == 0:
+            # The same frame again. Frames are slower than sends, so this
+            # is routine; only a timecode still for longer than TC_STILL_S
+            # (a pause or a hold) ends the steady run.
+            if now - last[1] > TC_STILL_S:
+                self._steady_since = None
+        else:
+            dt = now - last[1]
+            self._seek_last = (secs, now)
+            if dtc < 0:
+                self._seek(last[0], secs)
+            elif dt > TC_STILL_S:
+                # Moving again after standing still: a resume carries on
+                # from where it stood (it is not a seek) but it has to run
+                # steadily again before any flame value goes out. Anything
+                # that moved further than a resume can is a seek.
+                if dtc > SEEK_JUMP_S:
+                    self._seek(last[0], secs)
+                else:
+                    self._steady_since = now
+            elif abs(dtc - dt) > SEEK_JUMP_S:
+                self._seek(last[0], secs)
+            elif self._steady_since is None:
+                self._steady_since = now
+        return (self._steady_since is not None
+                and now - self._steady_since >= SEEK_SETTLE_S)
+
+    def _seek(self, frm, to):
+        self.seeks += 1
+        self._steady_since = None
+        self._blocked = set(range(UNIVERSE_SIZE))
+        if frm is not None:
+            self._note(f"Flame link: the show timecode jumped from "
+                       f"{frm:.2f} s to {to:.2f} s. Flame values are zero "
+                       f"until it has run steadily for {SEEK_SETTLE_S:g} s, "
+                       f"and a flame cue already under way at the landing "
+                       f"point stays zero until it ends.",
+                       action="flame_link", outcome="seek")
 
     def _cue_episode(self, kind, problem):
         """One line when a KIND of problem starts and one when it clears:
@@ -970,6 +1070,7 @@ class FlameLink:
                                                   "stalled")),
                 "zeroed": self.zeroed,
                 "nonzero": self.last_values_nonzero,
+                "seeks": self.seeks,
                 "cue_problem": self._cue_problem,
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,

@@ -89,6 +89,7 @@ class Service:
         self.sent_packets = 0
         self.send_errors = 0
         self.status_errors = 0
+        self.mirror_errors = 0
         self.input_errors = 0
         self.last_output = None
 
@@ -255,13 +256,24 @@ class Service:
             status["sacn"] = {"sent": self.sent_packets,
                               "errors": self.send_errors,
                               "status_errors": self.status_errors}
-            self._status_tx.sendto(encode_status(status, self.cfg.link_key),
-                                   (self.cfg.link_status_ip,
-                                    self.cfg.link_status_port))
+            pkt = encode_status(status, self.cfg.link_key)
+            self._status_tx.sendto(pkt, (self.cfg.link_status_ip,
+                                         self.cfg.link_status_port))
         except (OSError, TypeError, ValueError) as e:
             self.status_errors += 1
             self.composer.note_fault(f"status frame not sent "
                                      f"({self.status_errors} so far): {e}")
+            return
+        mirror = getattr(self.cfg, "link_status_mirror_port", None)
+        if mirror is not None:
+            # The same bytes again, for the engine's remote page. Display
+            # only: a failure here is counted, never a fault, because the
+            # wire and the deck's own status are untouched by it (the page
+            # shows its lamps as stale on its own when these stop).
+            try:
+                self._status_tx.sendto(pkt, (self.cfg.link_status_ip, mirror))
+            except OSError:
+                self.mirror_errors += 1
 
     def run_forever(self, stop):
         """Tick at tick_hz until `stop` (a threading.Event) is set."""

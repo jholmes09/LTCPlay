@@ -44,7 +44,9 @@ CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 # Which screens an operator can press things from. Beside the operator list,
 # and checked the same way, so the journal never names a screen nobody has.
 SCREENS_FILE = "ltcplay_screens.json"
-DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone")
+# "iPad": the show-network remote page (ltcplay/remote.py) signs a device in
+# under one of these names, so a list written fresh already has it.
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
 # own thread, so even this never holds up a show.
@@ -2708,15 +2710,88 @@ class Service:
                 raise ValueError(f"The current operator could not be saved: "
                                  f"{e}. Nothing was changed.") from None
             self.current_operator = name
+            # The reason used to be "", which the journal refuses (a reason
+            # is never blank), so this line was lost and only a "could not
+            # be written" fault was journaled. Found by the remote's tests.
+            text = (f"{self._who_text(screen)} chose {name} as the "
+                    f"operator." if name else
+                    f"{self._who_text(screen)} cleared the operator "
+                    f"selection.")
             self._log(self.logbook.record, actor="operator", action="operator",
-                      outcome="done", reason="",
-                      text=(f"{self._who_text(screen)} chose {name} as the "
-                            f"operator." if name else
-                            f"{self._who_text(screen)} cleared the operator "
-                            f"selection."),
+                      outcome="done", reason=text, text=text,
                       state=self._state_name(), night=self._night(),
-                      who=name or "unnamed operator", screen=screen)
+                      who=name or "unnamed operator",
+                      screen=screen or "unnamed screen")
         return self.operator_view()
+
+    # The operator presses the remote page sends (ltcplay/remote.py), by its
+    # route name. These are the engine's own operator events: the same
+    # schedule.step every other press goes through, journaled by the engine
+    # with who and which screen, the Abort latch saved before the conductor
+    # is asked (see _apply). Reset is reset_conductor, under its own name.
+    PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
+               "resume": sch.RESUME, "abort": sch.ABORT}
+
+    def operator_press(self, what, who, screen, confirmed=False):
+        """One operator press from a screen: Start now, Hold, Resume or
+        Abort. `who` must be on the operator list and `screen` on the
+        screen list; anything else is refused in the journal and raised as
+        ValueError with the sentence. Abort needs confirmed=True (the
+        engine refuses it otherwise, as it always has). Returns {"ok",
+        "text"}: ok False with the engine's own refusal sentence."""
+        kind = self.PRESSES.get(what)
+        if kind is None:
+            raise ValueError(f"{what!r} is not a press this program knows. "
+                             f"Nothing was changed.")
+        who = str(who or "").strip()
+        screen = str(screen or "").strip()
+        names = {n.lower(): n for n in self.operators}
+        if what == "abort" and not who:
+            # Abort is never gated on a chosen operator, the same rule the
+            # Stream Deck keeps: a press that only reduces risk must never
+            # wait on a picker. The journal says nobody was named.
+            names[""] = ""
+        if who.lower() not in names:
+            sentence = (f"{who or 'Nobody'!r} is not on the operator list "
+                        f"({', '.join(self.operators)}). Nothing was "
+                        f"changed.")
+            self.journal_press(who, screen, what, "refused",
+                               f"{what} was refused. {sentence}")
+            raise ValueError(sentence)
+        who = names[who.lower()]
+        screen = self._check_screen(screen, who, what, what)
+        with self._locked():
+            self.tick()
+            if self.machine is None:
+                sentence = (self.error or "There is no schedule loaded, so "
+                            "there is no show to press anything on.")
+                self.journal_press(who, screen, what, "refused",
+                                   f"{who}'s {what} was refused. {sentence}")
+                return {"ok": False, "text": sentence}
+            out = self._apply(sch.Event(kind, "operator", who=who,
+                                        screen=screen,
+                                        confirmed=bool(confirmed)))
+        if out.refused:
+            return {"ok": False, "text": out.refused}
+        text = " ".join(le.text for le in out.log if le.text)
+        return {"ok": True, "text": text or "Done."}
+
+    def journal_press(self, who, screen, action, outcome, text,
+                      fault=False):
+        """One journal line for a press that is not a schedule event (the
+        remote page's disarm-all, a sign-in), with who and which screen."""
+        if fault:
+            return self._log(self.logbook.fault, "operator", text,
+                             action=action, outcome=outcome,
+                             state=self._state_name(), night=self._night(),
+                             who=who or "unnamed operator",
+                             screen=screen or "unnamed screen")
+        return self._log(self.logbook.record, actor="operator",
+                         action=action, outcome=outcome, reason=text,
+                         text=text, state=self._state_name(),
+                         night=self._night(),
+                         who=who or "unnamed operator",
+                         screen=screen or "unnamed screen")
 
     @staticmethod
     def _who_text(screen):

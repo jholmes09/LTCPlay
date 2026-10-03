@@ -4491,6 +4491,86 @@ def test_second_copy_restart_gap_takeover_over_loopback():
             s.close()
         node.close()
         ltc_status.close()
+def _free_udp_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def test_status_mirror_port():
+    section("status_mirror_port (2026-10-03, the iPad remote): optional, a "
+            "byte-for-byte copy of every status frame, display only, never "
+            "a fault, never on a port that means something else")
+    doc = example_dict()
+    check("status_mirror_port" not in doc["link"],
+          "the example config has no mirror: off unless configured")
+    check(config.from_dict(doc).link_status_mirror_port is None,
+          "absent means none")
+    a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    a.bind(("127.0.0.1", 0))
+    b.bind(("127.0.0.1", 0))
+    a.settimeout(2)
+    b.settimeout(2)
+    try:
+        d = copy.deepcopy(doc)
+        d["link"]["status_port"] = a.getsockname()[1]
+        d["link"]["status_mirror_port"] = b.getsockname()[1]
+        d["link"]["listen_port"] = _free_udp_port()
+        d["link"]["arm_port"] = _free_udp_port()
+        d["link"]["key"] = "test-mirror-key-0123456"
+        cfg = config.from_dict(d)
+        check(cfg.link_status_mirror_port == b.getsockname()[1],
+              "the mirror port is read")
+        for clash in ("status_port", "listen_port", "arm_port"):
+            bad = copy.deepcopy(d)
+            bad["link"]["status_mirror_port"] = bad["link"][clash]
+            try:
+                config.from_dict(bad)
+                check(False, f"a mirror on {clash} was accepted")
+            except config.ConfigError as e:
+                check("status_mirror_port" in str(e), f"{clash}: {e}")
+        bad = copy.deepcopy(d)
+        bad["destination"] = {"ip": "127.0.0.1",
+                              "port": d["link"]["status_mirror_port"]}
+        try:
+            config.from_dict(bad)
+            check(False, "a loopback destination on the mirror was accepted")
+        except config.ConfigError:
+            pass
+        svc = Service(cfg, arminput.NullArmInput())
+        svc.open()
+        try:
+            svc.run_once()
+            one = a.recv(65535)
+            two = b.recv(65535)
+            check(one == two and b'"status"' in one,
+                  "the mirror gets the same keyed status frame")
+            b.close()
+            svc.cfg.link_status_mirror_port = 9   # nothing listens there
+            for _ in range(3):
+                svc.run_once()
+            last = None
+            a.settimeout(0.2)
+            try:
+                while True:
+                    last = a.recv(65535)
+            except OSError:
+                pass
+            st = json.loads(last.decode()) if last else {}
+            check(svc.status_errors == 0 and st.get("fault") == "",
+                  f"a mirror that is not there is never a status error or "
+                  f"a fault: {svc.status_errors} {st.get('fault')!r}")
+        finally:
+            svc.close()
+    finally:
+        a.close()
+        try:
+            b.close()
+        except OSError:
+            pass
 
 
 def test_the_wall_from_this_side():
@@ -4591,6 +4671,7 @@ if __name__ == "__main__":
     test_second_copy_another_flame_sender_blocks_consent()
     test_second_copy_flame_lock_changing_hands_blocks_consent()
     test_second_copy_restart_gap_takeover_over_loopback()
+    test_status_mirror_port()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

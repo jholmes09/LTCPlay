@@ -125,6 +125,18 @@ From the flamesafe config (`flamesafe.example.json`):
 |---|---|---|
 | ltcplay to flamesafe, flame frames | 127.0.0.1, `link.listen_port` (example 5571) | flamesafe binds it |
 | flamesafe to ltcplay, status frames | 127.0.0.1, `link.status_port` (example 5572) | ltcplay binds it |
+| flamesafe to ltcplay's engine, a copy of every status frame | `link.status_ip`, `link.status_mirror_port` (optional, absent by default) | ltcplay's engine binds it, for the remote page |
+
+`link.status_mirror_port` (added 2026-10-03 for the iPad remote): when set,
+every status frame is sent a second time, byte for byte, to this port as
+well. The Stream Deck process binds `status_port`, so the engine needs its
+own copy to show flamesafe's real armed state on the remote page. It is
+display only, exactly like `status_port`: nothing is ever read from it by
+flamesafe, and a failed send there is counted (`mirror_errors` on the
+service) but is never a fault, because neither the wire nor the deck's own
+status is affected. It must be a port of its own; the config refuses one
+that equals `listen_port`, `status_port`, `arm_port` or a loopback
+destination port.
 | flamesafe to the flame node, sACN | `destination.ip`, `destination.port` (5568) | unicast, priority 200 |
 
 The link addresses must be loopback; the config refuses anything else, and
