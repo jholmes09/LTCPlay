@@ -550,12 +550,16 @@ class ConductorDevices(DeviceOutputs):
         """Where a new fade to `end` starts: the estimated level now, or the
         level the Link last actually sent, whichever is nearer `end`. So a
         fade down never starts above the picture, nor a fade up below it.
-        Unknown (nothing sent yet): the far end, as before this fix."""
+        Unknown (nothing sent since this program started): a fade down is
+        opacity 0 at once, never a fade that starts at 1.0, which would
+        light the surfaces with no show running (PR #43 review, finding 6:
+        a failed start and a restart after a cut show or an Abort each
+        did); a fade up starts from 0."""
         levels = [v for v in (self.video_level(),
                               getattr(self.mm, "surfaces_level", None))
                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
         if not levels:
-            return 1.0 if end <= 0.0 else 0.0
+            return 0.0
         return min(levels) if end <= 0.0 else max(levels)
 
     def _surfaces(self, end, seconds, on_done):

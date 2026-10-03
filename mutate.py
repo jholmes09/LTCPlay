@@ -6620,6 +6620,12 @@ def build():
   '        if self._clock() - pend[1] > CONFIRM_S:',
   '        if self._clock() - pend[1] > CONFIRM_S * 10:'),
 
+
+ ('fix round 1: an unknown video level fades down from full',
+  'ltcplay/conductor.py',
+  '        if not levels:\n            return 0.0',
+  '        if not levels:\n            return 1.0 if end <= 0.0 else 0.0'),
+
 ]
 
 

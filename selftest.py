@@ -27424,6 +27424,32 @@ def test_conductor_devices_instant_video_lands_after_a_running_fade():
     print("  ok")
 
 
+def test_conductor_devices_unknown_video_level_never_fades_from_full():
+    section("conductor + devices: with the video level unknown (nothing sent "
+            "since this program started), a fade to black is opacity 0 at "
+            "once, never a fade that starts at 1.0 (PR #43 review, item 6)")
+    C = _cond_mod()
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    check(dev.video_level() is None, "setup: the level is unknown")
+    dev.video_fade_out(1.0)
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and max(sent) == 0.0,
+          f"only opacity 0 is sent, never anything above it: {sent[:6]}")
+    link.close()
+    # A fade up from unknown still starts at 0 and rises.
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    dev.video_restore(1.0)
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and sent[0] == 0.0 and sent[-1] == 1.0,
+          f"a fade up from unknown starts at 0: {sent[:2]} ... {sent[-2:]}")
+    link.close()
+    print("  ok")
+
+
 # ---------------------------------------------------------------------------
 # The independent review of PR #29 (real UDP, real time probes), findings A
 # to E. These run on real threads and real time, through a real
@@ -35327,6 +35353,7 @@ if __name__ == "__main__":
     test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
     test_conductor_devices_failures_missing_links_and_speed()
     test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_conductor_devices_unknown_video_level_never_fades_from_full()
     test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
     test_conductor_abort_is_never_held_up_by_a_slow_device()
     test_conductor_hears_about_madmapper_failures_and_stalls()
