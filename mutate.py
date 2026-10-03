@@ -6373,8 +6373,8 @@ def build():
 
  ("fire & ice: the scheduler is never given the conductor's config",
   "ltcplay/cli.py",
-  "                              announce=announce, fire_ice=fire_ice)",
-  "                              announce=announce)"),
+  "                              announce=announce, fire_ice=fire_ice,\n",
+  "                              announce=announce,\n"),
 
  ("audio_master per-call fade: pause ignores the fade it is given",
   "ltcplay/clock.py",
