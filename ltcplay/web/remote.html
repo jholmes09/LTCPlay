@@ -60,12 +60,13 @@ td{padding:6px 4px;border-bottom:1px solid var(--line)}
 .lamp.held{border-color:var(--warn)} .lamp.held span{color:var(--warn)}
 .lamp.disarmed span{color:var(--cool)}
 .lamp.unknown{border-style:dashed} .lamp.unknown span{color:var(--faint)}
-.lamp .lb{display:flex;gap:8px;margin-top:10px}
-.lamp .lb button{flex:1 1 0;min-height:64px;font-size:15px;padding:6px}
+.lamp .lb{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.lamp .lb button{min-height:64px;font-size:16px;padding:6px}
+.lamp .lb button.gdis{min-height:52px}
 .lamp button.armb{background:#1d2a12;border-color:#3f6b1f;position:relative;overflow:hidden;
   touch-action:none;-webkit-touch-callout:none}
 .lamp button.armb .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(61,220,132,.35)}
-.lamp button.armb span{position:relative}
+.lamp button.armb span{position:relative;font:inherit;color:var(--ink)}
 .lamp button.gdis{background:#4a2a08;border-color:#8a5310}
 #stale{position:sticky;top:0;z-index:20;background:#7a0d0d;color:#fff;border:3px solid #ff5c5c;
   border-radius:12px;padding:14px 16px;font-size:20px;font-weight:800;margin-bottom:12px;text-align:center}
