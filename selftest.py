@@ -32485,6 +32485,17 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
                 got.append(time.perf_counter())
     lt = threading.Thread(target=listen, daemon=True)
     lt.start()
+    # The sender's own clock as well as the receiver's: in this one process
+    # the receiving thread can itself be woken late (a macOS CI runner did,
+    # 2026-10-03), which is not the flame link holding a frame back.
+    sent_at = []
+    real_send = link.send_frame
+
+    def timed_send():
+        sent_at.append(time.perf_counter())
+        return real_send()
+    link.send_frame = timed_send
+    marks = {}
     try:
         link.start()
         t0 = time.perf_counter()
@@ -32495,13 +32506,17 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
                       live=True)
             time.sleep(1 / 30)
         base = len(got)
+        sbase = len(sent_at)
+        marks["burst"] = time.perf_counter()
         # The show's end: the timecode stops, the conductor's intermission
         # burst runs, the flame cues are zeroed, and the next show's
         # timecode lands somewhere else entirely.
         cond.intermission("the scheduler", "")
         time.sleep(0.6)
+        marks["jump"] = time.perf_counter()
         st.update(tc="01:05:00:00")
         time.sleep(0.4)
+        marks["start"] = time.perf_counter()
         cond.show_starting("the scheduler", "")
         time.sleep(0.6)
     finally:
@@ -32510,10 +32525,20 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
         cond.close()
         rx.close()
         lt.join(2)
-    gaps = [(b - a) * 1000.0 for a, b in zip(got, got[1:])]
-    worst = max(gaps[base:] or [0.0])
-    print(f"  note: {len(got)} flame frames, worst gap {worst:.1f} ms "
-          f"through the burst ({max(gaps[:base] or [0.0]):.1f} ms before it)")
+    def worst_of(ts, start):
+        g = [((b - a) * 1000.0, a) for a, b in zip(ts, ts[1:])][start:]
+        return max(g or [(0.0, 0.0)])
+    worst_rx, at_rx = worst_of(got, base)
+    worst, at_tx = worst_of(sent_at, sbase)
+    before_rx = worst_of(got[:base + 1], 0)[0]
+
+    def when(t):
+        return ", ".join(f"{k} {(t - v) * 1000:+.0f} ms" for k, v in
+                         marks.items())
+    where = (f"sender worst {worst:.1f} ms ({when(at_tx)}); receiver worst "
+             f"{worst_rx:.1f} ms ({when(at_rx)}), {before_rx:.1f} ms before "
+             f"the burst; {len(sent_at)} sent, {len(got)} received")
+    print(f"  note: {where}")
     check("ltcplay-flame-link" not in journal_threads,
           f"no journal line is ever written on the flame link's sender "
           f"thread: {sorted(journal_threads)}")
@@ -32521,9 +32546,10 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
     check(any(n == "ltcplay-flame-journal" for n in journal_threads),
           f"the flame link's lines are written by its own journal thread: "
           f"{sorted(journal_threads)}")
-    check(len(got) > 40, f"the flame link kept sending: {len(got)} frames")
+    check(len(sent_at) > 40, f"the flame link kept sending: {where}")
     check(worst < 50.0, f"no gap of 50 ms or more between flame frames "
-                        f"through the burst (CONTRACT.md): {worst:.1f} ms")
+                        f"through the burst, by the sender's own clock "
+                        f"(CONTRACT.md): {where}")
     print("  ok")
 
 
