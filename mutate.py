@@ -6782,6 +6782,27 @@ def build():
 
 
 
+
+ ('fix round 1: an Abort with no operator chosen is refused',
+  'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))',
+  'ALWAYS_TAKEN = frozenset((HOLD_ON,))'),
+
+ ('fix round 1: a Hold with no operator chosen is refused',
+  'ltcplay/schedule.py',
+  'ALWAYS_TAKEN = frozenset((ABORT, HOLD_ON))',
+  'ALWAYS_TAKEN = frozenset((ABORT,))'),
+
+ ("fix round 1: the service refuses an Abort by a name not on the list",
+  'ltcplay/schedule_service.py',
+  '        if always and who.lower() not in names:',
+  '        if False and who.lower() not in names:'),
+
+ ('fix round 1: an Abort with no operator chosen is journaled as the operator',
+  'ltcplay/schedule.py',
+  '    return f"{what} pressed{_screen(ev)} with no operator chosen"',
+  '    return f"The operator pressed {what}{_screen(ev)}"'),
+
 ]
 
 
