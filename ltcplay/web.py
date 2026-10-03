@@ -48,6 +48,51 @@ OPEN_GETS = ("/", "/index.html", "/remote", "/api/brand",
 OPEN_POSTS = ("/api/remote/login", "/api/remote/logout")
 
 
+def normalize_bind(bind):
+    """The address bind() will really use, written plainly: "127.0.0.1"
+    for any loopback spelling, "0.0.0.0" (refused by serve) for any
+    every-interface spelling, else the address itself. A name that does
+    not resolve is left as it is, for bind() to refuse."""
+    import ipaddress
+    import socket as _socket
+    text = str(bind if bind is not None else "").strip()
+    if text in ("", "::", "0.0.0.0"):
+        return "0.0.0.0" if text != "::" else "::"
+    try:
+        # inet_aton reads every IPv4 spelling the operating system does
+        # ("0", "0.0", "000.000.000.000"); getaddrinfo the rest.
+        addrs = {ipaddress.ip_address(_socket.inet_ntoa(
+            _socket.inet_aton(text)))}
+    except (OSError, ValueError):
+        try:
+            infos = _socket.getaddrinfo(text.strip("[]"), None,
+                                        type=_socket.SOCK_STREAM)
+        except (OSError, UnicodeError):
+            return text
+        addrs = {ipaddress.ip_address(i[4][0].split("%")[0])
+                 for i in infos}
+    if any(a.is_unspecified for a in addrs):
+        return "0.0.0.0"
+    if addrs and all(a.is_loopback for a in addrs):
+        return "127.0.0.1"
+    if len(addrs) == 1:
+        return str(next(iter(addrs)))
+    return text
+
+
+def network_may_reach(route):
+    """Fix round 1 of #39, F1: what a request from the network may reach
+    at all, signed in or not. The remote page and its own routes, the
+    logo, and nothing else: the operator page's API (Stop, Start, GO, the
+    input, the show folder) and the scheduler's routes (choosing the
+    operator, the Stream Deck's journal lines) are the machine's own, and
+    a network session reaching them bypassed every rule /api/remote/*
+    keeps (who pressed, no scrubbing during a show). Loopback is unchanged."""
+    return (route in ("/", "/index.html", "/remote", "/api/brand")
+            or route.startswith("/brand/")
+            or route == "/api/remote" or route.startswith("/api/remote/"))
+
+
 # Bumped whenever the page needs something this module did not have. The
 # page carries the same number; a mismatch means one of the two is stale.
 API = 7
@@ -703,12 +748,29 @@ class Handler(BaseHTTPRequestHandler):
                                   bind, port):
             return "This page has to be opened by the show machine's address."
         if post:
+            # Fix round 1 of #39, F2: a sandboxed iframe or a data: page on
+            # this machine sends Origin "null", and a text/plain or bodiless
+            # POST is a "simple" request a browser sends cross-site with no
+            # preflight. So: Origin null is cross-site; any Origin must be
+            # this host; a browser's Sec-Fetch-Site must say same-origin
+            # (or none: typed by the user); and the body must be declared
+            # JSON, which no cross-site page can send without a preflight
+            # this server never answers.
             origin = self.headers.get("Origin")
-            if origin and origin != "null":
+            if origin is not None:
                 o = urllib.parse.urlparse(origin)
-                if o.netloc.lower() != str(self.headers.get("Host") or
-                                           "").lower():
+                if origin.strip().lower() == "null" or \
+                        o.netloc.lower() != str(self.headers.get("Host") or
+                                                "").lower():
                     return "A press from another site's page was refused."
+            sfs = self.headers.get("Sec-Fetch-Site")
+            if sfs is not None and sfs.strip().lower() not in ("same-origin",
+                                                               "none"):
+                return "A press from another site's page was refused."
+            ctype = str(self.headers.get("Content-Type") or "")
+            if ctype.split(";")[0].strip().lower() != "application/json":
+                return ("A press has to be sent as JSON by the ltcplay page. "
+                        "Nothing was done.")
         return None
 
     def _send(self, code, body, ctype="application/json", headers=None):
@@ -769,6 +831,10 @@ class Handler(BaseHTTPRequestHandler):
         why = self._refusal()
         if why:
             return self._send(403, {"error": why})
+        if not self._local() and not network_may_reach(route):
+            return self._send(403, {"error": "Not from the network. Only "
+                                             "the remote page's own routes "
+                                             "answer here."})
         authorised = self._authorised()
         if not authorised and not (route in OPEN_GETS
                                    or route.startswith("/brand/")):
@@ -834,6 +900,10 @@ class Handler(BaseHTTPRequestHandler):
         why = self._refusal(post=True)
         if why:
             return self._send(403, {"error": why})
+        if not self._local() and not network_may_reach(route):
+            return self._send(403, {"error": "Not from the network. Only "
+                                             "the remote page's own routes "
+                                             "answer here."})
         if not self._authorised() and route not in OPEN_POSTS:
             return self._send(401, {"error": "Sign in with your operator "
                                              "PIN first."})
@@ -1018,6 +1088,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                        action="show length check",
                                        outcome="warning")
         httpd_schedule = schedule
+    # Fix round 1 of #39, F4: "0", "0.0" and "000.000.000.000" are all
+    # 0.0.0.0 to the operating system. Resolve the address the way bind()
+    # will, and refuse it if ANY form of it means every interface.
+    bind = normalize_bind(bind)
     on_network = bind not in LOOPBACK
     if on_network and bind in WILDCARD:
         # Every interface means the venue's network and anything else this
