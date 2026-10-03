@@ -9460,7 +9460,8 @@ def _entry_effects_hold(S, before, o, label):
               f"{label}: a resumed show carries on, music back up, lasers "
               f"back last; got {kinds}")
         return
-    if st in ("STANDBY", "HOLD") and "STOP_CONDUCTOR" in kinds \
+    if st in ("STANDBY", "HOLD") and (
+            "STOP_CONDUCTOR" in kinds or getattr(o.machine, "dark", False)) \
             and not S.INTERMISSION_AFTER_A_STOPPED_SHOW:
         check("INTERMISSION" not in kinds,
               f"{label}: the rig stays dark after a stopped show")
@@ -9616,19 +9617,30 @@ def test_schedule_expands_the_season():
           f"the day before the season has no shows, got {off}")
 
     # Both Denver offset changes, in 2026 and 2027, tested directly even
-    # though the season falls between them. An overnight window across 2 AM
-    # shows the arithmetic is in real time: the spring night is an hour
-    # shorter and the autumn night an hour longer.
-    spring = ["00:30", "00:50", "01:10", "01:30", "01:50", "03:10", "03:30",
-              "03:50"]
-    autumn = ["00:30", "00:50", "01:10", "01:30", "01:50", "01:10", "01:30",
-              "01:50", "02:10", "02:30", "02:50", "03:10", "03:30", "03:50"]
-    changes = {"2026-03-08": (spring, [-7] * 5 + [-6] * 3),
-               "2026-11-01": (autumn, [-6] * 5 + [-7] * 9),
-               "2027-03-14": (spring, [-7] * 5 + [-6] * 3),
-               "2027-11-07": (autumn, [-6] * 5 + [-7] * 9)}
-    overnight = {"first_start": "00:30", "interval_min": 20,
-                 "last_end": "04:00"}
+    # though the season falls between them. A night may not start before
+    # the 2 AM nightly reset (Jeff, 2026-10-03), so the earliest night,
+    # 02:00 to 06:00, is the one that meets the change: on the spring night
+    # 02:00 does not exist and the first show is at 03:00 MDT, an hour
+    # shorter in real time; on the autumn night the repeated hour (01:00 to
+    # 02:00) is before it, so it is a plain four hours on MST.
+    early = {"first_start": "01:59", "interval_min": 20, "last_end": "04:00"}
+    try:
+        S.parse_rule(_sched_doc(exceptions={"2026-12-05": early}))
+        check(False, "a night starting at 01:59, before the 2 AM nightly "
+                     "reset, must be refused")
+    except S.RuleError as e:
+        check("2 AM nightly reset" in str(e),
+              f"the refusal names the 2 AM nightly reset: {e}")
+    spring = ["03:00", "03:20", "03:40", "04:00", "04:20", "04:40", "05:00",
+              "05:20", "05:40"]
+    autumn = ["02:00", "02:20", "02:40", "03:00", "03:20", "03:40", "04:00",
+              "04:20", "04:40", "05:00", "05:20", "05:40"]
+    changes = {"2026-03-08": (spring, [-6] * 9),
+               "2026-11-01": (autumn, [-7] * 12),
+               "2027-03-14": (spring, [-6] * 9),
+               "2027-11-07": (autumn, [-7] * 12)}
+    overnight = {"first_start": "02:00", "interval_min": 20,
+                 "last_end": "06:00"}
     year = S.parse_rule(_sched_doc(
         season={"first_date": "2026-01-01", "last_date": "2027-12-31"},
         weekly={w: {"first_start": "17:30", "interval_min": 20,
@@ -9636,8 +9648,8 @@ def test_schedule_expands_the_season():
         exceptions=dict({k: overnight for k in changes},
                         **{"2026-06-01": overnight})))
     plain = S.expand(year, date(2026, 6, 1))
-    check(len(plain.starts) == 11, f"an ordinary 00:30 to 04:00 night holds "
-                                   f"11 shows, got {len(plain.starts)}")
+    check(len(plain.starts) == 12, f"an ordinary 02:00 to 06:00 night holds "
+                                   f"12 shows, got {len(plain.starts)}")
     for ds, (walls, offs) in changes.items():
         p = S.expand(year, date.fromisoformat(ds))
         got = [S.clock(s) for s in p.starts]
@@ -9726,8 +9738,10 @@ def test_schedule_late_rule():
         start = _den(S, 18, 0)
         waiting = _Night(S, rule)
         waiting.boot(start - timedelta(seconds=120))
-        check(waiting.m.state == S.IDLE, "two minutes before the first show "
-                                         "the scheduler waits in IDLE")
+        check(waiting.m.state == S.STANDBY, "two minutes before the first "
+                                            "show the intermission loop is "
+                                            "already running (within the "
+                                            "30 minute preshow lead)")
         idle = waiting.m
         fired, fired_boot = [], []
         for off in range(-60, 601):
@@ -10244,7 +10258,9 @@ def test_schedule_hold_between_shows_delays():
           f"MISSED: {n.m.slot(4).reason!r}")
     n.audit("two delayed")
 
-    # A delayed show keeps the night open, until midnight.
+    # A delayed show keeps the night open past midnight: it is never
+    # auto-missed or auto-closed, only Start now or Close for the night
+    # ends it (Jeff, 2026-10-01).
     n = _Night(S, rule)
     n.boot(_den(S, 21, 30))
     n.op(S.HOLD_ON, _den(S, 21, 35))
@@ -10254,10 +10270,16 @@ def test_schedule_hold_between_shows_delays():
     check(n.m.state == S.STANDBY and n.m.slot(12).status == S.DELAYED,
           "the last show delayed keeps the night open for Start now")
     n.tick(_den(S, 0, 0, 0, d=(2026, 11, 15)))
-    check(n.m.slot(12).status == S.MISSED
-          and "midnight" in n.m.slot(12).reason and n.m.state == S.CLOSING,
-          f"at midnight it is MISSED and the night closes: "
-          f"{n.m.slot(12).reason!r} {n.m.state}")
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          f"midnight does not miss it or close the night: "
+          f"{n.m.slot(12).status} {n.m.state}")
+    n.tick(_den(S, 9, 0, 0, d=(2026, 11, 15)))
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          "it stays open however long it takes, not just past midnight")
+    o = n.op(S.START_NOW, _den(S, 9, 5, 0, d=(2026, 11, 15)))
+    check(_fired(o, S) == [12] and
+          n.m.slot(12).reason == "DELAYED START (operator hold)",
+          f"Start now still starts it, long after midnight: {o.refused}")
     # End night skips a delayed show too; Skip next skips it first.
     n = _Night(S, rule)
     n.boot(_den(S, 18, 5))
@@ -10275,32 +10297,40 @@ def test_schedule_hold_between_shows_delays():
 
 
 def test_schedule_start_now_in_every_state():
-    section("scheduler: Start now anywhere but a running or paused show")
+    section("scheduler: Start now anywhere but a running or paused show, "
+            "and it always runs an EXTRA show unless a delayed one waits "
+            "(Jeff, 2026-10-02)")
     S = _sched()
     if S is None:
         return
     fx = _matrix_fixtures(S)
-    want = {S.IDLE: ("STARTED EARLY (operator)", 1),
-            S.STANDBY: ("STARTED EARLY (operator)", 2),
-            S.HOLD: ("STARTED EARLY (operator)", 1),
-            S.CLOSING: ("EXTRA SHOW (operator)", 16),
-            S.OFF: ("EXTRA SHOW (operator)", 16),
-            "HOLD+DELAYED": ("DELAYED START (operator hold)", 1),
-            "STANDBY+DELAYED": ("DELAYED START (operator hold)", 1)}
+    extra = "EXTRA SHOW (operator)"
+    want = {S.IDLE: extra, S.STANDBY: extra, S.HOLD: extra,
+            S.CLOSING: extra, S.OFF: extra,
+            "HOLD+DELAYED": "DELAYED START (operator hold)",
+            "STANDBY+DELAYED": "DELAYED START (operator hold)"}
+    check(not hasattr(S, "STARTED_EARLY"),
+          "the 2026-09-23 STARTED_EARLY reason is gone")
     for label, (m, now) in fx.items():
         o = S.step(m, S.Event(S.START_NOW, "operator", who="Jeff",
                               screen="rack screen"), now)
         if label in want:
-            reason, show = want[label]
+            reason = want[label]
+            show = (max(s.n for s in m.slots) + 1 if reason == extra
+                    else m.delayed().n)
             check(o.accepted and _fired(o, S) == [show]
                   and o.machine.slot(show).reason == reason
                   and o.machine.slot(show).fired_at == now,
                   f"Start now in {label} starts show {show} now as "
                   f"{reason}: {o.refused or o.machine.slot(show).reason}")
-            if reason == "STARTED EARLY (operator)":
-                check(o.machine.next_slot() is None or
-                      o.machine.next_slot().n != show,
-                      "starting early uses up that slot")
+            if reason == extra:
+                check(o.machine.slot(show).origin == "operator" and
+                      [s.n for s in o.machine.pending()] ==
+                      [s.n for s in m.pending()] and
+                      all(o.machine.slot(s.n).start == s.start
+                          for s in m.pending()),
+                      f"Start now in {label} leaves every scheduled show "
+                      f"where it was")
             check(not o.machine.held_from and o.machine.state == S.SHOW,
                   "Start now ends a Hold")
         else:
@@ -10312,22 +10342,86 @@ def test_schedule_start_now_in_every_state():
     n.tick(_den(S, 18, 0))
     n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
     o = n.op(S.START_NOW, _den(S, 18, 2))
-    check(o.accepted and _fired(o, S) == [2]
-          and n.m.slot(2).reason == "STARTED EARLY (operator)",
-          f"Start now works the moment after an Abort: {o.refused}")
+    check(o.accepted and _fired(o, S) == [13]
+          and n.m.slot(13).reason == extra
+          and n.m.slot(2).status == S.PENDING,
+          f"Start now works the moment after an Abort, as an extra show, "
+          f"and show 2 stays: {o.refused}")
     n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 9, 20))
     o = n.op(S.START_NOW, _den(S, 18, 9, 21))
-    check(o.accepted and _fired(o, S) == [3],
+    check(o.accepted and _fired(o, S) == [14],
           f"Start now works 1 s after a show ended, inside the guard: "
           f"{o.refused}")
-    # Every show used up: the next Start now is an extra show.
-    n = _Night(S, rule)
-    n.boot(_den(S, 21, 50))
-    o = n.op(S.START_NOW, _den(S, 21, 55))
-    check(n.m.slot(13) is not None and n.m.slot(13).origin == "operator"
-          and n.m.slot(13).reason == "EXTRA SHOW (operator)",
-          "with no show left, Start now runs an extra one")
     n.audit("start now")
+    # Latched after an Abort (the service sets this from the show
+    # conductor): Start now is refused until Reset.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    o = S.step(n.m, S.Event(S.START_NOW, "operator", who="Jeff",
+                            screen="rack screen", latched=True),
+               _den(S, 17, 51))
+    check(not o.accepted and "Reset" in o.refused,
+          f"Start now while aborted and not Reset is refused: {o.refused}")
+    print("  ok")
+
+
+def test_schedule_extra_show_and_the_next_slot():
+    section("scheduler: an extra show (Start now) and the next scheduled "
+            "show: it fires normally if it can, and if the extra show is "
+            "still running or in its guard when its time passes, it is "
+            "DELAYED and waits for Start now, the same as after a Hold")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S, grace=5)
+    # Room before the next slot: it fires on time.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 10))
+    x = n.m.running
+    check(n.m.slot(x).origin == "operator", "setup: an extra show runs")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 17, 20))
+    n.tick(_den(S, 18, 20))
+    check(n.m.state == S.SHOW and n.m.running == 2 and
+          n.m.slot(2).reason == "FIRED",
+          f"the 18:20 show still fires on schedule: {n.m.state} "
+          f"{n.m.running}")
+    # The extra show still running when 18:20 comes due.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 15))
+    x = n.m.running
+    n.tick(_den(S, 18, 20))
+    check(n.m.slot(2).status == S.PENDING and n.m.running == x,
+          "inside the grace the 18:20 show neither starts mid-show nor is "
+          "given up")
+    n.tick(_den(S, 18, 20, 6))
+    s2 = n.m.slot(2)
+    check(s2.status == S.DELAYED and "extra show" in s2.reason,
+          f"past the grace it is DELAYED, not MISSED: {s2.status} "
+          f"{s2.reason}")
+    check(n.m.state == S.SHOW and n.m.running == x,
+          "and the extra show carries on")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 22, 20))
+    n.tick(_den(S, 18, 30))
+    check(n.m.state == S.STANDBY and n.m.slot(2).status == S.DELAYED,
+          "after the extra show the delayed show waits; it does not start "
+          "by itself")
+    o = n.op(S.START_NOW, _den(S, 18, 31))
+    check(o.accepted and n.m.running == 2 and
+          n.m.slot(2).reason == "DELAYED START (operator hold)",
+          f"Start now then starts the delayed show, not another extra: "
+          f"{o.refused}")
+    # The extra show ended, but its guard still counts at 18:20.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 11))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 19, 0))
+    n.tick(_den(S, 18, 20, 6))
+    check(n.m.slot(2).status == S.DELAYED,
+          f"inside the extra show's guard the 18:20 show is DELAYED too: "
+          f"{n.m.slot(2).status} {n.m.slot(2).reason}")
+    n.audit("extra show")
     print("  ok")
 
 
@@ -10347,9 +10441,10 @@ def test_schedule_abort_end_night_and_operator_actions():
     check(n.m.state == S.SHOW and n.m.running == 3, "18:40 is show 3")
     panel = {a["id"]: a for a in S.actions_for(n.m)}
     check(panel["abort"]["allowed"] and "show 3" in panel["abort"]["confirm"]
-          and "does not disarm" in panel["abort"]["confirm"],
-          f"the Abort confirm names the show and says it does not disarm: "
-          f"{panel['abort']}")
+          and "every flame group is disarmed" in panel["abort"]["confirm"]
+          and "not disarm" not in panel["abort"]["confirm"],
+          f"the Abort confirm names the show and says every flame group is "
+          f"disarmed (Jeff, 2026-09-27): {panel['abort']}")
     check(panel["end_night"]["confirm"] and not panel["end_night"]["allowed"],
           "End night confirms, and is not offered during a show")
     check(all(panel[k]["confirm"] is None for k in panel
@@ -11224,14 +11319,14 @@ def test_schedule_restart_keeps_tonight():
     c = _svc(S, work, now)
     c.state_dir = blocker
     c.start(thread=False)
-    check(c.machine.state == S.IDLE and "could not be saved" in
+    check(c.machine.state == S.STANDBY and "could not be saved" in
           (c.persist_error or ""),
           f"a failed save is a sentence and the night goes on: "
           f"{c.persist_error!r}")
     check(c.state_view()["save_error"], "the state says the save failed")
 
-    # A running night is never replaced at midnight; the new day starts
-    # once it has finished.
+    # A running night is never replaced at midnight; the new night starts
+    # at the 2 AM nightly reset (Jeff, 2026-10-03), once the show is over.
     work = tempfile.mkdtemp()
     now = [_den(S, 23, 58)]
     a = _svc(S, work, now).start(thread=False)
@@ -11245,8 +11340,13 @@ def test_schedule_restart_keeps_tonight():
     now[0] = _den(S, 0, 5, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over, and Saturday's night runs on until the 2 AM "
+          f"reset, got {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"once the show is over the new day starts, got {a.machine.date}")
+          f"at the 2 AM reset the new night starts, got {a.machine.date}")
     old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work),
                          encoding="utf-8"))
     check([x["status"] for x in old["slots"]][-1] == S.DONE,
@@ -11317,8 +11417,9 @@ def test_schedule_clock_check_never_delays_a_show():
     svc.TICK_S = 0.02
     try:
         svc.start()
-        check(svc.machine is not None and svc.machine.state == S.IDLE,
-              "the first tick happens at start, before the clock check")
+        check(svc.machine is not None and svc.machine.state == S.STANDBY,
+              "the first tick happens at start, before the clock check "
+              "(within the preshow lead, so the intermission is running)")
         check(wait_for(lambda: svc.machine.state == S.SHOW, timeout=2.5),
               f"18:00 must start at 18:00 while the clock check is still "
               f"waiting, got {svc.machine.state} {svc.machine.slot(1).reason!r}")
@@ -12112,8 +12213,13 @@ def test_schedule_a_paused_show_is_never_overlapped():
     now[0] = _den(S, 0, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over at 00:30, and Saturday's night runs on until "
+          f"the 2 AM reset: {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"the new day starts once the show is over: {a.machine.date}")
+          f"the new night starts at the 2 AM reset: {a.machine.date}")
     print("  ok")
 
 
@@ -20322,10 +20428,38 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
+    # By now the night's last show, 21:40, has gone by during the Hold and
+    # is DELAYED. A delayed show keeps last night open across midnight
+    # (Jeff, 2026-10-01): it is not swept away just because the date
+    # changed, so neither pruning nor the new night's file happen yet.
+    check(svc.machine.delayed() is not None and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.state == S.HOLD,
+          f"a delayed show keeps last night open past midnight, got "
+          f"{svc.machine.date} {svc.machine.state} "
+          f"{svc.machine.delayed()}")
+    check(there("2026-07-17") and not there("2026-11-15"),
+          "so pruning's floor does not move another day and the new "
+          "night's file does not appear while a delayed show still waits")
+    # Once the operator actually closes the delayed night, the new night
+    # begins at the 2 AM nightly reset (Jeff, 2026-10-03), and pruning and
+    # the rollover happen then.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF, "Close for the night finally closes "
+                                      "the delayed night")
+    now[0] = _den(S, 0, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14" and
+          not there("2026-11-15"),
+          "a closed night still runs until the 2 AM reset")
+    now[0] = _den(S, 2, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-15",
+          "and now the new night starts")
     check(not there("2026-07-17") and there("2026-07-18"),
-          "and prunes again when the next night begins")
+          "and prunes again once the delayed night actually closes")
     check(there("2026-11-15"),
-          "after midnight the lines go to the new night's file")
+          "and the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
     # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
@@ -20347,9 +20481,10 @@ def test_journal_rotation_and_pruning_across_dst():
           "and after 10 minutes prunes, keeping the newest 120 nights even "
           "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
-    check(os.path.exists(sp14) and "written at midnight" in
+    check(os.path.exists(sp14) and "Close for the night" in
           open(sp14, encoding="utf-8").read(),
-          "and the night that never closed gets its summary at midnight")
+          "and the delayed night's summary, once it is actually closed, "
+          "says who closed it")
     print("  ok")
 
 
@@ -21764,21 +21899,28 @@ def test_journal_a_show_past_midnight_keeps_its_night():
           "nothing went to the calendar day's file while the show ran")
     now[0] = _den(S, 0, 4, 30, d=(2026, 11, 15))
     svc.tick()                                  # the show ends
-    now[0] = _den(S, 0, 4, 31, d=(2026, 11, 15))
+    now[0] = _den(S, 2, 0, 1, d=(2026, 11, 15))
     svc.tick()
     check(os.path.exists(os.path.join(nights, J.machine_name("2026-11-15"))),
-          "once the show is over, the new night gets its own file")
+          "once the show is over, the new night (from the 2 AM reset) gets "
+          "its own file")
     print("  ok")
 
 
-def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
-    section("scheduler: the hold epoch bumps when midnight sweeps away a "
-            "night left on Hold, not only when an operator's own Hold or "
-            "Resume crosses that line during the night (merge with #14, "
-            "2026-09-26: _ensure_night's own end-of-night write_summary "
-            "touches the same crossing hold_for_announcement's epoch "
-            "depends on, and that crossing happens by direct assignment, "
-            "not through _apply's own before/after check)")
+def test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight():
+    section("scheduler: a delayed show keeps a held night open across "
+            "midnight instead of letting it be swept away (Jeff, "
+            "2026-10-01), and the hold epoch does not move just because "
+            "the calendar date did (this test used to be named for the "
+            "opposite: midnight sweeping a held night away. Before this "
+            "decision a Hold spanning a show's time, carried past "
+            "midnight, was always swept; now a delayed show always "
+            "keeps it from being swept, so that case can no longer "
+            "happen -- the epoch must still only move on a real "
+            "Hold/Resume crossing, never on the date alone. merge with "
+            "#14, 2026-09-26: _ensure_night's own end-of-night "
+            "write_summary touches the same crossing "
+            "hold_for_announcement's epoch depends on)")
     S = _sched()
     if S is None:
         return
@@ -21794,14 +21936,25 @@ def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
           f"setup: the night is on Hold: {svc.machine.state} {out.refused}")
     epoch_before = svc.hold_epoch
     check(epoch_before > 0, "setup: Hold already bumped the epoch once")
-    now[0] = _den(S, 3, 0, d=(2026, 11, 15))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
     svc.tick()
-    check(svc.machine.state != S.HOLD,
-          f"setup: midnight replaced the held night: {svc.machine.state}")
-    check(svc.hold_epoch != epoch_before,
-          f"the epoch must bump on this crossing too: an announcement's "
-          f"Hold claim from last night must never still look current after "
-          f"midnight swept the night it was claimed on. Stayed at "
+    check(svc.machine.state == S.HOLD and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.delayed() is not None,
+          f"a delayed show keeps the held night open, on its own date, "
+          f"past midnight (until the 2 AM reset): {svc.machine.date} "
+          f"{svc.machine.state} {svc.machine.delayed()}")
+    check(svc.hold_epoch == epoch_before,
+          f"nothing crossed a Hold/Resume boundary, so an announcement's "
+          f"earlier Hold claim is still current: the epoch must not move "
+          f"just because the calendar date did. Was {epoch_before}, now "
+          f"{svc.hold_epoch}")
+    # Actually closing the delayed night IS a Hold/Resume crossing (HOLD to
+    # CLOSING), so that still bumps the epoch, through _apply's ordinary
+    # before/after check -- no special case needed for it.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF and svc.hold_epoch != epoch_before,
+          f"closing the delayed night for real does bump the epoch: "
           f"{svc.hold_epoch}")
     print("  ok")
 
@@ -24446,6 +24599,49 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     print("  ok")
 
 
+def test_conductor_failed_start_disarms_without_latch():
+    section("conductor: a failed start goes dark and disarms every flame "
+            "group at once, like an Abort, but does not latch; nothing "
+            "needs to be playing (Jeff, 2026-10-03)")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    rig.cue = False
+    r = c.failed_start("the scheduler", "")
+    calls = [x for x in rig.calls if x[0] == "flames_disarm_all"]
+    check(r.ok and rig.names()[:2] == ["flames_zero", "flames_disarm_all"]
+          and calls and calls[0][1] == (C.Conductor.FAILED_START,),
+          f"the flame cues are zeroed and every group disarmed before the "
+          f"call returns, because the show failed to start: {r} "
+          f"{rig.names()} {calls}")
+    check("armed again by hand" in r.sentence and "failed to start" in
+          r.sentence, f"and its answer says why and what to do: {r.sentence}")
+    c.run_pending()
+    a = c.snapshot()["applied"]
+    check(not c.latched and c.snapshot()["look"] == C.STOPPED_DARK and
+          a["lasers"] == "black" and a["pixels"] == "black" and
+          a["music"] == "stopped" and rig.count("flames_disarm_all") == 1,
+          f"the rig is dark, the disarm sent once, nothing latched: "
+          f"latched={c.latched} {a}")
+    check(any("failed start" in t and "disarm" in t and "failed to start"
+              in t for t, f in lines),
+          f"its own line says the flames were disarmed because the show "
+          f"failed to start: {lines[-2:]}")
+    rig.cue = True
+    check(c.show_starting("Andy", "rack screen").ok,
+          "no Reset is needed: the next show start is accepted")
+    # While aborted it changes nothing (the Abort already disarmed).
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    k = len(rig.calls)
+    r = c.failed_start("the scheduler", "")
+    check(r.ok and rig.names(k) == [] and c.latched,
+          f"a failed start while aborted sends nothing and keeps the latch: "
+          f"{rig.names(k)}")
+    print("  ok")
+
+
 def test_conductor_double_abort_is_idempotent():
     section("conductor: a second Abort does nothing, Reset waits for the "
             "fade, and Abort needs something playing")
@@ -25055,6 +25251,14 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
         c.run_pending()
         check(rig.count("flames_zero") == 2,
               f"{mode}: Abort cuts the flames again")
+    # A failed start's inline disarm fails: the executor sends it again.
+    c, rig, T, lines = _cond()
+    rig.fail = {"flames_disarm_all"}
+    c.failed_start("the scheduler", "")
+    rig.fail = set()
+    c.run_pending()
+    check(rig.count("flames_disarm_all") == 2,
+          "a failed start's failed disarm is sent again by its own effect")
     # Abort's inline disarm fails: the executor sends it again.
     c, rig, T, lines = _cond()
     _cond_live(c, rig)
@@ -28240,6 +28444,2219 @@ def _mm_values(socks):
     return out
 
 
+def _settle(svc, c=None):
+    """The Service's conductor calls all made (they run on their own
+    thread, off the scheduler's lock), then the conductor's own effects."""
+    check(svc.flush_conductor(5), "the show conductor's calls all ran")
+    if c is not None:
+        c.run_pending()
+
+
+def _confirm(S, svc):
+    return svc._apply(S.Event(S.SHOW_CONFIRMED, "madmapper"))
+
+
+def _two_nights(**over):
+    doc = _sched_doc(weekly={
+        "sat": {"first_start": "18:00", "interval_min": 20,
+                "last_end": "22:00"},
+        "sun": {"first_start": "18:00", "interval_min": 20,
+                "last_end": "22:00"}}, exceptions={})
+    doc.update(over)
+    return doc
+
+
+class _RecCond:
+    """A conductor that records every request, what tonight's file said at
+    that instant, and can raise, fail, return junk or be slow."""
+
+    def __init__(self, S, work=None):
+        self.S = S
+        self.work = work
+        self.calls = []
+        self.raise_on, self.fail_on, self.junk_on = set(), set(), set()
+        self.sleep_on = {}
+        self.block_on = {}
+        self.exit_on = set()
+        self.latched = False
+
+    def _do(self, name, who, screen):
+        from datetime import date
+        from ltcplay import schedule_service as SV
+        disk = None
+        if self.work:
+            p = SV.tonight_path(date(2026, 11, 14), self.work)
+            if os.path.exists(p):
+                with open(p) as fh:
+                    d = json.load(fh)
+                disk = (d["state"], d["running"])
+        self.calls.append((name, who, screen, disk))
+        if name in self.block_on:
+            self.block_on[name].wait(10)
+        if name in self.sleep_on:
+            time.sleep(self.sleep_on[name])
+        if name in self.raise_on:
+            raise RuntimeError(f"{name} blew up")
+        if name in self.exit_on:
+            raise SystemExit(f"{name} asked to exit")
+        if name in self.junk_on:
+            return "fine"
+        C = _cond_mod()
+        if name in self.fail_on:
+            return C.failed(f"{name} could not be done")
+        return C.done(f"{name} done")
+
+    def names(self, since=0):
+        return [c[0] for c in self.calls[since:]]
+
+    def hold(self, who="", screen=""):
+        return self._do("hold", who, screen)
+
+    def resume(self, who="", screen=""):
+        return self._do("resume", who, screen)
+
+    def abort(self, who="", screen=""):
+        return self._do("abort", who, screen)
+
+    def show_starting(self, who="", screen=""):
+        return self._do("show_starting", who, screen)
+
+    def show_stopped(self, who="", screen=""):
+        return self._do("show_stopped", who, screen)
+
+    def failed_start(self, who="", screen=""):
+        return self._do("failed_start", who, screen)
+
+    def intermission(self, who="", screen=""):
+        return self._do("intermission", who, screen)
+
+    def reset(self, who="", screen=""):
+        return self._do("reset", who, screen)
+
+
+def test_schedule_drives_the_show_conductor():
+    section("scheduler: Hold, Resume, Abort, a confirmed show and every way "
+            "out of a show reach the show conductor; what it does not "
+            "perform is still journaled as not performed")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY,
+          f"setup: within the preshow lead, the intermission is already "
+          f"running: {svc.machine.state}")
+    check(c.snapshot()["look"] == "BETWEEN",
+          f"leaving the show (the INTERMISSION bundle) reached the conductor "
+          f"as its BETWEEN look: {c.snapshot()}")
+    sent = [r for r in svc.journal if r.get("action") == "conductor"
+            and r.get("outcome") == "sent"]
+    rows = [r for r in svc.journal if r.get("action") == "INTERMISSION"]
+    check(sent and rows and "Not performed, dry run" in rows[0]["text"],
+          f"the journal says the conductor was told the show was left, AND "
+          f"that the intermission timeline itself was not performed (the "
+          f"conductor has no such thing): {sent[:1]} {rows[:1]}")
+
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW, "show 1 starts on schedule")
+    check(c.snapshot()["look"] == "BETWEEN",
+          f"START_SHOW alone does not bring the rig up: the conductor only "
+          f"does that for a show cue that is playing: {c.snapshot()['look']}")
+    rows = [r for r in svc.journal if r.get("action") == "START_SHOW"]
+    check(rows and "Not performed, dry run" in rows[-1]["text"],
+          f"START_SHOW is journaled as not performed, because it was not: "
+          f"{rows[-1:]}")
+    now[0] = _den(S, 18, 0, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING" and not svc.machine.fault,
+          f"once the show is confirmed running (SHOW_CONFIRMED) the "
+          f"conductor brings the rig up: {c.snapshot()} {svc.machine.faults}")
+
+    now[0] = _den(S, 18, 1)
+    out = svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.PAUSED and
+          c.snapshot()["look"] == "HELD",
+          f"Hold reached the conductor as a Hold: {c.snapshot()}")
+    now[0] = _den(S, 18, 2)
+    out = svc._apply(_op(S, S.RESUME))
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.SHOW and
+          c.snapshot()["look"] == "PLAYING",
+          f"Resume reached the conductor as a Resume: {c.snapshot()}")
+
+    now[0] = _den(S, 18, 3)
+    out = svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(out.accepted and c.latched and c.snapshot()["look"] == "ABORTED"
+          and rig.count("flames_disarm_all") == 1,
+          f"Abort reached the conductor as an Abort, disarm included: "
+          f"{c.snapshot()}")
+    said = [r["text"] for r in svc.journal if r.get("action") == S.ABORT]
+    check(said and "nothing was disarmed" not in said[-1].lower() and
+          "disarm to every flame group" in said[-1],
+          f"the Abort line says the conductor disarms, not that nothing was "
+          f"disarmed (Jeff, 2026-09-27): {said[-1:]}")
+    done_rows = [r for r in svc.journal if r.get("action") == "conductor"
+                 and r.get("outcome") == "done" and "Abort" in r["text"]]
+    check(done_rows and "disarm sent" in done_rows[-1]["text"],
+          f"and the conductor's own line says what it sent: {done_rows[-1:]}")
+
+    # Close for the night tells the conductor the show is over; closing's
+    # pixel fade and blackout have no conductor method and stay "not
+    # performed".
+    svc.reset_conductor("Andy", "Rack screen")
+    _settle(svc, c)
+    now[0] = _den(S, 18, 5)
+    k = len(rig.calls)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    _settle(svc, c)
+    snap = c.snapshot()
+    check(svc.machine.state == S.OFF and snap["look"] == "BETWEEN"
+          and snap["applied"]["lasers"] == "black"
+          and snap["applied"]["flames"] == "zero",
+          f"Close for the night takes the conductor out of the show: "
+          f"{snap} {rig.names(k)}")
+    rows = [r for r in svc.journal if r.get("action") == "BLACKOUT"]
+    check(rows and "Not performed, dry run" in rows[-1]["text"],
+          f"closing's own blackout is still only journaled: {rows[-1:]}")
+
+    # The LAST show of the night ending tells it too (it used to stay
+    # PLAYING, lasers lit and flame cues live, after the night closed).
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING", "setup: the last show plays")
+    now[0] = _den(S, 21, 47, 21)
+    svc.tick()
+    _settle(svc, c)
+    snap = c.snapshot()
+    check(svc.machine.state == S.OFF and snap["look"] == "BETWEEN" and
+          snap["applied"]["lasers"] == "black" and
+          snap["applied"]["flames"] == "zero",
+          f"after the last show ends the conductor is out of the show, "
+          f"lasers dark and flame cues zero: {svc.machine.state} {snap}")
+
+    # Without a conductor attached nothing changes from before: every
+    # effect is only journaled as a dry run, and nothing is sent.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 17, 55)]
+    plain = _svc(S, work2, now2)
+    plain.tick()
+    rows = [r for r in plain.journal if r.get("action") == "INTERMISSION"]
+    check(rows and "Not performed, dry run" in rows[0]["text"] and
+          not [r for r in plain.journal if r.get("action") == "conductor"],
+          f"with no conductor attached, effects are only journaled, "
+          f"exactly as before: {rows}")
+    try:
+        plain.reset_conductor("Andy", "Rack screen")
+        check(False, "Reset with no conductor attached is refused")
+    except ValueError as e:
+        check("no show conductor" in str(e), f"Reset with no conductor is "
+                                             f"refused with a sentence: {e}")
+    print("  ok")
+
+
+def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
+    section("scheduler: the show conductor is asked only after tonight is "
+            "saved and journaled, in order, on its own thread, and anything "
+            "it raises or refuses is a fault")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    grace = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                       "interval_min": 20,
+                                       "last_end": "22:00"}},
+                       exceptions={}, late_grace_s=15)
+    # The save comes first (schedule.py's effects contract, rule 1).
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S, work)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 1)
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 1)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc)
+    got = {c[0]: c[3] for c in rec.calls}
+    check(got.get("show_starting") == (S.SHOW, 1) and
+          got.get("hold") == (S.PAUSED, 1),
+          f"each request ran with tonight already saved: {got}")
+
+    # A conductor that raises, fails or returns junk: the start is saved
+    # and journaled anyway, the failure is a fault, and a restart inside
+    # the grace never starts the same show twice.
+    for how in ("raise_on", "fail_on", "junk_on"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        rec = _RecCond(S, work)
+        getattr(rec, how).add("show_starting")
+        svc = _svc(S, work, now, rule=grace, conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        svc._safe_tick()
+        now[0] = _den(S, 18, 0, 1)
+        _confirm(S, svc)
+        _settle(svc)
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            disk = json.load(fh)
+        check(disk["state"] == S.SHOW and
+              any(r.get("action") == "fire" for r in svc.journal),
+              f"[{how}] the start was saved and journaled: {disk['state']}")
+        bad = [r for r in svc.journal if r.get("fault") and
+               "did not carry out Show start" in r["text"]]
+        check(svc.machine.fault and bad,
+              f"[{how}] the conductor's failure is a fault, on the page and "
+              f"in the journal: {svc.machine.faults}")
+        svc.stop()
+        now[0] = _den(S, 18, 0, 5)
+        again = _svc(S, work, now, rule=grace, conductor=_RecCond(S, work))
+        again.start(thread=False)
+        check(again.machine.slot(1).status == S.FAULT and
+              again.machine.shows_started == 1,
+              f"[{how}] restarted inside the grace, show 1 is not started "
+              f"twice: {again.machine.slot(1)}")
+        again.stop()
+
+    # A slow conductor no longer holds the scheduler: the press, a status
+    # poll and the next press all return at once, and the requests still
+    # reach it in the order they were made.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    rec.sleep_on = {"show_starting": 0.6, "hold": 0.6}
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0, 1)
+    t0 = time.perf_counter()
+    _confirm(S, svc)
+    a = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    svc.state_view()
+    b = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    svc._apply(_op(S, S.HOLD_ON))
+    svc._apply(_op(S, S.RESUME))
+    c_ = time.perf_counter() - t0
+    check(a < 0.2 and b < 0.2 and c_ < 0.2,
+          f"nothing waits for a 0.6 s conductor: confirm {a:.2f} s, a "
+          f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
+    _settle(svc)
+    check(rec.names() == ["intermission", "show_starting", "hold", "resume"],
+          f"and the conductor got them in order: {rec.names()}")
+    t0 = time.perf_counter()
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(time.perf_counter() - t0 < 0.2, "nor does an Abort")
+    _settle(svc)
+    check(rec.names()[-1:] == ["abort"], f"which follows them: {rec.names()}")
+    # An Abort still waiting in the queue already counts: nothing can
+    # start in the moment before the conductor has latched.
+    now[0] = _den(S, 18, 2)
+    svc.reset_conductor("Andy", "Rack screen")
+    svc._apply(_op(S, S.START_NOW))
+    rec.sleep_on = {"abort": 0.5}
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now straight after Abort, before the conductor has run "
+          f"it, is refused: {out.refused}")
+    _settle(svc)
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused and
+          _tonight_doc(work).get("abort_latched") is True,
+          f"and still once it has run, though this conductor never latched: "
+          f"the Abort latch is the scheduler's own, saved in tonight's file, "
+          f"and only Reset ends it: {out.refused}")
+    r = svc.reset_conductor("Andy", "Rack screen")
+    out = svc._apply(_op(S, S.START_NOW))
+    check(r["ok"] and out.accepted,
+          f"after Reset, Start now works: {r} {out.refused}")
+    print("  ok")
+
+
+def test_schedule_failed_start_disarms_without_latch():
+    section("scheduler: a failed start (no timecode) goes dark, journals "
+            "loudly, and disarms every flame group like an Abort, but does "
+            "not latch: Start now works at once, and each group has to be "
+            "armed again by hand (Jeff, 2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    k = len(rig.calls)
+    now[0] = _den(S, 18, 0, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    _settle(svc)
+    check(rig.names(k)[:2] == ["flames_zero", "flames_disarm_all"],
+          f"the flame cut and the disarm go out at once, as the conductor is "
+          f"asked, before its fade has even begun: {rig.names(k)}")
+    c.run_pending()
+    a = c.snapshot()["applied"]
+    disarms = [x for x in rig.calls[k:] if x[0] == "flames_disarm_all"]
+    check(len(disarms) == 1 and "failed to start" in str(disarms[0]) and
+          not c.latched and not svc._aborted() and
+          not svc.machine.abort_latched,
+          f"every flame group is disarmed once, because the show failed to "
+          f"start, and nothing latches: {disarms} latched={c.latched} "
+          f"{svc._aborted()} {svc.machine.abort_latched}")
+    check(rig.names(k).index("flames_disarm_all") <
+          rig.names(k).index("music_halt"),
+          f"the disarm goes out with the flame cut, before the fade: "
+          f"{rig.names(k)}")
+    check(a["flames"] == "zero" and a["lasers"] == "black" and
+          a["video"] in ("black", "stopped") and a["pixels"] == "black" and
+          a["music"] == "stopped" and "music_halt" in rig.names(k),
+          f"the rig is dark: lasers blanked, video and pixels down, music "
+          f"stopped, flame cues zero: {a}")
+    rows = [r for r in svc.journal if r.get("action") == S.SHOW_FAILED]
+    sent = [r for r in svc.journal if r.get("action") == "conductor" and
+            "Failed start" in r["text"]]
+    check(rows and rows[-1].get("fault") and
+          "disarmed because the show failed to start" in rows[-1]["text"] and
+          S.FAILED_START_NOT_DISARMED not in rows[-1]["text"] and
+          "armed again by hand" in rows[-1]["text"] and sent and
+          "every flame group is disarmed" in sent[0]["text"],
+          f"the journal says it loudly, and says the flames were disarmed "
+          f"because the show failed to start: {rows[-1:]} {sent[:1]}")
+    rig_before = len(rig.calls)
+    check(svc.machine.state == S.STANDBY and svc.machine.dark,
+          "the scheduler waits dark, no intermission")
+    now[0] = _den(S, 18, 1)
+    out = svc._apply(_op(S, S.START_NOW))
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(out.accepted and c.snapshot()["look"] == "PLAYING",
+          f"Start now works straight away, with no Reset, and the rig comes "
+          f"up: {out.refused} {c.snapshot()['look']}")
+    check(not [x for x in rig.names(rig_before) if "arm" in x],
+          f"and nothing ltcplay sends arms a flame group again: that is a "
+          f"hand on the deck, off then on: {rig.names(rig_before)}")
+    # Without a show conductor nothing is disarmed, and the line says so.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    bare = _svc(S, work, now)
+    bare.tick()
+    now[0] = _den(S, 18, 0)
+    bare.tick()
+    now[0] = _den(S, 18, 0, 5)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    rows = [r for r in bare.journal if r.get("action") == S.SHOW_FAILED]
+    check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"],
+          f"with no conductor the line says nothing was disarmed: "
+          f"{rows[-1:]}")
+    # The LAST show fails to start: the night closes at once, and closing
+    # must not cut the stop's fade short (video and pixels still go down).
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    _settle(svc, c)
+    now[0] = _den(S, 21, 40, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    now[0] = _den(S, 21, 40, 6)
+    svc.tick()
+    _settle(svc, c)
+    a = c.snapshot()["applied"]
+    check(svc.machine.state == S.OFF and a["video"] in ("black", "stopped")
+          and a["pixels"] == "black" and a["lasers"] == "black",
+          f"a failed last show still takes video and pixels down, though "
+          f"the night closes straight after: {svc.machine.state} {a}")
+    print("  ok")
+
+
+def test_schedule_abort_latch_misses_the_next_show_until_reset():
+    section("scheduler: after an Abort the rig stays dark until the operator "
+            "presses Reset; a show that comes due meanwhile is MISSED, Start "
+            "now is refused, and Reset is journaled with who and where")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(c.latched, "setup: the conductor latched")
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now is refused until Reset: {out.refused}")
+    now[0] = _den(S, 18, 20)
+    svc.tick()
+    _settle(svc, c)
+    s2 = svc.machine.slot(2)
+    said = [r["text"] for r in svc.journal if r.get("show") == 2]
+    check(svc.machine.state == S.STANDBY and s2.status == S.MISSED and
+          s2.reason == S.LATCHED_MISSED and
+          "aborted and has not been Reset" in said[-1],
+          f"the 18:20 show does not start: MISSED, saying why: "
+          f"{s2.status} {s2.reason} {said[-1:]}")
+    check(not [r for r in svc.journal if r.get("action") == "SHOW_FAILED"],
+          "and it is not a failed start")
+    try:
+        svc.reset_conductor("Nobody", "Rack screen")
+        check(False, "a Reset from someone not on the list is refused")
+    except ValueError as e:
+        check("operator list" in str(e), f"refused with a sentence: {e}")
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] and not c.latched, f"Reset clears the latch: {r}")
+    row = [x for x in svc.journal if x.get("action") == "reset"]
+    check(row and row[-1]["who"] == "Jeff" and
+          row[-1]["screen"] == "Rack screen" and row[-1]["outcome"] == "done",
+          f"Reset is journaled with who and which screen: {row[-1:]}")
+    r = svc.reset_conductor("Andy", "Rack screen")
+    _settle(svc, c)
+    row = [x for x in svc.journal if x.get("action") == "reset"]
+    check(not r["ok"] and row[-1]["outcome"] == "refused" and
+          not row[-1].get("fault"),
+          f"a second Reset says nothing is aborted, refused but not a "
+          f"fault: {r} {row[-1:]}")
+    now[0] = _den(S, 18, 40)
+    svc.tick()
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.running == 3 and c.snapshot()["look"] == "PLAYING",
+          f"after Reset the next show starts on schedule and the rig comes "
+          f"up: {svc.machine.state} {svc.machine.running} "
+          f"{c.snapshot()['look']}")
+    print("  ok")
+
+
+def test_schedule_restart_after_a_stopped_show_stays_dark():
+    section("scheduler: a restart after an Abort, a failed start or a cut "
+            "show stays dark until the operator acts or the next show "
+            "starts; it no longer brings the intermission loop back")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
+    I = S.INTERMISSION
+
+    def restart(m, at, latched=False):
+        doc = json.loads(json.dumps(S.machine_to_doc(m)))
+        back = S.machine_from_doc(doc, rule, m.date, at)
+        return doc, S.step(back, S.Event(S.BOOT_DONE, "system",
+                                         latched=latched), at)
+
+    cases = {}
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+    cases["after an Abort"] = n.m
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_FAILED, "madmapper", _den(S, 18, 0, 5), detail="no timecode")
+    cases["after a failed start"] = n.m
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    _, o = restart(n.m, _den(S, 18, 3))
+    cases["after a show cut by a restart"] = o.machine
+    for name, m in cases.items():
+        # After an Abort the service (with a conductor attached) tells the
+        # engine it is latched until Reset: restart, tick and Hold all carry
+        # it, and the next show must NOT start (Jeff's rule). A failed start
+        # and a cut show latch nothing (DEFAULT pending Jeff).
+        latched = name == "after an Abort"
+        check(m.dark and m.state == S.STANDBY, f"{name}: dark, in STANDBY")
+        doc, o = restart(m, _den(S, 18, 5), latched)
+        kinds = [e.kind for e in o.effects]
+        check(doc.get("dark") is True, f"{name}: tonight's file says dark")
+        check(o.machine.state == S.STANDBY and I not in kinds and
+              o.machine.dark,
+              f"{name}: a second restart stays dark: {o.machine.state} "
+              f"{kinds}")
+        check("stays dark" in o.log[-1].text,
+              f"{name}: and says so: {o.log[-1].text}")
+        o2 = S.step(o.machine, S.Event(S.TICK, "scheduler", latched=latched),
+                    _den(S, 18, 20))
+        o3 = S.step(o.machine, S.Event(S.HOLD_ON, "operator", who="Andy",
+                                       screen="rack screen", latched=latched),
+                    _den(S, 18, 6))
+        if latched:
+            check(o2.machine.running == 0 and
+                  o2.machine.slot(2).reason == S.LATCHED_MISSED and
+                  o2.machine.dark,
+                  f"{name}: the next show does not start until Reset: "
+                  f"{o2.machine.slot(2)}")
+            check(I not in [e.kind for e in o3.effects] and o3.machine.dark,
+                  f"{name}: a Hold does not bring the look back either")
+        else:
+            check(o2.machine.running == 2 and not o2.machine.dark,
+                  f"{name}: the next show still starts on schedule")
+            check(I in [e.kind for e in o3.effects] and not o3.machine.dark,
+                  f"{name}: an operator's press brings the look back")
+    # A night that never went dark saves exactly as before.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    check("dark" not in S.machine_to_doc(n.m),
+          "a night that was never dark has no `dark` in its file")
+    print("  ok")
+
+
+def test_schedule_preshow_lead_on_tick_and_resume():
+    section("scheduler: the intermission loop takes over from the preshow "
+            "look 30 minutes before the first show, on the tick and on a "
+            "Resume (Jeff, 2026-10-01)")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 0))
+    check(n.m.state == S.IDLE, "setup: the preshow look at 17:00")
+    o = n.tick(_den(S, 17, 29, 59))
+    check(n.m.state == S.IDLE and not o.effects,
+          "17:29:59 is still the preshow look")
+    o = n.tick(_den(S, 17, 30))
+    check(n.m.state == S.STANDBY and
+          [e.kind for e in o.effects] == [S.INTERMISSION],
+          f"17:30 starts the intermission loop: {n.m.state} {o.effects}")
+    for at, want in (((17, 10), S.IDLE), ((17, 45), S.STANDBY)):
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 0))
+        n.op(S.HOLD_ON, _den(S, 17, 5))
+        o = n.op(S.RESUME, _den(S, *at))
+        check(n.m.state == want,
+              f"Resume at {at[0]}:{at[1]:02d} after a Hold from the preshow "
+              f"look lands in {want}: {n.m.state}")
+    n.audit("preshow lead")
+    print("  ok")
+
+
+def test_schedule_night_reset_boundary():
+    section("scheduler: a show night runs until the 2 AM nightly reset, "
+            "local, on the next calendar day: just before it, at it and "
+            "just after it, and on the nights the clocks change (Jeff, "
+            "2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import date, datetime, time, timedelta, timezone
+    check(S.NIGHT_RESET == time(2, 0) and S.reset_words() == "2 AM",
+          f"the nightly reset is one constant, 2 AM: {S.NIGHT_RESET} "
+          f"{S.reset_words()}")
+    den = S.zone("America/Denver")
+    sat, sun = date(2026, 11, 14), date(2026, 11, 15)
+    for at, want, what in (
+            (_den(S, 23, 59, 59, d=(2026, 11, 14)), sat, "Saturday 23:59:59"),
+            (_den(S, 0, 0, 0, d=(2026, 11, 15)), sat, "Sunday 00:00"),
+            (_den(S, 1, 59, 59, 999999, d=(2026, 11, 15)), sat,
+             "Sunday 01:59:59.999999, just before the reset"),
+            (_den(S, 2, 0, 0, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:00, at the reset"),
+            (_den(S, 2, 0, 1, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:01, just after it"),
+            (_den(S, 4, 30, d=(2026, 11, 15)), sun,
+             "Sunday 04:30, a media shoot"),
+            (_den(S, 18, 0, d=(2026, 11, 15)), sun, "Sunday 18:00")):
+        check(S.night_of(at, den) == want,
+              f"{what} belongs to the night of {want}: "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(sat, den) == _den(S, 2, 0, d=(2026, 11, 15)),
+          f"Saturday's night ends at 02:00 Sunday: "
+          f"{S.night_reset(sat, den)}")
+
+    def utc(*a):
+        return datetime(*a, tzinfo=timezone.utc)
+
+    # Denver, autumn 2026-11-01: 01:00 to 02:00 happens twice (MDT, then
+    # MST); the reset is 02:00 MST, after both. Spring 2027-03-14: 02:00
+    # does not exist; the reset is the first instant after the gap, 03:00
+    # MDT, the same real instant 02:00 MST would have been.
+    for at, want, what in (
+            (utc(2026, 11, 1, 7, 30), date(2026, 10, 31), "01:30 MDT"),
+            (utc(2026, 11, 1, 8, 30), date(2026, 10, 31),
+             "01:30 MST, the repeated hour"),
+            (utc(2026, 11, 1, 8, 59, 59), date(2026, 10, 31),
+             "01:59:59 MST"),
+            (utc(2026, 11, 1, 9, 0), date(2026, 11, 1), "02:00 MST"),
+            (utc(2027, 3, 14, 8, 59, 59), date(2027, 3, 13), "01:59:59 MST"),
+            (utc(2027, 3, 14, 9, 0), date(2027, 3, 14),
+             "03:00 MDT, straight after the spring gap")):
+        check(S.night_of(at, den) == want,
+              f"Denver, {what}: the night of {want}, got "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(date(2026, 10, 31), den) == utc(2026, 11, 1, 9, 0)
+          and S.night_reset(date(2027, 3, 13), den) == utc(2027, 3, 14, 9, 0),
+          "night_reset agrees with night_of on both Denver change nights")
+    # A zone whose autumn change repeats 02:00 to 03:00 (Berlin): the reset
+    # is the first 02:00 (CEST), and the repeated hour stays on the new
+    # night; the spring gap is 02:00 to 03:00 there too.
+    ber = S.zone("Europe/Berlin")
+    for at, want, what in (
+            (utc(2026, 10, 24, 23, 59, 59), date(2026, 10, 24),
+             "01:59:59 CEST"),
+            (utc(2026, 10, 25, 0, 0), date(2026, 10, 25), "02:00 CEST"),
+            (utc(2026, 10, 25, 1, 30), date(2026, 10, 25),
+             "02:30 CET, the repeated hour"),
+            (utc(2027, 3, 28, 0, 59, 59), date(2027, 3, 27), "01:59:59 CET"),
+            (utc(2027, 3, 28, 1, 0), date(2027, 3, 28), "03:00 CEST")):
+        check(S.night_of(at, ber) == want,
+              f"Berlin, {what}: the night of {want}, got "
+              f"{S.night_of(at, ber)}")
+    check(S.night_reset(date(2026, 10, 24), ber) == utc(2026, 10, 25, 0, 0)
+          and S.night_reset(date(2027, 3, 27), ber) == utc(2027, 3, 28, 1, 0),
+          "night_reset agrees with night_of on both Berlin change nights")
+    # A night's first show may be at the reset, never before it.
+    ok = S.parse_rule(_sched_doc(exceptions={"2026-12-05": {
+        "first_start": "02:00", "interval_min": 20, "last_end": "06:00"}}))
+    check(S.clock(S.expand(ok, date(2026, 12, 5)).starts[0]) == "02:00",
+          "a night may start at 02:00, the reset itself")
+
+    # The service on both Denver change nights: a delayed show keeps the
+    # night open through the repeated hour, or up to the spring gap, and
+    # the night closes at the reset's real instant, not an hour off.
+    import tempfile
+    from ltcplay import schedule_service as SV
+    doc = _sched_doc(season={"first_date": "2026-10-01",
+                             "last_date": "2027-03-31"},
+                     weekly={"sat": {"first_start": "18:00",
+                                     "interval_min": 20,
+                                     "last_end": "22:00"}}, exceptions={})
+    for night, ticks in (
+            (date(2026, 10, 31), (utc(2026, 11, 1, 7, 30),
+                                  utc(2026, 11, 1, 8, 30),
+                                  utc(2026, 11, 1, 8, 59, 59))),
+            (date(2027, 3, 13), (utc(2027, 3, 14, 8, 59, 59),))):
+        work = tempfile.mkdtemp()
+        d3 = (night.year, night.month, night.day)
+        now = [_den(S, 21, 30, d=d3)]
+        svc = _svc(S, work, now, rule=doc)
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41, d=d3)
+        svc.tick()
+        n = svc.machine.delayed().n if svc.machine.delayed() else None
+        check(n is not None, f"{night}: setup, a delayed show")
+        for t in ticks:
+            now[0] = t
+            svc.tick()
+            check(svc.machine.date == night and
+                  svc.machine.delayed() is not None,
+                  f"{night}: at {t.astimezone(den):%H:%M:%S %Z} the night is "
+                  f"still open: {svc.machine.date}")
+        reset = S.night_reset(night, den)
+        now[0] = reset
+        svc.tick()
+        with open(SV.tonight_path(night, work)) as fh:
+            old = json.load(fh)
+        st = [x for x in old["slots"] if x["n"] == n][0]
+        check(svc.machine.date == night + timedelta(days=1) and
+              st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+              f"{night}: at {reset.astimezone(den):%H:%M %Z} the night "
+              f"closes and show {n} is MISSED: {svc.machine.date} {st}")
+        svc.stop()
+    print("  ok")
+
+
+def test_schedule_delayed_night_closes_at_the_2am_reset():
+    section("scheduler: a night kept open past midnight by a delayed show "
+            "closes at the 2 AM nightly reset; the delayed show is MISSED, "
+            "out loud, and the next night runs. Start now after the reset "
+            "never starts last night's show (Jeff, 2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
+    for resumed in (True, False):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 21, 30)]
+        svc = _svc(S, work, now, rule=_two_nights())
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41)
+        svc.tick()
+        if resumed:
+            svc._apply(_op(S, S.RESUME))
+        epoch = svc.hold_epoch
+        for at in ((23, 59, 59, 0, (2026, 11, 14)),
+                   (0, 0, 1, 0, (2026, 11, 15)),
+                   (1, 59, 59, 999999, (2026, 11, 15))):
+            now[0] = _den(S, *at[:4], d=at[4])
+            svc.tick()
+            check(str(svc.machine.date) == "2026-11-14" and
+                  svc.machine.delayed() is not None,
+                  f"[resumed={resumed}] at {now[0]:%a %H:%M:%S.%f} Saturday "
+                  f"is still open, show 12 still waits")
+        check(svc.hold_epoch == epoch,
+              "the hold epoch does not move with the date alone")
+        now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+        svc.tick()
+        check(str(svc.machine.date) == "2026-11-15" and
+              svc.machine.state == S.IDLE,
+              f"[resumed={resumed}] at Sunday 02:00 Saturday closes and "
+              f"Sunday's night begins with its preshow look: "
+              f"{svc.machine.date} {svc.machine.state}")
+        line = [r for r in svc.journal if r.get("show") == 12 and
+                r.get("action") == "miss"]
+        check(line and line[-1].get("fault") and
+              "Show 12" in line[-1]["text"] and
+              "still waiting at the 2 AM nightly reset" in line[-1]["text"],
+              f"[resumed={resumed}] a fault line names show 12 and says "
+              f"why: {line[-1:]}")
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            sat = json.load(fh)
+        check(sat["slots"][11]["status"] == S.MISSED and
+              sat["slots"][11]["reason"] == S.RESET_MISSED and
+              "still waiting at the 2 AM nightly reset" in S.RESET_MISSED,
+              f"Saturday's saved list says show 12 was MISSED at the reset: "
+              f"{sat['slots'][11]}")
+        check(any("Show 12" in f and "never started" in f
+                  for f in sat["faults"]),
+              f"[resumed={resumed}] and it is on Saturday's fault list, the "
+              f"one the page shows: {sat['faults']}")
+        summary = os.path.join(work, "nights",
+                               J.summary_name(date(2026, 11, 14)))
+        check(os.path.exists(summary), "Saturday's summary is written")
+        if not resumed:
+            check(svc.hold_epoch == epoch + 1,
+                  f"setting aside a night still on Hold bumps the hold "
+                  f"epoch, so an announcement's claim on it is no longer "
+                  f"current: {epoch} -> {svc.hold_epoch}")
+        if resumed:
+            # Start now after the reset is Sunday's extra show, never
+            # Saturday's delayed one.
+            now[0] = _den(S, 2, 0, 5, d=(2026, 11, 15))
+            out = svc._apply(_op(S, S.START_NOW))
+            run = svc.machine.slot(svc.machine.running)
+            check(out.accepted and str(svc.machine.date) == "2026-11-15" and
+                  run is not None and run.origin == "operator",
+                  f"Start now at 02:00:05 runs an extra show on Sunday, not "
+                  f"Saturday's show 12: {svc.machine.date} {run}")
+            svc.stop()
+            continue
+        now[0] = _den(S, 17, 30, d=(2026, 11, 15))
+        svc.tick()
+        now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+        svc.tick()
+        check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+              f"[resumed={resumed}] Sunday's 18:00 show starts")
+        svc.stop()
+
+    # Start now just before the reset still starts the delayed show, and a
+    # show running at the reset is not cut: its night closes once it ends.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now, rule=_two_nights())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    svc._apply(_op(S, S.RESUME))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
+    svc.tick()
+    out = svc._apply(_op(S, S.START_NOW))
+    check(out.accepted and svc.machine.running == 12,
+          f"Start now at 01:59:59 starts the delayed show 12: {out.refused}")
+    for t in ((2, 0, 0), (2, 5, 0)):
+        now[0] = _den(S, *t, d=(2026, 11, 15))
+        svc.tick()
+        check(str(svc.machine.date) == "2026-11-14" and
+              svc.machine.running == 12,
+              f"at {t} show 12 is still running on Saturday's night: "
+              f"{svc.machine.date} {svc.machine.state}")
+    now[0] = _den(S, 2, 8, d=(2026, 11, 15))
+    svc.tick()
+    svc.tick()
+    with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+        sat = json.load(fh)
+    check(str(svc.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.DONE,
+          f"once it has ended, Saturday closes with show 12 DONE and Sunday "
+          f"begins: {svc.machine.date} {sat['slots'][11]['status']}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_restart_across_the_2am_reset():
+    section("scheduler: ltcplay restarted before the 2 AM reset carries on "
+            "with last night (a delayed show still waits; a show cut by the "
+            "restart is FAULT and the rig dark); restarted after it, last "
+            "night is closed out loud: a delayed show MISSED, a cut show "
+            "FAULT with the rig dark, and nothing from it runs, days later "
+            "included")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
+
+    def held_night():
+        work = tempfile.mkdtemp()
+        now = [_den(S, 21, 30)]
+        svc = _svc(S, work, now, rule=_two_nights())
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41)
+        svc.tick()
+        svc._apply(_op(S, S.RESUME))
+        return work, now, svc
+
+    def saturday(work):
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            return json.load(fh)
+
+    # Restarted at 00:30: still Saturday's night, show 12 still waits.
+    work, now, svc = held_night()
+    now[0] = _den(S, 0, 20, d=(2026, 11, 15))
+    svc.tick()
+    svc.stop()
+    now[0] = _den(S, 0, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights())
+    again.start(thread=False)
+    check(str(again.machine.date) == "2026-11-14" and
+          again.machine.delayed() is not None and
+          again.machine.delayed().n == 12,
+          f"restarted at 00:30, Saturday is still the night with show 12 "
+          f"waiting: {again.machine.date} {again.machine.state}")
+    out = again._apply(_op(S, S.START_NOW))
+    check(out.accepted and again.machine.running == 12,
+          f"Start now still starts it: {out.refused}")
+    again.stop()
+
+    # The delayed show was running after midnight when ltcplay stopped, and
+    # it restarted before the reset: the show is cut, the rig goes dark,
+    # and it stays dark through the reset (the next night's preshow look
+    # does not bring it back; only a show or an operator does).
+    work, now, svc = held_night()
+    now[0] = _den(S, 0, 10, d=(2026, 11, 15))
+    svc.tick()
+    svc._apply(_op(S, S.START_NOW))
+    check(svc.machine.running == 12, "setup: show 12 runs at 00:10")
+    now[0] = _den(S, 0, 12, d=(2026, 11, 15))
+    svc.tick()
+    svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 0, 15, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(saturday(work)["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-14",
+          f"show 12 is a cut show: FAULT with a fault line, Saturday still "
+          f"the night: {saturday(work)['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched and
+          "flames_disarm_all" not in rig.names(),
+          f"the conductor took the rig dark, no latch, no disarm: "
+          f"{c.snapshot()['look']} {rig.names()}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    again.tick()
+    _settle(again, c)
+    check(str(again.machine.date) == "2026-11-15" and
+          c.snapshot()["look"] == "STOPPED_DARK",
+          f"at the 2 AM reset Sunday begins, and the rig stays dark: "
+          f"{again.machine.date} {c.snapshot()['look']}")
+    again.stop()
+
+    # Restarted at 02:30, after the reset, with show 12 still delayed.
+    work, now, svc = held_night()
+    svc.stop()
+    rec = _RecCond(S)
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=rec)
+    again.start(thread=False)
+    _settle(again)
+    sat = saturday(work)
+    line = [r for r in again.journal if r.get("show") == 12 and
+            r.get("action") == "miss"]
+    said = [r for r in again.journal
+            if r.get("outcome") == "closing open night"]
+    check(str(again.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"restarted at 02:30, Saturday is closed with show 12 MISSED and "
+          f"Sunday is the night: {again.machine.date} {sat['slots'][11]}")
+    check(line and line[-1].get("fault") and
+          "still waiting at the 2 AM nightly reset" in line[-1]["text"] and
+          said and "show 12 is delayed" in said[0]["text"],
+          f"a fault line names show 12 and why, and the journal says the "
+          f"open night was closed: {line[-1:]} {said[:1]}")
+    check(os.path.exists(os.path.join(
+              work, "nights", J.summary_name(date(2026, 11, 14)))),
+          "Saturday's summary is written")
+    check("show_starting" not in rec.names(),
+          f"nothing from Saturday runs: {rec.names()}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and run.origin == "operator" and
+          str(again.machine.date) == "2026-11-15",
+          f"Start now runs Sunday's extra show, not show 12: {run}")
+    again.stop()
+
+    # Show 12 was running at 02:10 (started at 01:55) when ltcplay
+    # stopped; restarted at 02:30: cut, FAULT, the rig dark, Saturday
+    # closed, Sunday the night, and the rig still dark.
+    work, now, svc = held_night()
+    now[0] = _den(S, 1, 55, d=(2026, 11, 15))
+    svc.tick()
+    svc._apply(_op(S, S.START_NOW))
+    now[0] = _den(S, 2, 0, 30, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.running == 12 and str(svc.machine.date) == "2026-11-14",
+          "setup: show 12 started at 01:55 is still running after 02:00")
+    svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    sat = saturday(work)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(sat["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-15",
+          f"show 12 is a cut show (FAULT, a fault line), Saturday is closed "
+          f"and Sunday is the night: {sat['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched,
+          f"the rig is dark, no latch: {c.snapshot()['look']}")
+    again.stop()
+
+    # Days later: Saturday's delayed show, ltcplay off until Wednesday.
+    # Start now on Wednesday never starts last Saturday's show.
+    work, now, svc = held_night()
+    svc.stop()
+    now[0] = _den(S, 19, 0, d=(2026, 11, 18))
+    again = _svc(S, work, now, rule=_two_nights())
+    again.start(thread=False)
+    sat = saturday(work)
+    check(sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"on Wednesday, Saturday's show 12 is closed as MISSED: "
+          f"{sat['slots'][11]}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and str(again.machine.date) == "2026-11-18" and
+          run.origin == "operator",
+          f"Start now four days later runs an extra show on Wednesday, not "
+          f"Saturday's show 12: {again.machine.date} {run}")
+    again.stop()
+    print("  ok")
+
+
+def _tonight_doc(work, d=(2026, 11, 14)):
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    with open(SV.tonight_path(date(*d), work)) as fh:
+        return json.load(fh)
+
+
+def test_schedule_restart_after_an_abort_stays_latched_until_reset():
+    section("scheduler: after an Abort, a restart keeps the Abort latch and "
+            "sends the dark sequence again, even when ltcplay died before "
+            "the conductor was told; only Reset ends it (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+
+    # Killed after the Abort was saved, before the conductor call ran.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    svc._calls.put = lambda call: None          # the process dies here
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    doc = _tonight_doc(work)
+    check(doc.get("abort_latched") is True and doc.get("dark") is True and
+          doc["format"] == S.TONIGHT_FORMAT,
+          f"the Abort latch is saved with the Abort, before the conductor is "
+          f"asked: {doc.get('abort_latched')} {doc.get('dark')} "
+          f"format {doc['format']}")
+    check("abort" not in rec.names(), "setup: the conductor never heard")
+    now[0] = _den(S, 18, 3)
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    check(rec2.names() == ["show_stopped"],
+          f"the restart sends the dark sequence again (show_stopped), and "
+          f"nothing that lights anything: {rec2.names()}")
+    sent = [r for r in again.journal if r.get("action") == "conductor" and
+            r.get("outcome") == "sent"]
+    check(sent and "sent again" in sent[-1]["text"],
+          f"and the journal says why it was sent: {sent[-1:]}")
+    check(again._aborted() and again.machine.abort_latched,
+          "after the restart the scheduler still counts itself aborted")
+    out = again._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now is refused until Reset: {out.refused}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    s2 = again.machine.slot(2)
+    check(s2.status == S.MISSED and s2.reason == S.LATCHED_MISSED,
+          f"the 18:20 show does not start after Abort + restart without a "
+          f"Reset: {s2.status} {s2.reason}")
+    r = again.reset_conductor("Jeff", "Rack screen")
+    check(r["ok"] and not again.machine.abort_latched and
+          "abort_latched" not in _tonight_doc(work),
+          f"Reset ends it, in memory and in tonight's file: {r}")
+    now[0] = _den(S, 18, 40)
+    again.tick()
+    check(again.machine.running == 3, "after Reset the next show starts")
+    again.stop()
+
+    # A failed start saved, killed before show_stopped ran: the restart
+    # sends it, and nothing is latched.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc)
+    svc._calls.put = lambda call: None
+    now[0] = _den(S, 18, 0, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    now[0] = _den(S, 18, 1)
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    check(rec2.names() == ["show_stopped"] and not again._aborted(),
+          f"after a failed start the restart sends show_stopped and latches "
+          f"nothing: {rec2.names()} {again._aborted()}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.running == 2,
+          "and the next show still starts on its own time")
+    again.stop()
+
+    # The real conductor: the Abort ran and latched, then a restart brings
+    # up a fresh conductor that remembers nothing.
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(c.latched, "setup: the first conductor latched")
+    svc.stop()
+    c2, rig2, T2, lines2 = _cond()
+    now[0] = _den(S, 18, 5)
+    again = _svc(S, work, now, conductor=c2)
+    again.start(thread=False)
+    _settle(again, c2)
+    a = c2.snapshot()["applied"]
+    check(c2.snapshot()["look"] == "STOPPED_DARK" and a["flames"] == "zero"
+          and a["lasers"] == "black" and a["pixels"] == "black" and
+          a["music"] == "stopped" and a["video"] == "stopped",
+          f"the fresh conductor is told to go dark at once: {c2.snapshot()}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    _settle(again, c2)
+    check(again.machine.slot(2).reason == S.LATCHED_MISSED and
+          c2.snapshot()["look"] == "STOPPED_DARK",
+          f"18:20 after Abort + restart without Reset does not start and the "
+          f"rig stays dark: {again.machine.slot(2)} {c2.snapshot()['look']}")
+    r = again.reset_conductor("Jeff", "Rack screen")
+    row = [x for x in again.journal if x.get("action") == "reset"]
+    check(r["ok"] and "nothing latched" in r["text"] and
+          row[-1]["outcome"] == "done" and row[-1]["who"] == "Jeff",
+          f"Reset works though this conductor never saw the Abort, and is "
+          f"journaled: {r} {row[-1:]}")
+    now[0] = _den(S, 18, 40)
+    again.tick()
+    _confirm(S, again)
+    _settle(again, c2)
+    check(again.machine.running == 3 and c2.snapshot()["look"] == "PLAYING",
+          f"after Reset the next show starts and the rig comes up: "
+          f"{again.machine.state} {c2.snapshot()['look']}")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_abort_latch_outlives_the_night():
+    section("scheduler: an Abort nobody Reset outlives its night: the next "
+            "night starts dark and misses its shows until Reset, in one run "
+            "and after a restart (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+
+    def aborted_last_show(work, now):
+        rec = _RecCond(S)
+        svc = _svc(S, work, now, rule=_two_nights(), conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 21, 40)
+        svc.tick()
+        _confirm(S, svc)
+        now[0] = _den(S, 21, 41)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        now[0] = _den(S, 21, 42)
+        svc.tick()
+        _settle(svc)
+        return svc, rec
+
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc, rec = aborted_last_show(work, now)
+    check(svc.machine.state == S.OFF and svc.machine.abort_latched,
+          f"setup: Saturday closed with the Abort not Reset: "
+          f"{svc.machine.state} {svc.machine.abort_latched}")
+    # Fix round 3: as if the latch file could not be written (a full
+    # disk), so only the run's own memory carries the latch past midnight.
+    from ltcplay import schedule_service as SV
+    os.remove(SV.latch_path(work))
+    now[0] = _den(S, 10, 0, d=(2026, 11, 15))
+    svc.tick()
+    _settle(svc)
+    m = svc.machine
+    check(str(m.date) == "2026-11-15" and m.abort_latched and m.dark and
+          m.state == S.STANDBY,
+          f"in the same run, Sunday starts latched and dark (no preshow "
+          f"look): {m.date} {m.state} dark={m.dark}")
+    looks = [r for r in svc.journal if r.get("action") in
+             (S.PRESHOW_LOOK, S.INTERMISSION) and str(r.get("night")) ==
+             "2026-11-15"]
+    check(not looks, f"no look is asked for on Sunday: {looks[:1]}")
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.slot(1).reason == S.LATCHED_MISSED,
+          f"Sunday's 18:00 show is missed until Reset: "
+          f"{svc.machine.slot(1)}")
+    svc.stop()
+
+    # A fresh start on Sunday, with only Saturday's file to go on.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc, rec = aborted_last_show(work, now)
+    svc.stop()
+    now[0] = _den(S, 10, 0, d=(2026, 11, 15))
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, rule=_two_nights(), conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          rec2.names() == ["show_stopped"] and said and
+          "2026-11-14" in said[0],
+          f"restarted on Sunday, the latch comes from Saturday's file, the "
+          f"rig is sent dark, and the journal says why: "
+          f"{again.machine.abort_latched} {rec2.names()} {said[:1]}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    check(r["ok"] and not again.machine.abort_latched,
+          f"Reset ends it: {r}")
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    again.tick()
+    check(again.machine.running == 1, "then Sunday's 18:00 show starts")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_hold_while_aborted_stays_dark():
+    section("scheduler: while an Abort is not Reset, Hold, Resume and an "
+            "announcement's Hold keep the rig dark; only Reset ends the "
+            "Abort (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    k = len(svc.journal)
+    now[0] = _den(S, 18, 3)
+    out = svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    looks = [r for r in list(svc.journal)[k:] if r.get("action") in
+             (S.INTERMISSION, S.PRESHOW_LOOK) or (
+                 r.get("action") == "conductor" and
+                 r.get("outcome") == "sent")]
+    check(out.accepted and svc.machine.state == S.HOLD and
+          svc.machine.dark and not looks and
+          c.snapshot()["look"] == "ABORTED",
+          f"Hold while aborted keeps the rig dark and asks for no look: "
+          f"{svc.machine.state} dark={svc.machine.dark} {looks[:1]} "
+          f"{c.snapshot()['look']}")
+    check(_tonight_doc(work).get("dark") is True,
+          "tonight's file still says dark")
+    out = svc._apply(_op(S, S.RESUME))
+    check(out.accepted and svc.machine.state == S.STANDBY and
+          svc.machine.dark,
+          f"Resume while aborted goes back to waiting, still dark: "
+          f"{svc.machine.state} dark={svc.machine.dark}")
+    refusal, _epoch = svc.hold_for_announcement(
+        "Andy", "Rack screen", "played the test announcement")
+    _settle(svc, c)
+    looks = [r for r in list(svc.journal)[k:] if r.get("action") in
+             (S.INTERMISSION, S.PRESHOW_LOOK)]
+    check(refusal is None and svc.machine.state == S.HOLD and
+          svc.machine.dark and not looks,
+          f"an announcement's Hold while aborted keeps it dark too: "
+          f"{refusal} {svc.machine.state} {looks[:1]}")
+    now[0] = _den(S, 18, 20)
+    svc.tick()
+    check(svc.machine.slot(2).status != S.RUNNING and svc.machine.dark,
+          f"and nothing starts: {svc.machine.slot(2)}")
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    _settle(svc, c)
+    out = svc._apply(_op(S, S.RESUME))
+    check(r["ok"] and out.accepted and
+          S.INTERMISSION in [e.kind for e in out.effects],
+          f"after Reset, the operator's Resume brings the look back: {r} "
+          f"{[e.kind for e in out.effects]}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_conductor_line_stuck_or_dead_is_loud():
+    section("scheduler: a show conductor request that hangs, or a line of "
+            "requests whose thread died, is a fault on the page and in the "
+            "journal, with a line when it is over; an Abort never waits "
+            "behind a hung request (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    gate = _th.Event()
+    svc = _svc(S, work, now, conductor=rec)
+    svc.CONDUCTOR_STUCK_S = 0.3
+    svc.start(thread=False)
+    _settle(svc)
+    rec.block_on["show_starting"] = gate
+    try:
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        time.sleep(0.05)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.HOLD_ON))
+        early = svc.reset_conductor("Andy", "Rack screen", wait_s=0.01)
+        now[0] = _den(S, 18, 2)
+        t0 = time.perf_counter()
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        late = svc.reset_conductor("Jeff", "Rack screen", wait_s=0.01)
+        while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+            time.sleep(0.01)
+        took = time.perf_counter() - t0
+        check("abort" in rec.names() and took < 0.6,
+              f"Abort reaches the conductor while show_starting hangs, "
+              f"within 0.6 s: {rec.names()} {took:.2f} s")
+        check("hold" not in rec.names() and "reset" not in rec.names(),
+              f"the Hold and the Reset pressed before the Abort are not sent "
+              f"after it: {rec.names()}")
+        ahead = [r for r in svc.journal if r.get("outcome") == "sent ahead"]
+        check(ahead and "Show start" in ahead[-1]["text"],
+              f"the journal says the Abort went ahead of what: {ahead[-1:]}")
+        gone = [r for r in svc.journal if r.get("action") == "reset" and
+                "not sent" in r.get("text", "")]
+        check(not early["ok"] and gone and gone[-1]["who"] == "Andy",
+              f"the early Reset is journaled as not sent: {gone[-1:]}")
+        time.sleep(0.35)
+        n0 = len([r for r in svc.journal if r.get("fault")])
+        svc.tick()
+        faults = [r for r in svc.journal if r.get("fault") and
+                  "has not answered Show start" in r.get("text", "")]
+        page = svc.state_view()
+        check(faults and svc.machine.fault and page["conductor"]["trouble"]
+              and "Show start" in page["conductor"]["trouble"],
+              f"a request with no answer for the limit is a fault, on the "
+              f"page and in the journal: {faults[-1:]} "
+              f"{page['conductor']}")
+        svc.tick()
+        svc.tick()
+        n1 = len([r for r in svc.journal if r.get("fault")])
+        check(n1 - n0 == 1, f"written once, not every tick: {n1 - n0}")
+    finally:
+        gate.set()
+    _settle(svc)
+    check(not late["ok"] and rec.names()[-1:] == ["reset"],
+          f"a Reset pressed after the Abort stays in the line and goes out "
+          f"once the hung request answers: {rec.names()}")
+    svc.tick()
+    back = [r for r in svc.journal if r.get("outcome") == "recovered" and
+            r.get("action") == "conductor"]
+    check(back and svc.state_view()["conductor"]["trouble"] is None,
+          f"and a line says when it is over: {back[-1:]}")
+    svc.stop()
+
+    # The line's thread has died: a Reset waits, the tick says so once,
+    # starts the line again, and the Reset goes through.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    svc._calls._thread = dead
+    r = svc.reset_conductor("Andy", "Rack screen", wait_s=0.05)
+    check(not r["ok"] and "reset" not in rec.names(),
+          f"setup: with the line dead, Reset is not answered: {r}")
+    svc.start(thread=False)
+    _settle(svc)
+    faults = [r for r in svc.journal if r.get("fault") and
+              "line of requests to the show conductor stopped" in
+              r.get("text", "")]
+    check(faults and "reset" in rec.names(),
+          f"the dead line is a fault, written once, and started again so "
+          f"the Reset goes out: {faults[-1:]} {rec.names()}")
+    svc.tick()
+    back = [r for r in svc.journal if r.get("outcome") == "recovered"]
+    check(len(faults) == 1 and back, f"then a line says it is running "
+                                     f"again: {back[-1:]}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_reset_refusals_are_journaled():
+    section("scheduler: a Reset with no name, no screen, a name or screen "
+            "not on the list, or no conductor is refused with a sentence "
+            "and written to the journal like every other press (fix round "
+            "2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    for who, screen, word in (("", "Rack screen", "who pressed it"),
+                              ("Andy", "", "who pressed it"),
+                              ("Bob", "Rack screen", "operator list"),
+                              ("Andy", "Toaster", "screen list")):
+        k = len(svc.journal)
+        try:
+            svc.reset_conductor(who, screen)
+            check(False, f"Reset({who!r}, {screen!r}) is refused")
+            continue
+        except ValueError as e:
+            said = str(e)
+        rows = [r for r in list(svc.journal)[k:]
+                if r.get("action") == "reset" and
+                r.get("outcome") == "refused"]
+        check(word in said and rows and word in rows[-1]["text"] and
+              rows[-1]["who"] == (who or "unnamed operator"),
+              f"Reset({who!r}, {screen!r}) is refused and journaled: "
+              f"{said} {rows[-1:]}")
+    plain = _svc(S, tempfile.mkdtemp(), now)
+    plain.start(thread=False)
+    try:
+        plain.reset_conductor("Andy", "Rack screen")
+        check(False, "Reset with no conductor attached is refused")
+    except ValueError:
+        pass
+    rows = [r for r in plain.journal if r.get("action") == "reset"]
+    check(rows and rows[-1]["outcome"] == "refused" and
+          "no show conductor" in rows[-1]["text"],
+          f"with no conductor, the refusal is journaled too: {rows[-1:]}")
+    svc.stop()
+    plain.stop()
+    print("  ok")
+
+
+def test_schedule_conductor_wiring_details():
+    section("scheduler: no show start reaches the conductor while the "
+            "confirmed show is paused; the operator's name and screen reach "
+            "it; stop() waits for its last lines; an open night is looked "
+            "for more than a day back (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    # A show held before it was confirmed: the confirmation that follows
+    # must not light lasers or release flame cues during the Hold.
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    now[0] = _den(S, 18, 0, 1)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    k = len(rig.calls)
+    now[0] = _den(S, 18, 0, 2)
+    out = _confirm(S, svc)
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.PAUSED and
+          c.snapshot()["look"] == "HELD" and
+          "lasers_restore" not in rig.names(k) and
+          "flames_release" not in rig.names(k),
+          f"a show confirmed while on Hold stays held: no show start, no "
+          f"lasers, no flame cues: {svc.machine.state} "
+          f"{c.snapshot()['look']} {rig.names(k)}")
+    svc._apply(_op(S, S.RESUME))
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING", "Resume then brings it up")
+    svc.stop()
+
+    # Who asked: the operator's name and screen, or the scheduler.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    svc._apply(_op(S, S.HOLD_ON, who="Jeff", screen="Stream Deck"))
+    _settle(svc)
+    who = {c_[0]: (c_[1], c_[2]) for c_ in rec.calls}
+    check(who.get("hold") == ("Jeff", "Stream Deck") and
+          who.get("show_starting") == ("the scheduler", ""),
+          f"the conductor is told who pressed what, and from where: {who}")
+    svc.stop()
+
+    # stop() waits for the conductor's last request and its journal line.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    rec = _RecCond(S)
+    rec.sleep_on = {"intermission": 0.3}
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    svc.stop()
+    done = [r for r in svc.journal if r.get("action") == "conductor" and
+            r.get("outcome") == "done"]
+    check(done, f"stop() waits for the conductor's last request to be made "
+                f"and journaled: {done[-1:]}")
+
+    # A Reset pressed before an Abort, both waiting their turn in order
+    # behind a slow request: the Reset must not end that Abort.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    _settle(svc)
+    rec.sleep_on = {"hold": 0.1}
+    svc._apply(_op(S, S.HOLD_ON))
+    svc.reset_conductor("Andy", "Rack screen", wait_s=0.0)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc)
+    rows = [r for r in svc.journal if r.get("action") == "reset"]
+    check(rec.names()[-3:] == ["hold", "reset", "abort"] and
+          svc.machine.abort_latched and svc._aborted() and
+          "before the latest Abort" in rows[-1]["text"],
+          f"a Reset pressed before the Abort does not end it: "
+          f"{rec.names()} latched={svc.machine.abort_latched} {rows[-1:]}")
+    svc.stop()
+
+    # A conductor request that raises SystemExit is a fault; the line of
+    # requests carries on.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    rec.exit_on.add("show_starting")
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    _settle(svc)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc)
+    bad = [r for r in svc.journal if r.get("fault") and
+           "SystemExit" in r.get("text", "")]
+    check(bad and svc.machine.fault and rec.names()[-1:] == ["hold"],
+          f"a request that raises SystemExit is a fault and the next one "
+          f"still goes out: {bad[-1:]} {rec.names()}")
+    svc.stop()
+
+    # A night left open is looked for more than one day back: Saturday's
+    # delayed show, found on a Monday 01:00 start (Sunday's night, which
+    # has no shows and no file) and closed: MISSED at the 2 AM reset.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now)
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    n = svc.machine.delayed().n
+    svc.stop()
+    now[0] = _den(S, 1, 0, d=(2026, 11, 16))
+    again = _svc(S, work, now)
+    again.start(thread=False)
+    sat = _tonight_doc(work)
+    st = [x for x in sat["slots"] if x["n"] == n][0]
+    check(again.machine.date == date(2026, 11, 15) and
+          st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+          f"Saturday, two days back, is found and closed: "
+          f"{again.machine.date} {st}")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_tonight_file_format():
+    section("scheduler: tonight's file is format 3 as before unless it is "
+            "dark or latched, then format 4, which an older ltcplay refuses "
+            "rather than misreads; a newer format is refused in words (fix "
+            "round 2)")
+    S = _sched()
+    if S is None:
+        return
+    from dataclasses import replace
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    plain = S.machine_to_doc(n.m)
+    check(plain["format"] == 3 and "dark" not in plain and
+          "abort_latched" not in plain,
+          f"a night that is neither dark nor latched is format 3, as before: "
+          f"{plain['format']}")
+    at = _den(S, 17, 51)
+    for what, m in (("dark", replace(n.m, dark=True)),
+                    ("latched", replace(n.m, abort_latched=True))):
+        doc = json.loads(json.dumps(S.machine_to_doc(m)))
+        back = S.machine_from_doc(doc, rule, m.date, at)
+        check(doc["format"] == 4 and back.dark == m.dark and
+              back.abort_latched == m.abort_latched,
+              f"a {what} night is format 4 and reads back the same")
+    bad = dict(plain, dark=True)
+    try:
+        S.machine_from_doc(bad, rule, n.m.date, at)
+        check(False, "a format 3 file carrying dark is refused")
+    except ValueError as e:
+        check("dark" in str(e), f"format 3 carrying dark is refused: {e}")
+    newer = dict(plain, format=5)
+    try:
+        S.machine_from_doc(newer, rule, n.m.date, at)
+        check(False, "a newer format is refused")
+    except ValueError as e:
+        check("newer ltcplay" in str(e) and "3 and 4" in str(e),
+              f"a newer format is refused saying so: {e}")
+    # Fix round 3: a latch that is not plainly true or false is refused.
+    for k in ("dark", "abort_latched"):
+        odd = dict(plain, format=4, **{k: "yes"})
+        try:
+            S.machine_from_doc(odd, rule, n.m.date, at)
+            check(False, f"{k}: \"yes\" is refused")
+        except ValueError as e:
+            check(k in str(e) and "true or false" in str(e),
+                  f"{k} that is not true or false is refused: {e}")
+    # A schedule change rebuilds tonight and keeps the Abort latch and dark.
+    other = _one_night_rule(S, first="18:10")
+    back, _notes = S.rebuild_night(other, replace(n.m, abort_latched=True,
+                                                  dark=True))
+    check(back.abort_latched and back.dark,
+          f"a rebuild for a changed schedule keeps the latch and dark: "
+          f"{back.abort_latched} {back.dark}")
+    print("  ok")
+
+
+def _aborted_at_1802(S, work, now, rule=None, conductor=None):
+    """A service on `work` whose 18:00 show was Aborted at 18:02 and settled.
+    Returns (svc, conductor)."""
+    rec = conductor or _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc)
+    return svc, rec
+
+
+def _restarted(S, work, now, at, rule=None):
+    """A fresh run on `work` at `at`, with a fresh recording conductor."""
+    now[0] = at
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    _settle(svc)
+    return svc, rec
+
+
+def test_schedule_abort_latch_survives_a_damaged_disk():
+    section("scheduler: the Abort latch survives an unreadable or set aside "
+            "list, a failed save, a list for the wrong date and an older "
+            "ltcplay; it lives in a latch file of its own, written first; "
+            "only Reset ends it (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import shutil
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    D = date(2026, 11, 14)
+
+    # Tonight's list emptied by a power cut after the Abort: the latch file
+    # still says aborted.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now)
+    marker = SV.latch_path(work)
+    check(os.path.exists(marker) and svc.machine.abort_latched,
+          f"the Abort writes the latch file: {sorted(os.listdir(work))}")
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          rec2.names() == ["show_stopped"] and
+          any("latch file" in t for t in said),
+          f"an Abort, then tonight's list emptied, then a restart: latched, "
+          f"dark, sent dark, and the journal says why: "
+          f"{again.machine.abort_latched} {rec2.names()} {said[:2]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).reason == S.LATCHED_MISSED,
+          f"and the 18:20 show does not start: {again.machine.slot(2)}")
+    again.stop()
+
+    # No Abort at all, but tonight's list cannot be read and there is no
+    # latch file: with a conductor attached it starts latched and dark,
+    # and says plainly why. Reset ends it, for this run and the next.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    first = _svc(S, work, now, conductor=_RecCond(S))
+    first.start(thread=False)
+    _settle(first)
+    first.stop()
+    with open(SV.tonight_path(D, work), "wb") as fh:
+        fh.write(b"\0" * 64)
+    check(not os.path.exists(SV.latch_path(work)), "setup: no latch file")
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r for r in again.journal if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          said and said[-1].get("fault") and
+          "could not be read" in said[-1]["text"] and
+          "Reset" in said[-1]["text"],
+          f"an unreadable list starts latched and dark, and the journal says "
+          f"why as a fault: {again.machine.abort_latched} {said[-1:]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).status != S.RUNNING,
+          f"no show starts: {again.machine.slot(2)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    aside = SV.set_aside_path(SV.tonight_path(D, work))
+    kept = [n for n in os.listdir(work) if ".unreadable.reset-" in n]
+    check(r["ok"] and not again.machine.abort_latched and
+          not os.path.exists(aside) and kept and
+          not os.path.exists(SV.latch_path(work)),
+          f"Reset ends it; the set aside list is renamed, kept for the "
+          f"morning read, and the latch file is gone: {r} "
+          f"{sorted(os.listdir(work))}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 30))
+    check(not later.machine.abort_latched,
+          "a restart after that Reset is not latched again")
+    now[0] = _den(S, 18, 40)
+    later.tick()
+    check(later.machine.running == 3, "and the 18:40 show starts")
+    later.stop()
+
+    # An older ltcplay set tonight's latched list aside (it cannot read
+    # format 4) and wrote its own plain one. Back on this build: latched,
+    # by the set aside list alone and by the latch file alone.
+    for keep in ("set aside list", "latch file"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        svc, rec = _aborted_at_1802(S, work, now)
+        svc.stop()
+        path = SV.tonight_path(D, work)
+        os.replace(path, SV.set_aside_path(path))
+        old = _svc(S, work, now)                 # no conductor: as before
+        old.start(thread=False)
+        old.stop()
+        check(_tonight_doc(work)["format"] == 3,
+              "setup: a plain format 3 list is back in place")
+        if keep == "set aside list":
+            os.remove(SV.latch_path(work))
+        else:
+            os.remove(SV.set_aside_path(path))
+        again, rec2 = _restarted(S, work, now, _den(S, 18, 30))
+        now[0] = _den(S, 18, 40)
+        again.tick()
+        check(again.machine.abort_latched and
+              again.machine.slot(3).status != S.RUNNING,
+              f"after an older ltcplay ran, the {keep} alone keeps it "
+              f"latched: {again.machine.slot(3)}")
+        again.stop()
+
+    # The save of the Abort fails, the latch file too: the Abort still
+    # goes to the conductor, a loud line says what a restart would do, and
+    # every tick after tries again until it is saved.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.LATCH_RETRY_S = 0.0
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    real_write, real_marker = SV.write_json_atomic, SV.create_latch_marker
+
+    def full(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    SV.write_json_atomic = SV.create_latch_marker = full
+    try:
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        svc.tick()
+        loud = [r for r in svc.journal if r.get("action") ==
+                "save abort latch" and r.get("outcome") == "failed"]
+        check("abort" in rec.names() and len(loud) == 1 and
+              loud[0].get("fault") and
+              "if ltcplay restarts tonight the next show would start: press "
+              "nothing, fix the disk" in loud[0]["text"] and
+              "No space left" in loud[0]["text"],
+              f"a failed save of the Abort: the Abort still reaches the "
+              f"conductor, and one loud line says a restart would start the "
+              f"next show: {rec.names()} {loud}")
+        check(not os.path.exists(SV.latch_path(work)),
+              "setup: nothing reached the disk")
+    finally:
+        SV.write_json_atomic, SV.create_latch_marker = real_write, real_marker
+    now[0] = _den(S, 18, 3)
+    svc.tick()
+    back = [r for r in svc.journal if r.get("action") == "save abort latch"
+            and r.get("outcome") == "saved"]
+    check(os.path.exists(SV.latch_path(work)) and
+          _tonight_doc(work).get("abort_latched") is True and back,
+          f"once the disk takes it, the next tick saves the latch and says "
+          f"so: {back[-1:]}")
+    svc.stop()
+    again, _r = _restarted(S, work, now, _den(S, 18, 10))
+    check(again.machine.abort_latched, "and a restart is latched")
+    again.stop()
+
+    # Only the latch file fails: a softer line, the list holds the latch.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    SV.create_latch_marker = full
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.create_latch_marker = real_marker
+    half = [r for r in svc.journal if r.get("action") == "save abort latch"]
+    check(half and "Tonight's list holds the latch" in half[-1]["text"] and
+          _tonight_doc(work).get("abort_latched") is True,
+          f"when only the latch file fails, the line says the list holds it: "
+          f"{half[-1:]}")
+    svc.stop()
+
+    # The latch file is written before tonight's list, every time.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    order = []
+
+    def spy(path, doc, **kw):
+        if doc.get("abort_latched"):
+            order.append(os.path.exists(SV.latch_path(work)))
+        return real_write(path, doc, **kw)
+
+    SV.write_json_atomic = spy
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.write_json_atomic = real_write
+    check(order and all(order),
+          f"the latch file is there before tonight's list says latched: "
+          f"{order}")
+    svc.stop()
+
+    # A list for tomorrow left by a clock that ran ahead: the latch file
+    # still carries Saturday's Abort into Sunday. Reset removes the file.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now, rule=_two_nights())
+    svc.stop()
+    other = tempfile.mkdtemp()
+    stray = [_den(S, 16, 0, d=(2026, 11, 15))]
+    so = _svc(S, other, stray, rule=_two_nights(), conductor=_RecCond(S))
+    so.start(thread=False)
+    so.stop()
+    sunday = date(2026, 11, 15)
+    shutil.copy(SV.tonight_path(sunday, other), SV.tonight_path(sunday, work))
+    again, rec2 = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    again.tick()
+    check(again.machine.abort_latched and
+          again.machine.slot(1).reason == S.LATCHED_MISSED,
+          f"a stray list for Sunday does not hide Saturday's Abort: "
+          f"{again.machine.slot(1)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    check(r["ok"] and not os.path.exists(SV.latch_path(work)),
+          f"Reset removes the latch file: {r}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 10, d=(2026, 11, 15)))
+    check(not later.machine.abort_latched,
+          "and a restart after it is not latched")
+    later.stop()
+    shutil.rmtree(other, ignore_errors=True)
+
+    # Yesterday's list unreadable and no latch file: a fresh start today
+    # cannot tell, so it starts latched and says why.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, rule=_two_nights(), conductor=_RecCond(S))
+    svc.start(thread=False)
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, _r = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and
+          any("2026-11-14" in t and "could not be read" in t for t in said),
+          f"an unreadable last night latches a fresh start, said: {said[:1]}")
+    again.stop()
+
+    # Several earlier lists, no latch file: only the most recent one counts.
+    from dataclasses import replace as _rep
+
+    def earlier(work, d, latched):
+        n = _Night(S, S.parse_rule(_two_nights()), d=d)
+        n.boot(_den(S, 17, 0, d=(d.year, d.month, d.day)))
+        with open(SV.tonight_path(d, work), "w") as fh:
+            json.dump(S.machine_to_doc(_rep(n.m, abort_latched=latched)), fh)
+
+    for older, newer in ((True, False), (False, True)):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 0, d=(2026, 11, 15))]
+        SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+        earlier(work, date(2026, 11, 7), older)
+        earlier(work, date(2026, 11, 14), newer)
+        again, _r = _restarted(S, work, now, now[0])
+        check(again.machine.abort_latched == newer,
+              f"a fresh start takes the latch from the most recent earlier "
+              f"night only (older {older}, newer {newer}): "
+              f"{again.machine.abort_latched}")
+        again.stop()
+
+    # With no conductor attached nothing of this applies.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+    SV.create_latch_marker(SV.latch_path(work), {})
+    plain = _svc(S, work, now)
+    plain.start(thread=False)
+    check(not plain.machine.abort_latched and
+          os.path.exists(SV.latch_path(work)),
+          "with no conductor the latch file latches nothing and is left alone")
+    plain.stop()
+    print("  ok")
+
+
+def test_schedule_reset_never_overtakes_an_abort():
+    section("scheduler: a Reset pressed after an Abort that is still on its "
+            "way to a stuck conductor is refused and journaled, and the "
+            "latch stays (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["intermission"] = line
+    rec.block_on["abort"] = gate
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        t0 = time.perf_counter()
+        while "intermission" not in rec.names(1) and \
+                time.perf_counter() - t0 < 2:
+            time.sleep(0.01)
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+            time.sleep(0.01)
+        res = {}
+        th = _th.Thread(target=lambda: res.update(
+            r=svc.reset_conductor("Jeff", "Rack screen", wait_s=3)))
+        th.start()
+        time.sleep(0.05)
+        line.set()                      # the line moves: Reset goes first
+        th.join(4)
+        r = res.get("r") or {}
+        rows = [x for x in svc.journal if x.get("action") == "reset"]
+        check(not r.get("ok") and "has not reached" in r.get("text", "") and
+              svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              rows and rows[-1]["outcome"] == "refused" and
+              rows[-1]["who"] == "Jeff",
+              f"the Reset that got there first is refused, the latch stays, "
+              f"and it is journaled: {r} {rows[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    _settle(svc)
+    rec.latched = True
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    check(r["ok"] and not svc.machine.abort_latched,
+          f"once the Abort has landed, Reset works: {r}")
+    svc.stop()
+    print("  ok")
+
+
+class _NoLatchAnswer(_RecCond):
+    """A conductor whose `latched` cannot be read."""
+
+    @property
+    def latched(self):
+        raise RuntimeError("latched blew up")
+
+    @latched.setter
+    def latched(self, v):
+        pass
+
+
+def test_schedule_conductor_line_round3_details():
+    section("scheduler: an Abort that goes ahead drops a queued show start; "
+            "it goes ahead of a dead line too; a hang is a fault after 3 s, "
+            "an Abort sent beside the line included; flush waits for it; a "
+            "revived line is idle; Reset keeps the latch while the conductor "
+            "is still fading or cannot say (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    from ltcplay import schedule_service as SV
+
+    def showing(rec=None):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        rec = rec or _RecCond(S)
+        svc = _svc(S, work, now, conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        _settle(svc)
+        return svc, rec, now, work
+
+    def wait_for(pred, s=2.0):
+        t0 = time.perf_counter()
+        while not pred() and time.perf_counter() - t0 < s:
+            time.sleep(0.01)
+        return pred()
+
+    # A show start queued behind a stuck request is dropped by the Abort.
+    svc, rec, now, work = showing()
+    line = _th.Event()
+    rec.block_on["intermission"] = line
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        wait_for(lambda: "intermission" in rec.names(1))
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+    finally:
+        line.set()
+    _settle(svc)
+    k = rec.names().index("abort")
+    check("show_starting" not in rec.names(k),
+          f"a show start queued before the Abort is never sent after it: "
+          f"{rec.names()}")
+    svc.stop()
+
+    # The line's thread is dead: the Abort goes on its own at once. (A
+    # fresh line whose thread has ended: the old line's thread would still
+    # be serving its own queue.)
+    svc, rec, now, work = showing()
+    _confirm(S, svc)
+    _settle(svc)
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    svc._calls = SV._ConductorCalls(svc._run_conductor_call,
+                                    overtaken=svc._abort_overtook)
+    svc._calls._thread = dead
+    now[0] = _den(S, 18, 1)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(wait_for(lambda: "abort" in rec.names(), 1.0),
+          f"with the line's thread dead, the Abort still reaches the "
+          f"conductor, without waiting for a tick: {rec.names()}")
+    svc.tick()
+    svc.stop()
+
+    # The stuck limit, on a clock the test moves: 3 s, not more.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["show_starting"] = line
+    rec.block_on["abort"] = gate
+    try:
+        _confirm(S, svc)
+        wait_for(lambda: "show_starting" in rec.names())
+
+        def stuck(word):
+            return [r for r in svc.journal if r.get("fault") and
+                    f"has not answered {word}" in r.get("text", "")]
+
+        fake[0] += 2.9
+        svc.tick()
+        check(not stuck("Show start"), "2.9 s without an answer is no fault")
+        fake[0] += 0.2
+        svc.tick()
+        check(stuck("Show start"),
+              "3.1 s without an answer is a fault (CONDUCTOR_STUCK_S is 3 s)")
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+        line.set()
+        wait_for(lambda: svc._calls.health()["waiting"] == 0 and
+                 not svc._calls._busy)
+        svc.tick()
+        fake[0] += 3.1
+        svc.tick()
+        check(stuck("Abort"),
+              f"an Abort sent beside the line and hanging is a fault too: "
+              f"{[r['text'][:80] for r in svc.journal if r.get('fault')][-2:]}")
+        _th.Timer(0.3, gate.set).start()
+        flushed = svc.flush_conductor(3)
+        done = [r for r in svc.journal if r.get("action") == "conductor" and
+                r.get("outcome") == "done" and "Abort" in r.get("text", "")]
+        check(flushed and done,
+              f"flush waits for an Abort sent beside the line: {done[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    svc.stop()
+
+    # A line revived after its thread died is idle, not still busy with
+    # whatever it was making when it died.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    lost = svc._new_call("Lost request", "hold", "the scheduler", "")
+    with svc._calls._cv:
+        svc._calls._thread = dead
+        svc._calls._busy = True
+        svc._calls._current, svc._calls._since = lost, fake[0]
+    svc.tick()
+    fake[0] += 5
+    svc.tick()
+    bad = [r for r in svc.journal if r.get("fault") and
+           "Lost request" in r.get("text", "")]
+    check(not bad and not svc._calls._busy,
+          f"a revived line does not count the dead thread's request as "
+          f"stuck: {bad[-1:]}")
+    svc.stop()
+
+    # Reset while the conductor is still fading the Abort (it refuses and
+    # is still latched), or cannot say whether it is latched: the
+    # scheduler keeps its latch, in memory and on disk.
+    for label, rec in (("still fading", _RecCond(S)),
+                       ("cannot say", _NoLatchAnswer(S))):
+        svc, rec, now, work = showing(rec)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        rec.latched = True
+        rec.fail_on.add("reset")
+        r = svc.reset_conductor("Andy", "Rack screen")
+        check(not r["ok"] and svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              os.path.exists(SV.latch_path(work)),
+              f"a Reset the conductor refuses ({label}) keeps the "
+              f"scheduler's latch: {r}")
+        svc.stop()
+    print("  ok")
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
@@ -29760,6 +32177,7 @@ if __name__ == "__main__":
     test_schedule_hold_pauses_a_show()
     test_schedule_hold_between_shows_delays()
     test_schedule_start_now_in_every_state()
+    test_schedule_extra_show_and_the_next_slot()
     test_schedule_abort_end_night_and_operator_actions()
     test_schedule_file_is_versioned_and_atomic()
     test_schedule_clock_check()
@@ -29803,7 +32221,7 @@ if __name__ == "__main__":
     test_journal_a_torn_last_line_after_a_power_cut()
     test_journal_a_repeating_fault_does_not_flood()
     test_journal_a_show_past_midnight_keeps_its_night()
-    test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night()
+    test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight()
     test_journal_waiting_lines_are_capped_and_counted()
     test_journal_a_clean_stop_reads_as_one()
     test_journal_screens_come_from_a_list()
@@ -29939,6 +32357,7 @@ if __name__ == "__main__":
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
+    test_conductor_failed_start_disarms_without_latch()
     test_conductor_double_abort_is_idempotent()
     test_conductor_abort_mid_hold_fade_wins()
     test_conductor_resume_before_the_hold_fade_finishes()
@@ -29986,6 +32405,25 @@ if __name__ == "__main__":
     test_conductor_video_never_rises_after_abort_or_hold()
     test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
     test_conductor_announcement_after_abort_and_reset()
+    test_schedule_drives_the_show_conductor()
+    test_schedule_conductor_calls_after_the_save_and_off_the_lock()
+    test_schedule_failed_start_disarms_without_latch()
+    test_schedule_abort_latch_misses_the_next_show_until_reset()
+    test_schedule_restart_after_a_stopped_show_stays_dark()
+    test_schedule_preshow_lead_on_tick_and_resume()
+    test_schedule_night_reset_boundary()
+    test_schedule_delayed_night_closes_at_the_2am_reset()
+    test_schedule_restart_across_the_2am_reset()
+    test_schedule_restart_after_an_abort_stays_latched_until_reset()
+    test_schedule_abort_latch_outlives_the_night()
+    test_schedule_hold_while_aborted_stays_dark()
+    test_schedule_conductor_line_stuck_or_dead_is_loud()
+    test_schedule_reset_refusals_are_journaled()
+    test_schedule_conductor_wiring_details()
+    test_schedule_tonight_file_format()
+    test_schedule_abort_latch_survives_a_damaged_disk()
+    test_schedule_reset_never_overtakes_an_abort()
+    test_schedule_conductor_line_round3_details()
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
     test_flame_link_fix_round_1()
