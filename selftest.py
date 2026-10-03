@@ -3822,55 +3822,41 @@ def test_web_ui():
 
 
 def test_web_token_gate():
-    section("serving onto a venue network needs a token")
-    import json
+    section("serving onto a venue network needs an operator PIN, not a link "
+            "token (the old shared token opens nothing now)")
     import threading
-    import urllib.error
     import urllib.request
     from ltcplay import web as web_mod
     import tempfile
 
     folder = tempfile.mkdtemp()
-    port = _free_port()
-    # Bound to a non-loopback address in intent: the token is generated even
-    # though nobody asked, because anyone who can reach the port can black out
-    # the rig. Bind to loopback so the test can actually connect.
-    httpd = web_mod.serve(folder, port=port, bind="127.0.0.1")
-    httpd.token = "sekrit"                     # pretend we are on the network
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1")
+    httpd.bind_address = "10.20.0.5"
     t = threading.Thread(target=httpd.serve_forever,
                          kwargs={"poll_interval": 0.05}, daemon=True)
     t.start()
-    base = f"http://127.0.0.1:{port}"
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
         # A request FROM loopback is always allowed: it is the operator's own
-        # machine, and demanding a token there would only lock them out.
+        # machine, and demanding a PIN there would only lock them out.
         with urllib.request.urlopen(base + "/api/state", timeout=5) as r:
-            check(r.status == 200, "loopback should not need the token")
-
-        # Now prove the check itself works, by asking as if from elsewhere.
+            check(r.status == 200, "loopback should not need a PIN")
+        check(httpd.token is None, "no shared token is minted any more")
         h = web_mod.Handler.__new__(web_mod.Handler)
         h.server = httpd
-        h.headers = {}
         h.client_address = ("10.0.0.44", 5000)
-        h.path = "/api/state"
-        check(h._authorised() is False, "a network request with no token was let in")
-        h.path = "/api/state?t=wrong"
-        check(h._authorised() is False, "a wrong token was accepted")
-        h.path = "/api/state?t=sekrit"
-        check(h._authorised() is True, "the right token was rejected")
-        h.path = "/api/state"
-        h.headers = {"X-ltcplay-token": "sekrit"}
-        check(h._authorised() is True, "the token header was ignored")
-
-        # And that one is generated automatically when bound off loopback.
-        p2 = _free_port()
-        h2 = web_mod.serve(folder, port=p2, bind="0.0.0.0")
-        check(h2.token and len(h2.token) > 8,
-              "binding to the network must mint a token even unasked")
-        h2.server_close()
+        for path, headers in (("/api/state", {}),
+                              ("/api/state?t=anything", {}),
+                              ("/api/state", {"X-ltcplay-token": "x"})):
+            h.path, h.headers, h._ctx_cache = path, headers, None
+            check(h._authorised() is False,
+                  f"a network request with no PIN session was let in: "
+                  f"{path} {headers}")
     finally:
         httpd.shutdown()
         httpd.server_close()
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
     print("  ok")
 
 
@@ -20040,9 +20026,9 @@ def test_journal_screens_come_from_a_list():
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 30)]
     svc = _svc(S, work, now).start(thread=False)
-    check(svc.screens == ("Rack screen", "Stream Deck", "Phone")
+    check(svc.screens == ("Rack screen", "Stream Deck", "Phone", "iPad")
           and json.load(open(SV.screens_path(work), encoding="utf-8")) ==
-          {"screens": ["Rack screen", "Stream Deck", "Phone"]},
+          {"screens": ["Rack screen", "Stream Deck", "Phone", "iPad"]},
           f"the default list is written beside the operators: "
           f"{svc.screens}")
     try:
@@ -20051,7 +20037,7 @@ def test_journal_screens_come_from_a_list():
         check(False, "a screen not on the list was accepted")
     except ValueError as e:
         check("'Laptop' is not on the screen list (Rack screen, Stream Deck, "
-              "Phone)" in str(e), f"refused with a sentence: {e}")
+              "Phone, iPad)" in str(e), f"refused with a sentence: {e}")
     check(any(r["outcome"] == "refused" and r["screen"] == "Laptop"
               and "Andy" in r["line"] for r in svc.journal),
           "and the refusal is in the journal, with who tried")
@@ -27208,6 +27194,16 @@ class _FlSock:
         pass
 
 
+def _flk_unguarded(*a, **k):
+    """A FlameLink with its seek guard off, for the tests written before
+    the guard (2026-10-03) that test the OTHER rules: moving, released,
+    the providers, the Abort. The guard itself is tested on its own, with
+    the program's default (on), in test_flame_link_seek_guard."""
+    from ltcplay import flamelink as fl
+    k.setdefault("seek_guard", False)
+    return fl.FlameLink(*a, **k)
+
+
 def test_flame_link_unit():
     section("flame link: config, what goes in a frame, the wire format, "
             "zero/release/disarm_all, failing loud, the lock alarm")
@@ -27288,7 +27284,7 @@ def test_flame_link_unit():
             raise v
         return v
 
-    link = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=provider,
+    link = _flk_unguarded(fl.FlameLinkConfig.parse(good), cues=provider,
                         show_state=lambda: (state["tc"], state["live"]),
                         journal=j, clock=lambda: t[0])
     sock = _FlSock()
@@ -27495,7 +27491,7 @@ def test_flame_link_unit():
 
     # The example key is a fault line at open.
     j2 = _FlJournal()
-    l2 = fl.FlameLink(fl.FlameLinkConfig.parse({**good,
+    l2 = _flk_unguarded(fl.FlameLinkConfig.parse({**good,
                                                 "key": fl.EXAMPLE_KEY}),
                       journal=j2)
     l2.open()
@@ -27571,7 +27567,7 @@ def test_flame_link_fix_round_1():
     fire[410] = 200
 
     def make(clock, sock=None, cfg=None, **kw):
-        lk = fl.FlameLink(fl.FlameLinkConfig.parse({**good, **(cfg or {})}),
+        lk = _flk_unguarded(fl.FlameLinkConfig.parse({**good, **(cfg or {})}),
                           clock=clock, **kw)
         lk._sock = sock if sock is not None else _FlSock()
         return lk, lk._sock
@@ -27892,7 +27888,7 @@ def test_flame_link_fix_round_2():
         n["i"] += 1
         return (f"00:00:{n['i'] // 25 % 60:02d}:{n['i'] % 25:02d}", True)
     j = _FlJournal()
-    lk = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state,
+    lk = _flk_unguarded(fl.FlameLinkConfig.parse(good), show_state=state,
                       journal=j)
     lk._sock = _FlSock()
     check(lk.stall_s() == 0.25, f"stalled after half of frame_stale_ms: "
@@ -27933,7 +27929,7 @@ def test_flame_link_fix_round_2():
     def state2():
         m["i"] += 1
         return (f"00:00:01:{m['i'] % 25:02d}", True)
-    lk2 = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state2,
+    lk2 = _flk_unguarded(fl.FlameLinkConfig.parse(good), show_state=state2,
                        cues=lambda tc: "garbage" if block.is_set() else None,
                        journal=stuck_journal)
     lk2._sock = _FlSock()
@@ -27970,7 +27966,7 @@ def test_flame_link_fix_round_2():
             lk3.disarm_all("Abort")
             lk3.release()
         return fire
-    lk3 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t3[0],
+    lk3 = _flk_unguarded(fl.FlameLinkConfig.parse(good), clock=lambda: t3[0],
                        show_state=state3, cues=cues3)
     lk3._sock = _FlSock()
     lk3.release()
@@ -27992,7 +27988,7 @@ def test_flame_link_fix_round_2():
     def state4():
         return (f"00:00:{st4['n'] // 25 % 60:02d}:{st4['n'] % 25:02d}",
                 st4["live"])
-    lk4 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t4[0],
+    lk4 = _flk_unguarded(fl.FlameLinkConfig.parse(good), clock=lambda: t4[0],
                        show_state=state4, cues=lambda tc: fire)
     lk4._sock = _FlSock()
     lk4.release()
@@ -28218,7 +28214,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         # item 5).
         n = int((time.perf_counter() - t_show) * 30)
         return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
-    link = fl.FlameLink(cfg, cues=lambda tc: cue["v"],
+    link = _flk_unguarded(cfg, cues=lambda tc: cue["v"],
                         show_state=lambda: (show_tc(), state["live"]),
                         journal=j)
     deck = {"wanted": [False, False, False], "on": True}
@@ -28523,6 +28519,1102 @@ def test_the_gpl_path_never_loads_the_flame_link():
     check(r.stdout.strip() == "False",
           f"loading the program loads no flame link: {r.stdout!r} "
           f"{r.stderr[-300:]!r}")
+    print("  ok")
+
+
+# -------------------------------------------------- the iPad remote --
+
+class _FakeSock:
+    """Drives web.Handler with no socket: the request bytes in, the
+    response bytes out. Lets a test ask as any client address, which a
+    real socket on a test machine cannot."""
+
+    def __init__(self, raw):
+        import io
+        self._in = io.BytesIO(raw)
+        self.out = b""
+
+    def makefile(self, mode, *a, **k):
+        if "r" in mode:
+            return self._in
+        import io
+        sock = self
+
+        class W(io.RawIOBase):
+            def writable(self):
+                return True
+
+            def write(self, b):
+                sock.out += bytes(b)
+                return len(b)
+        return W()
+
+    def sendall(self, b):
+        self.out += bytes(b)
+
+    def settimeout(self, t):
+        pass
+
+    def setsockopt(self, *a):
+        pass
+
+    def shutdown(self, *a):
+        pass
+
+    def close(self):
+        pass
+
+
+def _ask(httpd, method, path, body=None, client=("10.20.0.44", 50000),
+         headers=None, host=None, raw_body=None, content_length=None):
+    """(status, headers, json or text) for one request as `client`."""
+    import json as _j
+    from ltcplay import web as web_mod
+    port = httpd.server_address[1]
+    if host is None:
+        host = (f"127.0.0.1:{port}" if client[0] in web_mod.LOOPBACK
+                else f"{httpd.bind_address}:{port}")
+    data = raw_body if raw_body is not None else (
+        _j.dumps(body).encode() if body is not None else b"")
+    h = {"Host": host}
+    if data or method == "POST":
+        h["Content-Type"] = "application/json"
+        h["Content-Length"] = str(len(data) if content_length is None
+                                  else content_length)
+    h.update(headers or {})
+    head = f"{method} {path} HTTP/1.1\r\n" + "".join(
+        f"{k}: {v}\r\n" for k, v in h.items() if v is not None) + \
+        "Connection: close\r\n\r\n"
+    sock = _FakeSock(head.encode() + data)
+    web_mod.Handler(sock, client, httpd)
+    raw = sock.out
+    head_b, _, payload = raw.partition(b"\r\n\r\n")
+    lines = head_b.decode("latin-1").split("\r\n")
+    status = int(lines[0].split()[1]) if lines and lines[0] else 0
+    hdrs = {}
+    for ln in lines[1:]:
+        k, _, v = ln.partition(":")
+        hdrs.setdefault(k.strip().lower(), []).append(v.strip())
+    try:
+        out = _j.loads(payload or b"null")
+    except ValueError:
+        out = payload.decode("utf-8", "replace")
+    return status, hdrs, out
+
+
+class _RemoteRig:
+    """A scheduler with a conductor, a web server built round them, and a
+    Remote with a clock and wall the test moves. Nothing here listens on a
+    network: requests go through _ask."""
+
+    def __init__(self, S, at=None, conductor=True):
+        import tempfile
+        from ltcplay import web as web_mod
+        from ltcplay import remote as remote_mod
+        self.S = S
+        self.work = tempfile.mkdtemp()
+        self.folder = tempfile.mkdtemp()
+        self.now = [at or _den(S, 17, 55)]
+        if conductor:
+            self.c, self.rig, self.T, self.lines = _cond()
+        else:
+            self.c = self.rig = None
+        self.svc = _svc(S, self.work, self.now, conductor=self.c)
+        self.svc.tick()
+        self.settle()
+        self.httpd = web_mod.serve(self.folder, port=0, bind="127.0.0.1")
+        self.httpd.bind_address = "10.20.0.5"     # as if on the show network
+        self.httpd.schedule = self.svc
+        self.mono = [1000.0]
+        self.wall = [1_800_000_000.0]
+        self.remote = remote_mod.Remote(
+            self.httpd.control, self.svc, folder=self.work,
+            clock=lambda: self.mono[0], wall=lambda: self.wall[0],
+            iterations=1000, log=lambda t: None)
+        self.httpd.remote = self.remote
+        self.cookie = None
+
+    def settle(self):
+        if self.c is not None:
+            check(self.svc.flush_conductor(5), "the conductor calls all ran")
+            self.c.run_pending()
+
+    def ask(self, method, path, body=None, cookie=True, **kw):
+        hd = dict(kw.pop("headers", None) or {})
+        if cookie and self.cookie:
+            hd["Cookie"] = self.cookie
+        return _ask(self.httpd, method, path, body, headers=hd, **kw)
+
+    def seen(self):
+        return int(self.wall[0] * 1000)
+
+    def sign_in(self, who="Andy", pin="2468", device="iPad", set_pin=True):
+        if set_pin:
+            self.remote.pins.set(who, pin)
+        st, hd, out = self.ask("POST", "/api/remote/login",
+                               {"who": who, "pin": pin, "device": device},
+                               cookie=False)
+        check(st == 200, f"sign in as {who}: {st} {out}")
+        sc = (hd.get("set-cookie") or [""])[0]
+        self.cookie = sc.split(";")[0]
+        return st, out
+
+    def lines_for(self, action):
+        return [r for r in self.svc.journal if r.get("action") == action]
+
+    def close(self):
+        self.httpd.server_close()
+        self.svc.stop()
+        import shutil
+        shutil.rmtree(self.work, ignore_errors=True)
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+
+def _live_show(R):
+    """Show 1 running and confirmed, as tests elsewhere get it."""
+    S = R.S
+    R.now[0] = _den(S, 18, 0)
+    R.svc.tick()
+    R.settle()
+    R.now[0] = _den(S, 18, 0, 1)
+    _confirm(S, R.svc)
+    R.settle()
+    check(R.svc.machine.state == S.SHOW, "setup: show 1 is running")
+
+
+def test_remote_pin_required_over_the_network():
+    section("iPad remote: over the network every route needs an operator's "
+            "PIN session; the session cookie is per device; sign out ends it")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        for method, path, body in (
+                ("GET", "/api/state", None),
+                ("GET", "/api/timelines", None),
+                ("GET", "/api/remote/status", None),
+                ("GET", "/api/schedule/state", None),
+                ("POST", "/api/stop", {}),
+                ("POST", "/api/start", {"timeline": "x.json"}),
+                ("POST", "/api/remote/hold", {"who": "Andy",
+                                              "screen": "iPad"}),
+                ("POST", "/api/remote/abort", {"confirmed": True}),
+                ("POST", "/api/remote/disarm-all", {}),
+                ("POST", "/api/schedule/operator", {"who": "Andy"})):
+            st, _h, out = R.ask(method, path, body)
+            check(st == 401, f"{method} {path} from the network without a "
+                             f"session is refused: {st} {out}")
+        check(not R.lines_for("HOLD_ON") and not R.lines_for("HOLD"),
+              "and nothing was held")
+        st, _h, out = R.ask("GET", "/")
+        check(st == 200 and "Sign in" in str(out) and
+              "ltcplay remote" in str(out),
+              f"the network gets the remote page, which signs in: {st}")
+        st, _h, out = R.ask("GET", "/api/remote/whoami")
+        check(st == 200 and out["signed_in"] is False and
+              "Andy" in out["operators"] and "iPad" in out["screens"] and
+              "Stream Deck" not in out["screens"] and
+              "pins_set" not in out,
+              f"whoami says who may sign in, never which PINs exist: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/login",
+                            {"who": "Andy", "pin": "1234", "device": "iPad"})
+        check(st == 403 and "no PIN" in out["error"],
+              f"an operator with no PIN set cannot sign in: {st} {out}")
+        st, out = R.sign_in("Andy", "2468", "iPad")
+        sc = R.cookie
+        check(sc.startswith("ltcplay_session=") and len(sc) > 40,
+              f"a session cookie: {sc[:24]}")
+        st, hd, out = R.ask("POST", "/api/remote/login",
+                            {"who": "Jeff", "pin": "2468", "device": "iPad"},
+                            cookie=False)
+        R.remote.pins.set("Jeff", "1357")
+        # The cookie attributes.
+        R2 = R.ask("POST", "/api/remote/login",
+                   {"who": "Jeff", "pin": "1357", "device": "Phone"},
+                   cookie=False)
+        attrs = (R2[1].get("set-cookie") or [""])[0]
+        check("HttpOnly" in attrs and "SameSite=Strict" in attrs and
+              "Path=/" in attrs, f"the cookie is HttpOnly, SameSite=Strict: "
+                                 f"{attrs}")
+        st, _h, out = R.ask("GET", "/api/remote/whoami")
+        check(out["signed_in"] and out["who"] == "Andy" and
+              out["device"] == "iPad", f"signed in as Andy on the iPad: {out}")
+        st, _h, out = R.ask("GET", "/api/state")
+        check(st == 200, f"with the session the engine answers: {st}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(st == 200 and out["me"]["who"] == "Andy" and
+              "served_at" in out, f"and the status: {st}")
+        # A forged or someone else's cookie is nobody.
+        st, _h, _o = R.ask("GET", "/api/state", cookie=False,
+                           headers={"Cookie": "ltcplay_session=forged"})
+        check(st == 401, f"a forged cookie is refused: {st}")
+        # PINs are stored hashed, in the settings folder, never as typed.
+        from ltcplay import remote as RM
+        txt = open(os.path.join(R.work, RM.PIN_FILE), encoding="utf-8").read()
+        check("2468" not in txt and "1357" not in txt and "salt" in txt
+              and "hash" in txt, "the PIN file holds hashes, not PINs")
+        # Sign out ends it.
+        st, hd, out = R.ask("POST", "/api/remote/logout", {})
+        check(st == 200 and "Max-Age=0" in (hd.get("set-cookie") or [""])[0],
+              f"sign out clears the cookie: {st}")
+        st, _h, _o = R.ask("GET", "/api/state")
+        check(st == 401, f"after sign out the old cookie opens nothing: {st}")
+        check(any(r.get("action") == "sign in" and r.get("who") == "Andy"
+                  and r.get("screen") == "iPad" for r in R.svc.journal) and
+              any(r.get("action") == "sign out" for r in R.svc.journal),
+              "sign in and sign out are journaled with who and device")
+        # A new PIN signs out every device that used the old one.
+        R.sign_in("Andy", "2468", "iPad")
+        st, _h, _o = R.ask("POST", "/api/remote/pin",
+                           {"who": "Andy", "pin": "9999"})
+        check(st == 403, f"PINs are not set from the network: {st}")
+        st, _h, _o = R.ask("GET", "/api/state", cookie=False,
+                           client=("127.0.0.1", 5000),
+                           headers={})
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
+                           {"who": "Andy", "pin": "9999"},
+                           client=("127.0.0.1", 5000))
+        check(st == 200 and "Andy" in out["pins_set"],
+              f"on the machine itself a PIN is set: {st} {out}")
+        st, _h, _o = R.ask("GET", "/api/state")
+        check(st == 401, "and the device signed in with the old PIN is out")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
+                           {"who": "Andy", "pin": "12"},
+                           client=("127.0.0.1", 5000))
+        check(st == 400 and "4 to 8 digits" in out["error"],
+              f"a PIN is 4 to 8 digits: {out}")
+        # Wildcard binds are refused outright.
+        from ltcplay import web as web_mod
+        for wild in ("0.0.0.0", "::"):
+            try:
+                h2 = web_mod.serve(R.folder, port=0, bind=wild)
+                h2.server_close()
+                check(False, f"serving on {wild} was allowed")
+            except ValueError as e:
+                check("show Wi-Fi" in str(e), f"{wild} refused: {e}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_wrong_pin_refused_and_throttled():
+    section("iPad remote: a wrong PIN is refused, and after three the device "
+            "and the name are locked out for longer each time")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    try:
+        R.remote.pins.set("Andy", "2468")
+
+        def login(pin, client=("10.20.0.44", 5000), who="Andy"):
+            return R.ask("POST", "/api/remote/login",
+                         {"who": who, "pin": pin, "device": "iPad"},
+                         cookie=False, client=client)
+        for i in range(RM.FREE_TRIES):
+            st, _h, out = login("0000")
+            check(st == 403 and "not right" in out["error"],
+                  f"wrong PIN {i + 1} is refused: {st} {out}")
+        st, _h, out = login("1111")
+        check(st == 403, f"the fourth wrong one is refused too: {st}")
+        st, _h, out = login("2468")
+        check(st == 429 and out["wait_s"] > 0,
+              f"then even the RIGHT PIN is refused, unchecked, while locked "
+              f"out: {st} {out}")
+        st, _h, out = login("2468", client=("10.20.0.99", 5000))
+        check(st == 429, f"and from another device too, for the same name: "
+                         f"{st}")
+        R.mono[0] += RM.LOCK_BASE_S + 0.1
+        st, _h, out = login("2222")
+        check(st == 403, "after the wait, a wrong PIN is checked again")
+        st, _h, out = login("2468")
+        check(st == 429 and out["wait_s"] > RM.LOCK_BASE_S,
+              f"and the next lock-out is longer: {out}")
+        R.mono[0] += RM.LOCK_MAX_S + 1
+        st, _h, out = login("2468")
+        check(st == 200, f"the right PIN after the wait signs in: {st}")
+        refused = [r for r in R.svc.journal if r.get("action") == "sign in"
+                   and r.get("outcome") == "refused"]
+        check(len(refused) >= 6 and any("wrong PIN" in r["text"]
+                                        for r in refused) and
+              any("too many wrong PINs" in r["text"] for r in refused),
+              f"every refusal is journaled: {len(refused)}")
+        check(RM.FREE_TRIES == 3 and RM.LOCK_BASE_S == 5.0 and
+              RM.LOCK_MAX_S == 300.0 and RM.PIN_MIN == 4,
+              "the throttle numbers are what the PR says")
+        # The PIN check itself.
+        p = RM.PinStore(R.work, iterations=1000)
+        check(p.verify("Andy", "2468") and not p.verify("Andy", "2469") and
+              not p.verify("Andy", "") and not p.verify("Nobody", "2468"),
+              "verify takes only the right PIN for the right name")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_localhost_unaffected_and_proxies_refused():
+    section("iPad remote: the machine itself needs no sign in, as before; "
+            "anything that looks proxied, misaddressed or cross-site is "
+            "refused, loopback included")
+    S = _sched()
+    if S is None:
+        return
+    import urllib.request
+    import urllib.error
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
+        check(st == 200, f"loopback reads the state with no session: {st}")
+        st, _h, out = _ask(R.httpd, "GET", "/", client=loop)
+        check(st == 200 and "ltcplay remote" not in str(out),
+              "loopback still gets the operator page at /")
+        st, _h, out = _ask(R.httpd, "GET", "/remote", client=loop)
+        check(st == 200 and "ltcplay remote" in str(out),
+              "and the remote page at /remote")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
+        check(out["local"] is True and "pins_set" in out,
+              f"whoami says it is the machine itself: {out}")
+        # The real thing, over a real loopback socket.
+        import threading
+        from ltcplay import web as web_mod
+        h2 = web_mod.serve(R.folder, port=0, bind="127.0.0.1")
+        t = threading.Thread(target=h2.serve_forever,
+                             kwargs={"poll_interval": 0.05}, daemon=True)
+        t.start()
+        try:
+            base = f"http://127.0.0.1:{h2.server_address[1]}"
+            with urllib.request.urlopen(base + "/api/state", timeout=5) as r:
+                check(r.status == 200, "a real loopback request needs no PIN")
+            req = urllib.request.Request(base + "/api/state", headers={
+                "X-Forwarded-For": "203.0.113.9"})
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                check(False, "a forwarded request from loopback was let in")
+            except urllib.error.HTTPError as e:
+                check(e.code == 403, f"forwarded is refused: {e.code}")
+        finally:
+            h2.shutdown()
+            h2.server_close()
+        for hname, val in (("X-Forwarded-For", "203.0.113.9"),
+                           ("Forwarded", "for=203.0.113.9"),
+                           ("Via", "1.1 tunnel"),
+                           ("X-Real-IP", "203.0.113.9"),
+                           ("CF-Connecting-IP", "203.0.113.9")):
+            st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop,
+                               headers={hname: val})
+            check(st == 403 and "proxy" in out["error"],
+                  f"{hname} from loopback is refused: {st}")
+        R.sign_in()
+        st, _h, _o = R.ask("GET", "/api/state",
+                           headers={"X-Forwarded-For": "10.0.0.1"})
+        check(st == 403, "and from a signed-in device too")
+        st, _h, _o = R.ask("GET", "/api/state", host="evil.example:7878")
+        check(st == 403, f"a Host that is not this server is refused: {st}")
+        st, _h, _o = _ask(R.httpd, "GET", "/api/state", client=loop,
+                          host="evil.example")
+        check(st == 403, "on loopback too (DNS rebinding)")
+        st, _h, _o = R.ask("POST", "/api/remote/hold",
+                           {"seen": R.seen()},
+                           headers={"Origin": "http://evil.example"})
+        check(st == 403, f"a press posted from another site is refused: {st}")
+        check(not R.lines_for("HOLD"), "and nothing was held")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
+    section("iPad remote: Start now, Hold, Resume, Abort, Reset, disarm and "
+            "the operator go through the scheduler and conductor paths every "
+            "other press uses, journaled with the operator and the device")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.sign_in("Andy", "2468", "iPad")
+        _live_show(R)
+        n0 = len(R.svc.journal)
+        st, _h, out = R.ask("POST", "/api/remote/hold",
+                            {"who": "Jeff", "screen": "Rack screen"})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.PAUSED and
+              R.c.snapshot()["look"] == "HELD",
+              f"Hold reached the scheduler and the conductor: {st} {out} "
+              f"{R.c.snapshot()}")
+        rows = [r for r in list(R.svc.journal)[n0:]
+                if r.get("action") == S.HOLD_ON]
+        check(rows and rows[-1]["who"] == "Andy" and
+              rows[-1]["screen"] == "iPad" and
+              "pressed Hold on the iPad" in rows[-1]["text"],
+              f"journaled as Andy on the iPad, never as the body's Jeff: "
+              f"{rows[-1:]}")
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.SHOW and
+              R.c.snapshot()["look"] == "PLAYING",
+              f"Resume: {st} {out} {R.c.snapshot()}")
+        check(any(r.get("action") == S.RESUME and r["who"] == "Andy" and
+                  r["screen"] == "iPad" for r in R.svc.journal),
+              "Resume journaled with who and where")
+        # The same press straight into the engine reads the same.
+        before = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(st == 200 and R.svc.machine.abort_latched and
+              R.c.snapshot()["look"] == "ABORTED" and
+              R.rig.count("flames_disarm_all") == before + 1,
+              f"Abort latched the scheduler and the conductor disarmed "
+              f"every group: {st} {out} {R.c.snapshot()}")
+        check(any(r.get("action") == S.ABORT and r["who"] == "Andy" and
+                  r["screen"] == "iPad" for r in R.svc.journal),
+              "Abort journaled with who and where")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
+        R.settle()
+        check(st == 200 and out["ok"] and not R.svc.machine.abort_latched
+              and not R.c.latched,
+              f"Reset is the scheduler's reset_conductor: {st} {out}")
+        # Disarm every flame group: the show's own flames_disarm_all.
+        n = R.rig.count("flames_disarm_all")
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all", {})
+        check(st == 200 and R.rig.count("flames_disarm_all") == n + 1,
+              f"disarm-all is the conductor's own flames_disarm_all: {st} "
+              f"{out}")
+        reason = R.rig.calls[-1][1][0]
+        check("Andy" in reason and "iPad" in reason,
+              f"the reason sent to flamesafe names who and where: {reason}")
+        check(any(r.get("action") == "disarm all" and r["who"] == "Andy" and
+                  r["screen"] == "iPad" for r in R.svc.journal),
+              "disarm-all journaled with who and where")
+        # Disarm is never gated on a fresh page or a show.
+        st, _h, out = R.ask("POST", "/api/remote/disarm-all",
+                            {"seen": 1})
+        check(st == 200, f"disarm with a stale page still goes: {st}")
+        # Start now: the scheduler's START_NOW.
+        R.now[0] = _den(S, 18, 30)
+        R.svc.tick()
+        R.settle()
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"confirmed": True, "seen": R.seen()})
+        check(st in (200, 409), f"Start now answered: {st} {out}")
+        check(any(r.get("action") == S.START_NOW and r["who"] == "Andy" and
+                  r["screen"] == "iPad" for r in R.svc.journal),
+              "Start now journaled with who and where")
+        # The operator: a device signed in as Andy can pick only Andy.
+        st, _h, out = R.ask("POST", "/api/remote/operator",
+                            {"pick": "Jeff", "seen": R.seen()})
+        check(st == 403 and "sign in as them" in out["error"],
+              f"picking someone else from a device is refused: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/operator",
+                            {"pick": "Andy", "seen": R.seen()})
+        check(st == 200 and R.svc.current_operator == "Andy",
+              f"picking yourself sets the current operator: {st} {out}")
+        check(any(r.get("action") == "operator" and r["screen"] == "iPad"
+                  for r in R.svc.journal), "journaled from the iPad")
+        # On the machine itself the page names who and where.
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/operator",
+                           {"pick": "Jeff", "screen": "Rack screen",
+                            "seen": R.seen()}, client=("127.0.0.1", 5000))
+        check(st == 200 and R.svc.current_operator == "Jeff",
+              f"locally any listed operator is picked: {st} {out}")
+        # No disarm path connected: refused loudly, never "done".
+        R.remote._flame_disarm = None
+        cond = R.svc.conductor
+        R.svc.conductor = None
+        try:
+            st, _h, out = R.ask("POST", "/api/remote/disarm-all", {})
+            check(st == 409 and "no flame link" in out["error"],
+                  f"no flame link is said, not faked: {st} {out}")
+            check(any(r.get("action") == "disarm all" and
+                      r.get("outcome") == "fault" for r in R.svc.journal),
+                  "and journaled as a fault")
+        finally:
+            R.svc.conductor = cond
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_abort_and_start_need_the_confirm():
+    section("iPad remote: Abort and Start now need the on-page confirm")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        _live_show(R)
+        for body in ({}, {"confirmed": "yes"}, {"confirmed": 1},
+                     {"confirmed": False}):
+            st, _h, out = R.ask("POST", "/api/remote/abort", body)
+            R.settle()
+            check(st == 400 and "Confirm" in out["error"] and
+                  not R.svc.machine.abort_latched and
+                  R.c.snapshot()["look"] == "PLAYING",
+                  f"Abort {body} without a real confirm does nothing: {st}")
+        check(any(r.get("action") == "abort" and
+                  r.get("outcome") == "refused" for r in R.svc.journal),
+              "the refused Abort is journaled")
+        st, _h, out = R.ask("POST", "/api/remote/start-now",
+                            {"seen": R.seen()})
+        check(st == 400 and "Confirm" in out["error"],
+              f"Start now without the confirm is refused: {st}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(st == 200 and R.c.snapshot()["look"] == "ABORTED",
+              "with the confirm, Abort goes")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        check('confirmBox("Abort the show?"' in page and
+              'press("abort", {confirmed:true})' in page and
+              'id="abortbar"' in page and "position:fixed" in page,
+              "the page asks before Abort, and the Abort bar is fixed on "
+              "screen")
+        check('confirmBox("Start a show now?"' in page,
+              "the page asks before Start now")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_stale_state_refused_and_banner():
+    section("iPad remote: presses that act on what the page shows are refused "
+            "on a status older than 2 s; the page shows a banner and turns "
+            "those controls off; Hold, Abort and disarm never wait on it")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        _live_show(R)
+        check(RM.FRESH_S == 2.0, "fresh means 2 s")
+        st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": 1})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.PAUSED,
+              "Hold goes with a stale page")
+        old = R.seen() - 2500
+        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": old})
+        R.settle()
+        check(st == 409 and out.get("stale") and
+              R.svc.machine.state == S.PAUSED,
+              f"Resume on a 2.5 s old status is refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/resume", {})
+        check(st == 409 and R.svc.machine.state == S.PAUSED,
+              "and with no status at all")
+        st, _h, out = R.ask("POST", "/api/remote/resume",
+                            {"seen": R.seen() - 1500})
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.SHOW,
+              f"on a 1.5 s old status it goes: {st} {out}")
+        for route, extra in (("start-now", {"confirmed": True}),
+                             ("reset", {}), ("operator", {"pick": "Andy"}),
+                             ("jump", {"seconds": 5}),
+                             ("play-from", {"at": "00:00:10:00"})):
+            body = dict(extra, seen=old)
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body)
+            check(st == 409 and out.get("stale"),
+                  f"{route} on a stale status is refused: {st} {out}")
+        check(any(r.get("outcome") == "refused" and "s old" in r["text"]
+                  for r in R.svc.journal), "stale refusals are journaled")
+        st, _h, out = R.ask("POST", "/api/remote/abort",
+                            {"confirmed": True, "seen": 1})
+        R.settle()
+        check(st == 200 and R.c.snapshot()["look"] == "ABORTED",
+              "Abort goes with a stale page")
+        # The status reports whether flamesafe's lamps are live.
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["flames"]["connected"] is False and out["flames"]["stale"],
+              "with no flamesafe status the lamps say so")
+        fs = RM.FlameStatus("127.0.0.1", 0, "k" * 20, ["front row"],
+                            clock=lambda: R.mono[0])
+        R.remote.flame_status = fs
+        import json as _j
+        frame = {"t": "status", "k": "k" * 20, "fault": "", "groups": [
+            {"name": "front row", "armed": "armed", "wanted": True,
+             "reason": ""}]}
+        fs.note(_j.dumps(frame).encode())
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(not out["flames"]["stale"] and
+              out["flames"]["groups"][0]["armed"] == "armed",
+              f"a fresh frame shows the real armed state: {out['flames']}")
+        fs.note(_j.dumps(dict(frame, k="x" * 20)).encode())
+        R.mono[0] += 1.2
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["flames"]["stale"] and
+              out["flames"]["groups"][0]["armed"] == "unknown",
+              f"1.2 s later (and a wrongly keyed frame ignored) the lamp is "
+              f"unknown, never the old armed: {out['flames']}")
+        _remote_page_logic_in_node()
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _remote_page_logic_in_node():
+    """The page's own stale and control logic, run in node when this
+    machine has it (CI does). The functions are cut out of remote.html
+    between its LOGIC markers, so this tests the page's real code."""
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// LOGIC BEGIN")
+    b = page.find("// LOGIC END")
+    check(a != -1 and b > a, "the page's logic block is marked")
+    logic = page[a:b]
+    # The wiring around it: the banner follows isStale, and every control
+    # takes its disabled state from controlStates.
+    for need in ("const stale = isStale(Date.now(), LAST_OK, FRESH_S);",
+                 "b.hidden = !stale || $(\"main\").hidden;",
+                 "const cs = controlStates(ST, stale);",
+                 "$(\"b-start\").disabled = !cs.startNow;",
+                 "$(\"b-resume\").disabled = !cs.resume;",
+                 "$(\"b-reset\").disabled = !cs.reset;",
+                 "$(\"b-op\").disabled = !cs.operator;",
+                 "el.disabled = !cs.transport;",
+                 "el.className = \"lamp unknown\";",
+                 "setInterval(renderStale, 250);"):
+        check(need in page, f"the page wires {need!r}")
+    node = shutil.which("node")
+    if not node:
+        print("  note: node is not on this machine, so the page's logic was "
+              "checked by reading only (CI runs it)")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+t(isStale(10000, null, 2), "never heard is stale");
+t(!isStale(10000, 9000, 2), "1 s old is fresh");
+t(!isStale(10000, 8000, 2), "2 s old is still fresh");
+t(isStale(10000, 7900, 2), "2.1 s old is stale");
+const st = {schedule:{attached:true}, transport:{programming:true}};
+let c = controlStates(st, true);
+t(c.abort && c.hold && c.disarm, "stale: Abort, Hold, disarm stay on");
+t(!c.startNow && !c.resume && !c.reset && !c.operator && !c.transport,
+  "stale: everything acting on shown state is off");
+c = controlStates(st, false);
+t(c.startNow && c.resume && c.reset && c.operator && c.transport,
+  "fresh: all on");
+c = controlStates(null, false);
+t(!c.startNow && !c.transport && c.abort, "no status yet: only the safe ones");
+c = controlStates({schedule:{attached:true}, transport:{programming:false}}, false);
+t(!c.transport, "no programming session: transport off");
+t(lampClass({armed:"armed"}, {connected:true, stale:true}) === "unknown",
+  "a stale armed lamp reads unknown");
+t(lampClass({armed:"armed"}, {connected:true, stale:false}) === "armed",
+  "a fresh armed lamp reads armed");
+t(staleText(10000, 6000).indexOf("CONNECTION LOST") === 0,
+  "the banner says connection lost");
+console.log(JSON.stringify(out));
+"""
+    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"the page's stale logic, in node: {r.stdout!r} {r.stderr[-400:]!r}")
+
+
+def test_remote_has_no_arm_route():
+    section("iPad remote: there is no arm route, here or in web.py")
+    import re as _re
+    from ltcplay import remote as RM
+    here = os.path.dirname(os.path.abspath(__file__))
+    every = list(RM.GET_ROUTES) + list(RM.POST_ROUTES)
+    bad = [r for r in every if _re.search(r"(?<!dis)arm", r)]
+    check(not bad, f"no remote route arms: {bad}")
+    for name in ("remote.py", "web.py"):
+        src = open(os.path.join(here, "ltcplay", name), encoding="utf-8").read()
+        routes = _re.findall(r'"/api/[a-z/_-]*"', src)
+        armish = [r for r in routes if _re.search(r"(?<!dis)arm", r)]
+        check(not armish, f"{name} names no arm route: {armish}")
+        for word in ("ArmSocket", "arm_port", "encode_arm_frame",
+                     "set_group(", "set_all(True"):
+            check(word not in src, f"{name} never touches the arm link "
+                                   f"({word})")
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check(not _re.search(r"/api/remote/(?!disarm)[a-z-]*arm", page) and
+          not _re.search(r'press\("(?!disarm)[a-z-]*arm', page),
+          "the page posts to no arm route")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        for path in ("/api/remote/arm", "/api/remote/arm-all",
+                     "/api/remote/arm-group", "/api/arm"):
+            st, _h, out = R.ask("POST", path, {"group": "front row",
+                                                "seen": R.seen()})
+            check(st == 404, f"{path} does not exist: {st}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm",
+                           {"group": "front row"},
+                           client=("127.0.0.1", 5000))
+        check(st == 404, "not from the machine itself either")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_page_loss_changes_nothing():
+    section("iPad remote: an iPad that drops mid-show (half a request, a "
+            "closed connection, a session that ends, no more polls) changes "
+            "nothing on the show; a Hold stays held")
+    S = _sched()
+    if S is None:
+        return
+    import socket
+    import threading
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        check(R.svc.machine.state == S.PAUSED, "setup: held from the iPad")
+        look = R.c.snapshot()["look"]
+        n = len(R.svc.journal)
+        calls = len(R.rig.calls)
+        # Half a request: the body never arrives whole.
+        st, _h, out = R.ask("POST", "/api/remote/resume",
+                            raw_body=b'{"seen": ', content_length=200)
+        R.settle()
+        check(st == 400 and R.svc.machine.state == S.PAUSED,
+              f"half a Resume does nothing: {st} {out}")
+        # Over a real socket: connect, send half a request, vanish.
+        import http.server
+        from ltcplay import web as web_mod
+        h2 = web_mod.serve(R.folder, port=0, bind="127.0.0.1")
+        h2.schedule, h2.remote = R.svc, R.remote
+        t = threading.Thread(target=h2.serve_forever,
+                             kwargs={"poll_interval": 0.05}, daemon=True)
+        t.start()
+        try:
+            port = h2.server_address[1]
+            for chunk in (b"POST /api/remote/resume HTTP/1.1\r\n",
+                          b"POST /api/remote/abort HTTP/1.1\r\nHost: "
+                          b"127.0.0.1\r\nContent-Length: 80\r\n\r\n{\"confi",
+                          b""):
+                s = socket.create_connection(("127.0.0.1", port), timeout=5)
+                if chunk:
+                    s.sendall(chunk)
+                s.close()
+            time.sleep(0.3)
+            import urllib.request
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/state", timeout=5) as r:
+                check(r.status == 200, "the server still answers after "
+                                       "dropped connections")
+        finally:
+            h2.shutdown()
+            h2.server_close()
+        R.settle()
+        # The session runs out and nobody polls for a long time.
+        from ltcplay import remote as RM
+        R.mono[0] += RM.SESSION_MAX_S + 10
+        R.now[0] = _den(S, 18, 5)
+        R.svc.tick()
+        R.settle()
+        st, _h, _o = R.ask("GET", "/api/remote/status")
+        check(st == 401, "the session ended")
+        check(R.svc.machine.state == S.PAUSED and
+              R.c.snapshot()["look"] == look,
+              f"and the Hold is still held: {R.svc.machine.state} "
+              f"{R.c.snapshot()}")
+        new = [r for r in list(R.svc.journal)[n:]
+               if r.get("actor") == "operator"
+               and r.get("outcome") == "done"]
+        check(not new, f"no operator action happened by itself: {new}")
+        check(not any(c[0] in ("music_resume", "flames_release",
+                               "flames_disarm_all", "music_halt")
+                      for c in R.rig.calls[calls:]),
+              f"and the rig was not touched: {R.rig.names(calls)}")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "remote.py"),
+                   encoding="utf-8").read()
+        check("operator_press" in src and
+              not _re_search(r"def (on_|_on_)(drop|disconnect|expire)", src),
+              "remote.py has no hook that acts when a page goes away")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _re_search(pat, text):
+    import re as _re
+    return _re.search(pat, text)
+
+
+def test_remote_scrubbing_only_in_a_programming_session():
+    section("iPad remote: play from, jump, pause, loop and follow work only "
+            "in a programming session, never while a scheduled show is "
+            "live, and each is journaled with who and where")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S, at=_den(S, 17, 0))
+    try:
+        R.sign_in()
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5, "seen": R.seen()})
+        check(st == 409 and "Nothing is playing" in out["error"],
+              f"nothing running: refused: {st} {out}")
+
+        class _P:
+            """A real-shaped player: the Player's own transport methods
+            on a fake clock are tested separately below."""
+            def __init__(self):
+                self.freerun_epoch = None
+                self.freerun_paused_at = None
+                self.tc_seconds = 30.0
+                self.loop = None
+                self.on_lost = "hold"
+                self.log = []
+
+            def nudge(self, s):
+                self.tc_seconds += s
+                self.log.append(("nudge", s))
+                return self.tc_seconds
+
+            def freerun_pause(self, on):
+                self.freerun_paused_at = self.tc_seconds if on else None
+                self.log.append(("pause", on))
+                return self.tc_seconds
+
+            def set_loop(self, a, b):
+                self.loop = None if a is None else (a, b)
+                self.log.append(("loop", a, b))
+
+        class _TL:
+            def format(self, s):
+                return f"T{s:.1f}"
+
+        class _Sess:
+            running = True
+            no_output = False
+            tl = _TL()
+            log = None
+
+        p = _P()
+        sess = _Sess()
+        sess.player = p
+        ctl = R.httpd.control
+        ctl.session = sess
+        gone = []
+        ctl.go = lambda at: (setattr(p, "freerun_epoch", 1.0),
+                             gone.append(at)) and {"at": at} or {"at": at}
+        ctl.release = lambda: gone.append("release") or {}
+        # Started in Show mode: refused.
+        p.on_lost = "freerun"
+        st, _h, out = R.ask("POST", "/api/remote/pause", {"seen": R.seen()})
+        check(st == 409 and "Show mode" in out["error"] and not p.log,
+              f"a show started in Show mode is not scrubbed: {out}")
+        p.on_lost = "hold"                       # Rehearsal mode
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": -10, "seen": R.seen()})
+        check(st == 200 and ("nudge", -10.0) in p.log and gone,
+              f"in a programming session a jump goes (starting a free run "
+              f"from here first): {st} {out} {p.log}")
+        for route, body in (("pause", {}), ("continue", {}),
+                            ("mark-a", {}), ("mark-b", {}),
+                            ("play-from", {"at": "00:01:00:00"}),
+                            ("follow", {})):
+            if route == "mark-b":
+                p.tc_seconds += 8
+            st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                dict(body, seen=R.seen()))
+            check(st == 200, f"{route}: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/loop",
+                            {"on": True, "seen": R.seen()})
+        check(st == 200 and p.loop is not None,
+              f"loop on between the marks: {st} {out} {p.loop}")
+        check(all(any(r.get("action") == a and r.get("who") == "Andy" and
+                      r.get("screen") == "iPad" and r.get("outcome") == "done"
+                      for r in R.svc.journal)
+                  for a in ("jump", "pause", "continue", "mark-a", "mark-b",
+                            "play-from", "follow", "loop")),
+              "every transport press is journaled with who and where")
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5000, "seen": R.seen()})
+        check(st == 400, "a silly jump is refused")
+        # A scheduled show goes live: only Hold, Resume and Abort.
+        _live_show(R)
+        n = len(p.log)
+        for route, body in (("jump", {"seconds": 5}), ("pause", {}),
+                            ("play-from", {"at": "00:00:01:00"}),
+                            ("loop", {"on": True}), ("follow", {})):
+            st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                dict(body, seen=R.seen()))
+            check(st == 409 and "scheduled show is live" in out["error"],
+                  f"{route} during a live show is refused: {st} {out}")
+        check(len(p.log) == n, "and the player was not touched")
+        check(any(r.get("action") == "jump" and
+                  r.get("outcome") == "refused" and
+                  "scheduled show is live" in r["text"]
+                  for r in R.svc.journal),
+              "the refusal is journaled")
+        st, _h, out = R.ask("POST", "/api/remote/hold", {})
+        R.settle()
+        check(st == 200, "Hold still works during the show")
+        st, _h, out = R.ask("POST", "/api/remote/jump",
+                            {"seconds": 5, "seen": R.seen()})
+        check(st == 409, "and a paused scheduled show is still live")
+        ctl.session = None
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_player_free_run_pause_and_loop():
+    section("Player: a free run pauses on its frame, carries on from it, and "
+            "loops between two marks")
+    from ltcplay.player import FREERUN
+    fs = FakeFSEQ(frames=8000)
+    tl = _timeline([("01:00:00:00", "A", fs), ("01:10:00:00", "B", fs)],
+                   gaps="idle")
+    p = Player(tl, FakeNetmap(), CountingSender(), gaps="idle")
+    try:
+        p.freerun_pause(True)
+        check(False, "pause with no free run was allowed")
+    except ValueError:
+        pass
+    at = tcmod.parse_tc("01:00:30:00", 30)
+    p.go(at)
+    p._tick()
+    t0 = p.tc_seconds
+    held = p.freerun_pause(True)
+    time.sleep(0.15)
+    p._tick()
+    check(p.state == FREERUN and abs(p.tc_seconds - held) < 1e-6,
+          f"paused, the show time stands still: {held} {p.tc_seconds}")
+    moved = p.nudge(-5)
+    p._tick()
+    check(abs(moved - (held - 5)) < 1e-6 and
+          abs(p.tc_seconds - moved) < 1e-6,
+          "a jump while paused moves the paused frame")
+    p.freerun_pause(False)
+    time.sleep(0.12)
+    p._tick()
+    check(p.tc_seconds > moved + 0.05 and p.freerun_paused_at is None,
+          f"continue carries on from it: {moved} {p.tc_seconds}")
+    try:
+        p.set_loop(10, 5)
+        check(False, "a loop with B before A was allowed")
+    except ValueError:
+        pass
+    a, b = t0 - 2.0, t0 - 0.1
+    p.go(t0 - 0.3)
+    p.set_loop(a, b)
+    time.sleep(0.25)
+    p._tick()
+    check(a - 0.01 <= p.tc_seconds < a + 0.2,
+          f"passing B wraps to A: {a} {p.tc_seconds}")
+    p.release()
+    check(p.loop is None and p.freerun_paused_at is None,
+          "release clears the loop and the pause")
+    print("  ok")
+
+
+def test_flame_link_seek_guard():
+    section("flame link seek guard: a flame cue fires in normal rehearsal "
+            "playback; nothing fires across a seek, a jump or a loop wrap "
+            "until the timecode has run 0.5 s; a cue whose start was jumped "
+            "over never fires")
+    from ltcplay import flamelink as fl
+    check(fl.SEEK_SETTLE_S == 0.5 and fl.SEEK_JUMP_S == 0.25,
+          "the seek guard numbers are what the PR says")
+    good = {"ip": "127.0.0.1", "port": 5571, "universe": 1,
+            "key": "selftest-key-0123456789", "frame_stale_ms": 500}
+    clk = [100.0]
+    show = {"tc": None, "live": True}
+
+    def state():
+        t = show["tc"]
+        if t is None:
+            return None, False
+        h, rem = divmod(int(t * 30), 30 * 3600)
+        m, rem = divmod(rem, 30 * 60)
+        s, f = divmod(rem, 30)
+        return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}", show["live"]
+
+    def cues(tc):
+        h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
+        t = h * 3600 + m * 60 + s + f / 30
+        v = [0] * 512
+        if 10.0 <= t < 12.0:
+            v[0] = 200                     # cue A on channel 1
+        if 13.0 <= t < 14.0:
+            v[1] = 180                     # cue C on channel 2
+        if 30.2 <= t < 31.5:
+            v[2] = 150                     # cue D on channel 3
+        return v
+    link = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=cues,
+                        show_state=state, clock=lambda: clk[0])
+    check(link.seek_guard is True, "the guard is on by default")
+    link.zeroed = False                    # the conductor released the cues
+
+    def run(frm, to, step=0.025):
+        """Play steadily from frm to to; [(tc seconds, values)]."""
+        out = []
+        t = frm
+        while t < to - 1e-9:
+            show["tc"] = t
+            _tc, vals = link.values_now()
+            out.append((t, vals))
+            t += step
+            clk[0] += step
+        return out
+    got = run(9.0, 12.5)
+    a_on = [t for t, v in got if v[0]]
+    check(a_on and min(a_on) < 10.1 and max(a_on) > 11.8,
+          f"normal playback in rehearsal: cue A fires from 10 s to 12 s: "
+          f"{a_on[:1]} {a_on[-1:]}")
+    check(not any(v[0] for t, v in got if t < 9.5),
+          "nothing in the first 0.5 s after the very first timecode")
+    # A jump forward into the middle of cue A: its start was jumped over.
+    run(8.0, 8.2)                          # a backwards locate first
+    show["tc"] = 9.0
+    run(9.0, 9.6)
+    got = run(10.6, 12.2)                  # jumped from 9.6 to 10.6
+    check(not any(v[0] for t, v in got),
+          "a cue whose start was jumped over never fires, even after the "
+          "settle")
+    got = run(12.2, 14.2)
+    check(any(v[1] for t, v in got if 13.0 <= t < 14.0),
+          "the next cue, played through, fires normally")
+    # Across a seek: zero for 0.5 s after landing, whatever is there.
+    got = run(29.9, 31.4)                  # jumped from 14.2 to 29.9
+    early = [t for t, v in got if any(v) and t < 30.4 - 1e-6]
+    check(not early, f"nothing fires in the 0.5 s after a seek: {early}")
+    check(any(v[2] for t, v in got if t >= 30.45),
+          "a cue that started after the landing fires once settled")
+    # A loop wrap is a seek like any other.
+    run(10.0, 10.5)                        # back to 10.0: a seek
+    got = run(10.5, 11.0)
+    check(not any(v[0] for t, v in got),
+          "a loop wrap into the middle of cue A does not fire it")
+    check(link.seeks >= 4, f"every jump was seen as one: {link.seeks}")
+    # A pause and a resume is not a seek, but it settles again.
+    run(12.5, 13.1)
+    n = link.seeks
+    show["tc"] = 13.1
+    for _ in range(20):                    # 0.5 s standing still
+        link.values_now()
+        clk[0] += 0.025
+    got = run(13.1, 13.9)
+    check(link.seeks == n and not any(v[1] for t, v in got if t < 13.55) and
+          any(v[1] for t, v in got if t >= 13.65),
+          f"a resume is not a seek, and zeros until it has run 0.5 s: "
+          f"{link.seeks}")
     print("  ok")
 
 
@@ -28850,6 +29942,17 @@ if __name__ == "__main__":
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
     test_the_gpl_path_never_loads_the_flame_link()
+    test_remote_pin_required_over_the_network()
+    test_remote_wrong_pin_refused_and_throttled()
+    test_remote_localhost_unaffected_and_proxies_refused()
+    test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
+    test_remote_abort_and_start_need_the_confirm()
+    test_remote_stale_state_refused_and_banner()
+    test_remote_has_no_arm_route()
+    test_remote_page_loss_changes_nothing()
+    test_remote_scrubbing_only_in_a_programming_session()
+    test_player_free_run_pause_and_loop()
+    test_flame_link_seek_guard()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

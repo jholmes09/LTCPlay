@@ -206,6 +206,24 @@ if the boxes do not respond to one, try the other.
 
 Turning it off puts every controller back on the live stream immediately.
 
+## The iPad
+
+Once, on the show machine: open the page, go to `/remote` (or
+http://127.0.0.1:7878/remote), set a PIN for each operator, and pick this
+machine's show Wi-Fi address under "Show network". Then start it with the
+show network on (Run ltcplay, answer y to the iPad question).
+
+On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. Pick your
+name and "iPad", type your PIN. The big red ABORT bar is always at the
+bottom; it asks once. Start now asks once too. Hold, Resume and Reset are
+one press. Disarm every flame group is one press and never asks.
+
+If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
+The show carries on by itself and a Hold stays held. Start now, Resume, Reset
+and the programming buttons go grey until it is back.
+
+Arming is never on the iPad. It stays on the Stream Deck.
+
 ## What it will not do
 
 It will not play audio and it will not start on a schedule.

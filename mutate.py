@@ -585,12 +585,169 @@ MUTATIONS = [
   "        kw.update(no_output=True, no_log=True, sd=self._sd)",
   "        kw.update(no_output=False, no_log=True, sd=self._sd)"),
 
- ("the network token is never checked", "ltcplay/web.py",
-  "        return secrets.compare_digest(str(given or \"\"), token)",
+ # -- the iPad remote (2026-10-03): PIN sessions, the show network, the
+ #    controls, stale state, no arm route, scrubbing and the seek guard --
+ ("remote: a network request needs no PIN session", "ltcplay/web.py",
+  "        return self._ctx().session is not None",
   "        return True"),
 
- ("serving on the network mints no token", "ltcplay/web.py",
-  "    if on_network and token is None:", "    if False:"),
+ ("remote: the remote routes skip the session check", "ltcplay/remote.py",
+  "        if not ctx.allowed:\n            return 401, {\"error\": \"Sign in "
+  "with your PIN first.\"}, {}",
+  "        if False:\n            return 401, {\"error\": \"Sign in "
+  "with your PIN first.\"}, {}"),
+
+ ("remote: any PIN opens a session", "ltcplay/remote.py",
+  "        return hmac.compare_digest(self._hash(pin, salt, n), want)",
+  "        return True"),
+
+ ("remote: wrong PINs are never throttled", "ltcplay/remote.py",
+  "        wait = self.throttle.wait_s(keys)\n        if wait > 0:",
+  "        wait = self.throttle.wait_s(keys)\n        if False:"),
+
+ ("remote: the lock-out never grows", "ltcplay/remote.py",
+  "                               LOCK_BASE_S * 2 ** (n - FREE_TRIES - 1))",
+  "                               LOCK_BASE_S)"),
+
+ ("remote: a new PIN leaves old sessions signed in", "ltcplay/remote.py",
+  "        # A new PIN signs out every device signed in with the old one.\n"
+  "        self.sessions.drop_who(who)",
+  "        pass"),
+
+ ("remote: PINs can be set from the network", "ltcplay/remote.py",
+  "        if name in LOCAL_ONLY and not ctx.local:",
+  "        if False:"),
+
+ ("remote: the press names whoever the body says", "ltcplay/remote.py",
+  "        if ctx.session is not None:\n            return ctx.session[\"who\"], "
+  "ctx.session[\"device\"]",
+  "        if False:\n            return ctx.session[\"who\"], "
+  "ctx.session[\"device\"]"),
+
+ ("remote: proxied requests are let in", "ltcplay/web.py",
+  "        h = remote_mod.looks_proxied(self.headers)\n        if h:",
+  "        h = remote_mod.looks_proxied(self.headers)\n        if False:"),
+
+ ("remote: any Host name is served", "ltcplay/web.py",
+  "        if not remote_mod.host_ok(self.headers.get(\"Host\"), self._local(),",
+  "        if False and not remote_mod.host_ok(self.headers.get(\"Host\"), "
+  "self._local(),"),
+
+ ("remote: presses from another site's page are taken", "ltcplay/web.py",
+  "                    return \"A press from another site's page was refused.\"",
+  "                    pass"),
+
+ ("remote: every interface can be served on", "ltcplay/web.py",
+  "    if on_network and bind in WILDCARD:", "    if False:"),
+
+ ("remote: a stale page can still press Start now and Resume",
+  "ltcplay/remote.py",
+  "        if age > FRESH_S or age < -FRESH_S:", "        if False:"),
+
+ ("remote: a press with no status at all is taken", "ltcplay/remote.py",
+  "            return (\"The page has not shown a status yet. Wait for it to \"",
+  "            return None\n            return (\"The page has not shown a "
+  "status yet. Wait for it to \""),
+
+ ("remote: the page enables stale-state controls", "ltcplay/web/remote.html",
+  "  const fresh = !stale && !!st;", "  const fresh = !!st;"),
+
+ ("remote: the page never shows the stale banner", "ltcplay/web/remote.html",
+  "  b.hidden = !stale || $(\"main\").hidden;", "  b.hidden = true;"),
+
+ ("remote: the page calls a 2.5 s old status fresh", "ltcplay/web/remote.html",
+  "  return (nowMs - lastOkMs) > freshS * 1000;",
+  "  return (nowMs - lastOkMs) > freshS * 2000;"),
+
+ ("remote: a stale flame lamp still reads armed", "ltcplay/remote.py",
+  "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
+  "            pass"),
+
+ ("remote: Start now and Abort need no confirm", "ltcplay/remote.py",
+  "        if name in CONFIRM_ROUTES and body.get(\"confirmed\") is not True:",
+  "        if False:"),
+
+ ("remote: an arm route appears", "ltcplay/remote.py",
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
+  "                  \"disarm-all\", \"operator\")",
+  "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
+  "                  \"disarm-all\", \"operator\", \"arm\")"),
+
+ ("remote: half a request is acted on", "ltcplay/web.py",
+  "            return None if \"/api/remote/\" in self.path else {}",
+  "            return {}"),
+
+ ("remote: disarm with no flame link says done", "ltcplay/remote.py",
+  "            return 409, {\"ok\": False, \"error\": text}",
+  "            return 200, {\"ok\": True, \"error\": text}"),
+
+ ("remote: scrubbing is allowed during a live scheduled show",
+  "ltcplay/remote.py",
+  "            if m is not None and m.state in self.LIVE_STATES:",
+  "            if False:"),
+
+ ("remote: scrubbing is allowed on a show started in Show mode",
+  "ltcplay/remote.py",
+  "        if not rehearsal:\n            return False, (\"This show was",
+  "        if False:\n            return False, (\"This show was"),
+
+ ("remote: a device can pick someone else as the operator",
+  "ltcplay/remote.py",
+  "                    if want.lower() != who.lower():",
+  "                    if False:"),
+
+ ("scheduler: a remote press from someone off the list is taken",
+  "ltcplay/schedule_service.py",
+  "        if who.lower() not in names:\n            sentence = (f\"{who or "
+  "'Nobody'!r} is not on the operator list \"",
+  "        if False:\n            sentence = (f\"{who or "
+  "'Nobody'!r} is not on the operator list \""),
+
+ ("flame link: the seek guard is off by default", "ltcplay/flamelink.py",
+  "                 tc_fps=TC_FPS_DEFAULT, seek_guard=True):",
+  "                 tc_fps=TC_FPS_DEFAULT, seek_guard=False):"),
+
+ ("flame link: a jump is not seen as a seek", "ltcplay/flamelink.py",
+  "            elif abs(dtc - dt) > SEEK_JUMP_S:\n                "
+  "self._seek(last[0], secs)",
+  "            elif False:\n                self._seek(last[0], secs)"),
+
+ ("flame link: a backwards locate is not a seek", "ltcplay/flamelink.py",
+  "            if dtc < 0:\n                self._seek(last[0], secs)\n"
+  "            elif dt > TC_STILL_S:",
+  "            if False:\n                self._seek(last[0], secs)\n"
+  "            elif dt > TC_STILL_S:"),
+
+ ("flame link: no settle after a seek", "ltcplay/flamelink.py",
+  "                and now - self._steady_since >= SEEK_SETTLE_S)",
+  "                and now - self._steady_since >= 0)"),
+
+ ("flame link: a jumped-over cue fires once settled", "ltcplay/flamelink.py",
+  "        if blocked:\n            for i in blocked:\n                "
+  "vals[i] = 0",
+  "        if False:\n            for i in blocked:\n                "
+  "vals[i] = 0"),
+
+ ("flame link: a resume needs no settle", "ltcplay/flamelink.py",
+  "                else:\n                    self._steady_since = now",
+  "                else:\n                    self._steady_since = now - 1.0"),
+
+ ("player: a free-run loop never wraps", "ltcplay/player.py",
+  "                if loop is not None and self.tc_seconds >= loop[1]:",
+  "                if False:"),
+
+ ("player: a paused free run keeps moving", "ltcplay/player.py",
+  "            if paused is not None:\n                self.tc_seconds = paused",
+  "            if False:\n                self.tc_seconds = paused"),
+
+ ("flamesafe: the status mirror gets nothing", "flamesafe/service.py",
+  "                self._status_tx.sendto(pkt, (self.cfg.link_status_ip, mirror))",
+  "                pass"),
+
+ ("flamesafe: a mirror on a link port is accepted", "flamesafe/config.py",
+  "            if c.link_status_ip == other_ip and \\\n"
+  "                    c.link_status_mirror_port == other_port:",
+  "            if False:"),
 
  ("a wrong device name reads as a program fault", "ltcplay/web.py",
   "USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,\n"
@@ -829,6 +986,8 @@ MUTATIONS = [
 
  ("release does not hand the show back", "ltcplay/player.py",
   "        self.freerun_epoch = None\n"
+  "        self.freerun_paused_at = None\n"
+  "        self.loop = None\n"
   "        live = self.feed_state == LOCKED",
   "        live = self.feed_state == LOCKED"),
 
@@ -947,20 +1106,22 @@ MUTATIONS = [
   "        now = time.monotonic()"),
 
  ("skipping a free run does nothing", "ltcplay/player.py",
+  "        at = max(0.0, here + float(seconds))\n"
   "        self.freerun_epoch = _now() - at",
+  "        at = max(0.0, here + float(seconds))\n"
   "        pass  # noqa"),
 
  ("skipping back runs off the front of the show", "ltcplay/player.py",
-  "        at = max(0.0, (_now() - self.freerun_epoch) + float(seconds))",
-  "        at = (_now() - self.freerun_epoch) + float(seconds)"),
+  "        at = max(0.0, here + float(seconds))",
+  "        at = here + float(seconds)"),
 
  ("skipping is allowed while following timecode", "ltcplay/player.py",
   "        if self.freerun_epoch is None:\n"
   "            raise ValueError(\"The show is following timecode, so this Mac \"\n"
   "                             \"cannot move it. Skipping only applies to a free \"\n"
   "                             \"run: press GO first.\")\n"
-  "        at = max(0.0,",
-  "        at = max(0.0,"),
+  "        here = (self.freerun_paused_at",
+  "        here = (self.freerun_paused_at"),
 
  ("restart always restarts the cue you just entered", "ltcplay/player.py",
   "            elif at - cues[here].tc_seconds < 1.5 and here > 0:",
@@ -2098,7 +2259,8 @@ MUTATIONS = [
  ("flamesafe: the flame universe may be sent to a link port",
   "flamesafe/config.py",
   "            c.destination_port in (c.link_listen_port, c.link_status_port,\n"
-  "                                   c.link_arm_port):",
+  "                                   c.link_arm_port,\n"
+  "                                   c.link_status_mirror_port):",
   "            False:"),
 
  ("flamesafe: wrong group names in an assertion are accepted",
