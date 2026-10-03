@@ -574,7 +574,9 @@ class Control:
         if check is not None:
             # Fire & Ice (fire_ice.py): a show that must not run, refused
             # before anything is opened.
-            check(path)
+            extra = check(path)
+            if isinstance(extra, dict):
+                kw.update(extra)
         s = Session(path, **kw)
         s.from_web = True
         s.open()

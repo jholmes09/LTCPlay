@@ -453,32 +453,99 @@ def flame_channels(networks_xml, name):
     Refused unless that controller is Inactive: an active one is in the
     pixel output's map, and the pixel output would send its fire values
     straight to the flame node, around flamesafe. Count is at most 512."""
+    found, near = [], []
+    for c, first, span in _controllers(networks_xml):
+        cname = c.attrib.get("Name", "")
+        if cname == name:
+            found.append((c, first, span))
+        elif cname.strip().lower() == str(name).strip().lower():
+            near.append(cname)
+    if len(found) > 1:
+        raise FlameControllerError(
+            f"{len(found)} controllers are called {name!r} in "
+            f"{networks_xml}, so which one is the flame controller cannot be "
+            f"told. Give it a name of its own in xLights and the same name "
+            f"as \"flame_controller\" in ltcplay_fire_ice.json.")
+    if not found:
+        hint = (f" There is one called {near[0]!r}: the name must match "
+                f"exactly, capitals and spaces included." if near else "")
+        raise FlameControllerError(
+            f"There is no controller called {name!r} (exactly that spelling) "
+            f"in {networks_xml}, so which channels are the flames cannot be "
+            f"told.{hint} Every flame cue is zero.")
+    c, first, span = found[0]
+    if c.attrib.get("ActiveState", "Active") == "Active":
+        raise FlameControllerActive(
+            f"The flame controller {name!r} is Active in "
+            f"{networks_xml}, so the pixel output would send its "
+            f"fire values straight to the flame node, around "
+            f"flamesafe. Set it Inactive in xLights (it keeps its "
+            f"channels). Until then every flame cue is zero.")
+    if span <= 0:
+        raise FlameControllerError(
+            f"The flame controller {name!r} in {networks_xml} has "
+            f"no channels.")
+    return first, min(span, 512)
+
+
+def _controllers(networks_xml):
+    """(element, first absolute channel, span) for every controller in
+    xlights_networks.xml, in netmap.load()'s and xLights' order."""
     import xml.etree.ElementTree as ET
     root = ET.parse(networks_xml).getroot()
     chan = 1
+    out = []
     for c in root:
         if c.tag != "Controller":
             continue
-        a = c.attrib
         nets = [n for n in c if n.tag == "network"]
         span = sum(max(0, int(n.attrib.get("MaxChannels", "0") or 0))
                    for n in nets)
-        if a.get("Name", "") == name:
-            if a.get("ActiveState", "Active") == "Active":
-                raise FlameControllerActive(
-                    f"The flame controller {name!r} is Active in "
-                    f"{networks_xml}, so the pixel output would send its "
-                    f"fire values straight to the flame node, around "
-                    f"flamesafe. Set it Inactive in xLights (it keeps its "
-                    f"channels). Until then every flame cue is zero.")
-            if span <= 0:
-                raise FlameControllerError(
-                    f"The flame controller {name!r} in {networks_xml} has "
-                    f"no channels.")
-            return chan, min(span, 512)
+        out.append((c, chan, span))
         chan += span
-    raise FlameControllerError(f"There is no controller called {name!r} in "
-                               f"{networks_xml}. Every flame cue is zero.")
+    return out
+
+
+def map_total_channels(networks_xml):
+    """Every channel xlights_networks.xml lays out, as netmap.load() counts
+    them: what a render made for this map has."""
+    return sum(span for _c, _f, span in _controllers(networks_xml))
+
+
+def flame_destinations(networks_xml, name):
+    """(address, universe, protocol) of every network row of the flame
+    controller `name` (ComPort, else the controller's IP; BaudRate is the
+    universe, as netmap.load() reads them)."""
+    from . import netmap
+    out = set()
+    for c, _f, _s in _controllers(networks_xml):
+        if c.attrib.get("Name", "") != name:
+            continue
+        for n in c:
+            if n.tag != "network":
+                continue
+            na = n.attrib
+            proto = netmap.UDP_PROTOCOLS.get(
+                (na.get("NetworkType") or "").lower())
+            dest = na.get("ComPort", "") or c.attrib.get("IP", "")
+            try:
+                univ = int(na.get("BaudRate", ""))
+            except ValueError:
+                continue
+            if proto and dest:
+                out.add((dest, univ, proto))
+    return out
+
+
+def flamesafe_destination(path):
+    """(address, universe, "e131") flamesafe sends the flame node, read from
+    its own config, or None when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        return (str(doc["destination"]["ip"]), int(doc["universe"]), "e131")
+    except Exception:
+        return None
 
 
 def _show_networks(show_file):
@@ -492,25 +559,48 @@ def _show_networks(show_file):
                         "xlights_networks.xml")
 
 
-def refuse_active_flame_controller(show_file, name):
-    """Raise FlameControllerError when the show this file plays has the
-    flame controller `name` Active (or with no ActiveState, which xLights
-    reads as Active) in its xlights_networks.xml: the pixel output would
-    then be built to send its fire values straight to the flame node,
-    around flamesafe (PR #43 review, finding 3). A controller that is not
-    there is not refused here (its cues are zero, said by FlameCues)."""
+def refuse_active_flame_controller(show_file, name, fs_dest=None):
+    """Raise FlameControllerError when the show this file plays cannot be
+    run safely with flames, from its xlights_networks.xml:
+      - the flame controller `name` is Active (or has no ActiveState,
+        which xLights reads as Active): the pixel output would send its
+        fire values straight to the flame node, around flamesafe (PR #43
+        review, finding 3);
+      - no controller has exactly that name, or two do, or it has no
+        channels (fix round 2, B: a rename or a change of case in xLights
+        used to slip past, with the controller Active);
+      - any Active controller sends to the flame controller's own address
+        and universe, or to flamesafe's destination (fix round 2, B: a
+        second controller at the flame node's address did).
+    Returns the (address, universe, protocol) set the pixel output must
+    never send to. A map that does not parse is left to the session, which
+    refuses it itself."""
     path = _show_networks(show_file)
     if not path or not os.path.exists(path):
-        return
+        return set()
     try:
-        flame_channels(path, name)
-    except FlameControllerActive:
-        raise
+        _controllers(path)
     except Exception:
-        # Not there, no channels, or a map that does not parse: none of
-        # those puts fire values on the pixel output (the session refuses a
-        # broken map itself), and FlameCues says so when cues are zero.
-        pass
+        return set()
+    flame_channels(path, name)
+    blocked = set(flame_destinations(path, name))
+    if fs_dest:
+        blocked.add(tuple(fs_dest))
+    from . import netmap
+    try:
+        nm = netmap.load(path)
+    except Exception:
+        return blocked
+    for u in nm.universes:
+        if (u.ip, u.universe, u.protocol) in blocked:
+            raise FlameControllerActive(
+                f"Controller {u.controller!r} is Active in {path} and sends "
+                f"to {u.ip}, {u.protocol} universe {u.universe}: the flame "
+                f"node's own address and universe, so the pixel output would "
+                f"send its values straight to the flame node, around "
+                f"flamesafe. Set it Inactive, or give it another address, "
+                f"in xLights.")
+    return blocked
 
 
 def check_flame_controllers(folder, cfg):
@@ -531,7 +621,10 @@ def check_flame_controllers(folder, cfg):
         if not isinstance(doc, dict) or "cues" not in doc:
             continue
         try:
-            refuse_active_flame_controller(p, cfg.flame_controller)
+            refuse_active_flame_controller(
+                p, cfg.flame_controller,
+                flamesafe_destination(cfg.flamesafe_config)
+                if cfg.flamesafe_config else None)
         except FlameControllerError as e:
             raise FireIceConfigError(f"{n}: {e}")
 
@@ -559,8 +652,9 @@ class FlameCues:
         self.control = control
         self.name = name
         self._journal = journal
-        self._folder = None
+        self._folder = None      # (session, map path, its mtime and size)
         self._span = None
+        self._total = None       # the map's channel count, for the render
         self._problem = ""
         self._why = ""
         self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
@@ -584,16 +678,30 @@ class FlameCues:
         return None
 
     def _locate(self, session):
+        """The flame controller's channels, found again for every new
+        session and whenever xlights_networks.xml changes (fix round 2, A:
+        they were cached per show folder for the life of ltc serve, so a
+        layout changed with serve running read fire from the wrong
+        channels)."""
         folder = getattr(getattr(session, "tl", None), "show_dir", None)
-        if folder == self._folder:
-            return self._span
-        self._folder, self._span = folder, None
+        path = getattr(session, "nm_path", None) or (
+            os.path.join(folder, "xlights_networks.xml") if folder else None)
         try:
-            if not folder:
+            st = os.stat(path) if path else None
+            stamp = (st.st_mtime_ns, st.st_size) if st else None
+        except OSError:
+            stamp = None
+        if self._folder is not None and self._folder[0] is session and \
+                self._folder[1:] == (path, stamp):
+            return self._span
+        self._folder = (session, path, stamp)
+        self._span, self._total = None, None
+        try:
+            if not path:
                 raise FlameControllerError("The running show has no show "
                                            "folder.")
-            self._span = flame_channels(
-                os.path.join(folder, "xlights_networks.xml"), self.name)
+            self._span = flame_channels(path, self.name)
+            self._total = map_total_channels(path)
             self._problem = ""
             self._note(f"Flame cues: from controller {self.name!r}, "
                        f"channels {self._span[0]} to "
@@ -673,6 +781,19 @@ class FlameCues:
                               f"is not one cue of this show file")
         try:
             f, spans = self._render(hits[0].path)
+            # A render whose one range starts at channel 1 is a whole
+            # render and must match the map exactly; a truly sparse one
+            # must at least lie inside it.
+            have = max(s + n for s, _src, n in spans)
+            whole = len(spans) == 1 and spans[0][0] == 0
+            if self._total is None or (have != self._total if whole
+                                       else have > self._total):
+                return self._zero(
+                    f"the show's render has {have} channels but "
+                    f"xlights_networks.xml lays out {self._total}: they were "
+                    f"not made for each other, so which channels are the "
+                    f"flames cannot be told. Render the show again for this "
+                    f"layout")
             rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
@@ -1118,12 +1239,21 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         defaults["exclude_controllers"] = (cfg.flame_controller,)
         control.defaults = defaults
 
+        fs_dest = (flamesafe_destination(cfg.flamesafe_config)
+                   if cfg.flamesafe_config else None)
+
         def before_open(show_file, _name=cfg.flame_controller):
+            """Refuses a show that cannot run safely with flames, and
+            returns what the session must leave out of the pixel output:
+            the flame controller by name AND every address and universe
+            the flame node is reached at (fix round 2, B)."""
             from .session import SessionError
             try:
-                refuse_active_flame_controller(show_file, _name)
+                blocked = refuse_active_flame_controller(show_file, _name,
+                                                         fs_dest)
             except FlameControllerError as e:
                 raise SessionError(f"This show will not start: {e}")
+            return {"exclude_destinations": tuple(sorted(blocked))}
         control.before_open = before_open
     elif cfg.flamesafe_config and journal is not None:
         journal("Flame cues: no 'flame_controller' is named in "

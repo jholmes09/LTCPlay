@@ -31699,18 +31699,20 @@ def test_fire_ice_active_flame_controller_refused():
             "an Active flame controller is refused")
         with open(net, "w", encoding="utf-8") as fh:
             fh.write(_FI_NETWORKS.replace(' ActiveState="{state}"', ""))
-        check(refused(lambda: F.refuse_active_flame_controller(
-            tlp, "Flames")) is not None,
-            "a flame controller with no ActiveState (xLights reads it as "
-            "Active) is refused")
+        why = refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Flames"))
+        check(why is not None and "The flame controller 'Flames' is Active" in why,
+              f"a flame controller with no ActiveState (xLights reads it as "
+              f"Active) is refused as Active: {why}")
         with open(net, "w", encoding="utf-8") as fh:
             fh.write(_FI_NETWORKS.replace("{state}", "Inactive"))
         check(refused(lambda: F.refuse_active_flame_controller(
             tlp, "Flames")) is None, "an Inactive one is not")
-        check(refused(lambda: F.refuse_active_flame_controller(
-            tlp, "Nope")) is None,
-            "a controller that is not there is not refused here (its cues "
-            "are zero)")
+        why = refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Nope"))
+        check(why is not None and "exactly that spelling" in why,
+              f"a controller that is not there is refused, saying so (fix "
+              f"round 2, B): {why}")
         # ltc serve startup: every show file in the folder.
         cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs)
         F.check_flame_controllers(folder, cfg)
@@ -31770,6 +31772,10 @@ def test_fire_ice_active_flame_controller_refused():
                   ("Flames",),
                   "and the session it opens leaves the flame controller "
                   "out of the pixel output")
+            check(("10.0.0.9", 7, "e131") in
+                  (made[-1].get("exclude_destinations") or ()),
+                  f"and the flame node's address and universe too (fix "
+                  f"round 2, B): {made[-1].get('exclude_destinations')}")
         finally:
             web_mod.Session = real
         check(not any(f and "flame" in t.lower() for t, f in lines),
@@ -31815,6 +31821,219 @@ def test_fire_ice_active_flame_controller_refused():
                       f"the GPL path is unchanged: {ctl}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+_FI2_NETWORKS = """<?xml version="1.0" encoding="UTF-8"?>
+<Networks computer="test">
+  <Controller Id="1" Name="Pixels A" Type="Ethernet" IP="127.0.0.1" ActiveState="Active">
+    <network NetworkType="ArtNET" ComPort="127.0.0.1" BaudRate="1" MaxChannels="510" Enabled="Yes" />
+  </Controller>
+{extra}  <Controller Id="9" Name="{name}" Type="Ethernet" IP="10.0.0.9" ActiveState="{state}">
+    <network NetworkType="E131" ComPort="10.0.0.9" BaudRate="7" MaxChannels="512" Enabled="Yes" />
+  </Controller>
+{after}</Networks>
+"""
+
+
+def _fi2_ctl(name, state, ip="127.0.0.2", univ=2, proto="ArtNET", count=512):
+    return (f'  <Controller Id="5" Name="{name}" Type="Ethernet" IP="{ip}" '
+            f'ActiveState="{state}">\n    <network NetworkType="{proto}" '
+            f'ComPort="{ip}" BaudRate="{univ}" MaxChannels="{count}" '
+            f'Enabled="Yes" />\n  </Controller>\n')
+
+
+def test_fire_ice_flame_cues_follow_a_changed_layout():
+    section("fire & ice: the flame cues find the flame controller again for "
+            "every session and whenever xlights_networks.xml changes, reopen "
+            "a re-rendered FSEQ, refuse a render that does not match the "
+            "layout, and refuse two cues with the playing name (fix round 2, "
+            "A; R2-H9, R2-H11)")
+    import shutil
+    import tempfile
+    import types
+    import test_show_fixtures as _fx
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    try:
+        show = os.path.join(work, "show")
+        os.makedirs(show)
+        net = os.path.join(show, "xlights_networks.xml")
+
+        def layout(extra=""):
+            with open(net, "w", encoding="utf-8") as fh:
+                fh.write(_FI2_NETWORKS.format(extra=extra, name="Flames",
+                                              state="Inactive", after=""))
+        render = os.path.join(show, "Show.fseq")
+
+        def rerender(channels, fill):
+            _fx.write_fseq(render, frame_count=400, channel_count=channels,
+                           step_ms=25, compression="zlib", block_frames=100,
+                           fill=fill)
+            st = os.stat(render)
+            os.utime(render, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        layout()
+        rerender(1022, 50)
+
+        def session():
+            clk = types.SimpleNamespace(
+                source="audio_master", paused=False,
+                _cue={"label": "Show", "position_s": 0.0},
+                last_sent=(0, 0, 2, 15))
+            player = types.SimpleNamespace(override=None, freerun_epoch=None)
+            cue = types.SimpleNamespace(name="Show", path=render)
+            return types.SimpleNamespace(
+                running=True, clock=clk, player=player,
+                tl=types.SimpleNamespace(show_dir=show, cues=[cue]))
+        control = types.SimpleNamespace(session=session())
+        cues = F.FlameCues(control, "Flames", journal)
+        check(cues("00:00:02:15") == [50] * 512 and cues._span == (511, 512),
+              f"setup: flame channels 511 to 1022: {cues._span}")
+        # R2-H9: the same layout re-rendered: the new render is read.
+        rerender(1022, 60)
+        check(cues("00:00:02:15") == [60] * 512,
+              "a re-rendered FSEQ is reopened, not read from the old one")
+        # A: a 512-channel controller inserted before Flames with serve
+        # running, and the show not yet rendered again: refused.
+        layout(_fi2_ctl("Pixels B", "Active"))
+        got = cues("00:00:02:15")
+        check(got is None and cues._span == (1023, 512) and any(
+            "render has 1022 channels but" in t for t, _f in lines),
+            f"a layout changed under a running serve: the channels are found "
+            f"again (1023), and a render made for the old layout is refused: "
+            f"{cues._span} {got and got[:2]}")
+        rerender(1534, 70)
+        check(cues("00:00:02:15") == [70] * 512,
+              "rendered again for the new layout: the cues come back")
+        # A new session (Stop, then Run) always looks again.
+        layout()
+        rerender(1022, 80)
+        control.session = session()
+        check(cues("00:00:02:15") == [80] * 512 and cues._span == (511, 512),
+              f"a new session finds the channels again: {cues._span}")
+        # R2-H11: two cues with the name the show audio is playing.
+        control.session.tl.cues = [
+            types.SimpleNamespace(name="Show", path=render),
+            types.SimpleNamespace(name="Show", path=render)]
+        check(cues("00:00:02:15") is None,
+              "two cues with the playing name: which render is meant cannot "
+              "be told, so zeros")
+        cues.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_fire_ice_flame_node_address_never_in_the_pixel_output():
+    section("fire & ice: a renamed, miscased, doubled or missing flame "
+            "controller is refused at serve and at Run, and so is any Active "
+            "controller sending to the flame node's address and universe or "
+            "flamesafe's destination; the pixel map leaves them out by "
+            "address as well as by name (fix round 2, B)")
+    import json as _json
+    import shutil
+    import tempfile
+    F = _fi_mod()
+    from ltcplay.session import Session, SessionError
+    work = tempfile.mkdtemp()
+    try:
+        fs, show, doc = _fi_flame_files(work)
+        net = os.path.join(show, "xlights_networks.xml")
+        folder = os.path.join(work, "folder")
+        os.makedirs(folder)
+        tlp = os.path.join(folder, "fi_timeline.json")
+        with open(tlp, "w", encoding="utf-8") as fh:
+            _json.dump({"name": "fi", "fps": 30, "show_dir": show,
+                        "cues": [{"tc": "01:00:00:00", "fseq": "Show.fseq",
+                                  "name": "Show"}]}, fh)
+        fs_dest = F.flamesafe_destination(fs)
+        check(fs_dest == (doc["destination"]["ip"], doc["universe"], "e131"),
+              f"flamesafe's destination is read from its own config: "
+              f"{fs_dest}")
+
+        def write(name="Flames", state="Inactive", extra="", after=""):
+            with open(net, "w", encoding="utf-8") as fh:
+                fh.write(_FI2_NETWORKS.format(extra=extra, name=name,
+                                              state=state, after=after))
+
+        def why(cfg_name="Flames"):
+            try:
+                F.refuse_active_flame_controller(tlp, cfg_name, fs_dest)
+            except F.FlameControllerError as e:
+                return str(e)
+            return None
+        write()
+        check(why() is None, "setup: Inactive and alone: not refused")
+        cases = [
+            ("renamed in xLights", dict(name="Flame Node", state="Active"),
+             "Flames", "exactly that spelling"),
+            ("a different case", dict(name="Flames", state="Active"),
+             "flames", "There is one called 'Flames'"),
+            ("two called Flames", dict(after=_fi2_ctl("Flames", "Inactive",
+                                                     "10.0.0.10", 8, "E131")),
+             "Flames", "2 controllers are called"),
+            ("a second Active controller at the flame node's address",
+             dict(after=_fi2_ctl("Flames spare", "Active", "10.0.0.9", 7,
+                                 "E131")),
+             "Flames", "the flame node's own address"),
+            ("an Active controller at flamesafe's destination",
+             dict(after=_fi2_ctl("Rogue", "Active", fs_dest[0], fs_dest[1],
+                                 "E131")),
+             "Flames", "the flame node's own address"),
+        ]
+        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs)
+        for label, kw, cfg_name, must in cases:
+            write(**kw)
+            w = why(cfg_name)
+            check(w is not None and must in w,
+                  f"{label}: refused at Run, saying why: {w}")
+            try:
+                F.check_flame_controllers(
+                    folder, F.FireIceConfig(flame_controller=cfg_name,
+                                            flamesafe_config=fs))
+                check(False, f"{label}: ltc serve must refuse it")
+            except F.FireIceConfigError as e:
+                check(must in str(e), f"{label}: refused at serve: {e}")
+        # Same address and universe on Art-Net is another universe space:
+        # not the flame node.
+        write(after=_fi2_ctl("Art-Net 7", "Active", "10.0.0.9", 7, "ArtNET"))
+        check(why() is None, "an Art-Net universe of the same number is not "
+                             "the flame node's sACN universe")
+        # The pixel map leaves the flame node out by address too.
+        write(after=_fi2_ctl("Flames spare", "Active", "10.0.0.9", 7, "E131"))
+        for dests in ((), (("10.0.0.9", 7, "e131"),)):
+            sess = Session(tlp, no_output=True, no_log=True, sd=FakeSD(),
+                           device="MOTU M4", channel=1,
+                           exclude_controllers=("Flames",),
+                           exclude_destinations=dests)
+            try:
+                sess.open()
+            except SessionError:
+                pass
+            ctl = sorted({u.controller for u in sess.nm.universes})
+            want = (["Pixels A"] if dests else ["Flames spare", "Pixels A"])
+            check(ctl == want, f"exclude_destinations={dests}: the pixel "
+                               f"map is {ctl}")
+        # Run: attach()'s check hands the session the addresses to leave out.
+        write()
+        n = _fi_night()
+        from ltcplay import web as web_mod
+        control = web_mod.Control(folder, sd=FakeSD())
+        F.attach(n.svc, control, cfg, flame_link=_FiFlames(n.calls, n.T),
+                 threaded=False, clock=n.T.now, waiter=n.T.wait)
+        extra = control.before_open(tlp)
+        check(set(extra["exclude_destinations"]) ==
+              {("10.0.0.9", 7, "e131"), fs_dest},
+              f"Run leaves out the flame node's address and flamesafe's: "
+              f"{extra}")
+        n.c.close()
+        n.link.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
 
 
 def test_fire_ice_flame_link_from_flamesafe_config():
@@ -36801,6 +37020,8 @@ if __name__ == "__main__":
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
+    test_fire_ice_flame_cues_follow_a_changed_layout()
+    test_fire_ice_flame_node_address_never_in_the_pixel_output()
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
