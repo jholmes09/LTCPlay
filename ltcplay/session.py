@@ -113,7 +113,7 @@ class Session:
                  fps=None, drop=None, device=None, channel=None, rate=None,
                  echo_log=False, sd=None, allow_missing=False,
                  auto_reload=False, exclude_controllers=(),
-                 log_factory=None):
+                 exclude_destinations=(), log_factory=None):
         self.timeline_path = timeline_path
         # Fire & Ice only (fire_ice.BackgroundShowLog): what builds the show
         # log, in place of showlog.ShowLog. The GPL path never passes it.
@@ -123,6 +123,10 @@ class Session:
         # (the flame controller: its universe goes to flamesafe only). The
         # GPL path never passes this.
         self.exclude_controllers = tuple(exclude_controllers or ())
+        # And every (address, universe, protocol) the flame node is reached
+        # at: a controller of another name sending there is left out too.
+        self.exclude_destinations = frozenset(
+            tuple(d) for d in (exclude_destinations or ()))
         self.allow_missing = allow_missing
         self.auto_reload = auto_reload
         self.no_output = no_output
@@ -192,13 +196,15 @@ class Session:
                 f"folder beside the .fseq files. Either \"show_dir\" in the "
                 f"timeline points somewhere else, or give the real path.")
         self.nm = netmap_mod.load(self.nm_path)
-        if self.exclude_controllers:
-            dropped = [u for u in self.nm.universes
-                       if u.controller in self.exclude_controllers]
+        if self.exclude_controllers or self.exclude_destinations:
+            def _out(u):
+                return (u.controller in self.exclude_controllers or
+                        (u.ip, u.universe, u.protocol) in
+                        self.exclude_destinations)
+            dropped = [u for u in self.nm.universes if _out(u)]
             if dropped:
                 self.nm.universes = [u for u in self.nm.universes
-                                     if u.controller not in
-                                     self.exclude_controllers]
+                                     if not _out(u)]
                 self.notes.append(
                     f"Not sent by the pixel output: "
                     f"{', '.join(sorted({u.controller for u in dropped}))} "

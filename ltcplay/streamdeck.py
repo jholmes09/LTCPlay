@@ -221,6 +221,11 @@ ARM_HOLD_S = 0.6
 # flinch-press, short enough that a deliberate re-arm a few seconds later
 # is never mistaken for one.
 REARM_REFRACTORY_S = 2.0
+# Reset (PR #43 fix round 2, C): its own deliberate gesture, the HOLD key
+# held this long while the rig is aborted. The Abort key never Resets: a
+# reflexive second press of Abort after an Abort from another screen used
+# to be a one-tap Reset (and Start now then lit the lasers).
+RESET_HOLD_S = 2.0
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -814,10 +819,16 @@ class EngineConductor:
         self._stop = threading.Event()
         self._threads = []
         self.dropped = 0
+        # The last press the engine did not take (or could not be reached
+        # for), for the deck's own keys to show, not only its console; ""
+        # once a press is taken again (fix round 2, E).
+        self.fault = ""
+        self._last_ok = None      # when the engine last answered a poll
 
     def start(self):
         if self._threads:
             return
+        self._started_at = self._clock()
         self._stop.clear()
         for target, name in ((self._post_loop, "ltcplay-deck-engine-press"),
                              (self._poll_loop, "ltcplay-deck-engine-poll")):
@@ -857,6 +868,15 @@ class EngineConductor:
                 "seen": int(self._wall() * 1000)}
         if name == "abort":
             body["confirmed"] = True
+            # Abort never waits behind another press (fix round 2, D: a deck
+            # Abort waited 2.6 s behind a slow Hold): a thread of its own,
+            # at once, like the scheduler's own Abort bypass.
+            threading.Thread(target=self._post_one, args=(name, body),
+                             daemon=True,
+                             name="ltcplay-deck-engine-abort").start()
+            return EngineResult(True, "abort sent to the engine's show "
+                                      "conductor at once; the engine's "
+                                      "journal says what it did.")
         try:
             self._q.put_nowait((name, body))
         except queue.Full:
@@ -873,22 +893,27 @@ class EngineConductor:
             item = self._q.get()
             if item is None:
                 return
-            name, body = item
-            try:
-                ok, text = self._poster("/api/remote/" + name, body)
-            except Exception as e:
-                ok, text = False, f"{type(e).__name__}: {e}"
-            if ok:
-                line = f"Stream Deck {name.title()}: the engine says: {text}"
-            else:
-                line = (f"Stream Deck {name.title()}: the engine's show "
-                        f"conductor did NOT take it: {text}")
-            try:
-                self._journal(line, fault=not ok, action=name,
-                              who=body.get("who") or "",
-                              screen=body.get("screen") or "Stream Deck")
-            except Exception:
-                pass
+            self._post_one(*item)
+
+    def _post_one(self, name, body):
+        """One press to the engine; its answer journaled, and kept as
+        the deck's engine fault when the engine did not take it."""
+        try:
+            ok, text = self._poster("/api/remote/" + name, body)
+        except Exception as e:
+            ok, text = False, f"{type(e).__name__}: {e}"
+        self.fault = "" if ok else f"{name.title()}: {text}"
+        if ok:
+            line = f"Stream Deck {name.title()}: the engine says: {text}"
+        else:
+            line = (f"Stream Deck {name.title()}: the engine's show "
+                    f"conductor did NOT take it: {text}")
+        try:
+            self._journal(line, fault=not ok, action=name,
+                          who=body.get("who") or "",
+                          screen=body.get("screen") or "Stream Deck")
+        except Exception:
+            pass
 
     def _http_post(self, path, body):
         """(ok, sentence) for one blocking POST, from the press thread."""
@@ -919,6 +944,8 @@ class EngineConductor:
             with self._lock:
                 self._engine = ((snap, self._clock())
                                 if isinstance(snap, dict) else None)
+                if self._engine is not None:
+                    self._last_ok = self._clock()
             self._stop.wait(self._period)
 
     def _http_get(self, path):
@@ -929,6 +956,16 @@ class EngineConductor:
                 return json.loads(r.read().decode("utf-8"))
         except (OSError, ValueError, urllib.error.URLError):
             return None
+
+    def unreachable(self):
+        """True once the engine has not answered a poll for 2 s (or never
+        has, after the first 2 s): for the deck's keys to show."""
+        with self._lock:
+            last = self._last_ok
+        if last is None:
+            return bool(self._threads) and self._clock() - \
+                self._started_at > 2.0
+        return self._clock() - last > 2.0
 
     def snapshot(self):
         """{"latched", "look"}: never the network, never raises."""
@@ -1522,6 +1559,7 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
+        self._reset_hold = AbortHold(hold_s=RESET_HOLD_S)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -1605,9 +1643,14 @@ class Controller:
                 return False
         return self._latched
 
-    def _do_abort(self):
+    def _do_abort(self, again=False):
         """ALWAYS real: every group's wanted goes false on the arm link at
         once, whether or not a conductor is connected (module docstring).
+        The arm link goes FIRST, before the engine is asked anything.
+
+        `again`: the rig is already aborted (pressed while latched, fix
+        round 2, C): the arm link is sent false again and that is all; the
+        engine already has its Abort.
 
         Also starts every group's own re-arm refractory window (item 8):
         Abort is itself the panic button, and a reflexive "make sure it's
@@ -1619,7 +1662,13 @@ class Controller:
         now = self._clock()
         self._disarmed_at = [now] * len(self.names)
         who = self.operator_provider() or ""
-        if self.conductor is not None:
+        if again:
+            self._log("Stream Deck Abort pressed again while aborted: every "
+                      "flame group's wanted state was sent false again. "
+                      "Reset is the HOLD key held for "
+                      f"{RESET_HOLD_S:g} s.", action="abort", who=who,
+                      screen="Stream Deck")
+        elif self.conductor is not None:
             r = self.conductor.abort(who=who, screen="Stream Deck")
             self._log(f"Stream Deck Abort: {r.sentence}", fault=not r.ok,
                       action="abort", who=who, screen="Stream Deck")
@@ -1883,16 +1932,33 @@ class Controller:
         now = self._clock()
         latched = self._latched_now()
         if latched:
-            # Aborted: only a plain press of the Abort/Reset key (index 2)
-            # does anything (the demo's own rule, kept exactly).
+            # Aborted (PR #43 fix round 2, C):
+            # - the Abort key Aborts again, at once (every group's wanted
+            #   false on the arm link, and the engine asked again); it NEVER
+            #   Resets, so a reflexive "make sure" press after an Abort
+            #   from another screen cannot undo it;
+            # - Reset is its own deliberate gesture: the HOLD key held for
+            #   RESET_HOLD_S (tick() fires it);
+            # - a group key still drops that group's arm request: disarm
+            #   is never behind any gate. Nothing can be armed.
+            for k in releases(self._prev_keys, down):
+                if k == TOP_HOLD:
+                    self._reset_hold.release()
             for k in edges(self._prev_keys, down):
                 if k == TOP_ABORT:
-                    self._do_reset()
+                    self._do_abort(again=True)
+                elif k == TOP_HOLD:
+                    self._reset_hold.press(now)
+                elif k in GROUP_KEYS:
+                    i = k - GROUP_KEYS[0]
+                    if self.arm.wanted[i]:
+                        self._do_disarm(i)
             self._abort_hold.release()
             for h in self._arm_holds:
                 h.release()
             self._prev_keys = list(down)
             return
+        self._reset_hold.release()
         for k in releases(self._prev_keys, down):
             if k == TOP_ABORT:
                 self._abort_hold.release()
@@ -1936,9 +2002,10 @@ class Controller:
         now = self._clock()
         if self._latched_now():
             # While latched, run_once's own latched branch releases every
-            # hold on its next call; there is nothing for tick() to fire
-            # here, and the only key that does anything (Reset) is instant,
-            # not hold-based.
+            # arm and Abort hold; the one hold that can fire is Reset's
+            # (the HOLD key held RESET_HOLD_S, fix round 2, C).
+            if self._prev_keys[TOP_HOLD] and self._reset_hold.fired(now):
+                self._do_reset()
             return
         if self._prev_keys[TOP_ABORT] and self._abort_hold.fired(now):
             self._do_abort()
@@ -2131,7 +2198,18 @@ class Controller:
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
         b0 = face_box(TOP_START)
-        if latched:
+        engine_fault = (getattr(self.conductor, "fault", "") or
+                        (self.conductor is not None and
+                         hasattr(self.conductor, "unreachable") and
+                         self.conductor.unreachable()))
+        if engine_fault:
+            # Fix round 2, E: the engine did not take a press (or cannot be
+            # reached): said on the deck itself, not only its console.
+            fonts.show_key(d, b0, ["ENGINE", "FAULT"],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=16)
+        elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
         else:
             op = self.operator_provider()
@@ -2142,7 +2220,8 @@ class Controller:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
         b1 = face_box(TOP_HOLD)
         if latched:
-            fonts.show_key(d, b1, ["HOLD"], DIM_TEXT, max_size=28)
+            fonts.show_key(d, b1, ["HOLD 2 s", "TO RESET"], CHAMPAGNE,
+                           kind="sans", max_size=16)
         elif self._held_hint() and blink_on:
             fonts.show_key(d, b1, ["RESUME"], BLACK, bg=GOLD)
         elif self._held_hint():
@@ -2151,7 +2230,7 @@ class Controller:
             fonts.show_key(d, b1, ["HOLD"], CHAMPAGNE, max_size=28)
         b2 = face_box(TOP_ABORT)
         if latched:
-            fonts.show_key(d, b2, ["RESET"], BLACK if blink_on else RED,
+            fonts.show_key(d, b2, ["ABORTED"], BLACK if blink_on else RED,
                            bg=RED if blink_on else None)
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)

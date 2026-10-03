@@ -1825,9 +1825,9 @@ MUTATIONS = [
   '        put("config.json", js({"note": "none"} if config is not None else'),
 
  ("the scheduler's own lines stay in memory only, as before",
-  "ltcplay/schedule_service.py",
-  '            self._record_logevent(le)\n        claimed = set()',
-  '            self.journal.append(le.to_dict())\n        claimed = set()'),
+  'ltcplay/schedule_service.py',
+  '            self._record_logevent(self._reworded(le))\n        claimed = set()',
+  '            self.journal.append(self._reworded(le).to_dict())\n        claimed = set()'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
   '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
@@ -5712,10 +5712,10 @@ def build():
   "            call.done.set()\n"
   "        if not call.done.wait(wait_s):"),
 
- ("scheduler fix round: the Abort line still says nothing was disarmed",
-  "ltcplay/schedule_service.py",
-  "            if self.conductor is not None and le.action == sch.ABORT and \\",
-  "            if False and \\"),
+ ('scheduler fix round: the Abort line still says nothing was disarmed',
+  'ltcplay/schedule_service.py',
+  '        if self.conductor is not None and le.action == sch.ABORT and \\',
+  '        if False and \\'),
 
  ("scheduler fix round: effects the conductor does not perform are "
   "journaled as performed",
@@ -6293,13 +6293,10 @@ def build():
   "        if any(p[1] == \"abort\" for p in plan):",
   "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
 
- ("failed start disarms: the journal never says why the flames were "
-  "disarmed",
-  "ltcplay/schedule_service.py",
-  "                le = replace(le, text=le.text.replace(\n"
-  "                    sch.FAILED_START_NOT_DISARMED,\n"
-  "                    self.CONDUCTOR_DISARMS_FAILED_START))",
-  "                pass"),
+ ('failed start disarms: the journal never says why the flames were disarmed',
+  'ltcplay/schedule_service.py',
+  '            le = replace(le, text=le.text.replace(\n                sch.FAILED_START_NOT_DISARMED,\n                self.CONDUCTOR_DISARMS_FAILED_START))',
+  '            pass'),
 
  ("failed start disarms: a cut show disarms too",
   "ltcplay/schedule_service.py",
@@ -6629,8 +6626,8 @@ def build():
 
  ('show-assembly: an Active flame controller is accepted',
   'ltcplay/fire_ice.py',
-  '            if a.get("ActiveState", "Active") == "Active":',
-  '            if a.get("ActiveState", "Active") == "Never":'),
+  '    if c.attrib.get("ActiveState", "Active") == "Active":',
+  '    if c.attrib.get("ActiveState", "Active") == "Never":'),
 
  ('show-assembly: flame channels are counted from 0',
   'ltcplay/fire_ice.py',
@@ -6731,8 +6728,8 @@ def build():
 
  ('fix round 1: the session keeps excluded controllers',
   'ltcplay/session.py',
-  '        if self.exclude_controllers:\n            dropped',
-  '        if False:\n            dropped'),
+  '        if self.exclude_controllers or self.exclude_destinations:\n            def _out(u):',
+  '        if False:\n            def _out(u):'),
 
  ("fix round 1: Fire & Ice sessions keep the flame controller",
   'ltcplay/fire_ice.py',
@@ -6741,8 +6738,8 @@ def build():
 
  ('fix round 1: an Active flame controller is not refused at Run',
   'ltcplay/fire_ice.py',
-  '    except FlameControllerActive:\n        raise\n',
-  '    except FlameControllerActive:\n        pass\n'),
+  '            except FlameControllerError as e:\n                raise SessionError(f"This show will not start: {e}")',
+  '            except FlameControllerError as e:\n                blocked = set()'),
 
  ('fix round 1: ltc serve starts with an Active flame controller',
   'ltcplay/fire_ice.py',
@@ -6835,10 +6832,10 @@ def build():
   '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
   '        if engine is not None:'),
 
- ("fix round 1: an engine refusal of a deck press is not a fault",
+ ('fix round 1: an engine refusal of a deck press is not a fault',
   'ltcplay/streamdeck.py',
-  '                self._journal(line, fault=not ok, action=name,',
-  '                self._journal(line, fault=False, action=name,'),
+  '            self._journal(line, fault=not ok, action=name,',
+  '            self._journal(line, fault=False, action=name,'),
 
 
  ('fix round 1: the background show log writes on the caller',
@@ -6895,8 +6892,8 @@ def build():
 
  ('review H11: a flame controller with no ActiveState attribute',
   'ltcplay/fire_ice.py',
-  '            if a.get("ActiveState", "Active") == "Active":',
-  '            if a.get("ActiveState", "Inactive") == "Active":'),
+  '    if c.attrib.get("ActiveState", "Active") == "Active":',
+  '    if c.attrib.get("ActiveState", "Inactive") == "Active":'),
 
  ('review H12: closing reports done without zeroing flames, blanking lasers or blacking the pixels',
   'ltcplay/fire_ice.py',
@@ -6925,6 +6922,124 @@ def build():
   'ltcplay/schedule.py',
   '    return f"{what} pressed{_screen(ev)} with no operator chosen"',
   '    return f"The operator pressed {what}{_screen(ev)}"'),
+
+
+ # -- PR #43 fix round 2 (second independent review, 2026-10-03).
+ ('fix round 2: the flame channels are cached per show folder for good',
+  'ltcplay/fire_ice.py',
+  '        if self._folder is not None and self._folder[0] is session and \\\n                self._folder[1:] == (path, stamp):',
+  '        if self._folder is not None:'),
+
+ ('fix round 2: a render made for another layout is read',
+  'ltcplay/fire_ice.py',
+  '            if self._total is None or (have != self._total if whole',
+  '            if False and (have != self._total if whole'),
+
+ ('R2-H9 a re-rendered FSEQ is never reopened by the flame cues',
+  'ltcplay/fire_ice.py',
+  '            key = (path, st.st_mtime_ns, st.st_size)',
+  '            key = (path, None, None)'),
+
+ ('R2-H11 flame cues take the first of two cues with the playing name',
+  'ltcplay/fire_ice.py',
+  '        if len(hits) != 1:\n            return self._zero(f"the show audio is playing',
+  '        if not hits:\n            return self._zero(f"the show audio is playing'),
+
+ ('fix round 2: a flame controller that is not there is not refused',
+  'ltcplay/fire_ice.py',
+  '    flame_channels(path, name)\n    blocked = ',
+  '    try:\n        flame_channels(path, name)\n    except FlameControllerActive:\n        raise\n    except FlameControllerError:\n        pass\n    blocked = '),
+
+ ("fix round 2: an Active controller at the flame node's address is not refused",
+  'ltcplay/fire_ice.py',
+  '        if (u.ip, u.universe, u.protocol) in blocked:\n            raise FlameControllerActive(',
+  '        if False:\n            raise FlameControllerActive('),
+
+ ("fix round 2: flamesafe's destination is not guarded",
+  'ltcplay/fire_ice.py',
+  '    if fs_dest:\n        blocked.add(tuple(fs_dest))',
+  '    if False:\n        blocked.add(tuple(fs_dest))'),
+
+ ('fix round 2: two controllers with the flame name are taken',
+  'ltcplay/fire_ice.py',
+  '    if len(found) > 1:',
+  '    if len(found) > 99:'),
+
+ ("fix round 2: the session keeps the flame node's address in the pixel map",
+  'ltcplay/session.py',
+  '                return (u.controller in self.exclude_controllers or\n                        (u.ip, u.universe, u.protocol) in\n                        self.exclude_destinations)',
+  '                return u.controller in self.exclude_controllers'),
+
+ ("fix round 2: Run does not hand the session the addresses to leave out",
+  'ltcplay/web.py',
+  '            if isinstance(extra, dict):\n                kw.update(extra)',
+  '            if False:\n                kw.update(extra)'),
+
+
+ ("fix round 2: the deck's Abort key Resets while aborted",
+  'ltcplay/streamdeck.py',
+  '                    self._do_abort(again=True)',
+  '                    self._do_reset()'),
+
+ ('fix round 2: a group key does nothing while aborted',
+  'ltcplay/streamdeck.py',
+  '                    if self.arm.wanted[i]:\n                        self._do_disarm(i)',
+  '                    if False:\n                        self._do_disarm(i)'),
+
+ ('fix round 2: Reset needs no hold',
+  'ltcplay/streamdeck.py',
+  '                    self._reset_hold.press(now)',
+  '                    self._do_reset()'),
+
+ ('fix round 2: a deck Abort waits in line behind other presses',
+  'ltcplay/streamdeck.py',
+  '            body["confirmed"] = True\n            # Abort never waits',
+  '            body["confirmed"] = True\n        if False:\n            # Abort never waits'),
+
+ ('R2-H5 the deck asks the engine to Abort before it disarms its own groups',
+  'ltcplay/streamdeck.py',
+  '        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        who = self.operator_provider() or ""\n        if again:',
+  '        who = self.operator_provider() or ""\n        if not again and self.conductor is not None:\n            self.conductor.abort(who=who, screen="Stream Deck")\n        self.arm.set_all(False)\n        self.arm.send(self.names)\n        now = self._clock()\n        self._disarmed_at = [now] * len(self.names)\n        if again:'),
+
+ ("fix round 2: an engine that did not take a press is not shown on the deck",
+  'ltcplay/streamdeck.py',
+  '        self.fault = "" if ok else f"{name.title()}: {text}"',
+  '        self.fault = ""'),
+
+ ('fix round 2: the page can bring the rig up while an Abort stands',
+  'ltcplay/web.py',
+  '                self._abort_latched():\n            return self._send(409, {"error": LATCHED_REFUSAL})',
+  '                False:\n            return self._send(409, {"error": LATCHED_REFUSAL})'),
+
+ ("fix round 2: a press's answer says nothing was disarmed",
+  'ltcplay/schedule_service.py',
+  '        text = " ".join(self._reworded(le).text for le in out.log if le.text)',
+  '        text = " ".join(le.text for le in out.log if le.text)'),
+
+ ('fix round 2: a look chosen before the show stays on',
+  'ltcplay/fire_ice.py',
+  '        self._clear_look(s, n)\n',
+  ''),
+
+ ("R2-H1 the page's Blackout/Preshow (override) is not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/stop", "/api/override", "/api/reload",',
+  '"/api/stop", "/api/reload",'),
+
+ ("R2-H2 the page's Stop is not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/stop", "/api/override", "/api/reload",',
+  '"/api/override", "/api/reload",'),
+
+ ("R2-H3 the page's Run (/api/start) is not refused during a live show",
+  'ltcplay/web.py',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/go",',
+  'LIVE_SHOW_REFUSED = ("/api/go",'),
+
+ ("R2-H4 the page's showdir/reinput are not refused during a live show",
+  'ltcplay/web.py',
+  '"/api/showdir", "/api/reinput", "/api/input",',
+  '"/api/input",'),
 
 ]
 
