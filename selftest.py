@@ -30287,9 +30287,14 @@ def test_screen_arm_deck_rules():
           k.new_disarms() == [], "a new disarm is handed out once")
     clk[0] += sd.SCREEN_STALE_S + 0.01
     check(k.holds() == {}, "an answer older than 0.3 s is let go")
+    # Unreachable: let go at once, not only once the last answer ages out.
+    answers[0] = {"enabled": True, "holds": [{"group": 0, "id": 1,
+                                              "held_s": 0.5, "fresh": True}]}
+    k.poll_once()
+    check(0 in k.holds(), "setup: a fresh hold again")
     answers[0] = None
     k.poll_once()
-    check(k.holds() == {}, "an unreachable engine is let go")
+    check(k.holds() == {}, "an unreachable engine is let go at once")
     answers[0] = {"enabled": False, "holds": [{"group": 0, "id": 1,
                                                "held_s": 2, "fresh": True}]}
     k.poll_once()
