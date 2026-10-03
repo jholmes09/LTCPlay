@@ -385,7 +385,17 @@ shows tonight's list, the show, the timecode, Hold and Abort, and each flame
 group as flamesafe last reported it (flamesafe sends the engine a copy of its
 status on `link.status_mirror_port`). If the page has not heard from the engine
 for 2 s a red banner says so and the controls that act on what it shows go
-off; Hold, Abort and Disarm stay on. There is no way to arm from the page.
+off; Hold, Abort and Disarm stay on.
+
+**Arming from the page** (Jeff, 2026-10-03): a signed-in operator (a PIN
+session even on the show machine) holds a group's "Hold to arm" button.
+The page never arms anything itself: the Stream Deck process reads the hold
+from the engine as a press of that group's key and arms it under every
+deck and flamesafe rule (flamesafe/CONTRACT.md, "Arming from a screen").
+It needs a page status and a flamesafe status no older than 1 s, 1 s of
+heartbeats the engine actually received, and `"screen_arming": true` in
+`ltcplay_remote.json` (the default; `false` turns it off). A dropped
+connection, a closed page, an Abort or a disarm lets the hold go.
 
 In a programming session (a show started with Rehearse, or in Rehearsal mode)
 the page can also play from a timecode, jump 5 or 10 s, pause and continue,

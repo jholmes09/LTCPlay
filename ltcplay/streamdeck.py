@@ -749,6 +749,119 @@ class LocalSchedule:
             return self._show_running
 
 
+# --------------------------------------------------------------------------
+# Screen and browser arming (Jeff, 2026-10-03): a signed-in operator's
+# "hold to arm" on the remote page (ltcplay/remote.py) reaches flamesafe
+# THROUGH THIS PROCESS, as a remote press of the same group key. There is
+# still exactly one sender on flamesafe's arm link (this deck process), so
+# every flamesafe rule (consent, dwell, chatter, edge quiet, the round-4
+# veto, the post-Abort window, the second-copy guard) applies unchanged,
+# and so does every deck rule (the hold, the re-arm refractory window, the
+# latched refusal, the operator gate). See flamesafe/CONTRACT.md, "Arming
+# from a screen".
+#
+# A screen hold counts only while the engine says it is fresh, and only
+# while this process has heard from the engine within SCREEN_STALE_S: a
+# dropped page, a dead engine or an unreachable one all read as "let go".
+# It fires only once BOTH the deck's own ARM_HOLD_S has run since this
+# process saw the press AND the engine has seen the page's heartbeats
+# carry on for SCREEN_HOLD_S (held_s, measured from beats the engine
+# actually received), so a page that drops before then can never finish
+# an arm.
+# --------------------------------------------------------------------------
+SCREEN_POLL_HZ = 20.0
+SCREEN_STALE_S = 0.3
+SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
+
+
+class ScreenKeys:
+    """The remote page's arm holds and per-group disarms, read from the
+    engine's /api/remote/deck-input on a BACKGROUND thread, like
+    LocalSchedule: holds() and new_disarms() never touch the network."""
+
+    def __init__(self, base_url, poll_hz=SCREEN_POLL_HZ, fetcher=None,
+                 clock=time.monotonic):
+        self.base_url = base_url.rstrip("/")
+        self._period = 1.0 / poll_hz
+        self._fetch = fetcher or self._http_fetch
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last = None          # (answer, clock) of the last good fetch
+        self._seen_disarm = None   # highest disarm id already handed out
+        self._pending = []
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None:
+            return self
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="ltcplay-deck-screen-poll")
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        t, self._thread = self._thread, None
+        if t is not None:
+            t.join(timeout=2.0)
+
+    def _loop(self):
+        while not self._stop.is_set():
+            self.poll_once()
+            self._stop.wait(self._period)
+
+    def poll_once(self):
+        ans = self._fetch("/api/remote/deck-input")
+        with self._lock:
+            if not isinstance(ans, dict):
+                self._last = None          # unreachable: every hold let go
+                return
+            self._last = (ans, self._clock())
+            evs = [e for e in (ans.get("disarms") or [])
+                   if isinstance(e, dict) and isinstance(e.get("id"), int)]
+            if self._seen_disarm is None:
+                # Disarms from before this process started are history.
+                self._seen_disarm = max([e["id"] for e in evs] + [0])
+                return
+            for e in sorted(evs, key=lambda e: e["id"]):
+                if e["id"] > self._seen_disarm:
+                    self._pending.append(e)
+                    self._seen_disarm = e["id"]
+
+    def _http_fetch(self, path):
+        try:
+            with urllib.request.urlopen(self.base_url + path,
+                                        timeout=FETCH_TIMEOUT_S) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+
+    def holds(self):
+        """{group index: hold} for every fresh screen hold, or {} when the
+        engine has not answered within SCREEN_STALE_S, says screen arming
+        is off, or has none."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return {}
+        ans = last[0]
+        if ans.get("enabled") is not True:
+            return {}
+        out = {}
+        for h in ans.get("holds") or []:
+            if isinstance(h, dict) and h.get("fresh") is True and \
+                    isinstance(h.get("group"), int):
+                out[h["group"]] = h
+        return out
+
+    def new_disarms(self):
+        with self._lock:
+            out, self._pending = self._pending, []
+        return out
+
+
 JOURNAL_QUEUE_MAX = 1000
 JOURNAL_POST_TIMEOUT_S = 2.0
 
@@ -1196,7 +1309,7 @@ class Controller:
     def __init__(self, arm_socket, status_socket, group_names, deck_factory=Deck,
                 operator_provider=lambda: "", show_running_provider=lambda: None,
                 conductor=None, journal=None, clock=time.monotonic,
-                sleep=time.sleep):
+                sleep=time.sleep, screen=None):
         if not (1 <= len(group_names) <= GROUP_KEY_LIMIT):
             raise ValueError(
                 f"the Stream Deck has {GROUP_KEY_LIMIT} arm keys; it was "
@@ -1223,6 +1336,16 @@ class Controller:
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
                           for _ in self.names]
         self._disarmed_at = [None] * len(self.names)
+        # Screen arming (2026-10-03): the remote page's holds, as remote
+        # presses of the group keys. _vholds: group -> the engine's hold id
+        # this deck has seen; _vpressed: the ones whose arm-hold timer it
+        # actually started; _vwho: (operator, device); _vheld: the engine's
+        # beat-evidenced held_s. See ScreenKeys and screen_pass.
+        self.screen = screen
+        self._vholds = {}
+        self._vpressed = set()
+        self._vwho = {}
+        self._vheld = {}
         # Item 1's second line of defence: what THIS deck itself last sent,
         # so a status frame that disagrees can be caught even if a rogue
         # sender briefly won the arm link's own lock (arminput.py).
@@ -1273,6 +1396,10 @@ class Controller:
         self._abort_hold.release()
         for h in self._arm_holds:
             h.release()
+        self._vholds.clear()
+        self._vpressed.clear()
+        self._vwho.clear()
+        self._vheld.clear()
 
     def _latched_now(self):
         if self.conductor is not None:
@@ -1389,19 +1516,83 @@ class Controller:
         left = REARM_REFRACTORY_S - (now - at)
         return left if left > 0 else 0.0
 
-    def _do_disarm(self, i):
+    def _do_disarm(self, i, who=None, screen="Stream Deck"):
         """Disarm stays an instant single tap, no hold, gate or no gate
         (Jeff, 2026-10-01; items 5 and 7: disarm is NEVER behind the
         operator gate, and NEVER waits on anything -- flip `wanted` and
         send BEFORE looking up who, so even a slow operator_provider()
-        cannot delay the disarm itself)."""
+        cannot delay the disarm itself). `who` and `screen` are given for a
+        disarm pressed on the remote page (screen_pass)."""
         self.arm.set_group(i, False)
         self.arm.send(self.names)
         self._disarmed_at[i] = self._clock()
-        who = self.operator_provider() or ""
-        self._log(f"Stream Deck: {self.names[i]} disarm pressed by "
+        if who is None:
+            who = self.operator_provider() or ""
+        where = "" if screen == "Stream Deck" else f" on the {screen}"
+        self._log(f"Stream Deck: {self.names[i]} disarm pressed{where} by "
                   f"{who or 'an operator the deck could not name'}.",
-                  action="disarm", who=who, screen="Stream Deck")
+                  action="disarm", who=who, screen=screen)
+
+    def screen_pass(self):
+        """Once per MAIN-LOOP pass, before tick(): the remote page's
+        per-group disarms (instant, like a tap) and its arm holds (remote
+        presses of the group key; see ScreenKeys). A screen hold goes
+        through _on_group_press's own rules (refractory, operator gate);
+        it never disarms, and it never starts while the group is already
+        wanted. Anything the engine stops reporting (let go, a dropped
+        page, an Abort, an unreachable engine) releases the hold at once."""
+        if self.screen is None:
+            return
+        now = self._clock()
+        for ev in self.screen.new_disarms():
+            i = ev.get("group")
+            if not isinstance(i, int) or not 0 <= i < len(self.names):
+                continue
+            self._screen_release(i)
+            if self.arm.wanted[i]:
+                self._do_disarm(i, who=str(ev.get("who") or ""),
+                                screen=str(ev.get("device") or "screen"))
+        holds = {} if self._latched_now() else self.screen.holds()
+        for i in list(self._vholds):
+            h = holds.get(i)
+            if h is None or h.get("id") != self._vholds[i]:
+                self._screen_release(i)
+        for i, h in holds.items():
+            if not 0 <= i < len(self.names):
+                continue
+            if i in self._vholds:
+                self._vheld[i] = float(h.get("held_s") or 0.0)
+                continue
+            self._vholds[i] = h.get("id")
+            self._vheld[i] = float(h.get("held_s") or 0.0)
+            who = str(h.get("who") or "")
+            device = str(h.get("device") or "screen")
+            self._vwho[i] = (who, device)
+            if self.arm.wanted[i] or self._prev_keys[GROUP_KEYS[i]]:
+                continue            # already wanted, or the key itself is down
+            left = self._in_rearm_refractory(i, now)
+            if left > 0:
+                self._log(f"Stream Deck: {self.names[i]} arm hold on the "
+                          f"{device} by {who or 'someone'} refused, "
+                          f"{left:.1f} s left in the re-arm refractory "
+                          f"window after its last disarm.",
+                          action="arm-refused", who=who, screen=device)
+                continue
+            refusal = operator_gate(who, "arm")
+            if refusal:
+                self._log(f"Stream Deck: {refusal}", action="arm")
+                continue
+            self._arm_holds[i].press(now)
+            self._vpressed.add(i)
+
+    def _screen_release(self, i):
+        self._vholds.pop(i, None)
+        self._vwho.pop(i, None)
+        self._vheld.pop(i, None)
+        if i in self._vpressed:
+            self._vpressed.discard(i)
+            if not self._prev_keys[GROUP_KEYS[i]]:
+                self._arm_holds[i].release()
 
     def _on_group_press(self, i, now):
         """One group key went down. Disarm fires at once; arming only
@@ -1427,7 +1618,7 @@ class Controller:
             return
         self._arm_holds[i].press(now)
 
-    def _do_arm_fire(self, i, now):
+    def _do_arm_fire(self, i, now, who=None, screen="Stream Deck"):
         """A group's arm-hold reached ARM_HOLD_S: send wanted=True, but
         only after two independent guards (item 3, round 2 of the safety
         review): a latched rig (post-Abort, pre-Reset) and the re-arm
@@ -1460,17 +1651,19 @@ class Controller:
                       f"refractory window (a disarm or Reset landed during "
                       f"the hold); refused.", action="arm-refused")
             return
-        who = self.operator_provider() or ""
+        if who is None:
+            who = self.operator_provider() or ""
         refusal = operator_gate(who, "arm")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
             return
         self.arm.set_group(i, True)
         self.arm.send(self.names)
-        self._log(f"Stream Deck: {self.names[i]} arm pressed (held "
-                  f"{ARM_HOLD_S:g} s) by "
+        held = (f"held {ARM_HOLD_S:g} s" if screen == "Stream Deck" else
+                f"held {SCREEN_HOLD_S:g} s on the {screen}")
+        self._log(f"Stream Deck: {self.names[i]} arm pressed ({held}) by "
                   f"{who or 'an operator the deck could not name'}.",
-                  action="arm", who=who, screen="Stream Deck")
+                  action="arm", who=who, screen=screen)
 
     def run_once(self, down):
         """One pass given ONE of the deck's 6-key snapshots (item 3 of
@@ -1568,8 +1761,19 @@ class Controller:
             return
         for i in range(len(self.names)):
             gk = GROUP_KEYS[i]
-            if self._prev_keys[gk] and self._arm_holds[i].fired(now):
-                self._do_arm_fire(i, now)
+            if self._prev_keys[gk]:
+                if self._arm_holds[i].fired(now):
+                    self._do_arm_fire(i, now)
+            elif i in self._vpressed:
+                # A screen hold: the deck's own ARM_HOLD_S AND the engine's
+                # beat-evidenced SCREEN_HOLD_S, both, before anything goes
+                # out. Checked before fired(), which consumes the press.
+                if self._vheld.get(i, 0.0) < SCREEN_HOLD_S:
+                    continue
+                if self._arm_holds[i].fired(now):
+                    self._vpressed.discard(i)
+                    who, device = self._vwho.get(i, ("", "screen"))
+                    self._do_arm_fire(i, now, who=who, screen=device)
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
@@ -1884,6 +2088,11 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 # vanish.
                 for down in deck.keys_down():
                     controller.run_once(down)
+                # The remote page's holds and disarms (2026-10-03), as
+                # remote presses of the group keys, before tick() advances
+                # the holds. Only while a deck is connected: unplugged, the
+                # link is held OFF below and nothing arms from anywhere.
+                controller.screen_pass()
                 # Item 2 (round 2 of the safety review): tick() runs every
                 # pass, unconditionally -- even when deck.keys_down() above
                 # returned nothing, which it will if the real hardware
@@ -2086,10 +2295,13 @@ def main(argv=None):
     status = StatusSocket(status_ip, status_port, key)
     status.open()
 
+    # Screen and browser arming: the remote page's holds, read on their own
+    # background thread (ScreenKeys), never on the main loop.
+    screen = ScreenKeys(args.ltcplay_url).start()
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
-                            conductor=None, journal=journal)
+                            conductor=None, journal=journal, screen=screen)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
          f"reading flamesafe's status on {status_ip}:{status_port}. No "
          f"show conductor is connected in this build: Start Now, Hold and "
@@ -2102,6 +2314,7 @@ def main(argv=None):
         arm.close()
         status.close()
         sched.stop()
+        screen.stop()
     return 0
 
 
