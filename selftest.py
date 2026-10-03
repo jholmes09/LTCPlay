@@ -31960,6 +31960,69 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
     print("  ok")
 
 
+def test_fire_ice_abort_and_hold_before_the_show_is_confirmed():
+    section("fire & ice: an Abort or Hold pressed after a show cue started "
+            "but before SHOW_CONFIRMED stops or freezes the music, even when "
+            "an earlier Abort, stop or failed start recorded it stopped (PR "
+            "#43 review, item 4)")
+    for press in ("abort", "hold", "failed start"):
+        n = _fi_night()
+        if n.S is None:
+            return
+        n.svc.tick()
+        # Where a failed start (or an Abort and Reset) leaves the record.
+        n.c.failed_start("the scheduler")
+        n.c.run_pending()
+        check(n.c.snapshot()["applied"]["music"] == "stopped",
+              "setup: the record says the music is stopped")
+        r = n.w.runner.start_show(7, who="Andy")
+        check(r.ok, f"the cue started: {r}")
+        check(n.c.snapshot()["applied"]["music"] == "playing",
+              f"once the cue is started the conductor knows the music is "
+              f"playing: {n.c.snapshot()['applied']}")
+        del n.calls[:]
+        if press == "abort":
+            n.c.abort("Andy", "Rack screen")
+            want = "music_halt"
+        elif press == "hold":
+            n.c.hold("Andy", "Rack screen")
+            want = "music_hold"
+        else:
+            n.c.failed_start("the scheduler")
+            want = "music_halt"
+        n.c.run_pending()
+        got = [k for k, _a, _t in n.calls]
+        check(want in got, f"{press} before SHOW_CONFIRMED: {want} sent to "
+                           f"the show audio: {got}")
+        n.c.close()
+        n.link.close()
+    # An Abort that lands while the cue is starting: its music step may have
+    # run before the cue began, so the runner stops the music itself.
+    n = _fi_night()
+    n.svc.tick()
+    n.c.failed_start("the scheduler")
+    n.c.run_pending()
+    real = n.sess.clock_play
+
+    def play_then_abort(cue=None):
+        out = real(cue)
+        n.c.abort("Andy", "Rack screen")
+        n.c.run_pending()
+        return out
+    n.sess.clock_play = play_then_abort
+    del n.calls[:]
+    r = n.w.runner.start_show(8, who="Andy")
+    got = [k for k, _a, _t in n.calls]
+    check(not r.ok and "aborted while it was starting" in r.sentence and
+          got.index("music_play") < len(got) - 1 - got[::-1].index(
+              "music_halt"),
+          f"an Abort during the start: the music is stopped after it began, "
+          f"and the start is reported failed: {r.sentence} {got}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
 def test_fire_ice_start_rules_on_the_ordered_line():
     section("fire & ice: a dry run never asks the performer to start a "
             "show; an Abort decided before a waiting show start supersedes "
@@ -35280,6 +35343,7 @@ if __name__ == "__main__":
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
+    test_fire_ice_abort_and_hold_before_the_show_is_confirmed()
     test_fire_ice_show_end_burst_never_holds_up_the_flame_link()
     test_fire_ice_status_mirror_reaches_the_flame_link()
     test_ltc_serve_gpl_builds_no_conductor()

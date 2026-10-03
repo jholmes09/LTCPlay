@@ -6602,6 +6602,22 @@ def build():
   '    elif cfg.flamesafe_config and journal is not None:',
   '    elif False:'),
 
+
+ ('fix round 1: the conductor is not told the music started',
+  'ltcplay/fire_ice.py',
+  '        if told is not None:\n            told()',
+  '        if False:\n            told()'),
+
+ ('fix round 1: music_started records nothing',
+  'ltcplay/conductor.py',
+  '            self._set("music", MUSIC_PLAYING)\n\n    def intermission',
+  '            pass\n\n    def intermission'),
+
+ ('fix round 1: an Abort during the start leaves the music playing',
+  'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)',
+  '            pass'),
+
 ]
 
 

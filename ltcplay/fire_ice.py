@@ -903,6 +903,21 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": str(e)}
             return C.failed(f"Show {n} was not started: {e}")
+        # The music is now playing, whatever the conductor's record says:
+        # an Abort or Hold before SHOW_CONFIRMED must stop or freeze it (PR
+        # #43 review, finding 4).
+        told = getattr(self.conductor, "music_started", None)
+        if told is not None:
+            told()
+        if self.conductor.latched:
+            # An Abort landed while the cue was starting, so its music step
+            # may have run before the cue began: stop the music here too.
+            why = "it was aborted while it was starting"
+            self.show.music_halt(C.ABORT_FADE_S)
+            with self._lock:
+                self._cue = {"show": n, "failed": why}
+            return C.failed(f"Show {n} was not started: {why}; the music "
+                            f"was stopped.")
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,

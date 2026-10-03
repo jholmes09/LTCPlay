@@ -826,6 +826,18 @@ class Conductor:
                          resume=False)
             return done("The rig comes up for the show.")
 
+    def music_started(self):
+        """A fact, not a command: the show cue has just been started on the
+        show audio, before anything confirms the show (the scheduler tells
+        show_starting() only on SHOW_CONFIRMED). From here a Hold freezes
+        the music and an Abort or a failed start stops it, whatever an
+        earlier Abort, stop or failed start recorded (PR #43 review,
+        finding 4: an Abort or Hold before the show was confirmed left the
+        music and timecode running, because the record still said
+        stopped). Starts nothing and changes no look."""
+        with self._lock:
+            self._set("music", MUSIC_PLAYING)
+
     def intermission(self, who="", screen=""):
         """The show has been left (intermission, preshow, closing): flame
         cues to zero and the lasers blanked with a real command, so "no
