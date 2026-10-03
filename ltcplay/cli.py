@@ -919,7 +919,36 @@ def _ltc_seconds(fr, tl):
     return tc_to_frames(fr.h, fr.m, fr.s, fr.f, tl.count, tl.drop) / tl.fps
 
 
+def _take_only_copy(lockname, note):
+    """(lock, None) when this is the only copy, else (None, the refusal).
+    Second-copy guard, 2026-10-03: see onlyone.py."""
+    from . import onlyone
+    try:
+        return onlyone.only_copy(lockname, note), None
+    except onlyone.AlreadyRunning as e:
+        return None, onlyone.refusal(lockname, e.holder)
+
+
+def _started():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def cmd_run(args):
+    """`ltc run`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc run {os.path.basename(args.timeline)}, started {_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_run(args)
+    finally:
+        lock.release()
+
+
+def _cmd_run(args):
     from .session import Session, SessionError
     try:
         sess = Session(
@@ -1209,6 +1238,23 @@ def cmd_bundle(args):
 
 
 def cmd_serve(args):
+    """`ltc serve`: refuses to start while another copy of the show program
+    (`ltc run` or `ltc serve`) is running on this machine."""
+    from . import onlyone
+    folder = os.path.abspath(args.folder or settings_mod.folder())
+    lock, refused = _take_only_copy(
+        onlyone.SHOW_LOCK,
+        f"ltc serve on port {args.port}, show folder {folder}, started "
+        f"{_started()}")
+    if refused:
+        return _err(refused)
+    try:
+        return _cmd_serve(args)
+    finally:
+        lock.release()
+
+
+def _cmd_serve(args):
     """Run the engine and serve the page onto it.
 
     The page is a window. The engine lives in this process, so closing the
@@ -1225,6 +1271,22 @@ def cmd_serve(args):
         from . import schedule_service
         schedule = os.path.abspath(os.path.expanduser(
             args.schedule or schedule_service.default_rule_path()))
+    fire_ice = None
+    if schedule is not None:
+        # A schedule is what makes this Fire & Ice (the GPL launchers never
+        # pass one), so only here is the real show conductor built, from
+        # ltcplay_fire_ice.json beside the rule file. No file: no lasers or
+        # video, and the scheduler stays a dry run. See fire_ice.py.
+        from . import fire_ice as fire_ice_mod
+        try:
+            fire_ice = fire_ice_mod.FireIceConfig.load(
+                fire_ice_mod.config_path_for(schedule))
+            fire_ice_mod.flame_link_config(fire_ice)
+            fire_ice_mod.check_flame_controllers(
+                os.path.abspath(args.folder or settings_mod.folder()),
+                fire_ice)
+        except ValueError as e:
+            return _err(str(e))
     announce = None
     if getattr(args, "announce", None) is not None:
         # Same rule as the scheduler: only here, and only when asked for,
@@ -1233,10 +1295,33 @@ def cmd_serve(args):
         from . import announce as announce_mod
         announce = os.path.abspath(os.path.expanduser(
             args.announce or announce_mod.default_config_path()))
+    flamesafe_config = getattr(args, "flamesafe_config", None)
+    if getattr(args, "network", False):
+        # The show network: one address, saved on the page (Show network),
+        # on the fixed port. Never every interface.
+        from . import remote as remote_mod
+        try:
+            rs = remote_mod.load_settings()
+        except ValueError as e:
+            return _err(str(e))
+        if not rs["show_network_address"]:
+            return _err("The show network address is not set yet. Start Web "
+                        "ltcplay normally, open the page on this machine, "
+                        "set it under Show network, then start it on the "
+                        "show network again.")
+        args.bind = rs["show_network_address"]
+        args.port = remote_mod.FIXED_PORT
+        flamesafe_config = flamesafe_config or rs["flamesafe_config"]
+    if flamesafe_config is None and fire_ice is not None:
+        # Fire & Ice: the flame link's own flamesafe config also feeds the
+        # remote page's flame lamps, and (through its status_mirror_port)
+        # the flame link's disarm confirmation and lock alarm.
+        flamesafe_config = fire_ice.flamesafe_config
     try:
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
-                              announce=announce)
+                              announce=announce, fire_ice=fire_ice,
+                              flamesafe_config=flamesafe_config)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1246,13 +1331,10 @@ def cmd_serve(args):
         # and found shorter (Jeff, 2026-09-26): nothing was bound or
         # started. See web.serve and clock.derive_show_length_in_folder.
         return _err(str(e))
-    token = httpd.token
     host = "127.0.0.1" if args.bind in web_mod.LOOPBACK else args.bind
-    if host in ("0.0.0.0", "::"):
-        # "serve on every interface" is not an address anybody can open.
-        # Print the one the phone has to type. Round 3, 2026-09-13.
-        host = _lan_address() or host
-    url = f"http://{host}:{args.port}/" + (f"?t={token}" if token else "")
+    if ":" in host:
+        host = f"[{host}]"
+    url = f"http://{host}:{args.port}/"
     from . import brand as brand_mod
     _b = brand_mod.load()
     print(f"{_b['product']}  {brand_mod.contact_line(_b)}\n")
@@ -1261,16 +1343,24 @@ def cmd_serve(args):
     if httpd.schedule is not None:
         sv = httpd.schedule
         print(f"Schedule: {sv.path}")
-        print("  " + (sv.error or "Loaded. It decides but does not act: no "
-                      "show is started by it in this build."))
+        print("  " + (sv.error or (
+            "Loaded. It decides but does not act: no show is started by it "
+            "in this build." if sv.dry_run else
+            "Loaded. It performs: it starts the show on schedule once Run "
+            "has been pressed.")))
+    if fire_ice is not None:
+        print(f"Fire & Ice: {fire_ice.path or 'no ltcplay_fire_ice.json'}")
+        print(f"  {fire_ice.summary()}")
     if httpd.announce is not None:
         av = httpd.announce
         print(f"Announcements: {av.config_path}")
         print("  " + (av.error or f"Loaded, on {av.device_name}."))
-    if token:
-        print(f"\nServing on the network, so the page needs the token in that "
-              f"link.\nAnyone who can reach {host}:{args.port} and has it can "
-              f"black out the rig.")
+    if httpd.loopback is not None:
+        print(f"\nServing on the show network at {host}:{args.port}, and on "
+              f"this machine at\nhttp://127.0.0.1:{args.port}/ . Each operator "
+              f"signs in with their own PIN on an iPad.\nNever put remote "
+              f"access software, a tunnel or a port forward on this machine.")
+        url = f"http://127.0.0.1:{args.port}/"
     print("\nLeave this window open. It is the engine; the page is only a "
           "window onto it,\nso closing the browser does not stop a running "
           "show. Ctrl-C here does.")
@@ -1328,6 +1418,13 @@ def _shutdown(httpd):
             httpd.schedule.stop()
         except Exception as e:
             print(f"The scheduler did not stop cleanly: {e}")
+    lb = getattr(httpd, "loopback", None)
+    if lb is not None:
+        try:
+            lb.shutdown()
+            lb.server_close()
+        except Exception:
+            pass
     httpd.server_close()
 
 
@@ -1591,6 +1688,12 @@ def cmd_retime(args):
     return 0
 
 
+def cmd_deck(args):
+    from . import streamdeck
+    return streamdeck.main(["--flamesafe-config", args.flamesafe_config,
+                            "--ltcplay-url", args.ltcplay_url])
+
+
 def cmd_gen(args):
     """Write an LTC WAV. Play it into the input, or use it with --wav."""
     import wave, struct
@@ -1800,9 +1903,16 @@ def main(argv=None):
                                      "(default: this folder)")
     sv.add_argument("--port", type=int, default=7878)
     sv.add_argument("--bind", default="127.0.0.1",
-                    help="0.0.0.0 to reach it from a phone or iPad on the "
-                         "same network; a token is then required")
-    sv.add_argument("--token", help="use this token instead of a generated one")
+                    help="one address of this machine to serve on besides "
+                         "loopback (never 0.0.0.0); prefer --network")
+    sv.add_argument("--token", help=argparse.SUPPRESS)
+    sv.add_argument("--network", action="store_true",
+                    help="serve on the show network address saved on the "
+                         "page (ltcplay_remote.json), port 7878; every "
+                         "operator signs in with their own PIN")
+    sv.add_argument("--flamesafe-config", dest="flamesafe_config",
+                    help="flamesafe's config, for the flame lamps on the "
+                         "remote page (needs link.status_mirror_port)")
     sv.add_argument("--no-browser", action="store_true", dest="no_browser")
     sv.add_argument("--schedule", nargs="?", const="", default=None,
                     metavar="FILE",
@@ -1854,6 +1964,17 @@ def main(argv=None):
     g.add_argument("--rate", type=int, default=48000)
     g.add_argument("--level", type=float, default=0.4)
     g.set_defaults(func=cmd_gen)
+
+    dk = sub.add_parser("deck", help="run the real Stream Deck: arms and "
+                        "disarms real flamesafe groups, and reaches Start "
+                        "Now, Hold and Abort through a show conductor "
+                        "where one is connected")
+    dk.add_argument("--flamesafe-config", required=True,
+                    help="the flamesafe config this deck talks to")
+    dk.add_argument("--ltcplay-url", default="http://127.0.0.1:7878",
+                    help="ltcplay's own local web server, for the chosen "
+                    "operator and the show's state")
+    dk.set_defaults(func=cmd_deck)
 
     args = ap.parse_args(argv)
     try:

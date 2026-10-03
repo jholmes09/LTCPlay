@@ -32,7 +32,13 @@ ltcplay_schedule.json
 ltcplay_schedule.previous.json
 ltcplay_tonight_*.json
 ltcplay_operators.json
+ltcplay_current_operator.json
 ltcplay_announce.json
+ltcplay_screens.json
+ltcplay_abort_latch.json
+# The iPad remote: the show network address, and the operators' PIN hashes
+ltcplay_remote.json
+ltcplay_remote_pins.json
 
 # Written by Cut a release.command at packaging time
 VERSION
@@ -49,6 +55,14 @@ VERSION
 *.token
 *secret*
 *password*
+
+# Real show configs that carry the flame link key (fix round 1 of PR #34).
+# Only the example config, whose key is a placeholder, is ever committed.
+ltcplay_fire_ice.json
+flamesafe.json
+flamesafe_*.json
+flamesafe/*.json
+!flamesafe/flamesafe.example.json
 
 # Claude-Brain
 Claude-Brain/

@@ -1409,6 +1409,7 @@ class AudioMaster(Clock):
         self._stop_frame = None
         self._pause_req = False
         self._paused = False
+        self._resume_fade_ms = None   # resume()'s own fade, see _resume
         self._resuming = False
         self._resume_after = False
         self._halting = False
@@ -1537,13 +1538,17 @@ class AudioMaster(Clock):
             self._kick()
             return now
 
-    def halt(self):
-        """Abort: fade the level to zero over abort_fade_ms, then stop."""
+    def halt(self, fade_ms=None):
+        """Abort: fade the level to zero over abort_fade_ms, then stop.
+        `fade_ms` overrides abort_fade_ms for this one call (the show
+        conductor's own fade length); None, every caller before it, is
+        abort_fade_ms exactly as before."""
         with self._lock:
             if self._cue is None or self._halting:
                 return
             now = self._clock()
-            fade = self._sa.fade_frames(self.audio.abort_fade_ms)
+            ms = self.audio.abort_fade_ms if fade_ms is None else fade_ms
+            fade = self._sa.fade_frames(ms)
             if self._paused or self._mode in ("freerun", "wait") \
                     or fade <= 0:
                 self._end("stopped", now)
@@ -1558,11 +1563,14 @@ class AudioMaster(Clock):
             self._resume_after = False
             self._kick()
             self._event(f"Abort: the show audio fades out over "
-                        f"{self.audio.abort_fade_ms / 1000.0:g} s, then the "
+                        f"{ms / 1000.0:g} s, then the "
                         f"timecode stops")
 
-    def pause(self):
-        """Hold: fade the audio out and freeze on the frame it stops on."""
+    def pause(self, fade_ms=None):
+        """Hold: fade the audio out and freeze on the frame it stops on.
+        `fade_ms` overrides hold_fade_ms for this one call: the show
+        conductor's rehearsal Hold passes 0, an instant freeze. None, every
+        caller before the conductor, is hold_fade_ms exactly as before."""
         with self._lock:
             if self._cue is None:
                 raise ClockConfigError("Nothing is playing to pause.")
@@ -1572,13 +1580,14 @@ class AudioMaster(Clock):
                 raise ClockConfigError("The show is stopping, so it cannot "
                                        "be paused.")
             now = self._clock()
-            fade = self._sa.fade_frames(self.audio.hold_fade_ms)
+            ms = self.audio.hold_fade_ms if fade_ms is None else fade_ms
+            fade = self._sa.fade_frames(ms)
             if self._mode in ("follow", "return") and fade > 0:
                 self._send(("pause", fade, self._token))
                 self._stop_frame = None
                 self._pause_req = True
                 self._event(f"Hold: the show audio fades out over "
-                            f"{self.audio.hold_fade_ms:g} ms and the "
+                            f"{ms:g} ms and the "
                             f"timecode freezes where it stops")
                 return
             if self._mode in ("follow", "return", "wait"):
@@ -1586,11 +1595,17 @@ class AudioMaster(Clock):
             self._freeze(now)
             self._kick()
 
-    def resume(self):
-        """Carry on from exactly where the audio stopped."""
+    def resume(self, fade_ms=None):
+        """Carry on from exactly where the audio stopped. `fade_ms`
+        overrides hold_fade_ms for this resume's fade in (the show
+        conductor's rehearsal Resume passes 0); None is hold_fade_ms
+        exactly as before."""
         with self._lock:
             if self._cue is None:
                 raise ClockConfigError("Nothing is playing to resume.")
+            # Set on every call, None included, so a value one Resume
+            # asked for is never left behind for a later one.
+            self._resume_fade_ms = fade_ms
             if self._pause_req and not self._paused:
                 # Resume pressed inside the Hold's own fade: the Hold
                 # finishes first, then this runs, so the audio and the
@@ -1691,7 +1706,9 @@ class AudioMaster(Clock):
     def _resume(self, now):
         cue = self._cue
         start = int(round(self._frozen_sec * self.rate))
-        fade = self._sa.fade_frames(self.audio.hold_fade_ms)
+        fade = self._sa.fade_frames(self.audio.hold_fade_ms
+                                    if self._resume_fade_ms is None
+                                    else self._resume_fade_ms)
         if start >= cue["frames"]:
             # Held on the very end of the audio: there is nothing left to
             # resume, so the cue ends here, the normal way.
