@@ -32049,6 +32049,106 @@ def test_fire_ice_abort_and_hold_before_the_show_is_confirmed():
     print("  ok")
 
 
+def test_fire_ice_show_log_is_written_off_the_logging_threads():
+    section("fire & ice: the show log is written on a thread of its own, so "
+            "the timecode thread never writes, flushes or prints a line, nor "
+            "waits on the logging lock; the GPL show log is unchanged (PR "
+            "#43 review, item 9)")
+    import io
+    import json as _json
+    import logging.handlers as LH
+    import shutil
+    import tempfile
+    import threading
+    import types
+    from ltcplay import showlog
+    from ltcplay.session import Session, SessionError
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_emit = LH.RotatingFileHandler.emit
+    real_stdout = sys.stdout
+    try:
+        # The GPL path: written before event() returns, as always.
+        gpl = showlog.ShowLog(os.path.join(work, "gpl.log"))
+        gpl.event("clock", "one")
+        check("one" in open(os.path.join(work, "gpl.log"),
+                            encoding="utf-8").read() and not gpl.background,
+              "GPL: the line is in the file when event() returns")
+        # Background: a file write that takes 300 ms, and a console that
+        # does too, never hold up the thread that logs.
+        slow = threading.Event()
+
+        def slow_emit(self, record):
+            slow.wait(0.3)
+            return real_emit(self, record)
+        LH.RotatingFileHandler.emit = slow_emit
+
+        class SlowOut(io.StringIO):
+            def write(self, x):
+                slow.wait(0.3)
+                return super().write(x)
+        out = SlowOut()
+        sys.stdout = out
+        bg = showlog.ShowLog(os.path.join(work, "fi.log"), echo=True,
+                             background=True)
+        took = []
+        for i in range(5):
+            t0 = time.perf_counter()
+            bg.event("timecode", f"line {i}")
+            took.append(time.perf_counter() - t0)
+        check(max(took) < 0.05,
+              f"logging with a 300 ms file and console never waits: "
+              f"{[round(x * 1000) for x in took]} ms")
+        slow.set()
+        bg.flush()
+        sys.stdout = real_stdout
+        text = open(os.path.join(work, "fi.log"), encoding="utf-8").read()
+        check([f"line {i}" in text for i in range(5)] == [True] * 5 and
+              text.index("line 0") < text.index("line 4"),
+              "every line reaches the file, in order, once flushed")
+        check("line 4" in out.getvalue(),
+              "and the console echo is written by the writer thread")
+        LH.RotatingFileHandler.emit = real_emit
+        # Fire & Ice asks for it; the session passes it on.
+        n = _fi_night()
+        if n.S is None:
+            return
+        control = types.SimpleNamespace(session=None)
+        F.attach(n.svc, control, F.FireIceConfig(), threaded=False,
+                 clock=n.T.now, waiter=n.T.wait)
+        check(control.defaults.get("log_background") is True,
+              f"Fire & Ice sessions log in the background: "
+              f"{control.defaults}")
+        n.c.close()
+        show = os.path.join(work, "show")
+        os.makedirs(show)
+        with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+            fh.write(_FI_NETWORKS.replace("{state}", "Inactive"))
+        tlp = os.path.join(work, "t_timeline.json")
+        with open(tlp, "w") as fh:
+            _json.dump({"name": "t", "fps": 30, "show_dir": show,
+                        "cues": [{"tc": "01:00:00:00", "fseq": "None.fseq",
+                                  "name": "Show"}]}, fh)
+        for bgflag in (False, True):
+            sess = Session(tlp, no_output=True, sd=FakeSD(), device="MOTU M4",
+                           channel=1, log_path=os.path.join(
+                               work, f"s{int(bgflag)}.log"),
+                           log_background=bgflag)
+            try:
+                sess.open()
+            except SessionError:
+                pass
+            check(sess.log is not None and sess.log.background is bgflag,
+                  f"the session's show log background={bgflag}")
+    finally:
+        LH.RotatingFileHandler.emit = real_emit
+        sys.stdout = real_stdout
+        # Leave the logger the way a GPL run has it.
+        showlog.ShowLog(os.path.join(work, "last.log"))
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_start_rules_on_the_ordered_line():
     section("fire & ice: a dry run never asks the performer to start a "
             "show; an Abort decided before a waiting show start supersedes "
@@ -35646,6 +35746,7 @@ if __name__ == "__main__":
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
+    test_fire_ice_show_log_is_written_off_the_logging_threads()
     test_fire_ice_abort_and_hold_before_the_show_is_confirmed()
     test_fire_ice_show_end_burst_never_holds_up_the_flame_link()
     test_fire_ice_status_mirror_reaches_the_flame_link()

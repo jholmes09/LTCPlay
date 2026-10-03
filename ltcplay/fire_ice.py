@@ -1045,6 +1045,12 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     (clock, waiter) are the selftest's: nothing runs on its own then."""
     link = madmapper[0] if madmapper is not None else None
     built_link = None
+    # The show log is written on a thread of its own, so the show audio's
+    # timecode thread never writes, flushes or prints a line itself, nor
+    # waits on the logging lock (PR #43 review, finding 9).
+    defaults = dict(getattr(control, "defaults", None) or {})
+    defaults["log_background"] = True
+    control.defaults = defaults
     if cfg.flame_controller:
         # The flame controller's channels are never sent by the pixel
         # output in Fire & Ice, whatever xlights_networks.xml says, and a

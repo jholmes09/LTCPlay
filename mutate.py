@@ -6674,6 +6674,27 @@ def build():
   '                self._journal(line, fault=not ok, action=name,',
   '                self._journal(line, fault=False, action=name,'),
 
+
+ ('fix round 1: the background show log writes on the caller',
+  'ltcplay/showlog.py',
+  '        if self.background:\n            out = [h]',
+  '        if False:\n            out = [h]'),
+
+ ('fix round 1: the background show log echoes on the caller',
+  'ltcplay/showlog.py',
+  '        line = f"[{self._stamp()}] {kind:12s} {msg}"\n        self._log.info(line)\n        if self.echo and not self.background:',
+  '        line = f"[{self._stamp()}] {kind:12s} {msg}"\n        self._log.info(line)\n        if self.echo:'),
+
+ ('fix round 1: Fire & Ice sessions log on the caller',
+  'ltcplay/fire_ice.py',
+  '    defaults["log_background"] = True',
+  '    pass'),
+
+ ('fix round 1: the session drops log_background',
+  'ltcplay/session.py',
+  '                                   background=self.log_background)',
+  '                                   background=False)'),
+
 ]
 
 
