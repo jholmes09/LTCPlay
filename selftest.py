@@ -34788,9 +34788,13 @@ def test_live_show_refuses_the_page_transport():
             check(st == 409 and "show is live" in str(out),
                   f"live show: {route} from the machine's own page is "
                   f"refused: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/go", {}, client=loop)
+        check(st == 409, f"GO from the machine's own page, by name: {st}")
         R.sign_in()
         st, _h, out = R.ask("POST", "/api/go", {})
-        check(st == 409, f"and from a signed-in iPad: {st} {out}")
+        # Since #39's fix round (F1) the network never reaches these routes
+        # at all (403); either way a signed-in iPad's GO is refused.
+        check(st in (403, 409), f"and from a signed-in iPad: {st} {out}")
         st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
         check(st == 200, f"reading the state still works: {st}")
         R.svc.operator_press("hold", "Jeff", "Rack screen")
