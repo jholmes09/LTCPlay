@@ -31628,32 +31628,70 @@ def test_fire_ice_flame_link_from_flamesafe_config():
     except F.FlameControllerError as e:
         check("Inactive" in str(e) and "around" in str(e),
               f"an Active flame controller is refused, saying why: {e}")
-    # FlameCues, on a fake running session.
-    buf = bytearray(1022)
-    for i in range(512):
-        buf[510 + i] = (i * 7) % 256
-    sess = types.SimpleNamespace(running=True,
-                                 tl=types.SimpleNamespace(show_dir=show),
-                                 player=types.SimpleNamespace(_buf=buf))
+    # FlameCues, on a fake running session, reading the show's OWN render
+    # (PR #43 review, finding 1): never the pixel output's buffer.
+    import test_show_fixtures as _fx
+
+    def fill_for(frame):
+        return frame & 0xFF
+    render = os.path.join(show, "Show.fseq")
+    _fx.write_fseq(render, frame_count=400, channel_count=1022, step_ms=25,
+                   compression="zlib", block_frames=100, fill=fill_for)
+    clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                _cue={"label": "Show", "position_s": 3600.0},
+                                last_sent=(0, 0, 2, 15))
+    player = types.SimpleNamespace(override=None, freerun_epoch=None,
+                                   _buf=bytearray([99]) * 1022)
+    cue = types.SimpleNamespace(name="Show", path=render, tc_seconds=3600.0)
+    sess = types.SimpleNamespace(running=True, clock=clk, player=player,
+                                 tl=types.SimpleNamespace(show_dir=show,
+                                                          cues=[cue]))
     control = types.SimpleNamespace(session=sess)
     cues = F.FlameCues(control, "Flames", journal)
-    check(cues("01:00:00:00") is None and
+    check(cues("00:00:02:15") is None and
           any(f and "Inactive" in t for t, f in lines),
           "Active controller: all zeros, and a fault line")
     n_faults = sum(1 for _t, f in lines if f)
-    cues("01:00:00:01")
+    cues("00:00:02:15")
     check(sum(1 for _t, f in lines if f) == n_faults,
           "the same refusal is journaled once, not every frame")
     fs, show, fsdoc = _fi_flame_files(work, state="Inactive")
-    sess.tl = types.SimpleNamespace(show_dir=show + os.sep + ".")
-    vals = cues("01:00:00:02")
-    check(vals == [(i * 7) % 256 for i in range(512)],
-          "Inactive controller: the flame universe out of the frame")
-    check(F.FlameCues(control, "Nope", journal)("x") is None,
+    sess.tl.show_dir = show + os.sep + "."
+    # 2.5 s into the cue is frame 100 of a 25 ms render.
+    vals = cues("00:00:02:15")
+    check(vals == [100] * 512,
+          f"Inactive controller: the flame universe of the show's own frame "
+          f"at the show timecode, not the pixel buffer: {vals and vals[:4]}")
+    clk.last_sent = (0, 0, 3, 0)
+    check(cues("00:00:03:00") == [120] * 512, "and it follows the timecode")
+    check(cues("00:00:02:15") is None,
+          "a timecode that is not the clock's own current frame: zeros")
+    for look in ("blackout", "preshow", "some look"):
+        player.override = look
+        check(cues("00:00:03:00") is None,
+              f"the pixel output on {look}: zeros")
+    player.override = None
+    player.freerun_epoch = 12.0
+    check(cues("00:00:03:00") is None, "a GO free run: zeros")
+    player.freerun_epoch = None
+    clk.paused = True
+    check(cues("00:00:03:00") is None, "show audio paused: zeros")
+    clk.paused = False
+    clk._cue = {"label": "Preshow loop", "position_s": 0.0}
+    check(cues("00:00:03:00") is None,
+          "the show audio playing something that is not a cue of the show "
+          "file: zeros")
+    clk._cue = {"label": "Show", "position_s": 3600.0}
+    clk.last_sent = (0, 0, 59, 0)
+    check(cues("00:00:59:00") is None, "past the render's end: zeros")
+    clk.last_sent = (0, 0, 3, 0)
+    check(cues("00:00:03:00") == [120] * 512, "and back")
+    check(F.FlameCues(control, "Nope", journal)("00:00:03:00") is None,
           "a controller that is not there: all zeros")
     sess.running = False
-    check(cues("01:00:00:03") is None, "nothing running: all zeros")
+    check(cues("00:00:03:00") is None, "nothing running: all zeros")
     sess.running = True
+    cues.close()
     # build_flame_link: the real FlameLink, key and port from flamesafe's
     # own file, and the Abort's disarm reaches the wire.
     show_out = F.FireIceShow(control, journal=journal, flame_link=None)
@@ -31756,15 +31794,10 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
         check(link.abort_state() == "confirmed by flamesafe",
               f"flamesafe's confirmation reached the flame link through the "
               f"mirror: {link.abort_state()}")
-        # The seek guard counts frames at the show file's rate.
-        buf = bytearray(1022)
-        sess = types.SimpleNamespace(
-            running=True, tl=types.SimpleNamespace(show_dir=show, fps=25.0),
-            player=types.SimpleNamespace(_buf=buf))
-        httpd.control.session = sess
-        link.cues("01:00:00:00")
-        check(link.tc_fps == 25.0,
-              f"the seek guard reads the timecode at the show's 25 fps: "
+        # The seek guard counts the show audio's own timecode frames, 30 a
+        # second (clock.MASTER_FPS), whatever the show file's rate.
+        check(link.tc_fps == 30.0,
+              f"the seek guard reads the show audio's 30 fps timecode: "
               f"{link.tc_fps}")
         httpd.control.session = None
     finally:

@@ -252,6 +252,18 @@ class FireIceShow(C.ShowOutputs):
         self._hook(clk)
         return clk
 
+    def clock_nolock(self):
+        """The running session's show audio clock, or None, taking no lock
+        and hooking nothing: what the flame link's sender reads every frame
+        (PR #43 review, item 9: it used to take this object's lock)."""
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return None
+        clk = getattr(s, "clock", None)
+        if clk is None or getattr(clk, "source", None) != "audio_master":
+            return None
+        return clk
+
     def _hook(self, clk):
         """Chain onto the clock's own on_pause/on_resume, after whatever the
         session set (the player's hard park), once per clock. The moment
@@ -347,6 +359,7 @@ class FireIceShow(C.ShowOutputs):
         s, p = self._player()
         if p is None:
             return C.failed("Pixels back was not sent: nothing is running.")
+        left = False
         with self._lock:
             if not self._pix_ours:
                 return C.done("Pixels: the show conductor had not taken "
@@ -354,12 +367,16 @@ class FireIceShow(C.ShowOutputs):
             self._pix_ours = False
             if p.override != "blackout":
                 # Someone pressed a look on the page since: theirs stands.
-                self._note(f"Pixels left on {p.override or 'auto'}: the "
-                           f"operator changed the look while the show "
-                           f"conductor had them black.", action="pixels",
-                           outcome="left")
-                return C.done("Pixels left on the operator's look.")
-            p.override = self._pix_prev
+                left, look = True, p.override
+            else:
+                p.override = self._pix_prev
+        if left:
+            # Written after the lock is let go: no lock is ever held across
+            # a journal line (PR #43 review, item 9).
+            self._note(f"Pixels left on {look or 'auto'}: the operator "
+                       f"changed the look while the show conductor had "
+                       f"them black.", action="pixels", outcome="left")
+            return C.done("Pixels left on the operator's look.")
         if s.log:
             s.log.event("override", f"show conductor set output to "
                                     f"{p.override or 'auto'}")
@@ -458,12 +475,22 @@ def flame_channels(networks_xml, name):
 
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
-    frame the pixel output is rendering right now (the player's buffer
-    holds the whole show's channels, the Inactive flame controller's
-    included; nothing sends those). The timecode FlameLink passes is the
-    frame the show audio last sent, which is what the player renders.
-    None (all zeros) whenever there is no running player, or the show
-    file's folder has no usable flame controller. Never raises."""
+    show's OWN render at the show timecode (PR #43 review, finding 1).
+
+    The timecode FlameLink passes is the frame the show audio last sent
+    (clock.AudioMaster: 00:00:00:00 at the top of the cue it is playing).
+    The values are that frame of THAT cue's FSEQ, read through a file handle
+    of this provider's own (never the pixel output's, whose block cache is
+    not shared across threads), at the Inactive flame controller's
+    channels. Never the pixel output's buffer: Blackout, Preshow and a look
+    override leave that buffer holding a frame that is not the show's.
+
+    None (all zeros) unless every one of these holds: Run pressed and the
+    session running; the show audio playing a cue of this show file and
+    not paused; the pixel output following the show (no Blackout, Preshow
+    or look override, and no GO free run); the timecode is the clock's own
+    current frame; the show folder has a usable flame controller; the frame
+    is inside the cue's render. Never raises."""
 
     def __init__(self, control, name, journal=None):
         self.control = control
@@ -472,7 +499,9 @@ class FlameCues:
         self._folder = None
         self._span = None
         self._problem = ""
-        self.link = None     # the FlameLink, for the seek guard's frame rate
+        self._why = ""
+        self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
+        self.link = None    # the FlameLink (closing it closes the files)
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -480,6 +509,16 @@ class FlameCues:
                 self._journal(text, **f)
             except Exception:
                 pass
+
+    def _zero(self, why):
+        """All zeros, saying why once each time the reason changes (an
+        episode); the cue going out again clears it."""
+        if why != self._why:
+            self._why = why
+            if why:
+                self._note(f"Flame cues are zero: {why}", action="flames",
+                           outcome="cues_zero")
+        return None
 
     def _locate(self, session):
         folder = getattr(getattr(session, "tl", None), "show_dir", None)
@@ -505,27 +544,91 @@ class FlameCues:
                            action="flames", outcome="cues_refused")
         return self._span
 
+    def _render(self, path):
+        try:
+            st = os.stat(path)
+            key = (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = (path, None, None)
+        got = self._open.get(key)
+        if got is None:
+            for old in [k for k in self._open if k[0] == path]:
+                try:
+                    self._open.pop(old)[0].close()
+                except Exception:
+                    pass
+            from .fseq import FSEQ
+            f = FSEQ(path)
+            spans, src = [], 0
+            for start0, length in (f.sparse_ranges or
+                                   [(0, f.channel_count)]):
+                spans.append((start0, src, length))
+                src += length
+            got = self._open[key] = (f, spans)
+        return got
+
+    def close(self):
+        for f, _spans in self._open.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._open.clear()
+
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
-            return None
+            return self._zero("")
+        clk = getattr(s, "clock", None)
+        cue = getattr(clk, "_cue", None)
+        if getattr(clk, "source", None) != "audio_master" or not cue or \
+                getattr(clk, "paused", True):
+            return self._zero("")
         p = getattr(s, "player", None)
-        buf = getattr(p, "_buf", None)
-        if buf is None:
-            return None
+        if p is None:
+            return self._zero("")
+        look = getattr(p, "override", None)
+        if look is not None:
+            return self._zero(f"the pixel output is on {look}, not the "
+                              f"show")
+        if getattr(p, "freerun_epoch", None) is not None:
+            return self._zero("the show was moved by hand (GO), so the "
+                              "pixels are not following the show audio")
+        last = getattr(clk, "last_sent", None)
+        if not tc or not last or tc != (f"{last[0]:02d}:{last[1]:02d}:"
+                                         f"{last[2]:02d}:{last[3]:02d}"):
+            return self._zero("")
         span = self._locate(s)
         if span is None:
             return None
-        link = getattr(self, "link", None)
-        fps = getattr(getattr(s, "tl", None), "fps", None)
-        if link is not None and isinstance(fps, (int, float)) and fps > 0 \
-                and link.tc_fps != float(fps):
-            # The seek guard turns HH:MM:SS:FF into seconds at the show's
-            # own frame rate.
-            link.tc_fps = float(fps)
+        tl = getattr(s, "tl", None)
+        label = cue.get("label") if isinstance(cue, dict) else None
+        hits = [c for c in (getattr(tl, "cues", None) or ())
+                if getattr(c, "name", None) == label]
+        if len(hits) != 1:
+            return self._zero(f"the show audio is playing {label!r}, which "
+                              f"is not one cue of this show file")
+        try:
+            f, spans = self._render(hits[0].path)
+            rel = (last[1] * 60 + last[2]) + last[3] / 30.0
+            idx = int(rel * 1000.0 // f.step_time_ms)
+            if not 0 <= idx < f.frame_count:
+                return self._zero("the timecode is past the end of the "
+                                  "show's render")
+            data = f.frame(idx)
+        except Exception as e:
+            return self._zero(f"the show's render could not be read "
+                              f"({type(e).__name__}: {e})")
         start, count = span
-        vals = list(bytes(buf[start - 1:start - 1 + count]))
-        return vals + [0] * (512 - len(vals))
+        first, end = start - 1, start - 1 + count
+        out = [0] * 512
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                out[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        self._why = ""
+        return out
 
 
 class OffThreadJournal:
@@ -624,7 +727,8 @@ def build_flame_link(cfg, control, show, journal=None):
     cues = (FlameCues(control, cfg.flame_controller, journal)
             if cfg.flame_controller else flamelink.zero_cues)
     link = flamelink.FlameLink(
-        lcfg, cues=cues, show_state=flamelink.audio_master_state(show._clock),
+        lcfg, cues=cues,
+        show_state=flamelink.audio_master_state(show.clock_nolock),
         journal=journal)
     link.journal_line = journal
     if journal is not None and not _has_status_mirror(cfg.flamesafe_config):
@@ -634,8 +738,11 @@ def build_flame_link(cfg, control, show, journal=None):
                 "raise the lock alarm itself; the Stream Deck shows both. Set "
                 "status_mirror_port to give this program its own copy.",
                 action="flame_link", outcome="no_status")
-    # The seek guard (PR #39) counts frames at the show file's own rate.
-    if hasattr(link, "tc_fps") and isinstance(cues, FlameCues):
+    # The seek guard (PR #39) counts the show audio's own timecode frames,
+    # which are always 30 a second (clock.MASTER_FPS), whatever the show
+    # file's rate.
+    link.tc_fps = 30.0
+    if isinstance(cues, FlameCues):
         cues.link = link
     return link
 
@@ -847,6 +954,10 @@ class Wiring:
                     fl.zero()
                 finally:
                     fl.stop()
+                    closer = getattr(getattr(fl, "cues", None), "close",
+                                     None)
+                    if closer is not None:
+                        closer()
 
 
 def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
