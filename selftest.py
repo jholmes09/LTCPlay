@@ -29075,6 +29075,19 @@ def test_remote_pin_required_over_the_network():
                              f"session is refused: {st} {out}")
         check(not R.lines_for("HOLD_ON") and not R.lines_for("HOLD"),
               "and nothing was held")
+        # The remote routes check the session themselves too, not only
+        # behind web.py's gate: a second wall, tested on its own.
+        from ltcplay import remote as RM0
+        nobody = RM0.Ctx(False, "10.20.0.44")
+        for route in ("/api/remote/status", "/api/remote/network"):
+            st, out = R.remote.get(route, nobody)
+            check(st == 401, f"Remote.get {route} with no session: {st}")
+        for route in ("/api/remote/hold", "/api/remote/abort",
+                      "/api/remote/disarm-all", "/api/remote/jump",
+                      "/api/remote/pin"):
+            st, out, _hh = R.remote.post(route, {"confirmed": True},
+                                         nobody)
+            check(st == 401, f"Remote.post {route} with no session: {st}")
         st, _h, out = R.ask("GET", "/")
         check(st == 200 and "Sign in" in str(out) and
               "ltcplay remote" in str(out),
