@@ -26695,12 +26695,29 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         # The sender stops: flamesafe fails safe inside frame_stale_ms.
         t_stop = time.perf_counter()
         link.stop()
+        t_stopped = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["fire"] == "zeroed", 1.0)
         t_fire = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["state"] == "stale", 2.0)
         t_stale = time.perf_counter() - t_stop
+        # Where the time went, for a failure on a slow machine: how long
+        # stop() itself took, when the first "zeroed" status arrived and how
+        # old flamesafe said the last frame was in it, and the largest gap
+        # between status frames (40 Hz expected) since the stop.
+        after = [(t_ - t_stop, x) for t_, x in list(statuses)
+                 if t_ >= t_stop - 0.05]
+        first_zero = next(((dt, x) for dt, x in after
+                           if x["frames"]["fire"] == "zeroed"), None)
+        gaps = [b[0] - a[0] for a, b in zip(after, after[1:])]
+        where = (f"stop() took {t_stopped:.3f} s; first zeroed status "
+                 f"received {first_zero[0]:.3f} s after the stop, "
+                 f"frames.age_ms {first_zero[1]['frames']['age_ms']}"
+                 if first_zero else f"stop() took {t_stopped:.3f} s; no "
+                 f"zeroed status")
         check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
-                                   f"sender stopped (fire_hold_ms 100)")
+                                   f"sender stopped (fire_hold_ms 100): "
+                                   f"{where}; largest gap between status "
+                                   f"frames {max(gaps or [0]):.3f} s")
         check(s is not None and t_stale < 0.5 + 0.2
               and all(g["sent_safety"] == 0 for g in s["groups"]),
               f"link stale and every group disarmed {t_stale:.3f} s after "
