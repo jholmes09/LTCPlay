@@ -32491,6 +32491,17 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
                 got.append(time.perf_counter())
     lt = threading.Thread(target=listen, daemon=True)
     lt.start()
+    # The sender's own clock as well as the receiver's: in this one process
+    # the receiving thread can itself be woken late (a macOS CI runner did,
+    # 2026-10-03), which is not the flame link holding a frame back.
+    sent_at = []
+    real_send = link.send_frame
+
+    def timed_send():
+        sent_at.append(time.perf_counter())
+        return real_send()
+    link.send_frame = timed_send
+    marks = {}
     try:
         link.start()
         t0 = time.perf_counter()
@@ -32501,13 +32512,17 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
                       live=True)
             time.sleep(1 / 30)
         base = len(got)
+        sbase = len(sent_at)
+        marks["burst"] = time.perf_counter()
         # The show's end: the timecode stops, the conductor's intermission
         # burst runs, the flame cues are zeroed, and the next show's
         # timecode lands somewhere else entirely.
         cond.intermission("the scheduler", "")
         time.sleep(0.6)
+        marks["jump"] = time.perf_counter()
         st.update(tc="01:05:00:00")
         time.sleep(0.4)
+        marks["start"] = time.perf_counter()
         cond.show_starting("the scheduler", "")
         time.sleep(0.6)
     finally:
@@ -32516,10 +32531,20 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
         cond.close()
         rx.close()
         lt.join(2)
-    gaps = [(b - a) * 1000.0 for a, b in zip(got, got[1:])]
-    worst = max(gaps[base:] or [0.0])
-    print(f"  note: {len(got)} flame frames, worst gap {worst:.1f} ms "
-          f"through the burst ({max(gaps[:base] or [0.0]):.1f} ms before it)")
+    def worst_of(ts, start):
+        g = [((b - a) * 1000.0, a) for a, b in zip(ts, ts[1:])][start:]
+        return max(g or [(0.0, 0.0)])
+    worst_rx, at_rx = worst_of(got, base)
+    worst, at_tx = worst_of(sent_at, sbase)
+    before_rx = worst_of(got[:base + 1], 0)[0]
+
+    def when(t):
+        return ", ".join(f"{k} {(t - v) * 1000:+.0f} ms" for k, v in
+                         marks.items())
+    where = (f"sender worst {worst:.1f} ms ({when(at_tx)}); receiver worst "
+             f"{worst_rx:.1f} ms ({when(at_rx)}), {before_rx:.1f} ms before "
+             f"the burst; {len(sent_at)} sent, {len(got)} received")
+    print(f"  note: {where}")
     check("ltcplay-flame-link" not in journal_threads,
           f"no journal line is ever written on the flame link's sender "
           f"thread: {sorted(journal_threads)}")
@@ -32527,9 +32552,10 @@ def test_fire_ice_show_end_burst_never_holds_up_the_flame_link():
     check(any(n == "ltcplay-flame-journal" for n in journal_threads),
           f"the flame link's lines are written by its own journal thread: "
           f"{sorted(journal_threads)}")
-    check(len(got) > 40, f"the flame link kept sending: {len(got)} frames")
+    check(len(sent_at) > 40, f"the flame link kept sending: {where}")
     check(worst < 50.0, f"no gap of 50 ms or more between flame frames "
-                        f"through the burst (CONTRACT.md): {worst:.1f} ms")
+                        f"through the burst, by the sender's own clock "
+                        f"(CONTRACT.md): {where}")
     print("  ok")
 
 
@@ -35297,7 +35323,16 @@ def _remote_page_logic_in_node():
                  "$(\"b-op\").disabled = !cs.operator;",
                  "el.disabled = !cs.transport;",
                  "el.className = \"lamp unknown\";",
-                 "setInterval(renderStale, 250);"):
+                 "setInterval(renderStale, 250);",
+                 # arming: live state or no hold, and anything that hides
+                 # or closes the page lets go
+                 "if(HOLD && !armState(ST, Date.now(), LAST_OK, "
+                 "HOLD.group).ok)",
+                 "el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;",
+                 "if(document.hidden) armStop(",
+                 "window.addEventListener(\"pagehide\", () => armStop(",
+                 "\"pointerup\", \"pointercancel\", \"pointerleave\"",
+                 "armStop(\"Abort\");"):
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
@@ -35329,6 +35364,22 @@ t(lampClass({armed:"armed"}, {connected:true, stale:false}) === "armed",
   "a fresh armed lamp reads armed");
 t(staleText(10000, 6000).indexOf("CONNECTION LOST") === 0,
   "the banner says connection lost");
+const ast = {arming:{enabled:true, signed_in:true, fresh_s:1.0},
+  flames:{connected:true, stale:false, age_ms:100,
+          groups:[{name:"a", armed:"disarmed", wanted:false},
+                  {name:"b", armed:"armed", wanted:true}]}};
+t(armState(ast, 10000, 9500, 0).ok, "live, signed in, off: may hold to arm");
+t(!armState(ast, 10000, 8900, 0).ok, "1.1 s since the engine: may not");
+t(!armState(ast, 10000, 9500, 1).ok, "already armed: may not");
+t(!armState(Object.assign({}, ast, {arming:{enabled:false, signed_in:true}}),
+  10000, 9500, 0).ok, "arming switched off: may not");
+t(!armState(Object.assign({}, ast, {arming:{enabled:true, signed_in:false}}),
+  10000, 9500, 0).ok, "not signed in: may not");
+t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
+  {age_ms:1200})}), 10000, 9500, 0).ok, "flamesafe 1.2 s old: may not");
+t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
+  {stale:true})}), 10000, 9500, 0).ok, "flamesafe stale: may not");
+t(!armState(null, 10000, 9500, 0).ok, "no status: may not");
 console.log(JSON.stringify(out));
 """
     r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
@@ -35341,27 +35392,35 @@ console.log(JSON.stringify(out));
 
 
 def test_remote_has_no_arm_route():
-    section("iPad remote: there is no arm route, here or in web.py")
+    section("iPad remote: no route arms anything by itself; the only arm "
+            "routes are the screen hold and its release, which the Stream "
+            "Deck reads; nothing here or in web.py touches the arm link")
     import re as _re
     from ltcplay import remote as RM
     here = os.path.dirname(os.path.abspath(__file__))
     every = list(RM.GET_ROUTES) + list(RM.POST_ROUTES)
-    bad = [r for r in every if _re.search(r"(?<!dis)arm", r)]
-    check(not bad, f"no remote route arms: {bad}")
+    armish = sorted(r for r in every if _re.search(r"(?<!dis)arm", r))
+    check(armish == ["arm-hold", "arm-release"],
+          f"the only arm routes are the hold and its release: {armish}")
+    check(RM.ARM_ROUTES == ("arm-hold", "arm-release", "group-disarm"),
+          f"the arm routes: {RM.ARM_ROUTES}")
     for name in ("remote.py", "web.py"):
         src = open(os.path.join(here, "ltcplay", name), encoding="utf-8").read()
         routes = _re.findall(r'"/api/[a-z/_-]*"', src)
         armish = [r for r in routes if _re.search(r"(?<!dis)arm", r)]
-        check(not armish, f"{name} names no arm route: {armish}")
+        check(not armish, f"{name} names no other arm route: {armish}")
         for word in ("ArmSocket", "arm_port", "encode_arm_frame",
-                     "set_group(", "set_all(True"):
-            check(word not in src, f"{name} never touches the arm link "
-                                   f"({word})")
+                     "set_group(", "set_all(True", "import streamdeck",
+                     "from . import streamdeck"):
+            check(word not in src,
+                  f"{name} never touches the arm link ({word})")
     page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
                 encoding="utf-8").read()
-    check(not _re.search(r"/api/remote/(?!disarm)[a-z-]*arm", page) and
-          not _re.search(r'press\("(?!disarm)[a-z-]*arm', page),
-          "the page posts to no arm route")
+    posted = set(_re.findall(r'/api/remote/([a-z-]+)', page)) | set(
+        _re.findall(r'press\("([a-z-]+)"', page))
+    check({p for p in posted if _re.search(r"(?<!dis)arm", p)} <=
+          {"arm-hold", "arm-release"},
+          f"the page posts to no other arm route: {sorted(posted)}")
     S = _sched()
     if S is None:
         return
@@ -35640,6 +35699,613 @@ def test_player_free_run_pause_and_loop():
     p.release()
     check(p.loop is None and p.freerun_paused_at is None,
           "release clears the loop and the pause")
+    print("  ok")
+
+
+# ------------------------------------------- arming from a screen --
+
+def _arm_rig(S):
+    """A _RemoteRig with flamesafe's status fed fresh on its clock."""
+    import json as _j
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    fs = RM.FlameStatus("127.0.0.1", 0, "k" * 20, [],
+                        clock=lambda: R.mono[0])
+    R.remote.flame_status = fs
+    R.groups = [{"name": "front row", "armed": "disarmed", "wanted": False,
+                 "reason": ""},
+                {"name": "cat-walk", "armed": "disarmed", "wanted": False,
+                 "reason": ""},
+                {"name": "wave flamer", "armed": "armed", "wanted": True,
+                 "reason": ""}]
+
+    def feed():
+        fs.note(_j.dumps({"t": "status", "k": "k" * 20, "fault": "",
+                          "groups": R.groups}).encode())
+    R.feed = feed
+    feed()
+    return R
+
+
+def _hold(R, group, hold_id=None, **kw):
+    body = {"group": group, "seen": R.seen()}
+    if hold_id is not None:
+        body["hold_id"] = hold_id
+    body.update(kw)
+    return R.ask("POST", "/api/remote/arm-hold", body)
+
+
+def test_screen_arm_engine_rules():
+    section("screen arming, the engine: a PIN session (the show machine "
+            "too), arming switched on, a live page and a live flamesafe, "
+            "one hold per group, heartbeats it actually received; a gap, "
+            "an Abort, a disarm or a sign out lets go and never carries on")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    check(RM.ARM_FRESH_S == 1.0 and RM.BEAT_STALE_S == 0.25 and
+          RM.SCREEN_HOLD_S == 1.0, "the arming numbers are what the PR says")
+    R = _arm_rig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm-hold",
+                           {"group": "front row", "seen": R.seen()},
+                           client=loop)
+        check(st == 401 and "PIN" in out["error"],
+              f"the show machine itself needs a PIN session to arm: {st}")
+        st, _h, out = _hold(R, "front row")
+        check(st == 401, f"the network without a session: {st}")
+        R.sign_in("Andy", "2468", "iPad")
+        # Switched off.
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = _hold(R, "front row")
+        check(st == 403 and "switched off" in out["error"],
+              f"screen_arming false refuses: {st} {out}")
+        st, _h, out = R.ask("GET", "/api/remote/deck-input")
+        check(st == 403, "deck-input is never served to the network")
+        d = R.remote.deck_input()
+        check(d["enabled"] is False and d["holds"] == [],
+              "and the deck is told arming is off")
+        try:
+            RM.save_settings(R.work, screen_arming="yes")
+            check(False, "a screen_arming of \"yes\" was read")
+        except ValueError:
+            pass
+        st, _h, out = _hold(R, "front row")
+        check(st == 403, "a setting that is not true or false reads as off")
+        RM.save_settings(R.work, screen_arming=True)
+        check(RM.load_settings(R.work)["screen_arming"] is True,
+              "and true is on")
+        import os as _os
+        _os.remove(_os.path.join(R.work, RM.SETTINGS_FILE))
+        check(RM.load_settings(R.work)["screen_arming"] is True,
+              "with no settings file arming defaults on (Jeff)")
+        # A stale page.
+        st, _h, out = _hold(R, "front row", seen=R.seen() - 1200)
+        check(st == 409 and "1 s old" in out["error"],
+              f"a page status 1.2 s old cannot arm: {st} {out}")
+        # A stale flamesafe.
+        R.mono[0] += 1.1
+        st, _h, out = _hold(R, "front row")
+        check(st == 409 and "flamesafe" in out["error"],
+              f"flamesafe 1.1 s quiet: refused: {st} {out}")
+        R.feed()
+        st, _h, out = _hold(R, "wave flamer")
+        check(st == 409 and "already armed" in out["error"],
+              "an armed group is not held")
+        st, _h, out = _hold(R, "no such")
+        check(st == 400, "a group flamesafe does not report is refused")
+        # A clean hold, with heartbeats.
+        st, _h, out = _hold(R, "front row")
+        check(st == 200 and out["hold_id"] and out["held_s"] == 0.0,
+              f"a hold starts: {st} {out}")
+        hid = out["hold_id"]
+        for _ in range(6):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            st, _h, out = _hold(R, "front row", hold_id=hid)
+        check(st == 200 and abs(out["held_s"] - 0.6) < 1e-6,
+              f"held_s is measured to the last heartbeat: {out}")
+        d = R.remote.deck_input()
+        check(d["enabled"] and len(d["holds"]) == 1 and
+              d["holds"][0]["group"] == 0 and d["holds"][0]["fresh"] and
+              d["holds"][0]["who"] == "Andy" and
+              d["holds"][0]["device"] == "iPad" and
+              abs(d["holds"][0]["held_s"] - 0.6) < 1e-6,
+              f"the deck sees the hold, its operator and device: {d}")
+        # A gap: the hold is let go and never carries on.
+        R.mono[0] += 0.3
+        R.feed()
+        d = R.remote.deck_input()
+        check(not d["holds"][0]["fresh"],
+              "0.3 s with no heartbeat: the deck sees it let go")
+        st, _h, out = _hold(R, "front row", hold_id=hid)
+        check(st == 409 and "interrupted" in out["error"] and
+              out.get("let_go"),
+              f"an interrupted hold never carries on: {st} {out}")
+        check(R.remote.deck_input()["holds"] == [],
+              "and it is gone for the deck")
+        # A second browser on the same group.
+        st, _h, out = _hold(R, "front row")
+        hid = out["hold_id"]
+        R.remote.pins.set("Jeff", "1357")
+        andy = R.cookie
+        R.sign_in("Jeff", "1357", "Phone", set_pin=False)
+        jeff = R.cookie
+        st, _h, out = _hold(R, "front row")
+        check(st == 409 and "Andy on the iPad is already holding" in
+              out["error"], f"a second browser on the same group is "
+                            f"refused: {st} {out}")
+        st, _h, out = _hold(R, "cat-walk")
+        check(st == 200, "a different group is its own hold")
+        R.ask("POST", "/api/remote/arm-release", {"group": "cat-walk"})
+        # Any disarm on the group cancels the hold.
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"})
+        check(st == 200 and R.remote.deck_input()["disarms"][-1]["group"]
+              == 0 and R.remote.deck_input()["disarms"][-1]["who"] == "Jeff"
+              and R.remote.deck_input()["disarms"][-1]["device"] == "Phone",
+              "a per-group disarm goes to the deck with who and where")
+        R.cookie = andy
+        st, _h, out = _hold(R, "front row", hold_id=hid)
+        check(st == 409, "and Andy's hold on it is over")
+        # An Abort cancels every hold, before anything else.
+        _live_show(R)
+        R.feed()
+        st, _h, out = _hold(R, "front row")
+        check(st == 200, "a new hold")
+        hid = out["hold_id"]
+        R.cookie = jeff
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        R.cookie = andy
+        check(R.remote.deck_input()["holds"] == [],
+              "Jeff's Abort let Andy's hold go")
+        st, _h, out = _hold(R, "front row", hold_id=hid)
+        check(st == 409, "and it does not carry on")
+        check(any(r.get("action") == "arm hold" and
+                  r.get("outcome") == "cancelled" for r in R.svc.journal),
+              "journaled as cancelled")
+        # Disarm every flame group too.
+        st, _h, out = _hold(R, "front row")
+        R.ask("POST", "/api/remote/disarm-all", {})
+        check(R.remote.deck_input()["holds"] == [],
+              "Disarm every flame group lets every hold go")
+        # Signing out drops your holds.
+        st, _h, out = _hold(R, "front row")
+        R.ask("POST", "/api/remote/logout", {})
+        check(R.remote.deck_input()["holds"] == [],
+              "signing out lets your holds go")
+        # Every hold is journaled with who and where.
+        check(any(r.get("action") == "arm hold" and
+                  r.get("outcome") == "started" and r.get("who") == "Andy"
+                  and r.get("screen") == "iPad" for r in R.svc.journal),
+              "a hold is journaled with who and where")
+    finally:
+        R.close()
+    print("  ok")
+
+
+class _FakeScreen:
+    def __init__(self):
+        self.h = {}
+        self.d = []
+
+    def holds(self):
+        return dict(self.h)
+
+    def new_disarms(self):
+        out, self.d = self.d, []
+        return out
+
+
+def test_screen_arm_deck_rules():
+    section("screen arming, the Stream Deck: a screen hold is a press of the "
+            "group key; it fires only after the deck's own hold AND 1 s of "
+            "heartbeats; a drop, an Abort, the refractory window or no "
+            "operator never arm; a screen disarm is a tap")
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    check(sd.SCREEN_HOLD_S == RM.SCREEN_HOLD_S,
+          "the deck and the engine agree on the screen hold")
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    names = ["front row", "cat-walk", "wave flamer"]
+    events = []
+    t = [100.0]
+    scr = _FakeScreen()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr)
+
+    def step(dt, held=None, group=0, hid=1, who="Andy", dev="iPad"):
+        t[0] += dt
+        if held is None:
+            scr.h.pop(group, None)
+        else:
+            scr.h[group] = {"group": group, "id": hid, "held_s": held,
+                            "fresh": True, "who": who, "device": dev}
+        c.screen_pass()
+        c.tick()
+
+    # A full hold: fires once both clocks are past.
+    step(0.0, 0.0)
+    check(c._arm_holds[0]._down_at is not None,
+          "a screen hold starts the group's own hold timer")
+    step(sd.ARM_HOLD_S + 0.05, 0.7)
+    check(arm.wanted[0] is False,
+          "the deck's own hold has run but only 0.7 s of heartbeats: no arm")
+    step(0.1, 1.0)
+    check(arm.wanted[0] is True, f"both done: armed: {arm.wanted}")
+    ev = events[-1]
+    check("arm pressed" in ev[0] and "on the iPad" in ev[0] and
+          ev[1].get("who") == "Andy" and ev[1].get("screen") == "iPad",
+          f"journaled with who and the device: {ev}")
+    # A screen disarm is an instant tap.
+    scr.h.clear()
+    scr.d.append({"id": 1, "group": 0, "who": "Jeff", "device": "Phone"})
+    step(0.05)
+    check(arm.wanted[0] is False and "disarm pressed on the Phone by Jeff"
+          in events[-1][0], f"a screen disarm: {events[-1]}")
+    # The refractory window after that disarm refuses a new screen hold.
+    step(0.1, 0.0, hid=2)
+    check(c._arm_holds[0]._down_at is None and
+          "refractory" in events[-1][0],
+          f"a screen hold inside the refractory window is refused: "
+          f"{events[-1][0]}")
+    step(sd.REARM_REFRACTORY_S, None)
+    # A drop before 1 s of heartbeats: never arms, however long after.
+    step(0.0, 0.0, hid=3)
+    step(0.5, 0.5, hid=3)
+    step(0.05, None)                       # the engine stopped reporting it
+    for _ in range(20):
+        step(0.1, None)
+    check(arm.wanted[0] is False,
+          "a hold that dropped at 0.5 s never arms")
+    # Heartbeats stop (held_s frozen at 0.9) while the deck's timer runs.
+    step(0.0, 0.0, hid=4)
+    for _ in range(15):
+        step(0.1, 0.9, hid=4)
+    check(arm.wanted[0] is False,
+          "held_s stuck short of 1 s never arms, however long the deck "
+          "waits")
+    step(0.05, None)
+    # A new hold id is a new press: the old timer does not count.
+    step(0.0, 0.0, hid=5)
+    step(sd.ARM_HOLD_S + 0.1, 0.5, hid=5)
+    step(0.01, 1.2, hid=6)                 # a different hold, already long
+    check(arm.wanted[0] is False,
+          "a changed hold id restarts the deck's own timer")
+    step(sd.ARM_HOLD_S + 0.05, 1.8, hid=6)
+    check(arm.wanted[0] is True, "and then it arms")
+    scr.d.append({"id": 2, "group": 0, "who": "Andy", "device": "iPad"})
+    step(0.05)
+    step(sd.REARM_REFRACTORY_S + 0.1)
+    # An Abort on the deck during a screen hold.
+    step(0.0, 0.0, group=1, hid=7)
+    step(0.3, 0.3, group=1, hid=7)
+    c._do_abort()
+    for k in range(10):
+        step(0.1, 0.4 + 0.1 * k, group=1, hid=7)
+    check(arm.wanted[1] is False,
+          "an Abort during a screen hold: nothing arms after it")
+    c._latched = False
+    step(0.05, None, group=1)
+    step(sd.REARM_REFRACTORY_S + 0.1)
+    # A latched rig: no screen hold even starts.
+    c._latched = True
+    step(0.0, 0.0, group=1, hid=8)
+    step(sd.ARM_HOLD_S + 0.1, 1.5, group=1, hid=8)
+    check(arm.wanted[1] is False and c._arm_holds[1]._down_at is None,
+          "while latched no screen hold runs")
+    c._latched = False
+    step(0.05, None, group=1)
+    # No operator named: refused by the deck's own gate.
+    step(0.0, 0.0, group=1, hid=9, who="")
+    step(sd.ARM_HOLD_S + 0.1, 1.5, group=1, hid=9, who="")
+    check(arm.wanted[1] is False, "a hold with no operator never arms")
+    step(0.05, None, group=1)
+    # A screen hold never disarms an armed group.
+    arm.set_group(2, True)
+    step(0.0, 0.0, group=2, hid=10)
+    step(0.1, 0.1, group=2, hid=10)
+    check(arm.wanted[2] is True, "holding an armed group does not disarm it")
+    step(0.05, None, group=2)
+    # The deck's own Abort clears a group the screen armed: one latch.
+    c._do_abort()
+    check(arm.wanted == [False, False, False],
+          "the deck's Abort disarms a screen-armed group too")
+    c._latched = False
+    # ScreenKeys: unreachable or stale reads as let go.
+    clk = [50.0]
+    answers = [{"enabled": True, "holds": [{"group": 0, "id": 1,
+                                            "held_s": 0.5, "fresh": True}],
+                "disarms": [{"id": 3, "group": 1}]}]
+    k = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda p: answers[0],
+                      clock=lambda: clk[0])
+    k.poll_once()
+    check(0 in k.holds() and k.new_disarms() == [],
+          "a fresh answer gives the hold; disarms from before start are "
+          "history")
+    answers[0] = dict(answers[0], disarms=[{"id": 3, "group": 1},
+                                           {"id": 4, "group": 2}])
+    k.poll_once()
+    check([e["id"] for e in k.new_disarms()] == [4] and
+          k.new_disarms() == [], "a new disarm is handed out once")
+    clk[0] += sd.SCREEN_STALE_S + 0.01
+    check(k.holds() == {}, "an answer older than 0.3 s is let go")
+    # Unreachable: let go at once, not only once the last answer ages out.
+    answers[0] = {"enabled": True, "holds": [{"group": 0, "id": 1,
+                                              "held_s": 0.5, "fresh": True}]}
+    k.poll_once()
+    check(0 in k.holds(), "setup: a fresh hold again")
+    answers[0] = None
+    k.poll_once()
+    check(k.holds() == {}, "an unreachable engine is let go at once")
+    answers[0] = {"enabled": False, "holds": [{"group": 0, "id": 1,
+                                               "held_s": 2, "fresh": True}]}
+    k.poll_once()
+    check(k.holds() == {}, "arming switched off: nothing")
+    answers[0] = {"enabled": True, "holds": [{"group": 0, "id": 1,
+                                              "held_s": 2, "fresh": False}]}
+    k.poll_once()
+    check(k.holds() == {}, "a hold the engine says is not fresh: nothing")
+    print("  ok")
+
+
+def test_screen_arm_end_to_end_probes():
+    section("screen arming end to end: the real flamesafe, the real deck "
+            "controller and arm socket, the real engine over HTTP; a full "
+            "hold arms; a dropped connection, a stale page, an Abort during "
+            "the hold, a second browser and arming switched off never do")
+    import json as _j
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    import urllib.request
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
+    S = _sched()
+    if S is None:
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    listen, armp, statusp, mirror = (free_port(), free_port(), free_port(),
+                                     free_port())
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    _j.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1", "status_port": statusp,
+                 "status_mirror_port": mirror, "arm_port": armp,
+                 "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": n, "safety": 401 + i, "fire": [411 + 10 * i]}
+                   for i, n in enumerate(names)]}, open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    stop = threading.Event()
+    out_lines = []
+    threading.Thread(target=lambda: [out_lines.append(l) for l in
+                                     proc.stdout], daemon=True).start()
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t0 = time.perf_counter()
+
+    def show_tc():
+        n = int((time.perf_counter() - t0) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, show_state=lambda: (show_tc(), True)).start()
+    # The engine: real HTTP on loopback, a real FlameStatus on the mirror.
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1",
+                          remote_folder=work, flamesafe_config=cfg_path)
+    rem = httpd.remote
+    rem.pins = RM.PinStore(work, iterations=1000)
+    rem.pins.set("Andy", "2468")
+    rem.pins.set("Jeff", "1357")
+    threading.Thread(target=httpd.serve_forever,
+                     kwargs={"poll_interval": 0.05}, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def http(path, body=None, cookie=None):
+        req = urllib.request.Request(
+            base + path, data=None if body is None else
+            _j.dumps(body).encode(), method="GET" if body is None else "POST",
+            headers={"Content-Type": "application/json",
+                     **({"Cookie": cookie} if cookie else {})})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, _j.loads(r.read()), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, _j.loads(e.read() or b"{}"), e.headers
+
+    def login(who, pin, dev):
+        st, out, h = http("/api/remote/login",
+                          {"who": who, "pin": pin, "device": dev})
+        check(st == 200, f"sign in {who}: {st} {out}")
+        return h.get("Set-Cookie").split(";")[0]
+    andy = login("Andy", "2468", "iPad")
+    jeff = login("Jeff", "1357", "Phone")
+    # The deck: the real controller, arm socket and status socket, and
+    # ScreenKeys reading the engine over HTTP; no hardware.
+    arm = sd.ArmSocket("127.0.0.1", armp, key, 3)
+    arm.open()
+    status = sd.StatusSocket("127.0.0.1", statusp, key)
+    status.open()
+    screen = sd.ScreenKeys(base).start()
+    events = []
+    ctl = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: None,
+                        journal=lambda t_, **kw: events.append(t_),
+                        screen=screen)
+    lock = threading.Lock()
+
+    def deck_loop():
+        while not stop.is_set():
+            with lock:
+                ctl.screen_pass()
+                ctl.tick()
+                status.poll()
+                arm.send(names)
+            time.sleep(0.05)
+    threading.Thread(target=deck_loop, daemon=True).start()
+
+    def armed(i):
+        st = status.last
+        return bool(st) and st["groups"][i]["armed"] == "armed"
+
+    def status_now():
+        return http("/api/remote/status", cookie=andy)[1]
+
+    def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
+             during=None):
+        """Hold like the page: a heartbeat every 100 ms, each after the
+        last answered, with the latest status's served_at."""
+        hid, end = None, time.perf_counter() + seconds
+        started = time.perf_counter()
+        answers = []
+        while time.perf_counter() < end:
+            if drop_at is not None and \
+                    time.perf_counter() - started >= drop_at:
+                break                       # the connection drops: silence
+            if during and time.perf_counter() - started >= during[0]:
+                during[1]()
+                during = None
+            st = http("/api/remote/status", cookie=cookie)[1]
+            body = {"group": group,
+                    "seen": st["served_at"] - int(seen_lag * 1000)}
+            if hid is not None:
+                body["hold_id"] = hid
+            code, out, _h = http("/api/remote/arm-hold", body, cookie)
+            answers.append(code)
+            if code != 200:
+                break
+            hid = out["hold_id"]
+            time.sleep(0.1)
+        return answers
+
+    def never_armed(i, seconds):
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            if armed(i):
+                return False
+            time.sleep(0.02)
+        return True
+    try:
+        # Wait for everything to be live.
+        end = time.perf_counter() + 10
+        while time.perf_counter() < end:
+            s = status_now()
+            if s["flames"].get("connected") and not s["flames"]["stale"] \
+                    and status.last:
+                break
+            time.sleep(0.1)
+        check(not status_now()["flames"]["stale"],
+              "setup: the engine hears flamesafe on the mirror")
+        time.sleep(1.2)                    # the deck's lows prove a cycle
+        # P1: a full hold arms, through the deck and flamesafe's own rules.
+        hold("front row", andy, 1.5)
+        end = time.perf_counter() + 3
+        while time.perf_counter() < end and not armed(0):
+            time.sleep(0.02)
+        check(armed(0), f"P1: a full screen hold armed front row on the "
+                        f"wire: {status.last and status.last['groups'][0]}")
+        check(any("arm pressed (held 1 s on the iPad) by Andy" in e
+                  for e in events), "and the deck journaled who and where")
+        # Disarm it from the page: a tap through the deck.
+        http("/api/remote/group-disarm", {"group": "front row"}, andy)
+        end = time.perf_counter() + 2
+        while time.perf_counter() < end and armed(0):
+            time.sleep(0.02)
+        check(not armed(0), "a per-group disarm from the page disarmed it")
+        time.sleep(sd.REARM_REFRACTORY_S + 0.2)
+        # P2: the connection drops at 0.7 s of a 1 s hold.
+        hold("cat-walk", andy, 2.0, drop_at=0.7)
+        check(never_armed(1, 3.0), "P2: a dropped connection mid-hold "
+                                   "never arms")
+        # P3: a stale page (its status 1.2 s old).
+        ans = hold("cat-walk", andy, 1.5, seen_lag=1.2)
+        check(ans and ans[0] == 409 and never_armed(1, 2.0),
+              f"P3: a stale page cannot even start a hold: {ans}")
+        # P4: an Abort during the hold (Jeff, from his phone). The
+        # scheduler is not attached here, so the Abort itself is refused,
+        # but every hold is let go before anything else.
+        ans = hold("cat-walk", andy, 2.0, during=(
+            0.5, lambda: http("/api/remote/abort", {"confirmed": True},
+                              jeff)))
+        check(409 in ans and never_armed(1, 3.0),
+              f"P4: an Abort during a browser hold: never arms: {ans}")
+        # P5: a second browser on the same group.
+        results = {}
+
+        def second():
+            time.sleep(0.3)
+            st = http("/api/remote/status", cookie=jeff)[1]
+            results["jeff"] = http("/api/remote/arm-hold",
+                                   {"group": "wave flamer",
+                                    "seen": st["served_at"]}, jeff)[0]
+        th = threading.Thread(target=second)
+        th.start()
+        hold("wave flamer", andy, 0.6)
+        th.join()
+        check(results.get("jeff") == 409 and never_armed(2, 2.0),
+              f"P5: a second browser on the same group is refused, and a "
+              f"short first hold arms nothing: {results}")
+        # P6: arming switched off.
+        RM.save_settings(work, screen_arming=False)
+        ans = hold("wave flamer", andy, 1.5)
+        check(ans and ans[0] == 403 and never_armed(2, 2.0),
+              f"P6: arming switched off: refused: {ans}")
+        RM.save_settings(work, screen_arming=True)
+        # P7: the engine stops answering mid-hold (the deck loses it).
+        httpd.shutdown()
+        check(never_armed(2, 1.5), "P7: an engine that stops answering "
+                                   "arms nothing")
+    finally:
+        stop.set()
+        screen.stop()
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        rs = getattr(httpd.remote, "flame_status", None)
+        if rs is not None:
+            rs.stop()
+        link.stop()
+        arm.close()
+        status.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        node.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
     print("  ok")
 
 
@@ -36167,6 +36833,9 @@ if __name__ == "__main__":
     test_remote_scrubbing_only_in_a_programming_session()
     test_player_free_run_pause_and_loop()
     test_flame_link_seek_guard()
+    test_screen_arm_engine_rules()
+    test_screen_arm_deck_rules()
+    test_screen_arm_end_to_end_probes()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

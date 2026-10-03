@@ -33,9 +33,18 @@ saved before the conductor is asked). Reset is Service.reset_conductor.
 link's disarm_all, the same call the conductor's Abort makes), journaled
 with who and which screen. Picking the operator is Service.set_operator.
 
-THERE IS NO ARM ROUTE. Arming stays on the Stream Deck, the one genuine
-off-then-on press flamesafe listens to. The selftest fails if a route with
-"arm" in its name (other than disarm) appears here or in web.py.
+ARMING (Jeff, 2026-10-03, its own PR): the page never arms anything. A
+signed-in operator's hold to arm (arm-hold, repeated every 100 ms while the
+finger is down) is read by the Stream Deck process (deck-input) as a remote
+press of that group's key. The deck owns flamesafe's arm link and runs its
+own rules (the hold, the refractory window, the latched refusal) and
+flamesafe runs all of its own (consent, dwell, the post-Abort window, the
+round-4 veto, the second-copy guard) exactly as for a finger on the deck.
+It needs a PIN session even on the show machine, a page status and a
+flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
+received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
+(default on). A gap in the heartbeats, an Abort, a disarm or a sign out
+lets the hold go; an interrupted hold never carries on.
 
 Fresh state
 -----------
@@ -148,9 +157,18 @@ FRESH_ROUTES = frozenset(("start-now", "resume", "reset", "operator")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
 CONFIRM_ROUTES = frozenset(("start-now", "abort"))
-GET_ROUTES = ("whoami", "status", "network")
-POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ("login", "logout", "pin",
-                                                  "network")
+# Arming from a screen (Jeff, 2026-10-03; its own PR and safety review).
+# The page never arms anything itself: a hold here is a remote press of the
+# group's key on the Stream Deck process, which owns flamesafe's arm link
+# and runs every one of its own and flamesafe's rules on it. See
+# flamesafe/CONTRACT.md, "Arming from a screen".
+ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
+ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
+BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
+SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
+GET_ROUTES = ("whoami", "status", "network", "deck-input")
+POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
+    "login", "logout", "pin", "network")
 LOCAL_ONLY = frozenset(("pin", "network"))
 
 # Any of these on a request means something forwarded it. A browser on the
@@ -214,7 +232,7 @@ def load_settings(folder=None):
     None}. A missing file is all None; a broken one raises ValueError."""
     path = os.path.join(folder or settings_folder(), SETTINGS_FILE)
     out = {"show_network_address": None, "flamesafe_config": None,
-           "path": path}
+           "screen_arming": True, "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -229,6 +247,14 @@ def load_settings(folder=None):
             doc["show_network_address"])
     if doc.get("flamesafe_config"):
         out["flamesafe_config"] = str(doc["flamesafe_config"])
+    if "screen_arming" in doc:
+        # One switch to turn screen and browser arming off without a code
+        # change. Only the JSON word false turns it off; anything else
+        # that is not true is refused rather than guessed at.
+        v = doc["screen_arming"]
+        if v is not True and v is not False:
+            raise ValueError(f"{path}: screen_arming must be true or false.")
+        out["screen_arming"] = v
     return out
 
 
@@ -641,6 +667,14 @@ class Remote:
         self.wall = wall
         self._log = log
         self.marks = {"a": None, "b": None}     # loop marks, show seconds
+        # Screen arm holds: group index -> {token, who, device, start,
+        # beat, id}; per-group disarms waiting for the deck to read them.
+        import collections
+        self._arm_lock = threading.Lock()
+        self._holds = {}
+        self._hold_ids = 0
+        self._disarms = collections.deque(maxlen=64)
+        self._disarm_ids = 0
 
     # -- who ---------------------------------------------------------------
     # With no scheduler (the GPL path) the lists are read here, read-only,
@@ -661,8 +695,10 @@ class Remote:
                                "screens", DEFAULT_SCREENS))
 
     def context(self, local, ip, cookie_header):
-        s = None if local else self.sessions.get(cookie_token(cookie_header))
-        return Ctx(local, ip, s)
+        # The machine itself is let in with or without a session, as
+        # before; a session there still names who is pressing, and arming
+        # needs one wherever it comes from.
+        return Ctx(local, ip, self.sessions.get(cookie_token(cookie_header)))
 
     def _actor(self, ctx, body):
         """(who, screen) for a press: the session's on the network, the
@@ -698,6 +734,12 @@ class Remote:
         name = route[len("/api/remote/"):]
         if name == "whoami":
             return 200, self.whoami(ctx)
+        if name == "deck-input":
+            # The Stream Deck process, on this machine. Never the network:
+            # it carries the holds the deck acts on.
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return 200, self.deck_input()
         if not ctx.allowed:
             return 401, {"error": "Sign in with your PIN first."}
         if name == "status":
@@ -727,6 +769,12 @@ class Remote:
             return (*self.set_network(body),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
+        if name == "arm-hold":
+            return (*self.arm_hold(body, ctx),) + ({},)
+        if name == "arm-release":
+            return (*self.arm_release(body, ctx),) + ({},)
+        if name == "group-disarm":
+            return (*self.group_disarm(body, ctx),) + ({},)
         return 404, {"error": "no such thing here"}, {}
 
     # -- sign in -----------------------------------------------------------
@@ -803,6 +851,10 @@ class Remote:
         s = ctx.session
         if s is not None:
             self.sessions.drop(s["token"])
+            with self._arm_lock:
+                for i in [i for i, h in self._holds.items()
+                          if h["token"] == s["token"]]:
+                    del self._holds[i]
             self._journal(s["who"], s["device"], "sign out", "done",
                           f"{s['who']} signed out on the {s['device']}.")
         return 200, {"ok": True}, {
@@ -882,6 +934,12 @@ class Remote:
                           f"{who or 'Someone'}'s {name} on the {screen} was "
                           f"refused. {why}")
             return 400, {"error": why}
+        if name in ("abort", "disarm-all"):
+            # Before anything else: no screen hold survives an Abort or a
+            # disarm, whoever pressed it and whether or not it goes on to
+            # be accepted.
+            self.cancel_holds(f"{who or 'someone'} pressed {name} on the "
+                              f"{screen}")
         if name == "disarm-all":
             return self.disarm_all(who, screen)
         if name in TRANSPORT_ROUTES:
@@ -1045,6 +1103,199 @@ class Remote:
                         for k, v in self.marks.items()}
         return out
 
+    # -- arming from a screen (its own PR) ---------------------------------
+    def arming_enabled(self):
+        try:
+            return load_settings(self.folder)["screen_arming"] is True
+        except (ValueError, OSError):
+            return False              # a broken settings file: off
+
+    def _group_index(self, body):
+        """(index, name) of the flame group the page named, from the names
+        flamesafe itself reports, or ValueError."""
+        fs = self.flame_status
+        names = []
+        if fs is not None:
+            names = [g["name"] for g in fs.view()["groups"]]
+        g = body.get("group")
+        if isinstance(g, int) and not isinstance(g, bool) and \
+                0 <= g < len(names):
+            return g, names[g]
+        for i, n in enumerate(names):
+            if isinstance(g, str) and n.lower() == g.strip().lower():
+                return i, n
+        raise ValueError("That is not a flame group flamesafe reports.")
+
+    def _drop_hold(self, i, token=None):
+        with self._arm_lock:
+            h = self._holds.get(i)
+            if h is not None and (token is None or h["token"] == token):
+                del self._holds[i]
+                return h
+        return None
+
+    def cancel_holds(self, why):
+        """Every screen arm hold let go, at once (an Abort, a Hold, a
+        disarm). The deck sees them gone on its next read."""
+        with self._arm_lock:
+            gone, self._holds = self._holds, {}
+        for h in gone.values():
+            self._journal(h["who"], h["device"], "arm hold", "cancelled",
+                          f"{h['who']}'s hold to arm group {h['group']} on "
+                          f"the {h['device']} was let go: {why}.")
+        return len(gone)
+
+    def arm_hold(self, body, ctx):
+        """The page's hold to arm one group: the first call starts it, and
+        the page repeats it every 100 ms while the finger stays down. Each
+        call checks everything again; any check that fails lets go."""
+        s = ctx.session
+        if s is None:
+            return 401, {"error": "Arming needs your own PIN sign in, even "
+                                  "on the show machine."}
+        who, device, token = s["who"], s["device"], s["token"]
+        try:
+            i, gname = self._group_index(body)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+
+        def refuse(code, why):
+            h = self._drop_hold(i, token)
+            if h is not None or body.get("hold_id") is None:
+                self._journal(who, device, "arm hold", "refused",
+                              f"{who}'s hold to arm {gname} on the "
+                              f"{device} was refused. {why}")
+            return code, {"error": why, "let_go": True}
+        if not self.arming_enabled():
+            return refuse(403, "Arming from a screen is switched off in "
+                               "ltcplay_remote.json.")
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            return refuse(409, "The page's status is more than 1 s old. "
+                               "Wait for it to be live, then hold again.")
+        fl = self.flame_status.view() if self.flame_status else None
+        if not fl or fl["stale"] or fl["age_ms"] is None or \
+                fl["age_ms"] > ARM_FRESH_S * 1000:
+            return refuse(409, "flamesafe has not reported in the last "
+                               "second, so its real armed state is not "
+                               "known. Nothing can arm from here until it "
+                               "does.")
+        g = fl["groups"][i]
+        if g["armed"] == "armed" or g["wanted"]:
+            return refuse(409, f"{gname} is already armed or asked for.")
+        now = self.clock()
+        if body.get("hold_id") is not None:
+            # A heartbeat for a hold already under way. If that hold is not
+            # the live one any more (a gap longer than BEAT_STALE_S, an
+            # Abort, a disarm, a restart), it is over: a hold that was
+            # interrupted never carries on, the finger has to come up and
+            # go down again.
+            with self._arm_lock:
+                h = self._holds.get(i)
+                live = (h is not None and h["token"] == token and
+                        h["id"] == body.get("hold_id") and
+                        now - h["beat"] <= BEAT_STALE_S)
+                if live:
+                    h["beat"] = now
+                    return 200, {"ok": True, "hold_id": h["id"],
+                                 "held_s": round(now - h["start"], 3),
+                                 "needs_s": SCREEN_HOLD_S}
+            return refuse(409, "The hold was interrupted. Lift your finger "
+                               "and hold again.")
+        with self._arm_lock:
+            h = self._holds.get(i)
+            if h is not None and h["token"] != token and \
+                    now - h["beat"] <= BEAT_STALE_S:
+                theirs = f"{h['who']} on the {h['device']}"
+                h = "busy"
+            elif h is not None and h["token"] == token and \
+                    now - h["beat"] <= BEAT_STALE_S and \
+                    body.get("hold_id") == h["id"]:
+                h["beat"] = now                 # still holding
+                return 200, {"ok": True, "hold_id": h["id"],
+                             "held_s": round(now - h["start"], 3),
+                             "needs_s": SCREEN_HOLD_S}
+            else:
+                self._hold_ids += 1
+                h = {"token": token, "who": who, "device": device,
+                     "group": gname, "start": now, "beat": now,
+                     "id": self._hold_ids}
+                self._holds[i] = h
+        if h == "busy":
+            why = (f"{theirs} is already holding {gname}. Only one hold at "
+                   f"a time.")
+            self._journal(who, device, "arm hold", "refused",
+                          f"{who}'s hold to arm {gname} on the {device} was "
+                          f"refused. {why}")
+            return 409, {"error": why, "let_go": True}
+        self._journal(who, device, "arm hold", "started",
+                      f"{who} started holding to arm {gname} on the "
+                      f"{device}. The Stream Deck arms it only if the hold "
+                      f"lasts {SCREEN_HOLD_S:g} s and every rule allows it.")
+        return 200, {"ok": True, "hold_id": h["id"], "held_s": 0.0,
+                     "needs_s": SCREEN_HOLD_S}
+
+    def arm_release(self, body, ctx):
+        s = ctx.session
+        if s is None:
+            return 200, {"ok": True}
+        try:
+            i, gname = self._group_index(body)
+        except ValueError:
+            return 200, {"ok": True}
+        h = self._drop_hold(i, s["token"])
+        if h is not None:
+            held = h["beat"] - h["start"]
+            self._journal(s["who"], s["device"], "arm hold", "let go",
+                          f"{s['who']} let go of {gname} on the "
+                          f"{s['device']} after {held:.1f} s.")
+        return 200, {"ok": True}
+
+    def group_disarm(self, body, ctx):
+        """Disarm one group: handed to the Stream Deck process, which owns
+        the arm link, as an instant tap of that group's key. Never waits
+        on a fresh page."""
+        try:
+            i, gname = self._group_index(body)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        who, device = self._actor(ctx, body)
+        self._drop_hold(i)
+        with self._arm_lock:
+            self._disarm_ids += 1
+            self._disarms.append({"id": self._disarm_ids, "group": i,
+                                  "name": gname, "who": who,
+                                  "device": device})
+        self._journal(who, device, "disarm", "sent",
+                      f"{who or 'Someone'} pressed Disarm {gname} on the "
+                      f"{device}. Sent to the Stream Deck, which owns the "
+                      f"arm link; flamesafe's lamp shows when it is off.")
+        return 200, {"ok": True, "text": f"Disarm {gname} sent."}
+
+    def deck_input(self):
+        """What the Stream Deck process reads, 20 times a second: the
+        fresh holds (with the held time the engine has heartbeats for) and
+        the per-group disarms."""
+        now = self.clock()
+        enabled = self.arming_enabled()
+        holds = []
+        with self._arm_lock:
+            for i, h in list(self._holds.items()):
+                age = now - h["beat"]
+                if age > 10 * BEAT_STALE_S:
+                    del self._holds[i]          # long gone; tidy up
+                    continue
+                holds.append({"group": i, "id": h["id"],
+                              "held_s": round(h["beat"] - h["start"], 3),
+                              "fresh": age <= BEAT_STALE_S,
+                              "who": h["who"], "device": h["device"]})
+            disarms = list(self._disarms)
+        return {"enabled": enabled, "holds": holds if enabled else [],
+                "disarms": disarms}
+
     def _disarm_fn(self):
         if self._flame_disarm is not None:
             return self._flame_disarm
@@ -1133,4 +1384,16 @@ class Remote:
         else:
             out["flames"] = self.flame_status.view()
         out["disarm_connected"] = self._disarm_fn() is not None
+        now = self.clock()
+        tok = ctx.session["token"] if ctx.session else None
+        with self._arm_lock:
+            holds = [{"group": i, "who": h["who"], "device": h["device"],
+                      "held_s": round(h["beat"] - h["start"], 2),
+                      "mine": h["token"] == tok}
+                     for i, h in self._holds.items()
+                     if now - h["beat"] <= BEAT_STALE_S]
+        out["arming"] = {"enabled": self.arming_enabled(),
+                         "signed_in": ctx.session is not None,
+                         "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
+                         "holds": holds}
         return out

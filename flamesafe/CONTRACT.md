@@ -602,6 +602,85 @@ reconnect after the hardware was lost) it starts every group `wanted`
 false, so the operator sees every key read OFF and re-arms by pressing it,
 matching what the lamp already says ("cycle the arm").
 
+## Arming from a screen (added 2026-10-03)
+
+Jeff approved arming from the rack touch screen and from an iPad, by any
+operator signed in with their own PIN, on the same consent rules as the
+Stream Deck. **Nothing in flamesafe changed for it, and no rule was
+loosened.** This section says why, and how.
+
+**The design: a screen hold is a remote press of the deck's own key.** The
+page never sends anything to flamesafe. A signed-in operator's "hold to
+arm" goes to ltcplay's engine (`ltcplay/remote.py`, `arm-hold`, repeated
+every 100 ms while the finger is down). The Stream Deck process
+(`ltcplay/streamdeck.py`, `ScreenKeys`, read 20 times a second from the
+engine's `deck-input`, loopback only) treats a live screen hold exactly as
+a finger on that group's key: the deck's own hold timer, re-arm
+refractory window, latched refusal and operator gate all apply, and when
+the hold completes the deck sets that group's `wanted` bit on its own arm
+socket, the same as for its own key. A per-group Disarm on the page is an
+instant tap of that key. So:
+
+- There is still exactly **one sender on the arm link**, the deck process.
+  The sender lock, the round-2 AND, the forced-edge rule, the round-4 veto
+  (no consent while `foreign_senders` is non-zero or `flooded`), the
+  post-Abort window after a `disarm_all`, the second-copy guard and
+  `arm_stale_ms` all see the same single stream they always have and work
+  unchanged. flamesafe cannot tell, and does not need to tell, whether a
+  bit was set by a finger on the deck or on a screen.
+- There is **one `wanted` latch per group**, the deck's. The deck's own
+  Abort (all false) disarms a group the screen armed, the deck's tap on
+  that group's key disarms it, and the deck's keys draw it, because it is
+  the deck's own bit.
+
+**Why not a second sender on the arm link.** Three reasons, each enough on
+its own:
+
+1. The round-4 veto refuses every consent edge while another sender is on
+   the link, and the deck process sends at 20 Hz all the time, unplugged or
+   not. A second arm sender could never arm anything while the deck runs,
+   and lifting the veto for it would reopen exactly the takeover the
+   round-4 review proved.
+2. Two senders would mean two `wanted` latches. A group armed from the
+   screen would be one the deck's own bit says is off: the deck's Abort
+   (all false) would leave it armed, and the deck's key could not disarm
+   it without the deck changing anyway.
+3. A second port with its own lock and merge rules would be a new consent
+   path inside flamesafe to review and get right; this design adds none.
+
+**What the screen hold must prove, at the engine** (all re-checked on
+every heartbeat; any failure lets the hold go and is journaled):
+
+- a PIN session, on the network AND on the show machine itself (the one
+  route that needs a session even on loopback);
+- `screen_arming` on in `ltcplay_remote.json` (default on; `false` turns
+  screen arming off without a code change; a broken file reads as off);
+- the page's own status no older than 1 s, and flamesafe's status (the
+  `status_mirror_port` copy) no older than 1 s, so the page is showing
+  flamesafe's real state, not a cached one;
+- the group not already armed or wanted;
+- one hold per group at a time: a second browser holding the same group is
+  refused; a Disarm from anyone cancels every hold on that group, and an
+  Abort or Disarm every flame group cancels every hold.
+
+**Connection loss never completes an arm.** The engine lets a hold go 0.25
+s after its last heartbeat, and a heartbeat for a hold that was let go is
+refused ("lift your finger and hold again"): an interrupted hold never
+carries on. The deck lets a screen hold go the moment the engine stops
+reporting it fresh, or the moment it has not heard from the engine for 0.3
+s. And the deck fires a screen hold only when BOTH its own `ARM_HOLD_S`
+has run since it saw the press AND the engine reports `held_s` of at least
+1 s, where `held_s` is measured to the last heartbeat the engine actually
+received. So a hold whose page drops before 1 s of heartbeats has arrived
+can never complete, whatever the timing of the deck's polls.
+
+**What it cannot do.** The physical key switch on Andy's flame system sits
+outside all of this: with it off nothing fires, whatever any software
+says. With the deck unplugged, the deck process holds every group off
+(round 4) and does not run screen holds, so nothing arms from a screen
+either. If the deck process is not running, nothing reads the screen
+holds and nothing arms.
+
 ## Disarm every group: the show program's Abort (added 2026-10-02)
 
 Jeff, 2026-09-27: "on Abort, flame cues zero and every group disarms
