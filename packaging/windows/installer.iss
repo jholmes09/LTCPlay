@@ -92,6 +92,7 @@ Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#A
 Name: "{group}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--start"; Comment: "Start LTC Player if it is not running, and open the show page"
 Name: "{group}\Stop LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--stop"; Comment: "Stop everything the safe way (refused while a show is running)"
 Name: "{group}\Roll back to the previous version"; Filename: "{app}\LTC Player.exe"; Parameters: "--rollback"
+Name: "{group}\LTC Player bench soak test"; Filename: "{app}\ltcplay-soak.exe"; Comment: "PC-only stress test with nothing connected: 1, 8 or 24 hours, then a report on the Desktop"
 Name: "{group}\Show PC checklist"; Filename: "{app}\SHOW PC CHECKLIST.txt"
 Name: "{group}\Settings and logs"; Filename: "{app}\LTC Player.exe"; Parameters: "--open-settings"
 Name: "{group}\Uninstall LTC Player"; Filename: "{uninstallexe}"
@@ -162,7 +163,8 @@ begin
     Service := Locator.ConnectServer('.', 'root\CIMV2');
     Procs := Service.ExecQuery('SELECT Name FROM Win32_Process WHERE ' +
       'Name=''flamesafe.exe'' OR Name=''ltcplay.exe'' OR ' +
-      'Name=''ltcplay-deck.exe'' OR Name=''LTC Player.exe''');
+      'Name=''ltcplay-deck.exe'' OR Name=''LTC Player.exe'' OR ' +
+      'Name=''ltcplay-soak.exe''');
     for I := 0 to Procs.Count - 1 do
     begin
       P := Procs.ItemIndex(I);

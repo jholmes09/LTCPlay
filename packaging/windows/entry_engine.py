@@ -35,6 +35,13 @@ def _self_check():
     yield f"brand: {brand.load()['product']}"
     yield f"version: {version.status()}"
     import ltcwin
+    if ltcwin.frozen():
+        inside = os.path.normcase(os.path.abspath(ltcwin.internal_dir()))
+        outside = [p for p in sys.path if p and not os.path.normcase(
+            os.path.abspath(p)).startswith(inside)]
+        if outside:
+            raise RuntimeError(f"Python looks outside the app: {outside}")
+        yield "self-contained: Python looks only inside the app"
     ctx = multiprocessing.get_context("spawn")
     p = ctx.Process(target=ltcwin.spawn_probe)
     p.start()

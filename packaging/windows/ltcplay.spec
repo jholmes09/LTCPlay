@@ -1,10 +1,12 @@
-# PyInstaller spec for the Windows app: ONE folder, four programs.
+# PyInstaller spec for the Windows app: ONE folder, five programs.
 #
 #   LTC Player.exe     the supervisor: starts, watches and safely stops the
 #                      other three (no console window)
 #   ltcplay.exe        the show engine (ltc serve and every ltc command)
 #   flamesafe.exe      the flame safety program (contains no ltcplay code)
 #   ltcplay-deck.exe   the Stream Deck program (ltc deck)
+#   ltcplay-soak.exe   the bench soak test (Start menu: LTC Player bench
+#                      soak test); never run by the show
 #
 # Build from the repo root:  pyinstaller --noconfirm packaging/windows/ltcplay.spec
 # Output: dist/LTC Player/
@@ -73,6 +75,16 @@ a_deck = Analysis(
     hiddenimports=LTCPLAY_MODULES + ["ltcwin", "hid"],
     **common)
 
+a_soak = Analysis(
+    [os.path.join(HERE, "soak.py")],
+    datas=LTCPLAY_DATA + [(os.path.join(ROOT, "flamesafe",
+                                        "flamesafe.example.json"), ".")],
+    hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor",
+                                     "test_show_fixtures", "psutil", "hid",
+                                     "sounddevice", "_sounddevice",
+                                     "tzdata"],
+    **common)
+
 a_sup = Analysis(
     [os.path.join(HERE, "supervisor.py")],
     datas=[],
@@ -93,10 +105,12 @@ e_engine = exe(a_engine, "ltcplay", True)
 e_flame = exe(a_flame, "flamesafe", True)
 e_deck = exe(a_deck, "ltcplay-deck", True)
 e_sup = exe(a_sup, "LTC Player", False)
+e_soak = exe(a_soak, "ltcplay-soak", True)
 
 coll = COLLECT(
     e_sup, a_sup.binaries, a_sup.datas,
     e_engine, a_engine.binaries, a_engine.datas,
     e_flame, a_flame.binaries, a_flame.datas,
     e_deck, a_deck.binaries, a_deck.datas,
+    e_soak, a_soak.binaries, a_soak.datas,
     strip=False, upx=False, name="LTC Player")

@@ -239,6 +239,47 @@ def none_running():
     return not (OURS & tasklist())
 
 
+def soak_check():
+    """ltcplay-soak.exe must stop LTC Player, run the real programs, measure
+    them, write its report, and start LTC Player again. On a shared CI
+    runner the timing items may fail (it is not the show PC); those are
+    printed as warnings. A missing report, a crash, or an item with nothing
+    measured is an error."""
+    import glob
+    rc, out = run([os.path.join(APP, "ltcplay-soak.exe"), "--minutes", "3",
+                   "--no-wait"], timeout=600)
+    reports = sorted(glob.glob(os.path.join(LOCAL, "soak", "*",
+                                            "LTC Player soak report *.txt")))
+    if not check(reports, f"the soak test wrote no report (exit {rc})"):
+        return
+    text = open(reports[-1], encoding="utf-8", errors="replace").read()
+    check("Run: finished" in text, "the soak report never says finished")
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith("[FAIL]"):
+            detail = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            hard = ("Crashes" in ln or "frames arrived" in detail or
+                    "never answered" in detail or "not all zero" in detail
+                    and not detail.endswith("0 packets not all zero "
+                                            "(limit 0)"))
+            msg = f"soak: {ln[7:]}: {detail}"
+            if hard:
+                error(msg)
+            else:
+                print(f"::warning title=soak timing on a CI runner::{msg}",
+                      flush=True)
+    for need in ("[PASS] Engine's own error counters",
+                 "flamesafe output (sACN, sent to this PC only)",
+                 "Flame link frames"):
+        check(need in text, f"the soak report has no '{need}' item")
+    check(wait(all_running, 90), "LTC Player did not come back after the "
+                                 "soak test")
+    body = "%0A".join(x.replace("%", "%25") for x in lines[:60])
+    print(f"::notice title=Soak report (3 minutes on a CI runner)::{body}",
+          flush=True)
+    NOTES.append(f"soak test ran 3 minutes and wrote {reports[-1]}")
+
+
 # ---------------------------------------------------------------- main ---
 def main(installer):
     # Logs from Setup and the programs carry UTF-8 (and a BOM); the
@@ -271,7 +312,7 @@ def main(installer):
             dump(os.path.join(tmp, "setup-1.log"), "setup log")
             return
         for n in ("LTC Player.exe", "ltcplay.exe", "flamesafe.exe",
-                  "ltcplay-deck.exe", "SHOW PC CHECKLIST.txt",
+                  "ltcplay-deck.exe", "ltcplay-soak.exe", "SHOW PC CHECKLIST.txt",
                   "flamesafe.example.json"):
             check(os.path.isfile(os.path.join(APP, n)),
                   f"{n} is missing from {APP}")
@@ -323,6 +364,14 @@ def main(installer):
         mark2 = listener.mark()
         check(listener.wait_for(mark2, lambda p: not terminated(p), 30),
               "flamesafe is not sending again after the update")
+
+        say("5b. the bench soak test, 3 minutes")
+        listener.sock.close()      # the soak test listens on 5568 itself
+        time.sleep(1)
+        try:
+            soak_check()
+        finally:
+            listener = Listener()
 
         say("6. Stop LTC Player")
         time.sleep(3)

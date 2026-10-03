@@ -23,7 +23,8 @@ THE ACCOUNT
 NO SLEEP, NO SCREEN OFF
 
 [ ] Settings, System, Power: set "Screen", "Sleep" and "Hibernate" to
-    Never, both on battery and plugged in.
+    Never, both on battery and plugged in. (Hibernate is easy to miss: if
+    it is listed there at all, set it to Never too.)
 [ ] Settings, System, Power, Power mode: Best performance.
 [ ] On a laptop: Control Panel, Power Options, "Choose what closing the
     lid does": Do nothing.
@@ -76,6 +77,14 @@ EVERY DAY
   restart the PC.
 - NEVER use Task Manager's "End task" on flamesafe, ltcplay or LTC Player.
   End task stops the flame safety program without its safe zeros.
+
+
+TESTING THE PC
+
+- Start menu, "LTC Player bench soak test": with NOTHING connected to
+  lasers, flames or lights, it runs the real programs on a loop for 1, 8
+  or 24 hours and writes a report on the Desktop. It stops LTC Player
+  first (refused while a show is running) and starts it again after.
 
 
 UPDATING AND GOING BACK
