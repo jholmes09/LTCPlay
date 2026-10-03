@@ -1021,6 +1021,10 @@ def main(argv=None):
         elif a == "--audio-device":
             device = argv[i + 1]
             i += 1
+        elif a != "--no-wait":
+            print(f"Unknown option {a}. Options: --hours H, --minutes M, "
+                  f"--audio-device NAME, --no-wait")
+            return 2
         i += 1
     if seconds is None:
         seconds = ask_hours() * 3600
