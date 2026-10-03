@@ -591,6 +591,49 @@ MUTATIONS = [
   "        return self._ctx().session is not None",
   "        return True"),
 
+ # -- fix round 1 of #39 (independent review) --
+ ("remote: a network GET reaches the legacy routes", "ltcplay/web.py",
+  "        if not self._local() and not network_may_reach(route):\n"
+  "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
+  "                                             \"the remote page's own routes \"\n"
+  "                                             \"answer here.\"})\n"
+  "        authorised = self._authorised()",
+  "        authorised = self._authorised()"),
+
+ ("remote: a network POST reaches the legacy routes", "ltcplay/web.py",
+  "        if not self._local() and not network_may_reach(route):\n"
+  "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
+  "                                             \"the remote page's own routes \"\n"
+  "                                             \"answer here.\"})\n"
+  "        if not self._authorised() and route not in OPEN_POSTS:",
+  "        if not self._authorised() and route not in OPEN_POSTS:"),
+
+ ("remote: Origin null counts as this site", "ltcplay/web.py",
+  "            origin = self.headers.get(\"Origin\")\n            if origin is not None:",
+  "            origin = self.headers.get(\"Origin\")\n"
+  "            if origin is not None and origin.strip().lower() != \"null\":"),
+
+ ("remote: Sec-Fetch-Site is ignored", "ltcplay/web.py",
+  "            if sfs is not None and sfs.strip().lower() not in (\"same-origin\",",
+  "            if False and sfs.strip().lower() not in (\"same-origin\","),
+
+ ("remote: a press need not be JSON", "ltcplay/web.py",
+  "            if ctype.split(\";\")[0].strip().lower() != \"application/json\":",
+  "            if False:"),
+
+ ("remote: PIN checks are not serialized", "ltcplay/remote.py",
+  "        with self.throttle.serial(keys):",
+  "        with threading.Lock():"),
+
+ ("remote: login says which operators have no PIN", "ltcplay/remote.py",
+  "            # on the show machine says the truth.\n"
+  "            return 403, {\"error\": \"That PIN is not right.\"}, {}",
+  "            # on the show machine says the truth.\n"
+  "            return 403, {\"error\": f\"{who} has no PIN yet.\"}, {}"),
+
+ ("web: odd spellings of every interface are served", "ltcplay/web.py",
+  "    bind = normalize_bind(bind)", "    bind = bind"),
+
  ("remote: the remote routes skip the session check", "ltcplay/remote.py",
   "        if not ctx.allowed:\n            return 401, {\"error\": \"Sign in "
   "with your PIN first.\"}, {}",
@@ -2159,11 +2202,9 @@ MUTATIONS = [
   '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a second sender's frames are taken while the link is live",
-  "flamesafe/composer.py",
-  "                if sender != self._frame_sender:\n"
-  '                    raise ValueError("another sender")',
-  "                if False:\n"
-  '                    raise ValueError("another sender")'),
+  'flamesafe/composer.py',
+  '                if sender != self._frame_sender:\n                    self._second_sender(sender, t)\n                    raise ValueError("another sender")',
+  '                if False:\n                    self._second_sender(sender, t)\n                    raise ValueError("another sender")'),
 
  ("flamesafe: the status frame carries no key",
   "flamesafe/link.py",
@@ -4066,11 +4107,9 @@ def build():
   ""),
 
  ("conductor: intermission cuts an Abort's fade short",
-  "ltcplay/conductor.py",
-  "            latched = self._latched\n            if not latched:\n"
-  "                self._accept(\"Intermission\"",
-  "            latched = False\n            if not latched:\n"
-  "                self._accept(\"Intermission\""),
+  'ltcplay/conductor.py',
+  '            latched = self._latched\n            if not latched:\n                if self._look == STOPPED_DARK:',
+  '            latched = False\n            if not latched:\n                if self._look == STOPPED_DARK:'),
 
  # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
  # the lasers-dark re-send that keeps devices.py's "never assume a blank
@@ -4703,17 +4742,15 @@ def build():
   "                controller.arm.set_all(False)\n"),
 
  # B: no consent while anyone else is on the link.
- ("round4: consent ignores another sender on the arm link",
-  "flamesafe/composer.py",
-  "        disturbed = (self._foreign_arm_senders != 0\n"
-  "                     or self._arm_link_flooded)\n",
-  "        disturbed = self._arm_link_flooded\n"),
+ ('round4: consent ignores another sender on the arm link',
+  'flamesafe/composer.py',
+  '        disturbed = (self._foreign_arm_senders != 0\n                     or self._arm_link_flooded\n',
+  '        disturbed = (self._arm_link_flooded\n'),
 
- ("round4: consent ignores a flood on the arm link",
-  "flamesafe/composer.py",
-  "        disturbed = (self._foreign_arm_senders != 0\n"
-  "                     or self._arm_link_flooded)\n",
-  "        disturbed = self._foreign_arm_senders != 0\n"),
+ ('round4: consent ignores a flood on the arm link',
+  'flamesafe/composer.py',
+  '        disturbed = (self._foreign_arm_senders != 0\n                     or self._arm_link_flooded\n',
+  '        disturbed = (self._foreign_arm_senders != 0\n'),
 
  ("round4: a down edge from before another sender turned up can be "
   "finished while it is there",
@@ -4849,12 +4886,10 @@ def build():
   "        self._spoof_last_seq = 0\n"),
 
  # -- the flame link: flamesafe's disarm_all (2026-10-02) ----------------
- ("flamelink: a disarm_all from another sender is accepted",
-  "flamesafe/composer.py",
-  '''                raise ValueError("no live flame link to accept it from")
-            if sender != self._frame_sender:
-                raise ValueError("another sender")''',
-  '''                raise ValueError("no live flame link to accept it from")'''),
+ ('flamelink: a disarm_all from another sender is accepted',
+  'flamesafe/composer.py',
+  '            if sender != self._frame_sender:\n                # A keyed disarm_all from a second sender is a second\n                # sender on the link (second-copy guard, 2026-10-03).\n                self._second_sender(sender, t)\n                raise ValueError("another sender")\n',
+  ''),
 
  ("flamelink: a disarm_all is accepted with no live flame link",
   "flamesafe/composer.py",
@@ -5309,8 +5344,8 @@ def build():
 
  ("flamelink: an unconfirmed disarm is never reported",
   "ltcplay/flamelink.py",
-  "                elif now - pend[1] > CONFIRM_S and \\",
-  "                elif False and \\"),
+  "            self._abort_unconfirmed = True\n            return pend[0]",
+  "            self._abort_unconfirmed = True\n            return None"),
 
  ("flamelink: a held clock reads as live",
   "ltcplay/flamelink.py",
@@ -5506,15 +5541,10 @@ def build():
  # -- PR #30 fix round (independent review), 2026-10-02. All named
  # "scheduler fix round: ..." so `python3 mutate.py "fix round"` runs them.
  # Item 1: conductor calls after the save, in order, off the lock, faults.
- ("scheduler fix round: the conductor is asked before tonight is saved",
-  "ltcplay/schedule_service.py",
-  "        self._record(out, now, plan)\n"
-  "        if DRY_RUN and self.machine.state == sch.CLOSING:",
-  "        self._queue_conductor(plan, ev)\n"
-  "        self._calls.flush(0.5)\n"
-  "        plan = []\n"
-  "        self._record(out, now, plan)\n"
-  "        if DRY_RUN and self.machine.state == sch.CLOSING:"),
+ ('scheduler fix round: the conductor is asked before tonight is saved',
+  'ltcplay/schedule_service.py',
+  '        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
+  '        self._queue_conductor(plan, ev)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
@@ -5998,11 +6028,10 @@ def build():
   "        if self._calls.aborts_beside():\n",
   "        if False:\n"),
 
- ("scheduler fix round 3: R303 an Abort that goes ahead still sends a queued "
-  "show start",
-  "ltcplay/schedule_service.py",
-  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\", \"show_starting\")",
-  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\")"),
+ ('scheduler fix round 3: R303 an Abort that goes ahead still sends a queued show start',
+  'ltcplay/schedule_service.py',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume",\n                           "start_show")'),
 
  ("scheduler fix round 3: R304 an Abort waits behind a dead line",
   "ltcplay/schedule_service.py",
@@ -6487,8 +6516,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            return None\n        p = getattr(s, "player", None)',
-  '        if s is None:\n            return None\n        p = getattr(s, "player", None)'),
+  '        if s is None or not getattr(s, "running", False):\n            return self._zero("")',
+  '        if s is None:\n            return self._zero("")'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -6520,20 +6549,238 @@ def build():
   '            if obj is not None:\n                _link.note_status(obj)\n',
   '            if obj is not None:\n                pass\n'),
 
- ("show-assembly: the seek guard ignores the show's frame rate",
-  'ltcplay/fire_ice.py',
-  '            link.tc_fps = float(fps)',
-  '            pass'),
-
- ('show-assembly: the flame cues never get the link for the seek guard',
-  'ltcplay/fire_ice.py',
-  '        cues.link = link',
-  '        pass'),
-
  ('show-assembly: the flame link journals on its own sender thread',
   'ltcplay/fire_ice.py',
   '    journal = OffThreadJournal(journal) if journal is not None else None\n',
   '    journal = journal\n'),
+
+
+ # -- show-assembly fix round 1 (PR #43 independent review, 2026-10-03).
+ ('fix round 1: flame cues follow Blackout, Preshow or a look',
+  'ltcplay/fire_ice.py',
+  '        if look is not None:\n            return self._zero(',
+  '        if False:\n            return self._zero('),
+
+ ('fix round 1: flame cues follow a GO free run',
+  'ltcplay/fire_ice.py',
+  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._zero(',
+  '        if False:\n            return self._zero('),
+
+ ('fix round 1: flame cues go on while the show audio is paused',
+  'ltcplay/fire_ice.py',
+  '        if getattr(clk, "source", None) != "audio_master" or not cue or \\\n                getattr(clk, "paused", True):',
+  '        if getattr(clk, "source", None) != "audio_master" or not cue:'),
+
+ ("fix round 1: flame cues take any timecode, not the clock's own frame",
+  'ltcplay/fire_ice.py',
+  '        if not tc or not last or tc != (f"{last[0]:02d}:{last[1]:02d}:"',
+  '        if not tc or not last or False and tc != (f"{last[0]:02d}:{last[1]:02d}:"'),
+
+ ('fix round 1: flame cues read whichever cue, not the one playing',
+  'ltcplay/fire_ice.py',
+  '        hits = [c for c in (getattr(tl, "cues", None) or ())\n                if getattr(c, "name", None) == label]',
+  '        hits = [c for c in (getattr(tl, "cues", None) or ())]'),
+
+ ('fix round 1: flame cues read one frame late',
+  'ltcplay/fire_ice.py',
+  '            idx = int(rel * 1000.0 // f.step_time_ms)',
+  '            idx = int(rel * 1000.0 // f.step_time_ms) + 1'),
+
+ ('fix round 1: the page transport works during a live show',
+  'ltcplay/web.py',
+  '        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():',
+  '        if False:'),
+
+ ('fix round 1: a held show is not live for the page transport',
+  'ltcplay/web.py',
+  'LIVE_SHOW_STATES = ("SHOW", "PAUSED")',
+  'LIVE_SHOW_STATES = ("SHOW",)'),
+
+ ('fix round 1: GO is not refused during a live show',
+  'ltcplay/web.py',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip",',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/goo", "/api/skip",'),
+
+ ('fix round 1: Run does not check the show before opening it',
+  'ltcplay/web.py',
+  '        if check is not None:\n            # Fire & Ice',
+  '        if False:\n            # Fire & Ice'),
+
+ ('fix round 1: the session keeps excluded controllers',
+  'ltcplay/session.py',
+  '        if self.exclude_controllers:\n            dropped',
+  '        if False:\n            dropped'),
+
+ ("fix round 1: Fire & Ice sessions keep the flame controller",
+  'ltcplay/fire_ice.py',
+  '        defaults["exclude_controllers"] = (cfg.flame_controller,)',
+  '        pass'),
+
+ ('fix round 1: an Active flame controller is not refused at Run',
+  'ltcplay/fire_ice.py',
+  '    except FlameControllerActive:\n        raise\n',
+  '    except FlameControllerActive:\n        pass\n'),
+
+ ('fix round 1: ltc serve starts with an Active flame controller',
+  'ltcplay/fire_ice.py',
+  '            raise FireIceConfigError(f"{n}: {e}")',
+  '            pass'),
+
+ ('fix round 1: no flame_controller is not said at startup',
+  'ltcplay/fire_ice.py',
+  '    elif cfg.flamesafe_config and journal is not None:',
+  '    elif False:'),
+
+
+ ('fix round 1: the conductor is not told the music started',
+  'ltcplay/fire_ice.py',
+  '        if told is not None:\n            told()',
+  '        if False:\n            told()'),
+
+ ('fix round 1: music_started records nothing',
+  'ltcplay/conductor.py',
+  '            self._set("music", MUSIC_PLAYING)\n\n    def intermission',
+  '            pass\n\n    def intermission'),
+
+ ('fix round 1: an Abort during the start leaves the music playing',
+  'ltcplay/fire_ice.py',
+  '            self.show.music_halt(C.ABORT_FADE_S)',
+  '            pass'),
+
+
+ ('fix round 1: the flame frames never raise an unconfirmed disarm',
+  'ltcplay/flamelink.py',
+  '            late = self._abort_overdue()\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok',
+  '            late = None\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok'),
+
+ ('fix round 1: status frames never raise an unconfirmed disarm',
+  'ltcplay/flamelink.py',
+  '                    with self._lock:\n                        late = self._abort_overdue()',
+  '                    with self._lock:\n                        late = None'),
+
+ ('fix round 1: an unconfirmed disarm is overdue only after 10 s',
+  'ltcplay/flamelink.py',
+  '        if self._clock() - pend[1] > CONFIRM_S:',
+  '        if self._clock() - pend[1] > CONFIRM_S * 10:'),
+
+
+ ('fix round 1: an unknown video level fades down from full',
+  'ltcplay/conductor.py',
+  '        if not levels:\n            return 0.0',
+  '        if not levels:\n            return 1.0 if end <= 0.0 else 0.0'),
+
+
+ ('fix round 1: the GPL remote loads the scheduler for its operator list',
+  'ltcplay/remote.py',
+  '        return list(read_names(os.path.join(self.folder, OPERATORS_FILE),\n                               "operators", DEFAULT_OPERATORS))',
+  '        from . import schedule_service\n        return list(schedule_service.load_operators(self.folder)[0])'),
+
+ ('fix round 1: the GPL remote reads a list with a name on it twice',
+  'ltcplay/remote.py',
+  '        if n.strip().lower() in seen:\n            return tuple(default)',
+  '        if False:\n            return tuple(default)'),
+
+ ('fix round 1: the GPL remote does not strip names',
+  'ltcplay/remote.py',
+  '        out.append(n.strip())\n    return tuple(out)',
+  '        out.append(n)\n    return tuple(out)'),
+
+ ('fix round 1: the GPL remote takes a list with another key beside it',
+  'ltcplay/remote.py',
+  '    if not isinstance(doc, dict) or set(doc) != {key}:',
+  '    if not isinstance(doc, dict) or key not in doc:'),
+
+
+ ('fix round 1: fire_ice imports the flame link outside its two builders',
+  'ltcplay/fire_ice.py',
+  'def _has_status_mirror(path):\n    try:',
+  'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
+
+
+ ("fix round 1: the deck does not read latched from its own Abort",
+  'ltcplay/streamdeck.py',
+  '        with self._lock:\n            self._local = (True, self._clock())\n        return self._press("abort", who, screen)',
+  '        return self._press("abort", who, screen)'),
+
+ ("fix round 1: the deck's Abort to the engine is not confirmed",
+  'ltcplay/streamdeck.py',
+  '        if name == "abort":\n            body["confirmed"] = True',
+  '        if name == "abort":\n            pass'),
+
+ ("fix round 1: an engine answer older than the deck's press wins",
+  'ltcplay/streamdeck.py',
+  '        if engine is not None and (pressed_at is None or\n                                   engine[1] > pressed_at):',
+  '        if engine is not None:'),
+
+ ("fix round 1: an engine refusal of a deck press is not a fault",
+  'ltcplay/streamdeck.py',
+  '                self._journal(line, fault=not ok, action=name,',
+  '                self._journal(line, fault=False, action=name,'),
+
+
+ ('fix round 1: the background show log writes on the caller',
+  'ltcplay/fire_ice.py',
+  "        self._log.handlers[:] = [logging.handlers.QueueHandler(q)]",
+  "        pass"),
+
+ ('fix round 1: the background show log echoes on the caller',
+  'ltcplay/fire_ice.py',
+  "        super().__init__(path, echo=False, **kw)",
+  "        super().__init__(path, echo=echo, **kw)"),
+
+ ('fix round 1: Fire & Ice sessions log on the caller',
+  'ltcplay/fire_ice.py',
+  '    defaults["log_factory"] = BackgroundShowLog',
+  '    pass'),
+
+ ('fix round 1: the session drops log_factory',
+  'ltcplay/session.py',
+  '                self.log = (self.log_factory or ShowLog)(',
+  '                self.log = (ShowLog)('),
+
+ # -- PR #43 independent review, fix round 1, item 10: the reviewer's hand
+ # mutations that survived the full suite.
+ ('review H4: the status mirror feeds the flame link frames with ANY key',
+  'ltcplay/web.py',
+  '            obj = remote_mod.decode_status(data, fstatus.key)',
+  '            import json as _j\n            try:\n                obj = _j.loads(data)\n            except ValueError:\n                obj = None'),
+
+ ('review H5: the runner confirms/ends on a cue that is not the one it started',
+  'ltcplay/fire_ice.py',
+  '        mine = clk.playing and clk.cues_played == cue["played"]',
+  '        mine = clk.playing'),
+
+ ("review H6: the show number never reaches the runner's start_show",
+  'ltcplay/schedule_service.py',
+  '            if len(entry) > 3:\n                call.show = entry[3]\n',
+  ''),
+
+ ('review H7: ltc serve opens the flame link but never starts its sender thread',
+  'ltcplay/fire_ice.py',
+  '        if threaded:\n            built_link.start()\n        else:\n            built_link.open()',
+  '        built_link.open()'),
+
+ ('review H9: a release on a closed flame link counts as done',
+  'ltcplay/fire_ice.py',
+  '        return C.done("Flame cues released.") if ok is True else \\\n            C.failed("Flame cues release did not go out.")',
+  '        return C.done("Flame cues released.")'),
+
+ ("review H10: ltc serve no longer checks flamesafe's config before binding",
+  'ltcplay/cli.py',
+  '            fire_ice_mod.flame_link_config(fire_ice)\n',
+  ''),
+
+ ('review H11: a flame controller with no ActiveState attribute',
+  'ltcplay/fire_ice.py',
+  '            if a.get("ActiveState", "Active") == "Active":',
+  '            if a.get("ActiveState", "Inactive") == "Active":'),
+
+ ('review H12: closing reports done without zeroing flames, blanking lasers or blacking the pixels',
+  'ltcplay/fire_ice.py',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self._close()\n            return',
+  '        if state == "CLOSING":\n            if not self._closing_reported:\n                self._closing_reported = True\n                self.svc.report("CLOSING_DONE", "x")\n            return'),
+
+
 
 ]
 

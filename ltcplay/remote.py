@@ -69,6 +69,41 @@ from http import cookies as http_cookies
 from . import appdata
 from . import settings as settings_mod
 
+# The scheduler's operator and screen lists (schedule_service.OPERATORS_FILE,
+# SCREENS_FILE, DEFAULT_SCREENS and schedule.DEFAULT_OPERATORS), repeated
+# here so the GPL path can read them without importing the scheduler. The
+# selftest checks they match.
+OPERATORS_FILE = "ltcplay_operators.json"
+SCREENS_FILE = "ltcplay_screens.json"
+DEFAULT_OPERATORS = ("Andy", "Jeff")
+DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
+
+
+def read_names(path, key, default):
+    """The names in {key: [names]} at `path`, by schedule_service's rules
+    (that one key only, at least one name, each a non-empty string, no
+    name twice whatever its case, each stripped), or `default` when the
+    file is missing or breaks a rule. Never writes and never raises."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return tuple(default)
+    if not isinstance(doc, dict) or set(doc) != {key}:
+        return tuple(default)
+    names = doc[key]
+    if not isinstance(names, list) or not names:
+        return tuple(default)
+    out, seen = [], set()
+    for n in names:
+        if not isinstance(n, str) or not n.strip():
+            return tuple(default)
+        if n.strip().lower() in seen:
+            return tuple(default)
+        seen.add(n.strip().lower())
+        out.append(n.strip())
+    return tuple(out)
+
 FIXED_PORT = 7878
 SETTINGS_FILE = "ltcplay_remote.json"
 PIN_FILE = "ltcplay_remote_pins.json"
@@ -351,6 +386,30 @@ class Throttle:
         self._fails = {}
         self._until = {}
         self._lock = threading.Lock()
+        self._key_locks = {}
+
+    def serial(self, keys):
+        """Fix round 1 of #39, F3: one PIN check at a time per device
+        address and per name. Without it, 24 overlapping guesses all read
+        "not locked out" before any of them recorded a failure, and 20 were
+        checked. Held across the whole check-verify-record, so the lock-out
+        is seen by the very next guess. The locks are taken in a fixed
+        order, so two keys can never deadlock."""
+        import contextlib
+        with self._lock:
+            locks = [self._key_locks.setdefault(k, threading.Lock())
+                     for k in sorted(keys)]
+
+        @contextlib.contextmanager
+        def held():
+            for lk in locks:
+                lk.acquire()
+            try:
+                yield
+            finally:
+                for lk in reversed(locks):
+                    lk.release()
+        return held()
 
     def wait_s(self, keys):
         now = self.clock()
@@ -584,17 +643,22 @@ class Remote:
         self.marks = {"a": None, "b": None}     # loop marks, show seconds
 
     # -- who ---------------------------------------------------------------
+    # With no scheduler (the GPL path) the lists are read here, read-only,
+    # by the same rules as schedule_service.load_operators/load_screens, so
+    # the GPL path never imports the scheduler (PR #43 review, finding 7).
+    # Nothing is written: a missing file means the defaults. The selftest
+    # holds both readers and both default lists to the same answers.
     def operators(self):
         if self.schedule is not None:
             return list(self.schedule.operators)
-        from . import schedule_service
-        return list(schedule_service.load_operators(self.folder)[0])
+        return list(read_names(os.path.join(self.folder, OPERATORS_FILE),
+                               "operators", DEFAULT_OPERATORS))
 
     def screens(self):
         if self.schedule is not None:
             return list(self.schedule.screens)
-        from . import schedule_service
-        return list(schedule_service.load_screens(self.folder)[0])
+        return list(read_names(os.path.join(self.folder, SCREENS_FILE),
+                               "screens", DEFAULT_SCREENS))
 
     def context(self, local, ip, cookie_header):
         s = None if local else self.sessions.get(cookie_token(cookie_header))
@@ -692,6 +756,22 @@ class Remote:
             return 400, {"error": "Pick this device's name from the list."}, {}
         who, device = names[who.lower()], screens[device.lower()]
         keys = (("ip", ctx.ip), ("who", who.lower()))
+        with self.throttle.serial(keys):
+            refused = self._check_pin(who, device, pin, keys, ctx)
+            if refused is not None:
+                return refused
+            self.throttle.succeed(keys)
+        tok = self.sessions.create(who, device, ctx.ip)
+        self._journal(who, device, "sign in", "done",
+                      f"{who} signed in on the {device} ({ctx.ip}).")
+        cookie = (f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; "
+                  f"Max-Age={SESSION_MAX_S}")
+        return 200, {"ok": True, "who": who, "device": device}, \
+            {"Set-Cookie": cookie}
+
+    def _check_pin(self, who, device, pin, keys, ctx):
+        """None when the PIN is right; else the refusal to send. Called
+        only with throttle.serial(keys) held."""
         wait = self.throttle.wait_s(keys)
         if wait > 0:
             self._journal(who, device, "sign in", "refused",
@@ -707,22 +787,17 @@ class Remote:
             self._journal(who, device, "sign in", "refused",
                           f"{who} tried to sign in from {ctx.ip} but has no "
                           f"PIN set. Set one on the show machine.")
-            return 403, {"error": f"{who} has no PIN yet. Set one on the "
-                                  f"show machine first."}, {}
+            # The same answer as a wrong PIN: the network is never told
+            # which operators have a PIN (fix round 1, A10b). The journal
+            # on the show machine says the truth.
+            return 403, {"error": "That PIN is not right."}, {}
         if not self.pins.verify(who, pin):
             self.throttle.fail(keys)
             self._journal(who, device, "sign in", "refused",
                           f"A wrong PIN for {who} from {ctx.ip} "
                           f"({device}).")
             return 403, {"error": "That PIN is not right."}, {}
-        self.throttle.succeed(keys)
-        tok = self.sessions.create(who, device, ctx.ip)
-        self._journal(who, device, "sign in", "done",
-                      f"{who} signed in on the {device} ({ctx.ip}).")
-        cookie = (f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; "
-                  f"Max-Age={SESSION_MAX_S}")
-        return 200, {"ok": True, "who": who, "device": device}, \
-            {"Set-Cookie": cookie}
+        return None
 
     def logout(self, ctx):
         s = ctx.session

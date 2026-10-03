@@ -550,12 +550,16 @@ class ConductorDevices(DeviceOutputs):
         """Where a new fade to `end` starts: the estimated level now, or the
         level the Link last actually sent, whichever is nearer `end`. So a
         fade down never starts above the picture, nor a fade up below it.
-        Unknown (nothing sent yet): the far end, as before this fix."""
+        Unknown (nothing sent since this program started): a fade down is
+        opacity 0 at once, never a fade that starts at 1.0, which would
+        light the surfaces with no show running (PR #43 review, finding 6:
+        a failed start and a restart after a cut show or an Abort each
+        did); a fade up starts from 0."""
         levels = [v for v in (self.video_level(),
                               getattr(self.mm, "surfaces_level", None))
                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
         if not levels:
-            return 1.0 if end <= 0.0 else 0.0
+            return 0.0
         return min(levels) if end <= 0.0 else max(levels)
 
     def _surfaces(self, end, seconds, on_done):
@@ -825,6 +829,18 @@ class Conductor:
             self._accept("Show start", PLAYING, who, screen, fade_s=0.0,
                          resume=False)
             return done("The rig comes up for the show.")
+
+    def music_started(self):
+        """A fact, not a command: the show cue has just been started on the
+        show audio, before anything confirms the show (the scheduler tells
+        show_starting() only on SHOW_CONFIRMED). From here a Hold freezes
+        the music and an Abort or a failed start stops it, whatever an
+        earlier Abort, stop or failed start recorded (PR #43 review,
+        finding 4: an Abort or Hold before the show was confirmed left the
+        music and timecode running, because the record still said
+        stopped). Starts nothing and changes no look."""
+        with self._lock:
+            self._set("music", MUSIC_PLAYING)
 
     def intermission(self, who="", screen=""):
         """The show has been left (intermission, preshow, closing): flame

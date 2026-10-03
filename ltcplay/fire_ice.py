@@ -45,11 +45,13 @@ the scheduler stays a dry run. Its one switch that changes what the
 scheduler does is "scheduler_performs" (see ShowRunner and BENCH.md):
 false, the default, is today's dry run exactly.
 """
+import atexit
 import json
 import os
 import threading
 
 from . import conductor as C
+from . import showlog as showlog_mod
 
 CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
@@ -197,8 +199,9 @@ NO_FLAME_LINK = (
     "cue frames at all, so the conductor's flame cue commands reach nothing.")
 DISARM_SENT = (
     "a disarm was sent to every flame group through the flame link. Sent "
-    "is not confirmed: flamesafe's status frames go to the Stream Deck "
-    "program, and the Stream Deck shows whether each group disarmed.")
+    "is not confirmed: only flamesafe's status frame can say it took it. "
+    "The journal says when flamesafe confirms it, or that it has not after "
+    "1 s, and the Stream Deck shows whether each group disarmed.")
 NO_DISARM = (
     "A screen-initiated Abort cannot disarm the flame groups: flamesafe's "
     "link contract (flamesafe/CONTRACT.md, version 2) has no disarm message "
@@ -250,6 +253,18 @@ class FireIceShow(C.ShowOutputs):
         if clk is None or getattr(clk, "source", None) != "audio_master":
             return None
         self._hook(clk)
+        return clk
+
+    def clock_nolock(self):
+        """The running session's show audio clock, or None, taking no lock
+        and hooking nothing: what the flame link's sender reads every frame
+        (PR #43 review, item 9: it used to take this object's lock)."""
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return None
+        clk = getattr(s, "clock", None)
+        if clk is None or getattr(clk, "source", None) != "audio_master":
+            return None
         return clk
 
     def _hook(self, clk):
@@ -347,6 +362,7 @@ class FireIceShow(C.ShowOutputs):
         s, p = self._player()
         if p is None:
             return C.failed("Pixels back was not sent: nothing is running.")
+        left = False
         with self._lock:
             if not self._pix_ours:
                 return C.done("Pixels: the show conductor had not taken "
@@ -354,12 +370,16 @@ class FireIceShow(C.ShowOutputs):
             self._pix_ours = False
             if p.override != "blackout":
                 # Someone pressed a look on the page since: theirs stands.
-                self._note(f"Pixels left on {p.override or 'auto'}: the "
-                           f"operator changed the look while the show "
-                           f"conductor had them black.", action="pixels",
-                           outcome="left")
-                return C.done("Pixels left on the operator's look.")
-            p.override = self._pix_prev
+                left, look = True, p.override
+            else:
+                p.override = self._pix_prev
+        if left:
+            # Written after the lock is let go: no lock is ever held across
+            # a journal line (PR #43 review, item 9).
+            self._note(f"Pixels left on {look or 'auto'}: the operator "
+                       f"changed the look while the show conductor had "
+                       f"them black.", action="pixels", outcome="left")
+            return C.done("Pixels left on the operator's look.")
         if s.log:
             s.log.event("override", f"show conductor set output to "
                                     f"{p.override or 'auto'}")
@@ -421,6 +441,11 @@ class FlameControllerError(ValueError):
     sentence."""
 
 
+class FlameControllerActive(FlameControllerError):
+    """The flame controller is Active (or has no ActiveState) in
+    xlights_networks.xml: the pixel output would send its channels."""
+
+
 def flame_channels(networks_xml, name):
     """(first absolute channel, count) of the controller called `name` in
     xlights_networks.xml, walked in the same order netmap.load() and
@@ -440,7 +465,7 @@ def flame_channels(networks_xml, name):
                    for n in nets)
         if a.get("Name", "") == name:
             if a.get("ActiveState", "Active") == "Active":
-                raise FlameControllerError(
+                raise FlameControllerActive(
                     f"The flame controller {name!r} is Active in "
                     f"{networks_xml}, so the pixel output would send its "
                     f"fire values straight to the flame node, around "
@@ -456,14 +481,79 @@ def flame_channels(networks_xml, name):
                                f"{networks_xml}. Every flame cue is zero.")
 
 
+def _show_networks(show_file):
+    """xlights_networks.xml of the show this show file plays, or None."""
+    from . import timeline as timeline_mod
+    try:
+        tl = timeline_mod.Timeline.load(show_file)
+    except Exception:
+        return None
+    return os.path.join(getattr(tl, "show_dir", "") or "",
+                        "xlights_networks.xml")
+
+
+def refuse_active_flame_controller(show_file, name):
+    """Raise FlameControllerError when the show this file plays has the
+    flame controller `name` Active (or with no ActiveState, which xLights
+    reads as Active) in its xlights_networks.xml: the pixel output would
+    then be built to send its fire values straight to the flame node,
+    around flamesafe (PR #43 review, finding 3). A controller that is not
+    there is not refused here (its cues are zero, said by FlameCues)."""
+    path = _show_networks(show_file)
+    if not path or not os.path.exists(path):
+        return
+    try:
+        flame_channels(path, name)
+    except FlameControllerActive:
+        raise
+    except Exception:
+        # Not there, no channels, or a map that does not parse: none of
+        # those puts fire values on the pixel output (the session refuses a
+        # broken map itself), and FlameCues says so when cues are zero.
+        pass
+
+
+def check_flame_controllers(folder, cfg):
+    """At `ltc serve` startup: every show file in the folder, checked with
+    refuse_active_flame_controller. Raises FireIceConfigError naming the
+    first one that would put fire values on the pixel output."""
+    if not cfg.flame_controller or not folder or not os.path.isdir(folder):
+        return
+    for n in sorted(os.listdir(folder)):
+        if not n.lower().endswith(".json"):
+            continue
+        p = os.path.join(folder, n)
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "cues" not in doc:
+            continue
+        try:
+            refuse_active_flame_controller(p, cfg.flame_controller)
+        except FlameControllerError as e:
+            raise FireIceConfigError(f"{n}: {e}")
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
-    frame the pixel output is rendering right now (the player's buffer
-    holds the whole show's channels, the Inactive flame controller's
-    included; nothing sends those). The timecode FlameLink passes is the
-    frame the show audio last sent, which is what the player renders.
-    None (all zeros) whenever there is no running player, or the show
-    file's folder has no usable flame controller. Never raises."""
+    show's OWN render at the show timecode (PR #43 review, finding 1).
+
+    The timecode FlameLink passes is the frame the show audio last sent
+    (clock.AudioMaster: 00:00:00:00 at the top of the cue it is playing).
+    The values are that frame of THAT cue's FSEQ, read through a file handle
+    of this provider's own (never the pixel output's, whose block cache is
+    not shared across threads), at the Inactive flame controller's
+    channels. Never the pixel output's buffer: Blackout, Preshow and a look
+    override leave that buffer holding a frame that is not the show's.
+
+    None (all zeros) unless every one of these holds: Run pressed and the
+    session running; the show audio playing a cue of this show file and
+    not paused; the pixel output following the show (no Blackout, Preshow
+    or look override, and no GO free run); the timecode is the clock's own
+    current frame; the show folder has a usable flame controller; the frame
+    is inside the cue's render. Never raises."""
 
     def __init__(self, control, name, journal=None):
         self.control = control
@@ -472,7 +562,9 @@ class FlameCues:
         self._folder = None
         self._span = None
         self._problem = ""
-        self.link = None     # the FlameLink, for the seek guard's frame rate
+        self._why = ""
+        self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
+        self.link = None    # the FlameLink (closing it closes the files)
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -480,6 +572,16 @@ class FlameCues:
                 self._journal(text, **f)
             except Exception:
                 pass
+
+    def _zero(self, why):
+        """All zeros, saying why once each time the reason changes (an
+        episode); the cue going out again clears it."""
+        if why != self._why:
+            self._why = why
+            if why:
+                self._note(f"Flame cues are zero: {why}", action="flames",
+                           outcome="cues_zero")
+        return None
 
     def _locate(self, session):
         folder = getattr(getattr(session, "tl", None), "show_dir", None)
@@ -505,27 +607,91 @@ class FlameCues:
                            action="flames", outcome="cues_refused")
         return self._span
 
+    def _render(self, path):
+        try:
+            st = os.stat(path)
+            key = (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = (path, None, None)
+        got = self._open.get(key)
+        if got is None:
+            for old in [k for k in self._open if k[0] == path]:
+                try:
+                    self._open.pop(old)[0].close()
+                except Exception:
+                    pass
+            from .fseq import FSEQ
+            f = FSEQ(path)
+            spans, src = [], 0
+            for start0, length in (f.sparse_ranges or
+                                   [(0, f.channel_count)]):
+                spans.append((start0, src, length))
+                src += length
+            got = self._open[key] = (f, spans)
+        return got
+
+    def close(self):
+        for f, _spans in self._open.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self._open.clear()
+
     def __call__(self, tc):
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
-            return None
+            return self._zero("")
+        clk = getattr(s, "clock", None)
+        cue = getattr(clk, "_cue", None)
+        if getattr(clk, "source", None) != "audio_master" or not cue or \
+                getattr(clk, "paused", True):
+            return self._zero("")
         p = getattr(s, "player", None)
-        buf = getattr(p, "_buf", None)
-        if buf is None:
-            return None
+        if p is None:
+            return self._zero("")
+        look = getattr(p, "override", None)
+        if look is not None:
+            return self._zero(f"the pixel output is on {look}, not the "
+                              f"show")
+        if getattr(p, "freerun_epoch", None) is not None:
+            return self._zero("the show was moved by hand (GO), so the "
+                              "pixels are not following the show audio")
+        last = getattr(clk, "last_sent", None)
+        if not tc or not last or tc != (f"{last[0]:02d}:{last[1]:02d}:"
+                                         f"{last[2]:02d}:{last[3]:02d}"):
+            return self._zero("")
         span = self._locate(s)
         if span is None:
             return None
-        link = getattr(self, "link", None)
-        fps = getattr(getattr(s, "tl", None), "fps", None)
-        if link is not None and isinstance(fps, (int, float)) and fps > 0 \
-                and link.tc_fps != float(fps):
-            # The seek guard turns HH:MM:SS:FF into seconds at the show's
-            # own frame rate.
-            link.tc_fps = float(fps)
+        tl = getattr(s, "tl", None)
+        label = cue.get("label") if isinstance(cue, dict) else None
+        hits = [c for c in (getattr(tl, "cues", None) or ())
+                if getattr(c, "name", None) == label]
+        if len(hits) != 1:
+            return self._zero(f"the show audio is playing {label!r}, which "
+                              f"is not one cue of this show file")
+        try:
+            f, spans = self._render(hits[0].path)
+            rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
+            idx = int(rel * 1000.0 // f.step_time_ms)
+            if not 0 <= idx < f.frame_count:
+                return self._zero("the timecode is past the end of the "
+                                  "show's render")
+            data = f.frame(idx)
+        except Exception as e:
+            return self._zero(f"the show's render could not be read "
+                              f"({type(e).__name__}: {e})")
         start, count = span
-        vals = list(bytes(buf[start - 1:start - 1 + count]))
-        return vals + [0] * (512 - len(vals))
+        first, end = start - 1, start - 1 + count
+        out = [0] * 512
+        for dst, src, length in spans:
+            lo, hi = max(dst, first), min(dst + length, end)
+            if lo < hi:
+                out[lo - first:hi - first] = data[src + lo - dst:
+                                                  src + hi - dst]
+        self._why = ""
+        return out
 
 
 class OffThreadJournal:
@@ -590,6 +756,62 @@ class OffThreadJournal:
                                      timeout)
 
 
+_log_writer = None     # the one BackgroundShowLog writer thread running
+
+
+@atexit.register
+def _drain_show_log():
+    """Every queued show log line is written before the program exits."""
+    lst = _log_writer
+    if lst is not None:
+        try:
+            lst.stop()
+        except Exception:
+            pass
+
+
+class BackgroundShowLog(showlog_mod.ShowLog):
+    """The show log for Fire & Ice: showlog.ShowLog, byte for byte the GPL
+    one, with its file handler (and the console echo) moved behind a queue
+    onto one writer thread of its own. The threads that log, the show
+    audio's timecode thread among them, then never write, flush or print a
+    line, nor wait on the logging handler's lock while another thread does
+    (PR #43 review, finding 9). A new one stops the last one's writer,
+    which drains first, as ShowLog replaces the logger's handlers."""
+
+    def __init__(self, path, echo=False, **kw):
+        global _log_writer
+        import logging
+        import logging.handlers
+        import queue
+        import sys
+        super().__init__(path, echo=False, **kw)
+        old, _log_writer = _log_writer, None
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        out = list(self._log.handlers)
+        if echo:
+            e = logging.StreamHandler(sys.stdout)
+            e.setFormatter(logging.Formatter("%(message)s"))
+            out.append(e)
+        q = queue.SimpleQueue()
+        self._writer = logging.handlers.QueueListener(q, *out)
+        self._writer.start()
+        _log_writer = self._writer
+        self._log.handlers[:] = [logging.handlers.QueueHandler(q)]
+        self.background = True
+
+    def flush(self):
+        """Wait until every line logged so far is written."""
+        w = self._writer
+        if w is not None and w is _log_writer:
+            w.stop()
+            w.start()
+
+
 def flame_link_config(cfg):
     """The FlameLinkConfig read from flamesafe's own config, or None when
     the Fire & Ice config names none. `ltc serve` calls this before it
@@ -624,7 +846,8 @@ def build_flame_link(cfg, control, show, journal=None):
     cues = (FlameCues(control, cfg.flame_controller, journal)
             if cfg.flame_controller else flamelink.zero_cues)
     link = flamelink.FlameLink(
-        lcfg, cues=cues, show_state=flamelink.audio_master_state(show._clock),
+        lcfg, cues=cues,
+        show_state=flamelink.audio_master_state(show.clock_nolock),
         journal=journal)
     link.journal_line = journal
     if journal is not None and not _has_status_mirror(cfg.flamesafe_config):
@@ -634,8 +857,11 @@ def build_flame_link(cfg, control, show, journal=None):
                 "raise the lock alarm itself; the Stream Deck shows both. Set "
                 "status_mirror_port to give this program its own copy.",
                 action="flame_link", outcome="no_status")
-    # The seek guard (PR #39) counts frames at the show file's own rate.
-    if hasattr(link, "tc_fps") and isinstance(cues, FlameCues):
+    # The seek guard (PR #39) counts the show audio's own timecode frames,
+    # which are always 30 a second (clock.MASTER_FPS), whatever the show
+    # file's rate.
+    link.tc_fps = 30.0
+    if isinstance(cues, FlameCues):
         cues.link = link
     return link
 
@@ -736,6 +962,21 @@ class ShowRunner:
             with self._lock:
                 self._cue = {"show": n, "failed": str(e)}
             return C.failed(f"Show {n} was not started: {e}")
+        # The music is now playing, whatever the conductor's record says:
+        # an Abort or Hold before SHOW_CONFIRMED must stop or freeze it (PR
+        # #43 review, finding 4).
+        told = getattr(self.conductor, "music_started", None)
+        if told is not None:
+            told()
+        if self.conductor.latched:
+            # An Abort landed while the cue was starting, so its music step
+            # may have run before the cue began: stop the music here too.
+            why = "it was aborted while it was starting"
+            self.show.music_halt(C.ABORT_FADE_S)
+            with self._lock:
+                self._cue = {"show": n, "failed": why}
+            return C.failed(f"Show {n} was not started: {why}; the music "
+                            f"was stopped.")
         with self._lock:
             self._cue = {"show": n, "clock": clk,
                          "played": clk.cues_played, "confirmed": False,
@@ -847,6 +1088,10 @@ class Wiring:
                     fl.zero()
                 finally:
                     fl.stop()
+                    closer = getattr(getattr(fl, "cues", None), "close",
+                                     None)
+                    if closer is not None:
+                        closer()
 
 
 def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
@@ -858,6 +1103,33 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     (clock, waiter) are the selftest's: nothing runs on its own then."""
     link = madmapper[0] if madmapper is not None else None
     built_link = None
+    # The show log is written on a thread of its own, so the show audio's
+    # timecode thread never writes, flushes or prints a line itself, nor
+    # waits on the logging lock (PR #43 review, finding 9).
+    defaults = dict(getattr(control, "defaults", None) or {})
+    defaults["log_factory"] = BackgroundShowLog
+    control.defaults = defaults
+    if cfg.flame_controller:
+        # The flame controller's channels are never sent by the pixel
+        # output in Fire & Ice, whatever xlights_networks.xml says, and a
+        # show whose flame controller is Active is refused at Run (PR #43
+        # review, finding 3).
+        defaults = dict(getattr(control, "defaults", None) or {})
+        defaults["exclude_controllers"] = (cfg.flame_controller,)
+        control.defaults = defaults
+
+        def before_open(show_file, _name=cfg.flame_controller):
+            from .session import SessionError
+            try:
+                refuse_active_flame_controller(show_file, _name)
+            except FlameControllerError as e:
+                raise SessionError(f"This show will not start: {e}")
+        control.before_open = before_open
+    elif cfg.flamesafe_config and journal is not None:
+        journal("Flame cues: no 'flame_controller' is named in "
+                "ltcplay_fire_ice.json, so no flame cue is ever sent: every "
+                "flame frame is zero.", fault=True, action="flames",
+                outcome="no_controller")
     if flame_link is None and cfg.flamesafe_config:
         # Built before the show outputs so they have it from the start; the
         # clock it reads is looked up through the show on every frame.

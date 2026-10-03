@@ -1282,6 +1282,9 @@ def _cmd_serve(args):
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
             fire_ice_mod.flame_link_config(fire_ice)
+            fire_ice_mod.check_flame_controllers(
+                os.path.abspath(args.folder or settings_mod.folder()),
+                fire_ice)
         except ValueError as e:
             return _err(str(e))
     announce = None

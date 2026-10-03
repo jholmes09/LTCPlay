@@ -867,7 +867,10 @@ class FlameLink:
                                          values, self.cfg.key))
             self._last_frame_at = self._clock()
             self._repeat_abort()
-            return ok
+            late = self._abort_overdue()
+        if late is not None:
+            self._note_unconfirmed(late)
+        return ok
 
     def _send_zero_frame(self):
         """An all-zero flame frame, now, built from nothing but zeros: no
@@ -876,6 +879,28 @@ class FlameLink:
         self.last_values_nonzero = False
         return self._send(encode_flame(seq, None, mono, self.cfg.universe,
                                        bytes(UNIVERSE_SIZE), self.cfg.key))
+
+    def _abort_overdue(self):
+        """The pending Abort's id the first time it is overdue (sent more
+        than CONFIRM_S ago and no status frame has confirmed it), else
+        None. Under self._lock. Asked on every flame frame as well as on
+        every status frame (PR #43 review, finding 5): with flamesafe
+        stopped or frozen, or with no status mirror, no status frame ever
+        comes, and the fault must still be raised."""
+        pend = self._pending_abort
+        if pend is None or self._abort_unconfirmed:
+            return None
+        if self._clock() - pend[1] > CONFIRM_S:
+            self._abort_unconfirmed = True
+            return pend[0]
+        return None
+
+    def _note_unconfirmed(self, aid):
+        self._note(f"Flame link: flamesafe has not confirmed the disarm "
+                   f"(abort {aid}) after {CONFIRM_S:g} s: no status frame "
+                   f"from flamesafe has said it took it. Check the flame "
+                   f"groups on the Stream Deck.", fault=True,
+                   action="flame_link", outcome="disarm_unconfirmed")
 
     def _repeat_abort(self):
         """One more copy of the Abort being repeated, if any (fix round 1,
@@ -1009,15 +1034,11 @@ class FlameLink:
                                action="flame_link",
                                outcome="disarm_confirmed")
                     self._abort_unconfirmed = False
-                elif now - pend[1] > CONFIRM_S and \
-                        not self._abort_unconfirmed:
-                    self._abort_unconfirmed = True
-                    self._note(f"Flame link: flamesafe has not confirmed the "
-                               f"disarm (abort {pend[0]}) after "
-                               f"{CONFIRM_S:g} s. Check the flame groups on "
-                               f"the Stream Deck.", fault=True,
-                               action="flame_link",
-                               outcome="disarm_unconfirmed")
+                else:
+                    with self._lock:
+                        late = self._abort_overdue()
+                    if late is not None:
+                        self._note_unconfirmed(late)
             return self.lock_alarm
         except Exception:
             return self.lock_alarm
