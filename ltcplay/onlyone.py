@@ -178,3 +178,64 @@ class OutputLock:
 
     def __exit__(self, *a):
         self.release()
+
+
+# ---------------------------------------------------------------- one copy
+#
+# Second-copy guard (Jeff, 2026-10-03). The show machines are dedicated and
+# the flame and arm links bind 127.0.0.1 only, so the realistic second
+# sender on those links is a second copy of this program: a launcher
+# double-clicked twice, autostart plus a manual launch, an old copy still
+# running after a restart. So the show process (`ltc run` and `ltc serve`,
+# one lock between them) and the Stream Deck process (`ltc deck`) each take
+# a lock for their whole life and refuse to start while another copy holds
+# it. Same mechanism as the output lock above, in the same folder: the
+# kernel drops the lock when the holder dies, however it dies, so a crashed
+# copy never blocks a restart.
+
+SHOW_LOCK = "ltcplay_show.lock"
+DECK_LOCK = "ltcplay_deck.lock"
+
+def instance_path(filename):
+    """Beside the output lock: one per user on this machine, whichever
+    folder the program was started from."""
+    return os.path.join(os.path.dirname(path()), filename)
+
+
+def only_copy(filename, note):
+    """Take this program's one-copy lock and hold it until release() or
+    the process ends. Raises AlreadyRunning, carrying the running copy's
+    own note, if another copy holds it."""
+    return OutputLock(where=instance_path(filename), note=note).acquire()
+
+
+def refusal(filename, holder):
+    """The plain sentences a refused second copy prints: what is running,
+    and how to stop it. Fix round 1 of PR #40: the app and the autostart
+    engine have no window, so "use the window that is already open" told
+    the operator nothing."""
+    here = "computer" if WINDOWS else "Mac"
+    said = f"\nThe copy that is running says: {holder}" if holder else ""
+    if filename == DECK_LOCK:
+        return (f"ltc deck is already running on this {here}, so this copy "
+                f"has stopped. Only one copy may run at a time: two would "
+                f"both send on the Stream Deck's arm link, and flamesafe "
+                f"would refuse every arm cycle while both were there."
+                f"{said}\nThat copy is already driving the Stream Deck. To "
+                f"start this one instead, stop that one first (Ctrl-C where "
+                f"it is running, or end the process with the pid above), "
+                f"then start this one again.")
+    return (f"ltcplay's show program is already running on this {here}, so "
+            f"this copy has stopped. Only one copy may run at a time: two "
+            f"copies would both talk to the rig and the flame safety "
+            f"program.{said}\nIt is the LTC Player app, the autostart "
+            f"engine, or a Run or Web window. To use it: for the app, "
+            f"autostart or a Web window, open its page in a browser at "
+            f"http://127.0.0.1 and the port in the line above; for a Run "
+            f"window, go to that window. To run this copy "
+            f"instead, stop that one first: quit the LTC Player app, turn "
+            f"autostart off (Autostart ltcplay.command, then R), or press "
+            f"Ctrl-C in the window it runs in.\nRehearse (option 5 in Run "
+            f"ltcplay.command) is a copy too, so it is refused while the "
+            f"app or autostart is running. Stop that first, as above, and "
+            f"then rehearse.")

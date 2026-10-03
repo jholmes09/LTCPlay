@@ -67,6 +67,20 @@ the screen do the right thing before the rig does anything at all.
 
 **6, run.** It shows you the validation again and makes you type RUN.
 
+**Only one copy at a time.** Rehearse and Run are a second copy of the show
+program, and only one copy may run on a machine. While the LTC Player app,
+the autostart engine or a Web window is running, they stop at once and say
+what is running and how to stop it. Use the page of the one that is running,
+or stop it first (quit the app, turn autostart off with `Autostart
+ltcplay.command` then R, or Ctrl-C in its window) and then rehearse. A second
+`ltc deck` is refused the same way.
+
+**OTHER SENDER on the Stream Deck.** For about half a second after every
+ltcplay restart the deck's flame keys read OTHER SENDER, and a cycle in that
+half second does not count; cycle again. If it stays, a second copy of the
+show program is talking to the flame safety program: every group has been
+disarmed, and nothing can arm until it is gone.
+
 ## The screen
 
 ```

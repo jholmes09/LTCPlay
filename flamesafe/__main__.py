@@ -1,8 +1,11 @@
 """python -m flamesafe <config.json>
 
-Starts the safety program with NO arm input: every group stays disarmed and
-the flame universe is all zeros at priority 200 until build step 7b adds the
-Stream Deck.  A config that fails any check stops it here with one sentence.
+Starts the safety program.  If the config carries link.arm_port (build step
+7b), the real arm input listens there for the Stream Deck (ltcplay's own
+process, never this one) and every group stays disarmed until it connects
+and is cycled.  Without link.arm_port, flamesafe runs exactly as it always
+has: NullArmInput, every group disarmed, the flame universe all zeros at
+priority 200.  A config that fails any check stops it here with one sentence.
 
 Stopping.  Ctrl-C, SIGTERM (and Ctrl-Break on Windows) set the stop event,
 and the service then sends zeros and the stream-terminated flag.  On Windows
@@ -19,7 +22,7 @@ import sys
 import threading
 
 from . import config as config_mod
-from .arminput import NullArmInput
+from .arminput import NullArmInput, SocketArmInput
 from .journal import Journal
 from .service import Service
 
@@ -40,9 +43,20 @@ def main(argv=None):
                                 "group map and the arm value in this config "
                                 "have not been confirmed by Andy. "
                                 + (cfg.note or ""))
-    journal.event("config", "no arm input in this build: every group stays "
-                            "disarmed and the flame universe is all zeros")
-    svc = Service(cfg, NullArmInput(), log=journal)
+    if cfg.link_arm_port is not None:
+        arm_input = SocketArmInput(cfg.link_arm_ip, cfg.link_arm_port,
+                                   cfg.link_key, cfg.n, log=journal,
+                                   stale_ms=cfg.arm_stale_ms)
+        journal.event("config", f"arm input: the Stream Deck asserts arm "
+                                f"over {cfg.link_arm_ip}:{cfg.link_arm_port} "
+                                f"(build step 7b); until it connects and is "
+                                f"cycled, every group stays disarmed")
+    else:
+        arm_input = NullArmInput()
+        journal.event("config", "no arm input configured (link.arm_port is "
+                                "not set): every group stays disarmed and "
+                                "the flame universe is all zeros")
+    svc = Service(cfg, arm_input, log=journal)
     stop = threading.Event()
 
     def _stop(*_a):

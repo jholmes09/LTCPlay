@@ -25,7 +25,8 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
             "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
             "log_dir", "groups"}
 DESTINATION_KEYS = {"ip", "port"}
-LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key"}
+LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
+             "arm_ip", "arm_port"}
 GROUP_KEYS = {"name", "safety", "fire", "arm_value"}
 
 
@@ -81,7 +82,8 @@ class Config:
 
     __slots__ = ("universe", "destination_ip", "destination_port",
                  "link_listen_ip", "link_listen_port", "link_status_ip",
-                 "link_status_port", "link_key", "gflame_range", "arm_value",
+                 "link_status_port", "link_arm_ip", "link_arm_port",
+                 "link_key", "gflame_range", "arm_value",
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
                  "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
                  "groups", "confirmed", "note", "log_dir",
@@ -236,8 +238,31 @@ def from_dict(d, source="config"):
             and c.link_status_ip == c.link_listen_ip:
         raise ConfigError("link listen_port and status_port are the same; "
                           "flamesafe would be talking to itself.")
+    # The arm link (build step 7b): optional. Absent, flamesafe runs with
+    # NullArmInput and every group stays disarmed, exactly as before 7b.
+    # Present, it is a loopback port of its own, never one already used by
+    # the flame or status link or the sACN destination: three things that
+    # mean very different things must never be able to land on each other.
+    if "arm_port" in link:
+        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),
+                            "link arm_ip", loopback_only=True)
+        c.link_arm_port = _int(link, "arm_port", PORT_MIN, PORT_MAX,
+                               "link arm_port")
+        for other_ip, other_port, other_name in (
+                (c.link_listen_ip, c.link_listen_port, "listen_port"),
+                (c.link_status_ip, c.link_status_port, "status_port")):
+            if c.link_arm_ip == other_ip and c.link_arm_port == other_port:
+                raise ConfigError(f"link arm_port is the same as {other_name}; "
+                                  f"flamesafe would be talking to itself.")
+    elif "arm_ip" in link:
+        raise ConfigError("link has arm_ip but no arm_port; set both or "
+                          "neither.")
+    else:
+        c.link_arm_ip = None
+        c.link_arm_port = None
     if ipaddress.ip_address(c.destination_ip).is_loopback and \
-            c.destination_port in (c.link_listen_port, c.link_status_port):
+            c.destination_port in (c.link_listen_port, c.link_status_port,
+                                   c.link_arm_port):
         raise ConfigError(f"destination port {c.destination_port} is one of "
                           f"the link ports; the flame universe would land on "
                           f"the link.")
