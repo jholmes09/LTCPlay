@@ -6676,25 +6676,24 @@ def build():
 
 
  ('fix round 1: the background show log writes on the caller',
-  'ltcplay/showlog.py',
-  '        if self.background:\n            out = [h]',
-  '        if False:\n            out = [h]'),
+  'ltcplay/fire_ice.py',
+  "        self._log.handlers[:] = [logging.handlers.QueueHandler(q)]",
+  "        pass"),
 
  ('fix round 1: the background show log echoes on the caller',
-  'ltcplay/showlog.py',
-  '        line = f"[{self._stamp()}] {kind:12s} {msg}"\n        self._log.info(line)\n        if self.echo and not self.background:',
-  '        line = f"[{self._stamp()}] {kind:12s} {msg}"\n        self._log.info(line)\n        if self.echo:'),
+  'ltcplay/fire_ice.py',
+  "        super().__init__(path, echo=False, **kw)",
+  "        super().__init__(path, echo=echo, **kw)"),
 
  ('fix round 1: Fire & Ice sessions log on the caller',
   'ltcplay/fire_ice.py',
-  '    defaults["log_background"] = True',
+  '    defaults["log_factory"] = BackgroundShowLog',
   '    pass'),
 
- ('fix round 1: the session drops log_background',
+ ('fix round 1: the session drops log_factory',
   'ltcplay/session.py',
-  '                                   background=self.log_background)',
-  '                                   background=False)'),
-
+  '                self.log = (self.log_factory or ShowLog)(',
+  '                self.log = (ShowLog)('),
 
  # -- PR #43 independent review, fix round 1, item 10: the reviewer's hand
  # mutations that survived the full suite.

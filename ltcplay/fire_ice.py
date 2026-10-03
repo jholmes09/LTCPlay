@@ -45,11 +45,13 @@ the scheduler stays a dry run. Its one switch that changes what the
 scheduler does is "scheduler_performs" (see ShowRunner and BENCH.md):
 false, the default, is today's dry run exactly.
 """
+import atexit
 import json
 import os
 import threading
 
 from . import conductor as C
+from . import showlog as showlog_mod
 
 CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
@@ -754,6 +756,62 @@ class OffThreadJournal:
                                      timeout)
 
 
+_log_writer = None     # the one BackgroundShowLog writer thread running
+
+
+@atexit.register
+def _drain_show_log():
+    """Every queued show log line is written before the program exits."""
+    lst = _log_writer
+    if lst is not None:
+        try:
+            lst.stop()
+        except Exception:
+            pass
+
+
+class BackgroundShowLog(showlog_mod.ShowLog):
+    """The show log for Fire & Ice: showlog.ShowLog, byte for byte the GPL
+    one, with its file handler (and the console echo) moved behind a queue
+    onto one writer thread of its own. The threads that log, the show
+    audio's timecode thread among them, then never write, flush or print a
+    line, nor wait on the logging handler's lock while another thread does
+    (PR #43 review, finding 9). A new one stops the last one's writer,
+    which drains first, as ShowLog replaces the logger's handlers."""
+
+    def __init__(self, path, echo=False, **kw):
+        global _log_writer
+        import logging
+        import logging.handlers
+        import queue
+        import sys
+        super().__init__(path, echo=False, **kw)
+        old, _log_writer = _log_writer, None
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        out = list(self._log.handlers)
+        if echo:
+            e = logging.StreamHandler(sys.stdout)
+            e.setFormatter(logging.Formatter("%(message)s"))
+            out.append(e)
+        q = queue.SimpleQueue()
+        self._writer = logging.handlers.QueueListener(q, *out)
+        self._writer.start()
+        _log_writer = self._writer
+        self._log.handlers[:] = [logging.handlers.QueueHandler(q)]
+        self.background = True
+
+    def flush(self):
+        """Wait until every line logged so far is written."""
+        w = self._writer
+        if w is not None and w is _log_writer:
+            w.stop()
+            w.start()
+
+
 def flame_link_config(cfg):
     """The FlameLinkConfig read from flamesafe's own config, or None when
     the Fire & Ice config names none. `ltc serve` calls this before it
@@ -1049,7 +1107,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     # timecode thread never writes, flushes or prints a line itself, nor
     # waits on the logging lock (PR #43 review, finding 9).
     defaults = dict(getattr(control, "defaults", None) or {})
-    defaults["log_background"] = True
+    defaults["log_factory"] = BackgroundShowLog
     control.defaults = defaults
     if cfg.flame_controller:
         # The flame controller's channels are never sent by the pixel

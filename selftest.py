@@ -32093,7 +32093,8 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
         gpl = showlog.ShowLog(os.path.join(work, "gpl.log"))
         gpl.event("clock", "one")
         check("one" in open(os.path.join(work, "gpl.log"),
-                            encoding="utf-8").read() and not gpl.background,
+                            encoding="utf-8").read() and
+              not getattr(gpl, "background", False),
               "GPL: the line is in the file when event() returns")
         # Background: a file write that takes 300 ms, and a console that
         # does too, never hold up the thread that logs.
@@ -32110,8 +32111,7 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
                 return super().write(x)
         out = SlowOut()
         sys.stdout = out
-        bg = showlog.ShowLog(os.path.join(work, "fi.log"), echo=True,
-                             background=True)
+        bg = F.BackgroundShowLog(os.path.join(work, "fi.log"), echo=True)
         took = []
         for i in range(5):
             t0 = time.perf_counter()
@@ -32137,7 +32137,7 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
         control = types.SimpleNamespace(session=None)
         F.attach(n.svc, control, F.FireIceConfig(), threaded=False,
                  clock=n.T.now, waiter=n.T.wait)
-        check(control.defaults.get("log_background") is True,
+        check(control.defaults.get("log_factory") is F.BackgroundShowLog,
               f"Fire & Ice sessions log in the background: "
               f"{control.defaults}")
         n.c.close()
@@ -32150,17 +32150,19 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
             _json.dump({"name": "t", "fps": 30, "show_dir": show,
                         "cues": [{"tc": "01:00:00:00", "fseq": "None.fseq",
                                   "name": "Show"}]}, fh)
-        for bgflag in (False, True):
+        for factory in (None, F.BackgroundShowLog):
             sess = Session(tlp, no_output=True, sd=FakeSD(), device="MOTU M4",
                            channel=1, log_path=os.path.join(
-                               work, f"s{int(bgflag)}.log"),
-                           log_background=bgflag)
+                               work, f"s{int(bool(factory))}.log"),
+                           log_factory=factory)
             try:
                 sess.open()
             except SessionError:
                 pass
-            check(sess.log is not None and sess.log.background is bgflag,
-                  f"the session's show log background={bgflag}")
+            want = factory or showlog.ShowLog
+            check(sess.log is not None and type(sess.log) is want,
+                  f"the session's show log is a {want.__name__}: "
+                  f"{type(sess.log).__name__}")
     finally:
         LH.RotatingFileHandler.emit = real_emit
         sys.stdout = real_stdout
@@ -33099,10 +33101,14 @@ def test_flame_link_fix_round_1():
     lk.note_status({"frames": {"seq": lk.seq},
                     "disarm_all": {"last_id": aid}})
     ok = [x for x, kw in j.lines if kw.get("outcome") == "disarm_confirmed"]
+    # 1.2 s of frames with no status frame: since PR #43's fix round 1
+    # (item 5) the flame frames themselves raised "not confirmed" at 1 s,
+    # so this confirmation is a late one, and says so.
+    bad = [x for x, kw in j.lines if kw.get("outcome") == "disarm_unconfirmed"]
     check(lk.snapshot()["abort"] == "confirmed by flamesafe" and len(ok) == 1
-          and "late" not in ok[0],
-          f"flamesafe's own status confirms it, and only then is it said: "
-          f"{ok}")
+          and "late" in ok[0] and len(bad) == 1,
+          f"flamesafe's own status confirms it, and only then is it said "
+          f"(late, after the 1 s fault): {ok} {bad}")
     # Every immediate copy lost (the review's p6): the repeats carry it.
     lk2, sock2 = make(lambda: t[0], cfg={"frame_stale_ms": 2000})
     sock2.failing = True

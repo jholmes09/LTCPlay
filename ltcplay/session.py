@@ -113,11 +113,11 @@ class Session:
                  fps=None, drop=None, device=None, channel=None, rate=None,
                  echo_log=False, sd=None, allow_missing=False,
                  auto_reload=False, exclude_controllers=(),
-                 log_background=False):
+                 log_factory=None):
         self.timeline_path = timeline_path
-        # Fire & Ice only (fire_ice.py): the show log written on a thread of
-        # its own (showlog.ShowLog background). The GPL path never passes it.
-        self.log_background = bool(log_background)
+        # Fire & Ice only (fire_ice.BackgroundShowLog): what builds the show
+        # log, in place of showlog.ShowLog. The GPL path never passes it.
+        self.log_factory = log_factory
         # Fire & Ice only (fire_ice.py): xLights controllers whose channels
         # the pixel output never sends, whatever xlights_networks.xml says
         # (the flame controller: its universe goes to flamesafe only). The
@@ -216,8 +216,8 @@ class Session:
                                       os.path.abspath(self.timeline_path)),
                                       "ltcplay.log"))
             try:
-                self.log = ShowLog(p, echo=self.echo_log,
-                                   background=self.log_background)
+                self.log = (self.log_factory or ShowLog)(
+                    p, echo=self.echo_log)
             except OSError as e:
                 # A bundle on a read-only volume, a team folder with no
                 # write permission, a locked card. The show can still run;
