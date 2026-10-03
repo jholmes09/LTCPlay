@@ -18675,6 +18675,8 @@ def test_the_gpl_path_never_loads_madmapper():
     import subprocess
     root = os.path.dirname(os.path.abspath(__file__))
     port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
     code = (
         "import sys, json, threading, tempfile, urllib.request, "
         "urllib.error\n"
@@ -18685,7 +18687,7 @@ def test_the_gpl_path_never_loads_madmapper():
         "for m in mods:\n"
         "    importlib.import_module('ltcplay.' + m)\n"
         "from ltcplay import web\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        f"h = web.serve({work!r}, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -19089,6 +19091,8 @@ def test_the_gpl_path_never_loads_beyond():
     import subprocess
     root = os.path.dirname(os.path.abspath(__file__))
     port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
     code = (
         "import sys, json, threading, tempfile, urllib.request, "
         "urllib.error\n"
@@ -19099,7 +19103,7 @@ def test_the_gpl_path_never_loads_beyond():
         "for m in mods:\n"
         "    importlib.import_module('ltcplay.' + m)\n"
         "from ltcplay import web\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        f"h = web.serve({work!r}, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -19534,11 +19538,13 @@ def test_the_gpl_path_never_loads_devices():
             "call")
     import subprocess
     root = os.path.dirname(os.path.abspath(__file__))
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
     code = (
         "import sys, tempfile\n"
         f"sys.path.insert(0, {root!r})\n"
         "from ltcplay import web\n"
-        "h = web.serve(tempfile.mkdtemp(), port=0)\n"
+        f"h = web.serve({work!r}, port=0)\n"
         "h.server_close()\n"
         "print(sorted(m for m in sys.modules if m.endswith('.devices') "
         "or m == 'devices'))\n")
