@@ -40,7 +40,7 @@ Not exercised: Hold, Resume and Abort (no page route presses them in this
 build; they come with the iPad remote, PR #39), announcements, real LTC
 input, and anything actually lighting up.
 """
-import csvimport csv
+import csv
 import json
 import os
 import socket
@@ -405,16 +405,23 @@ class Soak:
         return None
 
     def make_schedule(self):
-        """A show every SHOW_EVERY_MIN minutes, all day, every day, in UTC,
-        for today and the next two days, and the Fire & Ice settings that
-        make the scheduler perform, with BEYOND and MadMapper on this PC."""
+        """A show every SHOW_EVERY_MIN minutes from 02:00 to midnight (a
+        show night's hours: the 2 AM nightly reset comes in between), every
+        day, in this PC's own clock time, for today and the next two days,
+        and the Fire & Ice settings that make the scheduler perform, with
+        BEYOND and MadMapper on this PC."""
         import datetime as _dt
         self.sched_dir = os.path.join(self.dir, "schedule")
         os.makedirs(self.sched_dir, exist_ok=True)
-        today = _dt.datetime.now(_dt.timezone.utc).date()
-        night = {"first_start": "00:00", "interval_min": SHOW_EVERY_MIN,
+        local = _dt.datetime.now().astimezone()
+        hours = round(local.utcoffset().total_seconds() / 3600)
+        # Etc/GMT zones count the other way round: UTC-4 is Etc/GMT+4.
+        tz = "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
+        today = local.date()
+        night = {"first_start": "02:00", "interval_min": SHOW_EVERY_MIN,
                  "last_end": "23:59"}
-        rule = {"timezone": "UTC",
+        self.tz_name = tz
+        rule = {"timezone": tz,
                 "season": {"first_date": (today - _dt.timedelta(days=1))
                            .isoformat(),
                            "last_date": (today + _dt.timedelta(days=2))
@@ -839,37 +846,18 @@ class Soak:
                     v = aud.get(k)
                     if isinstance(v, (int, float)) and \
                             v > self.audio_worst.get(k, 0):
-                        if self.audio_worst.get(k, 0) == 0 or True:
-                            note(f"show audio {k}: {v}") \
-                                if k in ("underflows", "losses",
-                                         "render_errors", "respawns") \
-                                else None
+                        if k in ("underflows", "losses", "render_errors",
+                                 "respawns"):
+                            note(f"show audio {k}: now {v}")
                         self.audio_worst[k] = v
-            if False and st.get("state") == "FREERUN" \
-                    and st.get("playing"):
-                try:
-                    h, m, s, f = (int(x) for x in st["playing"].replace(
-                        ";", ":").split(":"))
-                    pos = (h - 1) * 3600 + m * 60 + s + f / 30.0
-                    wall = time.perf_counter() - self.go_wall
-                    # the page's answer may be up to 0.2 s old, and has
-                    # whole frames: allowed for, not counted as drift
-                    drift = (wall - pos) * 1000.0
-                    slack = 200.0 + 1000.0 / 30
-                    eff = max(0.0, abs(drift) - slack)
-                    if eff > self.drift_worst:
-                        self.drift_worst = eff
-                        self.drift_worst_at = time.time()
-                except (ValueError, KeyError):
-                    pass
             _ = nowc
         elif self.engine_last is not None and "error" in st:
             self.engine_errors.append((time.time(), st["error"]))
         tn = self.engine("/api/schedule/tonight")
         for sl in (tn.get("slots") or tn.get("tonight", {}).get("slots")
                    or []) if isinstance(tn, dict) else []:
-            if isinstance(sl, dict) and "n" in sl:
-                self.slots[sl["n"]] = (sl.get("status"), sl.get("reason"))
+            if isinstance(sl, dict) and "show" in sl:
+                self.slots[sl["show"]] = (sl.get("status"), sl.get("reason"))
         if psutil is not None:
             try:
                 fr = psutil.cpu_freq()
@@ -1235,7 +1223,8 @@ class Soak:
                               if self.fake_audio else
                               (self.audio_name or "NO interface found")),
             f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
-            f"minutes, started by the scheduler itself",
+            f"minutes from 02:00 to midnight ({getattr(self, 'tz_name', '')}"
+            f"), started by the scheduler itself",
             f"flamesafe config: copied from {self.fs_source}, sACN forced "
             f"to 127.0.0.1",
             "",

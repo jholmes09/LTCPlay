@@ -60,8 +60,34 @@ def main():
     if rc is not None:
         return rc
     ltcwin.clean_stop_on_logoff()
+    _bench_fake_audio()
     from ltcplay import cli
     return cli.main(argv)
+
+
+def _bench_fake_audio():
+    """BENCH BUILD ONLY (branch bench-build, never merged): when the soak
+    test runs on a machine with no audio interface (a CI runner) it sets
+    LTCPLAY_BENCH_FAKE_AUDIO to the show file's device name, and the show
+    audio then plays to the test suite's stand-in device
+    (showaudio.FakeSoundDevice). Unset, which is always on a show PC, this
+    does nothing at all."""
+    import os
+    name = os.environ.get("LTCPLAY_BENCH_FAKE_AUDIO")
+    if not name:
+        return
+    from ltcplay import showaudio
+    real = showaudio.engine_spec
+
+    def fake_spec(acfg, checked, fake=None, platform=None):
+        fake = {"devices": [{"name": acfg.device, "hostapi": 0,
+                             "max_output_channels": max(2, acfg.channels)}],
+                "hostapis": ["ASIO" if sys.platform == "win32"
+                             else "Core Audio"]}
+        return real(acfg, checked, fake=fake, platform=platform)
+    showaudio.engine_spec = fake_spec
+    print(f"BENCH: the show audio plays to a FAKE stand-in device named "
+          f"{name!r} (LTCPLAY_BENCH_FAKE_AUDIO is set)", flush=True)
 
 
 if __name__ == "__main__":
