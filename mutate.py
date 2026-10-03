@@ -6626,6 +6626,33 @@ def build():
   '        if not levels:\n            return 0.0',
   '        if not levels:\n            return 1.0 if end <= 0.0 else 0.0'),
 
+
+ ('fix round 1: the GPL remote loads the scheduler for its operator list',
+  'ltcplay/remote.py',
+  '        return list(read_names(os.path.join(self.folder, OPERATORS_FILE),\n                               "operators", DEFAULT_OPERATORS))',
+  '        from . import schedule_service\n        return list(schedule_service.load_operators(self.folder)[0])'),
+
+ ('fix round 1: the GPL remote reads a list with a name on it twice',
+  'ltcplay/remote.py',
+  '        if n.strip().lower() in seen:\n            return tuple(default)',
+  '        if False:\n            return tuple(default)'),
+
+ ('fix round 1: the GPL remote does not strip names',
+  'ltcplay/remote.py',
+  '        out.append(n.strip())\n    return tuple(out)',
+  '        out.append(n)\n    return tuple(out)'),
+
+ ('fix round 1: the GPL remote takes a list with another key beside it',
+  'ltcplay/remote.py',
+  '    if not isinstance(doc, dict) or set(doc) != {key}:',
+  '    if not isinstance(doc, dict) or key not in doc:'),
+
+
+ ('fix round 1: fire_ice imports the flame link outside its two builders',
+  'ltcplay/fire_ice.py',
+  'def _has_status_mirror(path):\n    try:',
+  'def _has_status_mirror(path):\n    from . import flamelink  # noqa: F401\n    try:'),
+
 ]
 
 

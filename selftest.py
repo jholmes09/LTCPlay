@@ -33785,6 +33785,51 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_remote_name_lists_match_the_scheduler():
+    section("iPad remote: with no scheduler (the GPL path) the operator and "
+            "screen lists are read without importing the scheduler, by the "
+            "same rules and with the same defaults (PR #43 review, item 7)")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import remote as RM, schedule as SC
+    from ltcplay import schedule_service as SV
+    check(RM.OPERATORS_FILE == SV.OPERATORS_FILE and
+          RM.SCREENS_FILE == SV.SCREENS_FILE and
+          RM.DEFAULT_OPERATORS == SC.DEFAULT_OPERATORS and
+          RM.DEFAULT_SCREENS == SV.DEFAULT_SCREENS,
+          "the file names and default lists are the scheduler's")
+    docs = [None, b"not json", {"operators": ["Ann", "Bo"]},
+            {"operators": [" Ann ", "bo"], "x": 1}, {"operators": []},
+            {"operators": ["Ann", "ann"]}, {"operators": ["Ann", " "]},
+            {"operators": ["Ann", 3]}, {"operators": "Ann"}, ["Ann"],
+            {"operators": [" Ann", "Bo "]}]
+    for key, fname, load in (("operators", SV.OPERATORS_FILE,
+                              SV.load_operators),
+                             ("screens", SV.SCREENS_FILE, SV.load_screens)):
+        for doc in docs:
+            work = tempfile.mkdtemp()
+            try:
+                path = os.path.join(work, fname)
+                if isinstance(doc, bytes):
+                    open(path, "wb").write(b"\xef\xbb\xbf" + doc)
+                elif doc is not None:
+                    if isinstance(doc, dict) and "operators" in doc:
+                        doc = {(key if k == "operators" else k): v
+                               for k, v in doc.items()}
+                    with open(path, "w", encoding="utf-8") as fh:
+                        _j.dump(doc, fh)
+                default = (RM.DEFAULT_OPERATORS if key == "operators"
+                           else RM.DEFAULT_SCREENS)
+                mine = RM.read_names(path, key, default)
+                theirs = tuple(load(work)[0])
+                check(mine == theirs,
+                      f"{key} {doc!r}: remote {mine} == scheduler {theirs}")
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_the_gpl_path_never_loads_the_flame_link():
     section("GPL: the flame link is never imported by the program")
     import subprocess as _sp
@@ -33800,15 +33845,29 @@ def test_the_gpl_path_never_loads_the_flame_link():
                 top.append(f"{name}:{i}")
     # The one import allowed (show-assembly, 2026-10-03): fire_ice.py, which
     # is itself loaded only for Fire & Ice (test_the_gpl_path_never_loads_
-    # the_conductor), imports it inside build_flame_link() only, so even
-    # loading fire_ice.py loads no flame link (checked below).
-    allowed = []
-    for i, line in enumerate(open(os.path.join(here, "ltcplay",
-                                               "fire_ice.py"),
-                                  encoding="utf-8"), 1):
-        if re.search(r"\bflamelink\b", line) and \
-                re.match(r"(from|import)\s", line):
-            allowed.append(f"fire_ice.py:{i} (at the top level)")
+    # the_conductor), imports it inside build_flame_link() and
+    # flame_link_config() only, so even loading fire_ice.py loads no flame
+    # link (checked below). Found by the
+    # parser (PR #43 review, item 7): an import anywhere else in the file,
+    # indented or not, is refused.
+    import ast as _ast
+    fi_tree = _ast.parse(open(os.path.join(here, "ltcplay", "fire_ice.py"),
+                              encoding="utf-8").read())
+    inside, allowed = set(), []
+    for fn in _ast.walk(fi_tree):
+        if isinstance(fn, _ast.FunctionDef) and \
+                fn.name in ("build_flame_link", "flame_link_config"):
+            inside |= {id(x) for x in _ast.walk(fn)}
+    for node in _ast.walk(fi_tree):
+        names = []
+        if isinstance(node, _ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, _ast.ImportFrom):
+            names = [node.module or ""] + [a.name for a in node.names]
+        if any("flamelink" in (n or "") for n in names) and \
+                id(node) not in inside:
+            allowed.append(f"fire_ice.py:{node.lineno} (outside "
+                           f"build_flame_link and flame_link_config)")
     top = [t for t in top if not t.startswith("fire_ice.py:")] + allowed
     check(not top, f"the flame link is imported by the program: {top}")
     r = _sp.run([sys.executable, "-c",
@@ -33821,6 +33880,55 @@ def test_the_gpl_path_never_loads_the_flame_link():
     check(r.stdout.strip() == "False False",
           f"loading the program (and even fire_ice.py) loads no flame link: "
           f"{r.stdout!r} {r.stderr[-300:]!r}")
+    # At run time (PR #43 review, item 7): a real GPL `ltc serve` answering
+    # the page's and the remote's routes loads none of the show-only
+    # modules. /api/remote/status used to load the scheduler.
+    port = _free_port()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {here!r})\n"
+        "from ltcplay import web, cli, session\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/remote/status', '/api/remote/whoami', "
+        "'/api/state', '/api/timelines', '/'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "show_only = ('schedule', 'schedule_service', 'conductor', "
+        "'fire_ice', 'flamelink', 'devices', 'madmapper', 'beyond', "
+        "'streamdeck', 'showaudio')\n"
+        "print(json.dumps({'codes': codes, 'loaded': sorted(\n"
+        "    m for m in sys.modules if m.startswith('ltcplay.') and\n"
+        "    m.split('.')[1] in show_only)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
+    env = dict(os.environ)
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy"):
+        env.pop(k, None)
+    env["NO_PROXY"] = env["no_proxy"] = "*"
+    r = _sp.run([sys.executable, "-c", code], capture_output=True,
+                text=True, timeout=60, env=env)
+    try:
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL run-time check did not run: {r.stderr[-800:]}")
+        print("  ok")
+        return
+    check(out["codes"][0] == 200 and out["codes"][2] == 200,
+          f"the GPL serve answered the remote and the page: {out['codes']}")
+    check(out["loaded"] == [],
+          f"a GPL serve answering the remote's routes loaded show-only "
+          f"modules: {out['loaded']}")
     print("  ok")
 
 
@@ -35401,6 +35509,7 @@ if __name__ == "__main__":
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
     test_the_gpl_path_never_loads_the_flame_link()
+    test_remote_name_lists_match_the_scheduler()
     test_remote_pin_required_over_the_network()
     test_remote_wrong_pin_refused_and_throttled()
     test_remote_localhost_unaffected_and_proxies_refused()
