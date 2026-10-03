@@ -2159,11 +2159,9 @@ MUTATIONS = [
   '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a second sender's frames are taken while the link is live",
-  "flamesafe/composer.py",
-  "                if sender != self._frame_sender:\n"
-  '                    raise ValueError("another sender")',
-  "                if False:\n"
-  '                    raise ValueError("another sender")'),
+  'flamesafe/composer.py',
+  '                if sender != self._frame_sender:\n                    self._second_sender(sender, t)\n                    raise ValueError("another sender")',
+  '                if False:\n                    self._second_sender(sender, t)\n                    raise ValueError("another sender")'),
 
  ("flamesafe: the status frame carries no key",
   "flamesafe/link.py",
@@ -4066,11 +4064,9 @@ def build():
   ""),
 
  ("conductor: intermission cuts an Abort's fade short",
-  "ltcplay/conductor.py",
-  "            latched = self._latched\n            if not latched:\n"
-  "                self._accept(\"Intermission\"",
-  "            latched = False\n            if not latched:\n"
-  "                self._accept(\"Intermission\""),
+  'ltcplay/conductor.py',
+  '            latched = self._latched\n            if not latched:\n                if self._look == STOPPED_DARK:',
+  '            latched = False\n            if not latched:\n                if self._look == STOPPED_DARK:'),
 
  # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
  # the lasers-dark re-send that keeps devices.py's "never assume a blank
@@ -4703,17 +4699,15 @@ def build():
   "                controller.arm.set_all(False)\n"),
 
  # B: no consent while anyone else is on the link.
- ("round4: consent ignores another sender on the arm link",
-  "flamesafe/composer.py",
-  "        disturbed = (self._foreign_arm_senders != 0\n"
-  "                     or self._arm_link_flooded)\n",
-  "        disturbed = self._arm_link_flooded\n"),
+ ('round4: consent ignores another sender on the arm link',
+  'flamesafe/composer.py',
+  '        disturbed = (self._foreign_arm_senders != 0\n                     or self._arm_link_flooded\n',
+  '        disturbed = (self._arm_link_flooded\n'),
 
- ("round4: consent ignores a flood on the arm link",
-  "flamesafe/composer.py",
-  "        disturbed = (self._foreign_arm_senders != 0\n"
-  "                     or self._arm_link_flooded)\n",
-  "        disturbed = self._foreign_arm_senders != 0\n"),
+ ('round4: consent ignores a flood on the arm link',
+  'flamesafe/composer.py',
+  '        disturbed = (self._foreign_arm_senders != 0\n                     or self._arm_link_flooded\n',
+  '        disturbed = (self._foreign_arm_senders != 0\n'),
 
  ("round4: a down edge from before another sender turned up can be "
   "finished while it is there",
@@ -4849,12 +4843,10 @@ def build():
   "        self._spoof_last_seq = 0\n"),
 
  # -- the flame link: flamesafe's disarm_all (2026-10-02) ----------------
- ("flamelink: a disarm_all from another sender is accepted",
-  "flamesafe/composer.py",
-  '''                raise ValueError("no live flame link to accept it from")
-            if sender != self._frame_sender:
-                raise ValueError("another sender")''',
-  '''                raise ValueError("no live flame link to accept it from")'''),
+ ('flamelink: a disarm_all from another sender is accepted',
+  'flamesafe/composer.py',
+  '            if sender != self._frame_sender:\n                # A keyed disarm_all from a second sender is a second\n                # sender on the link (second-copy guard, 2026-10-03).\n                self._second_sender(sender, t)\n                raise ValueError("another sender")\n',
+  ''),
 
  ("flamelink: a disarm_all is accepted with no live flame link",
   "flamesafe/composer.py",
@@ -5309,8 +5301,8 @@ def build():
 
  ("flamelink: an unconfirmed disarm is never reported",
   "ltcplay/flamelink.py",
-  "                elif now - pend[1] > CONFIRM_S and \\",
-  "                elif False and \\"),
+  "            self._abort_unconfirmed = True\n            return pend[0]",
+  "            self._abort_unconfirmed = True\n            return None"),
 
  ("flamelink: a held clock reads as live",
   "ltcplay/flamelink.py",
@@ -5506,15 +5498,10 @@ def build():
  # -- PR #30 fix round (independent review), 2026-10-02. All named
  # "scheduler fix round: ..." so `python3 mutate.py "fix round"` runs them.
  # Item 1: conductor calls after the save, in order, off the lock, faults.
- ("scheduler fix round: the conductor is asked before tonight is saved",
-  "ltcplay/schedule_service.py",
-  "        self._record(out, now, plan)\n"
-  "        if DRY_RUN and self.machine.state == sch.CLOSING:",
-  "        self._queue_conductor(plan, ev)\n"
-  "        self._calls.flush(0.5)\n"
-  "        plan = []\n"
-  "        self._record(out, now, plan)\n"
-  "        if DRY_RUN and self.machine.state == sch.CLOSING:"),
+ ('scheduler fix round: the conductor is asked before tonight is saved',
+  'ltcplay/schedule_service.py',
+  '        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:',
+  '        self._queue_conductor(plan, ev)\n        self._calls.flush(0.5)\n        plan = []\n        self._record(out, now, plan)\n        if self.dry_run and self.machine.state == sch.CLOSING:'),
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
@@ -5998,11 +5985,10 @@ def build():
   "        if self._calls.aborts_beside():\n",
   "        if False:\n"),
 
- ("scheduler fix round 3: R303 an Abort that goes ahead still sends a queued "
-  "show start",
-  "ltcplay/schedule_service.py",
-  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\", \"show_starting\")",
-  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\")"),
+ ('scheduler fix round 3: R303 an Abort that goes ahead still sends a queued show start',
+  'ltcplay/schedule_service.py',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",\n                           "start_show")',
+  '    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume",\n                           "start_show")'),
 
  ("scheduler fix round 3: R304 an Abort waits behind a dead line",
   "ltcplay/schedule_service.py",
@@ -6617,6 +6603,22 @@ def build():
   'ltcplay/fire_ice.py',
   '            self.show.music_halt(C.ABORT_FADE_S)',
   '            pass'),
+
+
+ ('fix round 1: the flame frames never raise an unconfirmed disarm',
+  'ltcplay/flamelink.py',
+  '            late = self._abort_overdue()\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok',
+  '            late = None\n        if late is not None:\n            self._note_unconfirmed(late)\n        return ok'),
+
+ ('fix round 1: status frames never raise an unconfirmed disarm',
+  'ltcplay/flamelink.py',
+  '                    with self._lock:\n                        late = self._abort_overdue()',
+  '                    with self._lock:\n                        late = None'),
+
+ ('fix round 1: an unconfirmed disarm is overdue only after 10 s',
+  'ltcplay/flamelink.py',
+  '        if self._clock() - pend[1] > CONFIRM_S:',
+  '        if self._clock() - pend[1] > CONFIRM_S * 10:'),
 
 ]
 

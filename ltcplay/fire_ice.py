@@ -197,8 +197,9 @@ NO_FLAME_LINK = (
     "cue frames at all, so the conductor's flame cue commands reach nothing.")
 DISARM_SENT = (
     "a disarm was sent to every flame group through the flame link. Sent "
-    "is not confirmed: flamesafe's status frames go to the Stream Deck "
-    "program, and the Stream Deck shows whether each group disarmed.")
+    "is not confirmed: only flamesafe's status frame can say it took it. "
+    "The journal says when flamesafe confirms it, or that it has not after "
+    "1 s, and the Stream Deck shows whether each group disarmed.")
 NO_DISARM = (
     "A screen-initiated Abort cannot disarm the flame groups: flamesafe's "
     "link contract (flamesafe/CONTRACT.md, version 2) has no disarm message "

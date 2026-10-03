@@ -32691,6 +32691,25 @@ def test_flame_link_unit():
     check("disarm_confirmed" in j.outcomes()
           and not link.snapshot()["disarm_unconfirmed"],
           "confirmed late: said so")
+    # No status frame at all (flamesafe stopped or frozen, or no status
+    # mirror): the flame frames themselves raise the fault (PR #43 review,
+    # item 5).
+    j.lines.clear()
+    link.disarm_all("Abort")
+    link.send_frame()
+    check("disarm_unconfirmed" not in j.outcomes(),
+          "not yet overdue: no fault")
+    t[0] += 1.5
+    link.send_frame()
+    link.send_frame()
+    check(j.outcomes().count("disarm_unconfirmed") == 1
+          and link.snapshot()["disarm_unconfirmed"]
+          and "NOT confirmed" in link.abort_state(),
+          f"no status frame for over 1 s: one fault from the flame frames, "
+          f"and the state says NOT confirmed: {j.outcomes()}")
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": link.abort_id}})
+    check("disarm_confirmed" in j.outcomes(), "and a late confirm still says so")
     check(link.note_status("garbage") == "", "a garbage status never raises")
 
     # Status frames: only ours.
