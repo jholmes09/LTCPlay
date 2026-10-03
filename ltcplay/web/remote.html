@@ -60,6 +60,13 @@ td{padding:6px 4px;border-bottom:1px solid var(--line)}
 .lamp.held{border-color:var(--warn)} .lamp.held span{color:var(--warn)}
 .lamp.disarmed span{color:var(--cool)}
 .lamp.unknown{border-style:dashed} .lamp.unknown span{color:var(--faint)}
+.lamp .lb{display:flex;gap:8px;margin-top:10px}
+.lamp .lb button{flex:1 1 0;min-height:64px;font-size:15px;padding:6px}
+.lamp button.armb{background:#1d2a12;border-color:#3f6b1f;position:relative;overflow:hidden;
+  touch-action:none;-webkit-touch-callout:none}
+.lamp button.armb .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(61,220,132,.35)}
+.lamp button.armb span{position:relative}
+.lamp button.gdis{background:#4a2a08;border-color:#8a5310}
 #stale{position:sticky;top:0;z-index:20;background:#7a0d0d;color:#fff;border:3px solid #ff5c5c;
   border-radius:12px;padding:14px 16px;font-size:20px;font-weight:800;margin-bottom:12px;text-align:center}
 .warnbox{border:1px solid #6b561f;background:#2a220c;color:var(--warn);border-radius:10px;padding:10px;margin-bottom:10px}
@@ -120,7 +127,7 @@ td{padding:6px 4px;border-bottom:1px solid var(--line)}
       <div class="warnbox" id="fl-warn" hidden></div>
       <div class="lamps" id="fl-lamps"></div>
       <button id="b-disarm" class="disarm">Disarm every flame group</button>
-      <div class="toast">Arming stays on the Stream Deck.</div>
+      <div class="toast" id="arm-note">Hold a group's Arm button to arm it. Lift your finger to stop.</div>
     </section>
 
     <section class="card">
@@ -243,6 +250,23 @@ function lampClass(g, flames){
   if(g.armed === "disarmed") return "disarmed";
   return "unknown";
 }
+// May this page start or carry on a hold to arm group i? Only with a
+// signed-in session, arming switched on, a status heard within the arming
+// freshness (1 s), flamesafe's real state reported within 1 s, and the
+// group not already armed or asked for.
+function armState(st, nowMs, lastOkMs, i){
+  const a = (st && st.arming) || {};
+  const fl = (st && st.flames) || {};
+  const g = (fl.groups || [])[i];
+  if(!a.enabled) return {ok:false, why:"Arming from a screen is switched off."};
+  if(!a.signed_in) return {ok:false, why:"Sign in with your PIN to arm."};
+  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
+  if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
+    return {ok:false, why:"flamesafe's real state is not known."};
+  if(!g) return {ok:false, why:"No such group."};
+  if(g.armed === "armed" || g.wanted) return {ok:false, why:"Already armed or asked for."};
+  return {ok:true, why:""};
+}
 function staleText(nowMs, lastOkMs){
   if(lastOkMs === null || lastOkMs === undefined)
     return "NOT CONNECTED to the show engine yet.";
@@ -296,7 +320,14 @@ async function whoami(){
   ME = await getJSON("/api/remote/whoami", 3000);
   FRESH_S = ME.fresh_s || 2.0;
   const signedIn = ME.local || ME.signed_in;
-  $("login").hidden = signedIn;
+  // On the show machine everything but arming works without signing in;
+  // arming needs your own PIN there too, so the sign in stays offered.
+  $("login").hidden = !!ME.signed_in;
+  $("login").querySelector("h2").textContent = ME.local ? "Sign in to arm (needed on this machine too)" : "Sign in";
+  if(ME.local && !ME.signed_in){
+    fill($("li-who"), ME.operators || [], true);
+    fill($("li-dev"), ME.screens || [], true);
+  }
   $("main").hidden = !signedIn;
   $("abortbar").hidden = !signedIn;
   $("signout").hidden = !ME.signed_in;
@@ -335,7 +366,7 @@ function startPolling(){
     }catch(e){
       if(e.status === 401){ POLLING = false; whoami().catch(()=>{}); return; }
     }
-    if(POLLING) setTimeout(loop, 500);
+    if(POLLING) setTimeout(loop, 250);
   };
   loop();
 }
@@ -365,6 +396,14 @@ function renderStale(){
   } else {
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "1";
   }
+  // Arming needs live state (1 s): a hold under way stops the moment it
+  // is not, and no Arm button can be pressed until it is again.
+  if(HOLD && !armState(ST, Date.now(), LAST_OK, HOLD.group).ok)
+    armStop(armState(ST, Date.now(), LAST_OK, HOLD.group).why);
+  document.querySelectorAll("[data-arm]").forEach(el => {
+    const i = Number(el.dataset.arm);
+    if(!(HOLD && HOLD.group === i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
+  });
   return stale;
 }
 setInterval(renderStale, 250);
@@ -399,11 +438,7 @@ function render(){
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
   fw.hidden = !fmsg; fw.textContent = fmsg;
-  $("fl-lamps").innerHTML = (fl.groups || []).map(g => {
-    const c = lampClass(g, fl);
-    const word = c === "unknown" ? "not known" : (g.armed + (g.reason ? ": " + g.reason : ""));
-    return `<div class="lamp ${c}"><b>${esc(g.name)}</b><span>${esc(word)}</span></div>`;
-  }).join("");
+  renderLamps(fl);
 
   const tw = $("tr-why");
   tw.hidden = !!tr.programming; tw.textContent = tr.why || "";
@@ -424,6 +459,83 @@ function render(){
     $("op-pick").value = sch.current_operator;
   renderStale();
 }
+
+// The lamps are built once per set of group names and then only updated,
+// so a finger held on an Arm button is never under a replaced element.
+let LAMP_KEY = "";
+function renderLamps(fl){
+  const groups = fl.groups || [];
+  const key = groups.map(g => g.name).join("\n");
+  const box = $("fl-lamps");
+  if(key !== LAMP_KEY){
+    armStop("the group list changed");
+    LAMP_KEY = key;
+    box.innerHTML = groups.map((g, i) =>
+      `<div class="lamp unknown" data-lamp="${i}"><b>${esc(g.name)}</b><span></span>
+        <div class="lb"><button class="armb" data-arm="${i}"><div class="fill"></div><span>Hold to arm</span></button>
+        <button class="gdis" data-gdis="${i}">Disarm</button></div></div>`).join("");
+    box.querySelectorAll("[data-arm]").forEach(b => {
+      const i = Number(b.dataset.arm);
+      b.addEventListener("pointerdown", e => { e.preventDefault(); armStart(i); });
+      ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
+        b.addEventListener(ev, () => armStop("let go")));
+      b.addEventListener("contextmenu", e => e.preventDefault());
+    });
+    box.querySelectorAll("[data-gdis]").forEach(b =>
+      b.addEventListener("click", () => { armStop("disarm"); press("group-disarm", {group:Number(b.dataset.gdis)}); }));
+  }
+  groups.forEach((g, i) => {
+    const el = box.querySelector(`[data-lamp="${i}"]`);
+    if(!el) return;
+    const c = lampClass(g, fl);
+    el.className = "lamp " + c;
+    el.querySelector("span").textContent = c === "unknown" ? "not known" : (g.armed + (g.reason ? ": " + g.reason : ""));
+    const as = armState(ST, Date.now(), LAST_OK, i);
+    const ab = el.querySelector("[data-arm]");
+    if(!(HOLD && HOLD.group === i)) ab.disabled = !as.ok;
+    ab.title = as.why;
+  });
+}
+
+// One hold at a time. A heartbeat goes only after the last one answered,
+// so the server never sees two at once; anything that is not a clean
+// answer lets go. The engine also lets go by itself 0.25 s after the last
+// heartbeat, so a page that is closed, slept or cut off cannot finish one.
+let HOLD = null;
+function armStart(i){
+  armStop("a new hold");
+  const as = armState(ST, Date.now(), LAST_OK, i);
+  if(!as.ok){ $("arm-note").textContent = as.why; return; }
+  HOLD = {group:i, id:null};
+  armBeat(HOLD);
+}
+async function armBeat(h){
+  if(HOLD !== h) return;
+  const as = armState(ST, Date.now(), LAST_OK, h.group);
+  if(!as.ok){ armStop(as.why); return; }
+  try{
+    const j = await post("/api/remote/arm-hold", {group:h.group, seen: ST ? ST.served_at : null, hold_id:h.id});
+    if(HOLD !== h) return;
+    h.id = j.hold_id;
+    const fill = document.querySelector(`[data-arm="${h.group}"] .fill`);
+    if(fill) fill.style.width = Math.min(100, 100 * j.held_s / (j.needs_s || 1)) + "%";
+    $("arm-note").textContent = j.held_s >= j.needs_s ? "Held. The Stream Deck arms it if every rule allows; watch the lamp." : "Keep holding...";
+    h.timer = setTimeout(() => armBeat(h), 100);
+  }catch(e){ if(HOLD === h) armStop(e.message); }
+}
+function armStop(why){
+  const h = HOLD;
+  HOLD = null;
+  if(!h) return;
+  clearTimeout(h.timer);
+  const fill = document.querySelector(`[data-arm="${h.group}"] .fill`);
+  if(fill) fill.style.width = "0";
+  if(why) $("arm-note").textContent = "Hold stopped: " + why;
+  post("/api/remote/arm-release", {group:h.group}).catch(() => {});
+}
+document.addEventListener("visibilitychange", () => { if(document.hidden) armStop("the page was hidden"); });
+window.addEventListener("pagehide", () => armStop("the page closed"));
+window.addEventListener("blur", () => armStop("the page lost focus"));
 
 function confirmBox(q, detail, yes, cls){
   return new Promise(res => {
@@ -459,6 +571,7 @@ $("signout").addEventListener("click", async () => {
   whoami();
 });
 $("b-abort").addEventListener("click", async () => {
+  armStop("Abort");
   if(await confirmBox("Abort the show?", "Flames zero and every group disarms, everything fades to black, and it stays dark until Reset.", "Yes, ABORT", ""))
     press("abort", {confirmed:true});
 });
@@ -469,7 +582,7 @@ $("b-start").addEventListener("click", async () => {
 $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));
 $("b-reset").addEventListener("click", () => press("reset"));
-$("b-disarm").addEventListener("click", () => press("disarm-all"));
+$("b-disarm").addEventListener("click", () => { armStop("Disarm every flame group"); press("disarm-all"); });
 $("b-op").addEventListener("click", () => press("operator", {pick:$("op-pick").value}));
 $("tr-play").addEventListener("click", () => press("play-from", {at:$("tr-at").value}, "tr-msg"));
 document.querySelectorAll("[data-jump]").forEach(b =>

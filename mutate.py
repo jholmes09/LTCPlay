@@ -703,6 +703,129 @@ MUTATIONS = [
   "        if False:\n            sentence = (f\"{who or "
   "'Nobody'!r} is not on the operator list \""),
 
+ # -- arming from a screen (2026-10-03, its own PR) --
+ ("arm: a hold needs no PIN session", "ltcplay/remote.py",
+  "        s = ctx.session\n        if s is None:\n            return 401, "
+  "{\"error\": \"Arming needs your own PIN sign in, even \"",
+  "        s = ctx.session or {\"who\": \"Andy\", \"device\": \"iPad\", "
+  "\"token\": \"x\"}\n        if s is None:\n            return 401, "
+  "{\"error\": \"Arming needs your own PIN sign in, even \""),
+
+ ("arm: the screen_arming switch is ignored", "ltcplay/remote.py",
+  "        if not self.arming_enabled():", "        if False:"),
+
+ ("arm: screen arming defaults off", "ltcplay/remote.py",
+  "           \"screen_arming\": True, \"path\": path}",
+  "           \"screen_arming\": False, \"path\": path}"),
+
+ ("arm: a stale page can hold to arm", "ltcplay/remote.py",
+  "        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:",
+  "        if seen is None:"),
+
+ ("arm: a stale flamesafe status can arm", "ltcplay/remote.py",
+  "        if not fl or fl[\"stale\"] or fl[\"age_ms\"] is None or \\\n"
+  "                fl[\"age_ms\"] > ARM_FRESH_S * 1000:",
+  "        if not fl:"),
+
+ ("arm: an armed group can be held again", "ltcplay/remote.py",
+  "        if g[\"armed\"] == \"armed\" or g[\"wanted\"]:", "        if False:"),
+
+ ("arm: a second browser can hold the same group", "ltcplay/remote.py",
+  "            if h is not None and h[\"token\"] != token and \\",
+  "            if False and h is not None and h[\"token\"] != token and \\"),
+
+ ("arm: an interrupted hold carries on", "ltcplay/remote.py",
+  "                        now - h[\"beat\"] <= BEAT_STALE_S)\n"
+  "                if live:",
+  "                        True)\n                if live:"),
+
+ ("arm: the deck is told a quiet hold is still fresh", "ltcplay/remote.py",
+  "                              \"fresh\": age <= BEAT_STALE_S,",
+  "                              \"fresh\": True,"),
+
+ ("arm: an Abort leaves screen holds running", "ltcplay/remote.py",
+  "        if name in (\"abort\", \"disarm-all\"):\n            # Before",
+  "        if False:\n            # Before"),
+
+ ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
+  "        self._drop_hold(i)\n        with self._arm_lock:\n"
+  "            self._disarm_ids += 1",
+  "        with self._arm_lock:\n            self._disarm_ids += 1"),
+
+ ("arm: signing out leaves your holds running", "ltcplay/remote.py",
+  "                for i in [i for i, h in self._holds.items()\n"
+  "                          if h[\"token\"] == s[\"token\"]]:\n"
+  "                    del self._holds[i]",
+  "                pass"),
+
+ ("arm: deck-input is served to the network", "ltcplay/remote.py",
+  "            if not ctx.local:\n                return 403, {\"error\": "
+  "\"Only on the show machine itself.\"}\n            return 200, "
+  "self.deck_input()",
+  "            return 200, self.deck_input()"),
+
+ ("arm: the deck fires a screen hold without 1 s of heartbeats",
+  "ltcplay/streamdeck.py",
+  "                if self._vheld.get(i, 0.0) < SCREEN_HOLD_S:\n"
+  "                    continue",
+  "                if False:\n                    continue"),
+
+ ("arm: the deck keeps a screen hold the engine let go",
+  "ltcplay/streamdeck.py",
+  "            if h is None or h.get(\"id\") != self._vholds[i]:\n"
+  "                self._screen_release(i)",
+  "            if False:\n                self._screen_release(i)"),
+
+ ("arm: the deck trusts an old engine answer", "ltcplay/streamdeck.py",
+  "        if last is None or self._clock() - last[1] > SCREEN_STALE_S:",
+  "        if last is None:"),
+
+ ("arm: the deck keeps the last answer when the engine is unreachable",
+  "ltcplay/streamdeck.py",
+  "                self._last = None          # unreachable: every hold let go",
+  "                pass"),
+
+ ("arm: the deck ignores screen arming switched off",
+  "ltcplay/streamdeck.py",
+  "        if ans.get(\"enabled\") is not True:\n            return {}",
+  "        if False:\n            return {}"),
+
+ ("arm: the deck takes a hold the engine says is not fresh",
+  "ltcplay/streamdeck.py",
+  "            if isinstance(h, dict) and h.get(\"fresh\") is True and \\",
+  "            if isinstance(h, dict) and \\"),
+
+ ("arm: a screen hold skips the refractory window", "ltcplay/streamdeck.py",
+  "            left = self._in_rearm_refractory(i, now)\n            if left > 0:\n"
+  "                self._log(f\"Stream Deck: {self.names[i]} arm hold on the \"",
+  "            left = 0\n            if left > 0:\n"
+  "                self._log(f\"Stream Deck: {self.names[i]} arm hold on the \""),
+
+ ("arm: screen holds run while latched", "ltcplay/streamdeck.py",
+  "        holds = {} if self._latched_now() else self.screen.holds()",
+  "        holds = self.screen.holds()"),
+
+ ("arm: a screen disarm does nothing", "ltcplay/streamdeck.py",
+  "            if self.arm.wanted[i]:\n                self._do_disarm(i, who=",
+  "            if False:\n                self._do_disarm(i, who="),
+
+ ("arm: the page arms on a stale status", "ltcplay/web/remote.html",
+  "  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return",
+  "  if(false) return"),
+
+ ("arm: the page arms on an old flamesafe status", "ltcplay/web/remote.html",
+  "fl.age_ms === undefined || fl.age_ms > 1000)",
+  "fl.age_ms === undefined || fl.age_ms > 100000)"),
+
+ ("arm: the page keeps holding when it goes stale", "ltcplay/web/remote.html",
+  "  if(HOLD && !armState(ST, Date.now(), LAST_OK, HOLD.group).ok)\n"
+  "    armStop(",
+  "  if(false)\n    armStop("),
+
+ ("arm: closing the page does not let go", "ltcplay/web/remote.html",
+  "window.addEventListener(\"pagehide\", () => armStop(\"the page closed\"));",
+  ""),
+
  ("flame link: the seek guard is off by default", "ltcplay/flamelink.py",
   "                 tc_fps=TC_FPS_DEFAULT, seek_guard=True):",
   "                 tc_fps=TC_FPS_DEFAULT, seek_guard=False):"),
