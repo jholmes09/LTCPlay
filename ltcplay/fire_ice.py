@@ -438,6 +438,11 @@ class FlameControllerError(ValueError):
     sentence."""
 
 
+class FlameControllerActive(FlameControllerError):
+    """The flame controller is Active (or has no ActiveState) in
+    xlights_networks.xml: the pixel output would send its channels."""
+
+
 def flame_channels(networks_xml, name):
     """(first absolute channel, count) of the controller called `name` in
     xlights_networks.xml, walked in the same order netmap.load() and
@@ -457,7 +462,7 @@ def flame_channels(networks_xml, name):
                    for n in nets)
         if a.get("Name", "") == name:
             if a.get("ActiveState", "Active") == "Active":
-                raise FlameControllerError(
+                raise FlameControllerActive(
                     f"The flame controller {name!r} is Active in "
                     f"{networks_xml}, so the pixel output would send its "
                     f"fire values straight to the flame node, around "
@@ -471,6 +476,61 @@ def flame_channels(networks_xml, name):
         chan += span
     raise FlameControllerError(f"There is no controller called {name!r} in "
                                f"{networks_xml}. Every flame cue is zero.")
+
+
+def _show_networks(show_file):
+    """xlights_networks.xml of the show this show file plays, or None."""
+    from . import timeline as timeline_mod
+    try:
+        tl = timeline_mod.Timeline.load(show_file)
+    except Exception:
+        return None
+    return os.path.join(getattr(tl, "show_dir", "") or "",
+                        "xlights_networks.xml")
+
+
+def refuse_active_flame_controller(show_file, name):
+    """Raise FlameControllerError when the show this file plays has the
+    flame controller `name` Active (or with no ActiveState, which xLights
+    reads as Active) in its xlights_networks.xml: the pixel output would
+    then be built to send its fire values straight to the flame node,
+    around flamesafe (PR #43 review, finding 3). A controller that is not
+    there is not refused here (its cues are zero, said by FlameCues)."""
+    path = _show_networks(show_file)
+    if not path or not os.path.exists(path):
+        return
+    try:
+        flame_channels(path, name)
+    except FlameControllerActive:
+        raise
+    except Exception:
+        # Not there, no channels, or a map that does not parse: none of
+        # those puts fire values on the pixel output (the session refuses a
+        # broken map itself), and FlameCues says so when cues are zero.
+        pass
+
+
+def check_flame_controllers(folder, cfg):
+    """At `ltc serve` startup: every show file in the folder, checked with
+    refuse_active_flame_controller. Raises FireIceConfigError naming the
+    first one that would put fire values on the pixel output."""
+    if not cfg.flame_controller or not folder or not os.path.isdir(folder):
+        return
+    for n in sorted(os.listdir(folder)):
+        if not n.lower().endswith(".json"):
+            continue
+        p = os.path.join(folder, n)
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "cues" not in doc:
+            continue
+        try:
+            refuse_active_flame_controller(p, cfg.flame_controller)
+        except FlameControllerError as e:
+            raise FireIceConfigError(f"{n}: {e}")
 
 
 class FlameCues:
@@ -610,7 +670,7 @@ class FlameCues:
                               f"is not one cue of this show file")
         try:
             f, spans = self._render(hits[0].path)
-            rel = (last[1] * 60 + last[2]) + last[3] / 30.0
+            rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
                 return self._zero("the timecode is past the end of the "
@@ -969,6 +1029,27 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     (clock, waiter) are the selftest's: nothing runs on its own then."""
     link = madmapper[0] if madmapper is not None else None
     built_link = None
+    if cfg.flame_controller:
+        # The flame controller's channels are never sent by the pixel
+        # output in Fire & Ice, whatever xlights_networks.xml says, and a
+        # show whose flame controller is Active is refused at Run (PR #43
+        # review, finding 3).
+        defaults = dict(getattr(control, "defaults", None) or {})
+        defaults["exclude_controllers"] = (cfg.flame_controller,)
+        control.defaults = defaults
+
+        def before_open(show_file, _name=cfg.flame_controller):
+            from .session import SessionError
+            try:
+                refuse_active_flame_controller(show_file, _name)
+            except FlameControllerError as e:
+                raise SessionError(f"This show will not start: {e}")
+        control.before_open = before_open
+    elif cfg.flamesafe_config and journal is not None:
+        journal("Flame cues: no 'flame_controller' is named in "
+                "ltcplay_fire_ice.json, so no flame cue is ever sent: every "
+                "flame frame is zero.", fault=True, action="flames",
+                outcome="no_controller")
     if flame_link is None and cfg.flamesafe_config:
         # Built before the show outputs so they have it from the start; the
         # clock it reads is looked up through the show on every frame.

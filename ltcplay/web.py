@@ -525,6 +525,11 @@ class Control:
                   auto_reload=bool(auto_reload))
         if on_lost:
             kw["on_lost"] = on_lost
+        check = getattr(self, "before_open", None)
+        if check is not None:
+            # Fire & Ice (fire_ice.py): a show that must not run, refused
+            # before anything is opened.
+            check(path)
         s = Session(path, **kw)
         s.from_web = True
         s.open()

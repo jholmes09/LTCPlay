@@ -31580,6 +31580,159 @@ def _free_udp_port():
     return p
 
 
+def test_fire_ice_active_flame_controller_refused():
+    section("fire & ice: an Active flame controller is refused at serve and "
+            "at Run, the pixel output never sends the flame controller, and "
+            "no flame_controller is said at startup (PR #43 review, item 3)")
+    import json as _json
+    import shutil
+    import tempfile
+    F = _fi_mod()
+    from ltcplay import web as web_mod
+    from ltcplay.session import Session, SessionError
+    work = tempfile.mkdtemp()
+    try:
+        fs, show, _doc = _fi_flame_files(work, state="Active")
+        net = os.path.join(show, "xlights_networks.xml")
+        folder = os.path.join(work, "folder")
+        os.makedirs(folder)
+        tlp = os.path.join(folder, "fi_timeline.json")
+        with open(tlp, "w", encoding="utf-8") as fh:
+            _json.dump({"name": "fi", "fps": 30, "show_dir": show,
+                        "cues": [{"tc": "01:00:00:00", "fseq": "Show.fseq",
+                                  "name": "Show"}]}, fh)
+        with open(os.path.join(folder, "notes.json"), "w") as fh:
+            fh.write("{}")
+
+        def refused(fn):
+            try:
+                fn()
+            except F.FlameControllerError as e:
+                return str(e)
+            return None
+        check(refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Flames")) is not None,
+            "an Active flame controller is refused")
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(_FI_NETWORKS.replace(' ActiveState="{state}"', ""))
+        check(refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Flames")) is not None,
+            "a flame controller with no ActiveState (xLights reads it as "
+            "Active) is refused")
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(_FI_NETWORKS.replace("{state}", "Inactive"))
+        check(refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Flames")) is None, "an Inactive one is not")
+        check(refused(lambda: F.refuse_active_flame_controller(
+            tlp, "Nope")) is None,
+            "a controller that is not there is not refused here (its cues "
+            "are zero)")
+        # ltc serve startup: every show file in the folder.
+        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs)
+        F.check_flame_controllers(folder, cfg)
+        check(True, "serve starts with the flame controller Inactive")
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(_FI_NETWORKS.replace("{state}", "Active"))
+        try:
+            F.check_flame_controllers(folder, cfg)
+            check(False, "ltc serve must refuse an Active flame controller")
+        except F.FireIceConfigError as e:
+            check("fi_timeline.json" in str(e) and "Active" in str(e),
+                  f"ltc serve refuses it, naming the show file: {e}")
+        F.check_flame_controllers(folder, F.FireIceConfig())
+        check(True, "no flame controller named: nothing to check at serve")
+
+        # Run: attach() puts the check in front of every Session the page
+        # opens, and the flame controller in exclude_controllers.
+        n = _fi_night()
+        if n.S is None:
+            return
+        control = web_mod.Control(folder, sd=FakeSD())
+        made = []
+
+        class Rec:
+            def __init__(self, path, **kw):
+                made.append(kw)
+                raise SessionError("stub: not opened here")
+        lines = []
+
+        def journal(text, **f):
+            lines.append((text, f.get("fault", False)))
+        F.attach(n.svc, control, cfg, journal=journal,
+                 flame_link=_FiFlames(n.calls, n.T), threaded=False,
+                 clock=n.T.now, waiter=n.T.wait)
+        check(control.defaults.get("exclude_controllers") == ("Flames",),
+              f"the page's sessions leave the flame controller out: "
+              f"{control.defaults}")
+        real = web_mod.Session
+        web_mod.Session = Rec
+        try:
+            try:
+                control.start("fi_timeline.json", no_output=True,
+                              auto_reload=False)
+                check(False, "Run must refuse an Active flame controller")
+            except SessionError as e:
+                check("will not start" in str(e) and "Active" in str(e)
+                      and not made,
+                      f"Run refuses it before anything opens: {e}")
+            with open(net, "w", encoding="utf-8") as fh:
+                fh.write(_FI_NETWORKS.replace("{state}", "Inactive"))
+            try:
+                control.start("fi_timeline.json", no_output=True,
+                              auto_reload=False)
+            except SessionError as e:
+                check("stub" in str(e), f"Inactive: Run goes on: {e}")
+            check(made and made[-1].get("exclude_controllers") ==
+                  ("Flames",),
+                  "and the session it opens leaves the flame controller "
+                  "out of the pixel output")
+        finally:
+            web_mod.Session = real
+        check(not any(f and "flame" in t.lower() for t, f in lines),
+              f"a named flame controller: no flame fault at startup: "
+              f"{[t for t, f in lines if f]}")
+
+        # No flame_controller with a flamesafe config: said at startup.
+        n2 = _fi_night()
+        lines2 = []
+        c2 = web_mod.Control(folder, sd=FakeSD())
+        F.attach(n2.svc, c2, F.FireIceConfig(flamesafe_config=fs),
+                 journal=lambda t, **f: lines2.append((t, f.get("fault"))),
+                 flame_link=_FiFlames(n2.calls, n2.T), threaded=False,
+                 clock=n2.T.now, waiter=n2.T.wait)
+        check(any(f and "no flame cue is ever sent" in t for t, f in lines2),
+              f"no flame_controller named: a startup fault says no flame "
+              f"cue is ever sent: {lines2}")
+        check(getattr(c2, "before_open", None) is None and
+              "exclude_controllers" not in c2.defaults,
+              "and nothing else changes")
+
+        # The session itself: an Active flame controller in the map is not
+        # in the pixel output's universes when it is excluded.
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(_FI_NETWORKS.replace("{state}", "Active"))
+        for excl in ((), ("Flames",)):
+            sess = Session(tlp, no_output=True, no_log=True, sd=FakeSD(),
+                           device="MOTU M4", channel=1,
+                           exclude_controllers=excl)
+            try:
+                sess.open()
+            except SessionError:
+                pass
+            ctl = sorted({u.controller for u in sess.nm.universes})
+            if excl:
+                check(ctl == ["Pixels A"] and any(
+                    "Flames" in x and "pixel output" in x
+                    for x in sess.notes),
+                    f"excluded: the pixel output's map has no flame "
+                    f"controller, and a note says so: {ctl} {sess.notes}")
+            else:
+                check(ctl == ["Flames", "Pixels A"],
+                      f"the GPL path is unchanged: {ctl}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_fire_ice_flame_link_from_flamesafe_config():
     section("fire & ice: the flame link is built from flamesafe's own "
             "config, its cues are the show's flame universe only while the "
@@ -33980,6 +34133,50 @@ def test_remote_localhost_unaffected_and_proxies_refused():
     print("  ok")
 
 
+def test_live_show_refuses_the_page_transport():
+    section("a live scheduled show refuses the page's transport and output "
+            "routes (GO, Skip, Stop, Start, looks, reload...) on every door, "
+            "loopback included; Hold, Resume and Abort still work (PR #43 "
+            "review, item 2)")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import web as web_mod
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 50000)
+    try:
+        st, _h, out = _ask(R.httpd, "POST", "/api/go", {}, client=loop)
+        check(st != 409, f"no show live: GO is not refused for it: {st}")
+        _live_show(R)
+        for route in web_mod.LIVE_SHOW_REFUSED:
+            st, _h, out = _ask(R.httpd, "POST", route, {}, client=loop)
+            check(st == 409 and "show is live" in str(out),
+                  f"live show: {route} from the machine's own page is "
+                  f"refused: {st} {out}")
+        R.sign_in()
+        st, _h, out = R.ask("POST", "/api/go", {})
+        check(st == 409, f"and from a signed-in iPad: {st} {out}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
+        check(st == 200, f"reading the state still works: {st}")
+        R.svc.operator_press("hold", "Jeff", "Rack screen")
+        R.settle()
+        check(R.svc.machine.state == S.PAUSED, "Hold still works")
+        st, _h, out = _ask(R.httpd, "POST", "/api/skip", {}, client=loop)
+        check(st == 409, f"held (PAUSED) is still live: Skip refused: {st}")
+        R.svc.operator_press("resume", "Jeff", "Rack screen")
+        R.settle()
+        check(R.svc.machine.state == S.SHOW, "Resume still works")
+        R.svc.operator_press("abort", "Jeff", "Rack screen", confirmed=True)
+        R.settle()
+        check(R.svc.machine.state not in (S.SHOW, S.PAUSED),
+              f"Abort still works: {R.svc.machine.state}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/go", {}, client=loop)
+        check(st != 409, f"aborted: GO is not refused for it: {st} {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
     section("iPad remote: Start now, Hold, Resume, Abort, Reset, disarm and "
             "the operator go through the scheduler and conductor paths every "
@@ -35080,6 +35277,7 @@ if __name__ == "__main__":
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
+    test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()
     test_fire_ice_start_rules_on_the_ordered_line()
     test_fire_ice_show_end_burst_never_holds_up_the_flame_link()
@@ -35097,6 +35295,7 @@ if __name__ == "__main__":
     test_remote_wrong_pin_refused_and_throttled()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
+    test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()

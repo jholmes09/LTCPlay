@@ -6487,8 +6487,8 @@ def build():
 
  ('show-assembly: flame cues read while nothing is running',
   'ltcplay/fire_ice.py',
-  '        if s is None or not getattr(s, "running", False):\n            return None\n        p = getattr(s, "player", None)',
-  '        if s is None:\n            return None\n        p = getattr(s, "player", None)'),
+  '        if s is None or not getattr(s, "running", False):\n            return self._zero("")',
+  '        if s is None:\n            return self._zero("")'),
 
  ("show-assembly: the screen Abort's disarm skips the flame link",
   'ltcplay/fire_ice.py',
@@ -6520,20 +6520,87 @@ def build():
   '            if obj is not None:\n                _link.note_status(obj)\n',
   '            if obj is not None:\n                pass\n'),
 
- ("show-assembly: the seek guard ignores the show's frame rate",
-  'ltcplay/fire_ice.py',
-  '            link.tc_fps = float(fps)',
-  '            pass'),
-
- ('show-assembly: the flame cues never get the link for the seek guard',
-  'ltcplay/fire_ice.py',
-  '        cues.link = link',
-  '        pass'),
-
  ('show-assembly: the flame link journals on its own sender thread',
   'ltcplay/fire_ice.py',
   '    journal = OffThreadJournal(journal) if journal is not None else None\n',
   '    journal = journal\n'),
+
+
+ # -- show-assembly fix round 1 (PR #43 independent review, 2026-10-03).
+ ('fix round 1: flame cues follow Blackout, Preshow or a look',
+  'ltcplay/fire_ice.py',
+  '        if look is not None:\n            return self._zero(',
+  '        if False:\n            return self._zero('),
+
+ ('fix round 1: flame cues follow a GO free run',
+  'ltcplay/fire_ice.py',
+  '        if getattr(p, "freerun_epoch", None) is not None:\n            return self._zero(',
+  '        if False:\n            return self._zero('),
+
+ ('fix round 1: flame cues go on while the show audio is paused',
+  'ltcplay/fire_ice.py',
+  '        if getattr(clk, "source", None) != "audio_master" or not cue or \\\n                getattr(clk, "paused", True):',
+  '        if getattr(clk, "source", None) != "audio_master" or not cue:'),
+
+ ("fix round 1: flame cues take any timecode, not the clock's own frame",
+  'ltcplay/fire_ice.py',
+  '        if not tc or not last or tc != (f"{last[0]:02d}:{last[1]:02d}:"',
+  '        if not tc or not last or False and tc != (f"{last[0]:02d}:{last[1]:02d}:"'),
+
+ ('fix round 1: flame cues read whichever cue, not the one playing',
+  'ltcplay/fire_ice.py',
+  '        hits = [c for c in (getattr(tl, "cues", None) or ())\n                if getattr(c, "name", None) == label]',
+  '        hits = [c for c in (getattr(tl, "cues", None) or ())]'),
+
+ ('fix round 1: flame cues read one frame late',
+  'ltcplay/fire_ice.py',
+  '            idx = int(rel * 1000.0 // f.step_time_ms)',
+  '            idx = int(rel * 1000.0 // f.step_time_ms) + 1'),
+
+ ('fix round 1: the page transport works during a live show',
+  'ltcplay/web.py',
+  '        if route in LIVE_SHOW_REFUSED and self._scheduled_show_live():',
+  '        if False:'),
+
+ ('fix round 1: a held show is not live for the page transport',
+  'ltcplay/web.py',
+  'LIVE_SHOW_STATES = ("SHOW", "PAUSED")',
+  'LIVE_SHOW_STATES = ("SHOW",)'),
+
+ ('fix round 1: GO is not refused during a live show',
+  'ltcplay/web.py',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/go", "/api/skip",',
+  'LIVE_SHOW_REFUSED = ("/api/start", "/api/goo", "/api/skip",'),
+
+ ('fix round 1: Run does not check the show before opening it',
+  'ltcplay/web.py',
+  '        if check is not None:\n            # Fire & Ice',
+  '        if False:\n            # Fire & Ice'),
+
+ ('fix round 1: the session keeps excluded controllers',
+  'ltcplay/session.py',
+  '        if self.exclude_controllers:\n            dropped',
+  '        if False:\n            dropped'),
+
+ ("fix round 1: Fire & Ice sessions keep the flame controller",
+  'ltcplay/fire_ice.py',
+  '        defaults["exclude_controllers"] = (cfg.flame_controller,)',
+  '        pass'),
+
+ ('fix round 1: an Active flame controller is not refused at Run',
+  'ltcplay/fire_ice.py',
+  '    except FlameControllerActive:\n        raise\n',
+  '    except FlameControllerActive:\n        pass\n'),
+
+ ('fix round 1: ltc serve starts with an Active flame controller',
+  'ltcplay/fire_ice.py',
+  '            raise FireIceConfigError(f"{n}: {e}")',
+  '            pass'),
+
+ ('fix round 1: no flame_controller is not said at startup',
+  'ltcplay/fire_ice.py',
+  '    elif cfg.flamesafe_config and journal is not None:',
+  '    elif False:'),
 
 ]
 

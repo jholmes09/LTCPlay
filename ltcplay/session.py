@@ -112,8 +112,13 @@ class Session:
                  freewheel_ms=250, hold_ms=2000, on_end="blackout",
                  fps=None, drop=None, device=None, channel=None, rate=None,
                  echo_log=False, sd=None, allow_missing=False,
-                 auto_reload=False):
+                 auto_reload=False, exclude_controllers=()):
         self.timeline_path = timeline_path
+        # Fire & Ice only (fire_ice.py): xLights controllers whose channels
+        # the pixel output never sends, whatever xlights_networks.xml says
+        # (the flame controller: its universe goes to flamesafe only). The
+        # GPL path never passes this.
+        self.exclude_controllers = tuple(exclude_controllers or ())
         self.allow_missing = allow_missing
         self.auto_reload = auto_reload
         self.no_output = no_output
@@ -183,6 +188,18 @@ class Session:
                 f"folder beside the .fseq files. Either \"show_dir\" in the "
                 f"timeline points somewhere else, or give the real path.")
         self.nm = netmap_mod.load(self.nm_path)
+        if self.exclude_controllers:
+            dropped = [u for u in self.nm.universes
+                       if u.controller in self.exclude_controllers]
+            if dropped:
+                self.nm.universes = [u for u in self.nm.universes
+                                     if u.controller not in
+                                     self.exclude_controllers]
+                self.notes.append(
+                    f"Not sent by the pixel output: "
+                    f"{', '.join(sorted({u.controller for u in dropped}))} "
+                    f"({len(dropped)} universe(s)); its channels go to "
+                    f"flamesafe only.")
         if not self.nm.universes and not self.no_output:
             raise SessionError(f"{self.nm_path} has no ArtNet or E1.31 "
                                f"universes to send to.")
