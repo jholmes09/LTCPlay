@@ -24569,6 +24569,560 @@ def test_schedule_tonight_file_format():
     except ValueError as e:
         check("newer ltcplay" in str(e) and "3 and 4" in str(e),
               f"a newer format is refused saying so: {e}")
+    # Fix round 3: a latch that is not plainly true or false is refused.
+    for k in ("dark", "abort_latched"):
+        odd = dict(plain, format=4, **{k: "yes"})
+        try:
+            S.machine_from_doc(odd, rule, n.m.date, at)
+            check(False, f"{k}: \"yes\" is refused")
+        except ValueError as e:
+            check(k in str(e) and "true or false" in str(e),
+                  f"{k} that is not true or false is refused: {e}")
+    # A schedule change rebuilds tonight and keeps the Abort latch and dark.
+    other = _one_night_rule(S, first="18:10")
+    back, _notes = S.rebuild_night(other, replace(n.m, abort_latched=True,
+                                                  dark=True))
+    check(back.abort_latched and back.dark,
+          f"a rebuild for a changed schedule keeps the latch and dark: "
+          f"{back.abort_latched} {back.dark}")
+    print("  ok")
+
+
+def _aborted_at_1802(S, work, now, rule=None, conductor=None):
+    """A service on `work` whose 18:00 show was Aborted at 18:02 and settled.
+    Returns (svc, conductor)."""
+    rec = conductor or _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc)
+    return svc, rec
+
+
+def _restarted(S, work, now, at, rule=None):
+    """A fresh run on `work` at `at`, with a fresh recording conductor."""
+    now[0] = at
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    _settle(svc)
+    return svc, rec
+
+
+def test_schedule_abort_latch_survives_a_damaged_disk():
+    section("scheduler: the Abort latch survives an unreadable or set aside "
+            "list, a failed save, a list for the wrong date and an older "
+            "ltcplay; it lives in a latch file of its own, written first; "
+            "only Reset ends it (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import shutil
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    D = date(2026, 11, 14)
+
+    # Tonight's list emptied by a power cut after the Abort: the latch file
+    # still says aborted.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now)
+    marker = SV.latch_path(work)
+    check(os.path.exists(marker) and svc.machine.abort_latched,
+          f"the Abort writes the latch file: {sorted(os.listdir(work))}")
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          rec2.names() == ["show_stopped"] and
+          any("latch file" in t for t in said),
+          f"an Abort, then tonight's list emptied, then a restart: latched, "
+          f"dark, sent dark, and the journal says why: "
+          f"{again.machine.abort_latched} {rec2.names()} {said[:2]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).reason == S.LATCHED_MISSED,
+          f"and the 18:20 show does not start: {again.machine.slot(2)}")
+    again.stop()
+
+    # No Abort at all, but tonight's list cannot be read and there is no
+    # latch file: with a conductor attached it starts latched and dark,
+    # and says plainly why. Reset ends it, for this run and the next.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    first = _svc(S, work, now, conductor=_RecCond(S))
+    first.start(thread=False)
+    _settle(first)
+    first.stop()
+    with open(SV.tonight_path(D, work), "wb") as fh:
+        fh.write(b"\0" * 64)
+    check(not os.path.exists(SV.latch_path(work)), "setup: no latch file")
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r for r in again.journal if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          said and said[-1].get("fault") and
+          "could not be read" in said[-1]["text"] and
+          "Reset" in said[-1]["text"],
+          f"an unreadable list starts latched and dark, and the journal says "
+          f"why as a fault: {again.machine.abort_latched} {said[-1:]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).status != S.RUNNING,
+          f"no show starts: {again.machine.slot(2)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    aside = SV.set_aside_path(SV.tonight_path(D, work))
+    kept = [n for n in os.listdir(work) if ".unreadable.reset-" in n]
+    check(r["ok"] and not again.machine.abort_latched and
+          not os.path.exists(aside) and kept and
+          not os.path.exists(SV.latch_path(work)),
+          f"Reset ends it; the set aside list is renamed, kept for the "
+          f"morning read, and the latch file is gone: {r} "
+          f"{sorted(os.listdir(work))}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 30))
+    check(not later.machine.abort_latched,
+          "a restart after that Reset is not latched again")
+    now[0] = _den(S, 18, 40)
+    later.tick()
+    check(later.machine.running == 3, "and the 18:40 show starts")
+    later.stop()
+
+    # An older ltcplay set tonight's latched list aside (it cannot read
+    # format 4) and wrote its own plain one. Back on this build: latched,
+    # by the set aside list alone and by the latch file alone.
+    for keep in ("set aside list", "latch file"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        svc, rec = _aborted_at_1802(S, work, now)
+        svc.stop()
+        path = SV.tonight_path(D, work)
+        os.replace(path, SV.set_aside_path(path))
+        old = _svc(S, work, now)                 # no conductor: as before
+        old.start(thread=False)
+        old.stop()
+        check(_tonight_doc(work)["format"] == 3,
+              "setup: a plain format 3 list is back in place")
+        if keep == "set aside list":
+            os.remove(SV.latch_path(work))
+        else:
+            os.remove(SV.set_aside_path(path))
+        again, rec2 = _restarted(S, work, now, _den(S, 18, 30))
+        now[0] = _den(S, 18, 40)
+        again.tick()
+        check(again.machine.abort_latched and
+              again.machine.slot(3).status != S.RUNNING,
+              f"after an older ltcplay ran, the {keep} alone keeps it "
+              f"latched: {again.machine.slot(3)}")
+        again.stop()
+
+    # The save of the Abort fails, the latch file too: the Abort still
+    # goes to the conductor, a loud line says what a restart would do, and
+    # every tick after tries again until it is saved.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.LATCH_RETRY_S = 0.0
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    real_write, real_marker = SV.write_json_atomic, SV.create_latch_marker
+
+    def full(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    SV.write_json_atomic = SV.create_latch_marker = full
+    try:
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        svc.tick()
+        loud = [r for r in svc.journal if r.get("action") ==
+                "save abort latch" and r.get("outcome") == "failed"]
+        check("abort" in rec.names() and len(loud) == 1 and
+              loud[0].get("fault") and
+              "if ltcplay restarts tonight the next show would start: press "
+              "nothing, fix the disk" in loud[0]["text"] and
+              "No space left" in loud[0]["text"],
+              f"a failed save of the Abort: the Abort still reaches the "
+              f"conductor, and one loud line says a restart would start the "
+              f"next show: {rec.names()} {loud}")
+        check(not os.path.exists(SV.latch_path(work)),
+              "setup: nothing reached the disk")
+    finally:
+        SV.write_json_atomic, SV.create_latch_marker = real_write, real_marker
+    now[0] = _den(S, 18, 3)
+    svc.tick()
+    back = [r for r in svc.journal if r.get("action") == "save abort latch"
+            and r.get("outcome") == "saved"]
+    check(os.path.exists(SV.latch_path(work)) and
+          _tonight_doc(work).get("abort_latched") is True and back,
+          f"once the disk takes it, the next tick saves the latch and says "
+          f"so: {back[-1:]}")
+    svc.stop()
+    again, _r = _restarted(S, work, now, _den(S, 18, 10))
+    check(again.machine.abort_latched, "and a restart is latched")
+    again.stop()
+
+    # Only the latch file fails: a softer line, the list holds the latch.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    SV.create_latch_marker = full
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.create_latch_marker = real_marker
+    half = [r for r in svc.journal if r.get("action") == "save abort latch"]
+    check(half and "Tonight's list holds the latch" in half[-1]["text"] and
+          _tonight_doc(work).get("abort_latched") is True,
+          f"when only the latch file fails, the line says the list holds it: "
+          f"{half[-1:]}")
+    svc.stop()
+
+    # The latch file is written before tonight's list, every time.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    order = []
+
+    def spy(path, doc, **kw):
+        if doc.get("abort_latched"):
+            order.append(os.path.exists(SV.latch_path(work)))
+        return real_write(path, doc, **kw)
+
+    SV.write_json_atomic = spy
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.write_json_atomic = real_write
+    check(order and all(order),
+          f"the latch file is there before tonight's list says latched: "
+          f"{order}")
+    svc.stop()
+
+    # A list for tomorrow left by a clock that ran ahead: the latch file
+    # still carries Saturday's Abort into Sunday. Reset removes the file.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now, rule=_two_nights())
+    svc.stop()
+    other = tempfile.mkdtemp()
+    stray = [_den(S, 16, 0, d=(2026, 11, 15))]
+    so = _svc(S, other, stray, rule=_two_nights(), conductor=_RecCond(S))
+    so.start(thread=False)
+    so.stop()
+    sunday = date(2026, 11, 15)
+    shutil.copy(SV.tonight_path(sunday, other), SV.tonight_path(sunday, work))
+    again, rec2 = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    again.tick()
+    check(again.machine.abort_latched and
+          again.machine.slot(1).reason == S.LATCHED_MISSED,
+          f"a stray list for Sunday does not hide Saturday's Abort: "
+          f"{again.machine.slot(1)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    check(r["ok"] and not os.path.exists(SV.latch_path(work)),
+          f"Reset removes the latch file: {r}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 10, d=(2026, 11, 15)))
+    check(not later.machine.abort_latched,
+          "and a restart after it is not latched")
+    later.stop()
+    shutil.rmtree(other, ignore_errors=True)
+
+    # Yesterday's list unreadable and no latch file: a fresh start today
+    # cannot tell, so it starts latched and says why.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, rule=_two_nights(), conductor=_RecCond(S))
+    svc.start(thread=False)
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, _r = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and
+          any("2026-11-14" in t and "could not be read" in t for t in said),
+          f"an unreadable last night latches a fresh start, said: {said[:1]}")
+    again.stop()
+
+    # Several earlier lists, no latch file: only the most recent one counts.
+    from dataclasses import replace as _rep
+
+    def earlier(work, d, latched):
+        n = _Night(S, S.parse_rule(_two_nights()), d=d)
+        n.boot(_den(S, 17, 0, d=(d.year, d.month, d.day)))
+        with open(SV.tonight_path(d, work), "w") as fh:
+            json.dump(S.machine_to_doc(_rep(n.m, abort_latched=latched)), fh)
+
+    for older, newer in ((True, False), (False, True)):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 0, d=(2026, 11, 15))]
+        SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+        earlier(work, date(2026, 11, 7), older)
+        earlier(work, date(2026, 11, 14), newer)
+        again, _r = _restarted(S, work, now, now[0])
+        check(again.machine.abort_latched == newer,
+              f"a fresh start takes the latch from the most recent earlier "
+              f"night only (older {older}, newer {newer}): "
+              f"{again.machine.abort_latched}")
+        again.stop()
+
+    # With no conductor attached nothing of this applies.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+    SV.create_latch_marker(SV.latch_path(work), {})
+    plain = _svc(S, work, now)
+    plain.start(thread=False)
+    check(not plain.machine.abort_latched and
+          os.path.exists(SV.latch_path(work)),
+          "with no conductor the latch file latches nothing and is left alone")
+    plain.stop()
+    print("  ok")
+
+
+def test_schedule_reset_never_overtakes_an_abort():
+    section("scheduler: a Reset pressed after an Abort that is still on its "
+            "way to a stuck conductor is refused and journaled, and the "
+            "latch stays (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["intermission"] = line
+    rec.block_on["abort"] = gate
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        t0 = time.perf_counter()
+        while "intermission" not in rec.names(1) and \
+                time.perf_counter() - t0 < 2:
+            time.sleep(0.01)
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+            time.sleep(0.01)
+        res = {}
+        th = _th.Thread(target=lambda: res.update(
+            r=svc.reset_conductor("Jeff", "Rack screen", wait_s=3)))
+        th.start()
+        time.sleep(0.05)
+        line.set()                      # the line moves: Reset goes first
+        th.join(4)
+        r = res.get("r") or {}
+        rows = [x for x in svc.journal if x.get("action") == "reset"]
+        check(not r.get("ok") and "has not reached" in r.get("text", "") and
+              svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              rows and rows[-1]["outcome"] == "refused" and
+              rows[-1]["who"] == "Jeff",
+              f"the Reset that got there first is refused, the latch stays, "
+              f"and it is journaled: {r} {rows[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    _settle(svc)
+    rec.latched = True
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    check(r["ok"] and not svc.machine.abort_latched,
+          f"once the Abort has landed, Reset works: {r}")
+    svc.stop()
+    print("  ok")
+
+
+class _NoLatchAnswer(_RecCond):
+    """A conductor whose `latched` cannot be read."""
+
+    @property
+    def latched(self):
+        raise RuntimeError("latched blew up")
+
+    @latched.setter
+    def latched(self, v):
+        pass
+
+
+def test_schedule_conductor_line_round3_details():
+    section("scheduler: an Abort that goes ahead drops a queued show start; "
+            "it goes ahead of a dead line too; a hang is a fault after 3 s, "
+            "an Abort sent beside the line included; flush waits for it; a "
+            "revived line is idle; Reset keeps the latch while the conductor "
+            "is still fading or cannot say (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    from ltcplay import schedule_service as SV
+
+    def showing(rec=None):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        rec = rec or _RecCond(S)
+        svc = _svc(S, work, now, conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        _settle(svc)
+        return svc, rec, now, work
+
+    def wait_for(pred, s=2.0):
+        t0 = time.perf_counter()
+        while not pred() and time.perf_counter() - t0 < s:
+            time.sleep(0.01)
+        return pred()
+
+    # A show start queued behind a stuck request is dropped by the Abort.
+    svc, rec, now, work = showing()
+    line = _th.Event()
+    rec.block_on["intermission"] = line
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        wait_for(lambda: "intermission" in rec.names(1))
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+    finally:
+        line.set()
+    _settle(svc)
+    k = rec.names().index("abort")
+    check("show_starting" not in rec.names(k),
+          f"a show start queued before the Abort is never sent after it: "
+          f"{rec.names()}")
+    svc.stop()
+
+    # The line's thread is dead: the Abort goes on its own at once.
+    svc, rec, now, work = showing()
+    _confirm(S, svc)
+    _settle(svc)
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    svc._calls._thread = dead
+    now[0] = _den(S, 18, 1)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(wait_for(lambda: "abort" in rec.names(), 1.0),
+          f"with the line's thread dead, the Abort still reaches the "
+          f"conductor, without waiting for a tick: {rec.names()}")
+    svc.tick()
+    svc.stop()
+
+    # The stuck limit, on a clock the test moves: 3 s, not more.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["show_starting"] = line
+    rec.block_on["abort"] = gate
+    try:
+        _confirm(S, svc)
+        wait_for(lambda: "show_starting" in rec.names())
+
+        def stuck(word):
+            return [r for r in svc.journal if r.get("fault") and
+                    f"has not answered {word}" in r.get("text", "")]
+
+        fake[0] += 2.9
+        svc.tick()
+        check(not stuck("Show start"), "2.9 s without an answer is no fault")
+        fake[0] += 0.2
+        svc.tick()
+        check(stuck("Show start"),
+              "3.1 s without an answer is a fault (CONDUCTOR_STUCK_S is 3 s)")
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+        line.set()
+        wait_for(lambda: svc._calls.health()["waiting"] == 0 and
+                 not svc._calls._busy)
+        svc.tick()
+        fake[0] += 3.1
+        svc.tick()
+        check(stuck("Abort"),
+              f"an Abort sent beside the line and hanging is a fault too: "
+              f"{[r['text'][:80] for r in svc.journal if r.get('fault')][-2:]}")
+        _th.Timer(0.3, gate.set).start()
+        flushed = svc.flush_conductor(3)
+        done = [r for r in svc.journal if r.get("action") == "conductor" and
+                r.get("outcome") == "done" and "Abort" in r.get("text", "")]
+        check(flushed and done,
+              f"flush waits for an Abort sent beside the line: {done[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    svc.stop()
+
+    # A line revived after its thread died is idle, not still busy with
+    # whatever it was making when it died.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    lost = svc._new_call("Lost request", "hold", "the scheduler", "")
+    with svc._calls._cv:
+        svc._calls._thread = dead
+        svc._calls._busy = True
+        svc._calls._current, svc._calls._since = lost, fake[0]
+    svc.tick()
+    fake[0] += 5
+    svc.tick()
+    bad = [r for r in svc.journal if r.get("fault") and
+           "Lost request" in r.get("text", "")]
+    check(not bad and not svc._calls._busy,
+          f"a revived line does not count the dead thread's request as "
+          f"stuck: {bad[-1:]}")
+    svc.stop()
+
+    # Reset while the conductor is still fading the Abort (it refuses and
+    # is still latched), or cannot say whether it is latched: the
+    # scheduler keeps its latch, in memory and on disk.
+    for label, rec in (("still fading", _RecCond(S)),
+                       ("cannot say", _NoLatchAnswer(S))):
+        svc, rec, now, work = showing(rec)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        rec.latched = True
+        rec.fail_on.add("reset")
+        r = svc.reset_conductor("Andy", "Rack screen")
+        check(not r["ok"] and svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              os.path.exists(SV.latch_path(work)),
+              f"a Reset the conductor refuses ({label}) keeps the "
+              f"scheduler's latch: {r}")
+        svc.stop()
     print("  ok")
 
 
@@ -24885,6 +25439,9 @@ if __name__ == "__main__":
     test_schedule_reset_refusals_are_journaled()
     test_schedule_conductor_wiring_details()
     test_schedule_tonight_file_format()
+    test_schedule_abort_latch_survives_a_damaged_disk()
+    test_schedule_reset_never_overtakes_an_abort()
+    test_schedule_conductor_line_round3_details()
     test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
         test_real_show(arg)

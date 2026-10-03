@@ -3811,8 +3811,8 @@ def build():
  ("scheduler fix round 2: Reset never clears the saved Abort latch",
   "ltcplay/schedule_service.py",
   "        self.machine = replace(m, abort_latched=False)\n"
-  "        self._save_tonight()\n        return ok, said",
-  "        return ok, said"),
+  "        self._unreadable_night = None\n",
+  "        self._unreadable_night = None\n"),
 
  ("scheduler fix round 2: a Reset after a restart can never end the Abort",
   "ltcplay/schedule_service.py",
@@ -3974,6 +3974,153 @@ def build():
   "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT\n"
   "                              else frozenset())",
   "    allowed = TONIGHT_KEYS | TONIGHT_OPTIONAL"),
+
+ # -- PR #30 fix round 3 (third independent review), 2026-10-03. All named
+ # "scheduler fix round 3: ..." so `python3 mutate.py "fix round 3"` runs
+ # them. The first group breaks the Abort latch file and the start-up
+ # latch; the second is the review's own hand mutations (R3xx) that the
+ # suite did not catch before this round.
+ ("scheduler fix round 3: the Abort latch file is never written",
+  "ltcplay/schedule_service.py",
+  "        marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n",
+  "        marker_error = None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n"),
+
+ ("scheduler fix round 3: the Abort latch file is written after tonight's "
+  "list",
+  "ltcplay/schedule_service.py",
+  "        marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n"
+  "        try:\n"
+  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
+  "        except OSError as e:\n",
+  "        path = tonight_path(m.date, self.state_dir)\n"
+  "        try:\n"
+  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
+  "            marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        except OSError as e:\n"
+  "            marker_error = self._write_latch_marker(m) if latched else None\n"),
+
+ ("scheduler fix round 3: the Abort latch file is never read at start",
+  "ltcplay/schedule_service.py",
+  "        if os.path.exists(marker) and not m.abort_latched:\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: the Abort latch file latches with no conductor",
+  "ltcplay/schedule_service.py",
+  "        if self.conductor is None:\n            return m\n        whys = []",
+  "        whys = []"),
+
+ ("scheduler fix round 3: an unreadable or set aside list does not latch",
+  "ltcplay/schedule_service.py",
+  "        if self._unreadable_night == m.date or os.path.exists(aside):\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: an unreadable earlier night does not latch a "
+  "fresh start",
+  "ltcplay/schedule_service.py",
+  "                action=\"load tonight\", outcome=\"still aborted\", "
+  "fault=True)\n            return True",
+  "                action=\"load tonight\", outcome=\"still aborted\", "
+  "fault=True)\n            return False"),
+
+ ("scheduler fix round 3: Reset leaves the Abort latch file in place",
+  "ltcplay/schedule_service.py",
+  "            remove_latch_marker(path)\n"
+  "            self._marker_clear_pending = False",
+  "            self._marker_clear_pending = False"),
+
+ ("scheduler fix round 3: Reset leaves the set aside list latching",
+  "ltcplay/schedule_service.py",
+  "                os.replace(aside, done)\n",
+  "                pass\n"),
+
+ ("scheduler fix round 3: a latch that could not be saved is not said",
+  "ltcplay/schedule_service.py",
+  "        if text is not None:\n"
+  "            self._journal_line(\"system\", text, action=\"save abort latch\",",
+  "        if False:\n"
+  "            self._journal_line(\"system\", text, action=\"save abort latch\","),
+
+ ("scheduler fix round 3: a failed latch save says the list holds it",
+  "ltcplay/schedule_service.py",
+  "        elif list_saved:\n            text = self.LATCH_HALF",
+  "        elif True:\n            text = self.LATCH_HALF"),
+
+ ("scheduler fix round 3: a latch that could not be saved is never tried "
+  "again",
+  "ltcplay/schedule_service.py",
+  "            self._keep_latch_on_disk()\n            m = self.machine",
+  "            m = self.machine"),
+
+ ("scheduler fix round 3: a Reset that overtakes an Abort in flight ends it",
+  "ltcplay/schedule_service.py",
+  "        if self._calls.aborts_beside():\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: R303 an Abort that goes ahead still sends a queued "
+  "show start",
+  "ltcplay/schedule_service.py",
+  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\", \"show_starting\")",
+  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\")"),
+
+ ("scheduler fix round 3: R304 an Abort waits behind a dead line",
+  "ltcplay/schedule_service.py",
+  "                self._busy or len(self._q) > 1 or not self._alive())",
+  "                self._busy)"),
+
+ ("scheduler fix round 3: R307 a fresh start reads the oldest earlier night "
+  "for the latch",
+  "ltcplay/schedule_service.py",
+  "        y = max(dates)", "        y = min(dates)"),
+
+ ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
+  "ltcplay/schedule.py",
+  "                abort_latched=saved.abort_latched)",
+  "                abort_latched=False)"),
+
+ ("scheduler fix round 3: R312 a hung conductor request is a fault only "
+  "after 30 s",
+  "ltcplay/schedule_service.py",
+  "    CONDUCTOR_STUCK_S = 3.0", "    CONDUCTOR_STUCK_S = 30.0"),
+
+ ("scheduler fix round 3: R313 an Abort sent beside the line is never "
+  "watched for a hang",
+  "ltcplay/schedule_service.py",
+  "            running = list(self._side.items())",
+  "            running = []"),
+
+ ("scheduler fix round 3: R314 flush does not wait for an Abort sent beside "
+  "the line",
+  "ltcplay/schedule_service.py",
+  "                lambda: not self._q and not self._busy and not self._side,",
+  "                lambda: not self._q and not self._busy,"),
+
+ ("scheduler fix round 3: R315 a revived line still thinks it is busy",
+  "ltcplay/schedule_service.py",
+  "            self._busy = False\n            self._current = self._since = None\n"
+  "            self._start()",
+  "            self._start()"),
+
+ ("scheduler fix round 3: R317 a conductor that cannot say whether it is "
+  "latched counts as not latched in Reset",
+  "ltcplay/schedule_service.py",
+  "        except Exception:\n            still = True",
+  "        except Exception:\n            still = False"),
+
+ ("scheduler fix round 3: R318 a Reset refused while the Abort still fades "
+  "clears the scheduler's latch",
+  "ltcplay/schedule_service.py",
+  "        if not ok and still:\n            return ok, said",
+  "        if False:\n            return ok, said"),
+
+ ("scheduler fix round 3: R322 a dark or latch that is not true or false is "
+  "accepted",
+  "ltcplay/schedule.py",
+  "    for k in sorted(TONIGHT_OPTIONAL):\n"
+  "        if not isinstance(doc.get(k, False), bool):",
+  "    for k in sorted(TONIGHT_OPTIONAL):\n        if False:"),
 ]
 
 

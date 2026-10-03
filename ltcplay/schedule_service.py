@@ -90,6 +90,98 @@ def tonight_path(d, folder=None):
                         f"{TONIGHT_PREFIX}{d.isoformat()}.json")
 
 
+def set_aside_path(path):
+    """Where a saved night that could not be used is moved to."""
+    return path[:-5] + ".unreadable.json"
+
+
+# The Abort latch, in a file of its own (fix round 3 of #30, 2026-10-03).
+# While this file EXISTS, an Abort has not been Reset, and a start with a
+# show conductor attached is latched and dark. Only Reset removes it. What
+# is written inside it is for a person reading the folder; nothing reads it
+# back, so a file left empty by a power cut, or by a disk too full to take
+# its words, still latches. That is the point of keeping it apart from
+# tonight's list:
+#   - creating an empty file needs no room for data, so it usually still
+#     lands on a disk too full to save tonight's list;
+#   - it is never held open by the program that has tonight's list open;
+#   - it has no date, so a night file for the wrong date (a clock that ran
+#     ahead) or none at all cannot hide it;
+#   - no older ltcplay knows its name, so a downgrade that sets tonight's
+#     list aside leaves it where it is.
+LATCH_FILE = "ltcplay_abort_latch.json"
+
+
+def latch_path(folder=None):
+    return os.path.join(folder or data_dir(), LATCH_FILE)
+
+
+def _fsync_folder(folder):
+    """Make a new or removed name in `folder` survive a power cut. Windows
+    cannot open a folder this way and does not need to."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def create_latch_marker(path, words):
+    """Create the latch file if it is not there. The name is what counts:
+    once the file exists it is done, even if the words could not be
+    written. Raises OSError only when the file could not be created.
+    True when it was created just now.
+
+    Nothing is flushed to disk here: every flush before the show conductor
+    hears the Abort is time the flames are still lit, and a slow disk can
+    take 300 ms a flush. Tonight's list is flushed next, as before, and the
+    caller flushes the folder (sync_latch_marker), which makes the NAME
+    survive a power cut, once the conductor has been asked. The words are
+    never flushed on their own: nothing reads them."""
+    if os.path.exists(path):
+        return False
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, (json.dumps(words, indent=2) + "\n").encode("utf-8"))
+    except OSError:
+        pass                            # a full disk: the name still counts
+    finally:
+        os.close(fd)
+    return True
+
+
+def sync_latch_marker(path):
+    """Flush the latch file's folder, so its name survives a power cut."""
+    _fsync_folder(os.path.dirname(os.path.abspath(path)))
+
+
+def remove_latch_marker(path, sleep_fn=None, tries=5):
+    """Remove the latch file, patiently while Windows says another program
+    has it open. Raises OSError if it is still there after that."""
+    sleep_fn = sleep_fn or _time.sleep
+    for i in range(tries):
+        try:
+            os.remove(path)
+            break
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            sleep_fn(0.1 * (i + 1))
+    _fsync_folder(os.path.dirname(os.path.abspath(path)))
+
+
 def operators_path(folder=None):
     return os.path.join(folder or data_dir(), OPERATORS_FILE)
 
@@ -521,6 +613,11 @@ class _ConductorCalls:
             return {"alive": self._alive(), "stuck": stuck, "age_s": age,
                     "waiting": len(self._q)}
 
+    def aborts_beside(self):
+        """The Aborts sent beside the line that have not answered yet."""
+        with self._cv:
+            return [c for c in self._side if c.method == "abort"]
+
     def revive(self):
         """Start the line again if its thread has died. True if it had."""
         with self._cv:
@@ -584,6 +681,15 @@ class Service:
         self.state_dir = state_dir or data_dir()
         self.clock_limit_s = clock_limit_s
         self.persist_error = ""
+        # The Abort latch on disk (fix round 3): the loud line said while it
+        # is not safely saved, a Reset's removal of the latch file still to
+        # do, when to try either again, and the night whose saved list could
+        # not be read this run (which latches, see _boot_latch).
+        self._latch_trouble = None
+        self._marker_clear_pending = False
+        self._latch_retry_at = None
+        self._latch_unsynced = False
+        self._unreadable_night = None
         self.lock = threading.RLock()
         # Depth of this thread's own nesting of _locked() (tonight_view()
         # and state_view() both call tick() while already holding the
@@ -1035,6 +1141,13 @@ class Service:
         m = self.machine
         if m is None or not m.abort_latched:
             return ok, said
+        if self._calls.aborts_beside():
+            # The reverse race (review round 3, r7): an Abort sent beside a
+            # stuck line is itself waiting on the conductor, and this
+            # Reset, pressed after it, got there first. The Abort lands
+            # next and latches the conductor again, so this Reset ends
+            # nothing: the scheduler keeps its latch.
+            return False, self.RESET_BEFORE_ABORT_LANDED
         try:
             still = bool(getattr(self.conductor, "latched", False))
         except Exception:
@@ -1053,8 +1166,50 @@ class Service:
                               "cleared. The rig stays dark until a show "
                               "starts.")
         self.machine = replace(m, abort_latched=False)
-        self._save_tonight()
+        self._unreadable_night = None
+        self._marker_clear_pending = True
+        if self._save_tonight():
+            self._clear_latch_files(m.date)
+        else:
+            said += (" The cleared latch could not be saved, so if ltcplay "
+                     "restarts before it is, the rig starts dark again and "
+                     "needs Reset again.")
         return ok, said
+
+    RESET_BEFORE_ABORT_LANDED = (
+        "Reset was refused: the Abort pressed before it has not reached the "
+        "show conductor yet (it was sent on its own, past a request that has "
+        "not answered), so there is nothing to Reset yet. Press Reset again "
+        "once the Abort has gone through.")
+
+    def _clear_latch_files(self, d):
+        """After a Reset whose cleared latch is saved in tonight's file: the
+        latch file goes, and a set-aside night file for tonight is renamed so
+        it no longer latches a restart. Kept, not deleted, for the morning
+        read. Said in the journal if either cannot be done."""
+        path = latch_path(self.state_dir)
+        try:
+            remove_latch_marker(path)
+            self._marker_clear_pending = False
+        except OSError as e:
+            self._journal_line(
+                "system", f"Reset is done, but the Abort latch file {path} "
+                f"could not be removed ({e.strerror or e}). If ltcplay "
+                f"restarts while it is there, the rig starts dark and needs "
+                f"Reset again. ltcplay keeps trying.",
+                action="reset", outcome="latch file kept", fault=True)
+        aside = set_aside_path(tonight_path(d, self.state_dir))
+        if os.path.exists(aside):
+            stamp = self.clock().astimezone(self._tz()).strftime("%H%M%S")
+            done = aside[:-5] + f".reset-{stamp}.json"
+            try:
+                os.replace(aside, done)
+            except OSError as e:
+                self._journal_line(
+                    "system", f"Reset is done, but {aside} could not be "
+                    f"renamed ({e.strerror or e}), so a restart tonight "
+                    f"starts dark again and needs Reset again.",
+                    action="reset", outcome="set aside kept", fault=True)
 
     def flush_conductor(self, timeout=5.0):
         """True once every conductor call queued so far has been made and
@@ -1148,6 +1303,7 @@ class Service:
             # is asked, so a restart in between still knows (and only a
             # Reset clears it, see _after_reset).
             self.machine = replace(self.machine, abort_latched=True)
+            self._marker_clear_pending = False
         self._record(out, now, plan)
         if DRY_RUN and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
@@ -1162,6 +1318,9 @@ class Service:
         # the save or the "Show N started" line, which is what keeps a
         # restart inside the grace from starting the same show twice.
         self._queue_conductor(plan, ev)
+        # A latch file created by this save is made to survive a power cut
+        # only now, once the conductor has the Abort (fix round 3).
+        self._sync_latch_marker()
         # Bumped every time the machine crosses INTO or OUT OF a held or
         # paused state, whoever does it: an operator's own Hold or Resume,
         # or an announcement's hold_for_announcement. hold_still_claimed
@@ -1290,11 +1449,15 @@ class Service:
                                 "ltcplay was running")
 
     # -- tonight on disk --------------------------------------------------
-    def _save_tonight(self):
+    def _save_tonight(self, tries=5):
         m = self.machine
+        latched = self.conductor is not None and m.abort_latched
+        # The latch file first: it is the one a full disk or a held file is
+        # least likely to stop, and the one every restart reads.
+        marker_error = self._write_latch_marker(m) if latched else None
         path = tonight_path(m.date, self.state_dir)
         try:
-            write_json_atomic(path, sch.machine_to_doc(m))
+            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)
         except OSError as e:
             msg = (f"Tonight's list could not be saved to {path}: "
                    f"{e.strerror or e}. The schedule carries on, but a "
@@ -1304,12 +1467,101 @@ class Service:
                 self._journal_line("system", msg, action="save tonight",
                                    outcome="failed", fault=True)
             self.persist_error = msg
+            if latched:
+                self._say_latch_saved(marker_error, False)
             return False
         if self.persist_error:
             self._journal_line("system", f"Tonight's list is being saved "
                                f"to {path} again.", action="save tonight")
         self.persist_error = ""
+        if latched:
+            self._say_latch_saved(marker_error, True)
         return True
+
+    def _write_latch_marker(self, m):
+        """Create the latch file, trying twice. None once it is there, or
+        the sentence for why it is not."""
+        path = latch_path(self.state_dir)
+        words = {"what": "An Abort was pressed and nobody has pressed Reset. "
+                         "While this file is here, ltcplay starts dark and "
+                         "starts no show. Reset removes it.",
+                 "night": m.date.isoformat(),
+                 "written": self.clock().isoformat()}
+        err = None
+        for _ in range(2):
+            try:
+                if create_latch_marker(path, words):
+                    self._latch_unsynced = True
+                return None
+            except OSError as e:
+                err = e
+        return f"{path}: {err.strerror or err}"
+
+    def _sync_latch_marker(self):
+        """The folder flush a just created latch file still needs: after
+        the conductor has been asked, never before (see
+        create_latch_marker)."""
+        if self._latch_unsynced:
+            self._latch_unsynced = False
+            sync_latch_marker(latch_path(self.state_dir))
+
+    LATCH_LOST = ("The Abort latch could not be saved; if ltcplay restarts "
+                  "tonight the next show would start: press nothing, fix the "
+                  "disk. Neither the latch file nor tonight's list could be "
+                  "written ({why}). The Abort itself went to the show "
+                  "conductor and the rig is dark in this run; ltcplay keeps "
+                  "trying to save the latch every few seconds.")
+    LATCH_HALF = ("The Abort latch file could not be written ({why}). "
+                  "Tonight's list holds the latch, so a restart tonight still "
+                  "starts dark, but a damaged list would lose it. Fix the "
+                  "disk. ltcplay keeps trying every few seconds.")
+    LATCH_SAVED = ("The Abort latch is saved now ({path}). A restart starts "
+                   "dark and starts no show until Reset.")
+
+    def _say_latch_saved(self, marker_error, list_saved):
+        """One loud line when the Abort latch is not safely on disk, and one
+        when it is again."""
+        if marker_error is None:
+            text = None
+        elif list_saved:
+            text = self.LATCH_HALF.format(why=marker_error)
+        else:
+            text = self.LATCH_LOST.format(why=marker_error)
+        if text == self._latch_trouble:
+            return
+        if text is not None:
+            self._journal_line("system", text, action="save abort latch",
+                               outcome="failed", fault=True)
+        else:
+            self._journal_line(
+                "system", self.LATCH_SAVED.format(
+                    path=latch_path(self.state_dir)),
+                action="save abort latch", outcome="saved")
+        self._latch_trouble = text
+
+    # How often a latch that could not be saved is tried again.
+    LATCH_RETRY_S = 2.0
+
+    def _keep_latch_on_disk(self):
+        """Once per tick, with the lock held: while the Abort latch is not
+        safely on disk (the latch file or tonight's list could not be
+        written), or a Reset's removal of the latch file did not go through,
+        try again, every LATCH_RETRY_S, once and without waiting, so a full
+        disk or a held file never stalls the tick."""
+        m = self.machine
+        if self.conductor is None or m is None:
+            return
+        if m.abort_latched:
+            if self._latch_trouble is None and not self.persist_error:
+                return
+        elif not self._marker_clear_pending:
+            return
+        t = _time.monotonic()
+        if self._latch_retry_at is not None and t < self._latch_retry_at:
+            return
+        self._latch_retry_at = t + self.LATCH_RETRY_S
+        if self._save_tonight(tries=1) and not m.abort_latched:
+            self._clear_latch_files(m.date)
 
     def _load_tonight(self, d, now, set_aside=True):
         """Tonight's saved machine, or a fresh one from the rule with a
@@ -1355,7 +1607,9 @@ class Service:
         return m
 
     def _set_aside(self, path, e, d, now):
-        aside = path[:-5] + ".unreadable.json"
+        aside = set_aside_path(path)
+        # Whatever was in it, an Abort may have been: see _boot_latch.
+        self._unreadable_night = d
         try:
             os.replace(path, aside)
             where = f"It was set aside as {aside}."
@@ -1404,6 +1658,7 @@ class Service:
                 m = self._load_tonight(d, now)
                 if fresh and self._latched_before(d):
                     m = replace(m, abort_latched=True)
+                m = self._boot_latch(m)
                 self.machine = replace(m, operators=self.operators)
                 self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
                 return True
@@ -1411,6 +1666,7 @@ class Service:
             # restart: a show that was running is cut (FAULT, the rig goes
             # dark, nothing resumes), a delayed show keeps waiting. Then it
             # goes through the same "is it still open" rule as at midnight.
+            old = self._boot_latch(old)
             self.machine = replace(old, operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         if self.machine.date == d:
@@ -1448,6 +1704,7 @@ class Service:
             self._journal_line(
                 "system", self.LATCH_CARRIED.format(night=self.machine.date),
                 action="load tonight", outcome="still aborted")
+        m = self._boot_latch(m)
         self.machine = replace(m, operators=self.operators)
         self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
         return True
@@ -1455,14 +1712,55 @@ class Service:
     LATCH_CARRIED = ("The night of {night} ended with an Abort that nobody "
                      "has Reset, so tonight starts dark: no show starts and "
                      "Start now is refused until an operator presses Reset.")
+    LATCH_FILE_FOUND = ("The Abort latch file {path} is there: an Abort was "
+                        "pressed and nobody has pressed Reset. ltcplay "
+                        "starts dark: no show starts and Start now is "
+                        "refused until an operator presses Reset.")
+    LATCH_UNREADABLE = ("Tonight's saved list ({night}) could not be read "
+                        "this time or an earlier time tonight (it is set "
+                        "aside as {aside}), so ltcplay cannot tell whether "
+                        "an Abort was pressed tonight. To be safe it starts "
+                        "dark, as if one was: no show starts and Start now "
+                        "is refused until an operator presses Reset.")
+    LATCH_EARLIER_UNREADABLE = (
+        "The saved list for {night}, the last night before this one, could "
+        "not be read, so ltcplay cannot tell whether that night ended with "
+        "an Abort nobody Reset. To be safe it starts dark, as if it did: no "
+        "show starts and Start now is refused until an operator presses "
+        "Reset.")
+
+    def _boot_latch(self, m):
+        """`m`, latched, when the disk says an Abort may not have been Reset
+        and its own list does not already say so (fix round 3 of #30), each
+        reason said in the journal. Only with a show conductor attached:
+          - the latch file is there;
+          - this night's saved list could not be read, now or earlier
+            tonight (it was set aside): it may have held an Abort, and an
+            older ltcplay that set a format 4 list aside and wrote its own
+            leaves exactly this behind."""
+        if self.conductor is None:
+            return m
+        whys = []
+        marker = latch_path(self.state_dir)
+        if os.path.exists(marker) and not m.abort_latched:
+            whys.append((self.LATCH_FILE_FOUND.format(path=marker), False))
+        aside = set_aside_path(tonight_path(m.date, self.state_dir))
+        if self._unreadable_night == m.date or os.path.exists(aside):
+            whys.append((self.LATCH_UNREADABLE.format(night=m.date,
+                                                      aside=aside), True))
+        for why, fault in whys:
+            self._journal_line("system", why, action="load tonight",
+                               outcome="still aborted", fault=fault)
+        return replace(m, abort_latched=True) if whys else m
 
     def _latched_before(self, d):
         """True when the most recent night saved before `d` ended with an
         Abort nobody Reset (its file says abort_latched), whatever its age:
         a run that never restarted would still be latched too. Said in the
-        journal. A file that cannot be read says nothing here; the
-        look-back for an open night (_open_night_before) already says so
-        out loud for the recent ones."""
+        journal. With a show conductor attached, a most recent file that
+        cannot be read counts as latched too, and says so (fix round 3).
+        The latch file (_boot_latch) is what normally carries the latch;
+        this is for a list saved before it existed."""
         try:
             names = os.listdir(self.state_dir)
         except OSError:
@@ -1487,7 +1785,13 @@ class Service:
                       encoding="utf-8-sig") as fh:
                 latched = json.load(fh).get("abort_latched") is True
         except (OSError, ValueError, AttributeError):
-            return False
+            if self.conductor is None:
+                return False
+            # Fix round 3: it may have held an Abort nobody Reset.
+            self._journal_line(
+                "system", self.LATCH_EARLIER_UNREADABLE.format(night=y),
+                action="load tonight", outcome="still aborted", fault=True)
+            return True
         if latched:
             self._journal_line("system", self.LATCH_CARRIED.format(night=y),
                                action="load tonight",
@@ -1605,6 +1909,7 @@ class Service:
             self._watch_conductor()
             if not self._ensure_night(now):
                 return None
+            self._keep_latch_on_disk()
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
@@ -1614,6 +1919,7 @@ class Service:
                                       detail="dry run, nothing was started",
                                       show=m.running), now)
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
+            self._sync_latch_marker()
             m = self.machine
         self._after_tick()
         return m
