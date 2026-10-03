@@ -65,7 +65,15 @@ class Listener:
         self.packets = []      # (time, priority, options, all_zero)
         self.lock = threading.Lock()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", SACN_PORT))
+        for _ in range(20):
+            try:
+                self.sock.bind(("127.0.0.1", SACN_PORT))
+                break
+            except OSError:
+                time.sleep(1)
+        else:
+            raise RuntimeError(f"127.0.0.1:{SACN_PORT} is still held by "
+                               f"another program")
         self.sock.settimeout(0.2)
         threading.Thread(target=self._run, daemon=True).start()
 

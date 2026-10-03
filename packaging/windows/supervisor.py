@@ -577,7 +577,7 @@ def cmd_start():
         pass
     settings = load_settings()
     if not supervisor_running():
-        args = [sys.executable] if ltcwin.frozen() else [
+        args = [supervisor_exe()] if ltcwin.frozen() else [
             sys.executable, os.path.abspath(__file__)]
         subprocess.Popen(args + ["--run"], cwd=appdata_dir(),
                          stdin=subprocess.DEVNULL,
@@ -674,8 +674,14 @@ def _xml(s):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def supervisor_exe():
+    """LTC Player.exe itself: this module also runs inside the soak test's
+    own exe, so sys.executable is not always it."""
+    return os.path.join(ltcwin.app_dir(), "LTC Player.exe")
+
+
 def task_xml(user):
-    exe = sys.executable if ltcwin.frozen() else os.path.abspath(__file__)
+    exe = supervisor_exe() if ltcwin.frozen() else os.path.abspath(__file__)
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
