@@ -56,6 +56,216 @@ SOURCE_TREE = os.path.exists(
 RAN = set()
 
 
+def _close_logs_under(path):
+    """Close the program's log files that live under `path`."""
+    import logging
+    try:
+        base = os.path.abspath(path)
+        loggers = [logging.getLogger(), logging.getLogger("ltcplay")]
+        for lg in loggers:
+            for h in list(lg.handlers):
+                f = getattr(h, "baseFilename", None)
+                if f and os.path.abspath(f).startswith(base):
+                    lg.removeHandler(h)
+                    h.close()
+    except Exception:
+        pass
+
+
+def _close_all_logs():
+    """Close every log file this process has open (the logging module does it
+    at exit, but that is after the run's own clean-up)."""
+    import logging
+    import gc
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    gc.collect()
+
+
+class _TempRun:
+    """Keeps one run of this file from littering the machine's temp folder.
+
+    Nearly every test makes itself a folder with tempfile.mkdtemp() and none
+    of them used to remove it; a run left hundreds behind (about 110MB), and a
+    loop of runs filled the disk. So the run makes ONE private folder inside
+    the temp folder, points everything at it (this process through
+    tempfile.tempdir, child processes through TMPDIR), remembers every
+    mkdtemp() made in this process, removes those when the next test starts
+    (and when a test fails, because it also runs at exit), and removes the
+    private folder when the run ends.
+
+    It never looks at the rest of the temp folder, so other runs going on at
+    the same time cannot be mistaken for this one's leftovers: whatever sits
+    in the private folder was made by this run and nobody else.
+
+    What it does NOT sweep up is what a test makes by some other route
+    (a file, or a folder a child process made). Those are still there when
+    the run ends and finish() fails the run, naming them."""
+
+    KEEP_PREFIX = "ltcplay_fixture_show_"   # the shared synthetic show
+
+    def __init__(self):
+        self.outer = tempfile.gettempdir()
+        self._real_mkdtemp = tempfile.mkdtemp
+        self.root = self._real_mkdtemp(prefix="ltcplay_selftest_",
+                                       dir=self.outer)
+        self.tracked = []
+        self.seen = set()         # every folder this process made
+        self.leftovers = None
+        self._test = None
+        self._saved_env = {k: os.environ.get(k)
+                           for k in ("TMPDIR", "TEMP", "TMP")}
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = self.root
+        for k in self._saved_env:
+            os.environ[k] = self.root
+        tempfile.mkdtemp = self._mkdtemp
+        import atexit
+        atexit.register(self.close)
+
+    def _mkdtemp(self, suffix=None, prefix=None, dir=None):
+        path = self._real_mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        if not (prefix or "").startswith(self.KEEP_PREFIX):
+            self.tracked.append(path)
+        return path
+
+    @staticmethod
+    def _remove(path, tries=5):
+        """Remove a folder or file. A file another process still has open
+        cannot be deleted on Windows, and a read-only one needs its bit
+        cleared first, so this retries rather than giving up at once."""
+        import shutil
+        import stat
+
+        def _fix(func, p, _exc):
+            # A test may leave a folder or file without permissions. Give
+            # them back to the owner and let the next try remove it. Only
+            # retry the call here when it takes just a path: rmtree can hand
+            # this os.open or os.scandir, which need more.
+            for q in (os.path.dirname(p), p):
+                try:
+                    os.chmod(q, stat.S_IRWXU)
+                except OSError:
+                    pass
+            if func in (os.rmdir, os.unlink, os.remove):
+                try:
+                    func(p)
+                except OSError:
+                    pass
+
+        for i in range(tries):
+            # Windows will not delete a log file that is still open. The
+            # program's own logger keeps its file open until it is replaced,
+            # so let go of any that sit under the folder being removed.
+            _close_logs_under(path)
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path, onerror=_fix)
+                elif os.path.lexists(path):
+                    os.unlink(path)
+            except OSError:
+                pass
+            if not os.path.lexists(path):
+                return True
+            if i + 1 < tries:
+                time.sleep(0.2 * (i + 1))
+        return False
+
+    def describe(self, names):
+        """What the leftovers are, for the failure message: kind and size."""
+        out = []
+        for n in names[:20]:
+            p = os.path.join(self.root, n)
+            try:
+                if os.path.isdir(p):
+                    kids = os.listdir(p)
+                    out.append(f"{n}/ ({len(kids)} inside: "
+                               f"{', '.join(kids[:4])})")
+                else:
+                    out.append(f"{n} ({os.path.getsize(p)} bytes)")
+            except OSError as e:
+                out.append(f"{n} ({e})")
+        return out
+
+    def sweep(self, tries=1):
+        """Remove every folder made so far. One that cannot go yet (an open
+        file on Windows) is kept for the next sweep, not forgotten."""
+        keep = []
+        while self.tracked:
+            path = self.tracked.pop()
+            self.seen.add(path)
+            if not self._remove(path, tries):
+                keep.append(path)
+        self.tracked.extend(keep)
+
+    def next_test(self, name):
+        if name != self._test:
+            self.sweep()
+            self._test = name
+
+    def finish(self):
+        """Run at the end: nothing may be left in this run's own folder.
+        Returns the names that were."""
+        try:
+            import test_show_fixtures
+            test_show_fixtures.cleanup()
+        except ImportError:
+            pass
+        _close_all_logs()
+        self.sweep(tries=5)
+        # multiprocessing keeps its own scratch folder (pymp-*) in the temp
+        # folder and removes it when the process exits, which is after this
+        # check. Run its clean-up now; a child process still shutting down
+        # gets a few seconds to finish removing what it made.
+        try:
+            import multiprocessing.util as _mpu
+            _mpu._run_finalizers()
+        except Exception:
+            pass
+        deadline = time.time() + 5.0
+        while True:
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            # A thread a finished test never stopped can write into its
+            # folder after the folder was removed, and that puts the folder
+            # (just its path, with a log in it) back. It is one this process
+            # made, so it is this sweeper's to remove, not a new leak.
+            for n in names:
+                path = os.path.join(self.root, n)
+                if path in self.seen:
+                    self._remove(path, 3)
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            self.leftovers = names
+            if not names or time.time() > deadline:
+                break
+            time.sleep(0.25)
+        return self.leftovers
+
+    def close(self):
+        _close_all_logs()
+        self.sweep(tries=3)
+        self._remove(self.root, 5)
+        tempfile.mkdtemp = self._real_mkdtemp
+        tempfile.tempdir = self._saved_tempdir
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# Set by the __main__ block below; None when this file is imported (mutate.py
+# imports it for its helpers) so that importing it changes nothing.
+_TEMPRUN = None
+
+
 # The real renders, for the tests that need a whole show. They are never in
 # the repo (600MB, and CLAUDE.md says never commit them). Say where they are
 # with LTCPLAY_TEST_SHOW_DIR; the default is where they sat in the machine
@@ -203,7 +413,10 @@ def section(name):
     # tests, because a string replace into the call list below silently matched
     # nothing.
     import sys as _sys
-    RAN.add(_sys._getframe(1).f_code.co_name)
+    _who = _sys._getframe(1).f_code.co_name
+    if _TEMPRUN is not None and _who.startswith("test_"):
+        _TEMPRUN.next_test(_who)
+    RAN.add(_who)
     print(f"\n== {name}")
 
 
@@ -3502,7 +3715,7 @@ def test_web_ui():
     # once a show folder was configured, which never happened until
     # synthetic fixtures landed, so a Unix-only path here was never
     # exercised on Windows. It is now, and Windows has no /tmp.
-    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
+    wav = os.path.join(folder, "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
@@ -10640,7 +10853,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -10656,7 +10870,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.schedule is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n")
+        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json
@@ -13911,7 +14126,8 @@ def test_the_gpl_path_never_loads_announcements():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -13927,7 +14143,8 @@ def test_the_gpl_path_never_loads_announcements():
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.announce is None,\n"
         "    'loaded': sorted(m for m in sys.modules if 'announce' in "
-        "m)}))\n")
+        "m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json as _json
@@ -14711,7 +14928,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     _write_show(work1)
     spath1 = _write_rule(work1, 40)
     try:
-        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        web_mod.serve(work1, port=_free_port(), schedule=SV.Service(spath1, state_dir=work1))
         check(False, "40s configured against 50s of media must refuse to "
                      "serve, not silently start")
     except ValueError as e:
@@ -14725,7 +14942,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     work2 = tempfile.mkdtemp()
     _write_show(work2)
     spath2 = _write_rule(work2, 60)
-    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=SV.Service(spath2, state_dir=work2))
     try:
         check(httpd2.schedule is not None and httpd2.schedule.rule is not
               None, "a long-enough show_len_s must serve normally")
@@ -14739,7 +14956,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     # in the journal, saying the check could not be done and why.
     work3 = tempfile.mkdtemp()
     spath3 = _write_rule(work3, 1)
-    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=SV.Service(spath3, state_dir=work3))
     try:
         check(httpd3.schedule is not None,
               "no show media in the folder must not block serving")
@@ -14765,7 +14982,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
           and "show_a.json" in w5 and "show_b.json" in w5,
           f"two candidates must refuse to pick one, naming both: "
           f"{(p5, l5, w5)}")
-    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=SV.Service(spath5, state_dir=work5))
     try:
         check(httpd5.schedule is not None,
               "an ambiguous folder must still serve (this warns, it does "
@@ -14970,6 +15187,7 @@ print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
                   "snap": "clock" in snap,
                   "ltc": s.player.last_ltc_at is not None,
                   "opened": len(s._sd.opened)}))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -17572,6 +17790,7 @@ print(json.dumps({
     "clock": "ltcplay.clock" in sys.modules,
     "output": "ltcplay.output" in sys.modules,
 }))
+import shutil; shutil.rmtree(os.path.dirname(lockpath), ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                text=True, timeout=30)
@@ -21010,7 +21229,8 @@ def test_the_gpl_path_never_loads_the_journal():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
         "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
-        "                     or 'schedule' in m)}))\n")
+        "                     or 'schedule' in m)}))\n"
+        "import logging, shutil; logging.shutdown(); shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     try:
@@ -23099,6 +23319,7 @@ for label, clock_doc in (("gpl", None),
                         if m == "ltcplay.showaudio"
                         or m.startswith("multiprocessing"))
 print(json.dumps(res))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -26038,6 +26259,7 @@ def test_the_gpl_path_never_loads_the_conductor():
 
 if __name__ == "__main__":
     t0 = time.time()
+    _TEMPRUN = _TempRun()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -26390,6 +26612,17 @@ if __name__ == "__main__":
             for t in touched:
                 print(f"    {t}")
 
+    # Last check: this run's own temp folder must be empty once the tests'
+    # folders are gone. A test that leaves a file or a child process's folder
+    # behind is caught here, not discovered later as a full disk.
+    _left = _TEMPRUN.finish()
+    if _left:
+        _what = "; ".join(_TEMPRUN.describe(_left))
+        FAILS.append(f"this run left {len(_left)} temp entries behind: "
+                     + _what)
+        print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
+              f"its own temp folder: {_what}")
+
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
         print(f"{len(SHOW_PROBLEMS)} thing(s) to fix in the SHOW FILE. The "
@@ -26399,6 +26632,11 @@ if __name__ == "__main__":
         print("  Open Tools and run 'Set the Advatek triggers.command'.")
         print()
     if FAILS:
+        if os.environ.get("GITHUB_ACTIONS"):
+            for _f in FAILS[:10]:
+                print("::error title=selftest::"
+                      + _f.replace("%", "%25").replace("\r", "%0D")
+                      .replace("\n", "%0A")[:900])
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
