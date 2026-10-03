@@ -39,6 +39,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 SACN_PORT = 5568
 
 FAILED = []
+NOTES = []      # evidence, printed as one notice at the end
 
 
 def error(msg):
@@ -121,8 +122,11 @@ def check_clean_stop(listener, mark, what):
           f"{what}: the stream-terminated packets were not all zeros")
     check(all(p[1] == 200 for p in pk),
           f"{what}: a flamesafe packet was not at priority 200")
-    say(f"{what}: clean stop seen ({len(term)} terminated packets, zeros "
-        f"before them)")
+    msg = (f"{what}: flamesafe stopped cleanly, {len(pk)} packets seen, "
+           f"{len(term)} with the stream-terminated flag, all zeros at "
+           f"priority 200 before them")
+    say(msg)
+    NOTES.append(msg)
 
 
 # ------------------------------------------------ a stand-in show engine ---
@@ -254,7 +258,9 @@ def main(installer):
         fake = FakeShow()
         rc = install(installer, os.path.join(tmp, "setup-refuse.log"))
         fake.close()
-        check(rc != 0, f"Setup installed while a show was running (exit {rc})")
+        if check(rc != 0, f"Setup installed while a show was running "
+                          f"(exit {rc})"):
+            NOTES.append(f"Setup refused during a show (exit {rc})")
         check(not os.path.exists(SUP),
               "Setup refused but still put files in Program Files")
         dump(os.path.join(tmp, "setup-refuse.log"), "refused setup log")
@@ -301,6 +307,9 @@ def main(installer):
               "flamesafe sent no zeros at priority 200 after starting")
         if not ok:
             return
+        NOTES.append("running after install: " + ", ".join(
+            sorted(OURS & tasklist())) + f"; {len(listener.since(mark))} "
+            "zero packets at priority 200 so far")
 
         say("5. an update stops flamesafe the proper way, then restarts")
         mark = listener.mark()
@@ -333,7 +342,8 @@ def main(installer):
         fake = FakeShow()
         rc, _ = run([SUP, "--stop", "--quiet"], timeout=60)
         fake.close()
-        check(rc == 3, f"Stop did not refuse during a show (exit {rc})")
+        if check(rc == 3, f"Stop did not refuse during a show (exit {rc})"):
+            NOTES.append("Stop LTC Player refused during a show (exit 3)")
 
         say("8. uninstall")
         uninst = os.path.join(APP, "unins000.exe")
@@ -354,6 +364,8 @@ def main(installer):
                 print(f"  - {f}")
         else:
             print("\nsmoke test passed")
+            print("::notice title=Smoke test evidence::"
+                  + "%0A".join(NOTES), flush=True)
 
 
 if __name__ == "__main__":
