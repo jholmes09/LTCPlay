@@ -1,0 +1,10 @@
+# Everything the Windows app bundles, pinned so a rebuild of the same tag
+# gives the same app. Used only by .github/workflows/windows-app.yml.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+numpy==2.4.6
+sounddevice==0.5.6
+zstandard==0.25.0
+pillow==12.3.0
+hidapi==0.15.0
+tzdata==2026.5

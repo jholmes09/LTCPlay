@@ -1,0 +1,89 @@
+LTC Player: show PC checklist
+Jeff Holmes Presents
+
+Do this once on the show PC, then again after any big Windows update.
+Each line is a setting you change by hand. LTC Player cannot change them.
+
+
+THE ACCOUNT
+
+[ ] Give the show PC one Windows account that is only for the show.
+    Install LTC Player while signed in to THAT account. LTC Player starts
+    by itself only when that account signs in.
+
+[ ] Make that account sign in by itself when the PC turns on.
+    Press Windows+R, type  netplwiz  and press Enter. Untick "Users must
+    enter a user name and password". Type the password twice. Restart to
+    check that it signs in with no one touching it.
+    (If that box is missing: Settings, Accounts, Sign-in options, turn off
+    "For improved security, only allow Windows Hello sign-in", then try
+    again.)
+
+
+NO SLEEP, NO SCREEN OFF
+
+[ ] Settings, System, Power: set "Screen", "Sleep" and "Hibernate" to
+    Never, both on battery and plugged in.
+[ ] Settings, System, Power, Power mode: Best performance.
+[ ] On a laptop: Control Panel, Power Options, "Choose what closing the
+    lid does": Do nothing.
+[ ] Settings, Personalization, Lock screen, Screen saver: None.
+    (LTC Player also keeps the PC awake while it runs. These are the belt
+    with the braces.)
+
+
+WINDOWS UPDATE
+
+[ ] Settings, Windows Update, Advanced options, Active hours: set them to
+    cover every show and rehearsal time (up to 18 hours a day).
+[ ] Settings, Windows Update: "Pause updates" for the show weeks. Unpause
+    and update on a dark day, then restart and check the show once.
+[ ] Settings, Windows Update, Advanced options: turn OFF "Get me up to
+    date" (it restarts as soon as it can).
+
+
+LTC PLAYER'S OWN FILES
+
+[ ] Put the show files in Documents\LTC Shows (made for you at first
+    start). To use another folder, open Start menu, "Settings and logs",
+    open showpc.json in Notepad and change "show_folder".
+[ ] Put the confirmed flamesafe config in that same "Settings and logs"
+    folder, named flamesafe.json. Until it is there, flamesafe and the
+    Stream Deck program do not start (the engine and show page still do).
+    flamesafe.example.json in the program folder shows the layout.
+
+
+OTHER
+
+[ ] Settings, Privacy and security, Windows Security, App and browser
+    control, Smart App Control: Off. Otherwise Windows may refuse to start
+    LTC Player, which is not signed yet. (Once off, it stays off.)
+[ ] The first time you run "LTC Player Setup", Windows says "Windows
+    protected your PC". Click "More info", then "Run anyway".
+[ ] Plug the Stream Deck and the audio interface into the same USB ports
+    every time.
+
+
+EVERY DAY
+
+- LTC Player starts by itself when the PC signs in, and opens the show
+  page. If any of its three programs stops, it is started again within
+  seconds. If LTC Player itself stops, it is back within a minute.
+- Start menu, LTC Player: starts it if needed and opens the show page.
+- Start menu, Stop LTC Player: stops everything the safe way, so the
+  flame safety program sends its safe zeros. It refuses while a show is
+  running. Stopped stays stopped until you press LTC Player again or
+  restart the PC.
+- NEVER use Task Manager's "End task" on flamesafe, ltcplay or LTC Player.
+  End task stops the flame safety program without its safe zeros.
+
+
+UPDATING AND GOING BACK
+
+- To update: download the new "LTC Player Setup" from GitHub Releases,
+  with no show running, and double-click it. It stops LTC Player the safe
+  way, installs, and starts it again. It refuses while a show is running.
+- To go back: Start menu, "Roll back to the previous version". It runs
+  the installer for the version you had before.
+- Your settings, logs and show files are kept through updates, rollbacks
+  and uninstalls. Settings and logs: Start menu, "Settings and logs".

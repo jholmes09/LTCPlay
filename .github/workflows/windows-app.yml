@@ -1,0 +1,149 @@
+name: windows-app
+
+# Builds "LTC Player Setup <version>.exe" for the Windows show PC, proves it
+# on a clean Windows machine, and attaches it to the GitHub Release.
+#
+#   - A release tag (gpl-YYYY.MM.DD.N, see CLAUDE.md) builds, tests and
+#     attaches the installer to that tag's Release.
+#   - "Run workflow" on the Actions tab builds and tests any branch; the
+#     installer is kept as a download on the run's page for 14 days.
+#   - A pull request that changes the Windows packaging (or this file) gets
+#     the same build and test, so a broken installer never reaches main.
+#
+# The Mac flow (the .command files) is not touched by any of this.
+#
+# Every failure is also printed as a `::error::` annotation, so it can be read
+# from the run's summary (or the check-runs annotations API) without the log.
+on:
+  push:
+    tags: ["gpl-*"]
+  pull_request:
+    paths:
+      - "packaging/windows/**"
+      - ".github/workflows/windows-app.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for a test build (empty: dev-<commit>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write     # creating the Release and attaching the installer
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Work out the version
+        id: ver
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            v="${GITHUB_REF_NAME#gpl-}"
+          else
+            v="${INPUT_VERSION:-}"
+            [[ -z "$v" ]] && v="dev-${GITHUB_SHA::7}"
+          fi
+          if [[ ! "$v" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::version '$v' may only use letters, digits, dot, dash and underscore"
+            exit 1
+          fi
+          # The installer's file properties need four plain numbers.
+          if [[ "$v" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then info="$v"; else info="0.0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "info=$info" >> "$GITHUB_OUTPUT"
+          echo "Version $v (file version $info)"
+
+      - name: Install the build tools and libraries
+        run: python packaging/windows/ci_run.py pip install -- python -m pip install -r packaging/windows/requirements.txt
+
+      - name: Build the app folder (PyInstaller)
+        run: python packaging/windows/ci_run.py PyInstaller -- pyinstaller --noconfirm packaging/windows/ltcplay.spec
+
+      - name: Stamp the version into the app
+        run: python packaging/windows/ci_run.py stamp version -- python packaging/windows/stamp_version.py "dist/LTC Player" "${{ steps.ver.outputs.version }}" "commit ${{ github.sha }}"
+
+      - name: Self-check each program before installing
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($exe in "ltcplay.exe", "flamesafe.exe", "ltcplay-deck.exe") {
+            python packaging/windows/ci_run.py "$exe self-check" -- "dist/LTC Player/$exe" --self-check
+            if ($LASTEXITCODE -ne 0) { $failed = 1 }
+          }
+          $p = Start-Process -FilePath "dist/LTC Player/LTC Player.exe" -ArgumentList "--self-check","--quiet" -Wait -PassThru
+          Get-Content "$env:LOCALAPPDATA\ltcplay\logs\supervisor.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Write-Output "::error::LTC Player.exe --self-check failed (exit $($p.ExitCode))"; $failed = 1 }
+          exit $failed
+
+      # ========================= SIGNING HOOK =========================
+      # Unsigned for now. When a certificate (or Azure Trusted Signing) is
+      # set up: sign the four .exe files in "dist/LTC Player" here, and pass
+      # the matching sign tool to iscc in the next step (see the SIGNING
+      # HOOK block in packaging/windows/installer.iss), so the installer and
+      # uninstaller are signed too. It runs only once the repository
+      # variable SIGN_WINDOWS is set to true (Settings, Secrets and
+      # variables, Actions, Variables); until then it is skipped.
+      - name: Sign the programs (off until SIGN_WINDOWS is true)
+        if: ${{ vars.SIGN_WINDOWS == 'true' }}
+        shell: pwsh
+        run: |
+          Write-Output "::error::signing is not set up yet"
+          exit 1
+      # ================================================================
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress | Out-Host
+          }
+          if (-not (Test-Path $iscc)) { Write-Output "::error::Inno Setup could not be installed"; exit 1 }
+          python packaging/windows/ci_run.py "Inno Setup" -- $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DVersionInfo=${{ steps.ver.outputs.info }}" packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $f = Get-Item "dist\LTC Player Setup ${{ steps.ver.outputs.version }}.exe"
+          $mb = [math]::Round($f.Length / 1MB, 1)
+          Write-Output "::notice title=Installer size::$($f.Name) is $mb MB"
+
+      - name: Smoke test (refuse during a show, install, run, update, stop, uninstall)
+        run: python -u packaging/windows/ci_smoke.py "dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe"
+
+      - name: Keep the installer on this run's page
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: LTC Player Setup ${{ steps.ver.outputs.version }}
+          path: dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Attach the installer to the GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          FILE: dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe
+        run: |
+          set -eu
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --title "LTC Player $TAG" --verify-tag \
+              --notes "Windows show PC installer for $TAG. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. See SHOW PC CHECKLIST.txt in the program folder."
+          fi
+          gh release upload "$TAG" "$FILE" --clobber
