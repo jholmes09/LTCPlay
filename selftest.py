@@ -9389,19 +9389,30 @@ def test_schedule_expands_the_season():
           f"the day before the season has no shows, got {off}")
 
     # Both Denver offset changes, in 2026 and 2027, tested directly even
-    # though the season falls between them. An overnight window across 2 AM
-    # shows the arithmetic is in real time: the spring night is an hour
-    # shorter and the autumn night an hour longer.
-    spring = ["00:30", "00:50", "01:10", "01:30", "01:50", "03:10", "03:30",
-              "03:50"]
-    autumn = ["00:30", "00:50", "01:10", "01:30", "01:50", "01:10", "01:30",
-              "01:50", "02:10", "02:30", "02:50", "03:10", "03:30", "03:50"]
-    changes = {"2026-03-08": (spring, [-7] * 5 + [-6] * 3),
-               "2026-11-01": (autumn, [-6] * 5 + [-7] * 9),
-               "2027-03-14": (spring, [-7] * 5 + [-6] * 3),
-               "2027-11-07": (autumn, [-6] * 5 + [-7] * 9)}
-    overnight = {"first_start": "00:30", "interval_min": 20,
-                 "last_end": "04:00"}
+    # though the season falls between them. A night may not start before
+    # the 2 AM nightly reset (Jeff, 2026-10-03), so the earliest night,
+    # 02:00 to 06:00, is the one that meets the change: on the spring night
+    # 02:00 does not exist and the first show is at 03:00 MDT, an hour
+    # shorter in real time; on the autumn night the repeated hour (01:00 to
+    # 02:00) is before it, so it is a plain four hours on MST.
+    early = {"first_start": "01:59", "interval_min": 20, "last_end": "04:00"}
+    try:
+        S.parse_rule(_sched_doc(exceptions={"2026-12-05": early}))
+        check(False, "a night starting at 01:59, before the 2 AM nightly "
+                     "reset, must be refused")
+    except S.RuleError as e:
+        check("2 AM nightly reset" in str(e),
+              f"the refusal names the 2 AM nightly reset: {e}")
+    spring = ["03:00", "03:20", "03:40", "04:00", "04:20", "04:40", "05:00",
+              "05:20", "05:40"]
+    autumn = ["02:00", "02:20", "02:40", "03:00", "03:20", "03:40", "04:00",
+              "04:20", "04:40", "05:00", "05:20", "05:40"]
+    changes = {"2026-03-08": (spring, [-6] * 9),
+               "2026-11-01": (autumn, [-7] * 12),
+               "2027-03-14": (spring, [-6] * 9),
+               "2027-11-07": (autumn, [-7] * 12)}
+    overnight = {"first_start": "02:00", "interval_min": 20,
+                 "last_end": "06:00"}
     year = S.parse_rule(_sched_doc(
         season={"first_date": "2026-01-01", "last_date": "2027-12-31"},
         weekly={w: {"first_start": "17:30", "interval_min": 20,
@@ -9409,8 +9420,8 @@ def test_schedule_expands_the_season():
         exceptions=dict({k: overnight for k in changes},
                         **{"2026-06-01": overnight})))
     plain = S.expand(year, date(2026, 6, 1))
-    check(len(plain.starts) == 11, f"an ordinary 00:30 to 04:00 night holds "
-                                   f"11 shows, got {len(plain.starts)}")
+    check(len(plain.starts) == 12, f"an ordinary 02:00 to 06:00 night holds "
+                                   f"12 shows, got {len(plain.starts)}")
     for ds, (walls, offs) in changes.items():
         p = S.expand(year, date.fromisoformat(ds))
         got = [S.clock(s) for s in p.starts]
@@ -11084,8 +11095,8 @@ def test_schedule_restart_keeps_tonight():
           f"{c.persist_error!r}")
     check(c.state_view()["save_error"], "the state says the save failed")
 
-    # A running night is never replaced at midnight; the new day starts
-    # once it has finished.
+    # A running night is never replaced at midnight; the new night starts
+    # at the 2 AM nightly reset (Jeff, 2026-10-03), once the show is over.
     work = tempfile.mkdtemp()
     now = [_den(S, 23, 58)]
     a = _svc(S, work, now).start(thread=False)
@@ -11099,8 +11110,13 @@ def test_schedule_restart_keeps_tonight():
     now[0] = _den(S, 0, 5, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over, and Saturday's night runs on until the 2 AM "
+          f"reset, got {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"once the show is over the new day starts, got {a.machine.date}")
+          f"at the 2 AM reset the new night starts, got {a.machine.date}")
     old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work),
                          encoding="utf-8"))
     check([x["status"] for x in old["slots"]][-1] == S.DONE,
@@ -11967,8 +11983,13 @@ def test_schedule_a_paused_show_is_never_overlapped():
     now[0] = _den(S, 0, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over at 00:30, and Saturday's night runs on until "
+          f"the 2 AM reset: {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"the new day starts once the show is over: {a.machine.date}")
+          f"the new night starts at the 2 AM reset: {a.machine.date}")
     print("  ok")
 
 
@@ -18439,12 +18460,18 @@ def test_journal_rotation_and_pruning_across_dst():
     check(there("2026-07-17") and not there("2026-11-15"),
           "so pruning's floor does not move another day and the new "
           "night's file does not appear while a delayed show still waits")
-    # Once the operator actually closes the delayed night, midnight's own
-    # pruning and the day rollover both catch up on the very next tick.
+    # Once the operator actually closes the delayed night, the new night
+    # begins at the 2 AM nightly reset (Jeff, 2026-10-03), and pruning and
+    # the rollover happen then.
     svc._apply(_op(S, S.END_NIGHT, confirmed=True))
     check(svc.machine.state == S.OFF, "Close for the night finally closes "
                                       "the delayed night")
     now[0] = _den(S, 0, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14" and
+          not there("2026-11-15"),
+          "a closed night still runs until the 2 AM reset")
+    now[0] = _den(S, 2, 0, 6, d=(2026, 11, 15))
     svc.tick()
     check(str(svc.machine.date) == "2026-11-15",
           "and now the new night starts")
@@ -19890,10 +19917,11 @@ def test_journal_a_show_past_midnight_keeps_its_night():
           "nothing went to the calendar day's file while the show ran")
     now[0] = _den(S, 0, 4, 30, d=(2026, 11, 15))
     svc.tick()                                  # the show ends
-    now[0] = _den(S, 0, 4, 31, d=(2026, 11, 15))
+    now[0] = _den(S, 2, 0, 1, d=(2026, 11, 15))
     svc.tick()
     check(os.path.exists(os.path.join(nights, J.machine_name("2026-11-15"))),
-          "once the show is over, the new night gets its own file")
+          "once the show is over, the new night (from the 2 AM reset) gets "
+          "its own file")
     print("  ok")
 
 
@@ -19926,14 +19954,14 @@ def test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight()
           f"setup: the night is on Hold: {svc.machine.state} {out.refused}")
     epoch_before = svc.hold_epoch
     check(epoch_before > 0, "setup: Hold already bumped the epoch once")
-    now[0] = _den(S, 3, 0, d=(2026, 11, 15))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
     svc.tick()
     check(svc.machine.state == S.HOLD and
           str(svc.machine.date) == "2026-11-14" and
           svc.machine.delayed() is not None,
           f"a delayed show keeps the held night open, on its own date, "
-          f"past midnight: {svc.machine.date} {svc.machine.state} "
-          f"{svc.machine.delayed()}")
+          f"past midnight (until the 2 AM reset): {svc.machine.date} "
+          f"{svc.machine.state} {svc.machine.delayed()}")
     check(svc.hold_epoch == epoch_before,
           f"nothing crossed a Hold/Resume boundary, so an announcement's "
           f"earlier Hold claim is still current: the epoch must not move "
@@ -22580,6 +22608,49 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     print("  ok")
 
 
+def test_conductor_failed_start_disarms_without_latch():
+    section("conductor: a failed start goes dark and disarms every flame "
+            "group at once, like an Abort, but does not latch; nothing "
+            "needs to be playing (Jeff, 2026-10-03)")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    rig.cue = False
+    r = c.failed_start("the scheduler", "")
+    calls = [x for x in rig.calls if x[0] == "flames_disarm_all"]
+    check(r.ok and rig.names()[:2] == ["flames_zero", "flames_disarm_all"]
+          and calls and calls[0][1] == (C.Conductor.FAILED_START,),
+          f"the flame cues are zeroed and every group disarmed before the "
+          f"call returns, because the show failed to start: {r} "
+          f"{rig.names()} {calls}")
+    check("armed again by hand" in r.sentence and "failed to start" in
+          r.sentence, f"and its answer says why and what to do: {r.sentence}")
+    c.run_pending()
+    a = c.snapshot()["applied"]
+    check(not c.latched and c.snapshot()["look"] == C.STOPPED_DARK and
+          a["lasers"] == "black" and a["pixels"] == "black" and
+          a["music"] == "stopped" and rig.count("flames_disarm_all") == 1,
+          f"the rig is dark, the disarm sent once, nothing latched: "
+          f"latched={c.latched} {a}")
+    check(any("failed start" in t and "disarm" in t and "failed to start"
+              in t for t, f in lines),
+          f"its own line says the flames were disarmed because the show "
+          f"failed to start: {lines[-2:]}")
+    rig.cue = True
+    check(c.show_starting("Andy", "rack screen").ok,
+          "no Reset is needed: the next show start is accepted")
+    # While aborted it changes nothing (the Abort already disarmed).
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    k = len(rig.calls)
+    r = c.failed_start("the scheduler", "")
+    check(r.ok and rig.names(k) == [] and c.latched,
+          f"a failed start while aborted sends nothing and keeps the latch: "
+          f"{rig.names(k)}")
+    print("  ok")
+
+
 def test_conductor_double_abort_is_idempotent():
     section("conductor: a second Abort does nothing, Reset waits for the "
             "fade, and Abort needs something playing")
@@ -23151,6 +23222,14 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
         c.run_pending()
         check(rig.count("flames_zero") == 2,
               f"{mode}: Abort cuts the flames again")
+    # A failed start's inline disarm fails: the executor sends it again.
+    c, rig, T, lines = _cond()
+    rig.fail = {"flames_disarm_all"}
+    c.failed_start("the scheduler", "")
+    rig.fail = set()
+    c.run_pending()
+    check(rig.count("flames_disarm_all") == 2,
+          "a failed start's failed disarm is sent again by its own effect")
     # Abort's inline disarm fails: the executor sends it again.
     c, rig, T, lines = _cond()
     _cond_live(c, rig)
@@ -25278,6 +25357,9 @@ class _RecCond:
     def show_stopped(self, who="", screen=""):
         return self._do("show_stopped", who, screen)
 
+    def failed_start(self, who="", screen=""):
+        return self._do("failed_start", who, screen)
+
     def intermission(self, who="", screen=""):
         return self._do("intermission", who, screen)
 
@@ -25545,10 +25627,11 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     print("  ok")
 
 
-def test_schedule_failed_start_goes_dark_without_disarm_or_latch():
+def test_schedule_failed_start_disarms_without_latch():
     section("scheduler: a failed start (no timecode) goes dark, journals "
-            "loudly, and does not disarm or latch: Start now or the next "
-            "show brings the rig back (DEFAULT pending Jeff, 2026-10-02)")
+            "loudly, and disarms every flame group like an Abort, but does "
+            "not latch: Start now works at once, and each group has to be "
+            "armed again by hand (Jeff, 2026-10-03)")
     S = _sched()
     if S is None:
         return
@@ -25564,11 +25647,23 @@ def test_schedule_failed_start_goes_dark_without_disarm_or_latch():
     k = len(rig.calls)
     now[0] = _den(S, 18, 0, 5)
     svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
-    _settle(svc, c)
+    _settle(svc)
+    check(rig.names(k)[:2] == ["flames_zero", "flames_disarm_all"],
+          f"the flame cut and the disarm go out at once, as the conductor is "
+          f"asked, before its fade has even begun: {rig.names(k)}")
+    c.run_pending()
     a = c.snapshot()["applied"]
-    check("flames_disarm_all" not in rig.names(k) and not c.latched,
-          f"no flame group is disarmed and nothing latches: "
-          f"{rig.names(k)} latched={c.latched}")
+    disarms = [x for x in rig.calls[k:] if x[0] == "flames_disarm_all"]
+    check(len(disarms) == 1 and "failed to start" in str(disarms[0]) and
+          not c.latched and not svc._aborted() and
+          not svc.machine.abort_latched,
+          f"every flame group is disarmed once, because the show failed to "
+          f"start, and nothing latches: {disarms} latched={c.latched} "
+          f"{svc._aborted()} {svc.machine.abort_latched}")
+    check(rig.names(k).index("flames_disarm_all") <
+          rig.names(k).index("music_halt"),
+          f"the disarm goes out with the flame cut, before the fade: "
+          f"{rig.names(k)}")
     check(a["flames"] == "zero" and a["lasers"] == "black" and
           a["video"] in ("black", "stopped") and a["pixels"] == "black" and
           a["music"] == "stopped" and "music_halt" in rig.names(k),
@@ -25576,11 +25671,15 @@ def test_schedule_failed_start_goes_dark_without_disarm_or_latch():
           f"stopped, flame cues zero: {a}")
     rows = [r for r in svc.journal if r.get("action") == S.SHOW_FAILED]
     sent = [r for r in svc.journal if r.get("action") == "conductor" and
-            "Show stopped" in r["text"]]
-    check(rows and rows[-1].get("fault") and sent and
-          "No flame group is disarmed" in sent[0]["text"],
-          f"the journal says it loudly, and says what it did not do: "
-          f"{rows[-1:]} {sent[:1]}")
+            "Failed start" in r["text"]]
+    check(rows and rows[-1].get("fault") and
+          "disarmed because the show failed to start" in rows[-1]["text"] and
+          S.FAILED_START_NOT_DISARMED not in rows[-1]["text"] and
+          "armed again by hand" in rows[-1]["text"] and sent and
+          "every flame group is disarmed" in sent[0]["text"],
+          f"the journal says it loudly, and says the flames were disarmed "
+          f"because the show failed to start: {rows[-1:]} {sent[:1]}")
+    rig_before = len(rig.calls)
     check(svc.machine.state == S.STANDBY and svc.machine.dark,
           "the scheduler waits dark, no intermission")
     now[0] = _den(S, 18, 1)
@@ -25590,6 +25689,22 @@ def test_schedule_failed_start_goes_dark_without_disarm_or_latch():
     check(out.accepted and c.snapshot()["look"] == "PLAYING",
           f"Start now works straight away, with no Reset, and the rig comes "
           f"up: {out.refused} {c.snapshot()['look']}")
+    check(not [x for x in rig.names(rig_before) if "arm" in x],
+          f"and nothing ltcplay sends arms a flame group again: that is a "
+          f"hand on the deck, off then on: {rig.names(rig_before)}")
+    # Without a show conductor nothing is disarmed, and the line says so.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    bare = _svc(S, work, now)
+    bare.tick()
+    now[0] = _den(S, 18, 0)
+    bare.tick()
+    now[0] = _den(S, 18, 0, 5)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    rows = [r for r in bare.journal if r.get("action") == S.SHOW_FAILED]
+    check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"],
+          f"with no conductor the line says nothing was disarmed: "
+          f"{rows[-1:]}")
     # The LAST show fails to start: the night closes at once, and closing
     # must not cut the stop's fade short (video and pixels still go down).
     c, rig, T, lines = _cond()
@@ -25782,28 +25897,144 @@ def test_schedule_preshow_lead_on_tick_and_resume():
     print("  ok")
 
 
-def test_schedule_delayed_night_gives_way_to_the_next_nights_preshow():
+def test_schedule_night_reset_boundary():
+    section("scheduler: a show night runs until the 2 AM nightly reset, "
+            "local, on the next calendar day: just before it, at it and "
+            "just after it, and on the nights the clocks change (Jeff, "
+            "2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import date, datetime, time, timedelta, timezone
+    check(S.NIGHT_RESET == time(2, 0) and S.reset_words() == "2 AM",
+          f"the nightly reset is one constant, 2 AM: {S.NIGHT_RESET} "
+          f"{S.reset_words()}")
+    den = S.zone("America/Denver")
+    sat, sun = date(2026, 11, 14), date(2026, 11, 15)
+    for at, want, what in (
+            (_den(S, 23, 59, 59, d=(2026, 11, 14)), sat, "Saturday 23:59:59"),
+            (_den(S, 0, 0, 0, d=(2026, 11, 15)), sat, "Sunday 00:00"),
+            (_den(S, 1, 59, 59, 999999, d=(2026, 11, 15)), sat,
+             "Sunday 01:59:59.999999, just before the reset"),
+            (_den(S, 2, 0, 0, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:00, at the reset"),
+            (_den(S, 2, 0, 1, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:01, just after it"),
+            (_den(S, 4, 30, d=(2026, 11, 15)), sun,
+             "Sunday 04:30, a media shoot"),
+            (_den(S, 18, 0, d=(2026, 11, 15)), sun, "Sunday 18:00")):
+        check(S.night_of(at, den) == want,
+              f"{what} belongs to the night of {want}: "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(sat, den) == _den(S, 2, 0, d=(2026, 11, 15)),
+          f"Saturday's night ends at 02:00 Sunday: "
+          f"{S.night_reset(sat, den)}")
+
+    def utc(*a):
+        return datetime(*a, tzinfo=timezone.utc)
+
+    # Denver, autumn 2026-11-01: 01:00 to 02:00 happens twice (MDT, then
+    # MST); the reset is 02:00 MST, after both. Spring 2027-03-14: 02:00
+    # does not exist; the reset is the first instant after the gap, 03:00
+    # MDT, the same real instant 02:00 MST would have been.
+    for at, want, what in (
+            (utc(2026, 11, 1, 7, 30), date(2026, 10, 31), "01:30 MDT"),
+            (utc(2026, 11, 1, 8, 30), date(2026, 10, 31),
+             "01:30 MST, the repeated hour"),
+            (utc(2026, 11, 1, 8, 59, 59), date(2026, 10, 31),
+             "01:59:59 MST"),
+            (utc(2026, 11, 1, 9, 0), date(2026, 11, 1), "02:00 MST"),
+            (utc(2027, 3, 14, 8, 59, 59), date(2027, 3, 13), "01:59:59 MST"),
+            (utc(2027, 3, 14, 9, 0), date(2027, 3, 14),
+             "03:00 MDT, straight after the spring gap")):
+        check(S.night_of(at, den) == want,
+              f"Denver, {what}: the night of {want}, got "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(date(2026, 10, 31), den) == utc(2026, 11, 1, 9, 0)
+          and S.night_reset(date(2027, 3, 13), den) == utc(2027, 3, 14, 9, 0),
+          "night_reset agrees with night_of on both Denver change nights")
+    # A zone whose autumn change repeats 02:00 to 03:00 (Berlin): the reset
+    # is the first 02:00 (CEST), and the repeated hour stays on the new
+    # night; the spring gap is 02:00 to 03:00 there too.
+    ber = S.zone("Europe/Berlin")
+    for at, want, what in (
+            (utc(2026, 10, 24, 23, 59, 59), date(2026, 10, 24),
+             "01:59:59 CEST"),
+            (utc(2026, 10, 25, 0, 0), date(2026, 10, 25), "02:00 CEST"),
+            (utc(2026, 10, 25, 1, 30), date(2026, 10, 25),
+             "02:30 CET, the repeated hour"),
+            (utc(2027, 3, 28, 0, 59, 59), date(2027, 3, 27), "01:59:59 CET"),
+            (utc(2027, 3, 28, 1, 0), date(2027, 3, 28), "03:00 CEST")):
+        check(S.night_of(at, ber) == want,
+              f"Berlin, {what}: the night of {want}, got "
+              f"{S.night_of(at, ber)}")
+    check(S.night_reset(date(2026, 10, 24), ber) == utc(2026, 10, 25, 0, 0)
+          and S.night_reset(date(2027, 3, 27), ber) == utc(2027, 3, 28, 1, 0),
+          "night_reset agrees with night_of on both Berlin change nights")
+    # A night's first show may be at the reset, never before it.
+    ok = S.parse_rule(_sched_doc(exceptions={"2026-12-05": {
+        "first_start": "02:00", "interval_min": 20, "last_end": "06:00"}}))
+    check(S.clock(S.expand(ok, date(2026, 12, 5)).starts[0]) == "02:00",
+          "a night may start at 02:00, the reset itself")
+
+    # The service on both Denver change nights: a delayed show keeps the
+    # night open through the repeated hour, or up to the spring gap, and
+    # the night closes at the reset's real instant, not an hour off.
+    import tempfile
+    from ltcplay import schedule_service as SV
+    doc = _sched_doc(season={"first_date": "2026-10-01",
+                             "last_date": "2027-03-31"},
+                     weekly={"sat": {"first_start": "18:00",
+                                     "interval_min": 20,
+                                     "last_end": "22:00"}}, exceptions={})
+    for night, ticks in (
+            (date(2026, 10, 31), (utc(2026, 11, 1, 7, 30),
+                                  utc(2026, 11, 1, 8, 30),
+                                  utc(2026, 11, 1, 8, 59, 59))),
+            (date(2027, 3, 13), (utc(2027, 3, 14, 8, 59, 59),))):
+        work = tempfile.mkdtemp()
+        d3 = (night.year, night.month, night.day)
+        now = [_den(S, 21, 30, d=d3)]
+        svc = _svc(S, work, now, rule=doc)
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41, d=d3)
+        svc.tick()
+        n = svc.machine.delayed().n if svc.machine.delayed() else None
+        check(n is not None, f"{night}: setup, a delayed show")
+        for t in ticks:
+            now[0] = t
+            svc.tick()
+            check(svc.machine.date == night and
+                  svc.machine.delayed() is not None,
+                  f"{night}: at {t.astimezone(den):%H:%M:%S %Z} the night is "
+                  f"still open: {svc.machine.date}")
+        reset = S.night_reset(night, den)
+        now[0] = reset
+        svc.tick()
+        with open(SV.tonight_path(night, work)) as fh:
+            old = json.load(fh)
+        st = [x for x in old["slots"] if x["n"] == n][0]
+        check(svc.machine.date == night + timedelta(days=1) and
+              st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+              f"{night}: at {reset.astimezone(den):%H:%M %Z} the night "
+              f"closes and show {n} is MISSED: {svc.machine.date} {st}")
+        svc.stop()
+    print("  ok")
+
+
+def test_schedule_delayed_night_closes_at_the_2am_reset():
     section("scheduler: a night kept open past midnight by a delayed show "
-            "closes when the next night's preshow lead begins; the delayed "
-            "show is MISSED, out loud, and the next night runs (DEFAULT "
-            "pending Jeff, 2026-10-02)")
+            "closes at the 2 AM nightly reset; the delayed show is MISSED, "
+            "out loud, and the next night runs. Start now after the reset "
+            "never starts last night's show (Jeff, 2026-10-03)")
     S = _sched()
     if S is None:
         return
     import tempfile
-    from datetime import timedelta
-    from ltcplay import journal as J
-    rule = S.parse_rule(_two_nights())
     from datetime import date
-    check(S.next_night_lead(rule, date(2026, 11, 15)) == _den(
-        S, 17, 30, d=(2026, 11, 15)), "Sunday's lead begins at 17:30")
-    early = S.parse_rule(_two_nights(exceptions={
-        "2026-11-15": {"first_start": "00:10", "interval_min": 20,
-                       "last_end": "02:00"}}))
-    check(S.next_night_lead(early, date(2026, 11, 15)) == _den(
-        S, 0, 0, d=(2026, 11, 15)),
-          "a first show within 30 minutes of midnight: the lead is that "
-          "night's own midnight")
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
     for resumed in (True, False):
         work = tempfile.mkdtemp()
         now = [_den(S, 21, 30)]
@@ -25815,36 +26046,37 @@ def test_schedule_delayed_night_gives_way_to_the_next_nights_preshow():
         if resumed:
             svc._apply(_op(S, S.RESUME))
         epoch = svc.hold_epoch
-        for at in ((23, 59, 59, (2026, 11, 14)), (0, 0, 1, (2026, 11, 15)),
-                   (17, 29, 59, (2026, 11, 15))):
-            now[0] = _den(S, *at[:3], d=at[3])
+        for at in ((23, 59, 59, 0, (2026, 11, 14)),
+                   (0, 0, 1, 0, (2026, 11, 15)),
+                   (1, 59, 59, 999999, (2026, 11, 15))):
+            now[0] = _den(S, *at[:4], d=at[4])
             svc.tick()
             check(str(svc.machine.date) == "2026-11-14" and
                   svc.machine.delayed() is not None,
-                  f"[resumed={resumed}] at {now[0]:%a %H:%M:%S} Saturday is "
-                  f"still open, show 12 still waits")
+                  f"[resumed={resumed}] at {now[0]:%a %H:%M:%S.%f} Saturday "
+                  f"is still open, show 12 still waits")
         check(svc.hold_epoch == epoch,
               "the hold epoch does not move with the date alone")
-        now[0] = _den(S, 17, 30, d=(2026, 11, 15))
+        now[0] = _den(S, 2, 0, d=(2026, 11, 15))
         svc.tick()
         check(str(svc.machine.date) == "2026-11-15" and
-              svc.machine.state == S.STANDBY,
-              f"[resumed={resumed}] at Sunday 17:30 Saturday closes and "
-              f"Sunday's intermission starts: {svc.machine.date} "
-              f"{svc.machine.state}")
+              svc.machine.state == S.IDLE,
+              f"[resumed={resumed}] at Sunday 02:00 Saturday closes and "
+              f"Sunday's night begins with its preshow look: "
+              f"{svc.machine.date} {svc.machine.state}")
         line = [r for r in svc.journal if r.get("show") == 12 and
                 r.get("action") == "miss"]
         check(line and line[-1].get("fault") and
-              "never started" in line[-1]["text"] and
-              "2026-11-15" in line[-1]["text"],
-              f"[resumed={resumed}] a fault line names show 12 and why: "
-              f"{line[-1:]}")
-        from ltcplay import schedule_service as SV
+              "Show 12" in line[-1]["text"] and
+              "still waiting at the 2 AM nightly reset" in line[-1]["text"],
+              f"[resumed={resumed}] a fault line names show 12 and says "
+              f"why: {line[-1:]}")
         with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
             sat = json.load(fh)
         check(sat["slots"][11]["status"] == S.MISSED and
-              sat["slots"][11]["reason"] == S.NEXT_NIGHT_MISSED,
-              f"Saturday's saved list says show 12 was MISSED: "
+              sat["slots"][11]["reason"] == S.RESET_MISSED and
+              "still waiting at the 2 AM nightly reset" in S.RESET_MISSED,
+              f"Saturday's saved list says show 12 was MISSED at the reset: "
               f"{sat['slots'][11]}")
         check(any("Show 12" in f and "never started" in f
                   for f in sat["faults"]),
@@ -25858,22 +26090,74 @@ def test_schedule_delayed_night_gives_way_to_the_next_nights_preshow():
                   f"setting aside a night still on Hold bumps the hold "
                   f"epoch, so an announcement's claim on it is no longer "
                   f"current: {epoch} -> {svc.hold_epoch}")
+        if resumed:
+            # Start now after the reset is Sunday's extra show, never
+            # Saturday's delayed one.
+            now[0] = _den(S, 2, 0, 5, d=(2026, 11, 15))
+            out = svc._apply(_op(S, S.START_NOW))
+            run = svc.machine.slot(svc.machine.running)
+            check(out.accepted and str(svc.machine.date) == "2026-11-15" and
+                  run is not None and run.origin == "operator",
+                  f"Start now at 02:00:05 runs an extra show on Sunday, not "
+                  f"Saturday's show 12: {svc.machine.date} {run}")
+            svc.stop()
+            continue
+        now[0] = _den(S, 17, 30, d=(2026, 11, 15))
+        svc.tick()
         now[0] = _den(S, 18, 0, d=(2026, 11, 15))
         svc.tick()
         check(svc.machine.state == S.SHOW and svc.machine.running == 1,
               f"[resumed={resumed}] Sunday's 18:00 show starts")
+        svc.stop()
+
+    # Start now just before the reset still starts the delayed show, and a
+    # show running at the reset is not cut: its night closes once it ends.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now, rule=_two_nights())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    svc._apply(_op(S, S.RESUME))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
+    svc.tick()
+    out = svc._apply(_op(S, S.START_NOW))
+    check(out.accepted and svc.machine.running == 12,
+          f"Start now at 01:59:59 starts the delayed show 12: {out.refused}")
+    for t in ((2, 0, 0), (2, 5, 0)):
+        now[0] = _den(S, *t, d=(2026, 11, 15))
+        svc.tick()
+        check(str(svc.machine.date) == "2026-11-14" and
+              svc.machine.running == 12,
+              f"at {t} show 12 is still running on Saturday's night: "
+              f"{svc.machine.date} {svc.machine.state}")
+    now[0] = _den(S, 2, 8, d=(2026, 11, 15))
+    svc.tick()
+    svc.tick()
+    with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+        sat = json.load(fh)
+    check(str(svc.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.DONE,
+          f"once it has ended, Saturday closes with show 12 DONE and Sunday "
+          f"begins: {svc.machine.date} {sat['slots'][11]['status']}")
+    svc.stop()
     print("  ok")
 
 
-def test_schedule_restart_after_midnight_picks_up_the_open_night():
-    section("scheduler: ltcplay started after midnight picks up last night "
-            "if it was still open: a delayed show keeps waiting, a delayed "
-            "show that was running is cut (FAULT, dark, nothing resumes)")
+def test_schedule_restart_across_the_2am_reset():
+    section("scheduler: ltcplay restarted before the 2 AM reset carries on "
+            "with last night (a delayed show still waits; a show cut by the "
+            "restart is FAULT and the rig dark); restarted after it, last "
+            "night is closed out loud: a delayed show MISSED, a cut show "
+            "FAULT with the rig dark, and nothing from it runs, days later "
+            "included")
     S = _sched()
     if S is None:
         return
     import tempfile
     from datetime import date
+    from ltcplay import journal as J
     from ltcplay import schedule_service as SV
 
     def held_night():
@@ -25887,6 +26171,11 @@ def test_schedule_restart_after_midnight_picks_up_the_open_night():
         svc._apply(_op(S, S.RESUME))
         return work, now, svc
 
+    def saturday(work):
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            return json.load(fh)
+
+    # Restarted at 00:30: still Saturday's night, show 12 still waits.
     work, now, svc = held_night()
     now[0] = _den(S, 0, 20, d=(2026, 11, 15))
     svc.tick()
@@ -25897,18 +26186,17 @@ def test_schedule_restart_after_midnight_picks_up_the_open_night():
     check(str(again.machine.date) == "2026-11-14" and
           again.machine.delayed() is not None and
           again.machine.delayed().n == 12,
-          f"restarted at 00:30, Saturday is picked up again with show 12 "
-          f"still waiting: {again.machine.date} {again.machine.state}")
-    said = [r["text"] for r in again.journal
-            if r.get("outcome") == "restored open night"]
-    check(said and "show 12 is delayed" in said[0],
-          f"and the journal says so: {said}")
+          f"restarted at 00:30, Saturday is still the night with show 12 "
+          f"waiting: {again.machine.date} {again.machine.state}")
     out = again._apply(_op(S, S.START_NOW))
     check(out.accepted and again.machine.running == 12,
           f"Start now still starts it: {out.refused}")
     again.stop()
 
-    # The delayed show was running after midnight when ltcplay stopped.
+    # The delayed show was running after midnight when ltcplay stopped, and
+    # it restarted before the reset: the show is cut, the rig goes dark,
+    # and it stays dark through the reset (the next night's preshow look
+    # does not bring it back; only a show or an operator does).
     work, now, svc = held_night()
     now[0] = _den(S, 0, 10, d=(2026, 11, 15))
     svc.tick()
@@ -25917,37 +26205,113 @@ def test_schedule_restart_after_midnight_picks_up_the_open_night():
     now[0] = _den(S, 0, 12, d=(2026, 11, 15))
     svc.tick()
     svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 0, 15, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(saturday(work)["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-14",
+          f"show 12 is a cut show: FAULT with a fault line, Saturday still "
+          f"the night: {saturday(work)['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched and
+          "flames_disarm_all" not in rig.names(),
+          f"the conductor took the rig dark, no latch, no disarm: "
+          f"{c.snapshot()['look']} {rig.names()}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    again.tick()
+    _settle(again, c)
+    check(str(again.machine.date) == "2026-11-15" and
+          c.snapshot()["look"] == "STOPPED_DARK",
+          f"at the 2 AM reset Sunday begins, and the rig stays dark: "
+          f"{again.machine.date} {c.snapshot()['look']}")
+    again.stop()
+
+    # Restarted at 02:30, after the reset, with show 12 still delayed.
+    work, now, svc = held_night()
+    svc.stop()
     rec = _RecCond(S)
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
     again = _svc(S, work, now, rule=_two_nights(), conductor=rec)
     again.start(thread=False)
     _settle(again)
-    with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
-        sat = json.load(fh)
-    cut = [r for r in again.journal if r.get("fault") and
-           "restarted during show 12" in r["text"]]
-    check(sat["slots"][11]["status"] == S.FAULT and cut,
-          f"show 12 is a cut show: FAULT, with a fault line: "
-          f"{sat['slots'][11]['status']} {cut[:1]}")
-    check("show_stopped" in rec.names() and "abort" not in rec.names() and
-          "show_starting" not in rec.names(),
-          f"the conductor takes the rig dark (no latch, no disarm) and "
-          f"nothing resumes: {rec.names()}")
-    check(str(again.machine.date) == "2026-11-15",
-          f"then Saturday closes and Sunday is the night: "
-          f"{again.machine.date}")
+    sat = saturday(work)
+    line = [r for r in again.journal if r.get("show") == 12 and
+            r.get("action") == "miss"]
+    said = [r for r in again.journal
+            if r.get("outcome") == "closing open night"]
+    check(str(again.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"restarted at 02:30, Saturday is closed with show 12 MISSED and "
+          f"Sunday is the night: {again.machine.date} {sat['slots'][11]}")
+    check(line and line[-1].get("fault") and
+          "still waiting at the 2 AM nightly reset" in line[-1]["text"] and
+          said and "show 12 is delayed" in said[0]["text"],
+          f"a fault line names show 12 and why, and the journal says the "
+          f"open night was closed: {line[-1:]} {said[:1]}")
+    check(os.path.exists(os.path.join(
+              work, "nights", J.summary_name(date(2026, 11, 14)))),
+          "Saturday's summary is written")
+    check("show_starting" not in rec.names(),
+          f"nothing from Saturday runs: {rec.names()}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and run.origin == "operator" and
+          str(again.machine.date) == "2026-11-15",
+          f"Start now runs Sunday's extra show, not show 12: {run}")
     again.stop()
 
-    # Too late to pick up: Sunday's preshow has begun.
+    # Show 12 was running at 02:10 (started at 01:55) when ltcplay
+    # stopped; restarted at 02:30: cut, FAULT, the rig dark, Saturday
+    # closed, Sunday the night, and the rig still dark.
+    work, now, svc = held_night()
+    now[0] = _den(S, 1, 55, d=(2026, 11, 15))
+    svc.tick()
+    svc._apply(_op(S, S.START_NOW))
+    now[0] = _den(S, 2, 0, 30, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.running == 12 and str(svc.machine.date) == "2026-11-14",
+          "setup: show 12 started at 01:55 is still running after 02:00")
+    svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    sat = saturday(work)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(sat["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-15",
+          f"show 12 is a cut show (FAULT, a fault line), Saturday is closed "
+          f"and Sunday is the night: {sat['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched,
+          f"the rig is dark, no latch: {c.snapshot()['look']}")
+    again.stop()
+
+    # Days later: Saturday's delayed show, ltcplay off until Wednesday.
+    # Start now on Wednesday never starts last Saturday's show.
     work, now, svc = held_night()
     svc.stop()
-    now[0] = _den(S, 17, 45, d=(2026, 11, 15))
+    now[0] = _den(S, 19, 0, d=(2026, 11, 18))
     again = _svc(S, work, now, rule=_two_nights())
     again.start(thread=False)
-    said = [r for r in again.journal if r.get("outcome") == "not restored"]
-    check(str(again.machine.date) == "2026-11-15" and said and
-          said[0].get("fault") and "show 12" in said[0]["text"],
-          f"after Sunday's lead, Saturday is not picked up, and that is "
-          f"said out loud: {said[:1]}")
+    sat = saturday(work)
+    check(sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"on Wednesday, Saturday's show 12 is closed as MISSED: "
+          f"{sat['slots'][11]}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and str(again.machine.date) == "2026-11-18" and
+          run.origin == "operator",
+          f"Start now four days later runs an extra show on Wednesday, not "
+          f"Saturday's show 12: {again.machine.date} {run}")
     again.stop()
     print("  ok")
 
@@ -26503,7 +26867,8 @@ def test_schedule_conductor_wiring_details():
     svc.stop()
 
     # A night left open is looked for more than one day back: Saturday's
-    # delayed show, picked up on a Monday start (no shows Sunday).
+    # delayed show, found on a Monday 01:00 start (Sunday's night, which
+    # has no shows and no file) and closed: MISSED at the 2 AM reset.
     work = tempfile.mkdtemp()
     now = [_den(S, 21, 30)]
     svc = _svc(S, work, now)
@@ -26511,14 +26876,17 @@ def test_schedule_conductor_wiring_details():
     svc._apply(_op(S, S.HOLD_ON))
     now[0] = _den(S, 21, 41)
     svc.tick()
+    n = svc.machine.delayed().n
     svc.stop()
     now[0] = _den(S, 1, 0, d=(2026, 11, 16))
     again = _svc(S, work, now)
     again.start(thread=False)
-    check(again.machine.date == date(2026, 11, 14) and
-          again.machine.delayed() is not None,
-          f"Saturday, two days back, is picked up again: "
-          f"{again.machine.date}")
+    sat = _tonight_doc(work)
+    st = [x for x in sat["slots"] if x["n"] == n][0]
+    check(again.machine.date == date(2026, 11, 15) and
+          st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+          f"Saturday, two days back, is found and closed: "
+          f"{again.machine.date} {st}")
     again.stop()
     print("  ok")
 
@@ -29881,6 +30249,7 @@ if __name__ == "__main__":
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
+    test_conductor_failed_start_disarms_without_latch()
     test_conductor_double_abort_is_idempotent()
     test_conductor_abort_mid_hold_fade_wins()
     test_conductor_resume_before_the_hold_fade_finishes()
@@ -29918,12 +30287,13 @@ if __name__ == "__main__":
     test_streamdeck_never_imports_flamesafe()
     test_schedule_drives_the_show_conductor()
     test_schedule_conductor_calls_after_the_save_and_off_the_lock()
-    test_schedule_failed_start_goes_dark_without_disarm_or_latch()
+    test_schedule_failed_start_disarms_without_latch()
     test_schedule_abort_latch_misses_the_next_show_until_reset()
     test_schedule_restart_after_a_stopped_show_stays_dark()
     test_schedule_preshow_lead_on_tick_and_resume()
-    test_schedule_delayed_night_gives_way_to_the_next_nights_preshow()
-    test_schedule_restart_after_midnight_picks_up_the_open_night()
+    test_schedule_night_reset_boundary()
+    test_schedule_delayed_night_closes_at_the_2am_reset()
+    test_schedule_restart_across_the_2am_reset()
     test_schedule_restart_after_an_abort_stays_latched_until_reset()
     test_schedule_abort_latch_outlives_the_night()
     test_schedule_hold_while_aborted_stays_dark()

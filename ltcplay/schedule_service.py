@@ -556,7 +556,8 @@ class _ConductorCalls:
     Resume, a show start, and above all a Reset, which was pressed before
     this Abort and must not clear it) are not sent at all; intermission and
     show_stopped stay in the line (they only ever take the rig dark, and
-    the conductor ignores them while latched). Requests decided after the
+    the conductor ignores them while latched; failed_start too, for the
+    same reason). Requests decided after the
     Abort stay in the line, in order.
 
     The thread starts with the first request, so a Service with no
@@ -993,9 +994,10 @@ class Service:
         contract for whatever performs its effects), with three
         exceptions that the kinds alone cannot tell apart:
           - the Abort bundle is an Abort only when the operator pressed
-            Abort. A failed start and a show cut by a restart fade the
-            same way, but go to show_stopped(): dark, no disarm, no latch
-            (DEFAULT pending Jeff's confirmation, 2026-10-02).
+            Abort. A failed start fades the same way but goes to
+            failed_start(): dark, every flame group disarmed, no latch
+            (Jeff, 2026-10-03). A show cut by a restart goes to
+            show_stopped(): dark, no disarm, no latch.
           - START_SHOW is NOT the conductor's: it brings the rig up only
             for a show cue that is playing (show_starting refuses "no show
             cue is playing" otherwise). It is told once the show is
@@ -1020,6 +1022,9 @@ class Service:
         elif kinds >= self._ABORT_EFFECTS:
             if ev.kind == sch.ABORT:
                 plan.append(("Abort", "abort", self._ABORT_EFFECTS))
+            elif ev.kind == sch.SHOW_FAILED:
+                plan.append(("Failed start", "failed_start",
+                             self._ABORT_EFFECTS))
             else:
                 plan.append(("Show stopped", "show_stopped",
                              self._ABORT_EFFECTS))
@@ -1032,7 +1037,8 @@ class Service:
                 out.machine.state == sch.SHOW:
             plan.append(("Show start", "show_starting", frozenset()))
         if ev.kind == sch.BOOT_DONE and out.machine.dark and \
-                not any(p[1] == "show_stopped" for p in plan):
+                not any(p[1] in ("show_stopped", "failed_start")
+                        for p in plan):
             # A start (or a restart) while the rig is meant to be dark: the
             # dark sequence it was sent before may never have gone out (the
             # process can die after the Abort or failed start was saved but
@@ -1048,6 +1054,13 @@ class Service:
                 # The engine never disarms; the conductor's abort() does.
                 le = replace(le, text=le.text.replace(
                     sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
+            if self.conductor is not None and \
+                    le.action == sch.SHOW_FAILED and \
+                    sch.FAILED_START_NOT_DISARMED in le.text:
+                # Jeff, 2026-10-03: the conductor's failed_start() disarms.
+                le = replace(le, text=le.text.replace(
+                    sch.FAILED_START_NOT_DISARMED,
+                    self.CONDUCTOR_DISARMS_FAILED_START))
             self._record_logevent(le)
         claimed = set()
         for label, method, kinds in plan:
@@ -1073,6 +1086,11 @@ class Service:
 
     CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
                          "flame group; its own line says whether it went.")
+    CONDUCTOR_DISARMS_FAILED_START = (
+        "The flames are disarmed because the show failed to start: the show "
+        "conductor sends a disarm to every flame group, and its own line "
+        "says whether it went. Each group has to be armed again by hand "
+        "(off, then on) before flames can fire.")
     DARK_AGAIN = "Dark again after the start"
     CONDUCTOR_SAYS = {
         DARK_AGAIN: (" ltcplay started while the rig was meant to be dark "
@@ -1084,8 +1102,14 @@ class Service:
         "show_stopped": (" The rig goes dark and stays dark until an "
                          "operator presses Start now or the next show "
                          "starts. No flame group is disarmed and nothing "
-                         "is latched, so no Reset is needed (DEFAULT "
-                         "pending Jeff's confirmation)."),
+                         "is latched, so no Reset is needed."),
+        "failed_start": (" The show failed to start, so every flame group "
+                         "is disarmed while it is looked at (Jeff, "
+                         "2026-10-03), and the rig goes dark until an "
+                         "operator presses Start now or the next show "
+                         "starts. Nothing is latched, so no Reset is "
+                         "needed; each flame group has to be armed again "
+                         "by hand (off, then on) before flames can fire."),
         "intermission": (" Out of the show: flame cues to zero and the "
                          "lasers blanked."),
     }
@@ -1683,24 +1707,29 @@ class Service:
 
     # -- the night ------------------------------------------------------
     def _tonight(self, now):
-        return now.astimezone(self.rule.tz).date()
+        """The night `now` belongs to: the local date from the nightly
+        reset on, the day before until then (sch.night_of, Jeff,
+        2026-10-03)."""
+        return sch.night_of(now, self.rule.tz)
 
-    # How many days back a start looks for a night left open past midnight
-    # (a delayed show waiting, or a show running), see _open_night_before.
+    # How many days back a start looks for a night left open (a delayed
+    # show waiting, or a show running) to close it, see _open_night_before.
     OPEN_NIGHT_LOOK_BACK = 7
 
     def _ensure_night(self, now):
-        """The night the scheduler is on, loaded or moved on as the date
-        changes. A night stays open past midnight while a show runs or is
-        paused, and while a delayed show waits for Start now or Close for
-        the night (Jeff, 2026-10-01), but only until the NEXT night's
-        preshow lead begins (_still_open, DEFAULT pending Jeff, 2026-10-02).
+        """The night the scheduler is on, loaded or moved on at the
+        nightly reset. A night runs until sch.NIGHT_RESET (2 AM local) on
+        the next calendar day, always (Jeff, 2026-10-03): until then a
+        delayed show waits for Start now or Close for the night (Jeff,
+        2026-10-01); at it the night closes and a show still delayed is
+        MISSED, out loud (_still_open). Only a show running or paused at
+        the reset keeps its night open, until it ends.
 
-        On start it first looks for such a night left open by the last run
-        (_open_night_before): before 2026-10-02 a start after midnight only
-        ever loaded the calendar day's file, so a delayed show waiting from
-        last night vanished without a word, and a delayed show running
-        after midnight was lost with no fault."""
+        On start it first looks for a night the last run left open
+        (_open_night_before): it is past its reset by then, so it is picked
+        up only to be closed out loud, a show that was running cut (the rig
+        dark) and a delayed show MISSED, rather than left behind without a
+        word."""
         if self.rule is None:
             return False
         d = self._tonight(now)
@@ -1718,7 +1747,8 @@ class Service:
             # The open night boots exactly as tonight's would after a
             # restart: a show that was running is cut (FAULT, the rig goes
             # dark, nothing resumes), a delayed show keeps waiting. Then it
-            # goes through the same "is it still open" rule as at midnight.
+            # goes through the same nightly reset rule as a live run, which
+            # closes it.
             old = self._boot_latch(old)
             self.machine = replace(old, operators=self.operators)
             self._apply(sch.Event(sch.BOOT_DONE, "system"), now)
@@ -1744,8 +1774,7 @@ class Service:
         # the crossing has to be bumped here, by hand, or an announcement's
         # claim from this night could still look current after it was
         # dropped (merge with #14, 2026-09-26). Reached by a held night
-        # with nothing waiting at midnight, and by a held night whose
-        # delayed show is given up when the next night's preshow begins.
+        # at the nightly reset, with or without a delayed show waiting.
         if self.machine.state == sch.HOLD:
             self.hold_epoch += 1
         # An Abort nobody has Reset outlives its night, exactly as the
@@ -1851,53 +1880,42 @@ class Service:
                                outcome="still aborted")
         return latched
 
-    def _next_lead(self, after, upto):
-        """(lead, date): when the first night after `after`, up to and
-        including `upto`, that has shows begins its preshow lead; (None,
-        None) when none of them has shows."""
-        x = after + timedelta(days=1)
-        while x <= upto:
-            lead = sch.next_night_lead(self.rule, x)
-            if lead is not None:
-                return lead, x
-            x += timedelta(days=1)
-        return None, None
-
     def _still_open(self, now, d):
-        """None while the night on the machine (an earlier date than `d`)
+        """None while the night on the machine (a date other than `d`)
         must stay open; otherwise the words for its summary, once it may
         be set aside.
 
-        A running or paused show is never set aside. A delayed show keeps
-        the night open (Jeff, 2026-10-01) until the next night's preshow
-        lead begins: then the delayed show is MISSED, with a fault line
-        naming it and why, and the night is set aside so the next night's
-        first show can fire (DEFAULT pending Jeff's confirmation,
-        2026-10-02; without it the next night never started at all)."""
+        A running or paused show is never set aside: it is not cut by the
+        reset, and the night closes once it has ended. Otherwise the night
+        closes at the nightly reset (Jeff, 2026-10-03): a delayed show
+        still waiting is MISSED, with a fault line naming it and saying it
+        was still waiting at the reset, and the night is set aside. Before
+        its reset (only a clock set back gets here) it stays."""
         m = self.machine
         if m.state in (sch.SHOW, sch.PAUSED):
             return None
+        words = sch.reset_words()
         if m.delayed() is None:
-            return "written at midnight; the night was never closed"
-        lead, when = self._next_lead(m.date, d)
-        if lead is None or now < lead:
+            return (f"written at the {words} nightly reset; the night was "
+                    f"never closed")
+        if now < sch.night_reset(m.date, m.tz):
             return None
         n = m.delayed().n
-        out = sch.close_for_next_night(m, now, when, lead)
+        out = sch.close_at_reset(m, now)
         self.machine = out.machine
         self._record(out, now)
         self._save_tonight()
-        return (f"closed when the night of {when} began its preshow; the "
-                f"delayed show {n} never started")
+        return (f"closed at the {words} nightly reset; the delayed show {n} "
+                f"never started")
 
     def _open_night_before(self, d, now):
         """The most recent night saved before `d`, picked up again if it
         was left open (a delayed show waiting, or a show running or paused),
-        or None. Only while it would still be open by _still_open's rule:
-        once a later night's preshow lead has begun, it is said out loud
-        and left. Journaled either way it matters. An unreadable file is
-        left where it is and said out loud; tonight's list then starts as
-        it always did."""
+        or None. Every night before `d` is past its nightly reset, so it is
+        picked up only to be closed by _still_open's rule, out loud: before
+        2026-10-03 (the next-night-preshow rule) it could be picked up and
+        run days later. Journaled. An unreadable file is left where it is
+        and said out loud; tonight's list then starts as it always did."""
         for back in range(1, self.OPEN_NIGHT_LOOK_BACK + 1):
             y = d - timedelta(days=back)
             path = tonight_path(y, self.state_dir)
@@ -1925,18 +1943,6 @@ class Service:
                        if st == sch.RUNNING and back == 1]
             if state in (sch.CLOSING, sch.OFF) or not waiting:
                 return None
-            lead, when = self._next_lead(y, d)
-            if lead is not None and now >= lead:
-                # Too late to pick it up: by the same rule as at midnight it
-                # would already have given way to the night of `when`.
-                self._journal_line(
-                    "system", f"The night of {y} was left open when ltcplay "
-                    f"stopped ({'; '.join(waiting)}), but the night of "
-                    f"{when} has already begun its preshow, so it is not "
-                    f"picked up again. Nothing from it will run.",
-                    action="load tonight", outcome="not restored",
-                    fault=True)
-                return None
             try:
                 m = self._load_tonight(y, now, set_aside=False)
             except (OSError, ValueError, sch.RuleError) as e:
@@ -1948,10 +1954,13 @@ class Service:
                     action="load tonight", outcome="failed", fault=True)
                 return None
             self._journal_line(
-                "system", f"ltcplay started on {d} while the night of {y} "
-                f"was still open: {'; '.join(waiting)}. That night is picked "
-                f"up again first, instead of being dropped.",
-                action="load tonight", outcome="restored open night")
+                "system", f"ltcplay started on the night of {d}, and the "
+                f"night of {y} was left open when it stopped: "
+                f"{'; '.join(waiting)}. That night ended at the "
+                f"{sch.reset_words()} nightly reset on "
+                f"{y + timedelta(days=1)}, so it is picked up only to close "
+                f"it: nothing from it will run.",
+                action="load tonight", outcome="closing open night")
             return m
         return None
 

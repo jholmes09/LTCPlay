@@ -57,9 +57,10 @@ Whatever drives this engine and carries out its effects must:
    dark until an operator acts or the next show starts.
    Lasers blanked by a pause or an abort stay blanked until a RESUME_SHOW
    or the next START_SHOW. The engine itself never arms or disarms
-   anything; on an operator's Abort (only) every flame group is disarmed at
-   once as well (Jeff, 2026-09-27), and that is the show conductor's job
-   (conductor.py), not an effect listed here.
+   anything; on an operator's Abort every flame group is disarmed at once
+   as well (Jeff, 2026-09-27), and on a failed start too (Jeff,
+   2026-10-03), and that is the show conductor's job (conductor.py), not an
+   effect listed here. A show cut by a restart is not disarmed by it.
 3. Never perform anything for a refused Outcome (Outcome.refused is set).
 4. Send SHOW_CONFIRMED as soon as timecode is seen advancing after a
    START_SHOW. Until then the show counts as not yet started.
@@ -141,8 +142,9 @@ EFFECTS = (PRESHOW_LOOK, INTERMISSION, START_SHOW, STOP_CONDUCTOR,
 # at once; music, video and pixels fade together over ABORT_FADE_S; then the
 # MadMapper conductor stops. On an operator's Abort every flame group is
 # also disarmed at once (Jeff, 2026-09-27); the show conductor does that, so
-# it is not one of these effects. A failed start or a cut show does not
-# disarm (show_stopped in conductor.py, DEFAULT pending Jeff, 2026-10-02).
+# it is not one of these effects. A failed start disarms every flame group
+# too, but latches nothing (failed_start in conductor.py, Jeff,
+# 2026-10-03); a show cut by a restart does not disarm (show_stopped).
 ABORT_FADE_S = 1.0
 CLOSING_FADE_S = 1.0
 
@@ -166,6 +168,25 @@ CONFIRM_WINDOW_S = 10
 # is no preshow phase at all: it goes straight to STANDBY. See
 # _in_preshow_lead, used by _boot_done, _tick and _resume.
 PRESHOW_LEAD_S = 30 * 60
+
+# The nightly reset (Jeff, 2026-10-03). A show night runs until this time,
+# local, on the next calendar day, always. At it last night closes: a show
+# still delayed is MISSED, out loud, with a fault line naming it
+# (close_at_reset). A show scheduled at or after it belongs to that calendar
+# day's night (night_of), so no night's first show may be before it
+# (_night). Jeff's reason: during operations nothing happens at 2 AM, and
+# media shoots sometimes run at 4 or 5 AM, so 2 AM is the safe gap. It
+# replaced the 2026-10-02 default, where a night closed only when the next
+# night's preshow began (30 minutes before its first show). The Abort latch
+# is not the night's: it stays until Reset, whatever the night.
+NIGHT_RESET = time(2, 0)
+
+
+def reset_words():
+    """The nightly reset for a sentence: "2 AM"."""
+    h, mi = NIGHT_RESET.hour, NIGHT_RESET.minute
+    return (f"{h % 12 or 12}{f':{mi:02d}' if mi else ''} "
+            f"{'AM' if h < 12 else 'PM'}")
 
 # Events, and who may send each one. A blank or unknown actor is a
 # programming error and raises; an event sent in the wrong state is refused
@@ -352,6 +373,16 @@ def _night(doc, where, show_len_s, guard_s, problems):
         problems.append(f"{where}: last_end {_hm(last)} is not after "
                         f"first_start {_hm(first)}. A night cannot run past "
                         f"midnight.")
+        return None
+    if first < NIGHT_RESET:
+        # Every night closes at the nightly reset, and from it on the shows
+        # belong to that day's night, so a show before it could never run
+        # (Jeff, 2026-10-03).
+        problems.append(f"{where}: first_start {_hm(first)} is before "
+                        f"{_hm(NIGHT_RESET)}, the {reset_words()} nightly "
+                        f"reset. A night's shows run from {_hm(NIGHT_RESET)} "
+                        f"to midnight, so a show before {reset_words()} "
+                        f"could never run.")
         return None
     if show_len_s is None or guard_s is None:
         return NightRule(first, interval, last)
@@ -1297,7 +1328,8 @@ def _tick(m, ev, now):
     # A delayed show keeps the night open on its own (Jeff, 2026-10-01): it
     # is never auto-missed or auto-closed just because midnight came and
     # went. It waits for Start now, or for the operator to Close for the
-    # night, however long that takes.
+    # night, until the nightly reset (NIGHT_RESET, Jeff, 2026-10-03), where
+    # the service closes the night with close_at_reset.
     _sweep(tx)
     st = tx.m.state
     if st in (IDLE, STANDBY) and not tx.m.waiting():
@@ -1422,8 +1454,9 @@ def _show_failed(m, ev, now):
         m, ev, now, FAULT, f"FAULT ({what})",
         f"Show {m.running} did not start: {what}. Reported by {ev.actor}. "
         f"Slot marked FAULT; flame cues zeroed, lasers blanked, the show "
-        f"faded to black and MadMapper stopped. The next show is still "
-        f"attempted.",
+        f"faded to black and MadMapper stopped. {FAILED_START_NOT_DISARMED} "
+        f"Nothing is latched: Start now works at once, and the next show is "
+        f"still attempted.",
         _abort_effects(m.running))
 
 
@@ -1468,7 +1501,11 @@ def _start_now(m, ev, now):
     Hold leaves a show in, see _extra_in_the_way) and waits for Start now.
     This replaces the 2026-09-23 behavior, where Start now with a show
     still to come started that show early (STARTED_EARLY) and used up its
-    slot."""
+    slot.
+
+    Start now inside the 2 minute guard after a show needs no cooldown:
+    decided (Jeff, 2026-10-03). The extra show and the guard as built
+    stand."""
     if ev.latched:
         return _refuse(m, ev, now, "The show was aborted and has not been "
                                    "Reset. Press Reset first; nothing "
@@ -1689,13 +1726,25 @@ def _delay(m, ev, now, rest):
 
 
 # Jeff, 2026-09-27: on Abort the flame cues go to zero AND every flame group
-# is disarmed at once. The engine performs nothing, so its own line says
+# is disarmed at once. The wording below (the journal line and the Abort
+# confirm question say every flame group is disarmed) is decided (Jeff,
+# 2026-10-03). The engine performs nothing, so its own line says
 # who does the disarm; schedule_service.py replaces this sentence with what
 # the show conductor really did when one is attached, so the journal never
 # says a disarm happened that did not, or that none did when one was sent.
 NOTHING_DISARMED = ("Every flame group is to be disarmed at once as well; "
                     "the show conductor does that, and none is attached "
                     "here, so nothing was disarmed.")
+# Jeff, 2026-10-03: a show that fails to start also disarms every flame
+# group, the same disarm-all an Abort sends ("disarm the flame units while
+# we are troubleshooting"), but latches nothing: Start now stays allowed,
+# and each group is re-armed by hand (off, then on) before flames can fire.
+# As with NOTHING_DISARMED, schedule_service.py replaces this sentence when
+# a show conductor is attached.
+FAILED_START_NOT_DISARMED = (
+    "Every flame group is to be disarmed as well, because the show failed "
+    "to start; the show conductor does that, and none is attached here, so "
+    "nothing was disarmed.")
 ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
                         "is disarmed at once.")
 
@@ -1732,45 +1781,51 @@ def _end_night(m, ev, now):
     return tx.done()
 
 
-NEXT_NIGHT_MISSED = "MISSED (still delayed when the next night's preshow began)"
+RESET_MISSED = f"MISSED (still waiting at the {reset_words()} nightly reset)"
 
 
-def next_night_lead(rule, d):
-    """When night `d`'s preshow lead begins: PRESHOW_LEAD_S before its first
-    show, but never before that date's own midnight (a night opens at its
-    midnight, so a first show within 30 minutes of it has no lead to speak
-    of). None when `d` has no shows. Pure."""
-    plan = expand(rule, d)
-    if not plan.starts:
-        return None
-    tz = rule.tz or zone(rule.timezone)
-    opens = _utc(datetime.combine(d, time(0), tzinfo=tz))
-    return max(opens, _utc(plan.starts[0]) - timedelta(seconds=PRESHOW_LEAD_S))
+def night_of(now, tz):
+    """Which night `now` belongs to: its local calendar date from the
+    nightly reset on, the day before until then (Jeff, 2026-10-03). Read on
+    the local wall clock, so on a night the clocks change the reset is still
+    the first instant the wall clock reads NIGHT_RESET or later (in the
+    spring gap, the first instant after it). Pure."""
+    local = _utc(_aware(now)).astimezone(tz)
+    if local.time() < NIGHT_RESET:
+        return local.date() - timedelta(days=1)
+    return local.date()
 
 
-def close_for_next_night(m, now, next_date, lead):
+def night_reset(d, tz):
+    """The instant the night of `d` closes: NIGHT_RESET, local, on the next
+    calendar day. A reset inside the spring gap comes out as the first
+    instant after it, the same instant night_of moves on at. Pure."""
+    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,
+                                 tzinfo=tz))
+
+
+def close_at_reset(m, now):
     """A night kept open past midnight by a delayed show (Jeff, 2026-10-01)
-    gives way once the NEXT night's preshow lead begins (`lead`, from
-    next_night_lead). The delayed show becomes MISSED, out loud, as a fault
-    line naming it and why. DEFAULT pending Jeff's confirmation (2026-10-02):
-    without it the next night's first show never fired at all.
+    closes at the nightly reset (Jeff, 2026-10-03): the delayed show becomes
+    MISSED, out loud, as a fault line naming it and why, and it goes on the
+    night's fault list. Nothing for it reaches the rig.
 
     Returns an Outcome; the machine keeps its state (the caller sets the
-    night aside, as at any midnight). Pure."""
+    night aside). Pure."""
     now = _utc(_aware(now))
     d = m.delayed()
     if d is None:
         return Outcome(m)
     tx = _Tx(m, Event(TICK, "scheduler"), now)
     text = (f"Show {d.n}, planned for {clock(_local(m, d.start))} on "
-            f"{m.date} and delayed since, never started: nobody pressed "
-            f"Start now or Close for the night, and the next night "
-            f"({next_date}) began its preshow at "
-            f"{clock(_local(m, lead))}. The night of {m.date} is closed "
-            f"and show {d.n} is {NEXT_NIGHT_MISSED}.")
-    tx.set_slot(d.n, status=MISSED, reason=NEXT_NIGHT_MISSED)
+            f"{m.date} and delayed since, never started: it was still "
+            f"waiting at the {reset_words()} nightly reset on "
+            f"{m.date + timedelta(days=1)}, and nobody had pressed Start now "
+            f"or Close for the night. The night of {m.date} is closed and "
+            f"show {d.n} is {RESET_MISSED}.")
+    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)
     tx.m = replace(tx.m, faults=tx.m.faults + (text,))
-    tx.note("miss", "fault", NEXT_NIGHT_MISSED, text, show=d.n,
+    tx.note("miss", "fault", RESET_MISSED, text, show=d.n,
             actor="scheduler")
     return tx.done()
 
