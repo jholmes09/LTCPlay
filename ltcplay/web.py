@@ -720,6 +720,15 @@ class Handler(BaseHTTPRequestHandler):
         return _BeyondRoutes(b) if b is not None else _NoBeyond()
 
     # -- routes -----------------------------------------------------------
+    def _conductor(self):
+        """Read-only: what the Fire & Ice show conductor last did. A plain
+        404 without one, like every optional route here. There is no route
+        that presses Hold, Resume or Abort."""
+        c = getattr(self.server, "conductor", None)
+        if c is None:
+            return 404, {"error": "no such thing here"}
+        return 200, {"conductor": c.snapshot()}
+
     def do_GET(self):
         route = urllib.parse.urlparse(self.path).path
         if not self._authorised():
@@ -767,6 +776,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(*self._madmapper().get(route))
             if route == "/api/beyond" or route.startswith("/api/beyond/"):
                 return self._send(*self._beyond().get(route))
+            if route == "/api/conductor":
+                return self._send(*self._conductor())
         except USER_ERRORS as e:
             return self._send(400, {"error": str(e)})
         except Exception as e:
@@ -948,7 +959,7 @@ _beyond_journal = _device_journal      # its earlier name
 
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
-          madmapper=None, beyond=None):
+          madmapper=None, beyond=None, fire_ice=None):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -997,7 +1008,18 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     Hold/Resume/Abort hooks (devices.py's on_hold/on_resume/on_abort,
     composing madmapper.py's and beyond.py's own primitives) are NOT wired
     to the scheduler by this function -- that sequencing belongs to the
-    show conductor, built separately; see devices.py's module docstring."""
+    show conductor, built separately; see devices.py's module docstring.
+
+    `fire_ice` is a fire_ice.FireIceConfig, given by `ltc serve` only when
+    a schedule is (see fire_ice.py). It is the one place the real show
+    conductor is built: its "madmapper" and "beyond" blocks become the two
+    links above (unless the caller passed its own), and the conductor is
+    attached to the scheduler BEFORE the scheduler's first tick. Without
+    it, nothing below changes in any way, and fire_ice.py and conductor.py
+    are never imported."""
+    if fire_ice is not None and schedule is None:
+        raise ValueError("The Fire & Ice show conductor needs the scheduler: "
+                         "serve it with a schedule.")
     control = Control(folder, defaults=defaults, sd=sd)
     httpd_schedule = None
     if schedule is not None:
@@ -1043,7 +1065,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     httpd.daemon_threads = True
     httpd.schedule = None
     if httpd_schedule is not None:
-        httpd.schedule = httpd_schedule.start()
+        # With Fire & Ice the scheduler is started further down, once the
+        # conductor is attached, so its first tick already reaches it.
+        httpd.schedule = (httpd_schedule if fire_ice is not None
+                          else httpd_schedule.start())
     httpd.announce = None
     if announce is not None:
         if isinstance(announce, str):
@@ -1070,6 +1095,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+    if fire_ice is not None:
+        if madmapper is None:
+            madmapper = fire_ice.madmapper
+        if beyond is None:
+            beyond = fire_ice.beyond
     httpd.madmapper = None
     _built_madmapper = False
     if madmapper is not None:
@@ -1107,6 +1137,25 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             if _built_beyond:
                 httpd.beyond.close()
         httpd.server_close = _server_close
+    if fire_ice is not None:
+        from . import fire_ice as fire_ice_mod
+        wiring = fire_ice_mod.attach(
+            httpd_schedule, control, fire_ice, madmapper=httpd.madmapper,
+            beyond=httpd.beyond, announce=httpd.announce,
+            journal=_beyond_journal(httpd_schedule))
+        httpd.conductor = wiring.conductor
+        httpd.fire_ice = wiring
+        httpd_schedule.start()
+        _close_before_fire_ice = httpd.server_close
+
+        def _close_fire_ice():
+            # The conductor and the runner first, while the links they
+            # send through are still open.
+            try:
+                wiring.close()
+            finally:
+                _close_before_fire_ice()
+        httpd.server_close = _close_fire_ice
     if on_ready:
         on_ready(httpd, control, token)
     return httpd

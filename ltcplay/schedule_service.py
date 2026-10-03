@@ -66,6 +66,15 @@ DRY_RUN = True
 DRY_RUN_NOTE = ("This build decides but does not act. No show is started, "
                 "stopped or faded by the scheduler; the MadMapper link "
                 "arrives in a later update.")
+# The one way out of the dry run, per Service, never this module's constant:
+# fire_ice.py sets Service.dry_run False, and attaches the performer that
+# then has to report what the dry run used to make up (a show ending, the
+# closing finishing), only when the Fire & Ice config says
+# "scheduler_performs": true. Every other Service, and the GPL path, which
+# never builds one, keeps DRY_RUN.
+PERFORMING_NOTE = ("The scheduler performs: it starts the show cue on "
+                   "schedule (only once Run has been pressed), and the "
+                   "show ends when its audio does.")
 
 
 # ------------------------------------------------------------ where --
@@ -533,6 +542,7 @@ class _ConductorCall:
         self.label, self.method = label, method
         self.who, self.screen = who, screen
         self.seq = seq
+        self.show = 0       # start_show only: which show
         self.ok, self.sentence = None, ""
         self.done = threading.Event()
 
@@ -562,7 +572,8 @@ class _ConductorCalls:
     conductor never has one."""
 
     URGENT_WAIT_S = 0.25
-    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting")
+    SUPERSEDED_BY_ABORT = ("reset", "hold", "resume", "show_starting",
+                           "start_show")
 
     def __init__(self, run_one, overtaken=None, clock=None):
         self._run_one = run_one
@@ -718,6 +729,12 @@ class Service:
         # A stuck or dead line of conductor requests, once it has been
         # journaled as a fault: {"key", "text"}. See _watch_conductor.
         self._conductor_trouble = None
+        # Dry run or not, for THIS service (see PERFORMING_NOTE), and what
+        # starts a show cue and reports back once it is not. Both are set
+        # together by fire_ice.attach() and nothing else; a performer is
+        # only ever asked for anything while dry_run is False.
+        self.dry_run = DRY_RUN
+        self.performer = None
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -1043,6 +1060,23 @@ class Service:
             # before the conductor call ran), and a fresh conductor knows
             # nothing of it. So it is always sent again.
             plan.append((self.DARK_AGAIN, "show_stopped", frozenset()))
+        if sch.START_SHOW in kinds and not self.dry_run and \
+                self.performer is not None:
+            # Fire & Ice, scheduler performing (fire_ice.ShowRunner): the
+            # show cue is started on the show audio, as one request in the
+            # same ordered line as every conductor request, off the
+            # scheduler's lock, after tonight is saved. The conductor is
+            # NOT told a show started here: that stays on SHOW_CONFIRMED,
+            # once the runner has seen the timecode moving (above). A start
+            # the runner refuses (Run not pressed, the conductor latched,
+            # no show audio) is its to report as SHOW_FAILED, which brings
+            # failed_start(). An Abort decided before it ran supersedes it
+            # (_ConductorCalls.SUPERSEDED_BY_ABORT). The scheduler itself
+            # never even gets here while its Abort latch is set: a show
+            # that comes due then is MISSED.
+            shows = [e.show for e in out.effects if e.kind == sch.START_SHOW]
+            plan.append(("Start the show", "start_show",
+                         frozenset((sch.START_SHOW,)), shows[0]))
         return plan
 
     def _record(self, out, now, plan=()):
@@ -1061,7 +1095,8 @@ class Service:
                     self.CONDUCTOR_DISARMS_FAILED_START))
             self._record_logevent(le)
         claimed = set()
-        for label, method, kinds in plan:
+        for entry in plan:
+            label, method, kinds = entry[:3]
             mine = [e for e in out.effects if e.kind in kinds]
             claimed |= set(kinds)
             what = (f": {', '.join(self._desc(e) for e in mine)}"
@@ -1077,9 +1112,13 @@ class Service:
             if eff.kind in claimed:
                 continue
             self._journal_line(
-                "system", f"Not performed, dry run: {self._desc(eff)}.",
+                "system",
+                f"Not performed, dry run: {self._desc(eff)}." if self.dry_run
+                else f"Not performed: nothing in this build carries out "
+                     f"{self._desc(eff)}.",
                 action=eff.kind, outcome="not performed",
-                reason="dry run, no transport in this build",
+                reason="dry run, no transport in this build" if self.dry_run
+                else "no performer for this effect in this build",
                 show=eff.show or None)
 
     CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
@@ -1124,8 +1163,11 @@ class Service:
         op = ev.actor == "operator"
         who = ev.who if op else "the scheduler"
         screen = ev.screen if op else ""
-        for label, method, _kinds in plan:
+        for entry in plan:
+            label, method = entry[0], entry[1]
             call = self._new_call(label, method, who, screen)
+            if len(entry) > 3:
+                call.show = entry[3]
             if method == "abort":
                 self._abort_seq = call.seq
             self._calls.put(call)
@@ -1171,7 +1213,13 @@ class Service:
         does or raises, then one journal line for it. Anything but a good
         Result is a fault, raised on the scheduler so the page shows it."""
         try:
-            r = getattr(self.conductor, call.method)(call.who, call.screen)
+            if call.method == "start_show":
+                # The Fire & Ice show runner, not the conductor (see
+                # _drive_conductor).
+                r = self.performer.start_show(call.show)
+            else:
+                r = getattr(self.conductor, call.method)(call.who,
+                                                         call.screen)
             ok = getattr(r, "ok", None) is True
             said = str(getattr(r, "sentence", "") or "")
             if not hasattr(r, "ok"):
@@ -1191,6 +1239,17 @@ class Service:
                                f"{call.screen}. {said}".strip(),
                           state=self._state_name(), night=self._night(),
                           who=call.who, screen=call.screen)
+            elif call.method == "start_show":
+                # A refused start is the runner's to report, as SHOW_FAILED
+                # (one report, from one place); this only says what happened.
+                # An automatic start is always journaled, done or not.
+                self._journal_line(
+                    "system", f"Automatic show start, show {call.show}: "
+                              f"{said}".strip(),
+                    action="automatic start",
+                    outcome="done" if ok else "refused",
+                    reason=said or ("done" if ok else "refused"),
+                    show=call.show or None, fault=not ok)
             elif ok:
                 self._journal_line(
                     "system", f"Show conductor, {call.label}: {said}".strip(),
@@ -1380,7 +1439,7 @@ class Service:
             self.machine = replace(self.machine, abort_latched=True)
             self._marker_clear_pending = False
         self._record(out, now, plan)
-        if DRY_RUN and self.machine.state == sch.CLOSING:
+        if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
                             sch.Event(sch.CLOSING_DONE, "system"), now)
@@ -1973,7 +2032,7 @@ class Service:
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
-            if DRY_RUN and m.state == sch.SHOW and \
+            if self.dry_run and m.state == sch.SHOW and \
                     now >= m.expected_end(now):
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
@@ -2410,7 +2469,9 @@ class Service:
             now = self.clock()
             out = {"ok": self.machine is not None,
                    "error": self.error or None,
-                   "dry_run": DRY_RUN, "note": DRY_RUN_NOTE,
+                   "dry_run": self.dry_run,
+                   "note": (DRY_RUN_NOTE if self.dry_run
+                            else PERFORMING_NOTE),
                    "now": now.astimezone(
                        self.rule.tz if self.rule else timezone.utc)
                    .isoformat(timespec="seconds"),
@@ -2456,6 +2517,27 @@ class Service:
             if out.refused:
                 raise ValueError(out.refused)
         return self.tonight_view()
+
+    # What a performer may report back (schedule.py's "Contract for PR 3",
+    # items 4 to 8). Operator presses never come this way.
+    REPORTS = frozenset((sch.SHOW_CONFIRMED, sch.SHOW_ENDED,
+                         sch.SHOW_FAILED, sch.FAULT_RAISED,
+                         sch.CLOSING_DONE))
+
+    def report(self, kind, detail="", show=0):
+        """A performer's report (fire_ice.ShowRunner): applied as a
+        "system" event exactly like the dry run's own made-up SHOW_ENDED
+        and CLOSING_DONE, journaled, refused with a sentence when the state
+        does not take it. Only while not dry_run: in a dry run nothing was
+        started, so nothing can report on it, and nothing does."""
+        if kind not in self.REPORTS:
+            raise ValueError(f"{kind} is not something a performer reports.")
+        with self._locked():
+            if self.dry_run or self.machine is None:
+                return None
+            ev = sch.Event(kind, "system", detail=detail, show=show)
+            self._apply(ev)
+            return None
 
     def hold_for_announcement(self, who, screen, detail=None):
         """Put the scheduler on Hold exactly as the operator's own Hold
@@ -2562,7 +2644,7 @@ class Service:
                 "tonight": sch.machine_to_doc(m) if m else None,
                 "tonight_file": (tonight_path(m.date, self.state_dir)
                                  if m else None),
-                "dry_run": DRY_RUN, "state_dir": self.state_dir,
+                "dry_run": self.dry_run, "state_dir": self.state_dir,
                 "screens": list(self.screens),
                 "log_folder": self.logbook.folder,
                 "clock_check": self.clock_check}
