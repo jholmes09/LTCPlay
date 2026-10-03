@@ -233,6 +233,12 @@ class Soak:
         self.audio_snap = {}
         self.audio_worst = {}
         self.slots = {}
+        # Times when nothing had pressed Run yet: from the start until the
+        # first Run, and from an engine restart until Run is pressed again.
+        # A show that comes due then fails to start by design ("Run has not
+        # been pressed"), and is not a fault of the program under test.
+        self.no_run = [[time.time(), None]]
+        self.before_run = 0
         self.journal_real = []
         self.journal_expected = {}
         self.engine_env_dir = None
@@ -804,6 +810,8 @@ class Soak:
         note("Run pressed on the bench show; the scheduler starts each show "
              "from here on")
         self.loops += 1
+        if self.no_run and self.no_run[-1][1] is None:
+            self.no_run[-1][1] = time.time()
         return True
 
     # --------------------------------------------------------- sample ---
@@ -944,6 +952,7 @@ class Soak:
                         c["out"].close()
                         self.start_program(name)
                         if name == "engine":
+                            self.no_run.append([time.time(), None])
                             self.start_show()
                 hours = (time.perf_counter() - t0) / 3600.0
                 if time.perf_counter() >= next_sample:
@@ -995,6 +1004,9 @@ class Soak:
                         continue
                     if not isinstance(rec, dict) or not rec.get("fault"):
                         continue
+                    if self._before_run(rec.get("at")):
+                        self.before_run += 1
+                        continue
                     text = str(rec.get("text") or rec.get("reason") or "")
                     low = text.lower()
                     why = next((w for k, w in EXPECTED_FAULTS if k in low),
@@ -1005,6 +1017,17 @@ class Soak:
                     else:
                         self.journal_real.append(
                             (str(rec.get("at", ""))[:19], text[:300]))
+
+    def _before_run(self, at):
+        """True for a journal time inside a stretch when nothing had pressed
+        Run (with 3 s either side for the engine's own start and stop)."""
+        import datetime as _dt
+        try:
+            t = _dt.datetime.fromisoformat(str(at)).timestamp()
+        except (TypeError, ValueError):
+            return False
+        return any(a - 3 <= t <= (b if b is not None else float("inf")) + 3
+                   for a, b in self.no_run)
 
     def power_events(self):
         """Sleep, wake and restarts Windows logged during the run."""
@@ -1071,14 +1094,20 @@ class Soak:
             out.append(("FAIL", "Engine's own error counters",
                         "the engine never answered with a running show"))
         done = sum(1 for st, _r in self.slots.values() if st == "DONE")
+        early = [n for n, (st, r) in self.slots.items()
+                 if st == "FAULT" and "run has not been pressed"
+                 in str(r).lower()]
         failed = [(n, r) for n, (st, r) in sorted(self.slots.items())
-                  if st == "FAULT"]
+                  if st == "FAULT" and n not in early]
         out.append(("PASS" if done and not failed else "FAIL",
                     "Scheduled shows (the scheduler starting each show)",
                     f"{done} show(s) played to the end, {len(failed)} failed "
                     f"to start (limit 0)" + (": " + "; ".join(
                         f"show {n}: {r}" for n, r in failed[:5])
-                        if failed else "") + f"; {self.show_starts} timecode "
+                        if failed else "") + (
+                        f"; {len(early)} came due before this test pressed "
+                        f"Run, so did not start, as designed (not counted)"
+                        if early else "") + f"; {self.show_starts} timecode "
                     f"run(s) seen (a silence over 1 s starts a new one)"))
         tc = self.tc
         ok = tc.n > 10 and tc.over_gap == 0 and \
@@ -1157,6 +1186,10 @@ class Soak:
         out.append(("INFO", "Nothing attached, expected (not faults)",
                     "; ".join(f"{w}: {n} line(s)" for w, n in
                               self.journal_expected.items()) or "none"))
+        out.append(("INFO", "Before Run was pressed (not faults)",
+                    f"{self.before_run} fault line(s) written while nothing "
+                    f"had pressed Run yet (a show that comes due then does "
+                    f"not start, as designed)"))
         crashes = sum(len(c["crashes"]) for c in self.procs.values())
         out.append(("PASS" if crashes == 0 else "FAIL", "Crashes and restarts",
                     "; ".join(f"{n}: {len(c['crashes'])} crash(es)"
