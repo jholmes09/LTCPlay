@@ -33,7 +33,19 @@ Modes (one per run):
   --quiet           no message boxes (for the installer and tests)
 
 Files:
-  %LOCALAPPDATA%\\ltcplay\\showpc.json   show folder, flamesafe config, port
+  %LOCALAPPDATA%\\ltcplay\\showpc.json   show folder, flamesafe config, port,
+                                       show mode and the schedule file
+
+SHOW MODE (showpc.json "show_mode")
+  "fire_ice" (the default, the Fire & Ice show PC): the engine runs as
+      `ltc serve --schedule <schedule>`, so the scheduler, the show
+      conductor, the flame link and the show runner all run, with
+      ltcplay_fire_ice.json beside the schedule file (flamesafe_config,
+      flame_controller). The Stream Deck program is started with the
+      engine's own address, so its Abort, Hold, Resume and Reset reach the
+      show conductor.
+  "plain": the engine alone, no scheduler. The Stream Deck program is NOT
+      started: with no show conductor its Abort could only disarm flames.
   %LOCALAPPDATA%\\ltcplay\\logs\\        one log per program, and this one's
   %PROGRAMDATA%\\LTC Player\\stop        present: stay stopped (see --task)
   %PROGRAMDATA%\\LTC Player\\stop-refused  why the last stop was refused
@@ -106,6 +118,8 @@ def load_settings():
         "run_flamesafe": True,
         "run_deck": True,
         "open_page_at_sign_in": True,
+        "show_mode": "fire_ice",
+        "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
     p = settings_path()
     doc = {}
@@ -457,17 +471,54 @@ def wanted_args(settings):
         os.makedirs(folder, exist_ok=True)
     except OSError:
         pass
-    out["engine"] = (["serve", "--folder", folder, "--port", str(port),
-                      "--no-browser"], "")
-    if not settings["run_deck"]:
+    mode = settings.get("show_mode") or "fire_ice"
+    if mode not in SHOW_MODES:
+        # A typo must not quietly drop the scheduler and the conductor.
+        out["engine"] = (None, f"show_mode {mode!r} in showpc.json is not "
+                         f"one of {', '.join(SHOW_MODES)}, so the engine is "
+                         f"not started. Fix it in showpc.json.")
+        out["deck"] = (None, "the Stream Deck program is not started: the "
+                       "engine is not running")
+        return out
+    engine = ["serve", "--folder", folder, "--port", str(port),
+              "--no-browser"]
+    if mode == "fire_ice":
+        engine += ["--schedule", settings["schedule"]]
+    out["engine"] = (engine, "")
+    url = f"http://127.0.0.1:{port}"
+    if mode != "fire_ice":
+        out["deck"] = (None, "the Stream Deck program is not started: its "
+                       "Abort, Hold, Resume and Reset need the engine's show "
+                       "conductor, which runs only with show_mode "
+                       "\"fire_ice\" in showpc.json")
+    elif not settings["run_deck"]:
         out["deck"] = (None, "the Stream Deck program is switched off in "
                        "showpc.json")
     elif not fs_ok:
         out["deck"] = (None, "the Stream Deck program is not started: it "
                        "needs flamesafe's config")
     else:
-        out["deck"] = (["--flamesafe-config", fs, "--ltcplay-url",
-                        f"http://127.0.0.1:{port}"], "")
+        out["deck"] = (["--flamesafe-config", fs, "--ltcplay-url", url], "")
+    return out
+
+
+SHOW_MODES = ("fire_ice", "plain")
+
+
+def fire_ice_files(settings):
+    """Sentences about what fire_ice mode needs and does not have yet, for
+    the log (the engine still starts: its page says the same)."""
+    if (settings.get("show_mode") or "fire_ice") != "fire_ice":
+        return []
+    out = []
+    sched = settings["schedule"]
+    if not os.path.isfile(sched):
+        out.append(f"no schedule file at {sched}: the engine starts, but no "
+                   f"show is scheduled")
+    fi = os.path.join(os.path.dirname(sched), "ltcplay_fire_ice.json")
+    if not os.path.isfile(fi):
+        out.append(f"no ltcplay_fire_ice.json beside the schedule ({fi}): "
+                   f"the scheduler stays a dry run, with no flame link")
     return out
 
 
@@ -479,7 +530,10 @@ def run_loop(open_page=False):
     settings = load_settings()
     port = settings["port"]
     log(f"supervisor starting: {ltcwin.version_line(ltcwin.APP)}, "
-        f"settings {settings_path()}")
+        f"settings {settings_path()}, show mode "
+        f"{settings.get('show_mode') or 'fire_ice'}")
+    for why in fire_ice_files(settings):
+        log(why)
     keep_awake(True)
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -837,6 +891,21 @@ def self_check():
             raise RuntimeError(f"{EXE[n]} is missing from {ltcwin.app_dir()}")
     yield "all three programs are beside it"
     yield f"settings: {settings_path()}"
+    probe = {"port": DEFAULT_PORT, "flamesafe_config": __file__,
+             "run_flamesafe": True, "run_deck": True,
+             "show_folder": control_dir(),
+             "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
+    want = wanted_args(probe)
+    if "--schedule" not in (want["engine"][0] or []) or \
+            f"http://127.0.0.1:{DEFAULT_PORT}" not in (want["deck"][0] or []):
+        raise RuntimeError(f"fire_ice mode does not run the scheduler and the "
+                           f"deck on the engine's address: {want}")
+    probe["show_mode"] = "plain"
+    want = wanted_args(probe)
+    if want["deck"][0] is not None or "--schedule" in want["engine"][0]:
+        raise RuntimeError(f"plain mode would start the deck or the "
+                           f"scheduler: {want}")
+    yield "fire_ice mode runs the scheduler and the deck; plain runs neither"
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
