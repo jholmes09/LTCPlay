@@ -1321,8 +1321,7 @@ class Soak:
         now = time.time()
         for app, watch in self.app_watch.items():
             alive = soak_apps.running(app, names)
-            a = soak_apps.APPS[app]
-            held = soak_apps.port_held(a["port"], a["ip"])
+            held = soak_apps.app_holds(app)
             why = watch.sample(now, alive, held,
                                hb if app == "MadMapper" else None,
                                hung=any(soak_apps.is_app(app, h)
@@ -1911,8 +1910,9 @@ def refuse_held_ports(need):
     """Raise a plain-sentence RuntimeError, naming the process, when any
     (ip, port, what) this program must listen on is already held."""
     for ip, port, what in need:
-        if soak_apps.port_held(port, ip):
-            who = soak_apps.port_owners(port)
+        owners = soak_apps.endpoint_owners(port, ip)
+        if owners or soak_apps.port_held(port, ip):
+            who = owners or soak_apps.port_owners(port)
             apps = [soak_apps.which_app(w) for w in who]
             hint = (" MadMapper or BEYOND is running, so run the soak in "
                     "all programs mode (leave out --mode fallback)."
@@ -1951,22 +1951,33 @@ def resolve_mode(want="auto", names=None):
             "LTC Player's real commands")
 
 
-def _enter_pressed():
-    """True once when Enter was pressed in this window (Windows), without
-    waiting for it."""
+_TYPED = []
+
+
+def _typed_line():
+    """The line typed in this window once Enter is pressed (Windows),
+    without waiting for it: "" for Enter alone, None while nothing is
+    finished."""
     try:
         import msvcrt
     except ImportError:
-        return False
-    hit = False
+        return None
     while msvcrt.kbhit():
-        if msvcrt.getwch() in ("\r", "\n"):
-            hit = True
-    return hit
+        ch = msvcrt.getwch()
+        if ch in ("\r", "\n"):
+            line = "".join(_TYPED).strip().lower()
+            del _TYPED[:]
+            return line
+        if ch == "\b":
+            if _TYPED:
+                _TYPED.pop()
+        else:
+            _TYPED.append(ch)
+    return None
 
 
 def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
-                  sleep=time.sleep, clock=time.time):
+                  sleep=time.sleep, clock=time.time, typed=None):
     """Wait, however long it takes, until MadMapper and BEYOND both answer
     (soak_apps.readiness), saying what to click once and each change in
     what is still awaited. `before`: {app: PIDs} from the block before,
@@ -1982,17 +1993,30 @@ def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
     if before:
         note("  (With full licenses there is nothing to restart: press Enter "
              "to go on with the copies already running.)")
+    note("  OPERATOR OVERRIDE: if both programs are running and set up but "
+         "this keeps waiting, type C and press Enter. The block then starts "
+         "with them treated as present, and the report says the check was "
+         "overridden.")
+    typed = typed or _typed_line
     said = {}
     t0 = clock()
     while True:
         pids, hung = probe()
-        if before and _enter_pressed():
+        line = typed()
+        if line == "c":
+            note("OPERATOR OVERRIDE: C pressed. The block starts with "
+                 "BEYOND and MadMapper treated as present; the check that "
+                 "they answer was overridden.")
+            out = {app: soak_apps.pids_of(app, pids)
+                   for app in ("BEYOND", "MadMapper")}
+            out["override"] = True
+            return out
+        if before and line == "":
             note("Enter pressed: the copies already running are used")
             before = None
         waiting = {}
         for app in ("BEYOND", "MadMapper"):
-            a = soak_apps.APPS[app]
-            held = soak_apps.port_held(a["port"], a["ip"])
+            held = soak_apps.app_holds(app)
             why = soak_apps.readiness(app, pids, hung, held,
                                       (before or {}).get(app))
             if why:
@@ -2031,6 +2055,7 @@ class Blocks:
         self.started = time.time()
         self.blocks = []        # Soak, one per block begun
         self.waited = {}        # block number -> minutes waited for the apps
+        self.overridden = set()  # blocks started with the operator's C
         self.finished = False
         self.stopped = ""
 
@@ -2048,6 +2073,8 @@ class Blocks:
                 t = time.time()
                 self.write()
                 pids = wait(before, (i, n))
+                if pids.pop("override", False):
+                    self.overridden.add(i)
                 self.waited[i] = (time.time() - t) / 60
                 s = Soak(secs, self.audio_device,
                          folder=os.path.join(self.dir, f"block {i}"),
@@ -2121,7 +2148,11 @@ class Blocks:
                 f"  Block {k}: {state}, {s.hours():.2f} h from "
                 f"{now_text(s.started)}; waited "
                 f"{self.waited.get(k, 0):.1f} min for BEYOND and MadMapper "
-                f"first" + (": FAIL " + "; ".join(bad) if bad else ""))
+                f"first"
+                + ("; STARTED BY OPERATOR OVERRIDE: the check that BEYOND "
+                   "and MadMapper answer was overridden (C pressed)"
+                   if k in self.overridden else "")
+                + (": FAIL " + "; ".join(bad) if bad else ""))
         for k in range(len(per) + 1, n + 1):
             lines.append(f"  Block {k}: not started")
         for k, (s, _items, _bad) in enumerate(per, 1):
@@ -2201,6 +2232,12 @@ def _self_check():
         yield line
     for line in soak_exercise.self_test():
         yield line
+    seq = iter([None, "c"])
+    r = wait_for_apps(None, (1, 1), poll_s=0, probe=lambda: ({}, set()),
+                      sleep=lambda s: None, typed=lambda: next(seq))
+    assert r.get("override") is True, r
+    yield ("typing C and Enter at the wait starts the block with the "
+           "programs treated as present, and says so")
 
 
 def main(argv=None):

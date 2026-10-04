@@ -201,6 +201,57 @@ def running(name, names):
     return any(is_app(name, n) for n in names)
 
 
+WILDCARDS = ("0.0.0.0", "::", "")
+
+
+def _udp_table(net=None):
+    """([endpoint with .laddr and .pid], name(pid)) for every UDP endpoint
+    on this PC, from Windows' own table (psutil); None when it cannot be
+    read."""
+    if net is not None:
+        return net
+    try:
+        import psutil
+        return (psutil.net_connections(kind="udp"),
+                lambda pid: psutil.Process(pid).name())
+    except Exception:
+        return None
+
+
+def endpoint_owners(port, ip, net=None):
+    """Image names of the processes with a UDP endpoint on `port` at `ip`
+    or on the wildcard (0.0.0.0 or ::), [] when none; None when the table
+    cannot be read. Show PC, 2026-10-04: MadMapperDemo and BEYOND listen on
+    0.0.0.0, and Windows lets a bind to one address sit beside a wildcard
+    bind, so binding a port to test it says nothing."""
+    tab = _udp_table(net)
+    if tab is None:
+        return None
+    conns, name = tab
+    out = []
+    for c in conns:
+        la = getattr(c, "laddr", None)
+        if not la or la[1] != port or not c.pid:
+            continue
+        if la[0] in WILDCARDS or la[0] == ip:
+            try:
+                out.append(name(c.pid))
+            except Exception:
+                out.append(f"process {c.pid}")
+    return sorted(set(out))
+
+
+def app_holds(app, net=None):
+    """True when `app`'s own process has a UDP endpoint on its OSC port, at
+    its address or the wildcard. Falls back to a test bind only when the
+    endpoint table cannot be read."""
+    a = APPS[app]
+    who = endpoint_owners(a["port"], a["ip"], net)
+    if who is None:
+        return port_held(a["port"], a["ip"])
+    return any(is_app(app, w) for w in who)
+
+
 def port_held(port, ip="127.0.0.1", sock=socket.socket):
     """True when another program holds UDP `port` on `ip` (binding it here
     fails), which for MadMapper and BEYOND means they are listening."""
@@ -546,8 +597,20 @@ def self_test():
            lambda pid: {7: "BEYOND.exe", 8: "MadMapperDemo.exe"}[pid])
     assert port_owners(8100, net) == ["BEYOND.exe"] and \
         port_owners(9999, net) == []
+    wild = ([C(laddr=("0.0.0.0", 8100), pid=7),
+             C(laddr=("0.0.0.0", 8000), pid=8),
+             C(laddr=("127.0.0.1", 6454), pid=8),
+             C(laddr=("0.0.0.0", 6454), pid=7)],
+            lambda pid: {7: "BEYOND.exe", 8: "MadMapperDemo.exe"}[pid])
+    assert app_holds("BEYOND", wild) and app_holds("MadMapper", wild), \
+        "the show PC's own table: both listen on the wildcard"
+    other = ([C(laddr=("127.0.0.1", 8000), pid=9)], lambda pid: "chrome.exe")
+    assert not app_holds("MadMapper", other) and \
+        endpoint_owners(8000, "127.0.0.1", other) == ["chrome.exe"]
+    assert endpoint_owners(6454, "127.0.0.2", wild) == ["BEYOND.exe"]
     yield ("MadMapperDemo.exe and BEYOND.exe in any folder are found, and "
-           "who holds a port is read")
+           "a port held on the wildcard (0.0.0.0) counts as held by the "
+           "program that owns it")
     yield "running programs are read from tasklist"
     # Answering, and its episodes.
     w = AppWatch("MadMapper")
