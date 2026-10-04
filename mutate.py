@@ -6986,10 +6986,10 @@ def build():
   '                    if self.arm.wanted[i]:\n                        self._do_disarm(i)',
   '                    if False:\n                        self._do_disarm(i)'),
 
- ('fix round 2: Reset needs no hold',
+ ('fix round 2: the RESET key does not Reset while aborted',
   'ltcplay/streamdeck.py',
-  '                    self._reset_hold.press(now)',
-  '                    self._do_reset()'),
+  '                elif k == TOP_HOLD:\n                    self._do_reset()',
+  '                elif k == TOP_HOLD:\n                    pass'),
 
  ('fix round 2: a deck Abort waits in line behind other presses',
   'ltcplay/streamdeck.py',
@@ -7040,6 +7040,22 @@ def build():
   'ltcplay/web.py',
   '"/api/showdir", "/api/reinput", "/api/input",',
   '"/api/input",'),
+
+
+ ('show PC 2026-10-04: a late flame frame is never journaled',
+  'ltcplay/flamelink.py',
+  '        if gap < self.LATE_S:\n            return',
+  '        if True:\n            return'),
+
+ ('show PC 2026-10-04: the idle deck draws every pass',
+  'ltcplay/streamdeck.py',
+  '                        t0 - last_draw >= DRAW_IDLE_S:',
+  '                        True:'),
+
+ ('show PC 2026-10-04: a held key is drawn only every DRAW_IDLE_S',
+  'ltcplay/streamdeck.py',
+  '                if moved or controller.animating() or last_draw is None or \\',
+  '                if moved or last_draw is None or \\'),
 
 ]
 

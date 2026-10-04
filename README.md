@@ -387,6 +387,15 @@ status on `link.status_mirror_port`). If the page has not heard from the engine
 for 2 s a red banner says so and the controls that act on what it shows go
 off; Hold, Abort and Disarm stay on.
 
+**The Stream Deck after an Abort** (Jeff, 2026-10-04): the Abort key reads
+ABORTED (red, blinking) and pressing it again only sends every flame group
+off again; it never Resets. The key beside it reads RESET (gold, steady):
+one press is Reset, under the same rules as every Reset (an operator chosen;
+refused while the Abort is still fading). A group key still turns its group
+off. Abort, Hold, Resume and Reset from the deck go to the engine's show
+conductor; if the engine does not take one, or cannot be reached, the Start
+key reads ENGINE FAULT.
+
 **Arming from the page** (Jeff, 2026-10-03): a signed-in operator (a PIN
 session even on the show machine) holds a group's "Hold to arm" button.
 The page never arms anything itself: the Stream Deck process reads the hold
