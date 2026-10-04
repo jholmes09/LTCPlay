@@ -59,6 +59,7 @@ import urllib.request
 
 import ltcwin
 import soak_apps
+import soak_exercise
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 7878
@@ -341,6 +342,12 @@ class Soak:
         self.disk_now = None
         self.checks = []          # pre-run warnings about the PC
         self.deck = False
+        self.virtual_deck = False   # the deck program with no hardware
+        self.ex = None              # soak_exercise.Exerciser
+        self.judge = None           # soak_exercise.SacnJudge
+        self.fs_armed = {}          # group -> armed, from flamesafe status
+        self.tc_last_wall = None
+        self.hold_continued = 0
         self.fs_source = "(not read yet)"
         self.tick_hz = 40.0
         self.samples = open(os.path.join(self.dir, "samples.csv"), "w",
@@ -507,6 +514,8 @@ class Soak:
                   soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
               "flame_controller": "Flames",
+              "show_name": "Ignite the Night",
+              "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test"}
         if self.mode != "fallback":
             # MadMapper's heartbeat track (its project sends it; see the
@@ -603,9 +612,30 @@ class Soak:
         if st.longest > before and self.go_wall is not None:
             st.longest_loop_s = t - self.go_wall
 
+    def show_time(self):
+        """Seconds into the show now playing, or None between shows."""
+        if self.tc_last is None or self.go_wall is None or \
+                time.perf_counter() - self.tc_last > SHOW_GAP_S:
+            return None
+        return time.perf_counter() - self.go_wall
+
     def on_timecode(self, t):
         """Art-Net timecode: a silence over SHOW_GAP_S is the gap between
-        two shows, not a fault; inside a show, every frame is timed."""
+        two shows, not a fault; inside a show, every frame is timed. A
+        silence the exerciser's own Hold made is the same show going on."""
+        wall = time.time()
+        if self.tc_last is not None and t - self.tc_last > SHOW_GAP_S and \
+                self.ex is not None and self.tc_last_wall is not None and \
+                any(w[2] == "hold" and w[0] - 1.0 <= self.tc_last_wall and
+                    (w[1] is None or w[1] + 1.0 >= self.tc_last_wall)
+                    for w in self.ex.windows):
+            self.hold_continued += 1
+            self.go_wall += t - self.tc_last      # the show's own clock
+            self.tc.reset_gap()
+            self.pixel_quiet_until = t + 5.0
+            self.tc_last, self.tc_last_wall = t, wall
+            return
+        self.tc_last_wall = wall
         if self.tc_last is None or t - self.tc_last > SHOW_GAP_S:
             self.show_starts += 1
             self.tc.reset_gap()
@@ -676,8 +706,15 @@ class Soak:
         if len(b) < 126 or b[4:16] != b"ASC-E1.17\0\0\0":
             return
         self.sacn.tick(t)
-        if any(b[126:126 + 512]):
+        vals = b[126:126 + 512]
+        if any(vals):
             self.sacn_nonzero += 1
+        if self.judge is not None and not self.stopping:
+            now = time.time()
+            in_show = self.tc_last is not None and \
+                t - self.tc_last <= soak_exercise.STALE_TC_S
+            self.judge.packet(vals, now, dict(self.fs_armed), in_show,
+                              self.ex.in_window(now) if self.ex else None)
         if b[112] & 0x40:
             self.sacn_terminated += 1
 
@@ -692,6 +729,9 @@ class Soak:
         if st is None:
             return
         self.fs_status_frames += 1
+        for g in st.get("groups") or []:
+            if isinstance(g, dict) and g.get("name"):
+                self.fs_armed[g["name"]] = g.get("armed") == "armed"
         state = (st.get("frames") or {}).get("state")
         if self.stopping:
             return
@@ -826,6 +866,8 @@ class Soak:
             env["XDG_STATE_HOME"] = self.engine_env_dir
             if self.fake_audio:
                 env[FAKE_AUDIO_ENV] = self.audio_name or "1"
+        if name == "deck" and self.virtual_deck:
+            env["LTCPLAY_BENCH_VIRTUAL_DECK"] = "1"
         p = subprocess.Popen(self.program_cmd(name) + args,
                              stdin=subprocess.DEVNULL, stdout=out,
                              stderr=subprocess.STDOUT, cwd=self.dir,
@@ -993,10 +1035,18 @@ class Soak:
         note(ltcwin.settings_folder_line())
         self.make_show()
         self.flamesafe_config()
-        self.deck = self.deck_plugged_in()
-        note("Stream Deck Mini " + ("found: the deck program runs too" if
-                                    self.deck else "not plugged in: the "
-                                    "deck program is not run"))
+        # The deck program always runs: it owns flamesafe's arm link, and
+        # the exerciser arms through it (soak_exercise). With no Stream
+        # Deck plugged in it runs a virtual one (entry_deck.py, bench only).
+        self.virtual_deck = not self.deck_plugged_in()
+        self.deck = True
+        note("Stream Deck Mini " + ("not plugged in: the deck program runs "
+                                    "with a virtual deck, so arming goes "
+                                    "through it" if self.virtual_deck else
+                                    "found: the deck program runs too"))
+        self.judge = soak_exercise.SacnJudge(
+            [(g["name"], g["safety"], g["fire"])
+             for g in self.fs_cfg_doc["groups"]])
         self.make_schedule()
         self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.flame_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1028,6 +1078,11 @@ class Soak:
         if self.deck:
             self.start_program("deck")
         self.start_show()
+        self.ex = soak_exercise.Exerciser(
+            soak_exercise.Http(f"http://127.0.0.1:{PORT}"),
+            [g["name"] for g in self.fs_cfg_doc["groups"]],
+            show_time=self.show_time, show_number=lambda: self.show_starts,
+            armed=lambda: dict(self.fs_armed), note=note).start()
         t0 = time.perf_counter()
         next_sample = next_report = t0
         last_wall = time.time()
@@ -1081,6 +1136,8 @@ class Soak:
             note("stopped early by Ctrl-C")
         finally:
             self.ended = time.time()
+            if self.ex is not None:
+                self.ex.close()
             self.stopping = True
             self.engine("/api/stop", {})
             for name in ("deck", "engine"):
@@ -1540,13 +1597,46 @@ class Soak:
                     f"went stale {self.fs_stale_events} time(s) after it was "
                     f"first fresh; lock alarms {self.fs_lock_alarms}"))
         sc = self.sacn
-        ok = sc.n > 10 and self.sacn_nonzero == 0 and sc.over_gap == 0
+        j = self.judge
+        viol = j.violations if j else []
+        ok = sc.n > 10 and not viol and sc.over_gap == 0
         out.append(("PASS" if ok else "FAIL", "flamesafe output (sACN, sent "
-                    "to this PC only)", f"{sc.events} packets, mean "
-                    f"{sc.mean():.1f} ms (target {1000 / self.tick_hz:.0f}), "
-                    f"longest gap {sc.longest:.1f} ms (limit "
-                    f"{SACN_LATE_MS:g}, flamesafe's overrun_ms), "
-                    f"{self.sacn_nonzero} packets not all zero (limit 0)"))
+                    "to this PC only), judged per armed group",
+                    f"{len(viol)} violation(s) (limit 0)"
+                    + (": " + "; ".join(f"{now_text(a)} {w}"
+                                        for a, w in viol[:6]) if viol else "")
+                    + "; fire packets per group: " + ", ".join(
+                        f"{n} {c}" for n, c in
+                        (j.fire_frames.items() if j else []))
+                    + f"; {sc.events} packets, mean {sc.mean():.1f} ms "
+                    f"(target {1000 / self.tick_hz:.0f}), longest gap "
+                    f"{sc.longest:.1f} ms (limit {SACN_LATE_MS:g}, "
+                    f"flamesafe's overrun_ms), {self.sacn_nonzero} not all "
+                    f"zero. A group's channels may carry values only while "
+                    f"flamesafe reports it armed, and its fire channels only "
+                    f"in a show, never in a Hold, never after an Abort until "
+                    f"it is armed again."))
+        ex = self.ex
+        if ex is not None:
+            c = ex.counts
+            ok = c["arms"] > 0 and not ex.failures
+            out.append(("PASS" if ok else "FAIL",
+                        "Flame arming exerciser (signed in on the rack "
+                        "screen, arming through the Stream Deck program, "
+                        "Hold, Resume, Abort and Reset)",
+                        f"{len(ex.failures)} failure(s) (limit 0)"
+                        + (": " + "; ".join(f"{now_text(a)} {w}" for a, w in
+                                            ex.failures[:6])
+                           if ex.failures else "")
+                        + f"; {c['arms']} of {c['arm_tries']} arms took ("
+                        + ", ".join(f"{n} {k}" for n, k in
+                                    ex.arms_by_group.items())
+                        + f"); {c['holds']} Holds, {c['resumes']} Resumes, "
+                        f"{c['aborts']} Aborts, {c['resets']} Resets; "
+                        f"{self.hold_continued} Hold silence(s) in the "
+                        f"timecode read as the same show"
+                        + ("; the Stream Deck program ran with a virtual "
+                           "deck" if self.virtual_deck else "")))
         out.append(("PASS" if not self.journal_real else "FAIL",
                     "Real faults in the engine's night journal",
                     f"{len(self.journal_real)} (limit 0)" + (": " + " | ".join(
@@ -1652,7 +1742,7 @@ class Soak:
             f"Run: {state}. Started {now_text(self.started)}, "
             f"{self.hours():.2f} of {self.seconds / 3600:g} hour(s).",
             f"Program: {ltcwin.version_line('LTC Player')}",
-            f"Stream Deck: {'Mini plugged in, deck program running' if self.deck else 'not plugged in, deck program not run'}",
+            f"Stream Deck: {'not plugged in, deck program running with a virtual deck' if self.virtual_deck else 'Mini plugged in, deck program running'}",
             "Show audio: " + ("FAKE stand-in device (CI run)"
                               if self.fake_audio else
                               (self.audio_name or "NO interface found")),
@@ -1688,10 +1778,9 @@ class Soak:
         lines += ["", "What happened, in order:"]
         lines += [f"  {now_text(t)}  {s}"
                   for t, s in NOTES[self.notes_from:][-200:]]
-        lines += ["", "Not exercised by this test: Hold, Resume and Abort "
-                  "(no page route presses them in this build), "
-                  "announcements, real LTC input, and anything actually "
-                  "lighting up (every output goes to this PC only).", "",
+        lines += ["", "Not exercised by this test: announcements, real LTC "
+                  "input, seeks, and anything actually lighting up (every "
+                  "output goes to this PC only).", "",
                   f"Every 5 s sample: {os.path.join(self.dir, 'samples.csv')}",
                   f"Program logs: {self.dir}"]
         return lines
@@ -1966,6 +2055,8 @@ def ask_hours():
 def _self_check():
     yield "the soak test loads"
     for line in soak_apps.self_test():
+        yield line
+    for line in soak_exercise.self_test():
         yield line
 
 

@@ -38,7 +38,41 @@ def main():
     # keeps its normal priority (it is not the frame sender).
     ltcwin.say_keep_time("ltcplay-deck", above_normal=False)
     from ltcplay import streamdeck
+    _bench_virtual_deck(streamdeck)
     return streamdeck.main(argv)
+
+
+class _VirtualDeck:
+    """BENCH BUILD ONLY: a Stream Deck with no hardware. No key is ever
+    pressed on it and nothing is drawn; the program around it is the real
+    one, so the screen's arm holds (remote presses of its keys) go through
+    every rule the real deck has."""
+
+    def set_key(self, Image, key, img):
+        pass
+
+    def keys_down(self):
+        return []
+
+    def close(self):
+        pass
+
+
+def _bench_virtual_deck(streamdeck):
+    """When the soak test runs with no Stream Deck plugged in it sets
+    LTCPLAY_BENCH_VIRTUAL_DECK, and the deck program then uses _VirtualDeck.
+    Unset, which is always on a show PC, this does nothing at all."""
+    import os
+    if os.environ.get("LTCPLAY_BENCH_VIRTUAL_DECK") != "1":
+        return
+    real = streamdeck.run_forever
+
+    def run_forever(controller, **kw):
+        kw["deck_factory"] = _VirtualDeck
+        return real(controller, **kw)
+    streamdeck.run_forever = run_forever
+    print("BENCH: the Stream Deck program runs with a VIRTUAL deck "
+          "(LTCPLAY_BENCH_VIRTUAL_DECK is set)", flush=True)
 
 
 if __name__ == "__main__":
