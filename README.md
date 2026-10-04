@@ -38,7 +38,7 @@ Before a season, read **the honest risk list** at the end of this file.
 
 Double-click **Install ltcplay.command** once. It builds a private Python
 environment beside these files and installs numpy, sounddevice and zstandard
-into it. Nothing is installed system-wide.
+into it, plus Pillow and hidapi for the Stream Deck. Nothing is installed system-wide.
 
 macOS will ask for microphone access the first time you run it. That prompt is
 for the audio input; there is no way to read LTC without granting it.
