@@ -4,134 +4,176 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>ltcplay</title>
+<title>Show control</title>
 <style>
+/* Jeff Holmes Presents house look: a showbill lit by stage light. Warm
+   antique gold on near black, a heavy serif for the big words, letterspaced
+   capitals for labels, gold hairlines and gold buttons. Green, amber and red
+   only ever mean good, take care and stop or fault. The fonts are bundled
+   (ltcplay/web/brand, SIL OFL), because the show machine may be offline. */
+@font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;
+  font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
+@font-face{font-family:"Cinzel";font-weight:700;font-style:normal;
+  font-display:swap;src:url(/brand/Cinzel-700.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:400;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-400.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:700;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-700.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:800;font-style:normal;
+  font-display:swap;src:url(/brand/Inter-800.woff2) format("woff2")}
 :root{
-  --bg:#0b0d10; --panel:#14181d; --panel2:#1b2027; --line:#262d36;
-  --ink:#e8edf4; --dim:#8b97a6; --faint:#5b6674;
-  --ok:#3ddc84; --warn:#ffb02e; --bad:#ff5c5c; --cool:#4db8ff;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --bg:#070605; --gold:#D4A84A; --gold-hi:#D9B25C; --champ:#F6E3AE;
+  --cream:#EFE3C6; --muted:#B99B5C; --bronze:#2C2418;
+  --btn-top:#F0CF7A; --btn-bot:#C9953A; --btn-ink:#070605;
+  --hair:rgba(212,168,74,.42); --hair-soft:rgba(212,168,74,.2);
+  --wash:rgba(212,168,74,.045);
+  --ink:var(--cream); --dim:var(--muted); --faint:var(--muted);
+  /* meaning colours: green good, amber take care, red stop or fault */
+  --ok:#28BE5A; --warn:#F5A01E; --bad:#FF6B5E; --red:#E61E18; --red-deep:#B3121B;
+  --green-ink:#061E0C; --amber-ink:#281400;
+  --serif:"Playfair Display",Georgia,"Times New Roman",serif;
+  --caps:"Cinzel","Trajan Pro",Georgia,serif;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:var(--sans);
+  --code:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
-  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased}
-.wrap{max-width:1100px;margin:0 auto;padding:16px}
+  font:16px/1.5 var(--sans);-webkit-font-smoothing:antialiased;
+  /* the only ornament: a faint gold pixel-dot grid */
+  background-image:radial-gradient(rgba(212,168,74,.11) 1px,transparent 1.3px);
+  background-size:22px 22px;background-attachment:fixed}
+.wrap{max-width:1500px;margin:0 auto;padding:16px clamp(16px,1.6vw,32px)}
 /* The logo is far taller than any text in here, so the row centres on the
    logo and each text group keeps its own baseline inside. Aligning the whole
    header on one baseline dropped the title and the pills to the logo's
    bottom edge. */
 header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
-  padding-block:10px 14px;border-bottom:1px solid var(--line);margin-bottom:18px}
-header .titles{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
-  min-width:0;row-gap:2px}
+  padding-block:6px 14px;border-bottom:1px solid var(--hair);margin-bottom:18px}
+header .titles{display:flex;flex-direction:column;gap:2px;min-width:0}
 header .status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   justify-content:flex-end}
-h1{font-size:15px;margin:0;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-#show{font-size:19px;font-weight:600}
+.kicker{font:700 13px/1.2 var(--caps);letter-spacing:.28em;text-transform:uppercase;
+  color:var(--muted);margin:0}
+h1{font:900 clamp(30px,2.9vw,52px)/1.1 var(--serif);margin:0 0 4px;color:var(--champ);
+  text-shadow:0 0 22px rgba(246,227,174,.22)}
+#show{font-size:19px;font-weight:700;color:var(--cream)}
 .spacer{flex:1}
-.pill{font:12px/1 var(--mono);padding:5px 9px;border-radius:99px;
-  border:1px solid var(--line);color:var(--dim);white-space:nowrap}
-.pill.live{color:var(--ok);border-color:#1f4f34;background:#0e1f16}
-.pill.bad{color:var(--bad);border-color:#4f1f1f;background:#1f0e0e}
-b.bad{color:var(--bad)}
-header img#brandlogo{height:144px;width:auto;margin-right:8px;
-  border-radius:14px;flex:0 0 auto}
-footer#credit{display:flex;align-items:center;gap:14px;margin:26px 0 8px;
-  padding-top:16px;border-top:1px solid var(--line);color:var(--faint);
-  font-size:12px;line-height:1.5;flex-wrap:wrap}
-footer#credit img{height:152px;width:auto;border-radius:14px;flex:0 0 auto}
+.pill{font:700 13px/1 var(--sans);padding:7px 12px;border-radius:99px;letter-spacing:.04em;
+  border:1px solid var(--hair);color:var(--champ);white-space:nowrap;background:var(--bronze)}
+.pill.live{color:var(--green-ink);border-color:#5FE08A;background:var(--ok)}
+.pill.bad{color:var(--champ);border-color:var(--red);background:var(--red-deep)}
+b.bad,.tiny.bad{color:var(--bad)}
+header img#brandlogo{height:clamp(64px,5.6vw,104px);width:auto;margin-right:8px;flex:0 0 auto}
+footer#credit{display:flex;align-items:center;gap:16px;margin:28px 0 8px;
+  padding-top:16px;border-top:1px solid var(--hair);color:var(--muted);
+  font-size:13px;line-height:1.5;flex-wrap:wrap}
+footer#credit img{height:72px;width:auto;flex:0 0 auto}
 .skiprow{display:flex;gap:6px;margin-top:8px}
-.skiprow button{flex:1 1 0;padding:9px 0;font-size:13px;min-width:0}
-.skiprow button#sk-top{font-size:16px;line-height:1}
-footer#credit #creditname{color:var(--dim);font-weight:600;font-size:13px;
-  letter-spacing:.2px}
-footer#credit a{color:var(--dim)}
-@media (max-width:520px){header img#brandlogo{height:96px;margin-right:0}
+.skiprow button{flex:1 1 0;padding:9px 0;font-size:14px;min-width:0}
+.skiprow button#sk-top{font-size:17px;line-height:1}
+footer#credit #creditname{font:700 12px/1.4 var(--caps);letter-spacing:.24em;
+  text-transform:uppercase;color:var(--champ)}
+footer#credit a{color:var(--cream)}
+@media (max-width:520px){header img#brandlogo{height:60px;margin-right:0}
   header{align-items:flex-start;gap:10px}
   header .status{justify-content:flex-start}
-  footer#credit img{height:110px}}
+  footer#credit img{height:56px}}
 
-.grid{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
-@media(max-width:860px){.grid{grid-template-columns:1fr}}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-  padding:16px}
-.card h2{font:12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
-  color:var(--faint);margin:0 0 12px}
+.grid{display:grid;grid-template-columns:1fr 380px;gap:16px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--wash);border:1px solid var(--hair);border-radius:6px;
+  padding:18px 20px}
+.card h2{font:700 13px/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--champ);margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid var(--hair-soft)}
+#idle p{color:var(--cream)!important}
 
 /* the two numbers that answer the question */
-.clocks{display:grid;gap:4px}
+.clocks{display:grid;gap:8px}
 .clockrow{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
-.lbl{font:11px/1 var(--mono);letter-spacing:.14em;color:var(--faint);
-  width:74px;flex:none;text-transform:uppercase}
-.tc{font:600 clamp(30px,7.2vw,54px)/1.05 var(--mono);letter-spacing:.01em;
-  font-variant-numeric:tabular-nums}
-.tc.small{font-size:clamp(24px,5.4vw,38px);color:var(--dim)}
-.badge{font:12px/1 var(--mono);padding:4px 8px;border-radius:6px;
-  background:var(--panel2);color:var(--dim)}
-.s-LOCKED{color:var(--ok)} .s-PARKED{color:var(--cool)}
-.s-FREEWHEEL{color:var(--warn)} .s-LOST{color:var(--bad)}
-.note{font:12px/1.4 var(--mono);color:var(--faint)}
+.lbl{font:700 12px/1.2 var(--caps);letter-spacing:.2em;color:var(--muted);
+  width:92px;flex:none;text-transform:uppercase}
+.tc{font:800 clamp(44px,5.4vw,96px)/1.02 var(--sans);letter-spacing:.005em;
+  font-variant-numeric:tabular-nums;color:var(--champ);
+  text-shadow:0 0 26px rgba(246,227,174,.16)}
+.tc.small{font-size:clamp(30px,3.4vw,60px);color:var(--cream)}
+.badge{font:800 14px/1 var(--sans);padding:7px 10px;border-radius:6px;letter-spacing:.06em;
+  background:var(--bronze);color:var(--champ);border:1px solid #7A6032;text-transform:uppercase}
+.tc.s-LOCKED{color:var(--champ)} .tc.s-PARKED{color:var(--gold-hi)}
+.tc.s-FREEWHEEL{color:var(--warn)} .tc.s-LOST{color:var(--bad)}
+.badge.s-LOCKED{background:var(--ok);color:var(--green-ink);border-color:#5FE08A}
+.badge.s-PARKED{background:var(--bronze);color:var(--champ)}
+.badge.s-FREEWHEEL,.badge.s-FREERUN{background:var(--warn);color:var(--amber-ink);border-color:#FFC266}
+.badge.s-LOST{background:var(--red-deep);color:var(--champ);border-color:var(--red)}
+.note{font:400 14px/1.4 var(--sans);color:var(--cream)}
 
-.kv{display:grid;grid-template-columns:74px 1fr;gap:6px 14px;
-  font:13px/1.5 var(--mono);margin-top:16px}
-.kv dt{color:var(--faint);text-transform:uppercase;font-size:11px;
-  letter-spacing:.12em;padding-top:2px}
-.kv dd{margin:0;color:var(--dim)}
-.kv dd b{color:var(--ink);font-weight:600}
+.kv{display:grid;grid-template-columns:92px 1fr;gap:8px 14px;
+  font:15px/1.5 var(--sans);margin-top:18px}
+.kv dt{color:var(--muted);text-transform:uppercase;font:700 12px/1.5 var(--caps);
+  letter-spacing:.18em;padding-top:2px}
+.kv dd{margin:0;color:var(--cream)}
+.kv dd b{color:var(--champ);font-weight:700}
 
-.meter{display:inline-block;width:90px;height:9px;border-radius:99px;
-  background:var(--panel2);overflow:hidden;vertical-align:middle;
-  margin-right:8px;border:1px solid var(--line)}
+.meter{display:inline-block;width:90px;height:10px;border-radius:99px;
+  background:var(--bronze);overflow:hidden;vertical-align:middle;
+  margin-right:8px;border:1px solid var(--hair)}
 .meter i{display:block;height:100%;background:var(--ok);width:0}
-.meter i.hot{background:var(--warn)} .meter i.clip{background:var(--bad)}
+.meter i.hot{background:var(--warn)} .meter i.clip{background:var(--red)}
 
-.cue{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
-.cuename{font-size:22px;font-weight:600;margin:2px 0 6px}
-.cuemeta{font:12px/1.5 var(--mono);color:var(--dim);
+.cue{margin-top:20px;padding-top:16px;border-top:1px solid var(--hair-soft)}
+.cuename{font:900 clamp(26px,2.2vw,40px)/1.1 var(--serif);color:var(--champ);margin:4px 0 6px}
+.cuemeta{font:15px/1.5 var(--sans);color:var(--cream);font-variant-numeric:tabular-nums;
   display:flex;gap:18px;flex-wrap:wrap}
 /* Where xLights is, as opposed to where the show is. Big, because this is
    the number you write down when something looks wrong on the rig. */
-.seqpos{font:600 26px/1.1 var(--mono);color:var(--cool);margin:6px 0 2px;
-  letter-spacing:.5px}
-.seqpos small{font:400 12px/1 var(--mono);color:var(--dim);
+.seqpos{font:800 clamp(28px,2.4vw,42px)/1.1 var(--sans);color:var(--gold-hi);margin:6px 0 2px;
+  font-variant-numeric:tabular-nums}
+.seqpos small{font:400 14px/1 var(--sans);color:var(--cream);
   letter-spacing:0;margin-left:10px}
-.seqpos.off{color:var(--faint);font-size:14px;font-weight:400}
-.bar{height:6px;border-radius:99px;background:var(--panel2);margin-top:10px;
-  overflow:hidden}
-.bar i{display:block;height:100%;background:var(--cool);width:0;
-  transition:width .2s linear}
-.upnext .cuename{font-size:18px;color:var(--dim)}
+.seqpos.off{color:var(--muted);font-size:16px;font-weight:400}
+.bar{height:8px;border-radius:99px;background:var(--bronze);margin-top:12px;
+  overflow:hidden;border:1px solid var(--hair-soft)}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--btn-bot),var(--btn-top));
+  width:0;transition:width .2s linear}
+.upnext .cuename{font-size:clamp(22px,1.7vw,30px);color:var(--cream)}
 
 .warn{margin-top:16px;display:grid;gap:8px}
-.warn p{margin:0;padding:10px 12px;border-radius:8px;font-size:13px;
-  background:#1f0e0e;border:1px solid #4f1f1f;color:#ffc9c9}
-.warn p.info{background:#141b22;border-color:#26384a;color:#bcd7ef}
+.warn p{margin:0;padding:10px 12px;border-radius:6px;font-size:15px;
+  background:rgba(179,18,27,.22);border:1px solid var(--red);color:var(--champ)}
+.warn p.info{background:var(--wash);border-color:var(--hair);color:var(--cream)}
+#apiwarn{padding:12px 14px;border-radius:6px;border:1px solid var(--red);
+  background:rgba(179,18,27,.22);color:var(--champ)}
 
-button{font:inherit;font-weight:600;padding:11px 14px;border-radius:9px;
-  border:1px solid var(--line);background:var(--panel2);color:var(--ink);
-  cursor:pointer;width:100%}
-button:hover{border-color:#3a4553}
-button:disabled{opacity:.4;cursor:not-allowed}
-button.go{background:#123a24;border-color:#1f5f39;color:#9df5c2}
-button.stop{background:#3a1414;border-color:#6b2626;color:#ffc0c0}
-select{font:inherit;width:100%;padding:10px;border-radius:9px;
-  background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
-label{display:block;font:11px/1 var(--mono);letter-spacing:.12em;
-  text-transform:uppercase;color:var(--faint);margin:14px 0 6px}
+button{font:700 16px/1.2 var(--sans);padding:12px 14px;border-radius:6px;
+  border:1px solid var(--gold-hi);color:var(--btn-ink);cursor:pointer;width:100%;
+  background:linear-gradient(180deg,var(--btn-top),var(--btn-bot))}
+button:hover{filter:brightness(1.06)}
+button:focus-visible,select:focus{outline:2px solid var(--champ);outline-offset:2px}
+button:disabled{opacity:.38;cursor:not-allowed;filter:saturate(.4)}
+button.go{background:var(--ok);border-color:#5FE08A;color:var(--green-ink)}
+button.stop{background:var(--red-deep);border:2px solid var(--red);color:var(--champ)}
+select{font:inherit;width:100%;padding:11px;border-radius:6px;
+  background:rgba(7,6,5,.85);color:var(--cream);border:1px solid var(--hair)}
+label{display:block;font:700 12px/1.25 var(--caps);letter-spacing:.18em;
+  text-transform:uppercase;color:var(--muted);margin:16px 0 7px}
 label:first-child{margin-top:0}
+#gobox,#ovbox,#rl-label{margin-top:18px}
+.cuename{font-variant-numeric:lining-nums}
 .row{display:grid;gap:8px;margin-top:10px}
 .row.two{grid-template-columns:1fr 1fr}
-.seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
-.seg button{border:0;border-radius:0;background:transparent;font-weight:500;
-  color:var(--dim)}
-.seg button[aria-pressed="true"]{background:var(--panel2);color:var(--ink)}
-.tiny{font:11px/1.5 var(--mono);color:var(--faint);margin-top:8px}
-pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
-  border-radius:9px;padding:12px;max-height:260px;overflow:auto;color:var(--dim);
+.seg{display:flex;border:1px solid var(--hair);border-radius:6px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:transparent;font-weight:700;
+  color:var(--cream)}
+.seg button[aria-pressed="true"]{background:linear-gradient(180deg,var(--btn-top),var(--btn-bot));
+  color:var(--btn-ink)}
+.tiny{font:13px/1.5 var(--sans);color:var(--cream);margin-top:8px}
+#buildline{color:var(--muted)}
+pre{font:12px/1.5 var(--code);background:rgba(7,6,5,.9);border:1px solid var(--hair-soft);
+  border-radius:6px;padding:12px;max-height:260px;overflow:auto;color:var(--cream);
   white-space:pre-wrap;margin:0}
-.hint{padding:10px 12px;border-radius:8px;background:var(--panel2);
-  font-size:13px;color:var(--dim);margin-top:12px}
+.hint{padding:10px 12px;border-radius:6px;background:var(--bronze);
+  font-size:14px;color:var(--champ);margin-top:12px;border:1px solid #7A6032}
+.hint.bad{background:rgba(179,18,27,.22);border-color:var(--red);color:var(--champ)}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -141,8 +183,9 @@ pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
 <header>
   <img id="brandlogo" alt="" hidden>
   <div class="titles">
-    <h1>ltcplay</h1>
-    <div id="show">—</div>
+    <h1 id="brandshow">Show control</h1>
+    <p class="kicker" id="brandkicker">Jeff Holmes Presents</p>
+    <div id="show"></div>
   </div>
   <div class="spacer"></div>
   <div class="status">
@@ -175,27 +218,27 @@ pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
         <div class="clockrow">
           <span class="lbl">LTC in</span>
           <span class="tc" id="ltcin">--:--:--:--</span>
-          <span class="badge" id="state">—</span>
+          <span class="badge" id="state">...</span>
           <span class="note" id="ltcnote"></span>
         </div>
         <div class="clockrow">
           <span class="lbl">Playing</span>
           <span class="tc small" id="playing">--:--:--:--</span>
-          <span class="badge" id="outsrc">—</span>
+          <span class="badge" id="outsrc">...</span>
           <span class="note" id="playnote"></span>
         </div>
       </div>
 
       <dl class="kv">
-        <dt>Rate in</dt><dd id="ratein">—</dd>
-        <dt>Show file</dt><dd id="ratefile">—</dd>
-        <dt>Input</dt><dd id="inputrow">—</dd>
-        <dt>Output</dt><dd id="outrow">—</dd>
+        <dt>Rate in</dt><dd id="ratein">...</dd>
+        <dt>Show file</dt><dd id="ratefile">...</dd>
+        <dt>Input</dt><dd id="inputrow">...</dd>
+        <dt>Output</dt><dd id="outrow">...</dd>
       </dl>
 
       <div class="cue" id="nowbox">
         <div class="lbl">Now</div>
-        <div class="cuename" id="nowname">—</div>
+        <div class="cuename" id="nowname">...</div>
         <div class="seqpos" id="nowseq"></div>
         <div class="cuemeta" id="nowmeta"></div>
         <div class="bar"><i id="nowbar"></i></div>
@@ -203,7 +246,7 @@ pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
 
       <div class="cue upnext" id="nextbox">
         <div class="lbl">Up next</div>
-        <div class="cuename" id="nextname">—</div>
+        <div class="cuename" id="nextname">...</div>
         <div class="cuemeta" id="nextmeta"></div>
       </div>
 
@@ -312,13 +355,13 @@ pre{font:12px/1.5 var(--mono);background:#0a0c0f;border:1px solid var(--line);
         <button id="btn-find">Find timecode</button>
       </div>
       <div class="tiny" id="inputlive" hidden></div>
-      <div class="tiny" id="inputsaved">—</div>
-      <div class="hint" id="devmiss" style="color:#ffc9c9;background:#1f0e0e" hidden></div>
+      <div class="tiny" id="inputsaved">...</div>
+      <div class="hint bad" id="devmiss" hidden></div>
     </div>
 
     <div class="card" style="margin-top:16px">
       <h2>log</h2>
-      <pre id="log">—</pre>
+      <pre id="log">...</pre>
     </div>
   </aside>
 </div>
@@ -495,13 +538,13 @@ function draw(s){
            ? ` Sending ${esc(s.clock.sending || "")} for ${esc(s.clock.playing)}.`
            : ` No cue is playing, so no timecode is being sent.`)
       : s.input_attached
-      ? `<b style="color:var(--ok)">Open</b> — ${esc(s.input || "")}`
-      : `<b class="bad">Not open</b> — ${esc(s.input || "")}<br>`
+      ? `<b style="color:var(--ok)">Open</b>: ${esc(s.input || "")}`
+      : `<b class="bad">Not open</b>: ${esc(s.input || "")}<br>`
         + `Retried every second. Save below to switch this show to another `
         + `input without stopping it.`;
   }
   if(!running){
-    $("show").textContent = "—";
+    $("show").textContent = "";
     $("uptime").hidden = true;
     if(s.last_error){ $("idleerr").hidden=false; $("idleerr").textContent = s.last_error; }
     return;
@@ -560,7 +603,7 @@ function draw(s){
       `${s.level.toFixed(2)} ${s.level_verdict} · ${s.input}`;
   }
   $("outrow").innerHTML = s.no_output
-    ? `<b class="bad">DISPLAY ONLY &mdash; the rig is receiving nothing.</b>` +
+    ? `<b class="bad">DISPLAY ONLY: the rig is receiving nothing.</b>` +
       ` Stop and start again without display-only to light anything.`
     : `<b>${s.universes} universes</b> · ${s.frames_out} frames · ${s.send_errors} send errors` +
       (s.since_ok!==null&&s.since_ok!==undefined
@@ -652,9 +695,9 @@ function drawShowDir(j){
     opts.unshift({folder: j.folder, sequences: j.sequences || 0});
   sel.innerHTML = opts.map(o =>
     `<option value="${o.folder.replace(/"/g,"&quot;")}"${o.folder===j.folder?" selected":""}>`
-    + `${o.folder.split("/").slice(-2).join("/")} — ${o.sequences} sequences`
+    + `${o.folder.split("/").slice(-2).join("/")}, ${o.sequences} sequences`
     + `</option>`).join("")
-    + `<option value="__other__">Somewhere else…</option>`;
+    + `<option value="__other__">Somewhere else...</option>`;
   $("sdnote").innerHTML = j.ok
     ? `${j.sequences} sequences and a controller map in<br>`
       + `<span style="font-family:var(--mono);font-size:11px">${j.folder}</span>`
@@ -696,7 +739,11 @@ async function loadBrand(){
         el.onload = () => { el.hidden = false; };
       }
     }
-    document.title = (b.product || "ltcplay") + " — " + (b.name || "");
+    // The show's name comes from ltcplay_brand.json: a settings change.
+    const title = b.show || b.product || "Show control";
+    document.title = title;
+    $("brandshow").textContent = title;
+    $("brandkicker").textContent = (b.name || "") + (b.venue ? " at " + b.venue : "");
     $("creditname").textContent =
       (b.product || "ltcplay") + (b.tagline ? ", a " + b.tagline : "") +
       " by " + (b.name || "");
@@ -947,8 +994,8 @@ $("btn-go").addEventListener("click", async () => {
 async function skip(body){
   try{
     const j = await post("/api/skip", body);
-    $("gonote").innerHTML = `<b class="bad">FREE RUNNING</b> from ${j.at} `
-      + `&mdash; ${j.where}. The timecode feed is not driving the rig.`;
+    $("gonote").innerHTML = `<b class="bad">FREE RUNNING</b> from ${j.at}`
+      + `, ${j.where}. The timecode feed is not driving the rig.`;
   }catch(e){ alert(e.message); }
   poll();
 }

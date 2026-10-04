@@ -917,8 +917,11 @@ class Handler(BaseHTTPRequestHandler):
                         and os.path.isfile(f)
                         and os.path.abspath(f).startswith(
                             os.path.join(os.path.dirname(PAGE), "brand"))):
+                    # The bundled show fonts live here too, so the pages
+                    # never need the internet at the venue.
                     kind = ("image/png" if name.endswith(".png") else
                             "image/svg+xml" if name.endswith(".svg") else
+                            "font/woff2" if name.endswith(".woff2") else
                             "application/octet-stream")
                     with open(f, "rb") as fh:
                         return self._send(200, fh.read(), kind)

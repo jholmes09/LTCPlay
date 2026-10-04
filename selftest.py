@@ -3769,7 +3769,7 @@ def test_web_ui():
         # the page itself, with nothing loaded from outside
         with urllib.request.urlopen(base + "/", timeout=5) as r:
             page = r.read().decode()
-        check(r.status == 200 and "<title>ltcplay</title>" in page,
+        check(r.status == 200 and "<title>Show control</title>" in page,
               "the page did not serve")
         check("//" not in re.sub(r"https?:", "", "") + "".join(
               re.findall(r'(?:src|href)="([^"]*)"', page)),
@@ -34954,7 +34954,7 @@ def test_remote_pin_required_over_the_network():
             check(st == 401, f"Remote.post {route} with no session: {st}")
         st, _h, out = R.ask("GET", "/")
         check(st == 200 and "Sign in" in str(out) and
-              "ltcplay remote" in str(out),
+              "<title>Show remote</title>" in str(out),
               f"the network gets the remote page, which signs in: {st}")
         st, _h, out = R.ask("GET", "/api/remote/whoami")
         check(st == 200 and out["signed_in"] is False and
@@ -35101,7 +35101,7 @@ def test_remote_network_session_reaches_only_remote_routes():
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(st == 200, "the remote page's own status still answers")
         st, _h, out = R.ask("GET", "/")
-        check(st == 200 and "ltcplay remote" in str(out),
+        check(st == 200 and "<title>Show remote</title>" in str(out),
               "and the remote page itself")
         st, _h, out = R.ask("GET", "/brand/logo_small.png")
         check(st in (200, 404), f"and the logo route: {st}")
@@ -35299,10 +35299,10 @@ def test_remote_localhost_unaffected_and_proxies_refused():
         st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
         check(st == 200, f"loopback reads the state with no session: {st}")
         st, _h, out = _ask(R.httpd, "GET", "/", client=loop)
-        check(st == 200 and "ltcplay remote" not in str(out),
+        check(st == 200 and "<title>Show remote</title>" not in str(out),
               "loopback still gets the operator page at /")
         st, _h, out = _ask(R.httpd, "GET", "/remote", client=loop)
-        check(st == 200 and "ltcplay remote" in str(out),
+        check(st == 200 and "<title>Show remote</title>" in str(out),
               "and the remote page at /remote")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
         check(out["local"] is True and "pins_set" in out,
