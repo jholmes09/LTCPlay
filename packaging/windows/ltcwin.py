@@ -108,6 +108,67 @@ def clean_stop_on_logoff():
     ctypes.windll.kernel32.SetConsoleCtrlHandler(h, True)
 
 
+def keep_time(above_normal=True):
+    """Windows only: ask Windows to keep this process on time.
+
+    The show programs run with no window, and Windows 11 treats a windowless
+    process as background work: it may run it on the efficiency cores at a
+    low clock and coalesce its timers ("power throttling", EcoQoS). The show
+    PC's first soak saw a flame frame 71 ms late with nothing else to do
+    (2026-10-04). So:
+      - power throttling is turned off for this process, both the
+        execution-speed part and the timer-resolution part;
+      - the system timer is asked for 1 ms (timeBeginPeriod), so every wait
+        in the process wakes within a millisecond, not 15.6;
+      - the priority class is Above normal (above_normal=True), so a busy
+        browser or Windows' own work never stands in front of a frame.
+    Returns one sentence per step, saying whether it took. Never raises."""
+    if not WINDOWS:
+        return []
+    out = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        proc = k32.GetCurrentProcess()
+
+        class _State(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG),
+                        ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+        # PROCESS_POWER_THROTTLING_EXECUTION_SPEED | ..._IGNORE_TIMER_RESOLUTION,
+        # with StateMask 0: both turned OFF. ProcessPowerThrottling = 4.
+        st = _State(1, 0x1 | 0x4, 0)
+        ok = k32.SetProcessInformation(proc, 4, ctypes.byref(st),
+                                       ctypes.sizeof(st))
+        out.append("power throttling off" if ok else
+                   f"power throttling NOT turned off (error "
+                   f"{ctypes.get_last_error()})")
+        rc = ctypes.WinDLL("winmm").timeBeginPeriod(1)
+        out.append("timer 1 ms" if rc == 0 else
+                   f"timer NOT set to 1 ms (timeBeginPeriod returned {rc})")
+        if above_normal:
+            ok = k32.SetPriorityClass(proc, 0x8000)   # ABOVE_NORMAL
+            out.append("priority Above normal" if ok else
+                       f"priority NOT raised (error "
+                       f"{ctypes.get_last_error()})")
+    except Exception as e:
+        out.append(f"could not ask Windows to keep time: "
+                   f"{type(e).__name__}: {e}")
+    return out
+
+
+def say_keep_time(program, above_normal=True):
+    """keep_time(), and one line on stdout (the program's log) saying what
+    took, for the soak report to read."""
+    got = keep_time(above_normal)
+    if got:
+        print(f"{program}: Windows timekeeping: {', '.join(got)}",
+              flush=True)
+    return got
+
+
 def common_flags(program, argv, self_check, emit=print):
     """Handle --version and --self-check. Returns an exit code, or None when
     neither was asked for and the program should run normally. `emit` is
