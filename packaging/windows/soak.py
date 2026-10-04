@@ -36,6 +36,12 @@ keeps "nothing attached, expected" separate from real faults.
         runner has no audio interface, so the engine's show audio uses the
         test suite's stand-in device and the report says so in capitals)
 
+With MadMapper and BEYOND installed (all programs mode) the run is split
+into blocks of 1 h 50 min, clear of the demos' 2 hour limit (8 hours is 4
+blocks). Each block waits until both programs answer, saying what to click;
+between blocks everything stops cleanly and the operator quits and starts
+both programs again. One combined report, with a section for each block.
+
 Not exercised: Hold, Resume and Abort (no page route presses them in this
 build; they come with the iPad remote, PR #39), announcements, real LTC
 input, and anything actually lighting up.
@@ -172,7 +178,7 @@ def udp_listener(port, handle, name, ip="127.0.0.1"):
             except socket.timeout:
                 continue
             except OSError:
-                if STOP.is_set():
+                if STOP.is_set() or s.fileno() == -1:
                     return
                 continue
             try:
@@ -242,18 +248,25 @@ def windows_update_state(reg=None, services=None):
             "for the show weeks.)")
 
 class Soak:
-    def __init__(self, seconds, audio_device=None):
+    def __init__(self, seconds, audio_device=None, folder=None, block=None):
         self.seconds = seconds
         self.audio_device = audio_device
         stamp = time.strftime("%Y-%m-%d_%H%M")
         import supervisor as sup
         self.sup = sup
-        self.dir = os.path.join(sup.appdata_dir(), "soak", stamp)
+        # A block of a longer run (Blocks): its own folder and report there;
+        # the combined report goes on the Desktop.
+        self.block = block
+        self.on_report = None
+        self.interrupted = False
+        self.notes_from = len(NOTES)
+        self.dir = folder or os.path.join(sup.appdata_dir(), "soak", stamp)
         os.makedirs(self.dir, exist_ok=True)
-        self.report_name = f"LTC Player soak report {stamp}.txt"
+        self.report_name = (f"LTC Player soak report {stamp}.txt" if not block
+                            else f"block {block[0]} report.txt")
         self.report_paths = [os.path.join(self.dir, self.report_name)]
         desk = desktop_dir()
-        if desk:
+        if desk and not block:
             self.report_paths.append(os.path.join(desk, self.report_name))
         self.started = time.time()
         self.ended = None
@@ -488,7 +501,8 @@ class Soak:
                   MM_PORT if self.mode == "fallback" else
                   soak_apps.MADMAPPER_PORT),
                             "show_bank": "Bank-1", "surfaces": ["Quad-1"]},
-              "beyond": {"host": "127.0.0.1", "port": (
+              "beyond": {"host": ("127.0.0.1" if self.mode == "fallback"
+                                  else soak_apps.BEYOND_IP), "port": (
                   BEYOND_PORT if self.mode == "fallback" else
                   soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
@@ -962,7 +976,10 @@ class Soak:
 
     # ------------------------------------------------------------ run ---
     def run(self):
-        note(f"soak test starting for {self.seconds / 3600:g} hour(s); "
+        STOP.clear()
+        note((f"block {self.block[0]} of {self.block[1]} " if self.block
+              else "soak test ") +
+             f"starting for {self.seconds / 3600:g} hour(s); "
              f"folder {self.dir}")
         self.pc_checks()
         for c in self.checks:
@@ -991,9 +1008,10 @@ class Soak:
                       udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
                       udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
         else:
+            # MadMapper and BEYOND were started by hand and answered before
+            # this block began (wait_for_apps).
             socks.append(udp_listener(ARTNET_PORT, self.on_artnet, "artnet",
                                       ip=SOAK_IP))
-            self.start_apps()
         if self.fake_audio:
             note("AUDIO IS FAKE: --fake-audio, so the engine's show audio "
                  "plays to the test suite's stand-in device, not a real "
@@ -1059,6 +1077,7 @@ class Soak:
                     self.write_report()
                     next_report += REPORT_EVERY_S
         except KeyboardInterrupt:
+            self.interrupted = True
             note("stopped early by Ctrl-C")
         finally:
             self.ended = time.time()
@@ -1138,25 +1157,9 @@ class Soak:
         """'all programs' when MadMapper and BEYOND are both installed (or
         running) and `want` allows it, else 'fallback'. Sets self.mode and
         self.apps; returns a sentence saying why."""
-        if want == "fallback":
-            self.mode = "fallback"
-            return "fallback mode: asked for (--mode fallback)"
-        names = soak_apps.tasklist_names() if names is None else names
-        found, missing = {}, []
-        for app in ("MadMapper", "BEYOND"):
-            path = soak_apps.find_app(app)
-            if path or soak_apps.running(app, names):
-                found[app] = path
-            else:
-                missing.append(app)
-        if missing:
-            if want == "all":
-                raise RuntimeError(f"--mode all, but {', '.join(missing)} "
-                                   f"is not installed or running")
-            self.mode = "fallback"
-            return (f"fallback mode: {', '.join(missing)} not installed, so "
-                    f"its commands go to this program's own counters")
-        self.mode = "all programs"
+        self.mode, found, why = resolve_mode(want, names)
+        if self.mode == "fallback":
+            return why
         self.apps = found
         for app in found:
             self.app_watch[app] = soak_apps.AppWatch(
@@ -1164,32 +1167,12 @@ class Soak:
         return ("all programs mode: MadMapper and BEYOND run on this PC and "
                 "get LTC Player's real commands")
 
-    def start_apps(self, wait_s=120):
-        """Start MadMapper and BEYOND if they are not running, then wait
-        for each to hold its OSC port."""
-        names = soak_apps.tasklist_names()
-        for app, path in self.apps.items():
-            if soak_apps.running(app, names):
-                self.app_started[app] = False
-                note(f"{app} is already running")
-            elif path:
-                subprocess.Popen([path], cwd=os.path.dirname(path))
-                self.app_started[app] = True
-                note(f"started {app} ({path})")
-        deadline = time.time() + wait_s
-        for app in self.apps:
-            port = soak_apps.APPS[app]["port"]
-            while time.time() < deadline and \
-                    not soak_apps.port_held(port):
-                time.sleep(1.0)
-            note(f"{app} {'holds' if soak_apps.port_held(port) else 'does NOT hold'}"
-                 f" its OSC port {port}")
-
     def sample_apps(self, hours):
         """Is each program running and answering; its CPU and memory."""
         if self.mode == "fallback":
             return
         names = soak_apps.tasklist_names()
+        hung = soak_apps.hung_names()
         mm = self.engine("/api/madmapper/state")
         wd = (mm.get("watchdog") or {}) if isinstance(mm, dict) else {}
         hb = None
@@ -1198,9 +1181,11 @@ class Soak:
         now = time.time()
         for app, watch in self.app_watch.items():
             alive = soak_apps.running(app, names)
-            held = soak_apps.port_held(soak_apps.APPS[app]["port"])
+            a = soak_apps.APPS[app]
+            held = soak_apps.port_held(a["port"], a["ip"])
             why = watch.sample(now, alive, held,
-                               hb if app == "MadMapper" else None)
+                               hb if app == "MadMapper" else None,
+                               hung=any(e.lower() in hung for e in a["exe"]))
             if why and watch.episodes and watch.episodes[-1][0] == now:
                 note(f"{app} not answering: {why}")
             if watch.demo_stopped_at == now:
@@ -1348,12 +1333,22 @@ class Soak:
                          f"{(watch.demo_stopped_at - watch.first_seen) / 3600:.1f}"
                          f" h after it was first seen: the demo's limit, not "
                          f"a fault (a full license runs the whole time)")
+            a = soak_apps.APPS[app]
+            how = ("" if app == "MadMapper" else
+                   ". BEYOND's response to commands is checked only as far "
+                   "as possible: it sends nothing back, so running, its "
+                   "window responding and holding its OSC port is all that "
+                   "can be known")
             out.append(("FAIL" if eps else "PASS",
-                        f"{app} answering (running, holding its OSC port"
+                        f"{app} answering (running, "
+                        + ("" if app == "MadMapper" else "window responding, ")
+                        + f"holding its OSC port {a['ip']}:{a['port']}"
                         + (", heartbeat fresh)" if app == "MadMapper" else ")"),
                         (f"{app} not answering: {text}" if eps else
+                         f"answered all block ({watch.samples} checks)"
+                         if self.block else
                          f"answered all run ({watch.samples} checks)")
-                        + extra))
+                        + extra + how))
             cpu = self.app_cpu.get(app) or []
             mem = self.app_mem.get(app) or []
             out.append(("INFO", f"{app}: CPU and memory",
@@ -1629,14 +1624,29 @@ class Soak:
         return all(v != "FAIL" for v, _t, _d in self.items())
 
     def write_report(self):
+        text = "\r\n".join(self.report_lines()) + "\r\n"
+        for p in self.report_paths:
+            try:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            except OSError:
+                pass
+        if self.on_report:
+            self.on_report()
+
+    def report_lines(self):
         items = self.items()
         verdict = ("PASSED" if all(v != "FAIL" for v, _t, _d in items)
                    else "FAILED")
         state = ("finished" if self.finished else
                  "STILL RUNNING (this file is rewritten every minute)")
         lines = [
-            "LTC Player bench soak test",
-            "BENCH ONLY: no lasers, flames or lights connected.",
+            ("LTC Player bench soak test" if not self.block else
+             f"Block {self.block[0]} of {self.block[1]}"),
+            ("BENCH ONLY: no lasers, flames or lights connected."
+             if self.mode == "fallback" else
+             "BENCH ONLY: this PC is isolated; flamesafe's output goes to "
+             "this PC only."),
             "",
             f"Result: {verdict if self.finished else verdict + ' so far'}",
             f"Run: {state}. Started {now_text(self.started)}, "
@@ -1656,8 +1666,10 @@ class Soak:
                                              "itself)"),
             f"Soak mode: {self.mode}"
             + (" (MadMapper and BEYOND running on this PC, getting LTC "
-               "Player's real commands on ports 8000 and 8100; laser output "
-               "must stay disabled in BEYOND)" if self.mode != "fallback"
+               "Player's real commands: MadMapper's OSC on 127.0.0.1:8000, "
+               "BEYOND's on 127.0.0.2:8100, the Art-Net timecode to both; "
+               "BEYOND's laser output may be enabled, this PC is isolated)"
+               if self.mode != "fallback"
                else " (MadMapper's and BEYOND's commands counted by this "
                     "program; neither program ran)"),
             "Show mode: fire_ice, the engine and the deck started exactly as "
@@ -1674,13 +1686,215 @@ class Soak:
             lines.append(f"[{v}] {title}")
             lines.append(f"    {detail}")
         lines += ["", "What happened, in order:"]
-        lines += [f"  {now_text(t)}  {s}" for t, s in NOTES[-200:]]
+        lines += [f"  {now_text(t)}  {s}"
+                  for t, s in NOTES[self.notes_from:][-200:]]
         lines += ["", "Not exercised by this test: Hold, Resume and Abort "
                   "(no page route presses them in this build), "
                   "announcements, real LTC input, and anything actually "
                   "lighting up (every output goes to this PC only).", "",
                   f"Every 5 s sample: {os.path.join(self.dir, 'samples.csv')}",
                   f"Program logs: {self.dir}"]
+        return lines
+
+
+def resolve_mode(want="auto", names=None):
+    """(mode, {app: install path}, sentence): 'all programs' when MadMapper
+    and BEYOND are both installed (or running) and `want` allows it, else
+    'fallback'."""
+    if want == "fallback":
+        return "fallback", {}, "fallback mode: asked for (--mode fallback)"
+    names = soak_apps.tasklist_names() if names is None else names
+    found, missing = {}, []
+    for app in ("MadMapper", "BEYOND"):
+        path = soak_apps.find_app(app)
+        if path or soak_apps.running(app, names):
+            found[app] = path
+        else:
+            missing.append(app)
+    if missing:
+        if want == "all":
+            raise RuntimeError(f"--mode all, but {', '.join(missing)} "
+                               f"is not installed or running")
+        return ("fallback", {},
+                f"fallback mode: {', '.join(missing)} not installed, so its "
+                f"commands go to this program's own counters")
+    return ("all programs", found,
+            "all programs mode: MadMapper and BEYOND run on this PC and get "
+            "LTC Player's real commands")
+
+
+def _enter_pressed():
+    """True once when Enter was pressed in this window (Windows), without
+    waiting for it."""
+    try:
+        import msvcrt
+    except ImportError:
+        return False
+    hit = False
+    while msvcrt.kbhit():
+        if msvcrt.getwch() in ("\r", "\n"):
+            hit = True
+    return hit
+
+
+def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
+                  sleep=time.sleep, clock=time.time):
+    """Wait, however long it takes, until MadMapper and BEYOND both answer
+    (soak_apps.readiness), saying what to click once and each change in
+    what is still awaited. `before`: {app: PIDs} from the block before,
+    which each must have been started again since (Enter skips that, for a
+    full license). Returns {app: PIDs} for the next block's check."""
+    probe = probe or (lambda: (soak_apps.app_pids(), soak_apps.hung_names()))
+    i, n = block
+    note(f"Block {i} of {n}: start BEYOND and MadMapper"
+         + (" again (quit both first)" if before else "")
+         + ". The block starts by itself once both answer. What to click:")
+    for c in soak_apps.CLICKS:
+        note("  " + c)
+    if before:
+        note("  (With full licenses there is nothing to restart: press Enter "
+             "to go on with the copies already running.)")
+    said = {}
+    t0 = clock()
+    while True:
+        pids, hung = probe()
+        if before and _enter_pressed():
+            note("Enter pressed: the copies already running are used")
+            before = None
+        waiting = {}
+        for app in ("BEYOND", "MadMapper"):
+            a = soak_apps.APPS[app]
+            held = soak_apps.port_held(a["port"], a["ip"])
+            why = soak_apps.readiness(app, pids, hung, held,
+                                      (before or {}).get(app))
+            if why:
+                waiting[app] = why
+            if said.get(app) != why:
+                note(f"waiting for {app}: {why}" if why else
+                     f"{app} answers")
+                said[app] = why
+        if not waiting:
+            note(f"both answer after {(clock() - t0) / 60:.1f} min of "
+                 f"waiting; block {i} of {n} starts")
+            return {app: soak_apps.pids_of(app, pids)
+                    for app in ("BEYOND", "MadMapper")}
+        sleep(poll_s)
+
+
+class Blocks:
+    """All programs mode: the run in blocks of 1 h 50 min (soak_apps.
+    block_plan), each a whole soak of its own, started only once BEYOND and
+    MadMapper answer, with one combined report."""
+
+    def __init__(self, seconds, audio_device=None, fake_audio=False):
+        import supervisor as sup
+        stamp = time.strftime("%Y-%m-%d_%H%M")
+        self.seconds = seconds
+        self.audio_device = audio_device
+        self.fake_audio = fake_audio
+        self.plan = soak_apps.block_plan(seconds)
+        self.dir = os.path.join(sup.appdata_dir(), "soak", stamp)
+        os.makedirs(self.dir, exist_ok=True)
+        name = f"LTC Player soak report {stamp}.txt"
+        self.report_paths = [os.path.join(self.dir, name)]
+        desk = desktop_dir()
+        if desk:
+            self.report_paths.append(os.path.join(desk, name))
+        self.started = time.time()
+        self.blocks = []        # Soak, one per block begun
+        self.waited = {}        # block number -> minutes waited for the apps
+        self.finished = False
+        self.stopped = ""
+
+    def run(self, wait=wait_for_apps):
+        n = len(self.plan)
+        note(f"all programs mode: {n} block(s) of "
+             f"{self.plan[0] / 60:.0f} minutes, clear of the demos' 2 hour "
+             f"limit; folder {self.dir}")
+        before = None
+        try:
+            for i, secs in enumerate(self.plan, 1):
+                if i > 1:
+                    note(f"Block {i - 1} of {n} is done and everything "
+                         f"stopped cleanly.")
+                t = time.time()
+                self.write()
+                pids = wait(before, (i, n))
+                self.waited[i] = (time.time() - t) / 60
+                s = Soak(secs, self.audio_device,
+                         folder=os.path.join(self.dir, f"block {i}"),
+                         block=(i, n))
+                s.fake_audio = self.fake_audio
+                s.want_mode = "all"
+                s.on_report = self.write
+                self.blocks.append(s)
+                s.run()
+                if s.interrupted:
+                    self.stopped = f"stopped by Ctrl-C in block {i}"
+                    break
+                before = pids
+        except KeyboardInterrupt:
+            self.stopped = "stopped by Ctrl-C while waiting for the programs"
+            note(self.stopped)
+        self.finished = True
+        self.write()
+        return self.passed
+
+    @property
+    def passed(self):
+        return bool(self.blocks) and not self.stopped and \
+            len(self.blocks) == len(self.plan) and \
+            all(v != "FAIL" for s in self.blocks for v, _t, _d in s.items())
+
+    def write_report(self):
+        self.write()
+
+    def write(self):
+        n = len(self.plan)
+        per = []
+        for s in self.blocks:
+            items = s.items()
+            bad = [t for v, t, _d in items if v == "FAIL"]
+            per.append((s, items, bad))
+        failed = any(bad for _s, _i, bad in per)
+        verdict = ("FAILED" if failed or (self.finished and not self.passed)
+                   else "PASSED")
+        lines = [
+            "LTC Player bench soak test, all programs, in blocks",
+            "BENCH ONLY: this PC is isolated; flamesafe's output goes to "
+            "this PC only.",
+            "",
+            f"Result: {verdict if self.finished else verdict + ' so far'}"
+            + (f" ({self.stopped})" if self.stopped else ""),
+            f"Plan: {n} block(s) of {self.plan[0] / 60:.0f} minutes for the "
+            f"{self.seconds / 3600:g} hour(s) asked for. Each block ends at "
+            f"1 h 50 min at most, clear of the demos' 2 hour limit. Between "
+            f"blocks everything stops cleanly, BEYOND and MadMapper are "
+            f"started again by hand, and the next block starts once both "
+            f"answer.",
+            f"Started {now_text(self.started)}. Program: "
+            f"{ltcwin.version_line('LTC Player')}",
+            "BEYOND's response to commands is checked only as far as "
+            "possible: it sends nothing back, so running, its window "
+            "responding and holding its OSC port (127.0.0.2:8100) is all "
+            "that can be known. MadMapper is checked by the engine's "
+            "heartbeat watchdog as well.",
+            "",
+            "Blocks:",
+        ]
+        for k, (s, _items, bad) in enumerate(per, 1):
+            state = ("running" if not s.finished else
+                     "FAILED" if bad else "PASSED")
+            lines.append(
+                f"  Block {k}: {state}, {s.hours():.2f} h from "
+                f"{now_text(s.started)}; waited "
+                f"{self.waited.get(k, 0):.1f} min for BEYOND and MadMapper "
+                f"first" + (": FAIL " + "; ".join(bad) if bad else ""))
+        for k in range(len(per) + 1, n + 1):
+            lines.append(f"  Block {k}: not started")
+        for k, (s, _items, _bad) in enumerate(per, 1):
+            lines += ["", "=" * 20 + f" Block {k} of {n} " + "=" * 20]
+            lines += s.report_lines()
         text = "\r\n".join(lines) + "\r\n"
         for p in self.report_paths:
             try:
@@ -1827,9 +2041,14 @@ def main(argv=None):
     import signal
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
-    soak = Soak(seconds, device)
-    soak.fake_audio = fake
-    soak.want_mode = mode
+    resolved, _found, why = resolve_mode(mode)
+    if resolved == "all programs":
+        note(why)
+        soak = Blocks(seconds, device, fake)
+    else:
+        soak = Soak(seconds, device)
+        soak.fake_audio = fake
+        soak.want_mode = mode
     ok = False
     try:
         ok = soak.run()

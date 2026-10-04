@@ -7,9 +7,14 @@ GPU reading. soak.py does the rest.
   MadMapper  its process is running, it holds its OSC input port (8000, the
              show's), and, once its project sends the heartbeat track, the
              engine's own watchdog says the heartbeat is fresh.
-  BEYOND     its process is running and it holds its OSC input port (8100,
-             the show's). BEYOND sends nothing back at all (bench B8), so
-             that is all that can be known.
+  BEYOND     its process is running, its window is responding, and it
+             holds its OSC input port (127.0.0.2:8100, the bench plan's).
+             BEYOND sends nothing back at all (bench B8), so that is as far
+             as its answering can be checked.
+
+Blocks (Jeff, 2026-10-04): with the demos, the soak runs in blocks of 1 h
+50 min, clear of their 2 hour limit. Between blocks the operator quits and
+starts BEYOND and MadMapper again, and each block waits until both answer.
 """
 import glob as _glob
 import os
@@ -20,6 +25,11 @@ MADMAPPER_PORT = 8000         # madmapper.DEFAULT_PORT: what the show uses
 BEYOND_PORT = 8100            # beyond.DEFAULT_PORT
 HEARTBEAT_PORT = 9001         # madmapper.DEFAULT_HEARTBEAT_PORT
 HEARTBEAT_ADDRESS = "/float-1"
+# The bench plan's addresses: MadMapper's OSC on 127.0.0.1, BEYOND's on
+# 127.0.0.2 (the Art-Net timecode goes to the same two addresses).
+MADMAPPER_IP = "127.0.0.1"
+BEYOND_IP = "127.0.0.2"
+BLOCK_S = 6600.0              # 1 h 50 min: clear of the demos' 2 h limit
 
 # BEYOND Essentials Demo stops after about 2 hours (Jeff, 2026-10-04). An
 # exit inside this window after it was first seen running is the demo's
@@ -31,15 +41,88 @@ APPS = {
                   "globs": (r"{pf}\MadMapper*\MadMapper.exe",
                             r"{pf}\MadMapper*\*\MadMapper.exe",
                             r"{pf86}\MadMapper*\MadMapper.exe"),
-                  "port": MADMAPPER_PORT},
+                  "port": MADMAPPER_PORT, "ip": MADMAPPER_IP},
     "BEYOND": {"exe": ("BEYOND.exe", "Beyond.exe"),
                "globs": (r"{pf}\Pangolin\BEYOND*\BEYOND.exe",
                          r"{pf86}\Pangolin\BEYOND*\BEYOND.exe",
                          r"C:\Pangolin\BEYOND*\BEYOND.exe",
                          r"{pf}\BEYOND*\BEYOND.exe",
                          r"{pf86}\BEYOND*\BEYOND.exe"),
-               "port": BEYOND_PORT},
+               "port": BEYOND_PORT, "ip": BEYOND_IP},
 }
+
+# What to click, said once at the start of each block (Jeff, 2026-10-04).
+CLICKS = (
+    "BEYOND (Demo, Advanced): start BEYOND from its icon. On the startup "
+    "settings window click Go BEYOND. In the version picker choose "
+    "Advanced (OSC and Art-Net need it). Close the VLC window that opens. "
+    "If it offers to recover after a crash, decline it. Its OSC input is "
+    "127.0.0.2 port 8100. Laser output may be enabled: this PC is isolated.",
+    "MadMapper (Demo): start MadMapper from its icon and choose the demo. "
+    "Check Preferences: OSC input port 8000, the heartbeat output to "
+    "127.0.0.1 port 9001 (/float-1), and Audio output None. Its DMX "
+    "blacking out every 30 s is the demo, not a fault.",
+)
+
+
+def block_plan(total_s, block_s=BLOCK_S):
+    """The block lengths for a run of `total_s` seconds: one block for each
+    2 hours asked for (at least one), each at most `block_s`. 8 hours is 4
+    blocks of 1 h 50 min."""
+    n = max(1, int(round(total_s / 7200.0)))
+    return [min(block_s, total_s / n)] * n
+
+
+def app_pids(run=subprocess.run):
+    """{lower-case image name: set of PIDs} of every running process."""
+    try:
+        out = run(["tasklist", "/fo", "csv", "/nh"], capture_output=True,
+                  text=True, timeout=20).stdout
+    except Exception:
+        return {}
+    got = {}
+    for ln in out.splitlines():
+        parts = [p.strip('"') for p in ln.strip().split('","')]
+        if len(parts) >= 2 and parts[1].isdigit():
+            got.setdefault(parts[0].lower(), set()).add(int(parts[1]))
+    return got
+
+
+def hung_names(run=subprocess.run):
+    """Lower-case image names whose window Windows says is not responding."""
+    try:
+        out = run(["tasklist", "/fi", "STATUS eq NOT RESPONDING", "/fo",
+                   "csv", "/nh"], capture_output=True, text=True,
+                  timeout=20).stdout
+    except Exception:
+        return set()
+    return {ln.split('","')[0].strip('"').lower()
+            for ln in out.splitlines() if ln.startswith('"')}
+
+
+def pids_of(app, pids):
+    found = set()
+    for e in APPS[app]["exe"]:
+        found |= pids.get(e.lower(), set())
+    return found
+
+
+def readiness(app, pids, hung, held, before=None):
+    """Why `app` is not ready for a block yet, or "" when it is: running,
+    started again since the block before (`before`: the PIDs it had then),
+    its window responding, and holding its OSC port."""
+    mine = pids_of(app, pids)
+    a = APPS[app]
+    if not mine:
+        return "not running yet"
+    if before and mine & before:
+        return ("still the copy from the block before: quit it and start it "
+                "again")
+    if any(e.lower() in hung for e in a["exe"]):
+        return "its window is not responding"
+    if not held:
+        return f"not holding its OSC port {a['ip']}:{a['port']} yet"
+    return ""
 
 
 def find_app(name, env=None, glob=_glob.glob):
@@ -99,16 +182,17 @@ class AppWatch:
         self.episodes = []           # (start, end or None, why)
         self.demo_stopped_at = None
 
-    def sample(self, now, alive, held, heartbeat=None):
+    def sample(self, now, alive, held, heartbeat=None, hung=False):
         """`heartbeat`: None when not configured or not known, else True
-        (fresh) or False (stale). Returns the sentence of what is wrong, or
-        ""."""
+        (fresh) or False (stale). `hung`: Windows says its window is not
+        responding. Returns the sentence of what is wrong, or ""."""
         self.samples += 1
         if alive and self.first_seen is None:
             self.first_seen = now
         if self.demo_stopped_at is not None:
             return ""
         why = ("not running" if not alive else
+               "window not responding" if hung else
                "not holding its OSC port" if not held else
                "heartbeat stale" if heartbeat is False else "")
         if why == "not running" and self.demo_limit and \
@@ -417,6 +501,35 @@ def self_test():
     c.sample(1800, False, False)
     assert c.faults() and c.demo_stopped_at is None
     yield "BEYOND stopping about 2 h in is the demo's limit; earlier is a fault"
+    hw = AppWatch("BEYOND", demo_limit=True)
+    assert hw.sample(0, True, True, hung=True) == "window not responding"
+    hw.sample(30, True, True)
+    assert hw.faults() == [(0, 30, "window not responding")]
+    yield "BEYOND's window not responding is an episode with its times"
+    assert block_plan(8 * 3600) == [6600.0] * 4
+    assert block_plan(3600) == [3600.0]
+    assert block_plan(2 * 3600) == [6600.0]
+    assert block_plan(24 * 3600) == [6600.0] * 12
+    yield "8 hours is 4 blocks of 1 h 50 min; 1 hour is one block of 1 hour"
+    tl = ('"BEYOND.exe","4120","Console","1","90,000 K"\n'
+          '"MadMapper.exe","5000","Console","1","300,000 K"\n')
+    pids = app_pids(lambda *a, **k: types.SimpleNamespace(stdout=tl))
+    assert pids_of("BEYOND", pids) == {4120}, pids
+    hung = hung_names(lambda *a, **k: types.SimpleNamespace(
+        stdout='"BEYOND.exe","4120","Console","1","90,000 K"\n'))
+    none = hung_names(lambda *a, **k: types.SimpleNamespace(
+        stdout="INFO: No tasks are running which match the specified "
+               "criteria.\n"))
+    assert hung == {"beyond.exe"} and none == set()
+    assert readiness("BEYOND", {}, set(), False) == "not running yet"
+    assert "window is not responding" in readiness("BEYOND", pids, hung, True)
+    assert "127.0.0.2:8100" in readiness("BEYOND", pids, set(), False)
+    assert readiness("BEYOND", pids, set(), True) == ""
+    assert "start it again" in readiness("BEYOND", pids, set(), True,
+                                         before={4120})
+    assert readiness("MadMapper", pids, set(), True, before={4999}) == ""
+    yield ("a block waits for each program: running, started again since "
+           "the block before, window responding, holding its OSC port")
     # GPU and heat readings parse.
     tp = ('"(PDH-CSV 4.0)","\\\\PC\\GPU Engine(pid_1_engtype_3D)"\n'
           '"10/04/2026 10:00:00.000","12.5","3.5"\n')
