@@ -10772,12 +10772,38 @@ def test_the_gpl_path_never_loads_the_scheduler():
     for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
         files += [os.path.join(dirpath, n) for n in names]
     for f in files:
+        if f.replace(os.sep, "/").endswith("packaging/windows/supervisor.py"):
+            # The Windows show PC's supervisor: its "fire_ice" show mode IS
+            # the Fire & Ice scheduler, on purpose. Its "plain" mode must
+            # never pass --schedule; proved below on the real function.
+            continue
         try:
             text = open(f, errors="replace", encoding="utf-8").read()
         except OSError:
             continue
         check("--schedule" not in text,
               f"{os.path.relpath(f, root)} turns the scheduler on")
+    import tempfile as _tf
+    sp = os.path.join(root, "packaging", "windows")
+    if os.path.isfile(os.path.join(sp, "supervisor.py")):
+        sys.path.insert(0, sp)
+        d = _tf.mkdtemp()
+        try:
+            import supervisor as _sup
+            want = _sup.wanted_args({
+                "show_folder": d, "flamesafe_config": os.path.join(d, "x"),
+                "port": 7878, "run_flamesafe": True, "run_deck": True,
+                "show_mode": "plain", "schedule": os.path.join(d, "s.json")})
+            eng = want["engine"][0] or []
+            check("--schedule" not in eng,
+                  f"the Windows supervisor's plain mode never turns the "
+                  f"scheduler on: {eng}")
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+            sys.path.remove(sp)
+            sys.modules.pop("supervisor", None)
+            sys.modules.pop("ltcwin", None)
     print("  ok")
 
 
