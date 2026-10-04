@@ -20,7 +20,8 @@ import math
 import time
 
 from . import rules
-from .link import FlameFrame, CONTRACT_VERSION
+from .arminput import _RejectJournal
+from .link import DisarmAll, FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
 FAULT_CLEAR_S = 5.0
@@ -29,8 +30,48 @@ FAULT_CLEAR_S = 5.0
 # show program coming back, and then a cycle.
 LINK_LOST = ("Show program stopped answering: disarmed. Cycle the arm to "
              "re-arm once it is back.")
+# Round 4, item B: why a cycle is not being accepted right now.
+OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
+                "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
+# Second-copy guard (Jeff, 2026-10-03): why a group is disarmed and a
+# cycle is not being accepted while a second sender is on the FLAME link,
+# the flame link has just changed hands, or it has been flooded.  Steady
+# amber: cycling now would not count.
+FLAME_OTHER_SENDER = ("Another sender is on the show program link, or it "
+                      "just changed hands: every group is disarmed and a "
+                      "cycle cannot arm until that has settled. Cycle the "
+                      "arm again once it has.")
+# More datagrams than this, or more bytes, waiting on the flame link in one
+# tick is a flood (fix round 1 of PR #40, the arm link's own rule).  An
+# honest ltcplay sends one frame per 25 ms, about 2 KB each, plus a few
+# disarm_all copies after an Abort.
+FLAME_FLOOD_DATAGRAMS_PER_TICK = 50
+FLAME_FLOOD_BYTES_PER_TICK = 256 * 1024
+# The words on the ARMED lamp of a group the show program's Abort disarmed
+# (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
+# and the only one.  Shown until that group latches again.
+ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# Rejections on the flame link are journaled exactly as the arm link's are
+# (arminput._RejectJournal, round 4 of #31's safety review, item C): one
+# line per REASON when an episode starts, one closing line with the count
+# once that reason has been quiet for EPISODE_QUIET_S (5 s), and never more
+# than 4 lines per reason in any 60 s.  The reason is one of the fixed
+# strings below, never the raw message: decode and refusal messages carry
+# text and numbers the SENDER chose, and a sender varying them must not get
+# a fresh episode, and a fresh line, every datagram.  A refused disarm_all
+# is throttled under its own "disarm_all: <reason>" keys.
+_FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
+                  "not a JSON object", "wrong contract version",
+                  "wrong key", "wrong message type", "seq is not",
+                  "tc is not", "mono is not", "universe",
+                  "values is not", "a channel value", "id is not",
+                  "reason is not", "disarm_all has a field",
+                  "another sender", "out of order",
+                  "sender clock went backwards",
+                  "no live flame link", "wrong length", "not a FlameFrame",
+                  "not a DisarmAll")
 
 
 def now():
@@ -65,11 +106,26 @@ class Composer:
         self._seen_down = [False] * self.n
         self._latched = [False] * self.n
         self._arm_seq = None
+        self._arm_sender = None         # round 4: who the last one came from
         self._arm_fresh_at = None       # our clock, last time seq advanced
         self._arm_seen_at = None        # our clock, last assertion of any kind
         self._arm_live = False
         self._link_live = False         # ltcplay's frames fresh last tick
         self._link_lost_at = None       # tick clock when the link went stale
+        # Round 3 of the safety review, item 6: how many OTHER senders
+        # SocketArmInput is currently tracking on the arm link (fresh
+        # inside its own stale_ms), as of the last note_foreign_arm_senders
+        # call. Zero for every input that never has one (NullArmInput,
+        # ScriptedArmInput). Carried in the status frame so the deck can
+        # raise its own alarm the instant a foreign sender is interacting
+        # with the link at all, not only once a divergence it can actually
+        # observe (a forced bit that happens to already match what this
+        # deck expects leaves nothing else to notice).
+        self._foreign_arm_senders = 0
+        # Round 4 of the safety review, item B: whether the arm input has
+        # seen a flood (arminput.FLOOD_DATAGRAMS_PER_POLL) inside its own
+        # stale_ms, as of the last note_arm_link_flooded call.
+        self._arm_link_flooded = False
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -78,7 +134,47 @@ class Composer:
         self._frame_mono = None
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
+        # Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10,
+        # review probe p2 s5), the flame link's own copy of the arm link's
+        # round-4 consent veto.  A second sender with the key on the flame
+        # link (a second copy of ltcplay, or an old one still running) means
+        # every group is disarmed (fix round 1 of PR #40) and nobody can newly
+        # arm one, whichever of the two holds the lock:
+        #   _flame_foreign   {sender: our clock} for every keyed, well-formed
+        #                    datagram refused as "another sender"; a sender
+        #                    counts until it has been quiet frame_stale_ms.
+        #   _flame_changed_at  our clock when the lock last passed to a
+        #                    sender other than the one that held it before;
+        #                    for frame_stale_ms after that the newcomer has
+        #                    not yet proved it is the only sender.
+        self._flame_foreign = {}
+        self._flame_changed_at = None
+        # Fix round 1 of PR #40: our clock at the last tick that found a
+        # flood on the flame link (Service._drain).  No cycle counts for
+        # frame_stale_ms after it.
+        self._flame_flood_at = None
         self._last_reject = ""
+        # Rejection journaling, the arm link's own throttle (see
+        # _FLAME_REASONS).  Written as kind "link-reject".
+        self._rejects = _RejectJournal(
+            lambda _kind, msg: self._event("link-reject", msg))
+
+        # disarm_all from the show program (CONTRACT.md, 2026-10-02).
+        # _aborted[i] only changes the WORDS on a held group's lamp; it is
+        # never read by anything that decides a safety value.
+        self._aborted = [False] * self.n
+        self._disarm_count = 0          # accepted disarm_all datagrams
+        self._disarm_last_id = None
+        self._disarm_last_key = None    # (id, sender) of the last journaled
+        self._disarm_last_reason = ""
+        self._disarm_at = None
+        # Fix round 1 of PR #34, item 2: True for a group whose low was
+        # already going on when the last disarm_all arrived.  Such a low
+        # cannot be consent within min_arm_dwell_ms of that disarm_all
+        # (assert_arm), so an arm-hold the operator began before a screen
+        # Abort cannot complete after it.  Cleared by a genuine True-to-False
+        # report after the Abort: that low is a new one.
+        self._low_predates_abort = [False] * self.n
 
         # composing
         self._last_sent = [DISARM] * self.n
@@ -88,6 +184,8 @@ class Composer:
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
         self._fire_refused = [False] * self.n
+        self._name_mismatch_logging = False   # item 10: once per episode
+        self._name_mismatch_count = 0
         self._last_tick = None
         self._fault = ""
         self._fault_at = None
@@ -98,12 +196,13 @@ class Composer:
             "arm_assertions", "arm_rejected", "overruns", "compose_faults",
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
-            "link_lost",
+            "link_lost", "disarm_all", "disarm_all_rejected",
+            "second_sender_disarms", "flame_link_floods",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
 
-    def assert_arm(self, wanted, seq, names=None):
+    def assert_arm(self, wanted, seq, names=None, forced=None, sender=None):
         """The arm input says: I want these groups armed, and my liveness
         counter is `seq`.  Returns True if the assertion was well formed.
 
@@ -112,6 +211,24 @@ class Composer:
         assertion is rejected unless they match the config exactly, in
         order, so a deck built against a different group map cannot arm
         the wrong head.
+
+        `forced` (added round 3 of the safety review, item 1) is optional:
+        one bool per group, True where this call's False bit is not a
+        genuine report from the input -- SocketArmInput sets it where its
+        own foreign-disarm AND (arminput.py's FOREIGN DISARM section)
+        cleared a bit that the locked sender itself was not asking to
+        clear.  A forced low still disarms this tick (that is the entire
+        point of letting a foreign frame clear a bit), but it must never
+        be read as the operator's own down edge: see the consent loop
+        below.  None (every other input) means nothing is forced, exactly
+        like an all-False vector.
+
+        `sender` (round 4 of the safety review) is optional: who this
+        assertion came from (SocketArmInput: the locked (ip, port)).  When
+        it differs from the last assertion's sender, this is treated exactly
+        like an input restart: every latch and every pending down edge is
+        cleared, so no consent edge can ever be half proved by one sender
+        and finished by another.
 
         Never raises.  A malformed assertion is rejected and counted; the
         staleness rule then disarms within arm_stale_ms if nothing well
@@ -123,9 +240,49 @@ class Composer:
                 raise ValueError("wanted")
             if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
                 raise ValueError("seq")
+            if forced is None:
+                f = [False] * self.n
+            else:
+                f = list(forced)
+                if len(f) != self.n or any(not isinstance(x, bool) for x in f):
+                    raise ValueError("forced")
             if names is not None:
-                if list(names) != [g.name for g in self.groups]:
-                    raise ValueError("names")
+                want_names = [g.name for g in self.groups]
+                if list(names) != want_names:
+                    # Safety review of PR #31, item 6: this used to be
+                    # folded into the generic except below, which counted
+                    # it and journaled NOTHING -- a deck built against a
+                    # different group map failed to arm anything and the
+                    # night journal never said why. Named here instead, so
+                    # it says which names, and against what.
+                    self.stats["arm_rejected"] += 1
+                    self._name_mismatch_count += 1
+                    if not self._name_mismatch_logging:
+                        # Round 2 of the safety review, item 10: logged once
+                        # per continuous episode, with a running count, not
+                        # once per assertion -- at 10 Hz or faster a
+                        # misconfigured deck would otherwise flood the
+                        # bounded journal queue (1000 lines) within a
+                        # couple of minutes, pushing out everything else.
+                        self._name_mismatch_logging = True
+                        self._event(
+                            "arm-link",
+                            f"arm assertion rejected: its group names "
+                            f"{list(names)!r} do not match this config's "
+                            f"{want_names!r}; a deck built against a "
+                            f"different group map cannot arm the wrong "
+                            f"head. Further rejections for this same "
+                            f"reason will not be logged individually "
+                            f"until it stops.")
+                    return False
+                elif self._name_mismatch_logging:
+                    self._name_mismatch_logging = False
+                    self._event(
+                        "arm-link",
+                        f"arm assertions are matching this config's group "
+                        f"names again, after {self._name_mismatch_count} "
+                        f"rejected for a mismatch")
+                    self._name_mismatch_count = 0
         except Exception:                               # noqa: BLE001
             self.stats["arm_rejected"] += 1
             return False
@@ -147,6 +304,12 @@ class Composer:
             # once it has been SEEN to advance.  Rev 1 latched on the
             # synthetic all-down report a booting watcher emits.
             advanced = False
+        elif sender is not None and self._arm_sender is not None and \
+                sender != self._arm_sender:
+            # Round 4: the arm input's sender lock changed hands.  Whatever
+            # the counter says, this is a different input: start over.
+            self._reset_latches("arm input changed sender")
+            advanced = False
         elif seq < self._arm_seq:
             # The counter went BACKWARDS: the input rebooted.  That is an
             # interruption even though the assertions kept arriving, and
@@ -156,6 +319,7 @@ class Composer:
         elif seq > self._arm_seq:
             advanced = True
         self._arm_seq = seq
+        self._arm_sender = sender
         self._arm_seen_at = t
         if advanced:
             self._arm_fresh_at = t
@@ -165,18 +329,107 @@ class Composer:
         # this very assertion advanced the counter, and the counter was
         # already fresh before it.  An input that boots up already asking
         # for arm has not asked this program for anything.
-        consent_ok = advanced and was_live
+        #
+        # Round 4 of the safety review, item B: and nobody else is on the
+        # link.  A foreign sender's frames can only ever clear bits (the
+        # AND in arminput.py), but the round-4 review proved a sender can
+        # still BECOME the locked one with no deck gap at all, by flooding
+        # the port until the real deck's frames are crowded out for
+        # arm_stale_ms, and then forge its own low-then-high.  Once it holds
+        # the lock the real deck is the foreign one, still sending, so
+        # "nobody else on the link and no flood" is false for as long as
+        # the real deck is alive -- the rogue can never collect consent.
+        # The cost: a genuine cycle made while another sender is on the
+        # link does not count, and the operator cycles again once it has
+        # gone (CONTRACT.md, the arm link).
+        #
+        # Second-copy guard (2026-10-03): and nobody else is on the FLAME
+        # link, and the flame link has not just changed hands.  Probe p2 s5:
+        # a second sender with the key took the flame link in an ltcplay
+        # restart gap, the real ltcplay came back and was refused, and the
+        # deck re-armed every group while the other sender supplied the fire
+        # values.  Now the real ltcplay, still sending, is the other sender,
+        # so no cycle counts for as long as both are running.
+        disturbed = (self._foreign_arm_senders != 0
+                     or self._arm_link_flooded
+                     or self._flame_link_disturbed(t))
+        consent_ok = advanced and was_live and not disturbed
+        # Fix round 1 of PR #34, item 2: inside min_arm_dwell_ms of an
+        # accepted disarm_all, a low that was already going on at the Abort
+        # is not consent.  The Stream Deck keeps reporting False all through
+        # an arm-HOLD, so without this a hold begun before a screen Abort
+        # re-proved its low on the next frame after it and armed the group
+        # about 0.35 s later with no further operator action (review probe
+        # p2 s2/s3).  The deck's hold is ARM_HOLD_S (0.6 s) and the dwell is
+        # never under 1 s, so every hold begun before the Abort completes
+        # inside this window and is refused.  A low that begins after the
+        # Abort (a True-to-False report) is a new one and counts as before.
+        in_abort_window = (
+            self._disarm_at is not None
+            and (t - self._disarm_at) * 1000.0 < self.cfg.min_arm_dwell_ms)
+        if disturbed:
+            # And no down edge seen BEFORE the other sender turned up may be
+            # finished while it is here: the operator cycles again once it
+            # has gone (the deck keeps re-asserting its own False, so a
+            # genuine low is re-proved on the first frame after it goes).
+            self._seen_down = [False] * self.n
         for i in range(self.n):
             if not w[i]:
                 if self._wanted[i]:
-                    # The operator disarmed this group.  The dwell applies.
+                    # Something disarmed this group (the operator, or a
+                    # foreign sender's forced clear).  The dwell applies
+                    # either way: a value that just went to zero must not
+                    # bounce straight back up, forced or not.
                     self._disarmed_at[i] = t
-                self._seen_down[i] = consent_ok
+                    if not f[i]:
+                        # a genuine low that began after the last Abort
+                        self._low_predates_abort[i] = False
+                # Round 3 of the safety review (item 1): seen_down is the
+                # "the operator pulled this down for real" flag a future
+                # True consumes as consent (just below).  A FORCED low --
+                # this bit went to False only because a foreign sender's
+                # AND cleared it, never because the locked sender itself
+                # reported it -- must never set that flag: it is not the
+                # operator cycling anything, and letting it count is
+                # exactly how a foreign False-then-True sequence used to
+                # forge a consent edge while the locked sender's own report
+                # never changed. A forced low also CLEARS any seen_down a
+                # genuine low already set: the bit the composer is looking
+                # at right now did not come from the locked sender, so
+                # there is nothing left here that proves the operator did
+                # anything, forced or not.
+                self._seen_down[i] = consent_ok and not f[i]
                 self._latched[i] = False
+                if in_abort_window and self._low_predates_abort[i]:
+                    # a low already going on at the Abort (fix round 1)
+                    self._seen_down[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
+                self._aborted[i] = False
             self._wanted[i] = w[i]
         return True
+
+    def note_foreign_arm_senders(self, count):
+        """How many OTHER senders the arm input is currently tracking on
+        the link (round 3 of the safety review, item 6).  Called by the
+        service every tick, independent of whether assert_arm was also
+        called this tick (a locked sender that goes briefly quiet must not
+        make this number look stale just because nothing else moved).
+        Never raises: a bad value is simply not counted, which is the safe
+        side -- the deck losing this one extra signal is never worse than
+        the deck crashing."""
+        try:
+            self._foreign_arm_senders = max(0, int(count))
+        except (TypeError, ValueError):
+            pass
+
+    def note_arm_link_flooded(self, flooded):
+        """Whether the arm input has seen a flood inside its own stale_ms
+        (round 4 of the safety review, item B).  Called by the service every
+        tick, BEFORE assert_arm, like note_foreign_arm_senders.  Never
+        raises."""
+        self._arm_link_flooded = bool(flooded) if isinstance(
+            flooded, bool) else True
 
     def _reset_latches(self, why, journal=True):
         # journal=False clears just the same but neither counts nor writes
@@ -208,6 +461,7 @@ class Composer:
             fresh = self._frame_is_fresh(t)
             if fresh:
                 if sender != self._frame_sender:
+                    self._second_sender(sender, t)
                     raise ValueError("another sender")
                 # While the link is live, frames must arrive in order and the
                 # sender's own clock must not go backwards.  Once the link
@@ -217,6 +471,22 @@ class Composer:
                                      f"{self._frame_seq}")
                 if frame.mono < self._frame_mono:
                     raise ValueError("sender clock went backwards")
+            elif self._frame_sender is not None and \
+                    sender != self._frame_sender:
+                # The lock passes to a different sender (second-copy guard,
+                # 2026-10-03).  Every ltcplay restart does this too (a new
+                # socket is a new port), and link loss has already disarmed
+                # every group; the newcomer must now be the only sender for
+                # frame_stale_ms before any cycle counts.
+                self._flame_changed_at = t
+                self._reset_latches("show program link changed sender")
+                self._event("link",
+                            f"show program link taken by "
+                            f"{_addr(sender)}, which is not "
+                            f"{_addr(self._frame_sender)} that held it "
+                            f"before: no group can be newly armed until it "
+                            f"has been the only sender for "
+                            f"{self.cfg.frame_stale_ms} ms")
             self._frame = bytes(frame.values)
             self._frame_at = t
             self._frame_seq = frame.seq
@@ -228,12 +498,132 @@ class Composer:
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
+            self._note_reject(self._last_reject, sender)
             return self._last_reject
 
-    def reject_frame(self, why):
+    def reject_frame(self, why, sender=None):
         """The link layer could not even decode a datagram."""
         self.stats["frames_rejected"] += 1
         self._last_reject = str(why)
+        self._note_reject(self._last_reject, sender)
+
+    def disarm_all(self, msg, sender=None):
+        """The show program says: disarm every group, now (its Abort).
+        Returns "" if accepted, otherwise the reason it was refused.  Never
+        raises.
+
+        Accepted only from the live, locked flame-link sender, in order,
+        exactly as a flame frame would be: the right key and shape were
+        already checked by link.decode_disarm_all, and here the sender
+        lock, the sequence and the sender's clock are checked against the
+        same record the flame frames use.  With no live flame link there
+        is nothing to accept it from (and nothing armed: link loss already
+        disarmed every group), so it is refused.
+
+        What it does, and all it does: every latch and every pending
+        consent edge (`_seen_down`) is cleared.  It never sets a latch,
+        never sets `_seen_down`, never touches `_wanted` or the dwell: a
+        group comes back only through a fresh, genuine, un-forced
+        low-to-high cycle from the arm input AFTER this message (assert_arm,
+        rule 6), and the low half of that cycle starts the re-arm dwell
+        itself (an armed group's `wanted` was True, so the operator's low is
+        a True-to-False report), so the safety slot cannot rise again within
+        min_arm_dwell_ms of the Abort.  An earlier draft also set the dwell
+        here; mutation testing proved that unobservable (the operator's own
+        low always restarts it later) and it was removed rather than kept
+        as code nothing can tell is there.  It does not refresh the flame
+        link's liveness or its fire values (it carries none).
+
+        Fix round 1 of PR #34, item 2: it also marks every group's current
+        low as one that began before the Abort, and for min_arm_dwell_ms
+        such a low is not consent (assert_arm).  That is the case the
+        dwell does NOT cover: a group that was not armed, whose low the
+        deck kept re-proving all through an arm-hold the operator began
+        before the Abort.  This, too, can only remove arming."""
+        try:
+            if not isinstance(msg, DisarmAll):
+                raise TypeError("not a DisarmAll")
+            t = self._clock()
+            if not self._frame_is_fresh(t):
+                raise ValueError("no live flame link to accept it from")
+            if sender != self._frame_sender:
+                # A keyed disarm_all from a second sender is a second
+                # sender on the link (second-copy guard, 2026-10-03).
+                self._second_sender(sender, t)
+                raise ValueError("another sender")
+            if msg.seq <= self._frame_seq:
+                raise ValueError(f"out of order: seq {msg.seq} after "
+                                 f"{self._frame_seq}")
+            if msg.mono < self._frame_mono:
+                raise ValueError("sender clock went backwards")
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1
+            why = f"disarm_all: {str(e) or type(e).__name__}"
+            self._last_reject = why
+            self._note_reject(why, sender)
+            return why
+        self._frame_seq = msg.seq
+        self._frame_mono = msg.mono
+        was_up = [self._latched[i] or self._last_sent[i] != DISARM
+                  for i in range(self.n)]
+        for i in range(self.n):
+            self._aborted[i] = True
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1
+        self._disarm_count += 1
+        self._low_predates_abort = [True] * self.n
+        # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
+        # pair.  ltcplay's abort ids now start at a random number per run,
+        # and a restarted ltcplay is a new sender too, so a second run's
+        # Abort is never mistaken for a repeat copy of the first run's.
+        key = (msg.abort_id, sender)
+        new_abort = key != self._disarm_last_key
+        self._disarm_last_key = key
+        self._disarm_last_id = msg.abort_id
+        self._disarm_last_reason = msg.reason
+        self._disarm_at = t
+        if new_abort:
+            # The sender repeats one Abort on every frame for a while in
+            # case datagrams are lost; each copy is applied (it can only
+            # clear), but only the first is written.
+            up = [g.name for g, u in zip(self.groups, was_up) if u]
+            armed = ("armed until now: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("disarm-all",
+                        f"the show program's Abort disarmed every group "
+                        f"({msg.reason}; abort {msg.abort_id}; {armed}). "
+                        f"Each group needs a fresh arm cycle from the "
+                        f"Stream Deck.")
+        return ""
+
+    def _note_reject(self, why, sender=None):
+        """Journal a rejection: once per reason per episode (the arm link's
+        own throttle, _RejectJournal).  Never raises."""
+        try:
+            why = str(why)
+            reason = _flame_reason(why)
+            where = (f" from {sender[0]}:{sender[1]}"
+                     if isinstance(sender, tuple) and len(sender) == 2
+                     else "")
+            if len(why) > 200:          # sender-chosen text, kept short
+                why = why[:200] + "..."
+            more = (" No group can be newly armed while it is on the link."
+                    if reason.endswith("another sender") else "")
+            self._rejects.note(reason, self._clock(), sender,
+                               f"flame link datagram rejected{where}: "
+                               f"{why}.{more}")
+        except Exception:                               # noqa: BLE001
+            pass
+
+    def _close_reject_episodes(self, t):
+        try:
+            self._rejects.sweep(
+                t, lambda reason, addrs, n:
+                f"flame link rejections ({reason}) stopped after {n} "
+                f"rejected, from {addrs}")
+        except Exception:                               # noqa: BLE001
+            pass
 
     def note_fault(self, sentence):
         """Something outside the composer failed (a send, a status write).
@@ -251,6 +641,85 @@ class Composer:
     def _fire_is_live(self, t):
         return (self._frame_at is not None and
                 (t - self._frame_at) * 1000.0 <= self.cfg.fire_hold_ms)
+
+    def _second_sender(self, sender, t):
+        """A keyed, well-formed datagram from a sender other than the
+        flame link's live, locked one (second-copy guard).
+
+        Fix round 1 of PR #40 (Jeff, 2026-10-03): this DISARMS every group,
+        on the tick it arrives in, not only blocks new arming.  With one
+        copy of ltcplay per machine (ltcplay/onlyone.py), two keyed senders
+        at once means something is wrong.  It can only ever take arm away:
+        every latch and every pending consent edge is cleared, nothing is
+        set.  The sender is remembered for frame_stale_ms (refreshed by
+        every datagram it sends), and while it is, no cycle counts.
+        Journaled once per episode."""
+        first = self._flame_foreign_count(t) == 0
+        self._flame_foreign[sender] = t
+        up = [g.name for i, g in enumerate(self.groups)
+              if self._latched[i] or self._last_sent[i] != DISARM]
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        if first:
+            self.stats["second_sender_disarms"] += 1
+            armed = ("disarmed: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("second-sender",
+                        f"a second sender ({_addr(sender)}) is on the show "
+                        f"program link while {_addr(self._frame_sender)} "
+                        f"holds it: every group disarmed ({armed}). No "
+                        f"group can be armed again until only one sender "
+                        f"has been on the link for "
+                        f"{self.cfg.frame_stale_ms} ms; then cycle the arm. "
+                        f"Only one copy of ltcplay should ever be running.")
+
+    def note_flame_link_flooded(self, flooded, count=0, size=0):
+        """Whether Service._drain found a flood on the flame link this tick
+        (fix round 1 of PR #40).  Blocks consent for frame_stale_ms, like the
+        arm link's flood flag.  Never raises."""
+        try:
+            if not flooded:
+                return
+            t = self._clock()
+            if not self._flame_flooded(t):
+                self.stats["flame_link_floods"] += 1
+                self._event("flame-flood",
+                            f"show program link flooded: {count} datagrams "
+                            f"({size} bytes) waiting in one tick. No group "
+                            f"can be newly armed until it has stopped for "
+                            f"{self.cfg.frame_stale_ms} ms.")
+            self._flame_flood_at = t
+        except Exception:                               # noqa: BLE001
+            self._flame_flood_at = self._clock()
+
+    def _flame_flooded(self, t):
+        return (self._flame_flood_at is not None and
+                (t - self._flame_flood_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
+    def _flame_foreign_count(self, t):
+        """How many OTHER keyed senders have been refused on the flame link
+        inside the last frame_stale_ms (second-copy guard, 2026-10-03).
+        Older entries are dropped here."""
+        win = self.cfg.frame_stale_ms
+        for s in [s for s, at in self._flame_foreign.items()
+                  if (t - at) * 1000.0 > win]:
+            del self._flame_foreign[s]
+        return len(self._flame_foreign)
+
+    def _flame_new_sender(self, t):
+        """True for frame_stale_ms after the flame link's lock passed to a
+        different sender: the newcomer has not yet been the only sender for
+        that long."""
+        return (self._flame_changed_at is not None and
+                (t - self._flame_changed_at) * 1000.0
+                <= self.cfg.frame_stale_ms)
+
+    def _flame_link_disturbed(self, t):
+        """No cycle counts while this is True (assert_arm)."""
+        return (self._flame_foreign_count(t) != 0
+                or self._flame_new_sender(t)
+                or self._flame_flooded(t))
 
     def _arm_is_live(self, t):
         return (self._arm_fresh_at is not None and
@@ -320,6 +789,8 @@ class Composer:
             self._fault = ""
             self._fault_at = None
 
+        self._close_reject_episodes(t)
+
         # 3. ltcplay's frame.  A fire value is kept on the wire for at most
         # fire_hold_ms after the last accepted frame; after that we know
         # nothing about the cue and the fire slots are zero.  After
@@ -356,6 +827,7 @@ class Composer:
         self._link_live = link_live
 
         # 4. The safety slots.
+        flame_disturbed = self._flame_link_disturbed(t)
         want = [live and link_live and self._wanted[i] and self._latched[i]
                 for i in range(self.n)]
         values = []
@@ -364,7 +836,8 @@ class Composer:
             prev = self._last_sent[i]
             if not want[i]:
                 values.append(DISARM)
-                held.append(self._why_not(i, live, link_live))
+                held.append(self._why_not(i, live, link_live,
+                                          flame_disturbed))
                 continue
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
@@ -481,7 +954,7 @@ class Composer:
                               live, frame_fresh, fire_live)
         return Output(bytes(buf), status, fault)
 
-    def _why_not(self, i, live, link_live):
+    def _why_not(self, i, live, link_live, flame_disturbed=False):
         """Why a group the input wants armed is not: (reason, amber mode).
         Flashing amber means cycling the arm is the fix.  Steady amber means
         wait, or fix something else; cycling would only restart the dwell."""
@@ -495,7 +968,18 @@ class Composer:
             if self._frame_at is None:
                 return (LINK_NEVER, "steady")
             return (LINK_LOST, "steady")
+        if not self._latched[i] and (self._foreign_arm_senders
+                                     or self._arm_link_flooded):
+            # Round 4, item B: cycling now would not count; say so instead
+            # of flashing "cycle the arm" at an operator whose cycle is
+            # being refused.
+            return (OTHER_SENDER, "steady")
+        if not self._latched[i] and flame_disturbed:
+            # Second-copy guard (2026-10-03): the same, for the flame link.
+            return (FLAME_OTHER_SENDER, "steady")
         if not self._latched[i]:
+            if self._aborted[i]:
+                return (ABORT_DISARMED, "flashing")
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
 
@@ -594,6 +1078,8 @@ class Composer:
                           else "live" if live else "stale"),
                 "seq": self._arm_seq,
                 "age_ms": arm_age,
+                "foreign_senders": self._foreign_arm_senders,
+                "flooded": self._arm_link_flooded,
             },
             "frames": {
                 "state": ("never" if self._frame_at is None
@@ -605,6 +1091,19 @@ class Composer:
                 "accepted": self.stats["frames_accepted"],
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
+                # Second-copy guard (2026-10-03): other keyed senders refused
+                # inside frame_stale_ms, and whether the lock changed hands
+                # inside frame_stale_ms.  Either one: no cycle counts.
+                "foreign_senders": self._flame_foreign_count(t),
+                "new_sender": self._flame_new_sender(t),
+                "flooded": self._flame_flooded(t),
+            },
+            "disarm_all": {
+                "accepted": self._disarm_count,
+                "last_id": self._disarm_last_id,
+                "last_reason": self._disarm_last_reason,
+                "age_ms": (None if self._disarm_at is None
+                           else int((t - self._disarm_at) * 1000)),
             },
             "stats": dict(self.stats,
                           journal_dropped=int(getattr(self._log, "dropped",
@@ -619,3 +1118,22 @@ class Composer:
             self._log.event(kind, msg)
         except Exception:                               # noqa: BLE001
             pass
+
+
+def _addr(sender):
+    """(ip, port) as ip:port for the journal; anything else as it is."""
+    if isinstance(sender, tuple) and len(sender) == 2:
+        return f"{sender[0]}:{sender[1]}"
+    return str(sender)
+
+
+def _flame_reason(why):
+    """The fixed reason a flame-link rejection is throttled under (see
+    _FLAME_REASONS); a refused disarm_all keeps its own prefix."""
+    pre = ""
+    if why.startswith("disarm_all: "):
+        pre, why = "disarm_all: ", why[len("disarm_all: "):]
+    for r in _FLAME_REASONS:
+        if why.startswith(r):
+            return pre + r
+    return pre + "other"

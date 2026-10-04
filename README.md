@@ -350,7 +350,7 @@ decode noise does not make the show stutter.
 ## The web page
 
     ./ltc serve                 open it on this Mac
-    ./ltc serve --bind 0.0.0.0  reach it from a phone or iPad on the same network
+    ./ltc serve --network       also reach it from an iPad on the show Wi-Fi
 
 Or double-click **Web ltcplay.command**.
 
@@ -367,10 +367,45 @@ Run and Stop. Run asks before it sends anything, and Validate sends nothing at
 all, which is tested by listening on the ArtNet port during a validation and
 requiring silence.
 
-Serving on `0.0.0.0` mints a token and puts it in the link, whether or not you
-asked for one: anyone who can reach that port can black out the rig, and a
-venue network is not a private one. Requests from the machine itself never need
-it.
+**The iPad remote.** `--network` serves on ONE address, this machine's address
+on the show Wi-Fi, saved on the page under "Show network" (it lands in
+`ltcplay_remote.json` in the settings folder), on port 7878, plus this machine
+itself on 127.0.0.1. Never every interface: `0.0.0.0` is refused. Over the
+network every operator signs in with their own PIN (set on the show machine,
+on the remote page at `/remote`; stored hashed in `ltcplay_remote_pins.json`).
+Three wrong PINs lock that device and that name out, 5 s, then 10, 20, up to
+5 minutes. A session is a cookie on that one device and ends with Sign out,
+after 12 hours idle, or after 18 hours. The Stream Deck needs no PIN (Jeff,
+2026-10-01). Requests from the machine itself need no sign-in, as before.
+
+The remote page has Start now and Abort (each asks first), Hold, Resume, Reset,
+Disarm every flame group and the operator picker, all through the same
+scheduler and conductor paths, journaled with the operator and the device. It
+shows tonight's list, the show, the timecode, Hold and Abort, and each flame
+group as flamesafe last reported it (flamesafe sends the engine a copy of its
+status on `link.status_mirror_port`). If the page has not heard from the engine
+for 2 s a red banner says so and the controls that act on what it shows go
+off; Hold, Abort and Disarm stay on.
+
+**Arming from the page** (Jeff, 2026-10-03): a signed-in operator (a PIN
+session even on the show machine) holds a group's "Hold to arm" button.
+The page never arms anything itself: the Stream Deck process reads the hold
+from the engine as a press of that group's key and arms it under every
+deck and flamesafe rule (flamesafe/CONTRACT.md, "Arming from a screen").
+It needs a page status and a flamesafe status no older than 1 s, 1 s of
+heartbeats the engine actually received, and `"screen_arming": true` in
+`ltcplay_remote.json` (the default; `false` turns it off). A dropped
+connection, a closed page, an Abort or a disarm lets the hold go.
+
+In a programming session (a show started with Rehearse, or in Rehearsal mode)
+the page can also play from a timecode, jump 5 or 10 s, pause and continue,
+and loop between marks A and B. Never during a scheduled show.
+
+**Never put remote access software, a tunnel or a port forward on the show
+machine.** The engine trusts anything that seems to come from the machine
+itself. Anything that looks forwarded (Forwarded, X-Forwarded-For, Via and the
+like) is refused, from anywhere, and so is a request addressed by any other
+name.
 
 One show runs at a time. A second start is refused with a reason, because two
 players on the same universes fight frame by frame and the rig looks broken.
