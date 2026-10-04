@@ -108,6 +108,51 @@ def clean_stop_on_logoff():
     ctypes.windll.kernel32.SetConsoleCtrlHandler(h, True)
 
 
+def package_name():
+    """The full name of the MSIX package this process runs inside (another
+    app's container, e.g. the Claude desktop app's shell), or "" when it
+    runs as itself. Inside one, AppData is redirected into that app's own
+    folder, so settings, locks and journals would land where a normally
+    started LTC Player never looks (show PC, 2026-10-04)."""
+    if not WINDOWS:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32")
+        n = wintypes.UINT(0)
+        rc = k32.GetCurrentPackageFullName(ctypes.byref(n), None)
+        if rc == 15700:                # APPMODEL_ERROR_NO_PACKAGE
+            return ""
+        buf = ctypes.create_unicode_buffer(max(n.value, 1))
+        rc = k32.GetCurrentPackageFullName(ctypes.byref(n), buf)
+        return buf.value if rc == 0 else "an unnamed package"
+    except Exception:
+        local = os.environ.get("LOCALAPPDATA", "")
+        return "a package" if "\\Packages\\" in local else ""
+
+
+CONTAINER_REFUSAL = (
+    "LTC Player was started from inside another app's container ({pkg}). "
+    "Windows would put its settings and files in that app's own folder, "
+    "where LTC Player started from the Start menu never looks. Start LTC "
+    "Player from the Start menu instead. Nothing was started.")
+
+
+def settings_folder_line():
+    """Which folder this process's settings and journals really go to."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Local")
+    pkg = package_name()
+    if not pkg:
+        return f"settings and journals: {os.path.join(base, 'ltcplay')}"
+    family = pkg.split("_")[0]
+    return (f"settings and journals: {os.path.join(base, 'ltcplay')}, which "
+            f"Windows REDIRECTS into the {pkg} container (under "
+            f"{os.path.join(base, 'Packages')}\\{family}*\\LocalCache"
+            f"\\Local\\ltcplay)")
+
+
 def keep_time(above_normal=True):
     """Windows only: ask Windows to keep this process on time.
 
@@ -166,6 +211,8 @@ def say_keep_time(program, above_normal=True):
     if got:
         print(f"{program}: Windows timekeeping: {', '.join(got)}",
               flush=True)
+    if WINDOWS:
+        print(f"{program}: {settings_folder_line()}", flush=True)
     return got
 
 
