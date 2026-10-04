@@ -1195,6 +1195,7 @@ def brand_doc(server):
             b["show"] = cfg.show_name
         if getattr(cfg, "venue", None):
             b["venue"] = cfg.venue
+        b["beyond_blank"] = getattr(cfg, "beyond_blank", None)
     return b
 
 

@@ -31281,6 +31281,205 @@ def test_fire_ice_serves_the_rack_screen_not_the_old_page():
     print("  ok")
 
 
+class _TcSock:
+    """A UDP socket stand-in for the BEYOND timecode tests: every packet
+    kept with where it went; `fail` makes sendto raise."""
+
+    def __init__(self, log, fail=None):
+        self.log, self.fail = log, fail
+
+    def sendto(self, pkt, addr):
+        if self.fail and self.fail[0]:
+            raise OSError("network unreachable")
+        self.log.append((bytes(pkt), addr))
+
+    def setsockopt(self, *a):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_beyond_timecode_blanking():
+    section("fire & ice: BEYOND's lasers kept dark by timecode (beyond_blank "
+            "\"timecode\", the default): BEYOND's own stream jumps to the "
+            "running hour-23 black zone within one frame in every blanking "
+            "case, comes back to the right show frame, MadMapper's stream is "
+            "never touched, a send that fails is a fault, and the setting is "
+            "checked")
+    import types
+    from ltcplay import beyondtc as BT, clock as CK
+    F = _fi_mod()
+    C = _cond_mod()
+    # The setting.
+    cfg = F.FireIceConfig.parse({})
+    check(cfg.beyond_blank == "timecode" and cfg.beyond_black_hour == 23,
+          "default: timecode blanking, black zone hour 23")
+    for bad, words in (({"beyond_blank": "dim"}, "beyond_blank"),
+                       ({"beyond_black_hour": 24}, "beyond_black_hour"),
+                       ({"beyond_black_hour": True}, "beyond_black_hour"),
+                       ({"beyond_timecode_ip": "beyond.local"},
+                        "beyond_timecode_ip")):
+        try:
+            F.FireIceConfig.parse(bad)
+            check(False, f"{bad} was accepted")
+        except F.FireIceConfigError as e:
+            check(words in str(e) and "\u2014" not in str(e),
+                  f"refused in a sentence: {e}")
+    for m in ("osc", "both"):
+        check(F.FireIceConfig.parse({"beyond_blank": m}).beyond_blank == m,
+              f"{m} is a mode")
+
+    # The gate on the show's own timecode sender.
+    sent, tsent = [], []
+    t = [100.0]
+    lines = []
+    fail = [False]
+    gate = BT.TimecodeGate("127.0.0.2", hour=23, clock=lambda: t[0],
+                           socket_factory=lambda: _TcSock(sent, fail),
+                           journal=lambda text, **k: lines.append(
+                               (text, k.get("fault", False))))
+    out = CK.TimecodeOut([("MadMapper", "127.0.0.1"), ("BEYOND", "127.0.0.2")],
+                         socket_factory=lambda: _TcSock(tsent))
+    CK.DIVERT.clear()
+    CK.DIVERT[BT.LABEL] = gate.divert
+    CK.DIVERT["127.0.0.2"] = gate.divert
+    try:
+        show = CK.arttimecode(0, 1, 2, 3)
+        out.send(show)
+        check([a for _p, a in tsent] == [("127.0.0.1", 6454)],
+              f"MadMapper gets the show's timecode: {tsent}")
+        check(not sent, "dark from the start: none of the show's timecode "
+                        "reaches BEYOND")
+        check(gate.dark() and BT.tc_of(sent[-1][0]) == (23, 0, 0, 0) and
+              sent[-1][1] == ("127.0.0.2", 6454),
+              f"blank: the first black-zone frame goes out at once: "
+              f"{BT.tc_of(sent[-1][0])}")
+        t[0] += 1.5
+        gate.send_black()
+        check(BT.tc_of(sent[-1][0]) == (23, 0, 1, 15),
+              f"the black zone keeps running, never frozen: "
+              f"{BT.tc_of(sent[-1][0])}")
+        check(BT.black_tc(23, 3600 * 30 + 5) == (23, 0, 0, 5),
+              "the zone wraps inside its own hour")
+        gate.light()
+        out.send(CK.arttimecode(0, 1, 2, 4))
+        check(BT.tc_of(sent[-1][0]) == (0, 1, 2, 4) and
+              tsent[-1][1] == ("127.0.0.1", 6454),
+              "lit: the very next show frame goes to BEYOND unchanged, and "
+              "MadMapper still gets it too")
+        # A Hold: the frozen frame repeats; dark, then back to that frame.
+        held = CK.arttimecode(0, 1, 9, 12)
+        out.send(held)
+        n0 = len(tsent)
+        gate.dark()
+        out.send(held)
+        check(BT.tc_of(sent[-1][0])[0] == 23 and len(tsent) == n0 + 1,
+              "held and dark: BEYOND is in the black zone; MadMapper still "
+              "gets the held frame")
+        gate.light()
+        out.send(held)
+        check(BT.tc_of(sent[-1][0]) == (0, 1, 9, 12),
+              "Resume: BEYOND goes back to the exact held frame")
+        # A node at BEYOND's address under another name is BEYOND too.
+        out2 = CK.TimecodeOut([("Lasers", "127.0.0.2")],
+                              socket_factory=lambda: _TcSock(tsent))
+        gate.dark()
+        n1 = len(tsent)
+        out2.send(show)
+        check(len(tsent) == n1, "a node at BEYOND's address by another name "
+                                "is diverted too")
+        # Fail safe.
+        fail[0] = True
+        check(gate.dark() is False and any(
+            f and "UNKNOWN" in x for x, f in lines),
+            f"a black frame that cannot be sent is a fault, lasers UNKNOWN: "
+            f"{lines[-1:]}")
+        fail[0] = False
+        check(gate.dark() and "again" in lines[-1][0], "and it says so when "
+                                                       "it is sent again")
+    finally:
+        CK.DIVERT.clear()
+    g2 = BT.TimecodeGate("127.0.0.2", socket_factory=lambda: _TcSock([]))
+    g2.start()
+    try:
+        check(CK.DIVERT.get("beyond") == g2.divert and
+              CK.DIVERT.get("127.0.0.2") == g2.divert,
+              "a started gate takes BEYOND's packets by name and address")
+    finally:
+        g2.close()
+    check(not CK.DIVERT, "closed, it lets them go")
+    # attach() gives the conductor the blanking the setting asks for.
+    n = _fi_night(session=False)
+    if n.S is not None:
+        for m in ("timecode", "osc", "both"):
+            w = F.attach(n.svc, types.SimpleNamespace(session=None),
+                         F.FireIceConfig(beyond_blank=m), threaded=False)
+            b = w.devices.beyond
+            check((b is None) if m == "osc" else (
+                isinstance(b, BT.Blanking) and b.mode == m and
+                b.gate is not None),
+                f"attach() with beyond_blank {m!r} and no OSC BEYOND: {b}")
+            w.close()
+
+    # Through the conductor: every blanking case puts BEYOND in the zone
+    # within the press (one frame), and Resume brings it back.
+    for mode in ("timecode", "both"):
+        sent.clear()
+        osc = types.SimpleNamespace(calls=[], cfg=None, last_result="ok")
+        osc.blank = lambda show=None: osc.calls.append("blank") or True
+        osc.unblank = lambda show=None, **k: osc.calls.append("unblank") or True
+        bl = BT.Blanking(mode, gate=gate, osc=osc)
+        T = _CondTime()
+        rig = _CondRig(T.now)
+        dev = C.ConductorDevices(None, bl, show=1)
+        state = ["SHOW"]
+        c = C.Conductor(dev, rig, C.laser_gate_for(lambda: state[0]),
+                        clock=T.now, waiter=T.wait, threaded=False)
+        _cd_live(c, rig, None)
+        rig.move_s = 0.1
+
+        def zone():
+            return gate.lit is False and sent and \
+                BT.tc_of(sent[-1][0])[0] == 23
+
+        def up(what):
+            c.resume("Andy", "rack screen")
+            c.run_pending()
+            check(gate.lit is True, f"{mode}: lit again after {what}")
+        check(gate.lit is True, f"{mode}: a confirmed show lights BEYOND")
+        for what, press in (("Hold", lambda: c.hold("Andy", "rack screen")),
+                            ("Abort", lambda: c.abort("Andy", "rack "
+                                                      "screen"))):
+            n = len(sent)
+            press()
+            if what == "Hold":
+                c.run_pending()     # Hold's blank is the executor's first
+            check(zone() and len(sent) > n,           # laser step
+                  f"{mode}: {what} puts BEYOND in the black zone"
+                  + (" at the press" if what == "Abort" else ""))
+            c.run_pending()
+            if what == "Hold":
+                up(what)
+        c.reset("Andy", "rack screen")
+        c.run_pending()
+        check(zone(), f"{mode}: still dark after Reset")
+        for what, call in (("intermission", c.intermission),
+                           ("a failed start", c.failed_start),
+                           ("a show stopped", c.show_stopped)):
+            gate.light()
+            n = len(sent)
+            call("scheduler")
+            c.run_pending()
+            check(zone() and len(sent) > n,
+                  f"{mode}: {what} puts BEYOND in the black zone")
+        check(("blank" in osc.calls) == (mode == "both"),
+              f"{mode}: OSC used only in both: {osc.calls}")
+        check(bl.unblank(in_show=1) is False,
+              "unblank refuses anything but the real True")
+    print("  ok")
+
+
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
@@ -31407,6 +31606,10 @@ def test_fire_ice_config_defaults_and_refusals():
           f"/api/brand names the Fire & Ice show from its own config, "
           f"under the global brand: {b}")
     plain = W.brand_doc(types.SimpleNamespace(fire_ice_config=None))
+    check(b.get("beyond_blank") == "timecode" and
+          "Lasers blanked by" in open(os.path.join(
+              os.path.dirname(W.__file__), "web", "remote.html")).read(),
+          "the rack screen shows how the lasers are blanked")
     check(plain["show"] == B.load()["show"] and
           "Ignite" not in json.dumps(B.load()),
           f"without Fire & Ice the shared brand file names no show: "
@@ -31612,7 +31815,9 @@ def _fi_night(performs=True, session=True, flames=True):
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 55)]
     svc = _svc(S, work, now)
-    cfg = F.FireIceConfig(scheduler_performs=performs)
+    # This rig proves the OSC path (beyond_blank "osc"); the timecode
+    # black zone has tests of its own (test_beyond_timecode_blanking).
+    cfg = F.FireIceConfig(scheduler_performs=performs, beyond_blank="osc")
     w = F.attach(svc, control, cfg, madmapper=(link, None), beyond=bey,
                  journal=journal,
                  flame_link=_FiFlames(calls, T) if flames else None,
@@ -37621,6 +37826,7 @@ if __name__ == "__main__":
     test_schedule_conductor_line_round3_details()
     test_fire_ice_config_defaults_and_refusals()
     test_flame_groups_are_a_settings_change_only()
+    test_beyond_timecode_blanking()
     test_fire_ice_serves_the_rack_screen_not_the_old_page()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()

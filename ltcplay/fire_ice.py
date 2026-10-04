@@ -56,7 +56,8 @@ from . import showlog as showlog_mod
 CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
-                  "flame_controller", "notes", "show_name", "venue"))
+                  "flame_controller", "notes", "show_name", "venue",
+                  "beyond_blank", "beyond_black_hour", "beyond_timecode_ip"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -90,7 +91,15 @@ class FireIceConfig:
     def __init__(self, scheduler_performs=False, show_cue=None,
                  madmapper=None, beyond=None, path=None,
                  auto_start="when_run_pressed", flamesafe_config=None,
-                 flame_controller=None, show_name=None, venue=None):
+                 flame_controller=None, show_name=None, venue=None,
+                 beyond_blank="timecode", beyond_black_hour=23,
+                 beyond_timecode_ip=None):
+        # How the lasers are kept dark (beyondtc.py, Jeff 2026-10-04):
+        # "timecode" (BEYOND's own timecode to the black zone, the default),
+        # "osc" (beyond.py's brightness 0/100) or "both".
+        self.beyond_blank = beyond_blank
+        self.beyond_black_hour = beyond_black_hour
+        self.beyond_timecode_ip = beyond_timecode_ip
         # The show's own name and where it plays, for the screens' title
         # (/api/brand). Here, not in the shared ltcplay_brand.json, so the
         # GPL build keeps its own name; Jeff Holmes Presents stays global.
@@ -164,6 +173,29 @@ class FireIceConfig:
                     f"{where}: {k!r} is words for the screens' title, or "
                     f"leave it out.")
             titles[k] = v.strip() if v else None
+        blank = doc.get("beyond_blank", "timecode")
+        if blank not in ("timecode", "osc", "both"):
+            raise FireIceConfigError(
+                f"{where}: 'beyond_blank' is how the lasers are kept dark: "
+                f"\"timecode\" (the black zone, the default), \"osc\" or "
+                f"\"both\", not {blank!r}.")
+        hour = doc.get("beyond_black_hour", 23)
+        if isinstance(hour, bool) or not isinstance(hour, int) or \
+                not 0 <= hour <= 23:
+            raise FireIceConfigError(
+                f"{where}: 'beyond_black_hour' is the hour of BEYOND's black "
+                f"zone, a whole number from 0 to 23, not {hour!r}.")
+        tip = doc.get("beyond_timecode_ip")
+        if tip is not None:
+            import ipaddress
+            try:
+                ipaddress.IPv4Address(str(tip))
+            except ValueError:
+                raise FireIceConfigError(
+                    f"{where}: 'beyond_timecode_ip' is BEYOND's address for "
+                    f"its timecode, like 127.0.0.2, not {tip!r}.")
+        titles.update(beyond_blank=blank, beyond_black_hour=hour,
+                      beyond_timecode_ip=tip)
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -1386,6 +1418,10 @@ class Wiring:
             if self.runner is not None:
                 self.runner.close()
             self.conductor.close()
+            gate = getattr(getattr(self.devices, "beyond", None), "gate",
+                           None)
+            if gate is not None:
+                gate.close()
         finally:
             # Last: zero frames until the end. flamesafe disarms every
             # group once it stops hearing it.
@@ -1461,7 +1497,8 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
             built_link.open()
     else:
         show = FireIceShow(control, journal=journal, flame_link=flame_link)
-    devices = C.ConductorDevices(link, beyond, journal=journal)
+    blanking = build_blanking(cfg, beyond, journal, threaded)
+    devices = C.ConductorDevices(link, blanking, journal=journal)
 
     def state():
         m = svc.machine
@@ -1484,6 +1521,42 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         journal(f"Fire & Ice show conductor built: {cfg.summary()}.",
                 action="fire_ice", outcome="built")
     return Wiring(conductor, show, devices, runner, built_link)
+
+
+def build_blanking(cfg, beyond, journal=None, threaded=True):
+    """BEYOND as the conductor sees it: beyondtc.Blanking, keeping the
+    lasers dark by timecode, OSC or both (cfg.beyond_blank). Journals the
+    mode. None only when there is no BEYOND at all (OSC mode, no BEYOND
+    configured)."""
+    from . import beyondtc
+    mode = getattr(cfg, "beyond_blank", "timecode")
+    if mode == "osc" and beyond is None:
+        return None
+    gate = None
+    if mode in ("timecode", "both"):
+        ip = getattr(cfg, "beyond_timecode_ip", None) or (
+            beyond.cfg.host if beyond is not None and
+            getattr(beyond, "cfg", None) is not None else None)
+        gate = beyondtc.TimecodeGate(ip, hour=cfg.beyond_black_hour,
+                                     journal=journal)
+        if threaded:
+            # Only a real serve registers the gate with the show's timecode
+            # sender; the selftest's unthreaded attach() starts it itself.
+            gate.start()
+    if journal is not None:
+        where = gate.ip if gate is not None and gate.ip else \
+            "the show file's BEYOND node"
+        what = {"timecode": f"by timecode: BEYOND's own Art-Net timecode "
+                            f"({where}) "
+                            f"jumps to the black zone, hour "
+                            f"{cfg.beyond_black_hour}, running, whenever the "
+                            f"lasers must be dark",
+                "osc": "by OSC: BEYOND's brightness 0 or 100",
+                "both": f"by timecode (black zone hour "
+                        f"{cfg.beyond_black_hour}) AND by OSC brightness"}[mode]
+        journal(f"Lasers are blanked {what} (beyond_blank \"{mode}\").",
+                action="lasers", outcome="blank_mode")
+    return beyondtc.Blanking(mode, gate=gate, osc=beyond, journal=journal)
 
 
 class _LinkSlot:

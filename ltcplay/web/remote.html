@@ -833,7 +833,8 @@ async function loadBrand(){
     $("brandshow").textContent = title;
     document.title = title + " remote";
     $("brandkicker").textContent = b.venue ? ("At " + b.venue) : (b.name || "");
-    $("brandfoot").textContent = (b.name || "") + (b.venue ? " at " + b.venue : "");
+    $("brandfoot").textContent = (b.name || "") + (b.venue ? " at " + b.venue : "") +
+      (b.beyond_blank ? ". Lasers blanked by " + ({timecode:"timecode (black zone)", osc:"OSC", both:"timecode and OSC"}[b.beyond_blank] || b.beyond_blank) : "");
   }catch(e){ /* the credit is not worth failing the page over */ }
 }
 loadBrand();
