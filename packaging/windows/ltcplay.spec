@@ -22,14 +22,36 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path[:0] = [ROOT, HERE]
 
 # The app icon, made from the Mac iconset so both share one picture.
+# Each size comes from its own drawing (the small ones are simplified so
+# "LTC" stays readable), so the .ico is written by hand: PNG entries.
 ICON = None
 try:
+    import io
+    import struct
     from PIL import Image
-    src = os.path.join(ROOT, "LTC Player.iconset", "icon_256x256.png")
+    ICONSET = os.path.join(ROOT, "LTC Player.iconset")
+    pngs = {16: "icon_16x16.png", 32: "icon_32x32.png",
+            64: "icon_32x32@2x.png", 128: "icon_128x128.png",
+            256: "icon_256x256.png"}
+    images = {s: Image.open(os.path.join(ICONSET, f)).convert("RGBA")
+              for s, f in pngs.items()}
+    images[48] = images[64].resize((48, 48), Image.LANCZOS)
+    entries = []
+    for s in sorted(images):
+        buf = io.BytesIO()
+        images[s].resize((s, s), Image.LANCZOS).save(buf, "PNG")
+        entries.append((s, buf.getvalue()))
     ICON = os.path.join(HERE, "build", "ltcplay.ico")
     os.makedirs(os.path.dirname(ICON), exist_ok=True)
-    Image.open(src).save(ICON, sizes=[(16, 16), (32, 32), (48, 48),
-                                      (64, 64), (128, 128), (256, 256)])
+    with open(ICON, "wb") as f:
+        f.write(struct.pack("<HHH", 0, 1, len(entries)))
+        offset = 6 + 16 * len(entries)
+        for s, data in entries:
+            f.write(struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32,
+                                len(data), offset))
+            offset += len(data)
+        for _, data in entries:
+            f.write(data)
 except Exception as e:  # an icon is not worth a failed build
     print(f"no icon: {e}")
     ICON = None
