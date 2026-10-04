@@ -26110,15 +26110,33 @@ def test_streamdeck_controller_with_fakes():
     c3.run_once(down8)
     check(cond.calls[-1] == ("abort", "Andy", "Stream Deck")
           and ("reset", "Andy", "Stream Deck") not in cond.calls,
-          f"the Abort key pressed while latched never Resets (fix round 2, "
-          f"C): {cond.calls}")
+          f"the Abort key pressed while latched, before the deck has shown "
+          f"RESET, never Resets: {cond.calls}")
     c3.run_once(down7)
     down9 = [False] * 6
     down9[sd.TOP_HOLD] = True
     c3.run_once(down9)
+    c3.run_once(down7)
+    check(("reset", "Andy", "Stream Deck") not in cond.calls
+          and cond.calls[-1] == ("abort", "Andy", "Stream Deck"),
+          f"the Hold key is greyed and does nothing while latched: "
+          f"{cond.calls}")
+    c3._track_reset_face(True, t[0])      # the deck draws RESET (draw())
+    t[0] += sd.RESET_SHOWN_S - 0.1
+    c3.run_once(down8)
+    c3.run_once(down7)
+    check(("reset", "Andy", "Stream Deck") not in cond.calls,
+          f"a press before RESET has shown {sd.RESET_SHOWN_S:g} s is an "
+          f"Abort again, not a Reset: {cond.calls}")
+    t[0] += 0.1
+    c3.run_once(down8)
     check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
-          f"Reset (one press of the RESET key, the HOLD key's place) while "
-          f"latched reaches the real conductor: {cond.calls}")
+          f"once RESET has shown {sd.RESET_SHOWN_S:g} s, one press of the "
+          f"Abort key is Reset and reaches the real conductor: {cond.calls}")
+    c3._track_reset_face(c3._latched_now(), t[0])
+    check(c3._latched_now() is False and c3._reset_shown_since is None,
+          "after Reset the RESET clock is forgotten, so the next Abort "
+          "starts it afresh")
 
 
 class _FakeStatus:
@@ -26595,7 +26613,8 @@ def test_streamdeck_refractory_also_starts_at_reset():
     t[0] += sd.REARM_REFRACTORY_S + 5.0
     down_reset = [False] * 6
     c.run_once(down_reset)              # release
-    down_reset[sd.TOP_HOLD] = True
+    c._track_reset_face(True, t[0] - sd.RESET_SHOWN_S)   # RESET shown
+    down_reset[sd.TOP_ABORT] = True
     c.run_once(down_reset)              # Reset: one press of RESET
     check(c._latched_now() is False, "Reset cleared the latch")
     c.run_once([False] * 6)
@@ -26667,6 +26686,17 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
           f"front row, still really armed, shows GREEN on the key even "
           f"while latched, not the old flat dim OFF: "
           f"{set(body_pixels)}")
+    check(c._reset_shown_since is not None,
+          "drawing the latched deck starts the RESET_SHOWN_S clock")
+
+    def key_px(cv, key):
+        b = sd.face_box(key)
+        return {cv.getpixel((x, y)) for x in range(b[0], b[2], 3)
+                for y in range(b[1], b[3], 3)}
+    check(sd.RED in key_px(canvas, sd.TOP_ABORT) and
+          sd.GOLD not in key_px(canvas, sd.TOP_HOLD),
+          "latched: the Abort key flashes red (RESET), the Hold key is "
+          "greyed, not a gold RESET key")
 
     # The spoof alarm must also stay visible while latched.
     c._spoof_alarm = "flamesafe reports a mismatch"
@@ -35552,8 +35582,8 @@ def test_deck_presses_reach_the_engine_conductor():
 def test_deck_fix_round_2_abort_reset_and_disarm():
     section("Stream Deck (PR #43 fix round 2, C to E): the arm link goes "
             "false before the engine is asked to Abort; while aborted the "
-            "Abort key never Resets, a group key still disarms, and Reset is "
-            "the HOLD key held; a deck Abort never waits behind another "
+            "Abort key Resets only once it has shown RESET for half a "
+            "second, a group key still disarms; a deck Abort never waits behind another "
             "press; an engine that did not take a press shows on the deck")
     import threading
     from ltcplay import streamdeck as sd
@@ -35612,12 +35642,19 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
     c.run_once([False] * 6)
     check(arm.wanted == [False, False, False],
           "and nothing can be armed while aborted")
-    # Reset: one press of the RESET key (the HOLD key's place while
-    # aborted; Jeff, 2026-10-04).
+    # Reset: one press of the Abort key once it has shown RESET for
+    # RESET_SHOWN_S (Jeff's approved design, 2026-09-26).
     check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
           "setup: nothing above Reset")
     down = [False] * 6
     down[sd.TOP_HOLD] = True
+    c.run_once(down)
+    c.run_once([False] * 6)
+    check(cond._latched, "the greyed Hold key does not Reset")
+    c._track_reset_face(True, t[0])
+    t[0] += sd.RESET_SHOWN_S
+    down = [False] * 6
+    down[sd.TOP_ABORT] = True
     c.run_once(down)
     check(not cond._latched and cond.calls[-1][0] == "reset",
           f"one press of RESET is Reset: {cond.calls}")

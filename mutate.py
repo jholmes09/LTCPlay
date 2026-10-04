@@ -6986,10 +6986,30 @@ def build():
   '                    if self.arm.wanted[i]:\n                        self._do_disarm(i)',
   '                    if False:\n                        self._do_disarm(i)'),
 
- ('fix round 2: the RESET key does not Reset while aborted',
+ ('Reset design: a deck press Resets before RESET has shown 0.5 s',
   'ltcplay/streamdeck.py',
-  '                elif k == TOP_HOLD:\n                    self._do_reset()',
-  '                elif k == TOP_HOLD:\n                    pass'),
+  '                    if shown is not None and now - shown >= RESET_SHOWN_S:',
+  '                    if shown is not None:'),
+
+ ('Reset design: the Abort key never Resets once RESET has shown',
+  'ltcplay/streamdeck.py',
+  '                        self._do_reset()\n                    else:',
+  '                        self._do_abort(again=True)\n                    else:'),
+
+ ('Reset design: drawing the latched deck never starts the RESET clock',
+  'ltcplay/streamdeck.py',
+  '        elif self._reset_shown_since is None:\n            self._reset_shown_since = now',
+  '        elif False:\n            self._reset_shown_since = now'),
+
+ ('Reset design: the RESET clock survives a Reset',
+  'ltcplay/streamdeck.py',
+  '        if not latched:\n            self._reset_shown_since = None',
+  '        if False:\n            self._reset_shown_since = None'),
+
+ ('Reset design: the Hold key Resets while aborted',
+  'ltcplay/streamdeck.py',
+  '                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i]:',
+  '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i]:'),
 
  ('fix round 2: a deck Abort waits in line behind other presses',
   'ltcplay/streamdeck.py',
