@@ -201,7 +201,16 @@ def keep_time(above_normal=True):
         rc = ctypes.WinDLL("winmm").timeBeginPeriod(1)
         out.append("timer 1 ms" if rc == 0 else
                    f"timer NOT set to 1 ms (timeBeginPeriod returned {rc})")
-        if above_normal:
+        if above_normal == "high":
+            # BENCH BUILD (show PC, 2026-10-04): MadMapper decoding six
+            # 1080p videos on the CPU starved the engine for 0.4 s at a
+            # time. High, never Realtime; third-party programs are never
+            # touched.
+            ok = k32.SetPriorityClass(proc, 0x80)     # HIGH
+            out.append("priority High" if ok else
+                       f"priority NOT raised to High (error "
+                       f"{ctypes.get_last_error()})")
+        elif above_normal:
             ok = k32.SetPriorityClass(proc, 0x8000)   # ABOVE_NORMAL
             out.append("priority Above normal" if ok else
                        f"priority NOT raised (error "
@@ -212,9 +221,75 @@ def keep_time(above_normal=True):
     return out
 
 
+PRIORITY_ENV = "LTCPLAY_PRIORITY"      # "high": set by the supervisor
+
+
+def boosted():
+    """True when the supervisor (or the soak) asked for the bench build's
+    scheduling protection (showpc.json "priority_boost")."""
+    return os.environ.get(PRIORITY_ENV) == "high"
+
+
+def thread_priority(native_id, level, k32=None):
+    """Set one thread's priority (by its native id; 2 is Highest). True
+    when Windows took it."""
+    if not WINDOWS:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = k32 or ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenThread.restype = wintypes.HANDLE
+        k32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL,
+                                   wintypes.DWORD)
+        k32.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k32.OpenThread(0x0020 | 0x0040, False, native_id)  # SET/QUERY
+        if not h:
+            return False
+        try:
+            return bool(k32.SetThreadPriority(h, level))
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return False
+
+
+def boost_threads(names, level=2, log=print, every_s=0.5, setter=None,
+                  threads=None, stop=None):
+    """A daemon thread that raises every thread named in `names` (as it
+    appears, and again whenever a new one with that name starts) to `level`
+    (2, Highest), logging each once. Fails soft."""
+    import threading as _t
+    setter = setter or thread_priority
+    threads = threads or _t.enumerate
+    done = set()
+    halt = stop or _t.Event()
+
+    def run():
+        while not halt.is_set():
+            for th in threads():
+                nid = getattr(th, "native_id", None)
+                if th.name in names and nid and nid not in done:
+                    done.add(nid)
+                    ok = setter(nid, level)
+                    log(f"thread {th.name} (id {nid}): priority "
+                        + ("Highest" if ok else "NOT raised (Windows "
+                           "refused)"))
+            if halt.wait(every_s):
+                return
+    th = _t.Thread(target=run, daemon=True, name="ltcwin-boost")
+    th.start()
+    return th
+
+
 def say_keep_time(program, above_normal=True):
     """keep_time(), and one line on stdout (the program's log) saying what
-    took, for the soak report to read."""
+    took, for the soak report to read. With the scheduling protection on
+    (boosted()), the engine and flamesafe go to High and the deck to Above
+    normal."""
+    if boosted():
+        above_normal = "high" if above_normal else True
     got = keep_time(above_normal)
     if got:
         print(f"{program}: Windows timekeeping: {', '.join(got)}",

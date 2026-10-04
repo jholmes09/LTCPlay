@@ -93,6 +93,7 @@ Name: "{group}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--sta
 Name: "{group}\Stop LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--stop"; Comment: "Stop everything the safe way (refused while a show is running)"
 Name: "{group}\Roll back to the previous version"; Filename: "{app}\LTC Player.exe"; Parameters: "--rollback"
 Name: "{group}\LTC Player bench soak test"; Filename: "{app}\ltcplay-soak.exe"; Comment: "PC-only stress test with nothing connected: 1, 8 or 24 hours, then a report on the Desktop"
+Name: "{group}\LTC Player bench soak A-B (priority on, then off)"; Filename: "{app}\ltcplay-soak.exe"; Parameters: "--ab 20"; Comment: "Two 20 minute soaks, scheduling protection on then off, MadMapper maximized and restored every 2 minutes; one report on the Desktop"
 Name: "{group}\Show PC checklist"; Filename: "{app}\SHOW PC CHECKLIST.txt"
 Name: "{group}\Settings and logs"; Filename: "{app}\LTC Player.exe"; Parameters: "--open-settings"
 Name: "{group}\Uninstall LTC Player"; Filename: "{uninstallexe}"

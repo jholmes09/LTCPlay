@@ -876,6 +876,12 @@ class Handler(BaseHTTPRequestHandler):
             return 404, {"error": "no such thing here"}
         out = {"conductor": c.snapshot()}
         fi = getattr(self.server, "fire_ice", None)
+        fl = getattr(fi, "flame_link", None)
+        if fl is not None and hasattr(fl, "snapshot"):
+            try:
+                out["flame_link"] = fl.snapshot()
+            except Exception:
+                pass
         lasers = getattr(getattr(fi, "devices", None), "beyond", None)
         if lasers is not None and hasattr(lasers, "health"):
             # How the lasers are kept dark, and BEYOND's timecode stream's

@@ -69,6 +69,12 @@ def main():
     _bench_fake_audio()
     if argv and argv[0] == "serve":
         ltcwin.say_keep_time("ltcplay")
+        if ltcwin.boosted():
+            # The flame link's sender at Highest (bench build). The show
+            # audio's own process raises itself (showaudio.child_main).
+            ltcwin.boost_threads(
+                ("ltcplay-flame-link",),
+                log=lambda t: print(f"ltcplay: {t}", flush=True))
     from ltcplay import cli
     return cli.main(argv)
 

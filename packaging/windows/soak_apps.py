@@ -252,6 +252,35 @@ def app_holds(app, net=None):
     return any(is_app(app, w) for w in who)
 
 
+def show_windows(app, how):
+    """ShowWindow(how) on every visible top-level window of `app`'s
+    processes (3 maximize, 9 restore). Returns how many. Windows only."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import psutil
+        pids = {p.pid for p in psutil.process_iter(["name"])
+                if is_app(app, p.info.get("name") or "")}
+        u32 = ctypes.WinDLL("user32")
+        found = []
+        PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                  wintypes.LPARAM)
+
+        def cb(hwnd, _lp):
+            pid = wintypes.DWORD()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids and u32.IsWindowVisible(hwnd) and \
+                    u32.GetWindowTextLengthW(hwnd) > 0:
+                found.append(hwnd)
+            return True
+        u32.EnumWindows(PROC(cb), 0)
+        for h in found:
+            u32.ShowWindow(h, how)
+        return len(found)
+    except Exception:
+        return 0
+
+
 def port_held(port, ip="127.0.0.1", sock=socket.socket):
     """True when another program holds UDP `port` on `ip` (binding it here
     fails), which for MadMapper and BEYOND means they are listening."""

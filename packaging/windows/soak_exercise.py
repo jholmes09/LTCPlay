@@ -292,11 +292,16 @@ class Exerciser:
         `armed_since`: when flamesafe's own status last turned it armed (it
         can fire a moment before the exerciser's hold returns)."""
         rearmed = max(self.rearmed.get(name, 0), armed_since or 0)
+        # A Hold names itself first: an older Abort's window is open only
+        # until the group is armed again, and must never label a Hold.
         for s, e, why in self.windows:
             if why == "hold" and s + GRACE_S <= at and (e is None or at <= e):
-                return why
+                return "hold"
+        for s, e, why in self.windows:
             if why == "abort" and s + GRACE_S <= at and rearmed < s:
-                return "abort (not armed again since)"
+                return (f"time after the Abort at "
+                        f"{time.strftime('%H:%M:%S', time.localtime(s))}, "
+                        f"{name} not armed again since")
         return None
 
     def in_window(self, at, kinds=("hold", "abort")):
@@ -432,6 +437,15 @@ def self_test():
               lambda g, since: ex0.fire_quiet(g, 101.0, since))
     assert "not armed again since" in jb.violations[-1][1], \
         "still armed from before the Abort: a violation"
+    # Show PC 18:33:34: a Hold, long after an Abort the group was armed
+    # again since, is named a Hold and judged as one.
+    ex0.windows.append([200.0, None, "hold"])
+    assert ex0.fire_quiet("front row", 201.0, 150.0) == "hold"
+    jc = SacnJudge(groups)
+    jc.packet(va, 150.0, {"front row": True}, True, None)
+    jc.packet(va, 201.0, {"front row": True}, True,
+              lambda g, since: ex0.fire_quiet(g, 201.0, since))
+    assert "during the hold" in jc.violations[-1][1]
     yield ("flamesafe's output is judged per group: values only on armed "
            "groups, fire only in a show and never in a Hold, stray "
            "channels caught")
@@ -510,7 +524,7 @@ def self_test():
     assert ex.fire_quiet("front row", time.time() + 1) is None, \
         "armed again after the Abort: it may fire"
     ex.windows.append([time.time(), None, "abort"])
-    assert ex.fire_quiet("front row", time.time() + 1).startswith("abort")
+    assert "after the Abort" in ex.fire_quiet("front row", time.time() + 1)
     assert not ex.failures, ex.failures
     yield ("the exerciser signs in with a PIN, picks the operator, holds "
            "each Arm button with heartbeats until flamesafe reports it "

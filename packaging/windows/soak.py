@@ -209,9 +209,61 @@ NETWORKS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+# Every console line is written by one thread of its own (show PC,
+# 2026-10-04: a click in this window's console froze this program for
+# 15 to 36 s, and with it the flame link relay and every timing taken
+# here). No other thread here ever waits on the console.
+import queue as _queue
+_OUT = _queue.Queue()
+
+
+def _writer():
+    while True:
+        line = _OUT.get()
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+
+
+threading.Thread(target=_writer, daemon=True, name="soak-console").start()
+
+
 def note(text):
     NOTES.append((time.time(), text))
-    print(f"{now_text()}  {text}", flush=True)
+    _OUT.put(f"{now_text()}  {text}")
+
+
+def flush_console(timeout=2.0):
+    """Wait (a little) for the console lines already noted."""
+    end = time.time() + timeout
+    while not _OUT.empty() and time.time() < end:
+        time.sleep(0.02)
+
+
+def no_quick_edit():
+    """Windows: turn off QuickEdit in this console, so a click in the
+    window cannot freeze this program. Returns a sentence."""
+    if not ltcwin.WINDOWS:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetStdHandle.restype = wintypes.HANDLE
+        h = k32.GetStdHandle(-10)                  # STD_INPUT_HANDLE
+        mode = wintypes.DWORD()
+        if not k32.GetConsoleMode(h, ctypes.byref(mode)):
+            return "QuickEdit: no console to change"
+        # ENABLE_EXTENDED_FLAGS (0x80) must be set for the change to take.
+        new = (mode.value & ~0x40) | 0x80          # clear QUICK_EDIT (0x40)
+        if k32.SetConsoleMode(h, new):
+            return "QuickEdit turned off in this window (a click cannot " \
+                   "freeze the soak)"
+        return f"QuickEdit could NOT be turned off (error " \
+               f"{ctypes.get_last_error()})"
+    except Exception as e:
+        return f"QuickEdit could not be changed: {e}"
 
 
 # ------------------------------------------------------------ the soak ---
@@ -353,6 +405,12 @@ class Soak:
         self.tc_last_wall = None
         self.hold_continued = 0
         self.measured = ""
+        self.priority = True        # the scheduling protection (bench)
+        self.window_script = False  # maximize/restore MadMapper every 2 min
+        self.window_events = []     # (time, what)
+        self.cpu_min = {}           # name -> {minute: max CPU % that minute}
+        self.oversleep = {}         # minute -> worst sender sleep overrun ms
+        self._cpu_stop = threading.Event()
         self.bey_black = 0          # BEYOND stream packets in the black zone
         self.bey_show = 0           # ... in the show zone
         self.bey_bad = []           # (time, why): show zone while dark
@@ -623,6 +681,81 @@ class Soak:
         st.tick(t)
         if st.longest > before and self.go_wall is not None:
             st.longest_loop_s = t - self.go_wall
+
+    def cpu_sampler(self):
+        """Every second: CPU % of the engine, flamesafe, the deck,
+        MadMapper and BEYOND, to cpu1s.csv, and each one's worst per
+        minute, to line up a starvation event."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        path = os.path.join(self.dir, "cpu1s.csv")
+        procs = {}
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["time", "name", "cpu_pct"])
+            while not self._cpu_stop.wait(1.0):
+                want = {n: c["p"].pid for n, c in self.procs.items()
+                        if c["p"].poll() is None}
+                try:
+                    for p in psutil.process_iter(["name"]):
+                        app = soak_apps.which_app(p.info.get("name") or "")
+                        if app:
+                            want.setdefault(app, p.pid)
+                except Exception:
+                    pass
+                now = time.time()
+                m = int(now // 60)
+                for name, pid in want.items():
+                    try:
+                        ps = procs.get(pid)
+                        if ps is None:
+                            ps = procs[pid] = psutil.Process(pid)
+                            ps.cpu_percent(None)
+                            continue
+                        v = ps.cpu_percent(None)
+                    except Exception:
+                        procs.pop(pid, None)
+                        continue
+                    w.writerow([now_text(now), name, f"{v:.0f}"])
+                    d = self.cpu_min.setdefault(name, {})
+                    d[m] = max(d.get(m, 0.0), v)
+                fh.flush()
+
+    def window_scripter(self, every_s=120.0, hold_s=10.0):
+        """A/B trigger (show PC, 2026-10-04): every 2 minutes, maximize
+        MadMapper's windows, then restore them, the moment that set its
+        video decoding off."""
+        while not self._cpu_stop.wait(every_s):
+            n = soak_apps.show_windows("MadMapper", 3)       # SW_MAXIMIZE
+            self.window_events.append((time.time(), f"maximized {n}"))
+            note(f"window script: MadMapper maximized ({n} window(s))")
+            if self._cpu_stop.wait(hold_s):
+                return
+            n = soak_apps.show_windows("MadMapper", 9)       # SW_RESTORE
+            self.window_events.append((time.time(), f"restored {n}"))
+            note(f"window script: MadMapper restored ({n} window(s))")
+
+    def starvation_item(self):
+        bad = sorted(m for m, v in self.oversleep.items() if v >= 20.0)
+        rows = []
+        for m in bad[:12]:
+            cpus = ", ".join(
+                f"{n} {d[m]:.0f}%" for n, d in sorted(self.cpu_min.items())
+                if m in d)
+            rows.append(f"{time.strftime('%H:%M', time.localtime(m * 60))} "
+                        f"sleep overran {self.oversleep[m]:.0f} ms (CPU "
+                        f"worst that minute: {cpus or 'not read'})")
+        worst = max(self.oversleep.values()) if self.oversleep else None
+        win = f"; window script: {len(self.window_events)} action(s)"             if self.window_script else ""
+        return ("INFO", "Flame link sender: sleep overrun per minute, beside "
+                "each program's CPU (1 s samples, cpu1s.csv)",
+                (f"worst {worst:.0f} ms; minutes over 20 ms: "
+                 + ("; ".join(rows) if rows else "none")
+                 if worst is not None else "not read from the engine")
+                + f"; scheduling protection {'on' if self.priority else 'off'}"
+                + win)
 
     def on_beyond_tc(self, b, t, addr=None):
         """BEYOND's own timecode stream (fallback mode): hour
@@ -908,6 +1041,9 @@ class Soak:
                 env[FAKE_AUDIO_ENV] = self.audio_name or "1"
         if name == "deck" and self.virtual_deck:
             env["LTCPLAY_BENCH_VIRTUAL_DECK"] = "1"
+        env.pop(ltcwin.PRIORITY_ENV, None)
+        if self.priority:
+            env[ltcwin.PRIORITY_ENV] = "high"
         p = subprocess.Popen(self.program_cmd(name) + args,
                              stdin=subprocess.DEVNULL, stdout=out,
                              stderr=subprocess.STDOUT, cwd=self.dir,
@@ -1156,6 +1292,15 @@ class Soak:
         if self.deck:
             self.start_program("deck")
         self.start_show()
+        note("scheduling protection " + (
+            "ON: engine and flamesafe at High, their show threads at "
+            "Highest, the deck at Above normal" if self.priority else
+            "OFF (--priority off)"))
+        threading.Thread(target=self.cpu_sampler, daemon=True,
+                         name="soak-cpu-1s").start()
+        if self.window_script:
+            threading.Thread(target=self.window_scripter, daemon=True,
+                             name="soak-windows").start()
         self.ex = soak_exercise.Exerciser(
             soak_exercise.Http(f"http://127.0.0.1:{PORT}"),
             [g["name"] for g in self.fs_cfg_doc["groups"]],
@@ -1170,7 +1315,10 @@ class Soak:
                 nw = time.time()
                 if nw - last_wall > 15:
                     self.pauses.append((last_wall, nw - last_wall))
-                    note(f"this PC paused or slept for {nw - last_wall:.0f} s")
+                    note(f"this program's own loop paused for "
+                         f"{nw - last_wall:.0f} s (the PC slept, or this "
+                         f"program was held up: its window clicked, or "
+                         f"no CPU for it)")
                 last_wall = nw
                 for name, c in list(self.procs.items()):
                     if c["p"].poll() is not None:
@@ -1214,6 +1362,7 @@ class Soak:
             note("stopped early by Ctrl-C")
         finally:
             self.ended = time.time()
+            self._cpu_stop.set()
             if self.ex is not None:
                 self.ex.close()
             self.stopping = True
@@ -1708,6 +1857,13 @@ class Soak:
                     f"in a show, never in a Hold, never after an Abort until "
                     f"it is armed again."))
         st = self.engine("/api/conductor")
+        fl = (st.get("flame_link") or {}) if isinstance(st, dict) else {}
+        for k, v in (fl.get("oversleep_ms_by_minute") or {}).items():
+            try:
+                m = int(k)
+                self.oversleep[m] = max(self.oversleep.get(m, 0.0), float(v))
+            except (TypeError, ValueError):
+                pass
         las = (st.get("lasers") or {}) if isinstance(st, dict) else {}
         if las.get("timecode"):
             self.bey_stats = las
@@ -1734,6 +1890,7 @@ class Soak:
                        f"{tc.get('send_errors', 0)} send error(s); mode "
                        f"{las.get('blank_mode', '?')}" if tc else
                        "the engine reported no BEYOND timecode counts")))
+        out.append(self.starvation_item())
         ex = self.ex
         if ex is not None:
             c = ex.counts
@@ -1794,7 +1951,13 @@ class Soak:
                 continue
             slope = _slope(pts)
             grow = pts[-1][1] - pts[0][1]
-            ok = slope <= MEM_GROWTH_MB_H or grow < 20
+            span_min = (pts[-1][0] - pts[0][0]) * 60
+            # Show PC, 2026-10-04: a deck climbing 14 MB an hour for 25
+            # minutes passed because it had grown under 20 MB. Over 20
+            # minutes or more of samples the trend decides; the 20 MB
+            # allowance is only for a run too short to tell.
+            ok = slope <= MEM_GROWTH_MB_H or (span_min < 20 and grow < 20)
+            only_small = ok and slope > MEM_GROWTH_MB_H
             # Where it was along the way, so a climb that levels off (a
             # cache filling) is told from one that keeps going (a leak).
             step = 5 if self.hours() < 1 else 15
@@ -1806,8 +1969,14 @@ class Soak:
             out.append(("PASS" if ok else "FAIL", f"Memory: {name}",
                         f"{pts[0][1]:.0f} MB to {pts[-1][1]:.0f} MB, trend "
                         f"{slope:+.1f} MB per hour (limit "
-                        f"{MEM_GROWTH_MB_H:g}, after the first few minutes); "
-                        f"along the way (MB): {', '.join(marks)}"))
+                        f"{MEM_GROWTH_MB_H:g} MB per hour after the first "
+                        f"6 minutes; a run with under 20 minutes of samples "
+                        f"may instead grow under 20 MB in all)"
+                        + (f"; THE TREND IS OVER THE LIMIT: passed only "
+                           f"because it grew {grow:.0f} MB in all, under "
+                           f"20, in under 20 minutes; a longer run decides"
+                           if only_small else "")
+                        + f"; along the way (MB): {', '.join(marks)}"))
         for name, vals in sorted(self.cpu.items()):
             if vals:
                 avg = sum(vals) / len(vals)
@@ -1821,7 +1990,8 @@ class Soak:
                         f"{self.disk_start:.1f} MB to {self.disk_now:.1f} MB "
                         f"({rate:.1f} MB per hour; limit 50)"))
         if self.pauses:
-            out.append(("FAIL", "PC paused or slept", "; ".join(
+            out.append(("FAIL", "PC paused or slept, or this soak program "
+                        "held up (its own loop stopped)", "; ".join(
                 f"{p[1]:.0f} s at {now_text(p[0])}" for p in self.pauses)))
         else:
             out.append(("PASS", "PC paused or slept", "never"))
@@ -1914,6 +2084,10 @@ class Soak:
                   f"Every 5 s sample: {os.path.join(self.dir, 'samples.csv')}",
                   f"Program logs: {self.dir}"]
         return lines
+
+
+class _Done(Exception):
+    pass
 
 
 def refuse_held_ports(need):
@@ -2043,6 +2217,109 @@ def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
         sleep(poll_s)
 
 
+class ABRun:
+    """The A/B preset (bench, 2026-10-04): the same soak twice, scheduling
+    protection ON then OFF, each `minutes` long, with MadMapper's windows
+    maximized and restored every 2 minutes (the show PC's trigger), and one
+    report comparing them."""
+
+    PLAN = (("priority on", True), ("priority off", False))
+
+    def __init__(self, minutes=20, audio_device=None, fake_audio=False,
+                 want_mode="auto"):
+        import supervisor as sup
+        stamp = time.strftime("%Y-%m-%d_%H%M")
+        self.seconds = minutes * 60.0
+        self.audio_device = audio_device
+        self.fake_audio = fake_audio
+        self.want_mode = want_mode
+        self.dir = os.path.join(sup.appdata_dir(), "soak", f"{stamp} A-B")
+        os.makedirs(self.dir, exist_ok=True)
+        name = f"LTC Player soak A-B report {stamp}.txt"
+        self.report_paths = [os.path.join(self.dir, name)]
+        desk = desktop_dir()
+        if desk:
+            self.report_paths.append(os.path.join(desk, name))
+        self.runs = []
+        self.finished = False
+        self.stopped = ""
+        self.started = time.time()
+
+    def run(self, wait=wait_for_apps):
+        resolved, _found, why = resolve_mode(self.want_mode)
+        note(f"A/B soak: {why}; two runs of {self.seconds / 60:.0f} minutes, "
+             f"scheduling protection on then off, MadMapper's windows "
+             f"maximized and restored every 2 minutes")
+        try:
+            if resolved == "all programs":
+                wait(None, (1, 2))
+            for i, (label, prio) in enumerate(self.PLAN, 1):
+                s = Soak(self.seconds, self.audio_device,
+                         folder=os.path.join(self.dir, f"{i} {label}"),
+                         block=(i, len(self.PLAN)))
+                s.fake_audio = self.fake_audio
+                s.want_mode = "all" if resolved == "all programs" else \
+                    "fallback"
+                s.priority = prio
+                s.window_script = True
+                s.on_report = self.write
+                self.runs.append((label, s))
+                s.run()
+                if s.interrupted:
+                    self.stopped = f"stopped by Ctrl-C in the {label} run"
+                    break
+        except KeyboardInterrupt:
+            self.stopped = "stopped by Ctrl-C"
+        self.finished = True
+        self.write()
+        return self.passed
+
+    @property
+    def passed(self):
+        return bool(self.runs) and not self.stopped and \
+            all(v != "FAIL" for _l, s in self.runs for v, _t, _d in s.items())
+
+    def write_report(self):
+        self.write()
+
+    def stop_all(self):
+        if self.runs and not self.runs[-1][1].finished:
+            self.runs[-1][1].stop_all()
+
+    def write(self):
+        lines = ["LTC Player bench soak, A/B: scheduling protection on "
+                 "against off",
+                 "BENCH ONLY. Each run: the same soak, with MadMapper's "
+                 "windows maximized and restored every 2 minutes.", "",
+                 f"Started {now_text(self.started)}. Program: "
+                 f"{ltcwin.version_line('LTC Player')}"
+                 + (f" ({self.stopped})" if self.stopped else ""), "",
+                 "Side by side:"]
+        for label, s in self.runs:
+            worst = max(s.oversleep.values()) if s.oversleep else None
+            over20 = sum(1 for v in s.oversleep.values() if v >= 20)
+            lines.append(
+                f"  {label}: flame link longest gap "
+                f"{s.link_gaps.longest:.1f} ms ({s.link_gaps.over_gap} over "
+                f"50 ms); timecode longest gap {s.tc.longest:.1f} ms; pixels "
+                f"longest gap {s.pixels.longest:.1f} ms; sender sleep "
+                f"overrun worst "
+                + (f"{worst:.0f} ms, {over20} minute(s) over 20 ms"
+                   if worst is not None else "not read")
+                + f"; {len(s.window_events)} window action(s)"
+                + ("" if s.finished else " (running)"))
+        for label, s in self.runs:
+            lines += ["", "=" * 20 + f" {label} " + "=" * 20]
+            lines += s.report_lines()
+        text = "\r\n".join(lines) + "\r\n"
+        for p in self.report_paths:
+            try:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            except OSError:
+                pass
+
+
 class Blocks:
     """All programs mode: the run in blocks of 1 h 50 min (soak_apps.
     block_plan), each a whole soak of its own, started only once BEYOND and
@@ -2091,6 +2368,7 @@ class Blocks:
                          block=(i, n))
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
+                s.priority = getattr(self, "priority", True)
                 s.on_report = self.write
                 self.blocks.append(s)
                 s.run()
@@ -2253,6 +2531,9 @@ def _self_check():
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     ltcwin.prepare_stdio()
+    qe = no_quick_edit()
+    if qe:
+        note(qe)
     rc = ltcwin.common_flags("ltcplay-soak", argv, _self_check)
     if rc is not None:
         return rc
@@ -2261,6 +2542,8 @@ def main(argv=None):
     device = None
     fake = False
     mode = "auto"
+    priority = True
+    ab = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -2275,6 +2558,17 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a == "--priority":
+            if argv[i + 1] not in ("on", "off"):
+                print("--priority is on or off")
+                return 2
+            priority = argv[i + 1] == "on"
+            i += 1
+        elif a == "--ab":
+            ab = 20.0
+            if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
+                ab = float(argv[i + 1])
+                i += 1
         elif a == "--mode":
             mode = argv[i + 1]
             if mode not in ("auto", "all", "fallback"):
@@ -2284,10 +2578,11 @@ def main(argv=None):
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
-                  f"--mode auto|all|fallback")
+                  f"--mode auto|all|fallback, --priority on|off, "
+                  f"--ab [MINUTES]")
             return 2
         i += 1
-    if seconds is None:
+    if seconds is None and ab is None:
         seconds = ask_hours() * 3600
     # The show audio's way of loading sounddevice (ASIO on Windows), before
     # anything else can load it another way.
@@ -2326,15 +2621,23 @@ def main(argv=None):
     soak = None
     failed = ""
     try:
+        if ab is not None:
+            soak = ABRun(ab, device, fake, mode)
+            ok = soak.run()
+            raise _Done()
         resolved, _found, why = resolve_mode(mode)
         if resolved == "all programs":
             note(why)
             soak = Blocks(seconds, device, fake)
+            soak.priority = priority
         else:
             soak = Soak(seconds, device)
             soak.fake_audio = fake
             soak.want_mode = mode
+            soak.priority = priority
         ok = soak.run()
+    except _Done:
+        pass
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2366,6 +2669,7 @@ def main(argv=None):
         print("THE SOAK TEST ITSELF FAILED: " + failed)
         print("LTC Player was left as it was found"
               + (" (started again)." if was_running else "."))
+    flush_console()
     print("")
     print("Result: " + ("PASSED" if ok else "FAILED"))
     print("The report is here:")
