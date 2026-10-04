@@ -7119,6 +7119,76 @@ def build():
   "            fire_ice_mod.check_flame_groups(\n",
   "            (lambda *a: None)(\n"),
 
+ ("beyond blanking: the show's timecode sender ignores the divert",
+  "ltcplay/clock.py",
+  "            if DIVERT:\n                d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)",
+  "            if False:\n                d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)"),
+
+ ("beyond blanking: a node at BEYOND's address by another name is not diverted",
+  "ltcplay/clock.py",
+  "                d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)",
+  "                d = DIVERT.get(str(label).lower())"),
+
+ ("beyond blanking: the show's timecode reaches BEYOND while dark",
+  "ltcplay/beyondtc.py",
+  "            if not self.lit:\n                return True",
+  "            if False:\n                return True"),
+
+ ("beyond blanking: a blank waits for the next black frame",
+  "ltcplay/beyondtc.py",
+  "                self._zone_start = self._clock()\n        return self.send_black()",
+  "                self._zone_start = self._clock()\n        return True"),
+
+ ("beyond blanking: the black zone freezes",
+  "ltcplay/beyondtc.py",
+  "        n = int((self._clock() - self._zone_start) * FPS)",
+  "        n = 0"),
+
+ ("beyond blanking: a black frame that could not be sent counts as dark",
+  "ltcplay/beyondtc.py",
+  "                           f\"not dark.\", fault=True, outcome=\"send_failed\")\n            return False",
+  "                           f\"not dark.\", fault=True, outcome=\"send_failed\")\n            return True"),
+
+ ("beyond blanking: timecode mode never moves the stream",
+  "ltcplay/beyondtc.py",
+  "        if self._uses(\"timecode\"):\n            sent = self.gate is not None and self.gate.dark()",
+  "        if False:\n            sent = self.gate is not None and self.gate.dark()"),
+
+ ("beyond blanking: Resume never brings BEYOND's stream back",
+  "ltcplay/beyondtc.py",
+  "            ok = self.gate is not None and self.gate.light()",
+  "            ok = self.gate is not None"),
+
+ ("beyond blanking: unblank takes something that only looks true",
+  "ltcplay/beyondtc.py",
+  "        if in_show is not True:\n            return False",
+  "        if not in_show:\n            return False"),
+
+ ("beyond blanking: both mode skips the OSC blank",
+  "ltcplay/beyondtc.py",
+  "        if self._uses(\"osc\"):\n            sent = self.osc is not None and self.osc.blank(show=show) is True",
+  "        if self.mode == \"osc\":\n            sent = self.osc is not None and self.osc.blank(show=show) is True"),
+
+ ("beyond blanking: an unknown beyond_blank is taken",
+  "ltcplay/fire_ice.py",
+  "        if blank not in (\"timecode\", \"osc\", \"both\"):",
+  "        if False:"),
+
+ ("beyond blanking: attach() keeps the plain OSC BEYOND",
+  "ltcplay/fire_ice.py",
+  "    devices = C.ConductorDevices(link, blanking, journal=journal)",
+  "    devices = C.ConductorDevices(link, beyond, journal=journal)"),
+
+ ("beyond blanking: a started gate is not registered by address",
+  "ltcplay/beyondtc.py",
+  "            _clock().DIVERT[self.ip] = self.divert",
+  "            pass"),
+
+ ("fire & ice: / still serves the old operator page",
+  "ltcplay/web.py",
+  "            if route in (\"/\", \"/index.html\") and \\\n                    getattr(self.server, \"fire_ice_config\", None) is not None:",
+  "            if False:"),
+
 ]
 
 

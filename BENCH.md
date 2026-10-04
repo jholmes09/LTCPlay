@@ -116,6 +116,16 @@ needs its stems under `clock.audio.cues`.
   blank. Lasers come back only once the timecode is moving and only while
   the scheduler is in a show, never in intermission. Abort blanks them at
   once (Jeff and Andy, 2026-10-04: BEYOND only accepts on or off).
+- **How the lasers are blanked** (`beyond_blank` in ltcplay_fire_ice.json,
+  decided at tech): `"timecode"` (the default, for BEYOND Essentials, which
+  has no OSC input), `"osc"` (brightness 0 or 100) or `"both"`. In timecode
+  mode BEYOND gets its own Art-Net timecode stream (the show file's node
+  named BEYOND, 127.0.0.2 on the bench; MadMapper's stream is never
+  touched). Whenever the lasers must be dark it jumps to the black zone,
+  hour 23 (`beyond_black_hour`), 23:00:00:00 and running; when they may
+  light it goes back to the show's own timecode on the next frame, the
+  exact held frame after a Hold. **Andy: leave hour 23 empty in the BEYOND
+  show, and keep BEYOND's "keep running when timecode stops" OFF.**
 - **Video (MadMapper)**: Hold and Abort fade every surface to black; Resume
   and show start bring them back; Abort then stops the show bank.
 - **Music and timecode**: Hold fades the show audio over 0.25 s and freezes

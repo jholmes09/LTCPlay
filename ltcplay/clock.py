@@ -261,6 +261,14 @@ class TimecodeOut:
             return False
         ok = False
         for label, ip in self.dests:
+            if DIVERT:
+                d = DIVERT.get(str(label).lower()) or DIVERT.get(ip)
+                if d is not None:
+                    try:
+                        ok = bool(d(pkt, ip, self.port)) or ok
+                    except Exception as e:
+                        self._dest_failed(now, label, ip, e)
+                    continue
             try:
                 sock.sendto(pkt, (ip, self.port))
                 self.packets_sent += 1
@@ -293,6 +301,13 @@ class TimecodeOut:
         if self.last_ok_at is None:
             return None
         return self._clock() - self.last_ok_at
+
+
+# Fire & Ice's BEYOND timecode blanking (beyondtc.TimecodeGate): a packet
+# meant for a destination named here (its clock.artnet.nodes name in lower
+# case, or its address) is handed to the callable(pkt, ip, port) instead of
+# being sent. Empty on the GPL path, which never loads beyondtc.
+DIVERT = {}
 
 
 # -------------------------------------------------------------- pacing ----
