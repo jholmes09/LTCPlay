@@ -37,7 +37,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata
+      # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
+      # its pixel test runs here too. The suite also passes without it.
+      - run: python -m pip install numpy zstandard tzdata pillow
       - run: python -u selftest.py
 
   # mutate.py is about 10 hours of runner time per OS since the synthetic show
