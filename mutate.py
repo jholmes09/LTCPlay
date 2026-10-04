@@ -256,8 +256,8 @@ MUTATIONS = [
 
  ("the title and the status pills lose their groups",
   "ltcplay/web/index.html",
-  '  <div class="titles">\n    <h1>ltcplay</h1>',
-  '  <div class="nope">\n    <h1>ltcplay</h1>'),
+  '  <div class="titles">\n    <h1 id="brandshow">Show control</h1>',
+  '  <div class="nope">\n    <h1 id="brandshow">Show control</h1>'),
 
  ("the folder picker accepts a folder with no sequences in it",
   "ltcplay/cli.py",
