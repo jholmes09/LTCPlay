@@ -874,7 +874,17 @@ class Handler(BaseHTTPRequestHandler):
         c = getattr(self.server, "conductor", None)
         if c is None:
             return 404, {"error": "no such thing here"}
-        return 200, {"conductor": c.snapshot()}
+        out = {"conductor": c.snapshot()}
+        fi = getattr(self.server, "fire_ice", None)
+        lasers = getattr(getattr(fi, "devices", None), "beyond", None)
+        if lasers is not None and hasattr(lasers, "health"):
+            # How the lasers are kept dark, and BEYOND's timecode stream's
+            # own counts (beyondtc.py), for the soak and the screens.
+            try:
+                out["lasers"] = lasers.health()
+            except Exception:
+                pass
+        return 200, out
 
     def do_GET(self):
         self._ctx_cache = None          # one connection carries many requests
