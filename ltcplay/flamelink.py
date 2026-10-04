@@ -612,12 +612,18 @@ class FlameLink:
         period = 1.0 / self.cfg.send_hz
         next_at = None
         why = "it returned without being stopped"
+        last_start = slept = None
         try:
             while not self._stop.is_set():
                 try:
                     if next_at is None:
                         next_at = self._clock()
+                    start = self._clock()
                     self.send_frame()
+                    took = self._clock() - start
+                    if last_start is not None:
+                        self._note_late(start - last_start, slept, took)
+                    last_start = start
                     self._run_ok()
                     next_at += period
                     now = self._clock()
@@ -631,12 +637,16 @@ class FlameLink:
                     self._run_failed(e)
                     next_at = None
                     delay = period
+                slept = None
                 if delay > 0:
                     # The injected sleep (time.sleep, as the pixel loop
                     # paces), so the schedule can be proved on a fake
                     # clock. At most 50 ms at a time, so stop() is never
                     # kept waiting.
-                    self._sleep(min(delay, 0.05))
+                    want = min(delay, 0.05)
+                    t_sleep = self._clock()
+                    self._sleep(want)
+                    slept = (want, self._clock() - t_sleep)
         except BaseException as e:
             # Not re-raised: the line below says it, and a daemon thread's
             # traceback on stderr would say nothing more to anyone.
@@ -649,6 +659,45 @@ class FlameLink:
                            f"disarms every group. Restart ltcplay.",
                            fault=True, action="flame_link",
                            outcome="sender_dead")
+
+    LATE_S = 0.045      # a frame this long after the last one is noted
+    LATE_NOTE_EVERY_S = 10.0
+
+    def _note_late(self, gap, slept, took):
+        """A frame that went out LATE_S or more after the one before (the
+        contract's floor is 50 ms) is journaled, with where the time went:
+        the sender's own sleep waking late (the OS: timer resolution, power
+        throttling, an overloaded core) or the frame itself taking long
+        (another thread holding the interpreter, a slow provider). At most
+        one line per LATE_NOTE_EVERY_S, with the count since the last.
+        Show PC, 2026-10-04: a 71 ms gap with no show running."""
+        self.late_frames = getattr(self, "late_frames", 0)
+        if gap < self.LATE_S:
+            return
+        self.late_frames += 1
+        worst = getattr(self, "late_worst", 0.0)
+        if gap > worst:
+            self.late_worst = gap
+        now = self._clock()
+        last = getattr(self, "_late_noted_at", None)
+        if last is not None and now - last < self.LATE_NOTE_EVERY_S:
+            self._late_unnoted = getattr(self, "_late_unnoted", 0) + 1
+            return
+        self._late_noted_at = now
+        more = getattr(self, "_late_unnoted", 0)
+        self._late_unnoted = 0
+        if slept is not None:
+            want, got = slept
+            where = (f"the sender's sleep of {want * 1000:.1f} ms took "
+                     f"{got * 1000:.1f} ms")
+        else:
+            where = "the sender did not sleep before it"
+        self._note(f"Flame link: a frame went out {gap * 1000:.1f} ms after "
+                   f"the one before (the contract's floor is 50 ms): "
+                   f"{where}, and sending the frame took {took * 1000:.1f} "
+                   f"ms." + (f" {more} more late frame(s) since the last "
+                             f"such line." if more else ""),
+                   action="flame_link", outcome="late_frame")
 
     def _run_failed(self, e):
         self.run_errors += 1
@@ -1092,6 +1141,9 @@ class FlameLink:
                 "zeroed": self.zeroed,
                 "nonzero": self.last_values_nonzero,
                 "seeks": self.seeks,
+                "late_frames": getattr(self, "late_frames", 0),
+                "late_worst_ms": round(getattr(self, "late_worst", 0.0)
+                                       * 1000.0, 1),
                 "cue_problem": self._cue_problem,
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,

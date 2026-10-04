@@ -33417,6 +33417,26 @@ def test_flame_link_fix_round_1():
     def sent(sock, since=0):
         return [json.loads(d) for d, _a in sock.sent[since:]]
 
+    # -- a late frame is journaled with where the time went (show PC,
+    # 2026-10-04: a 71 ms gap with no show running) ----------------------
+    tl = [100.0]
+    calls = [0]
+    jl = _FlJournal()
+
+    def late_sleep(d):
+        calls[0] += 1
+        tl[0] += d + (0.06 if calls[0] == 5 else 0.0)
+        if calls[0] >= 12:
+            lkl._stop.set()
+    lkl, _sl = make(lambda: tl[0], journal=jl, sleep=late_sleep)
+    lkl._run()
+    late = [x for x, kw in jl.lines if kw.get("outcome") == "late_frame"]
+    check(len(late) == 1 and "took 85.0 ms" in late[0] and
+          lkl.snapshot()["late_frames"] == 1 and
+          lkl.snapshot()["late_worst_ms"] >= 80.0,
+          f"a frame 85 ms late is journaled once, naming the sleep that "
+          f"overran: {late} {lkl.snapshot().get('late_frames')}")
+
     # -- item 1: one Abort, repeated once per frame past frame_stale_ms ----
     check(fl.ABORT_REPEAT_MIN_S == 0.75 and fl.TC_STILL_S == 0.1,
           "the repeat and still-timecode constants are pinned")
