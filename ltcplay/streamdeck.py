@@ -227,12 +227,16 @@ REARM_REFRACTORY_S = 2.0
 # at 20 Hz took 14% of a core with nothing happening. The arm link, key
 # reads and holds still run every pass.
 DRAW_IDLE_S = 0.2
-# Reset (PR #43 fix round 2, C; Jeff, 2026-10-04): while the rig is aborted
-# the HOLD key becomes RESET (drawn gold, unlike the red ABORTED key) and
-# one press of it is Reset. The Abort key never Resets: a reflexive second
-# press of Abort after an Abort from another screen used to be a one-tap
-# Reset (and Start now then lit the lasers). Reset's own rules still apply
-# (an operator chosen; refused while the Abort is still fading).
+# Reset (Jeff's approved design, decisions of 2026-09-26): Abort fires
+# after a 0.5 s hold and latches. While latched the deck border is solid
+# red, the Abort key reads RESET (flashing), Start and Hold are greyed and
+# do nothing, and one press of the Abort key is Reset. A press only counts
+# as Reset once this deck has shown RESET for RESET_SHOWN_S (PR #43 review):
+# before that it is an Abort again, so a reflexive second press after an
+# Abort from another screen can never undo it. Reset's own rules still
+# apply (an operator chosen; refused while the Abort is still fading), and
+# after Reset every flame group stays disarmed until it is armed again.
+RESET_SHOWN_S = 0.5
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -1566,6 +1570,7 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
+        self._reset_shown_since = None   # see RESET_SHOWN_S
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -1676,7 +1681,8 @@ class Controller:
         if again:
             self._log("Stream Deck Abort pressed again while aborted: every "
                       "flame group's wanted state was sent false again. "
-                      "Reset is the gold RESET key.", action="abort",
+                      "Reset is one press of the Abort key once it shows "
+                      "RESET.", action="abort",
                       who=who,
                       screen="Stream Deck")
         elif self.conductor is not None:
@@ -1943,20 +1949,22 @@ class Controller:
         now = self._clock()
         latched = self._latched_now()
         if latched:
-            # Aborted (PR #43 fix round 2, C):
-            # - the Abort key Aborts again, at once (every group's wanted
-            #   false on the arm link, and the engine asked again); it NEVER
-            #   Resets, so a reflexive "make sure" press after an Abort
+            # Aborted (Jeff's approved design, see RESET_SHOWN_S):
+            # - the Abort key reads RESET; one press is Reset, but only once
+            #   this deck has shown RESET for RESET_SHOWN_S. Before that a
+            #   press is an Abort again (every group's wanted false on the
+            #   arm link), so a reflexive "make sure" press after an Abort
             #   from another screen cannot undo it;
-            # - Reset is its own key: the HOLD key, drawn RESET in gold,
-            #   one press (Jeff, 2026-10-04);
+            # - Start and Hold are greyed and do nothing;
             # - a group key still drops that group's arm request: disarm
             #   is never behind any gate. Nothing can be armed.
             for k in edges(self._prev_keys, down):
                 if k == TOP_ABORT:
-                    self._do_abort(again=True)
-                elif k == TOP_HOLD:
-                    self._do_reset()
+                    shown = self._reset_shown_since
+                    if shown is not None and now - shown >= RESET_SHOWN_S:
+                        self._do_reset()
+                    else:
+                        self._do_abort(again=True)
                 elif k in GROUP_KEYS:
                     i = k - GROUP_KEYS[0]
                     if self.arm.wanted[i]:
@@ -2198,6 +2206,7 @@ class Controller:
         d = ImageDraw.Draw(canvas)
         now = self._clock()
         latched = self._latched_now()
+        self._track_reset_face(latched, now)
         abort_frac = 1.0 if latched else self._abort_hold.fraction(now)
         draw_outline_chase(d, chase, abort_frac)
         live = abort_is_live(self._anything_armed_or_wanted(),
@@ -2225,9 +2234,7 @@ class Controller:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
         b1 = face_box(TOP_HOLD)
         if latched:
-            # Gold and steady, unlike the red blinking ABORTED key beside
-            # it, so it is not a reflex hit.
-            fonts.show_key(d, b1, ["RESET"], BLACK, bg=GOLD, max_size=26)
+            fonts.show_key(d, b1, ["HOLD"], DIM_TEXT, max_size=28)
         elif self._held_hint() and blink_on:
             fonts.show_key(d, b1, ["RESUME"], BLACK, bg=GOLD)
         elif self._held_hint():
@@ -2236,8 +2243,8 @@ class Controller:
             fonts.show_key(d, b1, ["HOLD"], CHAMPAGNE, max_size=28)
         b2 = face_box(TOP_ABORT)
         if latched:
-            fonts.show_key(d, b2, ["ABORTED"], BLACK if blink_on else RED,
-                           bg=RED if blink_on else None)
+            fonts.show_key(d, b2, ["RESET"], BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, max_size=26)
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
         fault, confirmed = self._top_fault_confirmed()
@@ -2281,6 +2288,15 @@ class Controller:
                               confirmed=confirmed)
             arm_key_image(fonts, d, box, name, look, blink_on)
         return canvas
+
+    def _track_reset_face(self, latched, now):
+        """Called by draw(): remembers when this deck first drew RESET on
+        the Abort key. A press counts as Reset only RESET_SHOWN_S after
+        that; un-latched, it is forgotten."""
+        if not latched:
+            self._reset_shown_since = None
+        elif self._reset_shown_since is None:
+            self._reset_shown_since = now
 
     def _held_hint(self):
         """Whether the show looks HELD right now, for the HOLD key's own
