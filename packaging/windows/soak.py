@@ -1794,10 +1794,19 @@ class Soak:
             slope = _slope(pts)
             grow = pts[-1][1] - pts[0][1]
             ok = slope <= MEM_GROWTH_MB_H or grow < 20
+            # Where it was along the way, so a climb that levels off (a
+            # cache filling) is told from one that keeps going (a leak).
+            step = 5 if self.hours() < 1 else 15
+            marks, want = [], 0
+            for h, mb in self.mem[name]:
+                if h * 60 >= want:
+                    marks.append(f"{h * 60:.0f} min {mb:.0f}")
+                    want += step
             out.append(("PASS" if ok else "FAIL", f"Memory: {name}",
                         f"{pts[0][1]:.0f} MB to {pts[-1][1]:.0f} MB, trend "
                         f"{slope:+.1f} MB per hour (limit "
-                        f"{MEM_GROWTH_MB_H:g}, after the first few minutes)"))
+                        f"{MEM_GROWTH_MB_H:g}, after the first few minutes); "
+                        f"along the way (MB): {', '.join(marks)}"))
         for name, vals in sorted(self.cpu.items()):
             if vals:
                 avg = sum(vals) / len(vals)
