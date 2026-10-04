@@ -197,6 +197,43 @@ def note(text):
 
 
 # ------------------------------------------------------------ the soak ---
+
+def windows_update_state(reg=None, services=None):
+    """One sentence on whether Windows Update can restart this PC during a
+    run. Disabled outright (its services wuauserv, UsoSvc and WaaSMedicSvc
+    disabled, or DisableWindowsUpdateAccess=1) is OK; paused says until
+    when; anything else is NOT paused. `reg(path, name)` and
+    `services(name)` are injectable for tests."""
+    if reg is None:
+        def reg(path, name):
+            import winreg
+            try:
+                k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path)
+                return winreg.QueryValueEx(k, name)[0]
+            except OSError:
+                return None
+    if services is None:
+        def services(name):
+            # Start type 4 is Disabled.
+            return reg(r"SYSTEM\CurrentControlSet\Services" + "\\" + name,
+                       "Start")
+    off = [n for n in ("wuauserv", "UsoSvc", "WaaSMedicSvc")
+           if services(n) == 4]
+    no_access = reg(r"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate",
+                    "DisableWindowsUpdateAccess") == 1
+    if len(off) == 3 or (no_access and "wuauserv" in off):
+        why = ", ".join(off) + (" disabled" if off else "")
+        if no_access:
+            why += (", and " if off else "") + "DisableWindowsUpdateAccess=1"
+        return f"Windows Update is disabled on this PC ({why}). OK."
+    until = reg(r"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings",
+                "PauseUpdatesExpiryTime")
+    if until:
+        return f"Windows Update is paused until {until}."
+    return ("Windows Update is NOT paused or disabled. An update restart "
+            "during this run would end it early. (Checklist: pause updates "
+            "for the show weeks.)")
+
 class Soak:
     def __init__(self, seconds, audio_device=None):
         self.seconds = seconds
@@ -233,6 +270,7 @@ class Soak:
         self.audio_snap = {}
         self.audio_worst = {}
         self.slots = {}
+        self.late_lines = []     # the flame link's own late-frame lines
         # Times when nothing had pressed Run yet: from the start until the
         # first Run, and from an engine restart until Run is pressed again.
         # A show that comes due then fails to start by design ("Run has not
@@ -286,33 +324,7 @@ class Soak:
         """Things about the PC that can end a long run early."""
         if not ltcwin.WINDOWS:
             return
-        try:
-            import winreg
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                               r"SOFTWARE\Microsoft\WindowsUpdate\UX\Settings")
-            try:
-                until, _ = winreg.QueryValueEx(k, "PauseUpdatesExpiryTime")
-            except OSError:
-                until = ""
-            if not until:
-                self.checks.append(
-                    "Windows Update is NOT paused. An update restart during "
-                    "this run would end it early. (Checklist: pause updates "
-                    "for the show weeks.)")
-            else:
-                self.checks.append(f"Windows Update is paused until {until}.")
-        except OSError:
-            self.checks.append("Could not read whether Windows Update is "
-                               "paused.")
-        out = run_text(["powercfg", "/a"])
-        if out:
-            head = out.split("not available", 1)[0].lower() \
-                if "not available" in out.lower() else out.lower()
-            if "hibernate" in head:
-                self.checks.append(
-                    "Hibernate is available on this PC. If it is set to "
-                    "start after a time, it would end this run. "
-                    "(Checklist: Sleep and Hibernate: Never.)")
+        self.checks.append(windows_update_state())
         q = run_text(["powercfg", "/q", "SCHEME_CURRENT", "SUB_SLEEP"])
         if q:
             for name, guid in (("Sleep", "29f6c1db-86da-48c5-9fdb-f2b67b1f44da"),
@@ -329,6 +341,9 @@ class Soak:
                                 f"{name} after {secs // 60} minutes is set "
                                 f"(plugged in). LTC Player keeps the PC "
                                 f"awake while it runs, but set it to Never.")
+                        else:
+                            self.checks.append(f"{name} (plugged in): Never. "
+                                               f"OK.")
 
     def make_show(self):
         """The bench show, generated: one 100 s cue whose FSEQ covers a
@@ -1016,6 +1031,11 @@ class Soak:
                         rec = json.loads(ln)
                     except ValueError:
                         continue
+                    if isinstance(rec, dict) and \
+                            rec.get("outcome") == "late_frame":
+                        self.late_lines.append(
+                            (str(rec.get("at", ""))[11:19],
+                             str(rec.get("text") or "")[12:200]))
                     if not isinstance(rec, dict) or not rec.get("fault"):
                         continue
                     if self._before_run(rec.get("at")):
@@ -1042,6 +1062,29 @@ class Soak:
             return False
         return any(a - 3 <= t <= (b if b is not None else float("inf")) + 3
                    for a, b in self.no_run)
+
+    def timekeeping(self):
+        """{program: what its log says Windows agreed to}, from the
+        'Windows timekeeping:' line each program writes at start."""
+        out = {}
+        if not ltcwin.WINDOWS:
+            return out
+        for name, tag in (("engine", "ltcplay:"), ("flamesafe", "flamesafe:"),
+                          ("deck", "ltcplay-deck:")):
+            if name == "deck" and not self.deck:
+                continue
+            got = ""
+            try:
+                with open(os.path.join(self.dir, f"{name}.log"),
+                          encoding="utf-8", errors="replace") as fh:
+                    for ln in fh:
+                        if ln.startswith(tag) and \
+                                "Windows timekeeping:" in ln:
+                            got = ln.split("Windows timekeeping:", 1)[1].strip()
+            except OSError:
+                pass
+            out[name] = got
+        return out
 
     def power_events(self):
         """Sleep, wake and restarts Windows logged during the run."""
@@ -1207,6 +1250,19 @@ class Soak:
         out.append(("INFO", "Nothing attached, expected (not faults)",
                     "; ".join(f"{w}: {n} line(s)" for w, n in
                               self.journal_expected.items()) or "none"))
+        keep = self.timekeeping()
+        bad = [f"{n}: {v}" for n, v in keep.items()
+               if not v or "NOT" in v or "could not" in v]
+        out.append((("FAIL" if bad and ltcwin.WINDOWS else "PASS"),
+                    "Windows timekeeping (no power throttling, 1 ms timer, "
+                    "engine and flamesafe Above normal)",
+                    "; ".join(f"{n}: {v or 'no line in its log'}"
+                              for n, v in keep.items()) or "not Windows"))
+        out.append(("INFO", "Late flame frames, as the flame link saw them",
+                    (f"{len(self.late_lines)} line(s); " + "; ".join(
+                        f"{a} {t}" for a, t in self.late_lines[:6]))
+                    if self.late_lines else "none journaled (45 ms or more "
+                    "after the frame before)"))
         out.append(("INFO", "Before Run was pressed (not faults)",
                     f"{self.before_run} fault line(s) written while nothing "
                     f"had pressed Run yet (a show that comes due then does "
