@@ -891,7 +891,9 @@ def self_check():
             raise RuntimeError(f"{EXE[n]} is missing from {ltcwin.app_dir()}")
     yield "all three programs are beside it"
     yield f"settings: {settings_path()}"
-    probe = {"port": DEFAULT_PORT, "flamesafe_config": __file__,
+    # Any file that exists stands in for flamesafe.json (frozen, __file__
+    # is not on disk).
+    probe = {"port": DEFAULT_PORT, "flamesafe_config": sys.executable,
              "run_flamesafe": True, "run_deck": True,
              "show_folder": control_dir(),
              "show_mode": "fire_ice", "schedule": r"C:\x\ltcplay_schedule.json"}
