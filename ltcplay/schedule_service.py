@@ -61,6 +61,15 @@ DRY_RUN = True
 DRY_RUN_NOTE = ("This build decides but does not act. No show is started, "
                 "stopped or faded by the scheduler; the MadMapper link "
                 "arrives in a later update.")
+# The one way out of the dry run, per Service, never this module's constant:
+# fire_ice.py sets Service.dry_run False, and attaches the performer that
+# then has to report what the dry run used to make up (a show ending, the
+# closing finishing), only when the Fire & Ice config says
+# "scheduler_performs": true. Every other Service, and the GPL path, which
+# never builds one, keeps DRY_RUN.
+PERFORMING_NOTE = ("The scheduler performs: it starts the show cue on "
+                   "schedule (only once Run has been pressed), and the "
+                   "show ends when its audio does.")
 
 
 # ------------------------------------------------------------ where --
@@ -400,9 +409,21 @@ class Service:
 
     def __init__(self, path, clock=None, ntp_query=None, state_dir=None,
                  clock_limit_s=CLOCK_CHECK_LIMIT_S, log_dir=None,
-                 flame_provider=None, logbook=None, perf_counter=None):
+                 flame_provider=None, logbook=None, perf_counter=None,
+                 conductor=None):
         self.path = path
         self.clock = clock or _utc_now
+        # The Fire & Ice show conductor (ltcplay.conductor.Conductor), or
+        # None (the GPL path, and every build before PR #17's device layer
+        # lands). See _drive_conductor: without one, every effect is only
+        # journaled as not performed, exactly as before this was added.
+        self.conductor = conductor
+        # Dry run or not, for THIS service (see PERFORMING_NOTE), and what
+        # starts a show cue and reports back once it is not. Both are set
+        # together by fire_ice.attach() and nothing else; a performer is
+        # only ever asked for anything while dry_run is False.
+        self.dry_run = DRY_RUN
+        self.performer = None
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -628,25 +649,107 @@ class Service:
             screen=(le.screen.strip() or "unnamed screen") if op else None,
             fault=le.outcome in self.FAULT_OUTCOMES)
 
-    def _record(self, out, now):
+    # Effect-kind bundles schedule.py always emits together for one show
+    # conductor action (see its module docstring, and entry_effects and
+    # _abort_effects). Checked by subset, most specific first, so the
+    # abort and closing bundles -- which both carry ZERO_FLAME_CUES and
+    # STOP_CONDUCTOR -- are never confused: closing never also carries
+    # BLANK_LASERS or FADE_MUSIC_OUT, but the check order makes that true
+    # by construction rather than by relying on it.
+    _HOLD_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                               sch.FREEZE_SHOW, sch.FADE_MUSIC_OUT))
+    _RESUME_EFFECTS = frozenset((sch.RESUME_SHOW, sch.FADE_MUSIC_IN,
+                                 sch.UNBLANK_LASERS))
+    _ABORT_EFFECTS = frozenset((sch.ZERO_FLAME_CUES, sch.BLANK_LASERS,
+                                sch.FADE_MUSIC_OUT, sch.FADE_VIDEO_OUT,
+                                sch.FADE_PIXELS, sch.STOP_CONDUCTOR))
+
+    def _drive_conductor(self, out, ev):
+        """Hand the effects that belong to the show conductor (Hold,
+        Resume, Abort, a show starting, leaving the show for intermission)
+        to conductor.Conductor, instead of only ever journaling them as
+        not performed. Returns (label, conductor.Result), or None when
+        there is no conductor attached (every build before PR #17's
+        device layer lands, and the GPL path, which never even passes a
+        schedule) or the outcome carries no effects (a refused event, or a
+        TICK that changed nothing).
+
+        Matched by which effect KINDS came back, not by which event was
+        sent: that is what schedule.py's own module docstring describes
+        as the contract for whatever performs its effects, and it is
+        robust to a bundle arriving by more than one route (SHOW_FAILED
+        and a restart mid-show fade out exactly like an Abort).
+
+        Only the effects conductor.py actually implements are claimed.
+        PRESHOW_LOOK and INTERMISSION both map onto its one BETWEEN look
+        (conductor.py's own docstring: "intermission, preshow, closing").
+        The closing sequence's pixel fade and blackout are NOT claimed:
+        conductor.py has no method for them, so they are still only
+        journaled as not performed, same as before this existed."""
+        if self.conductor is None or not out.effects:
+            return None
+        kinds = {e.kind for e in out.effects}
+        who, screen = ev.who, ev.screen
+        if kinds >= self._HOLD_EFFECTS:
+            return "Hold", self.conductor.hold(who, screen)
+        if kinds >= self._RESUME_EFFECTS:
+            return "Resume", self.conductor.resume(who, screen)
+        if kinds >= self._ABORT_EFFECTS:
+            return "Abort", self.conductor.abort(who, screen)
+        if sch.START_SHOW in kinds:
+            if not self.dry_run and self.performer is not None:
+                # The cue has to be playing before the conductor is told a
+                # show started: it brings the rig up only for a show that
+                # is playing. A refusal (Run not pressed, no show audio)
+                # is the performer's to report as SHOW_FAILED.
+                shows = [e.show for e in out.effects
+                         if e.kind == sch.START_SHOW]
+                started = self.performer.start_show(shows[0])
+                if not started.ok:
+                    return "Show start", started
+            return "Show start", self.conductor.show_starting(who, screen)
+        if sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
+            return "Intermission", self.conductor.intermission(who, screen)
+        return None
+
+    def _record(self, out, now, claimed=None):
         for le in out.log:
             self._record_logevent(le)
-        for eff in out.effects:
-            desc = eff.kind + (f" show {eff.show}" if eff.show else "") + \
+        if not out.effects:
+            return
+        descs = [eff.kind + (f" show {eff.show}" if eff.show else "") +
                 (f" over {eff.seconds:g} s" if eff.seconds else "")
+                for eff in out.effects]
+        if claimed is not None:
+            label, result = claimed
+            text = f"{label}: {', '.join(descs)}. {result.sentence}".strip()
             self._journal_line(
-                "system", f"Not performed, dry run: {desc}.",
+                "system", text, action=label.lower(),
+                outcome="done" if result.ok else "failed",
+                reason=result.sentence or "sent to the show conductor",
+                fault=not result.ok)
+            return
+        for eff, desc in zip(out.effects, descs):
+            if self.dry_run:
+                text = f"Not performed, dry run: {desc}."
+                why = "dry run, no transport in this build"
+            else:
+                text = (f"Not performed: nothing in this build carries "
+                        f"out {desc}.")
+                why = "no performer for this effect in this build"
+            self._journal_line(
+                "system", text,
                 action=eff.kind, outcome="not performed",
-                reason="dry run, no transport in this build",
-                show=eff.show or None)
+                reason=why, show=eff.show or None)
 
     def _apply(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
-        self._record(out, now)
-        if DRY_RUN and self.machine.state == sch.CLOSING:
+        claimed = self._drive_conductor(out, ev)
+        self._record(out, now, claimed)
+        if self.dry_run and self.machine.state == sch.CLOSING:
             # Nothing to wait for: nothing was faded.
             out2 = sch.step(self.machine,
                             sch.Event(sch.CLOSING_DONE, "system"), now)
@@ -875,9 +978,17 @@ class Service:
             # (the machine was asleep across it) is marked MISSED in the
             # journal rather than dropped without a word.
             self._apply(sch.Event(sch.TICK, "scheduler"), now)
-            if self.machine.state in (sch.SHOW, sch.PAUSED):
+            if self.machine.state in (sch.SHOW, sch.PAUSED) or \
+                    self.machine.delayed() is not None:
                 # Never replace a running night: a show started by hand at
-                # 23:58 finishes on yesterday's list.
+                # 23:58 finishes on yesterday's list. Same for a night that
+                # still has a delayed show waiting for Start now or Close
+                # for the night (Jeff, 2026-10-01): the calendar date
+                # rolling over must not be what closes it. schedule.py's
+                # own _tick no longer auto-misses a delayed show at
+                # midnight either, so without this check the delayed show
+                # would survive the tick above only to be thrown away here
+                # a moment later.
                 return True
             if str(self.machine.date) not in self._summarised and \
                     self.machine.slots:
@@ -914,7 +1025,7 @@ class Service:
             m = self.machine
             # Dry run: nothing was started, so the show "ends" when it would
             # have, which a pause moves later. A paused show never ends.
-            if DRY_RUN and m.state == sch.SHOW and \
+            if self.dry_run and m.state == sch.SHOW and \
                     now >= m.expected_end(now):
                 self._apply(sch.Event(sch.SHOW_ENDED, "system",
                                       detail="dry run, nothing was started",
@@ -1282,7 +1393,9 @@ class Service:
             now = self.clock()
             out = {"ok": self.machine is not None,
                    "error": self.error or None,
-                   "dry_run": DRY_RUN, "note": DRY_RUN_NOTE,
+                   "dry_run": self.dry_run,
+                   "note": (DRY_RUN_NOTE if self.dry_run
+                            else PERFORMING_NOTE),
                    "now": now.astimezone(
                        self.rule.tz if self.rule else timezone.utc)
                    .isoformat(timespec="seconds"),
@@ -1327,6 +1440,27 @@ class Service:
             if out.refused:
                 raise ValueError(out.refused)
         return self.tonight_view()
+
+    # What a performer may report back (schedule.py's "Contract for PR 3",
+    # items 4 to 8). Operator presses never come this way.
+    REPORTS = frozenset((sch.SHOW_CONFIRMED, sch.SHOW_ENDED,
+                         sch.SHOW_FAILED, sch.FAULT_RAISED,
+                         sch.CLOSING_DONE))
+
+    def report(self, kind, detail="", show=0):
+        """A performer's report (fire_ice.ShowRunner): applied as a
+        "system" event exactly like the dry run's own made-up SHOW_ENDED
+        and CLOSING_DONE, journaled, refused with a sentence when the state
+        does not take it. Only while not dry_run: in a dry run nothing was
+        started, so nothing can report on it, and nothing does."""
+        if kind not in self.REPORTS:
+            raise ValueError(f"{kind} is not something a performer reports.")
+        with self._locked():
+            if self.dry_run or self.machine is None:
+                return None
+            ev = sch.Event(kind, "system", detail=detail, show=show)
+            self._apply(ev)
+            return None
 
     def hold_for_announcement(self, who, screen, detail=None):
         """Put the scheduler on Hold exactly as the operator's own Hold
@@ -1433,7 +1567,7 @@ class Service:
                 "tonight": sch.machine_to_doc(m) if m else None,
                 "tonight_file": (tonight_path(m.date, self.state_dir)
                                  if m else None),
-                "dry_run": DRY_RUN, "state_dir": self.state_dir,
+                "dry_run": self.dry_run, "state_dir": self.state_dir,
                 "screens": list(self.screens),
                 "log_folder": self.logbook.folder,
                 "clock_check": self.clock_check}
