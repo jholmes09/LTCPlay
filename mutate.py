@@ -7068,6 +7068,12 @@ def build():
   '    cues = (FlameCues(control, cfg.flame_controller, journal,\n                      background=True)',
   '    cues = (FlameCues(control, cfg.flame_controller, journal,\n                      background=False)'),
 
+
+ ('MSIX 2026-10-04: a copy holding the named lock elsewhere is not seen',
+  'ltcplay/onlyone.py',
+  '        handle, existed = got\n        if existed:',
+  '        handle, existed = got\n        if False:'),
+
 ]
 
 

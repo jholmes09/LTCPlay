@@ -32189,6 +32189,52 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     print("  ok")
 
 
+def test_onlyone_named_lock_sees_a_copy_in_another_folder():
+    section("one copy: on Windows every lock is also a named kernel mutex, "
+            "so a copy whose files were redirected into another app's "
+            "container (MSIX, show PC 2026-10-04) still refuses while the "
+            "first runs, and starts once it has stopped")
+    import shutil
+    import tempfile
+    from ltcplay import onlyone as O
+    held = {}
+
+    def fake_create(name):
+        n = held.get(name, 0)
+        held[name] = n + 1
+        return name, n > 0
+
+    def fake_close(h):
+        held[h] -= 1
+        if not held[h]:
+            del held[h]
+    saved = (O.NAMED, O._create_named, O._close_named)
+    O.NAMED, O._create_named, O._close_named = True, fake_create, fake_close
+    a_dir, b_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+    try:
+        a = O.OutputLock(where=os.path.join(a_dir, O.SHOW_LOCK),
+                         note="the app").acquire()
+        try:
+            O.OutputLock(where=os.path.join(b_dir, O.SHOW_LOCK),
+                         note="from inside another app").acquire()
+            check(False, "a copy whose lock file is elsewhere must refuse")
+        except O.AlreadyRunning as e:
+            check("another app" in str(e.holder),
+                  f"it refuses, saying where the other may be: {e.holder}")
+        check(held == {"ltcplay-" + O.SHOW_LOCK: 1},
+              f"the refused copy let go of its handle: {held}")
+        a.release()
+        check(not held, "release lets go of the mutex")
+        b = O.OutputLock(where=os.path.join(b_dir, O.SHOW_LOCK)).acquire()
+        b.release()
+        check(True, "once the first has stopped, the second starts")
+    finally:
+        O.NAMED, O._create_named, O._close_named = saved
+        shutil.rmtree(a_dir, ignore_errors=True)
+        shutil.rmtree(b_dir, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_flame_link_from_flamesafe_config():
     section("fire & ice: the flame link is built from flamesafe's own "
             "config, its cues are the show's flame universe only while the "
@@ -37394,6 +37440,7 @@ if __name__ == "__main__":
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
+    test_onlyone_named_lock_sees_a_copy_in_another_folder()
     test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
     test_fire_ice_flame_node_address_never_in_the_pixel_output()

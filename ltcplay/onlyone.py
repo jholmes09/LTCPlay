@@ -33,6 +33,42 @@ _WIN_LOCK_AT = 1 << 30
 
 FILENAME = "ltcplay_output.lock"
 
+# Windows: every lock is also a named kernel mutex (show PC, 2026-10-04).
+# A copy started from inside another app's MSIX container (the Claude
+# desktop app's shell) has its AppData redirected into that container, so
+# its lock FILE is a different file and the two copies never saw each
+# other. Named kernel objects are not redirected: every process on the
+# machine sees the same name. The mutex exists for as long as some process
+# holds a handle to it, and Windows closes that handle when the process
+# ends, however it ends.
+NAMED = WINDOWS
+
+
+def _win_create_named(name):
+    """(handle, already_existed) for the named mutex `name`; Global\ first,
+    Local\ (this logon session) if Global\ is refused. None when neither
+    can be made (the file lock still guards)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
+                                 wintypes.LPCWSTR)
+    for ns in ("Global\\", "Local\\"):
+        h = k32.CreateMutexW(None, False, ns + name)
+        if h:
+            return h, ctypes.get_last_error() == 183   # ALREADY_EXISTS
+    return None
+
+
+def _win_close_named(handle):
+    import ctypes
+    ctypes.WinDLL("kernel32").CloseHandle(handle)
+
+
+_create_named = _win_create_named
+_close_named = _win_close_named
+
 
 def path():
     """One lock per user on this Mac, not one per copy of the folder.
@@ -77,10 +113,53 @@ class OutputLock:
         self.path = where or path()
         self.note = note
         self._fh = None
+        self._named = None
+
+    def _take_named(self):
+        """The named mutex for this lock (NAMED): refuses when another
+        process anywhere on the machine holds it, whatever folder its
+        files went to."""
+        name = "ltcplay-" + os.path.basename(self.path)
+        try:
+            got = _create_named(name)
+        except Exception:
+            got = None
+        if got is None:
+            return
+        handle, existed = got
+        if existed:
+            try:
+                _close_named(handle)
+            except Exception:
+                pass
+            raise AlreadyRunning(
+                "another copy (it may have been started from inside "
+                "another app, whose files go to that app's own folder)")
+        self._named = handle
 
     def acquire(self):
+        if NAMED:
+            self._take_named()
+            try:
+                if WINDOWS:
+                    return self._acquire_windows()
+                return self._acquire_posix()
+            except BaseException:
+                self._drop_named()
+                raise
         if WINDOWS:
             return self._acquire_windows()
+        return self._acquire_posix()
+
+    def _drop_named(self):
+        h, self._named = self._named, None
+        if h is not None:
+            try:
+                _close_named(h)
+            except Exception:
+                pass
+
+    def _acquire_posix(self):
         import fcntl
         try:
             fh = open(self.path, "a+")
@@ -155,6 +234,7 @@ class OutputLock:
 
     def release(self):
         _HELD.discard(self)
+        self._drop_named()
         fh, self._fh = self._fh, None
         if fh is None:
             return
