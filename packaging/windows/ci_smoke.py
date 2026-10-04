@@ -258,7 +258,8 @@ def soak_check():
     # least one whole 100 s show (one every 3 minutes, 02:00 to midnight in
     # the runner's clock). The runner has no audio interface: --fake-audio.
     rc, out = run([os.path.join(APP, "ltcplay-soak.exe"), "--minutes", "7",
-                   "--no-wait", "--fake-audio"], timeout=1200)
+                   "--no-wait", "--fake-audio", "--mode", "fallback"],
+                  timeout=1200)
     reports = sorted(glob.glob(os.path.join(LOCAL, "soak", "*",
                                             "LTC Player soak report *.txt")))
     if not check(reports, f"the soak test wrote no report (exit {rc})"):

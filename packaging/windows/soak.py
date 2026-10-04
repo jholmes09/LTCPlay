@@ -52,6 +52,7 @@ import time
 import urllib.request
 
 import ltcwin
+import soak_apps
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 7878
@@ -61,6 +62,12 @@ DECK_STATUS_RELAY = 5579
 FLAME_RELAY = 5581         # the engine's flame link sends here; relayed on
 STATUS_MIRROR = 5583       # flamesafe's status copy for the engine (PR #39)
 MM_PORT = 8010             # MadMapper's OSC port, as the bench config says
+# All-programs mode (Jeff, 2026-10-04): MadMapper and BEYOND themselves run
+# on this PC and get LTC Player's real commands on the show's own ports
+# (soak_apps), so this program cannot listen there. The pixel output and a
+# copy of the Art-Net timecode then go to this address instead, where this
+# program times them; MadMapper and BEYOND keep 127.0.0.1.
+SOAK_IP = "127.0.0.9"
 BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
 SHOW_S = 100               # each generated show's length
 SHOW_EVERY_MIN = 3         # the bench schedule: a show every 3 minutes
@@ -149,13 +156,13 @@ class Intervals:
 
 
 # ----------------------------------------------------------- listeners ---
-def udp_listener(port, handle, name):
+def udp_listener(port, handle, name, ip="127.0.0.1"):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
     except OSError:
         pass
-    s.bind(("127.0.0.1", port))
+    s.bind((ip, port))
     s.settimeout(0.5)
 
     def run():
@@ -270,6 +277,17 @@ class Soak:
         self.audio_snap = {}
         self.audio_worst = {}
         self.slots = {}
+        self.mode = "fallback"      # or "all programs" (see choose_mode)
+        self.apps = {}              # name -> install path, all-programs mode
+        self.app_watch = {}         # name -> soak_apps.AppWatch
+        self.app_cpu = {}           # name -> [cpu %]
+        self.app_mem = {}           # name -> [(hours, MB)]
+        self.gpu = []               # [percent]
+        self.heat = soak_apps.HeatJudge()
+        self.disk = soak_apps.DiskJudge()
+        self._disk_since = None
+        self.want_mode = "auto"
+        self.app_started = {}       # name -> started by this soak?
         self.late_lines = []     # the flame link's own late-frame lines
         # Times when nothing had pressed Run yet: from the start until the
         # first Run, and from an engine restart until Run is pressed again.
@@ -360,7 +378,10 @@ class Soak:
         os.makedirs(self.show_dir, exist_ok=True)
         with open(os.path.join(self.show_dir, "xlights_networks.xml"), "w",
                   encoding="utf-8") as fh:
-            fh.write(NETWORKS_XML)
+            fh.write(NETWORKS_XML if self.mode == "fallback" else
+                     NETWORKS_XML.replace('IP="127.0.0.1"',
+                                          f'IP="{SOAK_IP}"').replace(
+                         'ComPort="127.0.0.1"', f'ComPort="{SOAK_IP}"'))
         fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
                       frame_count=SHOW_S * 40, channel_count=1022,
                       step_ms=25, compression="zlib", block_frames=400,
@@ -384,7 +405,11 @@ class Soak:
                "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
                          "name": "Show"}],
                "clock": {"source": "audio_master",
-                         "artnet": {"nodes": {"MadMapper": "127.0.0.1"}},
+                         "artnet": {"nodes": (
+                             {"MadMapper": "127.0.0.1"}
+                             if self.mode == "fallback" else
+                             {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
+                              "Soak": SOAK_IP})},
                          "audio": {"device": self.audio_name or "none found",
                                    "channels": 2,
                                    "cues": {"show": {
@@ -459,12 +484,23 @@ class Soak:
             json.dump(rule, fh, indent=1)
         fi = {"scheduler_performs": True, "auto_start": "when_run_pressed",
               "show_cue": "Show",
-              "madmapper": {"host": "127.0.0.1", "port": MM_PORT,
+              "madmapper": {"host": "127.0.0.1", "port": (
+                  MM_PORT if self.mode == "fallback" else
+                  soak_apps.MADMAPPER_PORT),
                             "show_bank": "Bank-1", "surfaces": ["Quad-1"]},
-              "beyond": {"host": "127.0.0.1", "port": BEYOND_PORT},
+              "beyond": {"host": "127.0.0.1", "port": (
+                  BEYOND_PORT if self.mode == "fallback" else
+                  soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
               "flame_controller": "Flames",
               "notes": "BENCH ONLY, written by the soak test"}
+        if self.mode != "fallback":
+            # MadMapper's heartbeat track (its project sends it; see the
+            # checklist), read by the engine's own watchdog.
+            fi["madmapper"]["heartbeat"] = {
+                "port": soak_apps.HEARTBEAT_PORT,
+                "address": soak_apps.HEARTBEAT_ADDRESS,
+                "show_len_s": SHOW_S + 5}
         with open(os.path.join(self.sched_dir, "ltcplay_fire_ice.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(fi, fh, indent=1)
@@ -845,6 +881,7 @@ class Soak:
 
     # --------------------------------------------------------- sample ---
     def sample(self, hours):
+        self.sample_apps(hours)
         try:
             import psutil
         except ImportError:
@@ -930,6 +967,7 @@ class Soak:
         self.pc_checks()
         for c in self.checks:
             note("PC check: " + c)
+        note(self.choose_mode(self.want_mode))
         self.make_show()
         self.flamesafe_config()
         self.deck = self.deck_plugged_in()
@@ -939,12 +977,17 @@ class Soak:
         self.make_schedule()
         self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.flame_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        socks = [udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
-                 udp_listener(SACN_PORT, self.on_sacn, "sacn"),
+        socks = [udp_listener(SACN_PORT, self.on_sacn, "sacn"),
                  udp_listener(self.status_port, self.on_status, "status"),
-                 udp_listener(FLAME_RELAY, self.on_flame, "flame relay"),
-                 udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
-                 udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
+                 udp_listener(FLAME_RELAY, self.on_flame, "flame relay")]
+        if self.mode == "fallback":
+            socks += [udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
+                      udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
+                      udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
+        else:
+            socks.append(udp_listener(ARTNET_PORT, self.on_artnet, "artnet",
+                                      ip=SOAK_IP))
+            self.start_apps()
         if self.fake_audio:
             note("AUDIO IS FAKE: --fake-audio, so the engine's show audio "
                  "plays to the test suite's stand-in device, not a real "
@@ -988,6 +1031,25 @@ class Soak:
                     self.sample(hours)
                     next_sample += SAMPLE_S
                 if time.perf_counter() >= next_report:
+                    if ltcwin.WINDOWS:
+                        import datetime as _dt
+                        since = self._disk_since or _dt.datetime.fromtimestamp(
+                            self.started)
+                        self._disk_since = _dt.datetime.now()
+                        dsk = soak_apps.disk_sample(since)
+                        self.disk.add(time.time(), dsk)
+                        for ev in dsk["events"]:
+                            note(f"STORAGE EVENT {ev[2]} {ev[1]} at {ev[0]}: "
+                                 f"{ev[3]}")
+                        smp = soak_apps.heat_sample()
+                        self.heat.add(time.time(), smp)
+                        t = smp.get("temp_c")
+                        if t is not None and t > soak_apps.TEMP_LIMIT_C:
+                            note(f"CPU at {t:.0f} C")
+                    if self.mode != "fallback":
+                        g = soak_apps.gpu_percent()
+                        if g is not None:
+                            self.gpu.append(g)
                     self.write_report()
                     next_report += REPORT_EVERY_S
         except KeyboardInterrupt:
@@ -1043,7 +1105,9 @@ class Soak:
                         continue
                     text = str(rec.get("text") or rec.get("reason") or "")
                     low = text.lower()
-                    why = next((w for k, w in EXPECTED_FAULTS if k in low),
+                    why = next((w for k, w in EXPECTED_FAULTS if k in low
+                                and not (self.mode != "fallback" and
+                                         k in ("heartbeat", "madmapper"))),
                                None)
                     if why:
                         self.journal_expected[why] = \
@@ -1062,6 +1126,239 @@ class Soak:
             return False
         return any(a - 3 <= t <= (b if b is not None else float("inf")) + 3
                    for a, b in self.no_run)
+
+    # ----------------------------------------------- all-programs mode ---
+    def choose_mode(self, want="auto", names=None):
+        """'all programs' when MadMapper and BEYOND are both installed (or
+        running) and `want` allows it, else 'fallback'. Sets self.mode and
+        self.apps; returns a sentence saying why."""
+        if want == "fallback":
+            self.mode = "fallback"
+            return "fallback mode: asked for (--mode fallback)"
+        names = soak_apps.tasklist_names() if names is None else names
+        found, missing = {}, []
+        for app in ("MadMapper", "BEYOND"):
+            path = soak_apps.find_app(app)
+            if path or soak_apps.running(app, names):
+                found[app] = path
+            else:
+                missing.append(app)
+        if missing:
+            if want == "all":
+                raise RuntimeError(f"--mode all, but {', '.join(missing)} "
+                                   f"is not installed or running")
+            self.mode = "fallback"
+            return (f"fallback mode: {', '.join(missing)} not installed, so "
+                    f"its commands go to this program's own counters")
+        self.mode = "all programs"
+        self.apps = found
+        for app in found:
+            self.app_watch[app] = soak_apps.AppWatch(
+                app, demo_limit=(app == "BEYOND"))
+        return ("all programs mode: MadMapper and BEYOND run on this PC and "
+                "get LTC Player's real commands")
+
+    def start_apps(self, wait_s=120):
+        """Start MadMapper and BEYOND if they are not running, then wait
+        for each to hold its OSC port."""
+        names = soak_apps.tasklist_names()
+        for app, path in self.apps.items():
+            if soak_apps.running(app, names):
+                self.app_started[app] = False
+                note(f"{app} is already running")
+            elif path:
+                subprocess.Popen([path], cwd=os.path.dirname(path))
+                self.app_started[app] = True
+                note(f"started {app} ({path})")
+        deadline = time.time() + wait_s
+        for app in self.apps:
+            port = soak_apps.APPS[app]["port"]
+            while time.time() < deadline and \
+                    not soak_apps.port_held(port):
+                time.sleep(1.0)
+            note(f"{app} {'holds' if soak_apps.port_held(port) else 'does NOT hold'}"
+                 f" its OSC port {port}")
+
+    def sample_apps(self, hours):
+        """Is each program running and answering; its CPU and memory."""
+        if self.mode == "fallback":
+            return
+        names = soak_apps.tasklist_names()
+        mm = self.engine("/api/madmapper/state")
+        wd = (mm.get("watchdog") or {}) if isinstance(mm, dict) else {}
+        hb = None
+        if wd.get("armed"):
+            hb = wd.get("state") != "fault"
+        now = time.time()
+        for app, watch in self.app_watch.items():
+            alive = soak_apps.running(app, names)
+            held = soak_apps.port_held(soak_apps.APPS[app]["port"])
+            why = watch.sample(now, alive, held,
+                               hb if app == "MadMapper" else None)
+            if why and watch.episodes and watch.episodes[-1][0] == now:
+                note(f"{app} not answering: {why}")
+            if watch.demo_stopped_at == now:
+                note(f"{app} stopped after "
+                     f"{(now - watch.first_seen) / 3600:.1f} h: the demo's "
+                     f"limit, not a fault")
+        try:
+            import psutil
+        except ImportError:
+            return
+        for proc in psutil.process_iter(["name"]):
+            nm = (proc.info.get("name") or "").lower()
+            for app in self.app_watch:
+                if nm in [e.lower() for e in soak_apps.APPS[app]["exe"]]:
+                    try:
+                        if not hasattr(self, "_app_ps"):
+                            self._app_ps = {}
+                        ps = self._app_ps.get(proc.pid)
+                        if ps is None:
+                            ps = self._app_ps[proc.pid] = proc
+                            ps.cpu_percent(None)
+                            continue
+                        self.app_cpu.setdefault(app, []).append(
+                            ps.cpu_percent(None))
+                        self.app_mem.setdefault(app, []).append(
+                            (hours, ps.memory_info().rss / 1e6))
+                    except Exception:
+                        pass
+
+    def disk_item(self):
+        d = self.disk
+        if not ltcwin.WINDOWS or not d.samples:
+            return ("NOT TESTED", "Drive (SSD)",
+                    "not sampled (not Windows, or the run was too short)")
+        temps = [smp["temp_c"] for _t, smp in d.samples
+                 if smp.get("temp_c") is not None]
+        tmax = [smp["temp_max_c"] for _t, smp in d.samples
+                if smp.get("temp_max_c") is not None]
+        xfer = [smp["xfer_s"] for _t, smp in d.samples
+                if smp.get("xfer_s") is not None]
+        parts = []
+        parts.append(
+            f"drive temperature {min(temps):g} to {max(temps):g} C (limit "
+            f"{soak_apps.DISK_TEMP_LIMIT_C:g})" if temps else
+            "drive temperature NOT readable here (Windows may need the soak "
+            "run as administrator for it)")
+        if tmax:
+            parts.append(f"the drive's own lifetime maximum {max(tmax):g} C")
+        if xfer:
+            parts.append(f"average transfer up to {max(xfer) * 1000:.1f} ms "
+                         f"(limit {soak_apps.DISK_TRANSFER_LIMIT_S:g} s)")
+        faults = d.faults()
+        if faults:
+            parts.append("FAULTS: " + "; ".join(
+                f"{t if isinstance(t, str) else now_text(t)} {w}"
+                for t, w in faults[:6]))
+        # The outputs' worst gaps beside any slow drive moment or event.
+        near = []
+        slow = [(t, f"drive slow ({x * 1000:.0f} ms a transfer)")
+                for t, x in d.slow_moments()]
+        evs = []
+        for at, eid, src, msg in d.events:
+            try:
+                import datetime as _dt
+                evs.append((_dt.datetime.fromisoformat(at).timestamp(),
+                            f"{src} event {eid}"))
+            except ValueError:
+                pass
+        for label, iv in (("flame link", self.link_gaps),
+                          ("pixels", self.pixels), ("timecode", self.tc)):
+            at = iv.longest_at
+            if at is None:
+                continue
+            hits = [w for t, w in slow + evs if abs(t - at) <= 60]
+            near.append(f"{label} worst gap {iv.longest:.1f} ms at "
+                        f"{now_text(at)}: " + (", ".join(hits) if hits else
+                                               "no drive stall within a "
+                                               "minute"))
+        if near:
+            parts.append("; ".join(near))
+        return ("FAIL" if faults else "PASS",
+                "Drive (SSD): temperature, transfer time, storage events "
+                "(sampled every minute)", "; ".join(parts))
+
+    def heat_item(self):
+        h = self.heat
+        if not ltcwin.WINDOWS or not h.samples:
+            return ("NOT TESTED", "CPU temperature and throttling",
+                    "not sampled (not Windows, or the run was too short)")
+        now = time.time()
+        bad, temps = h.verdict(now)
+        parts = []
+        if temps:
+            third = max(1, len(temps) // 3)
+            first, last = temps[:third], temps[-third:]
+            parts.append(f"CPU temperature {min(temps):.0f} to "
+                         f"{max(temps):.0f} C (first third mean "
+                         f"{sum(first) / len(first):.0f}, last third "
+                         f"{sum(last) / len(last):.0f}); limit "
+                         f"{soak_apps.TEMP_LIMIT_C:.0f} C")
+        else:
+            parts.append("CPU temperature is NOT readable on this PC "
+                         "(Windows exposes no thermal zone here)")
+        lim = [smp["limit_pct"] for _t, smp in h.samples
+               if smp.get("limit_pct") is not None]
+        perf = [smp["perf_pct"] for _t, smp in h.samples
+                if smp.get("perf_pct") is not None]
+        clk = [smp["clock_pct"] for _t, smp in h.samples
+               if smp.get("clock_pct") is not None]
+        if lim:
+            parts.append(f"Windows' performance limit {min(lim):.0f} to "
+                         f"{max(lim):.0f}% (100 = nothing holding the CPU "
+                         f"back)")
+        if perf:
+            parts.append(f"processor performance {min(perf):.0f} to "
+                         f"{max(perf):.0f}% of base")
+        if clk:
+            parts.append(f"clock {min(clk):.0f} to {max(clk):.0f}% of max")
+        thr = h.throttled(now)
+        if thr:
+            parts.append("held back under 70% for over a minute: " + "; ".join(
+                f"{now_text(a)} to {now_text(b)}" for a, b in thr[:4]))
+        if h.hot:
+            parts.append("over the limit at " + ", ".join(
+                f"{now_text(a)} ({t:.0f} C)" for a, t in h.hot[:4]))
+        parts.append("GPU temperature: not readable without installing "
+                     "anything (Intel graphics expose none to Windows)")
+        return ("FAIL" if bad else "PASS",
+                "CPU temperature and throttling (sampled every minute)",
+                "; ".join(parts))
+
+    def app_items(self):
+        out = []
+        if self.mode == "fallback":
+            return out
+        for app, watch in self.app_watch.items():
+            eps = watch.faults()
+            text = "; ".join(f"{why} from {now_text(a)} to "
+                             f"{now_text(b) if b else 'the end'}"
+                             for a, b, why in eps[:6])
+            extra = ""
+            if watch.demo_stopped_at:
+                extra = (f"; stopped {now_text(watch.demo_stopped_at)}, "
+                         f"{(watch.demo_stopped_at - watch.first_seen) / 3600:.1f}"
+                         f" h after it was first seen: the demo's limit, not "
+                         f"a fault (a full license runs the whole time)")
+            out.append(("FAIL" if eps else "PASS",
+                        f"{app} answering (running, holding its OSC port"
+                        + (", heartbeat fresh)" if app == "MadMapper" else ")"),
+                        (f"{app} not answering: {text}" if eps else
+                         f"answered all run ({watch.samples} checks)")
+                        + extra))
+            cpu = self.app_cpu.get(app) or []
+            mem = self.app_mem.get(app) or []
+            out.append(("INFO", f"{app}: CPU and memory",
+                        (f"CPU mean {sum(cpu) / len(cpu):.1f}% of one core, "
+                         f"peak {max(cpu):.1f}%" if cpu else "CPU not read")
+                        + (f"; memory {mem[0][1]:.0f} MB at start, "
+                           f"{mem[-1][1]:.0f} MB at the end" if mem else "")))
+        out.append(("INFO", "GPU (3D engine, all programs)",
+                    (f"mean {sum(self.gpu) / len(self.gpu):.1f}%, peak "
+                     f"{max(self.gpu):.1f}% over {len(self.gpu)} readings")
+                    if self.gpu else "not readable on this PC"))
+        return out
 
     def timekeeping(self):
         """{program: what its log says Windows agreed to}, from the
@@ -1197,16 +1494,22 @@ class Soak:
                            if snap.get("fault") else "")
                         + (". AUDIO WAS FAKE: this proves the player, not "
                            "an interface." if self.fake_audio else "")))
+        out += self.app_items()
+        out.append(self.heat_item())
+        out.append(self.disk_item())
         ups = sum(1 for _t, w, _a in self.beyond_cmds if w == "unblank")
         downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
         ok = (self.show_starts == 0 or ups > 0) and \
             self.beyond_lit_outside == 0
+        if self.mode != "fallback":
+            ok = True        # BEYOND itself has them: see "BEYOND answering"
         out.append(("PASS" if ok else "FAIL",
                     "Lasers (BEYOND commands, to this PC only)",
                     f"{ups} unblank and {downs} blank command packets; "
                     f"{self.beyond_lit_outside} unblank(s) with no show "
                     f"running (limit 0)"))
-        out.append(("PASS" if self.mm_packets and self.show_starts else
+        out.append(("INFO" if self.mode != "fallback" else
+                    "PASS" if self.mm_packets and self.show_starts else
                     "FAIL" if self.show_starts else "NOT TESTED",
                     "Video (MadMapper commands, to this PC only)",
                     f"{self.mm_packets} OSC packets: " + ", ".join(
@@ -1339,6 +1642,12 @@ class Soak:
             f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
             f"minutes from 02:00 to midnight ({getattr(self, 'tz_name', '')}"
             f"), started by the scheduler itself",
+            f"Soak mode: {self.mode}"
+            + (" (MadMapper and BEYOND running on this PC, getting LTC "
+               "Player's real commands on ports 8000 and 8100; laser output "
+               "must stay disabled in BEYOND)" if self.mode != "fallback"
+               else " (MadMapper's and BEYOND's commands counted by this "
+                    "program; neither program ran)"),
             "Show mode: fire_ice, the engine and the deck started exactly as "
             "the installed LTC Player starts them in that mode",
             f"flamesafe config: copied from {self.fs_source}, sACN forced "
@@ -1428,17 +1737,23 @@ def ask_hours():
         print("Please type 1, 8 or 24.")
 
 
+def _self_check():
+    yield "the soak test loads"
+    for line in soak_apps.self_test():
+        yield line
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     ltcwin.prepare_stdio()
-    rc = ltcwin.common_flags("ltcplay-soak", argv, lambda: iter(
-        ["the soak test loads"]))
+    rc = ltcwin.common_flags("ltcplay-soak", argv, _self_check)
     if rc is not None:
         return rc
     wait = "--no-wait" not in argv
     seconds = None
     device = None
     fake = False
+    mode = "auto"
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1453,9 +1768,16 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a == "--mode":
+            mode = argv[i + 1]
+            if mode not in ("auto", "all", "fallback"):
+                print("--mode is auto, all or fallback")
+                return 2
+            i += 1
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
-                  f"--audio-device NAME, --no-wait, --fake-audio")
+                  f"--audio-device NAME, --no-wait, --fake-audio, "
+                  f"--mode auto|all|fallback")
             return 2
         i += 1
     if seconds is None:
@@ -1495,6 +1817,7 @@ def main(argv=None):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
     soak = Soak(seconds, device)
     soak.fake_audio = fake
+    soak.want_mode = mode
     ok = False
     try:
         ok = soak.run()

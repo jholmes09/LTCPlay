@@ -79,7 +79,7 @@ a_soak = Analysis(
     [os.path.join(HERE, "soak.py")],
     datas=LTCPLAY_DATA + [(os.path.join(ROOT, "flamesafe",
                                         "flamesafe.example.json"), ".")],
-    hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor",
+    hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor", "soak_apps",
                                      "test_show_fixtures", "psutil", "hid",
                                      "sounddevice", "_sounddevice",
                                      "tzdata"],
