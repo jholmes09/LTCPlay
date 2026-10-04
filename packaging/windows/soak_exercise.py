@@ -286,14 +286,16 @@ class Exerciser:
         if self.thread is not None:
             self.thread.join(10)
 
-    def fire_quiet(self, name, at):
+    def fire_quiet(self, name, at, armed_since=None):
         """Why group `name` may not fire at wall time `at`, or None: inside
-        a Hold, or after an Abort until that group has been armed again."""
+        a Hold, or after an Abort until that group has been armed again.
+        `armed_since`: when flamesafe's own status last turned it armed (it
+        can fire a moment before the exerciser's hold returns)."""
+        rearmed = max(self.rearmed.get(name, 0), armed_since or 0)
         for s, e, why in self.windows:
             if why == "hold" and s + GRACE_S <= at and (e is None or at <= e):
                 return why
-            if why == "abort" and s + GRACE_S <= at and \
-                    self.rearmed.get(name, 0) < s:
+            if why == "abort" and s + GRACE_S <= at and rearmed < s:
                 return "abort (not armed again since)"
         return None
 
@@ -365,7 +367,8 @@ class SacnJudge:
                 self._bad(at, f"{n} fired (channel {fire_on[0]}) outside "
                               f"a show")
             else:
-                why = quiet(n) if callable(quiet) else quiet
+                why = quiet(n, self._changed.get(n)) if callable(quiet) \
+                    else quiet
                 if why:
                     self._bad(at, f"{n} fired (channel {fire_on[0]}) during "
                                   f"the {why}")
@@ -413,6 +416,22 @@ def self_test():
     v4[99] = 1
     j.packet(v4, 6.0, {"front row": True, "cat-walk": False}, True, None)
     assert "belong to no group" in j.violations[-1][1]
+    ex0 = Exerciser(lambda *a: (200, {}), ["front row"], lambda: None,
+                    lambda: 0, lambda: {}, lambda t: None)
+    ex0.windows.append([100.0, None, "abort"])
+    va = [0] * 512
+    va[400], va[410] = 78, 9
+    ja = SacnJudge(groups)
+    ja.packet(va, 50.0, {"front row": False}, True, None)
+    ja.packet(va, 101.0, {"front row": True}, True,
+              lambda g, since: ex0.fire_quiet(g, 101.0, since))
+    assert not ja.violations, "armed again (flamesafe says so) after it"
+    jb = SacnJudge(groups)
+    jb.packet(va, 50.0, {"front row": True}, True, None)
+    jb.packet(va, 101.0, {"front row": True}, True,
+              lambda g, since: ex0.fire_quiet(g, 101.0, since))
+    assert "not armed again since" in jb.violations[-1][1], \
+        "still armed from before the Abort: a violation"
     yield ("flamesafe's output is judged per group: values only on armed "
            "groups, fire only in a show and never in a Hold, stray "
            "channels caught")
