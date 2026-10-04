@@ -31285,6 +31285,29 @@ def test_fire_ice_config_defaults_and_refusals():
     check(cfg.scheduler_performs is True and cfg.show_cue == "Show" and
           cfg.madmapper is not None and cfg.beyond is not None,
           f"a full config parses: {cfg.summary()}")
+    # The show's name comes from this file, not the shared brand file.
+    import types
+    from ltcplay import web as W
+    from ltcplay import brand as B
+    cfg = F.FireIceConfig.parse({"show_name": " Ignite the Night ",
+                                 "venue": "Thanksgiving Point"})
+    b = W.brand_doc(types.SimpleNamespace(fire_ice_config=cfg))
+    check(b["show"] == "Ignite the Night" and
+          b["venue"] == "Thanksgiving Point" and
+          b["name"] == B.load()["name"],
+          f"/api/brand names the Fire & Ice show from its own config, "
+          f"under the global brand: {b}")
+    plain = W.brand_doc(types.SimpleNamespace(fire_ice_config=None))
+    check(plain["show"] == B.load()["show"] and
+          "Ignite" not in json.dumps(B.load()),
+          f"without Fire & Ice the shared brand file names no show: "
+          f"{plain}")
+    for bad in ("", 3):
+        try:
+            F.FireIceConfig.parse({"show_name": bad})
+            check(False, f"show_name {bad!r} was accepted")
+        except F.FireIceConfigError as e:
+            check("show_name" in str(e), f"refused in a sentence: {e}")
     print("  ok")
 
 

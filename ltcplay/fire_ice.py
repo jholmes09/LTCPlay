@@ -56,7 +56,7 @@ from . import showlog as showlog_mod
 CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
-                  "flame_controller", "notes"))
+                  "flame_controller", "notes", "show_name", "venue"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -90,7 +90,12 @@ class FireIceConfig:
     def __init__(self, scheduler_performs=False, show_cue=None,
                  madmapper=None, beyond=None, path=None,
                  auto_start="when_run_pressed", flamesafe_config=None,
-                 flame_controller=None):
+                 flame_controller=None, show_name=None, venue=None):
+        # The show's own name and where it plays, for the screens' title
+        # (/api/brand). Here, not in the shared ltcplay_brand.json, so the
+        # GPL build keeps its own name; Jeff Holmes Presents stays global.
+        self.show_name = show_name
+        self.venue = venue
         self.scheduler_performs = scheduler_performs
         self.auto_start = auto_start
         self.show_cue = show_cue
@@ -151,6 +156,14 @@ class FireIceConfig:
                     f"{where}: 'flame_controller' needs 'flamesafe_config': "
                     f"flame cues only ever go to flamesafe.")
             fc = fc.strip()
+        titles = {}
+        for k in ("show_name", "venue"):
+            v = doc.get(k)
+            if v is not None and (not isinstance(v, str) or not v.strip()):
+                raise FireIceConfigError(
+                    f"{where}: {k!r} is words for the screens' title, or "
+                    f"leave it out.")
+            titles[k] = v.strip() if v else None
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -160,7 +173,7 @@ class FireIceConfig:
             bey = beyond_mod.BeyondConfig.parse(doc["beyond"], where)
         return cls(performs, cue.strip() if cue else None, mm, bey, where,
                    auto_start=auto, flamesafe_config=fs,
-                   flame_controller=fc)
+                   flame_controller=fc, **titles)
 
     @classmethod
     def load(cls, path):
