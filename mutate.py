@@ -3906,9 +3906,9 @@ def build():
  ("conductor: intermission cuts an Abort's fade short",
   "ltcplay/conductor.py",
   "            latched = self._latched\n            if not latched:\n"
-  "                self._accept(\"Intermission\"",
+  "                if self._look == STOPPED_DARK:",
   "            latched = False\n            if not latched:\n"
-  "                self._accept(\"Intermission\""),
+  "                if self._look == STOPPED_DARK:"),
 
  # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
  # the lasers-dark re-send that keeps devices.py's "never assume a blank
