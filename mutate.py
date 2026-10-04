@@ -7057,6 +7057,23 @@ def build():
   '                if moved or controller.animating() or last_draw is None or \\',
   '                if moved or last_draw is None or \\'),
 
+
+ ('SSD 2026-10-04: the flame link sender reads the render itself',
+  'ltcplay/fire_ice.py',
+  '                got = self._by_path.get(hits[0].path)',
+  '                got = self._render(hits[0].path)'),
+
+ ("SSD 2026-10-04: ltc serve's flame cues read files on the sender",
+  'ltcplay/fire_ice.py',
+  '    cues = (FlameCues(control, cfg.flame_controller, journal,\n                      background=True)',
+  '    cues = (FlameCues(control, cfg.flame_controller, journal,\n                      background=False)'),
+
+
+ ('MSIX 2026-10-04: a copy holding the named lock elsewhere is not seen',
+  'ltcplay/onlyone.py',
+  '        handle, existed = got\n        if existed:',
+  '        handle, existed = got\n        if False:'),
+
 ]
 
 

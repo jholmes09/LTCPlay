@@ -32127,6 +32127,120 @@ def test_fire_ice_flame_node_address_never_in_the_pixel_output():
     print("  ok")
 
 
+def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
+    section("fire & ice: in ltc serve the flame cues read the layout and the "
+            "render (whole, into memory) on a thread of their own; the "
+            "flame link's sender never opens or looks at a file, so a "
+            "stalled drive cannot hold up a flame frame (show PC SSD "
+            "stalls, 2026-09-25)")
+    import builtins
+    import shutil
+    import tempfile
+    import threading
+    import types
+    import test_show_fixtures as _fx
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_open, real_stat = builtins.open, os.stat
+    on_caller = []
+    me = threading.current_thread()
+
+    def spy_open(*a, **k):
+        if threading.current_thread() is me:
+            on_caller.append(("open", a[0] if a else None))
+        return real_open(*a, **k)
+
+    def spy_stat(*a, **k):
+        if threading.current_thread() is me:
+            on_caller.append(("stat", a[0] if a else None))
+        return real_stat(*a, **k)
+    try:
+        show = os.path.join(work, "show")
+        os.makedirs(show)
+        with open(os.path.join(show, "xlights_networks.xml"), "w") as fh:
+            fh.write(_FI2_NETWORKS.format(extra="", name="Flames",
+                                          state="Inactive", after=""))
+        render = os.path.join(show, "Show.fseq")
+        _fx.write_fseq(render, frame_count=400, channel_count=1022,
+                       step_ms=25, compression="zlib", block_frames=100,
+                       fill=40)
+        clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                    _cue={"label": "Show", "position_s": 0.0},
+                                    last_sent=(0, 0, 2, 15))
+        sess = types.SimpleNamespace(
+            running=True, clock=clk,
+            player=types.SimpleNamespace(override=None, freerun_epoch=None),
+            tl=types.SimpleNamespace(show_dir=show, cues=[
+                types.SimpleNamespace(name="Show", path=render)]))
+        cues = F.FlameCues(types.SimpleNamespace(session=sess), "Flames",
+                           background=True)
+        builtins.open, os.stat = spy_open, spy_stat
+        first = cues("00:00:02:15")
+        got = None
+        for _ in range(100):
+            got = cues("00:00:02:15")
+            if got:
+                break
+            time.sleep(0.02)
+        builtins.open, os.stat = real_open, real_stat
+        check(first is None and got == [40] * 512,
+              f"zeros until the background read is done, then the cues: "
+              f"{first} {got and got[:2]}")
+        check(not on_caller, f"the caller (the flame link's sender) never "
+                             f"opened or looked at a file: {on_caller[:3]}")
+        cues.close()
+    finally:
+        builtins.open, os.stat = real_open, real_stat
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_onlyone_named_lock_sees_a_copy_in_another_folder():
+    section("one copy: on Windows every lock is also a named kernel mutex, "
+            "so a copy whose files were redirected into another app's "
+            "container (MSIX, show PC 2026-10-04) still refuses while the "
+            "first runs, and starts once it has stopped")
+    import shutil
+    import tempfile
+    from ltcplay import onlyone as O
+    held = {}
+
+    def fake_create(name):
+        n = held.get(name, 0)
+        held[name] = n + 1
+        return name, n > 0
+
+    def fake_close(h):
+        held[h] -= 1
+        if not held[h]:
+            del held[h]
+    saved = (O.NAMED, O._create_named, O._close_named)
+    O.NAMED, O._create_named, O._close_named = True, fake_create, fake_close
+    a_dir, b_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+    try:
+        a = O.OutputLock(where=os.path.join(a_dir, O.SHOW_LOCK),
+                         note="the app").acquire()
+        try:
+            O.OutputLock(where=os.path.join(b_dir, O.SHOW_LOCK),
+                         note="from inside another app").acquire()
+            check(False, "a copy whose lock file is elsewhere must refuse")
+        except O.AlreadyRunning as e:
+            check("another app" in str(e.holder),
+                  f"it refuses, saying where the other may be: {e.holder}")
+        check(held == {"ltcplay-" + O.SHOW_LOCK: 1},
+              f"the refused copy let go of its handle: {held}")
+        a.release()
+        check(not held, "release lets go of the mutex")
+        b = O.OutputLock(where=os.path.join(b_dir, O.SHOW_LOCK)).acquire()
+        b.release()
+        check(True, "once the first has stopped, the second starts")
+    finally:
+        O.NAMED, O._create_named, O._close_named = saved
+        shutil.rmtree(a_dir, ignore_errors=True)
+        shutil.rmtree(b_dir, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_flame_link_from_flamesafe_config():
     section("fire & ice: the flame link is built from flamesafe's own "
             "config, its cues are the show's flame universe only while the "
@@ -32314,6 +32428,9 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
         check(link is not None, "ltc serve built the flame link")
         check(getattr(link, "seek_guard", False) is True,
               "the seek guard is on for the real flame cues")
+        check(getattr(link.cues, "_bg", False) is True,
+              "ltc serve's flame cues read files on their own thread, never "
+              "the sender's")
         rows = [r for r in svc.journal if r.get("outcome") == "no_status"]
         check(not rows, f"with a status mirror it does not say it cannot "
                         f"see flamesafe: {rows}")
@@ -37329,6 +37446,8 @@ if __name__ == "__main__":
     test_fire_ice_night_end_to_end()
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
+    test_onlyone_named_lock_sees_a_copy_in_another_folder()
+    test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
     test_fire_ice_flame_node_address_never_in_the_pixel_output()
     test_fire_ice_active_flame_controller_refused()
