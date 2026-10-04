@@ -176,7 +176,15 @@ def keep_time(above_normal=True):
         from ctypes import wintypes
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.GetCurrentProcess.restype = wintypes.HANDLE
-        proc = k32.GetCurrentProcess()
+        # The pseudo-handle is -1, which comes back as a 64-bit unsigned int;
+        # passed bare it overflows ctypes' default int (windows-latest,
+        # 2026-10-04). Typed as a HANDLE it goes through whole.
+        proc = wintypes.HANDLE(k32.GetCurrentProcess())
+        k32.SetProcessInformation.argtypes = (wintypes.HANDLE, ctypes.c_int,
+                                              wintypes.LPVOID, wintypes.DWORD)
+        k32.SetProcessInformation.restype = wintypes.BOOL
+        k32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k32.SetPriorityClass.restype = wintypes.BOOL
 
         class _State(ctypes.Structure):
             _fields_ = [("Version", wintypes.ULONG),

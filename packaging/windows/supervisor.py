@@ -634,6 +634,9 @@ def monitors():
                         ("rcWork", wintypes.RECT),
                         ("dwFlags", wintypes.DWORD)]
         u32 = ctypes.WinDLL("user32")
+        u32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR,
+                                        ctypes.POINTER(MONITORINFO))
+        u32.GetMonitorInfoW.restype = wintypes.BOOL
         PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR,
                                   wintypes.HDC, ctypes.POINTER(wintypes.RECT),
                                   wintypes.LPARAM)
