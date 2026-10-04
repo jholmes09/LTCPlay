@@ -71,6 +71,16 @@ def _bench_virtual_deck(streamdeck):
         kw["deck_factory"] = _VirtualDeck
         return real(controller, **kw)
     streamdeck.run_forever = run_forever
+    # Nothing is shown on a virtual deck, so a machine with none of the key
+    # fonts (a Linux test box) draws the faces without their words.
+    real_text = streamdeck.Fonts.text_block
+
+    def text_block(self, *a, **kw):
+        try:
+            return real_text(self, *a, **kw)
+        except Exception:
+            return None
+    streamdeck.Fonts.text_block = text_block
     print("BENCH: the Stream Deck program runs with a VIRTUAL deck "
           "(LTCPLAY_BENCH_VIRTUAL_DECK is set)", flush=True)
 

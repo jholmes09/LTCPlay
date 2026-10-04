@@ -282,6 +282,7 @@ class SacnJudge:
         self.nonzero = 0
         self._changed = {}           # group -> wall time its state changed
         self._last = {}
+        self._mismatch = {}          # group -> [since, reported]
 
     def armed_state(self, armed, at):
         """Remember when each group's reported state last changed."""
@@ -304,11 +305,19 @@ class SacnJudge:
             mine.update(slots)
             settling = at - self._changed.get(n, -1e9) < GRACE_S
             on = [s for s in slots if values[s - 1]]
+            if not on or armed.get(n):
+                self._mismatch.pop(n, None)
             if not on:
                 continue
             if not armed.get(n) and not settling:
-                self._bad(at, f"{n} is not armed but channel(s) "
-                              f"{on[:4]} carry values")
+                # flamesafe's status and its sACN are two streams: an arm
+                # shows on the wire a moment before its status says so. A
+                # violation is one that lasts past GRACE_S.
+                since = self._mismatch.setdefault(n, [at, False])
+                if at - since[0] >= GRACE_S and not since[1]:
+                    since[1] = True
+                    self._bad(at, f"{n} is not armed but channel(s) "
+                                  f"{on[:4]} carry values")
                 continue
             fire_on = [s for s in fire if values[s - 1]]
             if not fire_on:
@@ -352,8 +361,14 @@ def self_test():
     assert "outside a show" in j.violations[-1][1]
     v3 = list(v)
     v3[401] = 78
+    nv = len(j.violations)
     j.packet(v3, 5.0, {"front row": True, "cat-walk": False}, True, None)
+    assert len(j.violations) == nv, "a moment before the status: not yet"
+    j.packet(v3, 5.01 + GRACE_S, {"front row": True, "cat-walk": False},
+             True, None)
     assert "cat-walk is not armed" in j.violations[-1][1]
+    j.packet(v3, 5.9, {"front row": True, "cat-walk": False}, True, None)
+    assert len(j.violations) == nv + 1, "one line per episode"
     v4 = list(v)
     v4[99] = 1
     j.packet(v4, 6.0, {"front row": True, "cat-walk": False}, True, None)
