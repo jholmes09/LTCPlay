@@ -39,45 +39,7 @@ def main():
     ltcwin.say_keep_time("ltcplay-deck", above_normal=False)
     from ltcplay import streamdeck
     _bench_virtual_deck(streamdeck)
-    _bench_text_cache(streamdeck)
     return streamdeck.main(argv)
-
-
-def _bench_text_cache(streamdeck, size=256):
-    """BENCH BUILD (show PC, 2026-10-04: the deck program grew about 14 MB
-    an hour on Windows, steadily): each key's words are drawn once into a
-    small transparent tile and pasted from then on, instead of being laid
-    out and rasterised again five times a second. If the growth is in the
-    font or text path, it stops; the soak's memory line shows which.
-    LTCPLAY_DECK_TEXT_CACHE=0 turns it off for comparison."""
-    import collections
-    import os
-    if os.environ.get("LTCPLAY_DECK_TEXT_CACHE", "1") == "0":
-        print("BENCH: deck key text drawn every time (cache off)", flush=True)
-        return
-    real = streamdeck.Fonts.text_block
-    cache = collections.OrderedDict()
-
-    def text_block(self, d, box, lines, kind, fill, max_size, sp_ratio=0.06):
-        x0, y0, x1, y1 = (int(round(v)) for v in box)
-        key = (x1 - x0, y1 - y0, tuple(lines), kind, tuple(fill)
-               if isinstance(fill, (list, tuple)) else fill, max_size,
-               sp_ratio)
-        tile = cache.get(key)
-        if tile is None:
-            tile = self.Image.new("RGBA", (max(1, x1 - x0), max(1, y1 - y0)),
-                                  (0, 0, 0, 0))
-            real(self, self.ImageDraw.Draw(tile), (0, 0, x1 - x0, y1 - y0),
-                 lines, kind, fill, max_size, sp_ratio)
-            cache[key] = tile
-            if len(cache) > size:
-                cache.popitem(last=False)
-        else:
-            cache.move_to_end(key)
-        d._image.paste(tile, (x0, y0), tile)
-    streamdeck.Fonts.text_block = text_block
-    print(f"BENCH: deck key text drawn once per face and reused (at most "
-          f"{size} faces kept)", flush=True)
 
 
 class _VirtualDeck:
