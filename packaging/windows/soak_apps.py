@@ -255,7 +255,8 @@ STORAGE_PROVIDERS = ("disk", "stornvme", "storahci", "Ntfs",
 _PS_DISK = (
     "$since = [datetime]::Parse('{since}'); "
     "$r = $null; try {{ $r = Get-PhysicalDisk | Get-StorageReliabilityCounter "
-    "-ErrorAction Stop | Select-Object Temperature, TemperatureMax }} catch {{}}; "
+    "-ErrorAction Stop | Select-Object Temperature, TemperatureMax, "
+    "ReadLatencyMax, WriteLatencyMax }} catch {{}}; "
     "$c = (Get-Counter -ErrorAction SilentlyContinue -Counter "
     "'\\PhysicalDisk(_Total)\\Avg. Disk sec/Transfer',"
     "'\\PhysicalDisk(_Total)\\Current Disk Queue Length').CounterSamples; "
@@ -278,7 +279,8 @@ def disk_sample(since, run=subprocess.run):
     storage events in the System log since `since` (a datetime)."""
     import json
     out = {"temp_c": None, "temp_max_c": None, "xfer_s": None,
-           "queue": None, "events": []}
+           "queue": None, "events": [], "read_lat_max_ms": None,
+           "write_lat_max_ms": None}
     ps = _PS_DISK.format(since=since.strftime("%Y-%m-%dT%H:%M:%S"),
                          providers=",".join(f"'{p}'"
                                             for p in STORAGE_PROVIDERS))
@@ -298,6 +300,12 @@ def disk_sample(since, run=subprocess.run):
             and r.get("TemperatureMax") > 0]
     out["temp_c"] = max(temps) if temps else None
     out["temp_max_c"] = max(tmax) if tmax else None
+    for k, src in (("read_lat_max_ms", "ReadLatencyMax"),
+                   ("write_lat_max_ms", "WriteLatencyMax")):
+        vals = [r.get(src) for r in (doc.get("rel") or [])
+                if isinstance(r, dict) and isinstance(r.get(src),
+                                                      (int, float))]
+        out[k] = max(vals) if vals else None
     for k, src in (("xfer_s", "xfer"), ("queue", "queue")):
         v = doc.get(src)
         if isinstance(v, (int, float)):
@@ -333,7 +341,32 @@ class DiskJudge:
                 out.append((now, f"a transfer averaged {x:.2f} s"))
         for at, eid, src, msg in self.events:
             out.append((at, f"System log {src} event {eid}: {msg}"))
+        # The drive's own worst read and write since its counters began
+        # (show PC, 2026-10-04: a 15,284 ms write). A rise during the run
+        # past DISK_TRANSFER_LIMIT_S is a stall in this run.
+        for k, what in (("read_lat_max_ms", "read"),
+                        ("write_lat_max_ms", "write")):
+            vals = [(t, smp[k]) for t, smp in self.samples
+                    if smp.get(k) is not None]
+            if len(vals) >= 2 and vals[-1][1] > vals[0][1] and \
+                    vals[-1][1] > DISK_TRANSFER_LIMIT_S * 1000:
+                when = next(t for t, v in vals if v == vals[-1][1])
+                out.append((when, f"the drive's worst {what} rose to "
+                                  f"{vals[-1][1]:,} ms during this run"))
         return out
+
+    def latency_line(self):
+        parts = []
+        for k, what in (("read_lat_max_ms", "read"),
+                        ("write_lat_max_ms", "write")):
+            vals = [smp[k] for _t, smp in self.samples
+                    if smp.get(k) is not None]
+            if vals:
+                parts.append(f"the drive's worst {what} {vals[0]:,} ms at the "
+                             f"start, {vals[-1]:,} ms at the end")
+        return "; ".join(parts) or ("the drive's own worst read and write "
+                                    "times are NOT readable (they may need "
+                                    "the soak run as administrator)")
 
     def slow_moments(self, limit_s=0.1):
         return [(now, smp["xfer_s"]) for now, smp in self.samples
@@ -430,5 +463,11 @@ def self_test():
                          stdout='{"rel":[],"xfer":0.001,"queue":0,'
                                 '"events":[]}'))
     assert d0["temp_c"] is None and not DiskJudge().faults()
+    dl = DiskJudge()
+    dl.add(0, {"write_lat_max_ms": 15284, "read_lat_max_ms": 9895})
+    dl.add(60, {"write_lat_max_ms": 15284, "read_lat_max_ms": 9895})
+    assert not dl.faults()
+    dl.add(120, {"write_lat_max_ms": 16000, "read_lat_max_ms": 9895})
+    assert any("worst write rose to 16,000 ms" in w for _t, w in dl.faults())
     yield ("drive temperature, transfer time and storage events parse and "
            "are judged (70 C, 1 s, any event)")

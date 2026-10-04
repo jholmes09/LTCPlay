@@ -968,6 +968,12 @@ class Soak:
         for c in self.checks:
             note("PC check: " + c)
         note(self.choose_mode(self.want_mode))
+        self.container = ltcwin.package_name()
+        if self.container:
+            note(f"WARNING: this soak runs inside another app's container "
+                 f"({self.container}): Windows redirects its files there. "
+                 f"Start it from the Start menu for a true reading.")
+        note(ltcwin.settings_folder_line())
         self.make_show()
         self.flamesafe_config()
         self.deck = self.deck_plugged_in()
@@ -1246,6 +1252,7 @@ class Soak:
         if xfer:
             parts.append(f"average transfer up to {max(xfer) * 1000:.1f} ms "
                          f"(limit {soak_apps.DISK_TRANSFER_LIMIT_S:g} s)")
+        parts.append(d.latency_line())
         faults = d.faults()
         if faults:
             parts.append("FAULTS: " + "; ".join(
@@ -1642,6 +1649,11 @@ class Soak:
             f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
             f"minutes from 02:00 to midnight ({getattr(self, 'tz_name', '')}"
             f"), started by the scheduler itself",
+            (f"WARNING: ran inside another app's container "
+             f"({self.container}); its files went to that app's folder. "
+             f"Start the soak from the Start menu." if getattr(
+                 self, "container", "") else "Container: none (started as "
+                                             "itself)"),
             f"Soak mode: {self.mode}"
             + (" (MadMapper and BEYOND running on this PC, getting LTC "
                "Player's real commands on ports 8000 and 8100; laser output "
