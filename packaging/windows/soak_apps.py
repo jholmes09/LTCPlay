@@ -36,32 +36,81 @@ BLOCK_S = 6600.0              # 1 h 50 min: clear of the demos' 2 h limit
 # limit, not a fault; with a full license it never comes.
 DEMO_LIMIT_S = (6600.0, 7800.0)
 
+# Matched by image name in any folder (show PC, 2026-10-04: the demo runs
+# as "C:\Program Files\MadMapperDemo 6.1.5\MadMapperDemo.exe", BEYOND as
+# BEYOND.exe in C:\BEYOND55_Demo).
 APPS = {
-    "MadMapper": {"exe": ("MadMapper.exe",),
-                  "globs": (r"{pf}\MadMapper*\MadMapper.exe",
-                            r"{pf}\MadMapper*\*\MadMapper.exe",
-                            r"{pf86}\MadMapper*\MadMapper.exe"),
+    "MadMapper": {"exe": ("MadMapper*.exe",),
+                  "globs": (r"{pf}\MadMapper*\MadMapper*.exe",
+                            r"{pf}\MadMapper*\*\MadMapper*.exe",
+                            r"{pf86}\MadMapper*\MadMapper*.exe"),
                   "port": MADMAPPER_PORT, "ip": MADMAPPER_IP},
-    "BEYOND": {"exe": ("BEYOND.exe", "Beyond.exe"),
-               "globs": (r"{pf}\Pangolin\BEYOND*\BEYOND.exe",
-                         r"{pf86}\Pangolin\BEYOND*\BEYOND.exe",
-                         r"C:\Pangolin\BEYOND*\BEYOND.exe",
-                         r"{pf}\BEYOND*\BEYOND.exe",
-                         r"{pf86}\BEYOND*\BEYOND.exe"),
+    "BEYOND": {"exe": ("BEYOND*.exe",),
+               "globs": (r"{pf}\Pangolin\BEYOND*\BEYOND*.exe",
+                         r"{pf86}\Pangolin\BEYOND*\BEYOND*.exe",
+                         r"C:\Pangolin\BEYOND*\BEYOND*.exe",
+                         r"C:\BEYOND*\BEYOND*.exe",
+                         r"{pf}\BEYOND*\BEYOND*.exe",
+                         r"{pf86}\BEYOND*\BEYOND*.exe"),
                "port": BEYOND_PORT, "ip": BEYOND_IP},
 }
 
+
+def is_app(app, image):
+    """True when the image name (e.g. "MadMapperDemo.exe") is `app`'s."""
+    import fnmatch
+    n = (image or "").lower()
+    return any(fnmatch.fnmatch(n, p.lower()) for p in APPS[app]["exe"])
+
+
+def which_app(image):
+    return next((a for a in APPS if is_app(a, image)), None)
+
+
+def port_owners(port, net=None):
+    """Image names of the processes holding UDP `port` on any address,
+    [] when none or when it cannot be told (psutil)."""
+    try:
+        if net is None:
+            import psutil
+            conns = psutil.net_connections(kind="udp")
+            name = lambda pid: psutil.Process(pid).name()  # noqa: E731
+        else:
+            conns, name = net
+        out = []
+        for c in conns:
+            if c.laddr and c.laddr[1] == port and c.pid:
+                try:
+                    out.append(name(c.pid))
+                except Exception:
+                    out.append(f"process {c.pid}")
+        return sorted(set(out))
+    except Exception:
+        return []
+
 # What to click, said once at the start of each block (Jeff, 2026-10-04).
 CLICKS = (
-    "BEYOND (Demo, Advanced): start BEYOND from its icon. On the startup "
-    "settings window click Go BEYOND. In the version picker choose "
+    "BEYOND (Demo, Advanced): start BEYOND.exe (C:\\BEYOND55_Demo). On the "
+    "startup settings window click Go BEYOND. In the version picker choose "
     "Advanced (OSC and Art-Net need it). Close the VLC window that opens. "
-    "If it offers to recover after a crash, decline it. Its OSC input is "
-    "127.0.0.2 port 8100. Laser output may be enabled: this PC is isolated.",
-    "MadMapper (Demo): start MadMapper from its icon and choose the demo. "
-    "Check Preferences: OSC input port 8000, the heartbeat output to "
-    "127.0.0.1 port 9001 (/float-1), and Audio output None. Its DMX "
-    "blacking out every 30 s is the demo, not a fault.",
+    "If it offers to recover after a crash, decline it. Settings, OSC: "
+    "incoming OSC on, port 8100; OUTGOING OSC OFF (it defaults to "
+    "broadcast 255.255.255.255:8000, which hits MadMapper). Show "
+    "Properties: Enable incoming timecode ON (it can reset each launch). "
+    "Laser output is not available in the demo, so the lasers stay off.",
+    "MadMapper (Demo): start MadMapperDemo 6.1.5 from the Start menu. "
+    "Application, Audio Output: None, AND Audio Input: None (both reset to "
+    "Default; the input otherwise grabs the Scarlett). Project, OSC: input "
+    "port 8000 (the default is 8010); OSC Output-1 to 127.0.0.1 port 9001. "
+    "Project, DMX input: ArtNet In on Loopback Pseudo-Interface 1 - "
+    "127.0.0.1 (the default is the Wi-Fi). Its DMX blacking out every 30 s "
+    "is the demo, not a fault.",
+    "What the soak waits for: MadMapper running and holding OSC port 8000; "
+    "BEYOND running, its window responding, and holding OSC port 8100. "
+    "No six-track timeline is needed (the demo cannot load one). If "
+    "MadMapper sends OSC /float-1 to 127.0.0.1:9001 the engine's heartbeat "
+    "watchdog checks that too; if it sends nothing there, that check is "
+    "simply not made and the report says so.",
 )
 
 
@@ -102,8 +151,9 @@ def hung_names(run=subprocess.run):
 
 def pids_of(app, pids):
     found = set()
-    for e in APPS[app]["exe"]:
-        found |= pids.get(e.lower(), set())
+    for image, ids in pids.items():
+        if is_app(app, image):
+            found |= ids
     return found
 
 
@@ -118,7 +168,7 @@ def readiness(app, pids, hung, held, before=None):
     if before and mine & before:
         return ("still the copy from the block before: quit it and start it "
                 "again")
-    if any(e.lower() in hung for e in a["exe"]):
+    if any(is_app(app, h) for h in hung):
         return "its window is not responding"
     if not held:
         return f"not holding its OSC port {a['ip']}:{a['port']} yet"
@@ -148,7 +198,7 @@ def tasklist_names(run=subprocess.run):
 
 
 def running(name, names):
-    return any(e.lower() in names for e in APPS[name]["exe"])
+    return any(is_app(name, n) for n in names)
 
 
 def port_held(port, ip="127.0.0.1", sock=socket.socket):
@@ -479,6 +529,25 @@ def self_test():
     out = '"MadMapper.exe","1","Console","1","200 K"\n"System","4"\n'
     names = tasklist_names(lambda *a, **k: types.SimpleNamespace(stdout=out))
     assert running("MadMapper", names) and not running("BEYOND", names)
+    assert running("MadMapper", {"madmapperdemo.exe"}) and \
+        running("BEYOND", {"beyond.exe"}) and \
+        which_app("MadMapperDemo.exe") == "MadMapper" and \
+        which_app("chrome.exe") is None
+    hits = {r"C:\Program Files\MadMapperDemo 6.1.5\MadMapperDemo.exe",
+            r"C:\BEYOND55_Demo\BEYOND.exe"}
+    env2 = {"ProgramFiles": r"C:\Program Files"}
+    assert find_app("MadMapper", env2, lambda p: [h for h in hits if
+                    fnmatch.fnmatch(h.lower(), p.lower())]) and \
+        find_app("BEYOND", env2, lambda p: [h for h in hits if
+                 fnmatch.fnmatch(h.lower(), p.lower())])
+    C = types.SimpleNamespace
+    net = ([C(laddr=("0.0.0.0", 8100), pid=7), C(laddr=("127.0.0.1", 6454),
+                                                 pid=8)],
+           lambda pid: {7: "BEYOND.exe", 8: "MadMapperDemo.exe"}[pid])
+    assert port_owners(8100, net) == ["BEYOND.exe"] and \
+        port_owners(9999, net) == []
+    yield ("MadMapperDemo.exe and BEYOND.exe in any folder are found, and "
+           "who holds a port is read")
     yield "running programs are read from tasklist"
     # Answering, and its episodes.
     w = AppWatch("MadMapper")
