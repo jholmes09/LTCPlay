@@ -43,6 +43,7 @@ ABORT_AT_S = 60.0
 ABORT_EVERY = 2          # shows 2, 4, 6, ...
 BEAT_S = 0.1             # the page's own heartbeat while a finger is down
 GRACE_S = 0.3            # a change reaching flamesafe and back
+REFRACTORY_S = 2.5       # the deck's re-arm refractory (2 s) and a margin
 STALE_TC_S = 1.0         # timecode silent this long: not in a show
 
 
@@ -94,8 +95,8 @@ class Exerciser:
         self.clock = clock
         self.sleep = sleep
         self.stop = threading.Event()
-        self.counts = {"arm_tries": 0, "arms": 0, "holds": 0, "resumes": 0,
-                       "aborts": 0, "resets": 0}
+        self.counts = {"arm_tries": 0, "arms": 0, "cycles": 0, "holds": 0,
+                       "resumes": 0, "aborts": 0, "resets": 0}
         self.arms_by_group = {g: 0 for g in self.groups}
         self.failures = []           # (time, sentence)
         self.windows = []            # (start, end or None, why): no fire
@@ -142,9 +143,31 @@ class Exerciser:
 
     def arm(self, i):
         """Hold group i's Arm button on the screen until flamesafe reports
-        it armed (or 4 s), then let go."""
+        it armed, then let go. A group still asked for but not armed (an
+        Abort from a screen disarmed it at flamesafe; the deck still wants
+        it) is cycled first, as an operator does: Disarm, wait out the
+        deck's re-arm refractory window, then hold again."""
         name = self.groups[i]
         self.counts["arm_tries"] += 1
+        ok = self._hold(i, name)
+        if ok == "cycle":
+            self.counts["cycles"] += 1
+            self.http("POST", "/api/remote/group-disarm",
+                      {"group": i, "seen": self._seen()})
+            self.sleep(REFRACTORY_S)
+            ok = self._hold(i, name)
+        ok = ok is True
+        if ok:
+            self.counts["arms"] += 1
+            self.arms_by_group[name] += 1
+        elif not self.failures or "Arm button" not in self.failures[-1][1]:
+            self._fail(f"arming {name}", {"error": "flamesafe never "
+                                                   "reported it armed"})
+        return ok
+
+    def _hold(self, i, name):
+        """True once armed, "cycle" when it is asked for but held, else
+        False."""
         hold_id = None
         t0 = self.clock()
         ok = False
@@ -158,8 +181,10 @@ class Exerciser:
                 if self.armed().get(name) or "asked for" in err:
                     # The deck took the hold and asked flamesafe to arm:
                     # the hold is over. flamesafe reports armed once its
-                    # own arm dwell has passed.
-                    ok = self._wait_armed(name)
+                    # own arm dwell has passed; if it never does, the group
+                    # was asked for already and needs a cycle.
+                    ok = self._wait_armed(name) or (
+                        "cycle" if hold_id is None else False)
                     break
                 self._fail(f"holding {name}'s Arm button", doc)
                 break
@@ -169,14 +194,8 @@ class Exerciser:
                 break
             self.sleep(BEAT_S)
         self.http("POST", "/api/remote/arm-release", {"group": i})
-        if not ok and self.armed().get(name):
+        if ok is False and self.armed().get(name):
             ok = True
-        if ok:
-            self.counts["arms"] += 1
-            self.arms_by_group[name] += 1
-        elif not self.failures or "Arm button" not in self.failures[-1][1]:
-            self._fail(f"arming {name}", {"error": "flamesafe never "
-                                                   "reported it armed"})
         return ok
 
     def _wait_armed(self, name, within=4.0):
@@ -223,13 +242,16 @@ class Exerciser:
                 self._fail("Abort", doc)
                 return
             self.counts["aborts"] += 1
-            self.windows.append([time.time(), None, "abort"])
+            now = time.time()
+            self.windows.append([now, None, "abort"])
+            self.windows.append([now, None, "aborted"])     # until Reset
             t0 = self.clock()
             while self.clock() - t0 < 15 and not self.stop.is_set():
                 self.sleep(1.0)
                 st, doc = self.press("reset")
                 if st == 200:
                     self.counts["resets"] += 1
+                    self._close("aborted")
                     break
             else:
                 self._fail("Reset", doc)
@@ -262,10 +284,12 @@ class Exerciser:
         if self.thread is not None:
             self.thread.join(10)
 
-    def in_window(self, at):
-        """The reason fire must be zero at wall time `at`, or None."""
+    def in_window(self, at, kinds=("hold", "abort")):
+        """The reason fire (by default) must be zero at wall time `at`, or
+        None. The lasers' kinds are ("hold", "aborted"): dark from an Abort
+        until its Reset."""
         for s, e, why in self.windows:
-            if s + GRACE_S <= at and (e is None or at <= e):
+            if why in kinds and s + GRACE_S <= at and (e is None or at <= e):
                 return why
         return None
 
@@ -428,12 +452,26 @@ def self_test():
     ab = [b for _m, p, b in state["calls"] if p == "/api/remote/abort"]
     assert ab and ab[0]["confirmed"] is True and ex.counts["resets"] == 1
     assert ex.in_window(time.time() + 1) == "abort"
+    assert ex.in_window(time.time() + 1, ("hold", "aborted")) is None, \
+        "the lasers' Abort window ends at Reset"
     show["k"] = 3
     show["t"] = 9.0
     state["armed"] = {"front row": False, "cat-walk": False}
-    state["beats"] = {}
+    state["beats"] = {0: 99, 1: 99}      # still asked for: held, not armed
+    real_http = http
+
+    def http2(method, path, body=None):
+        if path == "/api/remote/group-disarm":
+            state["beats"][body["group"]] = 0
+        if path == "/api/remote/arm-hold" and \
+                state["beats"].get(body["group"], 0) >= 99:
+            state["calls"].append((method, path, dict(body or {})))
+            return 409, {"error": "already armed or asked for."}
+        return real_http(method, path, body)
+    ex.http = http2
     ex.step()
-    assert ex.counts["arms"] == 4 and ex.in_window(time.time() + 1) is None
+    assert ex.counts["arms"] == 4 and ex.counts["cycles"] == 2, ex.counts
+    assert ex.in_window(time.time() + 1) is None
     assert not ex.failures, ex.failures
     yield ("the exerciser signs in with a PIN, picks the operator, holds "
            "each Arm button with heartbeats until flamesafe reports it "

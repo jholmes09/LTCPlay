@@ -75,6 +75,10 @@ MM_PORT = 8010             # MadMapper's OSC port, as the bench config says
 # copy of the Art-Net timecode then go to this address instead, where this
 # program times them; MadMapper and BEYOND keep 127.0.0.1.
 SOAK_IP = "127.0.0.9"
+# BEYOND's own Art-Net timecode (beyond_blank "timecode", the default:
+# BEYOND Essentials has no OSC input). In fallback mode this program
+# listens there and times the black zone against the show zone.
+BEYOND_TC_IP = "127.0.0.2"
 BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
 SHOW_S = 100               # each generated show's length
 SHOW_EVERY_MIN = 3         # the bench schedule: a show every 3 minutes
@@ -349,6 +353,10 @@ class Soak:
         self.tc_last_wall = None
         self.hold_continued = 0
         self.measured = ""
+        self.bey_black = 0          # BEYOND stream packets in the black zone
+        self.bey_show = 0           # ... in the show zone
+        self.bey_bad = []           # (time, why): show zone while dark
+        self.bey_stats = None       # the engine's own counts (all mode)
         self.outside_timing = True
         self.fs_source = "(not read yet)"
         self.tick_hz = 40.0
@@ -428,7 +436,7 @@ class Soak:
                          "name": "Show"}],
                "clock": {"source": "audio_master",
                          "artnet": {"nodes": (
-                             {"MadMapper": "127.0.0.1"}
+                             {"MadMapper": "127.0.0.1", "BEYOND": BEYOND_TC_IP}
                              if self.mode == "fallback" else
                              {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
                               "Soak": SOAK_IP})},
@@ -516,6 +524,8 @@ class Soak:
                   soak_apps.BEYOND_PORT)},
               "flamesafe_config": self.engine_fs_cfg,
               "flame_controller": "Flames",
+              "beyond_blank": "timecode",
+              "beyond_timecode_ip": BEYOND_TC_IP,
               "show_name": "Ignite the Night",
               "venue": "Thanksgiving Point",
               "notes": "BENCH ONLY, written by the soak test"}
@@ -613,6 +623,32 @@ class Soak:
         st.tick(t)
         if st.longest > before and self.go_wall is not None:
             st.longest_loop_s = t - self.go_wall
+
+    def on_beyond_tc(self, b, t, addr=None):
+        """BEYOND's own timecode stream (fallback mode): hour
+        BLACK_HOUR is the black zone; anything else is the show's, which
+        is a fault while the lasers must be dark: no show timecode moving
+        to MadMapper, or inside the exerciser's Hold or Abort."""
+        if self.stopping or len(b) < 19 or b[:8] != b"Art-Net\0" or \
+                struct.unpack_from("<H", b, 8)[0] != 0x9700:
+            return
+        if b[17] == 23:
+            self.bey_black += 1
+            return
+        self.bey_show += 1
+        why = None
+        if self.tc_last is None or t - self.tc_last > 1.0:
+            why = "no show running"
+        elif self.ex is not None:
+            w = self.ex.in_window(time.time(), ("hold", "aborted"))
+            if w:
+                why = f"inside the {w}"
+        if why and (not self.bey_bad or
+                    time.time() - self.bey_bad[-1][0] > 5):
+            self.bey_bad.append((time.time(),
+                                 f"BEYOND got show timecode "
+                                 f"{b[17]:02d}:{b[16]:02d}:{b[15]:02d}:"
+                                 f"{b[14]:02d} with {why}"))
 
     def show_time(self):
         """Seconds into the show now playing, or None between shows."""
@@ -1059,7 +1095,8 @@ class Soak:
                 ("127.0.0.1", self.status_port, "flamesafe's status"),
                 ("127.0.0.1", FLAME_RELAY, "the flame link relay")]
         if self.mode == "fallback":
-            need += [("127.0.0.1", ARTNET_PORT, "Art-Net"),
+            need += [(BEYOND_TC_IP, ARTNET_PORT, "BEYOND's timecode"),
+                     ("127.0.0.1", ARTNET_PORT, "Art-Net"),
                      ("127.0.0.1", BEYOND_PORT, "BEYOND's OSC"),
                      ("127.0.0.1", MM_PORT, "MadMapper's OSC")]
         refuse_held_ports(need)
@@ -1067,7 +1104,9 @@ class Soak:
                  udp_listener(self.status_port, self.on_status, "status"),
                  udp_listener(FLAME_RELAY, self.on_flame, "flame relay")]
         if self.mode == "fallback":
-            socks += [udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
+            socks += [udp_listener(ARTNET_PORT, self.on_beyond_tc,
+                                   "beyond timecode", ip=BEYOND_TC_IP),
+                      udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
                       udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
                       udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
             self.measured = ("pixels, timecode, BEYOND's and MadMapper's "
@@ -1608,8 +1647,11 @@ class Soak:
         downs = sum(1 for _t, w, _a in self.beyond_cmds if w == "blank")
         ok = (self.show_starts == 0 or ups > 0) and \
             self.beyond_lit_outside == 0
-        if self.mode != "fallback":
-            ok = True        # BEYOND itself has them: see "BEYOND answering"
+        if self.mode != "fallback" or (self.bey_stats or {}).get(
+                "blank_mode") == "timecode":
+            # BEYOND itself has them ("BEYOND answering"), or the lasers
+            # are blanked by timecode, so OSC is not used.
+            ok = True
         out.append(("PASS" if ok else "FAIL",
                     "Lasers (BEYOND commands, to this PC only)",
                     f"{ups} unblank and {downs} blank command packets; "
@@ -1664,6 +1706,33 @@ class Soak:
                     f"flamesafe reports it armed, and its fire channels only "
                     f"in a show, never in a Hold, never after an Abort until "
                     f"it is armed again."))
+        st = self.engine("/api/conductor")
+        las = (st.get("lasers") or {}) if isinstance(st, dict) else {}
+        if las.get("timecode"):
+            self.bey_stats = las
+        las = self.bey_stats or {}
+        tc = las.get("timecode") or {}
+        heard = self.mode == "fallback"
+        out.append((("FAIL" if self.bey_bad else "PASS") if heard else
+                    "INFO",
+                    "BEYOND's timecode blanking (black zone hour 23 while "
+                    "the lasers must be dark)",
+                    (f"{len(self.bey_bad)} show-zone moment(s) while the "
+                     f"lasers had to be dark (limit 0)"
+                     + (": " + "; ".join(f"{now_text(a)} {w}" for a, w in
+                                         self.bey_bad[:6])
+                        if self.bey_bad else "")
+                     + f"; heard here: {self.bey_black / 30:.0f} s in the "
+                     f"black zone, {self.bey_show / 30:.0f} s on show "
+                     f"timecode; " if heard else
+                     "BEYOND holds port 6454, so its stream is not heard "
+                     "here; ")
+                    + (f"the engine sent {tc.get('black_frames', 0) / 30:.0f}"
+                       f" s of black zone and {tc.get('show_frames', 0) / 30:.0f}"
+                       f" s of show timecode to {tc.get('ip')}, "
+                       f"{tc.get('send_errors', 0)} send error(s); mode "
+                       f"{las.get('blank_mode', '?')}" if tc else
+                       "the engine reported no BEYOND timecode counts")))
         ex = self.ex
         if ex is not None:
             c = ex.counts
@@ -1679,7 +1748,9 @@ class Soak:
                         + f"; {c['arms']} of {c['arm_tries']} arms took ("
                         + ", ".join(f"{n} {k}" for n, k in
                                     ex.arms_by_group.items())
-                        + f"); {c['holds']} Holds, {c['resumes']} Resumes, "
+                        + f"); {c['cycles']} arm cycle(s) after an Abort "
+                        f"(Disarm, then hold again); {c['holds']} Holds, "
+                        f"{c['resumes']} Resumes, "
                         f"{c['aborts']} Aborts, {c['resets']} Resets; "
                         f"{self.hold_continued} Hold silence(s) in the "
                         f"timecode read as the same show"
