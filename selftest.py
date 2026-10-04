@@ -26688,6 +26688,21 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
           f"{set(body_pixels)}")
     check(c._reset_shown_since is not None,
           "drawing the latched deck starts the RESET_SHOWN_S clock")
+    box1 = sd.face_box(sd.GROUP_KEYS[1])
+    body1 = {canvas.getpixel((x, y)) for x in range(box1[0], box1[2], 3)
+             for y in range(box1[1] + 18, box1[3], 3)}
+    check(sd.LATCHED_GREY in body1 and (44, 36, 24) not in body1,
+          f"cat-walk, really off, greys out while latched: {body1}")
+    # A tap on a group flamesafe still reports armed disarms it, even
+    # though this deck never wanted it (an arm from somewhere else).
+    sends0 = len(arm.sends)
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    c.run_once(down)
+    c.run_once([False] * 6)
+    check(len(arm.sends) > sends0 and arm.wanted[0] is False,
+          "while latched, a tap on a group still reported armed sends its "
+          "disarm")
 
     def key_px(cv, key):
         b = sd.face_box(key)

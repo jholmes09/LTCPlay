@@ -390,12 +390,14 @@ off; Hold, Abort and Disarm stay on.
 **The Stream Deck after an Abort** (Jeff's approved design, 2026-09-26):
 hold Abort for half a second while the red ring fills. Once it fires, the
 deck border stays solid red, the Abort key reads RESET (flashing red), and
-Start and Hold are greyed and do nothing. One press of the Abort key is
+every other key is greyed and does nothing. One press of the Abort key is
 Reset, but only once the deck has shown RESET for half a second; a press
 before that sends every flame group off again and does not Reset. Reset
 follows the same rules as every Reset (an operator chosen; refused while the
 Abort is still fading), and every flame group stays off until it is armed
-again. A group key still turns its group off. Abort, Hold, Resume and Reset from the deck go to the engine's show
+again. One exception to the grey: a group that flamesafe still reports armed
+keeps showing ARMED (and a fault or a lost link still shows), and a tap on it
+turns it off. Abort, Hold, Resume and Reset from the deck go to the engine's show
 conductor; if the engine does not take one, or cannot be reached, the Start
 key reads ENGINE FAULT.
 

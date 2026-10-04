@@ -6983,7 +6983,7 @@ def build():
 
  ('fix round 2: a group key does nothing while aborted',
   'ltcplay/streamdeck.py',
-  '                    if self.arm.wanted[i]:\n                        self._do_disarm(i)',
+  '                    if self.arm.wanted[i] or self._reported_armed(i):\n                        self._do_disarm(i)',
   '                    if False:\n                        self._do_disarm(i)'),
 
  ('Reset design: a deck press Resets before RESET has shown 0.5 s',
@@ -7005,6 +7005,21 @@ def build():
   'ltcplay/streamdeck.py',
   '        if not latched:\n            self._reset_shown_since = None',
   '        if False:\n            self._reset_shown_since = None'),
+
+ ('Deck latched: a tap on a group still reported armed does not disarm it',
+  'ltcplay/streamdeck.py',
+  '                    if self.arm.wanted[i] or self._reported_armed(i):',
+  '                    if self.arm.wanted[i]:'),
+
+ ('Deck latched: a group still reported armed greys out',
+  'ltcplay/streamdeck.py',
+  '                if st is not None and not fault and \\\n                        st.get("armed") != "armed":',
+  '                if st is not None and not fault:'),
+
+ ('Deck latched: a group that is off keeps its colour',
+  'ltcplay/streamdeck.py',
+  '                    look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)',
+  '                    pass'),
 
  ('Reset design: the Hold key Resets while aborted',
   'ltcplay/streamdeck.py',
