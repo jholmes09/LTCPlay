@@ -154,8 +154,12 @@ class Exerciser:
                 body["hold_id"] = hold_id
             st, doc = self.http("POST", "/api/remote/arm-hold", body)
             if st != 200:
-                if self.armed().get(name):
-                    ok = True        # armed: the hold is over, as it should
+                err = str((doc or {}).get("error", ""))
+                if self.armed().get(name) or "asked for" in err:
+                    # The deck took the hold and asked flamesafe to arm:
+                    # the hold is over. flamesafe reports armed once its
+                    # own arm dwell has passed.
+                    ok = self._wait_armed(name)
                     break
                 self._fail(f"holding {name}'s Arm button", doc)
                 break
@@ -174,6 +178,14 @@ class Exerciser:
             self._fail(f"arming {name}", {"error": "flamesafe never "
                                                    "reported it armed"})
         return ok
+
+    def _wait_armed(self, name, within=4.0):
+        t0 = self.clock()
+        while self.clock() - t0 < within and not self.stop.is_set():
+            if self.armed().get(name):
+                return True
+            self.sleep(BEAT_S)
+        return bool(self.armed().get(name))
 
     # -- one pass of the plan -----------------------------------------------
     def step(self):
@@ -361,8 +373,10 @@ def self_test():
         if path == "/api/remote/arm-hold":
             i = body["group"]
             n = state["beats"][i] = state["beats"].get(i, 0) + 1
-            if n >= 11:                  # about SCREEN_HOLD_S of beats
-                state["armed"][groups[i][0]] = True
+            if n >= 12:                  # wanted now: the route refuses,
+                state["armed"][groups[i][0]] = True    # and flamesafe arms
+                return 409, {"error": "front row is already armed or "
+                                      "asked for.", "let_go": True}
             return 200, {"ok": True, "hold_id": "h"}
         if path == "/api/remote/reset":
             r = state.setdefault("resets", 0)
