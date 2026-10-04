@@ -58,6 +58,32 @@ LTC PLAYER'S OWN FILES
     flamesafe.json above, and "flame_controller" is the flame controller's
     name exactly as xLights spells it (capitals and spaces included). Until
     the schedule is there, the show page says no show is scheduled.
+[ ] Also in ltcplay_fire_ice.json: "show_name": "Ignite the Night" and
+    "venue": "Thanksgiving Point" (the rack screen's title), and
+    "beyond_blank": how the lasers are kept dark, decided at tech.
+    "timecode" (the default; BEYOND Essentials has no OSC input), "osc"
+    or "both".
+[ ] Timecode blanking: BEYOND gets its own Art-Net timecode (the show
+    file's node named BEYOND). Whenever the lasers must be dark it is sent
+    to hour 23, running. In the BEYOND show, Andy leaves hour 23 EMPTY (no
+    laser cues there), and BEYOND's "keep running when timecode stops" is
+    OFF.
+
+
+CHANGING THE FLAME GROUPS (at tech)
+
+[ ] The flame groups are a settings change only, in flamesafe.json under
+    "groups": each group has a "name", one "safety" channel and its "fire"
+    channels. The Stream Deck and the rack screen read the names from
+    there; nothing else needs changing.
+[ ] At most 3 groups (the Stream Deck has 3 arm keys). A channel belongs
+    to one group only. Every channel must exist on the flame controller in
+    the show's xLights layout.
+[ ] Stop LTC Player, save the file, start LTC Player. If the edit breaks
+    a rule, LTC Player does not start the show program and its log says
+    which rule, in a sentence. Fix it and start again.
+[ ] Check the new names on the Stream Deck keys and the rack screen, then
+    arm and disarm each group once.
 [ ] In showpc.json, "show_mode" is "fire_ice" (it is, unless someone
     changed it). That runs the scheduler, the show conductor and the flame
     link, and starts the Stream Deck program on the engine's own address,
