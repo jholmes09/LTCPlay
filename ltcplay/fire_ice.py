@@ -56,7 +56,7 @@ from . import showlog as showlog_mod
 CONFIG_FILE = "ltcplay_fire_ice.json"
 KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
                   "madmapper", "beyond", "flamesafe_config",
-                  "flame_controller", "notes"))
+                  "flame_controller", "notes", "show_name", "venue"))
 
 # "auto_start": the ONE setting that decides whether the scheduler, once it
 # performs, starts a scheduled show by itself (an open question for Jeff,
@@ -90,7 +90,12 @@ class FireIceConfig:
     def __init__(self, scheduler_performs=False, show_cue=None,
                  madmapper=None, beyond=None, path=None,
                  auto_start="when_run_pressed", flamesafe_config=None,
-                 flame_controller=None):
+                 flame_controller=None, show_name=None, venue=None):
+        # The show's own name and where it plays, for the screens' title
+        # (/api/brand). Here, not in the shared ltcplay_brand.json, so the
+        # GPL build keeps its own name; Jeff Holmes Presents stays global.
+        self.show_name = show_name
+        self.venue = venue
         self.scheduler_performs = scheduler_performs
         self.auto_start = auto_start
         self.show_cue = show_cue
@@ -151,6 +156,14 @@ class FireIceConfig:
                     f"{where}: 'flame_controller' needs 'flamesafe_config': "
                     f"flame cues only ever go to flamesafe.")
             fc = fc.strip()
+        titles = {}
+        for k in ("show_name", "venue"):
+            v = doc.get(k)
+            if v is not None and (not isinstance(v, str) or not v.strip()):
+                raise FireIceConfigError(
+                    f"{where}: {k!r} is words for the screens' title, or "
+                    f"leave it out.")
+            titles[k] = v.strip() if v else None
         mm = bey = None
         if "madmapper" in doc:
             from . import madmapper as madmapper_mod
@@ -160,7 +173,7 @@ class FireIceConfig:
             bey = beyond_mod.BeyondConfig.parse(doc["beyond"], where)
         return cls(performs, cue.strip() if cue else None, mm, bey, where,
                    auto_start=auto, flamesafe_config=fs,
-                   flame_controller=fc)
+                   flame_controller=fc, **titles)
 
     @classmethod
     def load(cls, path):
@@ -601,6 +614,81 @@ def refuse_active_flame_controller(show_file, name, fs_dest=None):
                 f"flamesafe. Set it Inactive, or give it another address, "
                 f"in xLights.")
     return blocked
+
+
+# The Stream Deck's arm keys (streamdeck.GROUP_KEY_LIMIT; not imported, so
+# this module never loads the deck).
+FLAME_GROUP_LIMIT = 3
+
+
+def check_flame_groups(folder, cfg):
+    """At `ltc serve` startup: the flame groups in flamesafe's config, the
+    one place they are decided (Jeff: a settings change at tech, never a
+    code change). The deck's and the pages' labels are read from the same
+    file. Raises FireIceConfigError, in a sentence, for an edit that would
+    not work on the night: more than FLAME_GROUP_LIMIT groups, a group with
+    no name or one name twice, one channel (safety or fire) in two groups,
+    or a channel the flame controller in a show's layout does not have (a
+    head that does not exist)."""
+    if not cfg.flamesafe_config:
+        return
+    path = cfg.flamesafe_config
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            groups = json.load(fh).get("groups")
+    except (OSError, ValueError, AttributeError) as e:
+        raise FireIceConfigError(f"{path}: could not be read: {e}")
+    if not isinstance(groups, list) or not groups:
+        raise FireIceConfigError(f"{path}: it lists no flame groups.")
+    if len(groups) > FLAME_GROUP_LIMIT:
+        raise FireIceConfigError(
+            f"{path} lists {len(groups)} flame groups; the Stream Deck has "
+            f"{FLAME_GROUP_LIMIT} arm keys. Put the heads into at most "
+            f"{FLAME_GROUP_LIMIT} groups.")
+    owner, names = {}, set()
+    for i, g in enumerate(groups):
+        name = g.get("name") if isinstance(g, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            raise FireIceConfigError(f"{path}: group {i + 1} has no name.")
+        if name in names:
+            raise FireIceConfigError(
+                f"{path}: two groups are both called {name!r}.")
+        names.add(name)
+        slots = [g.get("safety")] + list(g.get("fire") or [])
+        for s in slots:
+            if not isinstance(s, int) or isinstance(s, bool):
+                raise FireIceConfigError(
+                    f"{path}: {name} lists {s!r}, which is not a channel "
+                    f"number.")
+            if s in owner and owner[s] != name:
+                raise FireIceConfigError(
+                    f"{path}: channel {s} is in both {owner[s]} and {name}. "
+                    f"A head belongs to one group only.")
+            owner[s] = name
+    if not cfg.flame_controller or not folder or not os.path.isdir(folder):
+        return
+    layouts = [os.path.join(folder, "xlights_networks.xml")]
+    for n in sorted(os.listdir(folder)):
+        if n.lower().endswith(".json"):
+            try:
+                layouts.append(_show_networks(os.path.join(folder, n)))
+            except Exception:
+                pass
+    seen = set()
+    for xml in layouts:
+        if not xml or xml in seen or not os.path.isfile(xml):
+            continue
+        seen.add(xml)
+        try:
+            _first, count = flame_channels(xml, cfg.flame_controller)
+        except FlameControllerError:
+            continue     # check_flame_controllers says why, in its words
+        for s, name in sorted(owner.items()):
+            if not 1 <= s <= count:
+                raise FireIceConfigError(
+                    f"{path}: {name} lists channel {s}, but the flame "
+                    f"controller {cfg.flame_controller!r} has channels 1 to "
+                    f"{count} in {xml}. There is no such head.")
 
 
 def check_flame_controllers(folder, cfg):

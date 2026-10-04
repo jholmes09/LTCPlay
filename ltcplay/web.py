@@ -893,6 +893,13 @@ class Handler(BaseHTTPRequestHandler):
                                              "PIN first."})
         c = self.server.control
         try:
+            if route in ("/", "/index.html") and \
+                    getattr(self.server, "fire_ice_config", None) is not None:
+                # Fire & Ice (Jeff, 2026-10-04): the rack screen is the one
+                # operator screen. The old operator page stays for the GPL
+                # path only; nothing in this mode serves or links to it.
+                return self._send(302, b"", "text/plain",
+                                  headers={"Location": "/remote"})
             if route == "/remote" or (route in ("/", "/index.html")
                                       and not self._local()):
                 # The show network gets the remote page: the sign-in form
@@ -927,7 +934,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(200, fh.read(), kind)
                 return self._send(404, {"error": "no such thing here"})
             if route == "/api/brand":
-                return self._send(200, brand_mod.load())
+                return self._send(200, brand_doc(self.server))
             if route == "/api/state":
                 return self._send(200, c.state())
             if route == "/api/devices":
@@ -1177,6 +1184,20 @@ def _device_journal(httpd_schedule):
 _beyond_journal = _device_journal      # its earlier name
 
 
+def brand_doc(server):
+    """ltcplay_brand.json, with the show's own name and venue from the
+    Fire & Ice config when this server runs one (its "show_name" and
+    "venue"): the shared brand file never names one show."""
+    b = brand_mod.load()
+    cfg = getattr(server, "fire_ice_config", None)
+    if cfg is not None:
+        if getattr(cfg, "show_name", None):
+            b["show"] = cfg.show_name
+        if getattr(cfg, "venue", None):
+            b["venue"] = cfg.venue
+    return b
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
@@ -1351,6 +1372,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+    httpd.fire_ice_config = fire_ice
     if fire_ice is not None:
         if madmapper is None:
             madmapper = fire_ice.madmapper

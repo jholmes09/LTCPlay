@@ -229,14 +229,17 @@ REARM_REFRACTORY_S = 2.0
 DRAW_IDLE_S = 0.2
 # Reset (Jeff's approved design, decisions of 2026-09-26): Abort fires
 # after a 0.5 s hold and latches. While latched the deck border is solid
-# red, the Abort key reads RESET (flashing), Start and Hold are greyed and
-# do nothing, and one press of the Abort key is Reset. A press only counts
+# red, the Abort key reads RESET (flashing), every other key is greyed, and
+# one press of the Abort key is Reset. Meaning wins over grey: a group
+# flamesafe still reports armed (or a fault, or no link) shows its real
+# state, and a tap on it disarms it. A press only counts
 # as Reset once this deck has shown RESET for RESET_SHOWN_S (PR #43 review):
 # before that it is an Abort again, so a reflexive second press after an
 # Abort from another screen can never undo it. Reset's own rules still
 # apply (an operator chosen; refused while the Abort is still fading), and
 # after Reset every flame group stays disarmed until it is armed again.
 RESET_SHOWN_S = 0.5
+LATCHED_GREY = (30, 28, 26)   # a key with nothing to do while latched
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -1956,8 +1959,9 @@ class Controller:
             #   arm link), so a reflexive "make sure" press after an Abort
             #   from another screen cannot undo it;
             # - Start and Hold are greyed and do nothing;
-            # - a group key still drops that group's arm request: disarm
-            #   is never behind any gate. Nothing can be armed.
+            # - a group key disarms that group if this deck wants it or
+            #   flamesafe still reports it armed: disarm is never behind
+            #   any gate. Nothing can be armed.
             for k in edges(self._prev_keys, down):
                 if k == TOP_ABORT:
                     shown = self._reset_shown_since
@@ -1967,7 +1971,7 @@ class Controller:
                         self._do_abort(again=True)
                 elif k in GROUP_KEYS:
                     i = k - GROUP_KEYS[0]
-                    if self.arm.wanted[i]:
+                    if self.arm.wanted[i] or self._reported_armed(i):
                         self._do_disarm(i)
             self._abort_hold.release()
             for h in self._arm_holds:
@@ -2276,8 +2280,15 @@ class Controller:
                 # run_once already released every arm-hold the instant it
                 # entered the latched branch, so there is no hold left to
                 # draw.
-                look = group_look(self.status_for(name), fault=fault,
-                                  confirmed=confirmed)
+                # Jeff's design greys every key but RESET while latched;
+                # meaning wins: a group still reported armed, a fault or no
+                # link keeps its real look. Only a group that is really off
+                # (disarmed or held) greys out.
+                st = self.status_for(name)
+                look = group_look(st, fault=fault, confirmed=confirmed)
+                if st is not None and not fault and \
+                        st.get("armed") != "armed":
+                    look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
                 arm_key_image(fonts, d, box, name, look, blink_on)
                 continue
             hold_frac = self._arm_holds[i].fraction(now)
@@ -2288,6 +2299,10 @@ class Controller:
                               confirmed=confirmed)
             arm_key_image(fonts, d, box, name, look, blink_on)
         return canvas
+
+    def _reported_armed(self, i):
+        st = self.status_for(self.names[i])
+        return bool(st) and st.get("armed") == "armed"
 
     def _track_reset_face(self, latched, now):
         """Called by draw(): remembers when this deck first drew RESET on

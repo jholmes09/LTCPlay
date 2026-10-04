@@ -17,9 +17,10 @@ DEFAULT = {
     "phone": "",
     "url": "",
     "logo": "brand/logo.png",
-    # The show the screens are titled with, and where it plays. A settings
-    # change, not a code change: the Fire & Ice show is "Ignite the Night"
-    # at Thanksgiving Point. Empty means the screens fall back to `product`.
+    # The show the screens are titled with, and where it plays. Empty means
+    # the screens fall back to `product`. The Fire & Ice show sets these in
+    # its own ltcplay_fire_ice.json ("show_name", "venue"), which wins
+    # (web.brand_doc), so this shared file stays free of any one show.
     "show": "",
     "venue": "",
 }
