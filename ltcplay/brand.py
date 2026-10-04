@@ -17,6 +17,11 @@ DEFAULT = {
     "phone": "",
     "url": "",
     "logo": "brand/logo.png",
+    # The show the screens are titled with, and where it plays. A settings
+    # change, not a code change: the Fire & Ice show is "Ignite the Night"
+    # at Thanksgiving Point. Empty means the screens fall back to `product`.
+    "show": "",
+    "venue": "",
 }
 
 
