@@ -348,6 +348,8 @@ class Soak:
         self.fs_armed = {}          # group -> armed, from flamesafe status
         self.tc_last_wall = None
         self.hold_continued = 0
+        self.measured = ""
+        self.outside_timing = True
         self.fs_source = "(not read yet)"
         self.tick_hz = 40.0
         self.samples = open(os.path.join(self.dir, "samples.csv"), "w",
@@ -1050,6 +1052,17 @@ class Soak:
         self.make_schedule()
         self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.flame_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Every port this program would listen on is checked first: one a
+        # real program holds is never taken (show PC, 2026-10-04: a bind
+        # MadMapper or BEYOND held crashed the soak).
+        need = [("127.0.0.1", SACN_PORT, "flamesafe's sACN"),
+                ("127.0.0.1", self.status_port, "flamesafe's status"),
+                ("127.0.0.1", FLAME_RELAY, "the flame link relay")]
+        if self.mode == "fallback":
+            need += [("127.0.0.1", ARTNET_PORT, "Art-Net"),
+                     ("127.0.0.1", BEYOND_PORT, "BEYOND's OSC"),
+                     ("127.0.0.1", MM_PORT, "MadMapper's OSC")]
+        refuse_held_ports(need)
         socks = [udp_listener(SACN_PORT, self.on_sacn, "sacn"),
                  udp_listener(self.status_port, self.on_status, "status"),
                  udp_listener(FLAME_RELAY, self.on_flame, "flame relay")]
@@ -1057,11 +1070,35 @@ class Soak:
             socks += [udp_listener(ARTNET_PORT, self.on_artnet, "artnet"),
                       udp_listener(BEYOND_PORT, self.on_beyond, "beyond"),
                       udp_listener(MM_PORT, self.on_madmapper, "madmapper")]
+            self.measured = ("pixels, timecode, BEYOND's and MadMapper's "
+                             "commands: overheard on their own ports on this "
+                             "PC (neither program ran)")
         else:
             # MadMapper and BEYOND were started by hand and answered before
-            # this block began (wait_for_apps).
-            socks.append(udp_listener(ARTNET_PORT, self.on_artnet, "artnet",
-                                      ip=SOAK_IP))
+            # this block began (wait_for_apps). They hold 6454, 8000 and
+            # 8100, so their commands are not overheard; the pixels and a
+            # copy of the timecode go to SOAK_IP, timed here when that
+            # address can be listened on.
+            try:
+                socks.append(udp_listener(ARTNET_PORT, self.on_artnet,
+                                          "artnet", ip=SOAK_IP))
+                self.measured = (f"pixels and timecode: timed here from the "
+                                 f"copy the engine sends {SOAK_IP}:6454; "
+                                 f"MadMapper and BEYOND: process, window and "
+                                 f"OSC port held (their commands are not "
+                                 f"overheard: they hold those ports)")
+            except OSError:
+                who = ", ".join(soak_apps.port_owners(ARTNET_PORT)) or \
+                    "another program"
+                self.outside_timing = False
+                self.measured = (f"pixels and timecode NOT timed from "
+                                 f"outside: {SOAK_IP}:6454 could not be "
+                                 f"listened on ({who} holds 6454); see the "
+                                 f"engine's own counters. MadMapper and "
+                                 f"BEYOND: process, window and OSC port held")
+                note(f"could not listen on {SOAK_IP}:6454 ({who} holds "
+                     f"6454): pixels and timecode are not timed from "
+                     f"outside in this run")
         if self.fake_audio:
             note("AUDIO IS FAKE: --fake-audio, so the engine's show audio "
                  "plays to the test suite's stand-in device, not a real "
@@ -1155,6 +1192,12 @@ class Soak:
             self.samples.close()
         return self.passed
 
+    def stop_all(self):
+        """After a failure in this program: stop whatever it started."""
+        self.stopping = True
+        for name in ("deck", "engine", "flamesafe"):
+            self.stop_program(name)
+
     def read_journal(self):
         """Every fault line the engine's night journal wrote, sorted into
         "nothing attached, expected" and real."""
@@ -1242,7 +1285,8 @@ class Soak:
             held = soak_apps.port_held(a["port"], a["ip"])
             why = watch.sample(now, alive, held,
                                hb if app == "MadMapper" else None,
-                               hung=any(e.lower() in hung for e in a["exe"]))
+                               hung=any(soak_apps.is_app(app, h)
+                                        for h in hung))
             if why and watch.episodes and watch.episodes[-1][0] == now:
                 note(f"{app} not answering: {why}")
             if watch.demo_stopped_at == now:
@@ -1256,7 +1300,7 @@ class Soak:
         for proc in psutil.process_iter(["name"]):
             nm = (proc.info.get("name") or "").lower()
             for app in self.app_watch:
-                if nm in [e.lower() for e in soak_apps.APPS[app]["exe"]]:
+                if soak_apps.is_app(app, nm):
                     try:
                         if not hasattr(self, "_app_ps"):
                             self._app_ps = {}
@@ -1471,7 +1515,10 @@ class Soak:
         """(verdict, title, detail) for every item."""
         out = []
         px = self.pixels
-        if px.n < 10:
+        if not self.outside_timing:
+            out.append(("NOT TESTED", "Pixel frames and Art-Net timecode",
+                        self.measured))
+        elif px.n < 10:
             out.append(("FAIL", "Pixel frames (Art-Net, timed from outside "
                         "the engine)", f"only {px.events} frames arrived"))
         else:
@@ -1525,7 +1572,8 @@ class Soak:
         tc = self.tc
         ok = tc.n > 10 and tc.over_gap == 0 and \
             abs(tc.mean() - TC_PERIOD_MS) <= 3.0
-        out.append(("PASS" if ok else "FAIL",
+        out.append(("NOT TESTED" if not self.outside_timing else
+                    "PASS" if ok else "FAIL",
                     "Art-Net timecode (from the show audio, to MadMapper's "
                     "address)",
                     f"{tc.events} packets in {self.show_starts} show(s), "
@@ -1762,6 +1810,7 @@ class Soak:
                if self.mode != "fallback"
                else " (MadMapper's and BEYOND's commands counted by this "
                     "program; neither program ran)"),
+            f"How measured: {self.measured or 'not started'}",
             "Show mode: fire_ice, the engine and the deck started exactly as "
             "the installed LTC Player starts them in that mode",
             f"flamesafe config: copied from {self.fs_source}, sACN forced "
@@ -1786,6 +1835,22 @@ class Soak:
         return lines
 
 
+def refuse_held_ports(need):
+    """Raise a plain-sentence RuntimeError, naming the process, when any
+    (ip, port, what) this program must listen on is already held."""
+    for ip, port, what in need:
+        if soak_apps.port_held(port, ip):
+            who = soak_apps.port_owners(port)
+            apps = [soak_apps.which_app(w) for w in who]
+            hint = (" MadMapper or BEYOND is running, so run the soak in "
+                    "all programs mode (leave out --mode fallback)."
+                    if any(apps) else " Close it and start the soak again.")
+            raise RuntimeError(
+                f"Port {port} ({what}) is already held by "
+                f"{', '.join(who) or 'another program'}, so the soak cannot "
+                f"listen there. Nothing was started.{hint}")
+
+
 def resolve_mode(want="auto", names=None):
     """(mode, {app: install path}, sentence): 'all programs' when MadMapper
     and BEYOND are both installed (or running) and `want` allows it, else
@@ -1796,7 +1861,9 @@ def resolve_mode(want="auto", names=None):
     found, missing = {}, []
     for app in ("MadMapper", "BEYOND"):
         path = soak_apps.find_app(app)
-        if path or soak_apps.running(app, names):
+        on_port = any(soak_apps.is_app(app, o) for o in
+                      soak_apps.port_owners(soak_apps.APPS[app]["port"]))
+        if path or soak_apps.running(app, names) or on_port:
             found[app] = path
         else:
             missing.append(app)
@@ -1937,6 +2004,10 @@ class Blocks:
 
     def write_report(self):
         self.write()
+
+    def stop_all(self):
+        if self.blocks and not self.blocks[-1].finished:
+            self.blocks[-1].stop_all()
 
     def write(self):
         n = len(self.plan)
@@ -2132,27 +2203,36 @@ def main(argv=None):
     import signal
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
-    resolved, _found, why = resolve_mode(mode)
-    if resolved == "all programs":
-        note(why)
-        soak = Blocks(seconds, device, fake)
-    else:
-        soak = Soak(seconds, device)
-        soak.fake_audio = fake
-        soak.want_mode = mode
     ok = False
+    soak = None
+    failed = ""
     try:
+        resolved, _found, why = resolve_mode(mode)
+        if resolved == "all programs":
+            note(why)
+            soak = Blocks(seconds, device, fake)
+        else:
+            soak = Soak(seconds, device)
+            soak.fake_audio = fake
+            soak.want_mode = mode
         ok = soak.run()
     except Exception as e:
         import traceback
         traceback.print_exc()
-        note(f"THE SOAK TEST ITSELF FAILED: {type(e).__name__}: {e}")
-        soak.finished = True
-        soak.ended = time.time()
-        try:
-            soak.write_report()
-        except Exception:
-            pass
+        failed = f"{type(e).__name__}: {e}" if not isinstance(
+            e, RuntimeError) else str(e)
+        note(f"THE SOAK TEST ITSELF FAILED: {failed}")
+        if soak is not None:
+            soak.finished = True
+            soak.ended = time.time()
+            try:
+                soak.stop_all()
+            except Exception:
+                pass
+            try:
+                soak.write_report()
+            except Exception:
+                pass
     finally:
         if was_running:
             print("Starting LTC Player again...")
@@ -2162,10 +2242,15 @@ def main(argv=None):
                 os.remove(sup.stop_file())
             except OSError:
                 pass
+    if failed:
+        print("")
+        print("THE SOAK TEST ITSELF FAILED: " + failed)
+        print("LTC Player was left as it was found"
+              + (" (started again)." if was_running else "."))
     print("")
     print("Result: " + ("PASSED" if ok else "FAILED"))
     print("The report is here:")
-    for p in soak.report_paths:
+    for p in (soak.report_paths if soak is not None else []):
         if os.path.exists(p):
             print("    " + p)
     if wait:
