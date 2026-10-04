@@ -25,6 +25,12 @@ def _self_check():
     if os.path.isfile(ex):
         config.load(ex)
         yield "the example config loads"
+    if ltcwin.WINDOWS:
+        got = ltcwin.keep_time()
+        bad = [g for g in got if "NOT" in g or "could not" in g]
+        if bad:
+            raise RuntimeError("Windows timekeeping: " + "; ".join(bad))
+        yield "Windows timekeeping: " + ", ".join(got)
 
 
 def main():
@@ -35,6 +41,7 @@ def main():
     if rc is not None:
         return rc
     ltcwin.clean_stop_on_logoff()
+    ltcwin.say_keep_time("flamesafe")
     from flamesafe.__main__ import main as flamesafe_main
     return flamesafe_main(argv)
 

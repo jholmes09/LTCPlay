@@ -49,6 +49,12 @@ def _self_check():
     if p.exitcode != 0:
         raise RuntimeError(f"a spawned process exited with {p.exitcode}")
     yield "a spawned process (how the show audio runs) starts and exits"
+    if ltcwin.WINDOWS:
+        got = ltcwin.keep_time()
+        bad = [g for g in got if "NOT" in g or "could not" in g]
+        if bad:
+            raise RuntimeError("Windows timekeeping: " + "; ".join(bad))
+        yield "Windows timekeeping: " + ", ".join(got)
 
 
 def main():
@@ -60,6 +66,8 @@ def main():
     if rc is not None:
         return rc
     ltcwin.clean_stop_on_logoff()
+    if argv and argv[0] == "serve":
+        ltcwin.say_keep_time("ltcplay")
     from ltcplay import cli
     return cli.main(argv)
 

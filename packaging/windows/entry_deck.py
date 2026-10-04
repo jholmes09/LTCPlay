@@ -34,6 +34,9 @@ def main():
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
     ltcwin.clean_stop_on_logoff()
+    # The arm link's keepalive must not be throttled either; the deck
+    # keeps its normal priority (it is not the frame sender).
+    ltcwin.say_keep_time("ltcplay-deck", above_normal=False)
     from ltcplay import streamdeck
     return streamdeck.main(argv)
 
