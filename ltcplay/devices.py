@@ -94,7 +94,7 @@ The conductor does NOT call on_hold(), on_resume() or on_abort()
 
 Everything above was written before the conductor (conductor.py, PR #28)
 existed. When it arrived, its DeviceOutputs interface turned out to be
-granular (lasers_blank, lasers_fade_out, lasers_restore, video_fade_out,
+granular (lasers_blank, lasers_restore, video_fade_out,
 video_restore, video_stop), and the conductor does its own sequencing: one
 step at a time, under its generation guard, with its own record of what
 each output was last told. conductor.ConductorDevices is the conductor's
@@ -137,10 +137,9 @@ to prove it:
     lasers, then the rest, and beyond.blank() returns only after its
     packets have gone (about 40 ms), so the blank is out before MadMapper
     is sent anything.
-  - Abort's lasers are an instant blank, never a ramp: lasers_fade_out()
-    here blanks at once and journals that it was not a fade. beyond.py's
-    allow-list (0.0 and 100.0 only) is untouched. A real ramp for Abort is
-    still a separate, laser-safety-relevant change for review.
+  - Abort's lasers are an instant blank, never a ramp (Jeff and Andy,
+    2026-10-04): BEYOND takes brightness 0.0 or 100.0 only (beyond.py's
+    allow-list), so every dark look sends lasers_blank().
   - Hold's 0.25 s fade, then freeze: the conductor asks AudioMaster for it
     (music_hold) and waits for the clock to report frozen.
   - No lasers in intermission: lasers_restore() is the only unblank, and

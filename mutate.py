@@ -4046,11 +4046,10 @@ def build():
   "                if False:\n"
   "                    return self._refused(\"Abort\","),
 
- ("conductor: Abort blanks the lasers instead of ramping them",
+ ("conductor: Abort sends no laser blank of its own",
   "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
-  "                           ABORT_FADE_S)",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)"),
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
+  "            r = done(\"lasers left to the executor\")"),
 
  ("conductor: Abort never stops the video",
   "ltcplay/conductor.py",
@@ -4251,18 +4250,13 @@ def build():
  ("conductor: Abort's laser blank waits for the executor, so the video "
   "fades first (review of PR #29, finding D)",
   "ltcplay/conductor.py",
-  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
-  "                           ABORT_FADE_S)",
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)",
   "            r = failed(\"left to the executor\")"),
 
  ("conductor: a Hold fades the music before the lasers go dark",
   "ltcplay/conductor.py",
-  "        if look == DARK and fade > 0:\n"
-  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                       self.devices.lasers_fade_out, fade)\n"
-  "        else:\n"
-  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                       self.devices.lasers_blank)\n"
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                   self.devices.lasers_blank)\n"
   "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
   "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
@@ -4271,12 +4265,8 @@ def build():
   "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
   "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
   "                                                          UNKNOWN))\n"
-  "        if look == DARK and fade > 0:\n"
-  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                       self.devices.lasers_fade_out, fade)\n"
-  "        else:\n"
-  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
-  "                       self.devices.lasers_blank)\n"),
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                   self.devices.lasers_blank)\n"),
 
  ("conductor: the real device layer says it is wired without BEYOND or "
   "MadMapper",
@@ -7108,6 +7098,26 @@ def build():
   'ltcplay/onlyone.py',
   '        handle, existed = got\n        if existed:',
   '        handle, existed = got\n        if False:'),
+
+ ("flame groups: more than 3 groups pass at start",
+  "ltcplay/fire_ice.py",
+  "    if len(groups) > FLAME_GROUP_LIMIT:",
+  "    if len(groups) > 99:"),
+
+ ("flame groups: one channel in two groups passes at start",
+  "ltcplay/fire_ice.py",
+  "            if s in owner and owner[s] != name:",
+  "            if False:"),
+
+ ("flame groups: a head the layout does not have passes at start",
+  "ltcplay/fire_ice.py",
+  "            if not 1 <= s <= count:",
+  "            if False:"),
+
+ ("flame groups: ltc serve never checks them",
+  "ltcplay/cli.py",
+  "            fire_ice_mod.check_flame_groups(\n",
+  "            (lambda *a: None)(\n"),
 
 ]
 

@@ -24853,21 +24853,22 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     # the lasers blanked on the pressing thread (independent review of PR
     # #29, finding D: never queued behind the executor).
     check(rig.names() == ["flames_zero", "flames_disarm_all",
-                          "lasers_fade_out"],
+                          "lasers_blank"],
           f"Abort cuts and disarms the flames, then sends the lasers dark, "
           f"before it returns, and nothing else yet: {rig.names()}")
     check(all(t == 200.0 for _n, _a, t in rig.calls),
           "the flame cut and the lasers' dark command have zero delay")
     check(c.latched, "Abort latches at once")
     c.run_pending()
-    for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
-                 "music_halt"):
+    for name in ("video_fade_out", "pixels_fade_out", "music_halt"):
         got = rig.first(name)
         check(got is not None and got[1] == (1.0,) and got[2] == 200.0,
               f"{name} starts at the press, over 1 s: {got}")
-    check(rig.count("lasers_blank") == 0,
-          "Abort ramps the lasers (BEYOND brightness), not an instant blank")
-    check(rig.count("lasers_fade_out") == 1,
+    las = rig.first("lasers_blank")
+    check(las is not None and las[1] == () and las[2] == 200.0,
+          f"Abort blanks the lasers at once at the press, no ramp (Jeff and "
+          f"Andy, 2026-10-04): {las}")
+    check(rig.count("lasers_blank") == 1,
           "the executor does not send the lasers dark again once the "
           "press's command got out")
     check(any("lasers blanked at the press" in t for t, _f in lines),
@@ -24959,7 +24960,7 @@ def test_conductor_double_abort_is_idempotent():
     c.run_pending()
     c.abort("Andy", "rack screen")
     c.run_pending()
-    for name in ("flames_zero", "flames_disarm_all", "lasers_fade_out",
+    for name in ("flames_zero", "flames_disarm_all",
                  "video_fade_out", "pixels_fade_out", "music_halt",
                  "video_stop"):
         check(rig.count(name) == 1, f"{name} sent exactly once for three "
@@ -24967,8 +24968,9 @@ def test_conductor_double_abort_is_idempotent():
     # Finding B: each press while latched sends the laser blank again (a
     # blank only makes it darker), so a blank that did not get out the
     # first time is not stuck that way until Reset.
-    check(rig.count("lasers_blank") == 2,
-          f"each later Abort press sends the laser blank again "
+    check(rig.count("lasers_blank") == 3,
+          f"the first Abort press blanks the lasers and each later press "
+          f"sends the blank again "
           f"({rig.count('lasers_blank')})")
     check(resets and not resets[0].ok and "still fading" in
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
@@ -25001,7 +25003,7 @@ def test_conductor_abort_mid_hold_fade_wins():
     c.run_pending()
     check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
     check(seen.get("cut") == ["flames_zero", "flames_disarm_all",
-                              "lasers_fade_out"],
+                              "lasers_blank"],
           f"the flames were cut and the lasers sent dark inside the press "
           f"itself: {seen.get('cut')}")
     hold = rig.first("music_hold")
@@ -25022,11 +25024,11 @@ def test_conductor_abort_mid_hold_fade_wins():
     # The Hold blanked the lasers; Abort sends their dark command again
     # anyway (BEYOND never confirms, so "already dark" is never trusted),
     # on the pressing thread, before the music fade.
-    check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
-    las = rig.first("lasers_fade_out")
-    check(las is not None and abs(las[2] - 400.1) < 1e-9
-          and rig.names().index("lasers_fade_out")
-          < rig.names().index("music_halt"),
+    blanks = [i for i, cl in enumerate(rig.calls) if cl[0] == "lasers_blank"]
+    check(len(blanks) == 2, "the Hold blanked the lasers, then the Abort")
+    las = rig.calls[blanks[-1]]
+    check(abs(las[2] - 400.1) < 1e-9
+          and blanks[-1] < rig.names().index("music_halt"),
           f"Abort sends the lasers dark again at its press, before "
           f"anything else it fades: {las} {rig.names()}")
     # Finding C: Abort fades the video again, from wherever the Hold's fade
@@ -25129,8 +25131,7 @@ def test_conductor_generation_guard_stops_a_stale_effect():
           f"no step of a superseded effect runs after the press: "
           f"{rig.names()}")
     ri = rig.calls.index(rig.first("lasers_restore"))
-    check(any(cl[0] in ("lasers_blank", "lasers_fade_out")
-              for cl in rig.calls[ri + 1:]),
+    check(any(cl[0] == "lasers_blank" for cl in rig.calls[ri + 1:]),
           "and Abort takes the lasers that did come up back down")
     check(c.snapshot()["applied"]["lasers"] == "black",
           f"and the record says dark, not the restore's lit: "
@@ -25138,9 +25139,10 @@ def test_conductor_generation_guard_stops_a_stale_effect():
     # The restore returned after the Abort's blank: its "lit" must not
     # overwrite the newer record (finding D), or the Abort's effect would
     # think its blank had not landed and blank again.
-    check(rig.count("lasers_blank") == 1 and
+    check(rig.count("lasers_blank") == 2 and
           any("lasers blanked at the press" in t for t, _f in lines),
-          f"the Abort's own blank stands; nothing had to blank again: "
+          f"the Hold's blank, then the Abort's own, which stands; nothing "
+          f"had to blank again: "
           f"{rig.names()}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
@@ -25231,11 +25233,12 @@ def test_conductor_announcements_hold_go_dark_then_play():
     check(not r2.ok and "still starting" in r2.sentence,
           f"a second announcement while one starts is refused: {r2}")
     c.run_pending()
-    for name in ("flames_zero", "lasers_fade_out", "music_hold",
+    for name in ("flames_zero", "lasers_blank", "music_hold",
                  "video_fade_out", "pixels_fade_out"):
         got = rig.first(name)
         check(got is not None and got[2] == 800.0 and
-              (name == "flames_zero" or got[1] == (0.25,)),
+              (name in ("flames_zero", "lasers_blank") or
+               got[1] == (0.25,)),
               f"{name} at the press, fading with the music: {got}")
     check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
           f"played 0.5 s after the 0.25 s fade ended: {plays}")
@@ -25246,7 +25249,7 @@ def test_conductor_announcements_hold_go_dark_then_play():
     T.t = 810.0
     c.announce("cancellation", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == ["lasers_fade_out"],
+    check(rig.names(n) == ["lasers_blank"],
           f"already dark: only the lasers' blank is sent again: "
           f"{rig.names(n)}")
     check(plays[-1][3] == 810.0, "and it plays at once")
@@ -25274,7 +25277,7 @@ def test_conductor_announcements_hold_go_dark_then_play():
     T.t = 900.0
     c.announce("delayed", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == ["lasers_fade_out"],
+    check(rig.names(n) == ["lasers_blank"],
           f"an announcement during a Hold sends nothing but the lasers' "
           f"blank again (always re-sent): already dark: {rig.names(n)}")
     check(plays[-1][3] == 900.0,
@@ -25446,7 +25449,6 @@ def test_conductor_rehearsal_hold_is_instant():
     c.announce("delayed", "Andy", "rehearsal page")
     c.run_pending()
     check(rig.first("lasers_blank", n) is not None and
-          rig.first("lasers_fade_out", n) is None and
           rig.first("video_fade_out", n)[1] == (0.0,),
           f"a rehearsal announcement goes dark at once: {rig.names(n)}")
     c.resume("Andy", "rehearsal page")
@@ -25527,9 +25529,10 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
     check(c.snapshot()["applied"]["lasers"] == "unknown",
           "a failed blank is not counted as dark")
     rig.fail = set()
+    n0 = rig.count("lasers_blank")
     c.abort("Andy", "rack screen")
     c.run_pending()
-    check(rig.count("lasers_fade_out") == 1,
+    check(rig.count("lasers_blank") == n0 + 1,
           "so the Abort sends the lasers to black again")
     # A raise, and a return that is not a Result.
     for mode in ("raise_on", "bad"):
@@ -25657,12 +25660,9 @@ def test_conductor_on_real_threads():
                                         f"({rig.count(name)})")
         # The Hold's blank, then one per Abort press (finding B); the
         # Hold's video fade, then Abort's own from where it got to (C).
-        check(rig.count("lasers_fade_out") == 1 and
-              rig.count("lasers_blank") == 2,
-              f"lasers blanked by the Hold, sent dark by the first Abort "
-              f"press and blanked again by the second "
-              f"({rig.count('lasers_fade_out')}, "
-              f"{rig.count('lasers_blank')})")
+        check(rig.count("lasers_blank") == 3,
+              f"lasers blanked by the Hold, by the first Abort press and "
+              f"again by the second ({rig.count('lasers_blank')})")
         vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
         check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
                              f"({len(vfs)})")
@@ -27394,8 +27394,8 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
           and min(mc) > max(b),
           f"the conductor calls MadMapper (fade, then stop) only after "
           f"BEYOND is dark: {names}")
-    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
-          f"the journal says the lasers were blanked, not faded: {lines}")
+    check(not any("faded" in t and "BEYOND" in t for t, _f in lines),
+          f"the journal never says the lasers faded: {lines}")
     mm_ev = [ev[i][1] for i in m]
     check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
           f"MadMapper's audio level is not sent: {mm_ev}")
@@ -27554,7 +27554,7 @@ def test_conductor_devices_failures_missing_links_and_speed():
         if link is not None:
             link.close()
     dev = C.ConductorDevices(None, None)
-    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+    for name, args in (("lasers_blank", ()),
                        ("lasers_restore", ()), ("video_fade_out", (1.0,)),
                        ("video_restore", (0.0,)), ("video_stop", ())):
         r = getattr(dev, name)(*args)
@@ -27576,7 +27576,7 @@ def test_conductor_devices_failures_missing_links_and_speed():
     bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
                    sleep=_on_time_sleep)
     dev = C.ConductorDevices(link, bey)
-    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+    for name, args in (("lasers_blank", ()),
                        ("lasers_restore", ()), ("video_fade_out", (1.0,)),
                        ("video_restore", (1.0,)), ("video_fade_out", (0.0,)),
                        ("video_stop", ())):
@@ -31247,6 +31247,81 @@ def _fi_mod():
     return fire_ice
 
 
+def test_flame_groups_are_a_settings_change_only():
+    section("fire & ice: the flame groups live in flamesafe's config only; "
+            "renaming or regrouping there changes the deck's labels, and an "
+            "edit that cannot work (more than 3 groups, a channel in two "
+            "groups, a head the layout does not have) is refused at start "
+            "in a sentence")
+    import json as _json
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import streamdeck as sd
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        fs, show, doc = _fi_flame_files(work)
+        cfg = types.SimpleNamespace(flamesafe_config=fs,
+                                    flame_controller="Flames")
+
+        def write(groups):
+            d = dict(doc, groups=groups)
+            with open(fs, "w", encoding="utf-8") as fh:
+                _json.dump(d, fh)
+
+        def refusal(groups):
+            write(groups)
+            try:
+                F.check_flame_groups(show, cfg)
+                return ""
+            except F.FireIceConfigError as e:
+                return str(e)
+        good = [{"name": "stage left", "safety": 401,
+                 "fire": [411, 412, 421]},
+                {"name": "stage right", "safety": 402, "fire": [413, 414]},
+                {"name": "finale", "safety": 403, "fire": [431, 432]}]
+        check(refusal(good) == "", "a renamed and regrouped config passes")
+        check(sd.load_flamesafe_link(fs)[5] ==
+              ["stage left", "stage right", "finale"],
+              "the deck's labels are the config's new names, in order")
+        moved = [dict(good[0], fire=[411, 412]),
+                 dict(good[1], fire=[413, 414, 421]), good[2]]
+        check(refusal(moved) == "", "a head moved to another group passes")
+        four = good + [{"name": "spare", "safety": 404, "fire": [441]}]
+        e = refusal(four)
+        check("4 flame groups" in e and "3 arm keys" in e, e)
+        twice = [good[0], dict(good[1], fire=[413, 411]), good[2]]
+        e = refusal(twice)
+        check("channel 411 is in both stage left and stage right" in e, e)
+        unknown = [good[0], good[1], dict(good[2], fire=[431, 900])]
+        e = refusal(unknown)
+        check("finale lists channel 900" in e and "no such head" in e, e)
+        # ltc serve refuses to start on such an edit, before binding.
+        import contextlib
+        import io
+        from ltcplay import cli as _cli
+        write(four)
+        with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
+            _json.dump({"flamesafe_config": fs,
+                        "flame_controller": "Flames"}, fh)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(out):
+            rc = _cli._cmd_serve(types.SimpleNamespace(
+                folder=show, schedule=os.path.join(
+                    work, "ltcplay_schedule.json")))
+        check(rc and "3 arm keys" in out.getvalue(),
+              f"ltc serve refuses it in a sentence: {rc} {out.getvalue()!r}")
+        same = [good[0], dict(good[1], name="stage left"), good[2]]
+        check("both called 'stage left'" in refusal(same), "duplicate name")
+        for e in (refusal(four), refusal(twice), refusal(unknown)):
+            check("—" not in e and "–" not in e, f"no dashes: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_config_defaults_and_refusals():
     section("fire & ice: the config file defaults to today's dry run, and "
             "anything that is not exactly true or false is refused")
@@ -31797,6 +31872,7 @@ def _fi_flame_files(work, state="Inactive", port=None):
               encoding="utf-8") as fh:
         doc = _json.load(fh)
     doc["link"]["listen_port"] = port or _free_udp_port()
+    doc["groups"] = doc["groups"][:3]    # the deck's three arm keys
     fs = os.path.join(work, "flamesafe.json")
     with open(fs, "w", encoding="utf-8") as fh:
         _json.dump(doc, fh)
@@ -35593,7 +35669,7 @@ def test_deck_presses_reach_the_engine_conductor():
                  "engine's conductor")
         R.c.run_pending()
         names = R.rig.names()
-        check(all(x in names for x in ("flames_disarm_all", "lasers_fade_out",
+        check(all(x in names for x in ("flames_disarm_all", "lasers_blank",
                                        "video_fade_out", "music_halt")),
               f"a deck Abort with no operator chosen reaches the conductor: "
               f"flames disarmed, lasers blanked, video and music down: "
@@ -37510,6 +37586,7 @@ if __name__ == "__main__":
     test_schedule_reset_never_overtakes_an_abort()
     test_schedule_conductor_line_round3_details()
     test_fire_ice_config_defaults_and_refusals()
+    test_flame_groups_are_a_settings_change_only()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()
     test_fire_ice_night_end_to_end()

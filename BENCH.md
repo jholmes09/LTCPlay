@@ -114,8 +114,8 @@ needs its stems under `clock.audio.cues`.
 
 - **Lasers (BEYOND)**: Hold, Abort, intermission and preshow send a real
   blank. Lasers come back only once the timecode is moving and only while
-  the scheduler is in a show, never in intermission. Abort blanks at once
-  rather than ramping over 1 second (BEYOND only accepts on or off).
+  the scheduler is in a show, never in intermission. Abort blanks them at
+  once (Jeff and Andy, 2026-10-04: BEYOND only accepts on or off).
 - **Video (MadMapper)**: Hold and Abort fade every surface to black; Resume
   and show start bring them back; Abort then stops the show bank.
 - **Music and timecode**: Hold fades the show audio over 0.25 s and freezes

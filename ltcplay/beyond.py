@@ -32,14 +32,10 @@ devices.py, alongside this module, composes blank()/unblank() with
 madmapper.py's own primitives into on_hold()/on_resume()/on_abort() --
 plain synchronous functions with the handoff's ordering already built in,
 ready for that future conductor to call directly without re-deriving it.
-Notably, on_abort() blanks BEYOND at once rather than ramping its
-brightness down over the same 1 s as the video/audio fade: the handoff's
-own words for Abort ("lasers by a BEYOND brightness ramp, not an instant
-blank") call for a ramp, but this module's allow-list (S5, below) only
-ever permits the two exact values 0.0 and 100.0 -- loosening that for an
-Abort ramp is a laser-safety-relevant change this task did not make
-unreviewed. See devices.py's own module docstring for the full reasoning
-and the flag for Andy/Jeff.
+Abort blanks BEYOND at once, before the video and audio fade (Jeff and
+Andy, 2026-10-04): this module's allow-list (S5, below) permits only the
+two exact values 0.0 and 100.0, and that is the design, not a gap. There
+is no laser ramp anywhere.
 
 The facts that shape this module:
 

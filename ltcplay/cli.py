@@ -1285,6 +1285,9 @@ def _cmd_serve(args):
             fire_ice_mod.check_flame_controllers(
                 os.path.abspath(args.folder or settings_mod.folder()),
                 fire_ice)
+            fire_ice_mod.check_flame_groups(
+                os.path.abspath(args.folder or settings_mod.folder()),
+                fire_ice)
         except ValueError as e:
             return _err(str(e))
     announce = None

@@ -616,6 +616,81 @@ def refuse_active_flame_controller(show_file, name, fs_dest=None):
     return blocked
 
 
+# The Stream Deck's arm keys (streamdeck.GROUP_KEY_LIMIT; not imported, so
+# this module never loads the deck).
+FLAME_GROUP_LIMIT = 3
+
+
+def check_flame_groups(folder, cfg):
+    """At `ltc serve` startup: the flame groups in flamesafe's config, the
+    one place they are decided (Jeff: a settings change at tech, never a
+    code change). The deck's and the pages' labels are read from the same
+    file. Raises FireIceConfigError, in a sentence, for an edit that would
+    not work on the night: more than FLAME_GROUP_LIMIT groups, a group with
+    no name or one name twice, one channel (safety or fire) in two groups,
+    or a channel the flame controller in a show's layout does not have (a
+    head that does not exist)."""
+    if not cfg.flamesafe_config:
+        return
+    path = cfg.flamesafe_config
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            groups = json.load(fh).get("groups")
+    except (OSError, ValueError, AttributeError) as e:
+        raise FireIceConfigError(f"{path}: could not be read: {e}")
+    if not isinstance(groups, list) or not groups:
+        raise FireIceConfigError(f"{path}: it lists no flame groups.")
+    if len(groups) > FLAME_GROUP_LIMIT:
+        raise FireIceConfigError(
+            f"{path} lists {len(groups)} flame groups; the Stream Deck has "
+            f"{FLAME_GROUP_LIMIT} arm keys. Put the heads into at most "
+            f"{FLAME_GROUP_LIMIT} groups.")
+    owner, names = {}, set()
+    for i, g in enumerate(groups):
+        name = g.get("name") if isinstance(g, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            raise FireIceConfigError(f"{path}: group {i + 1} has no name.")
+        if name in names:
+            raise FireIceConfigError(
+                f"{path}: two groups are both called {name!r}.")
+        names.add(name)
+        slots = [g.get("safety")] + list(g.get("fire") or [])
+        for s in slots:
+            if not isinstance(s, int) or isinstance(s, bool):
+                raise FireIceConfigError(
+                    f"{path}: {name} lists {s!r}, which is not a channel "
+                    f"number.")
+            if s in owner and owner[s] != name:
+                raise FireIceConfigError(
+                    f"{path}: channel {s} is in both {owner[s]} and {name}. "
+                    f"A head belongs to one group only.")
+            owner[s] = name
+    if not cfg.flame_controller or not folder or not os.path.isdir(folder):
+        return
+    layouts = [os.path.join(folder, "xlights_networks.xml")]
+    for n in sorted(os.listdir(folder)):
+        if n.lower().endswith(".json"):
+            try:
+                layouts.append(_show_networks(os.path.join(folder, n)))
+            except Exception:
+                pass
+    seen = set()
+    for xml in layouts:
+        if not xml or xml in seen or not os.path.isfile(xml):
+            continue
+        seen.add(xml)
+        try:
+            _first, count = flame_channels(xml, cfg.flame_controller)
+        except FlameControllerError:
+            continue     # check_flame_controllers says why, in its words
+        for s, name in sorted(owner.items()):
+            if not 1 <= s <= count:
+                raise FireIceConfigError(
+                    f"{path}: {name} lists channel {s}, but the flame "
+                    f"controller {cfg.flame_controller!r} has channels 1 to "
+                    f"{count} in {xml}. There is no such head.")
+
+
 def check_flame_controllers(folder, cfg):
     """At `ltc serve` startup: every show file in the folder, checked with
     refuse_active_flame_controller. Raises FireIceConfigError naming the
