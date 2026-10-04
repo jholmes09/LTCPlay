@@ -98,6 +98,7 @@ class Exerciser:
         self.counts = {"arm_tries": 0, "arms": 0, "cycles": 0, "holds": 0,
                        "resumes": 0, "aborts": 0, "resets": 0}
         self.arms_by_group = {g: 0 for g in self.groups}
+        self.rearmed = {}            # group -> wall time it was last armed
         self.failures = []           # (time, sentence)
         self.windows = []            # (start, end or None, why): no fire
         self.ready = False
@@ -160,6 +161,7 @@ class Exerciser:
         if ok:
             self.counts["arms"] += 1
             self.arms_by_group[name] += 1
+            self.rearmed[name] = time.time()
         elif not self.failures or "Arm button" not in self.failures[-1][1]:
             self._fail(f"arming {name}", {"error": "flamesafe never "
                                                    "reported it armed"})
@@ -284,6 +286,17 @@ class Exerciser:
         if self.thread is not None:
             self.thread.join(10)
 
+    def fire_quiet(self, name, at):
+        """Why group `name` may not fire at wall time `at`, or None: inside
+        a Hold, or after an Abort until that group has been armed again."""
+        for s, e, why in self.windows:
+            if why == "hold" and s + GRACE_S <= at and (e is None or at <= e):
+                return why
+            if why == "abort" and s + GRACE_S <= at and \
+                    self.rearmed.get(name, 0) < s:
+                return "abort (not armed again since)"
+        return None
+
     def in_window(self, at, kinds=("hold", "abort")):
         """The reason fire (by default) must be zero at wall time `at`, or
         None. The lasers' kinds are ("hold", "aborted"): dark from an Abort
@@ -318,7 +331,8 @@ class SacnJudge:
     def packet(self, values, at, armed, in_show, quiet):
         """`values`: the 512 slot values; `armed`: {name: bool};
         `in_show`: timecode moving; `quiet`: the reason fire must be zero
-        now (a Hold, an Abort), or None."""
+        now (a Hold, an Abort), or None, or a callable(group) giving it per
+        group."""
         self.packets += 1
         self.armed_state(armed, at)
         if any(values):
@@ -350,9 +364,11 @@ class SacnJudge:
             if not in_show:
                 self._bad(at, f"{n} fired (channel {fire_on[0]}) outside "
                               f"a show")
-            elif quiet:
-                self._bad(at, f"{n} fired (channel {fire_on[0]}) during "
-                              f"the {quiet}")
+            else:
+                why = quiet(n) if callable(quiet) else quiet
+                if why:
+                    self._bad(at, f"{n} fired (channel {fire_on[0]}) during "
+                                  f"the {why}")
         stray = [i + 1 for i, v in enumerate(values) if v and
                  (i + 1) not in mine]
         if stray:
@@ -472,6 +488,10 @@ def self_test():
     ex.step()
     assert ex.counts["arms"] == 4 and ex.counts["cycles"] == 2, ex.counts
     assert ex.in_window(time.time() + 1) is None
+    assert ex.fire_quiet("front row", time.time() + 1) is None, \
+        "armed again after the Abort: it may fire"
+    ex.windows.append([time.time(), None, "abort"])
+    assert ex.fire_quiet("front row", time.time() + 1).startswith("abort")
     assert not ex.failures, ex.failures
     yield ("the exerciser signs in with a PIN, picks the operator, holds "
            "each Arm button with heartbeats until flamesafe reports it "

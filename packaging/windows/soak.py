@@ -752,7 +752,8 @@ class Soak:
             in_show = self.tc_last is not None and \
                 t - self.tc_last <= soak_exercise.STALE_TC_S
             self.judge.packet(vals, now, dict(self.fs_armed), in_show,
-                              self.ex.in_window(now) if self.ex else None)
+                              (lambda g, _n=now: self.ex.fire_quiet(g, _n))
+                              if self.ex else None)
         if b[112] & 0x40:
             self.sacn_terminated += 1
 
