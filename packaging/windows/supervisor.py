@@ -118,6 +118,9 @@ def load_settings():
         "run_flamesafe": True,
         "run_deck": True,
         "open_page_at_sign_in": True,
+        # The rack screen page (/remote), full screen on this monitor:
+        # 1 is the main display, 2 the next one Windows lists, and so on.
+        "page_monitor": 1,
         "show_mode": "fire_ice",
         "schedule": os.path.join(appdata_dir(), "ltcplay_schedule.json"),
     }
@@ -612,10 +615,91 @@ def _write_refusal(why):
         log(f"could not write {refused_file()}: {e}")
 
 
+RACK_PAGE = "/remote"     # the rack screen page ("Rack screen")
+
+
+def monitors():
+    """[(left, top, right, bottom)] of every display, the main one first
+    (Windows). [] when they cannot be read."""
+    if not ltcwin.WINDOWS:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        found = []
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD)]
+        u32 = ctypes.WinDLL("user32")
+        PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR,
+                                  wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                                  wintypes.LPARAM)
+
+        def cb(hmon, _hdc, _rect, _data):
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcMonitor
+                found.append(((r.left, r.top, r.right, r.bottom),
+                              bool(mi.dwFlags & 1)))
+            return True
+        u32.EnumDisplayMonitors(None, None, PROC(cb), 0)
+        found.sort(key=lambda m: (not m[1], m[0][0], m[0][1]))
+        return [r for r, _main in found]
+    except Exception as e:
+        log(f"could not list the displays: {e}")
+        return []
+
+
+def edge_exe(env=None, isfile=os.path.isfile):
+    env = os.environ if env is None else env
+    for base in (env.get("ProgramFiles(x86)"), env.get("ProgramFiles"),
+                 env.get("LOCALAPPDATA")):
+        if base:
+            p = os.path.join(base, "Microsoft", "Edge", "Application",
+                             "msedge.exe")
+            if isfile(p):
+                return p
+    return None
+
+
+def rack_page_command(port, monitor, screens, edge, profile):
+    """The command that opens the rack screen page full screen (Edge kiosk
+    mode, its own profile so it never asks first-run questions) on display
+    number `monitor` (1 = main) of `screens`, or None without Edge. An
+    unknown display number means the main one."""
+    if not edge:
+        return None
+    url = f"http://127.0.0.1:{port}{RACK_PAGE}"
+    cmd = [edge, "--kiosk", url, "--edge-kiosk-type=fullscreen",
+           "--no-first-run", f"--user-data-dir={profile}"]
+    if screens:
+        i = monitor - 1 if isinstance(monitor, int) and \
+            1 <= monitor <= len(screens) else 0
+        left, top = screens[i][0], screens[i][1]
+        cmd.append(f"--window-position={left},{top}")
+    return cmd
+
+
 def open_page_now(port):
-    url = f"http://127.0.0.1:{port}/"
+    """The rack screen page (/remote), full screen on the show monitor
+    (showpc.json "page_monitor"); without Edge, in the default browser."""
+    url = f"http://127.0.0.1:{port}{RACK_PAGE}"
     try:
         if ltcwin.WINDOWS:
+            cmd = rack_page_command(
+                port, load_settings().get("page_monitor", 1), monitors(),
+                edge_exe(), os.path.join(appdata_dir(), "rack-screen"))
+            if cmd:
+                subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, close_fds=True)
+                log(f"opened the rack screen full screen: {cmd[2]} "
+                    f"({cmd[-1]})")
+                return
             os.startfile(url)
         else:
             import webbrowser
@@ -912,6 +996,18 @@ def self_check():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
+    cmd = rack_page_command(7878, 2, [(0, 0, 1920, 1080),
+                                      (1920, 0, 3840, 1080)],
+                            r"C:\Edge\msedge.exe", r"C:\p")
+    if not (cmd and cmd[1:3] == ["--kiosk", "http://127.0.0.1:7878/remote"]
+            and cmd[-1] == "--window-position=1920,0"):
+        raise RuntimeError(f"the rack screen command is wrong: {cmd}")
+    if rack_page_command(7878, 9, [(0, 0, 1, 1)], "e", "p")[-1] != \
+            "--window-position=0,0" or \
+            rack_page_command(7878, 1, [], None, "p") is not None:
+        raise RuntimeError("the rack screen's fallbacks are wrong")
+    yield ("the page opens as the rack screen (/remote), full screen on the "
+           "show monitor")
 
 
 def main(argv=None):
