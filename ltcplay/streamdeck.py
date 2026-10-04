@@ -221,11 +221,18 @@ ARM_HOLD_S = 0.6
 # flinch-press, short enough that a deliberate re-arm a few seconds later
 # is never mistaken for one.
 REARM_REFRACTORY_S = 2.0
-# Reset (PR #43 fix round 2, C): its own deliberate gesture, the HOLD key
-# held this long while the rig is aborted. The Abort key never Resets: a
-# reflexive second press of Abort after an Abort from another screen used
-# to be a one-tap Reset (and Start now then lit the lasers).
-RESET_HOLD_S = 2.0
+# The keys are drawn every pass only while something on them moves (a key
+# held, a screen hold, a hold ring filling); otherwise every DRAW_IDLE_S,
+# fast enough for the 2 Hz blink. Show PC, 2026-10-04: drawing all six keys
+# at 20 Hz took 14% of a core with nothing happening. The arm link, key
+# reads and holds still run every pass.
+DRAW_IDLE_S = 0.2
+# Reset (PR #43 fix round 2, C; Jeff, 2026-10-04): while the rig is aborted
+# the HOLD key becomes RESET (drawn gold, unlike the red ABORTED key) and
+# one press of it is Reset. The Abort key never Resets: a reflexive second
+# press of Abort after an Abort from another screen used to be a one-tap
+# Reset (and Start now then lit the lasers). Reset's own rules still apply
+# (an operator chosen; refused while the Abort is still fading).
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -1559,7 +1566,6 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
-        self._reset_hold = AbortHold(hold_s=RESET_HOLD_S)
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -1632,6 +1638,11 @@ class Controller:
         self._vwho.clear()
         self._vheld.clear()
 
+    def animating(self):
+        """True while something on the keys moves every pass: a key held
+        down (a hold ring filling) or a screen hold in progress."""
+        return any(self._prev_keys) or bool(getattr(self, "_vpressed", ()))
+
     def _latched_now(self):
         if self.conductor is not None:
             try:
@@ -1665,8 +1676,8 @@ class Controller:
         if again:
             self._log("Stream Deck Abort pressed again while aborted: every "
                       "flame group's wanted state was sent false again. "
-                      "Reset is the HOLD key held for "
-                      f"{RESET_HOLD_S:g} s.", action="abort", who=who,
+                      "Reset is the gold RESET key.", action="abort",
+                      who=who,
                       screen="Stream Deck")
         elif self.conductor is not None:
             r = self.conductor.abort(who=who, screen="Stream Deck")
@@ -1937,18 +1948,15 @@ class Controller:
             #   false on the arm link, and the engine asked again); it NEVER
             #   Resets, so a reflexive "make sure" press after an Abort
             #   from another screen cannot undo it;
-            # - Reset is its own deliberate gesture: the HOLD key held for
-            #   RESET_HOLD_S (tick() fires it);
+            # - Reset is its own key: the HOLD key, drawn RESET in gold,
+            #   one press (Jeff, 2026-10-04);
             # - a group key still drops that group's arm request: disarm
             #   is never behind any gate. Nothing can be armed.
-            for k in releases(self._prev_keys, down):
-                if k == TOP_HOLD:
-                    self._reset_hold.release()
             for k in edges(self._prev_keys, down):
                 if k == TOP_ABORT:
                     self._do_abort(again=True)
                 elif k == TOP_HOLD:
-                    self._reset_hold.press(now)
+                    self._do_reset()
                 elif k in GROUP_KEYS:
                     i = k - GROUP_KEYS[0]
                     if self.arm.wanted[i]:
@@ -1958,7 +1966,6 @@ class Controller:
                 h.release()
             self._prev_keys = list(down)
             return
-        self._reset_hold.release()
         for k in releases(self._prev_keys, down):
             if k == TOP_ABORT:
                 self._abort_hold.release()
@@ -2002,10 +2009,8 @@ class Controller:
         now = self._clock()
         if self._latched_now():
             # While latched, run_once's own latched branch releases every
-            # arm and Abort hold; the one hold that can fire is Reset's
-            # (the HOLD key held RESET_HOLD_S, fix round 2, C).
-            if self._prev_keys[TOP_HOLD] and self._reset_hold.fired(now):
-                self._do_reset()
+            # hold; nothing here fires (Reset is a single press, handled
+            # there).
             return
         if self._prev_keys[TOP_ABORT] and self._abort_hold.fired(now):
             self._do_abort()
@@ -2220,8 +2225,9 @@ class Controller:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
         b1 = face_box(TOP_HOLD)
         if latched:
-            fonts.show_key(d, b1, ["HOLD 2 s", "TO RESET"], CHAMPAGNE,
-                           kind="sans", max_size=16)
+            # Gold and steady, unlike the red blinking ABORTED key beside
+            # it, so it is not a reflex hit.
+            fonts.show_key(d, b1, ["RESET"], BLACK, bg=GOLD, max_size=26)
         elif self._held_hint() and blink_on:
             fonts.show_key(d, b1, ["RESUME"], BLACK, bg=GOLD)
         elif self._held_hint():
@@ -2337,6 +2343,7 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     chase = 0
     period = 1.0 / ARM_SEND_HZ
     outage = _DeckOutage(journal)
+    last_draw = None
     while True:
         deck = None
         try:
@@ -2358,8 +2365,10 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 # since the last read, in order, not just the latest one
                 # -- a quick tap-and-release between read cycles must not
                 # vanish.
+                moved = False
                 for down in deck.keys_down():
                     controller.run_once(down)
+                    moved = True
                 # The remote page's holds and disarms (2026-10-03), as
                 # remote presses of the group keys, before tick() advances
                 # the holds. Only while a deck is connected: unplugged, the
@@ -2375,12 +2384,15 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 controller.check_links()
                 controller.arm.send(controller.names)
                 chase += 1
-                blink_on = int(t0 * 2) % 2 == 0
-                img = controller.draw(fonts, blink_on, chase)
-                for k in range(6):
-                    ox, oy = key_origin(k)
-                    deck.set_key(fonts.Image, k,
-                                img.crop((ox, oy, ox + K, oy + K)))
+                if moved or controller.animating() or last_draw is None or \
+                        t0 - last_draw >= DRAW_IDLE_S:
+                    last_draw = t0
+                    blink_on = int(t0 * 2) % 2 == 0
+                    img = controller.draw(fonts, blink_on, chase)
+                    for k in range(6):
+                        ox, oy = key_origin(k)
+                        deck.set_key(fonts.Image, k,
+                                     img.crop((ox, oy, ox + K, oy + K)))
                 elapsed = clock() - t0
                 outage.ran_clean(clock() - connected_at)
                 if elapsed < period:

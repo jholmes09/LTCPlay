@@ -26116,11 +26116,9 @@ def test_streamdeck_controller_with_fakes():
     down9 = [False] * 6
     down9[sd.TOP_HOLD] = True
     c3.run_once(down9)
-    t[0] += sd.RESET_HOLD_S + 0.01
-    c3.tick()
     check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
-          f"Reset (the HOLD key held {sd.RESET_HOLD_S:g} s) while latched "
-          f"reaches the real conductor: {cond.calls}")
+          f"Reset (one press of the RESET key, the HOLD key's place) while "
+          f"latched reaches the real conductor: {cond.calls}")
 
 
 class _FakeStatus:
@@ -26177,6 +26175,77 @@ def _deck_draw_stubs(sd):
         sd.Controller.draw = real_draw
         real_fonts.text_block = real_text_block
     return restore
+
+
+def test_streamdeck_idle_deck_draws_rarely():
+    section("Stream Deck: with nothing happening the keys are drawn every "
+            "DRAW_IDLE_S, not every pass, while the arm link still goes out "
+            "every pass; a key held is drawn every pass (show PC, "
+            "2026-10-04: an idle deck took 14% of a core)")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      clock=lambda: t[0])
+
+    class _Stop(BaseException):
+        pass
+    press = [False] * 6
+    press[sd.GROUP_KEYS[0]] = True
+    draws = []
+    real_draw = None
+
+    class _Deck:
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            i, self.i = self.i, self.i + 1
+            if i == 200:
+                draws.append(("held", None))
+                return [press]
+            if i == 220:
+                return [[False] * 6]
+            if i >= 240:
+                raise _Stop()
+            return []
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+    restore = _deck_draw_stubs(sd)
+    real_draw = sd.Controller.draw
+
+    def counting_draw(self, fonts, blink_on, chase):
+        draws.append((t[0], self._prev_keys[sd.GROUP_KEYS[0]]))
+        return real_draw(self, fonts, blink_on, chase)
+    sd.Controller.draw = counting_draw
+    try:
+        sd.run_forever(c, deck_factory=_Deck,
+                       sleep=lambda s_: t.__setitem__(0, t[0] + s_),
+                       clock=lambda: t[0])
+    except _Stop:
+        pass
+    finally:
+        sd.Controller.draw = real_draw
+        restore()
+    i = draws.index(("held", None))
+    idle, held = draws[:i], [d for d in draws[i + 1:] if d[1]]
+    passes_idle = 200
+    check(len(idle) <= passes_idle * (1.0 / sd.ARM_SEND_HZ) /
+          sd.DRAW_IDLE_S + 2,
+          f"idle: {len(idle)} draws in {passes_idle} passes (every "
+          f"{sd.DRAW_IDLE_S:g} s, not every pass)")
+    check(len(held) >= 18, f"a key held is drawn every pass: {len(held)} "
+                           f"draws in 20 passes")
+    check(len(arm.sends) >= 230, f"the arm link went out every pass: "
+                                 f"{len(arm.sends)}")
+    print("  ok")
 
 
 def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
@@ -26527,9 +26596,7 @@ def test_streamdeck_refractory_also_starts_at_reset():
     down_reset = [False] * 6
     c.run_once(down_reset)              # release
     down_reset[sd.TOP_HOLD] = True
-    c.run_once(down_reset)              # Reset: the HOLD key, held
-    t[0] += sd.RESET_HOLD_S + 0.01
-    c.tick()
+    c.run_once(down_reset)              # Reset: one press of RESET
     check(c._latched_now() is False, "Reset cleared the latch")
     c.run_once([False] * 6)
 
@@ -35428,22 +35495,15 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
     c.run_once([False] * 6)
     check(arm.wanted == [False, False, False],
           "and nothing can be armed while aborted")
-    # Reset: the HOLD key held RESET_HOLD_S; let go early and nothing.
+    # Reset: one press of the RESET key (the HOLD key's place while
+    # aborted; Jeff, 2026-10-04).
+    check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
+          "setup: nothing above Reset")
     down = [False] * 6
     down[sd.TOP_HOLD] = True
     c.run_once(down)
-    t[0] += sd.RESET_HOLD_S - 0.5
-    c.tick()
-    c.run_once([False] * 6)
-    t[0] += 1.0
-    c.tick()
-    check(cond._latched and not any(x[0] == "reset" for x in cond.calls),
-          "the HOLD key let go before RESET_HOLD_S resets nothing")
-    c.run_once(down)
-    t[0] += sd.RESET_HOLD_S + 0.01
-    c.tick()
     check(not cond._latched and cond.calls[-1][0] == "reset",
-          f"the HOLD key held {sd.RESET_HOLD_S:g} s is Reset: {cond.calls}")
+          f"one press of RESET is Reset: {cond.calls}")
     c.run_once([False] * 6)
 
     # D: a deck Abort never waits behind a slow press.
@@ -37201,6 +37261,7 @@ if __name__ == "__main__":
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
+    test_streamdeck_idle_deck_draws_rarely()
     test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
