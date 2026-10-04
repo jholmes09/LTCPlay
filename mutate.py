@@ -7189,6 +7189,11 @@ def build():
   "            if route in (\"/\", \"/index.html\") and \\\n                    getattr(self.server, \"fire_ice_config\", None) is not None:",
   "            if False:"),
 
+ ("deck: a new urllib opener for every request",
+  "ltcplay/streamdeck.py",
+  "    if not _OPENER:\n        _OPENER.append(",
+  "    if True:\n        _OPENER.append("),
+
 ]
 
 

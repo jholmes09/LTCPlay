@@ -674,6 +674,22 @@ def releases(prev, cur):
 # web.py or schedule_service.py: this module may run as its own process,
 # entirely separate from `ltc serve`.
 # --------------------------------------------------------------------------
+_OPENER = []
+
+
+def _opener():
+    """One urllib opener for the whole process, built on first use (no
+    proxies: the engine is on this machine). Building one per request costs
+    about 20 ms of CPU on Python 3.12, which makes a fresh TLS context and
+    loads the system certificates every time, and on Windows the memory
+    grew steadily with it (the deck program, show PC and CI, 2026-10-04:
+    about 14 to 190 MB an hour at the 4 Hz engine poll)."""
+    if not _OPENER:
+        _OPENER.append(urllib.request.build_opener(
+            urllib.request.ProxyHandler({})))
+    return _OPENER[0]
+
+
 POLL_HZ = 4.0            # how often the BACKGROUND thread refreshes the
                          # cache; the main loop never waits on this
 FETCH_TIMEOUT_S = 1.0    # per HTTP GET, same as before -- it just no
@@ -934,7 +950,7 @@ class EngineConductor:
         req = urllib.request.Request(
             self.base_url + path, data=json.dumps(body).encode("utf-8"),
             method="POST", headers={"Content-Type": "application/json"})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener = _opener()
         try:
             with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
                 doc = json.loads(r.read().decode("utf-8") or "{}")
@@ -963,7 +979,7 @@ class EngineConductor:
             self._stop.wait(self._period)
 
     def _http_get(self, path):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener = _opener()
         try:
             with opener.open(self.base_url + path,
                              timeout=FETCH_TIMEOUT_S) as r:

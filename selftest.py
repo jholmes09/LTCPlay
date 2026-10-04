@@ -26631,6 +26631,35 @@ def test_streamdeck_refractory_also_starts_at_reset():
     check(any("refractory" in e[0] for e in events[-3:]), events[-3:])
 
 
+def test_streamdeck_builds_one_http_opener():
+    section("Stream Deck: one urllib opener for the whole process, never one "
+            "per request (on Python 3.12 each costs about 20 ms and a fresh "
+            "TLS context; on Windows the deck's memory climbed with it at "
+            "the 4 Hz engine poll, 2026-10-04)")
+    import urllib.request as UR
+    from ltcplay import streamdeck as sd
+    built = []
+    real = UR.build_opener
+    saved = list(sd._OPENER)
+    del sd._OPENER[:]
+
+    def counting(*a, **k):
+        built.append(a)
+        return real(*a, **k)
+    UR.build_opener = counting
+    try:
+        e = sd.EngineConductor("http://127.0.0.1:9")
+        for _ in range(5):
+            e._http_get("/api/conductor")
+            e._http_post("/api/conductor/hold", {"who": "Andy"})
+        check(len(built) == 1, f"built once for ten requests: {len(built)}")
+    finally:
+        UR.build_opener = real
+        del sd._OPENER[:]
+        sd._OPENER.extend(saved)
+    print("  ok")
+
+
 def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
     section("Stream Deck: a latched screen (post-Abort, pre-Reset) must "
             "show any group flamesafe is STILL actually reporting armed, "
@@ -37774,6 +37803,7 @@ if __name__ == "__main__":
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
     test_streamdeck_refractory_also_starts_at_reset()
     test_streamdeck_draw_latched_shows_real_state_not_flat_off()
+    test_streamdeck_builds_one_http_opener()
     test_streamdeck_spoof_alarm()
     test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
     test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off()
