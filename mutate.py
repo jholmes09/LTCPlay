@@ -7013,8 +7013,8 @@ def build():
 
  ('Reset design: the Hold key Resets while aborted',
   'ltcplay/streamdeck.py',
-  '                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i]:',
-  '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i]:'),
+  '                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i] or self._reported_armed(i):',
+  '                elif k == TOP_HOLD:\n                    self._do_reset()\n                elif k in GROUP_KEYS:\n                    i = k - GROUP_KEYS[0]\n                    if self.arm.wanted[i] or self._reported_armed(i):'),
 
  ('fix round 2: a deck Abort waits in line behind other presses',
   'ltcplay/streamdeck.py',
