@@ -268,7 +268,11 @@ def soak_check():
     lines = text.splitlines()
     for i, ln in enumerate(lines):
         if ln.startswith("[FAIL]"):
-            detail = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            # The item's detail is the next line with text (a blank line
+            # sits between them: it used to be read as the detail, so the
+            # annotation came out empty).
+            detail = next((x.strip() for x in lines[i + 1:i + 4]
+                           if x.strip()), "")
             # A timecode stall on a shared runner is timing, not a fault in
             # the program: warned. Any other real fault line is an error.
             parts = detail.split(" | ")
@@ -282,7 +286,9 @@ def soak_check():
                 "never saw the link go stale" in ln or
                 ("not all zero" in detail and not detail.endswith(
                     "0 packets not all zero (limit 0)")))
-            msg = f"soak: {ln[7:]}: {detail}"
+            # One annotation per failing item, numbers first, short.
+            title = ln[7:].split(" (")[0]
+            msg = f"FAIL {title}: {detail}"[:900]
             if hard:
                 error(msg)
             else:

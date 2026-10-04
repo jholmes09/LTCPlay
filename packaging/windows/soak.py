@@ -1173,12 +1173,19 @@ class Soak:
         out.append(("PASS" if lg.n > 10 and lg.over_gap == 0 else "FAIL",
                     "Flame link frames (the engine's flame link to "
                     "flamesafe, timed through a relay)",
-                    f"{lg.events} frames ({self.flame_nonzero} carrying the "
-                    f"show's flame cues), mean {lg.mean():.1f} ms, longest "
-                    f"gap "
-                    f"{lg.longest:.1f} ms at {now_text(lg.longest_at)}; "
-                    f"{lg.over_gap} gaps over {LINK_GAP_MS:g} ms (CONTRACT.md: "
-                    f"never more than 50 ms)"))
+                    # The numbers first, so a cut-short annotation still
+                    # has them; the timecode's and pixels' worst gaps beside
+                    # them tell a flame link stall from a whole-process
+                    # pause (compare the times).
+                    f"longest gap {lg.longest:.1f} ms at "
+                    f"{now_text(lg.longest_at)}, {lg.over_gap} over "
+                    f"{LINK_GAP_MS:g} ms (limit 0); timecode longest gap "
+                    f"{self.tc.longest:.1f} ms at "
+                    f"{now_text(self.tc.longest_at)}; pixels longest gap "
+                    f"{self.pixels.longest:.1f} ms at "
+                    f"{now_text(self.pixels.longest_at)}; {lg.events} frames "
+                    f"({self.flame_nonzero} carrying flame cues), mean "
+                    f"{lg.mean():.1f} ms"))
         ok = self.fs_fresh_seen and self.fs_stale_events == 0
         out.append(("PASS" if ok else "FAIL", "flamesafe never saw the link "
                     "go stale", f"{self.fs_status_frames} status frames; link "
