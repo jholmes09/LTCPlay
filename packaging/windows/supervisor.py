@@ -534,6 +534,7 @@ def run_loop(open_page=False):
         f"{settings.get('show_mode') or 'fire_ice'}")
     for why in fire_ice_files(settings):
         log(why)
+    log(ltcwin.settings_folder_line())
     keep_awake(True)
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -923,6 +924,10 @@ def main(argv=None):
     if rc is not None:
         return rc
     verb = argv[0] if argv else "--start"
+    pkg = ltcwin.package_name()
+    if pkg:
+        tell(ltcwin.CONTAINER_REFUSAL.format(pkg=pkg), error=True)
+        return 4
     verbs = {"--start": cmd_start, "--stop": cmd_stop, "--task": cmd_task,
              "--run": run_loop, "--install-task": cmd_install_task,
              "--remove-task": cmd_remove_task, "--rollback": cmd_rollback,
