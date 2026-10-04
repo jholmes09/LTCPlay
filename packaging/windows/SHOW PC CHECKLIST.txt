@@ -63,8 +63,12 @@ LTC PLAYER'S OWN FILES
     link, and starts the Stream Deck program on the engine's own address,
     so the deck's Abort, Hold, Resume and Reset reach the show. With
     "plain", the Stream Deck program is not started at all.
-[ ] Check it: open the show page. It shows tonight's shows. On the Stream
-    Deck, the Start key does not say ENGINE FAULT.
+[ ] The rack screen page opens full screen on the show monitor. If it
+    opens on the wrong monitor, set "page_monitor" in showpc.json: 1 is the
+    main display, 2 the next. Alt+F4 closes it; Start menu, LTC Player opens
+    it again.
+[ ] Check it: the rack screen shows tonight's shows. On the Stream Deck,
+    the Start key does not say ENGINE FAULT.
 
 
 OTHER
@@ -80,10 +84,10 @@ OTHER
 
 EVERY DAY
 
-- LTC Player starts by itself when the PC signs in, and opens the show
-  page. If any of its three programs stops, it is started again within
+- LTC Player starts by itself when the PC signs in, and opens the rack
+  screen page full screen on the show monitor. If any of its three programs stops, it is started again within
   seconds. If LTC Player itself stops, it is back within a minute.
-- Start menu, LTC Player: starts it if needed and opens the show page.
+- Start menu, LTC Player: starts it if needed and opens the rack screen.
 - Start menu, Stop LTC Player: stops everything the safe way, so the
   flame safety program sends its safe zeros. It refuses while a show is
   running. Stopped stays stopped until you press LTC Player again or
