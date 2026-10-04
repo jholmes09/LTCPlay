@@ -267,6 +267,14 @@ td:first-child{font-weight:700;color:var(--champ)}
         <label for="loc-screen">Pressing from</label>
         <select id="loc-screen"></select>
       </div>
+      <div id="local-run" hidden>
+        <label for="run-file">Show file (nothing reaches the rig until Run)</label>
+        <div class="row">
+          <select id="run-file" style="flex:2 1 0"></select>
+          <button id="b-run" class="go" style="flex:1 1 0">Run</button>
+          <button id="b-stoprun" style="flex:1 1 0">Stop</button>
+        </div>
+      </div>
       <div class="toast" id="ctl-msg"></div>
     </section>
 
@@ -457,6 +465,8 @@ async function whoami(){
   $("whodev").textContent = ME.local ? "" : ("on the " + (ME.device || ""));
   $("admin").hidden = !ME.local;
   $("local-screen").hidden = !ME.local;
+  $("local-run").hidden = !ME.local;
+  if(ME.local) loadShowFiles();
   if(!signedIn){
     fill($("li-who"), ME.operators || [], true);
     fill($("li-dev"), ME.screens || [], true);
@@ -755,6 +765,28 @@ $("b-abort").addEventListener("click", async () => {
 $("b-start").addEventListener("click", async () => {
   if(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start"))
     press("start-now", {confirmed:true});
+});
+// Run and Stop: the show machine only, through the engine's own Run and
+// Stop (every guard they have applies). This screen is the one operator
+// screen in Fire & Ice (Jeff, 2026-10-04); the old operator page is not.
+async function loadShowFiles(){
+  try{
+    const j = await getJSON("/api/timelines", 3000);
+    const ok = (j.timelines || []).filter(t => !t.error).map(t => t.file);
+    fill($("run-file"), ok, true);
+  }catch(e){}
+}
+$("b-run").addEventListener("click", async () => {
+  const f = $("run-file").value;
+  if(!f){ $("ctl-msg").textContent = "No show file in the show folder."; return; }
+  if(!(await confirmBox("Press Run?", "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
+  try{ const j = await post("/api/start", {timeline:f}); $("ctl-msg").textContent = j.banner || "Running."; }
+  catch(e){ $("ctl-msg").textContent = e.message; }
+});
+$("b-stoprun").addEventListener("click", async () => {
+  if(!(await confirmBox("Stop?", "Stop playback. No show starts until Run is pressed again.", "Yes, Stop", ""))) return;
+  try{ await post("/api/stop", {}); $("ctl-msg").textContent = "Stopped."; }
+  catch(e){ $("ctl-msg").textContent = e.message; }
 });
 $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));

@@ -893,6 +893,13 @@ class Handler(BaseHTTPRequestHandler):
                                              "PIN first."})
         c = self.server.control
         try:
+            if route in ("/", "/index.html") and \
+                    getattr(self.server, "fire_ice_config", None) is not None:
+                # Fire & Ice (Jeff, 2026-10-04): the rack screen is the one
+                # operator screen. The old operator page stays for the GPL
+                # path only; nothing in this mode serves or links to it.
+                return self._send(302, b"", "text/plain",
+                                  headers={"Location": "/remote"})
             if route == "/remote" or (route in ("/", "/index.html")
                                       and not self._local()):
                 # The show network gets the remote page: the sign-in form

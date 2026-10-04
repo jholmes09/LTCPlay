@@ -31247,6 +31247,40 @@ def _fi_mod():
     return fire_ice
 
 
+def test_fire_ice_serves_the_rack_screen_not_the_old_page():
+    section("fire & ice: the rack screen (/remote) is the one operator "
+            "screen; / and /index.html go to it, and the old operator page "
+            "is served only on the GPL path")
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import web as web_mod
+    folder = tempfile.mkdtemp()
+    httpd = web_mod.serve(folder, port=0, bind="127.0.0.1")
+    try:
+        local = ("127.0.0.1", 50000)
+        st, _h, page = _ask(httpd, "GET", "/", client=local)
+        check(st == 200 and "/api/brand" in str(page),
+              f"GPL path: / is the old operator page ({st})")
+        httpd.fire_ice_config = types.SimpleNamespace(show_name=None,
+                                                      venue=None)
+        for path in ("/", "/index.html"):
+            st, hd, _ = _ask(httpd, "GET", path, client=local)
+            check(st == 302 and hd.get("location") == ["/remote"],
+                  f"Fire & Ice: {path} goes to the rack screen: {st} {hd}")
+        st, _h, page = _ask(httpd, "GET", "/remote", client=local)
+        check(st == 200 and "index.html" not in str(page),
+              "the rack screen is served and never links the old page")
+        check('id="b-run"' in str(page) and '"/api/start"' in str(page)
+              and '"/api/stop"' in str(page),
+              "the rack screen has Run and Stop of its own, through the "
+              "engine's own guarded routes")
+    finally:
+        httpd.server_close()
+        shutil.rmtree(folder, ignore_errors=True)
+    print("  ok")
+
+
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
@@ -37587,6 +37621,7 @@ if __name__ == "__main__":
     test_schedule_conductor_line_round3_details()
     test_fire_ice_config_defaults_and_refusals()
     test_flame_groups_are_a_settings_change_only()
+    test_fire_ice_serves_the_rack_screen_not_the_old_page()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()
     test_fire_ice_night_end_to_end()
