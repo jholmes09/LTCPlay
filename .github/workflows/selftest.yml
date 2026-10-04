@@ -37,7 +37,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata
+      # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
+      # its pixel test runs here too. The suite also passes without it.
+      - run: python -m pip install numpy zstandard tzdata pillow
       - run: python -u selftest.py
 
   # mutate.py is about 10 hours of runner time per OS since the synthetic show
@@ -163,21 +165,28 @@ jobs:
 
   mutate:
     needs: changes
-    if: needs.changes.outputs.oses != '[]' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    # A change that touches no file mutate.py breaks still runs the ubuntu shards,
+    # each finishing at once, so the 32 required shard checks report success and
+    # doc-only PRs can merge.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.oses) }}
+        os: ${{ fromJSON(needs.changes.outputs.oses != '[]' && needs.changes.outputs.oses || '["ubuntu-latest"]') }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
+        if: needs.changes.outputs.oses != '[]'
       - uses: actions/setup-python@v6
+        if: needs.changes.outputs.oses != '[]'
         with:
           python-version: "3.12"
       - run: python -m pip install numpy zstandard tzdata
+        if: needs.changes.outputs.oses != '[]'
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job.
       - run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt
+        if: needs.changes.outputs.oses != '[]'

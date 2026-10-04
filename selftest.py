@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import struct
 import tempfile
 import threading
 import sys
@@ -53,6 +54,216 @@ SOURCE_TREE = os.path.exists(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutate.py"))
 
 RAN = set()
+
+
+def _close_logs_under(path):
+    """Close the program's log files that live under `path`."""
+    import logging
+    try:
+        base = os.path.abspath(path)
+        loggers = [logging.getLogger(), logging.getLogger("ltcplay")]
+        for lg in loggers:
+            for h in list(lg.handlers):
+                f = getattr(h, "baseFilename", None)
+                if f and os.path.abspath(f).startswith(base):
+                    lg.removeHandler(h)
+                    h.close()
+    except Exception:
+        pass
+
+
+def _close_all_logs():
+    """Close every log file this process has open (the logging module does it
+    at exit, but that is after the run's own clean-up)."""
+    import logging
+    import gc
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    gc.collect()
+
+
+class _TempRun:
+    """Keeps one run of this file from littering the machine's temp folder.
+
+    Nearly every test makes itself a folder with tempfile.mkdtemp() and none
+    of them used to remove it; a run left hundreds behind (about 110MB), and a
+    loop of runs filled the disk. So the run makes ONE private folder inside
+    the temp folder, points everything at it (this process through
+    tempfile.tempdir, child processes through TMPDIR), remembers every
+    mkdtemp() made in this process, removes those when the next test starts
+    (and when a test fails, because it also runs at exit), and removes the
+    private folder when the run ends.
+
+    It never looks at the rest of the temp folder, so other runs going on at
+    the same time cannot be mistaken for this one's leftovers: whatever sits
+    in the private folder was made by this run and nobody else.
+
+    What it does NOT sweep up is what a test makes by some other route
+    (a file, or a folder a child process made). Those are still there when
+    the run ends and finish() fails the run, naming them."""
+
+    KEEP_PREFIX = "ltcplay_fixture_show_"   # the shared synthetic show
+
+    def __init__(self):
+        self.outer = tempfile.gettempdir()
+        self._real_mkdtemp = tempfile.mkdtemp
+        self.root = self._real_mkdtemp(prefix="ltcplay_selftest_",
+                                       dir=self.outer)
+        self.tracked = []
+        self.seen = set()         # every folder this process made
+        self.leftovers = None
+        self._test = None
+        self._saved_env = {k: os.environ.get(k)
+                           for k in ("TMPDIR", "TEMP", "TMP")}
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = self.root
+        for k in self._saved_env:
+            os.environ[k] = self.root
+        tempfile.mkdtemp = self._mkdtemp
+        import atexit
+        atexit.register(self.close)
+
+    def _mkdtemp(self, suffix=None, prefix=None, dir=None):
+        path = self._real_mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        if not (prefix or "").startswith(self.KEEP_PREFIX):
+            self.tracked.append(path)
+        return path
+
+    @staticmethod
+    def _remove(path, tries=5):
+        """Remove a folder or file. A file another process still has open
+        cannot be deleted on Windows, and a read-only one needs its bit
+        cleared first, so this retries rather than giving up at once."""
+        import shutil
+        import stat
+
+        def _fix(func, p, _exc):
+            # A test may leave a folder or file without permissions. Give
+            # them back to the owner and let the next try remove it. Only
+            # retry the call here when it takes just a path: rmtree can hand
+            # this os.open or os.scandir, which need more.
+            for q in (os.path.dirname(p), p):
+                try:
+                    os.chmod(q, stat.S_IRWXU)
+                except OSError:
+                    pass
+            if func in (os.rmdir, os.unlink, os.remove):
+                try:
+                    func(p)
+                except OSError:
+                    pass
+
+        for i in range(tries):
+            # Windows will not delete a log file that is still open. The
+            # program's own logger keeps its file open until it is replaced,
+            # so let go of any that sit under the folder being removed.
+            _close_logs_under(path)
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path, onerror=_fix)
+                elif os.path.lexists(path):
+                    os.unlink(path)
+            except OSError:
+                pass
+            if not os.path.lexists(path):
+                return True
+            if i + 1 < tries:
+                time.sleep(0.2 * (i + 1))
+        return False
+
+    def describe(self, names):
+        """What the leftovers are, for the failure message: kind and size."""
+        out = []
+        for n in names[:20]:
+            p = os.path.join(self.root, n)
+            try:
+                if os.path.isdir(p):
+                    kids = os.listdir(p)
+                    out.append(f"{n}/ ({len(kids)} inside: "
+                               f"{', '.join(kids[:4])})")
+                else:
+                    out.append(f"{n} ({os.path.getsize(p)} bytes)")
+            except OSError as e:
+                out.append(f"{n} ({e})")
+        return out
+
+    def sweep(self, tries=1):
+        """Remove every folder made so far. One that cannot go yet (an open
+        file on Windows) is kept for the next sweep, not forgotten."""
+        keep = []
+        while self.tracked:
+            path = self.tracked.pop()
+            self.seen.add(path)
+            if not self._remove(path, tries):
+                keep.append(path)
+        self.tracked.extend(keep)
+
+    def next_test(self, name):
+        if name != self._test:
+            self.sweep()
+            self._test = name
+
+    def finish(self):
+        """Run at the end: nothing may be left in this run's own folder.
+        Returns the names that were."""
+        try:
+            import test_show_fixtures
+            test_show_fixtures.cleanup()
+        except ImportError:
+            pass
+        _close_all_logs()
+        self.sweep(tries=5)
+        # multiprocessing keeps its own scratch folder (pymp-*) in the temp
+        # folder and removes it when the process exits, which is after this
+        # check. Run its clean-up now; a child process still shutting down
+        # gets a few seconds to finish removing what it made.
+        try:
+            import multiprocessing.util as _mpu
+            _mpu._run_finalizers()
+        except Exception:
+            pass
+        deadline = time.time() + 5.0
+        while True:
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            # A thread a finished test never stopped can write into its
+            # folder after the folder was removed, and that puts the folder
+            # (just its path, with a log in it) back. It is one this process
+            # made, so it is this sweeper's to remove, not a new leak.
+            for n in names:
+                path = os.path.join(self.root, n)
+                if path in self.seen:
+                    self._remove(path, 3)
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            self.leftovers = names
+            if not names or time.time() > deadline:
+                break
+            time.sleep(0.25)
+        return self.leftovers
+
+    def close(self):
+        _close_all_logs()
+        self.sweep(tries=3)
+        self._remove(self.root, 5)
+        tempfile.mkdtemp = self._real_mkdtemp
+        tempfile.tempdir = self._saved_tempdir
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# Set by the __main__ block below; None when this file is imported (mutate.py
+# imports it for its helpers) so that importing it changes nothing.
+_TEMPRUN = None
 
 
 # The real renders, for the tests that need a whole show. They are never in
@@ -202,7 +413,10 @@ def section(name):
     # tests, because a string replace into the call list below silently matched
     # nothing.
     import sys as _sys
-    RAN.add(_sys._getframe(1).f_code.co_name)
+    _who = _sys._getframe(1).f_code.co_name
+    if _TEMPRUN is not None and _who.startswith("test_"):
+        _TEMPRUN.next_test(_who)
+    RAN.add(_who)
     print(f"\n== {name}")
 
 
@@ -3501,7 +3715,7 @@ def test_web_ui():
     # once a show folder was configured, which never happened until
     # synthetic fixtures landed, so a Unix-only path here was never
     # exercised on Windows. It is now, and Windows has no /tmp.
-    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
+    wav = os.path.join(folder, "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
@@ -6095,6 +6309,11 @@ def test_a_poisoned_portaudio_is_rebuilt():
               "PortAudio was rebuilt before the failures it is meant to follow")
         sd3.poisoned = False
         check(src3._open(), "the input should open once the fault clears")
+        # Closed first, as the supervisor always does before a reopen: the
+        # failing _open below drops its stream reference, and this stream
+        # used to keep decoding on its own thread for the rest of the run,
+        # loading every later timing test (the flame link's on macOS CI).
+        src3._close()
         sd3.unplug()
         was3 = sd3.terminates
         src3._open()
@@ -10641,16 +10860,77 @@ def test_schedule_routes():
         check(open(path, "rb").read() == rule_bytes,
               "editing tonight must never write the rule file")
         # Nothing that starts, stops or arms anything can be posted: only
-        # tonight's edits and Save the last incident.
+        # tonight's edits, Save the last incident, choosing the current
+        # operator (2026-10-01, the Stream Deck's operator gate) -- which
+        # only names who is about to press something, the same as `who` on
+        # every other schedule route already does -- and a journal line the
+        # real Stream Deck process posts about its own arm/disarm/Abort
+        # actions (review item 9).
         check(SV.Service.POST_ROUTES == ("/api/schedule/tonight",
-                                         "/api/schedule/incident"),
+                                         "/api/schedule/incident",
+                                         "/api/schedule/operator",
+                                         "/api/schedule/deck-event"),
               f"the only schedule routes that take a POST are the tonight "
-              f"edit and the incident bundle, got {SV.Service.POST_ROUTES}")
+              f"edit, the incident bundle, choosing the operator and the "
+              f"deck's own journal line, got {SV.Service.POST_ROUTES}")
         for r in ("/api/schedule/start", "/api/schedule/state",
                   "/api/schedule", "/api/schedule/abort",
                   "/api/schedule/hold"):
             code, _ = call(r, {"op": "move"})
             check(code == 404, f"POST {r} must not exist, got {code}")
+        code, bad = call("/api/schedule/operator", {"who": "Not Anyone"})
+        check(code == 400 and "not on the operator list" in bad.get("error", ""),
+              f"choosing an unlisted operator is refused: {code} {bad}")
+        code, ok_op = call("/api/schedule/operator",
+                           {"who": "andy", "screen": "rack screen"})
+        check(code == 200 and ok_op["current_operator"] == "Andy",
+              f"choosing a listed operator (any case) sets it, spelled as "
+              f"the list has it: {code} {ok_op}")
+        code, state_after = call("/api/schedule/state")
+        check(code == 200 and state_after["state"] == S.STANDBY,
+              "choosing the operator starts, stops and arms nothing: the "
+              "scheduler's own state is untouched")
+        code, cleared = call("/api/schedule/operator",
+                             {"who": "", "screen": "rack screen"})
+        check(code == 200 and cleared["current_operator"] == "",
+              f"an empty who clears the selection: {code} {cleared}")
+
+        # The real Stream Deck (a separate process) posts its own
+        # arm/disarm/Abort/refusal lines here (review item 9): this is the
+        # SAME night journal everything else writes to, not a separate log.
+        code, bad = call("/api/schedule/deck-event", {"text": ""})
+        check(code == 400 and "text" in bad.get("error", "").lower(),
+              f"a deck event with no text is refused: {code} {bad}")
+        before = len(svc.journal)
+        code, ok = call("/api/schedule/deck-event",
+                        {"text": "front row arm pressed by Andy.",
+                         "action": "arm", "who": "Andy",
+                         "screen": "Stream Deck"})
+        check(code == 200 and ok.get("ok") and len(svc.journal) == before + 1,
+              f"a deck arm event is accepted and written: {code} {ok}")
+        check(any(r["actor"] == "operator" and r["who"] == "Andy"
+                  and "front row arm pressed by Andy" in r["text"]
+                  for r in svc.journal),
+              f"the deck's arm press landed in the real night journal, "
+              f"named: {[r['text'] for r in svc.journal][-3:]}")
+        code, ok2 = call("/api/schedule/deck-event",
+                         {"text": "Abort pressed with nothing armed or "
+                                 "wanted; refused (nothing to do).",
+                          "action": "abort"})
+        check(code == 200 and ok2.get("ok") and
+              any(r["actor"] == "system" and "nothing armed" in r["text"]
+                  for r in svc.journal),
+              "a deck refusal with no operator named still lands in the "
+              "journal, as the system actor, not dropped for lack of a name")
+        code, ok3 = call("/api/schedule/deck-event",
+                         {"text": "flamesafe has not answered in over a "
+                                 "second.", "action": "arm-link",
+                          "fault": True})
+        check(code == 200 and ok3.get("ok") and
+              any(r.get("fault") and "flamesafe has not answered"
+                  in r["text"] for r in svc.journal),
+              f"a deck fault event is journaled as a fault: "
+              f"{[r for r in svc.journal if r.get('fault')][-1:]}")
 
         # Dry run: at 18:25 the engine decides to start show 5 (moved there
         # above) and nothing performs it; the clock ends it after show_len_s.
@@ -10734,7 +11014,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -10750,7 +11031,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.schedule is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n")
+        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json
@@ -14016,7 +14298,8 @@ def test_the_gpl_path_never_loads_announcements():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -14032,7 +14315,8 @@ def test_the_gpl_path_never_loads_announcements():
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.announce is None,\n"
         "    'loaded': sorted(m for m in sys.modules if 'announce' in "
-        "m)}))\n")
+        "m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json as _json
@@ -14816,7 +15100,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     _write_show(work1)
     spath1 = _write_rule(work1, 40)
     try:
-        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        web_mod.serve(work1, port=_free_port(), schedule=SV.Service(spath1, state_dir=work1))
         check(False, "40s configured against 50s of media must refuse to "
                      "serve, not silently start")
     except ValueError as e:
@@ -14830,7 +15114,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     work2 = tempfile.mkdtemp()
     _write_show(work2)
     spath2 = _write_rule(work2, 60)
-    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=SV.Service(spath2, state_dir=work2))
     try:
         check(httpd2.schedule is not None and httpd2.schedule.rule is not
               None, "a long-enough show_len_s must serve normally")
@@ -14844,7 +15128,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     # in the journal, saying the check could not be done and why.
     work3 = tempfile.mkdtemp()
     spath3 = _write_rule(work3, 1)
-    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=SV.Service(spath3, state_dir=work3))
     try:
         check(httpd3.schedule is not None,
               "no show media in the folder must not block serving")
@@ -14870,7 +15154,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
           and "show_a.json" in w5 and "show_b.json" in w5,
           f"two candidates must refuse to pick one, naming both: "
           f"{(p5, l5, w5)}")
-    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=SV.Service(spath5, state_dir=work5))
     try:
         check(httpd5.schedule is not None,
               "an ambiguous folder must still serve (this warns, it does "
@@ -15075,6 +15359,7 @@ print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
                   "snap": "clock" in snap,
                   "ltc": s.player.last_ltc_at is not None,
                   "opened": len(s._sd.opened)}))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -17677,6 +17962,7 @@ print(json.dumps({
     "clock": "ltcplay.clock" in sys.modules,
     "output": "ltcplay.output" in sys.modules,
 }))
+import shutil; shutil.rmtree(os.path.dirname(lockpath), ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                text=True, timeout=30)
@@ -17692,6 +17978,1753 @@ print(json.dumps({
     # whole job is to drive them. What must never be true is session/player.
     check(res["clock"], "tctest ran but never loaded the clock it sends "
                         "timecode through")
+    print("  ok")
+
+
+# ============================================================ madmapper ====
+# Step 3 of the Fire & Ice handoff: the MadMapper OSC transport link and the
+# heartbeat watchdog -- DEVICE LAYER ONLY. Anchored to
+# bench_report_2026-09-25.md (branch bench/2026-09-25), B1-B4 and B9.
+#
+# An earlier version of this PR also wired Hold/Resume/Abort/Closing
+# sequencing straight into a Link.on_transition hook, driven by the
+# scheduler's own state transitions. An opus review (round 2) found two
+# real races in that design -- deriving an action from a PAIR of scheduler
+# states, on the scheduler's own unordered per-transition hook threads,
+# means a Hold immediately followed by a quick Resume can interleave or
+# run out of order (audit17_repros.py, R1/R2) -- so that whole mechanism
+# was removed. This module is now pure primitives; a future "conductor"
+# module will run the scheduler's own ORDERED effects list through one
+# serialized executor and call these.
+
+class _FakeMMSock:
+    """Stands in for a real UDP socket: records every (packet, addr) sent,
+    never touches the network. Also inert for the INBOUND side (bind/
+    settimeout/recvfrom): a couple of tests hand this to a real Watchdog
+    through web.serve()'s own construction path, which starts a real
+    listener thread against whatever socket_factory it was given -- these
+    stubs let that thread idle harmlessly (a timeout loop, exactly like a
+    real socket with nothing arriving) instead of crashing with an
+    AttributeError on a background thread."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, pkt, addr):
+        self.sent.append((pkt, addr))
+
+    def bind(self, addr):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def recvfrom(self, n):
+        import socket as _socket
+        raise _socket.timeout()
+
+    def close(self):
+        pass
+
+
+class _Steps:
+    """A perf_counter stand-in a test moves by hand: sleep() advances it
+    rather than actually waiting, so a 1 s ramp runs in no real time at all
+    and its pacing is still exactly provable."""
+
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _mm_cfg(**over):
+    from ltcplay import madmapper as MM
+    doc = {"surfaces": ["Quad-1", "Quad-2"],
+          "intermission_bank": "Bank-2",
+          "heartbeat": {"show_len_s": 10.0}}
+    doc.update(over)
+    return MM.MadMapperConfig.parse(doc)
+
+
+def _mm_link(cfg=None, journal=None):
+    from ltcplay import madmapper as MM
+    cfg = cfg or _mm_cfg()
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory, clock=steps.clock,
+                  sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def _mm_journal(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def _mm_addrs(sock):
+    """The OSC address of every packet one fake socket saw, in order."""
+    from ltcplay import madmapper as MM
+    out = []
+    for pkt, _addr in sock.sent:
+        addr, at = MM._read_osc_string(pkt, 0)
+        out.append(addr)
+    return out
+
+
+def test_madmapper_osc_bytes_match_the_bench_capture():
+    section("madmapper: OSC bytes match the bench's captured bytes exactly")
+    from ltcplay import madmapper as MM
+    pkt = MM.encode("/timelines/Bank-2/select", (True,))
+    expected = bytes.fromhex(
+        "2f74696d656c696e65732f42616e6b2d322f73656c656374"
+        "000000002c540000")
+    check(pkt == expected,
+         f"select bytes do not match the bench capture: {pkt.hex()} != "
+         f"{expected.hex()}")
+
+    # A False bool, and an address whose length is not already a multiple
+    # of 4, to prove the padding rule generally, not only on this one
+    # bench-sized string.
+    pkt2 = MM.encode("/timelines/Bank-1/conductor/play", (False,))
+    check(pkt2.endswith(b",F\x00\x00"), f"a bool False must be the bare "
+                                       f"tag F, no data bytes: {pkt2!r}")
+    check(len(pkt2) % 4 == 0, "every OSC message is a multiple of 4 bytes")
+
+    pkt3 = MM.encode("/timelines/Bank-1/conductor/stop")
+    check(pkt3 == MM._pad(b"/timelines/Bank-1/conductor/stop")
+          + MM._pad(b","), f"an argument-less message still needs a bare "
+                          f"comma type tag: {pkt3!r}")
+
+    # The heartbeat's own captured bytes (bench B3.2): /float-1 ,f 1.0
+    hb = bytes.fromhex("2f666c6f61742d3100000000" "2c660000" "3f800000")
+    got = MM.decode_float(hb)
+    check(got == ("/float-1", 1.0),
+         f"the heartbeat's captured bytes did not decode to ('/float-1', "
+         f"1.0): {got}")
+    check(MM.decode_float(b"not an osc packet at all") is None,
+         "decode_float must return None, not raise, for garbage")
+    check(MM.decode_float(MM.encode("/float-1", (1,))) is None,
+         "decode_float must refuse a message that is not exactly one "
+         "float (an int, here) rather than mis-read it")
+
+    try:
+        MM.encode("not-a-slash-address")
+        check(False, "encode() must refuse an address with no leading /")
+    except ValueError:
+        pass
+    print("  ok")
+
+
+def test_madmapper_primitives_send_the_right_addresses():
+    section("madmapper: each primitive sends exactly the address it "
+            "should, and nothing else")
+    link, socks, steps = _mm_link()
+    link.select_bank("Bank-1")
+    link.stop_bank("Bank-1")
+    link.play("Bank-1")
+    link.play_from_beginning("Bank-2")
+    link.close()
+    addrs = _mm_addrs(socks[0])
+    check(addrs == ["/timelines/Bank-1/select",
+                   "/timelines/Bank-1/conductor/stop",
+                   "/timelines/Bank-1/conductor/play",
+                   "/timelines/Bank-2/conductor/play_from_beginning"],
+         f"primitives sent the wrong sequence: {addrs}")
+    print("  ok")
+
+
+def test_madmapper_ramp_step_count_and_values():
+    section("madmapper: the ramp's step count and its endpoints")
+    from ltcplay import madmapper as MM
+    vals = MM.ramp_values(1.0, 0.0, 31)
+    check(len(vals) == 31, f"31 steps over 1 s (bench B2/B4): got "
+                          f"{len(vals)}")
+    check(vals[0] == 1.0 and vals[-1] == 0.0,
+         f"a ramp's first and last values must be exact: {vals[0]} .. "
+         f"{vals[-1]}")
+    check(all(vals[i] > vals[i + 1] for i in range(len(vals) - 1)),
+         "a 1 -> 0 ramp must fall monotonically")
+    up = MM.ramp_values(0.0, 1.0, 31)
+    check(up[0] == 0.0 and up[-1] == 1.0, "a fade-up ramp's endpoints")
+    check(MM.ramp_values(0.0, 1.0, 1) == [1.0],
+         "fewer than 2 steps just sends the end value once")
+    # From ANY start, not just 1.0 (PR #29 review round 3, seen on macOS
+    # CI: a fade down from a level a stopped fade-up had reached ended on
+    # 1e-32, not 0.0). About 1 start in 30 missed before the fix.
+    rnd = random.Random(29)
+    missed = []
+    for _ in range(2000):
+        a, b = rnd.random(), rnd.choice((0.0, 1.0))
+        for curve in MM.VIDEO_CURVES:
+            v = MM.shape_values(MM.ramp_values(a, b, 31), a, b, curve)
+            if v[0] != a or v[-1] != b:
+                missed.append((a, b, curve, v[0], v[-1]))
+    check(not missed, f"a ramp from any level starts and ends exactly: "
+                      f"{len(missed)} missed, e.g. {missed[:2]}")
+
+    # The ramp as Link actually sends it: right address(es), right step
+    # count, right pacing (31 steps over 1 s = 30 gaps of 1/30 s each).
+    link, socks, steps = _mm_link()
+    link.fade_audio(1.0, 0.0, seconds=1.0, steps=31)
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 31, f"fade_audio must send exactly 31 packets: "
+                          f"{len(sent)}")
+    check(all(MM._read_osc_string(p, 0)[0] == MM.AUDIO_ADDR
+              for p, _a in sent),
+         "every packet in an audio fade goes to master_audio_level only")
+    check(abs(steps.t - 1.0) < 1e-9,
+         f"31 steps over 1 s must take exactly 1 s of paced time: "
+         f"{steps.t}")
+
+    link2, socks2, steps2 = _mm_link()
+    link2.fade_surfaces(0.0, 1.0, seconds=0.5, steps=5)
+    link2.close()
+    addrs2 = _mm_addrs(socks2[0])
+    check(addrs2 == (["/surfaces/Quad-1/opacity",
+                     "/surfaces/Quad-2/opacity"] * 5),
+         f"fade_surfaces must send both surfaces together, every step: "
+         f"{addrs2}")
+    print("  ok")
+
+
+def test_madmapper_fade_surfaces_perceptual_curve_step_values():
+    section("madmapper: fade_surfaces defaults to a perceptual curve "
+            "(bench B14: a plain linear opacity fade looks like it "
+            "holds, then drops in the last 0.5 s); fade_audio always "
+            "stays linear")
+    from ltcplay import madmapper as MM
+
+    # The pure math, exactly, with no socket at all.
+    lin = MM.ramp_values(1.0, 0.0, 5)
+    down = MM.shape_values(lin, 1.0, 0.0, MM.CURVE_PERCEPTUAL)
+    check(down == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fading down must be an ease-in-quad (steep first, lingers "
+         f"near black): {down}")
+    lin_up = MM.ramp_values(0.0, 1.0, 5)
+    up = MM.shape_values(lin_up, 0.0, 1.0, MM.CURVE_PERCEPTUAL)
+    check(up == [0.0, 0.4375, 0.75, 0.9375, 1.0],
+         f"fading up must be the mirrored ease-out: {up}")
+    check(MM.shape_values(lin, 1.0, 0.0, MM.CURVE_LINEAR) == lin,
+         "CURVE_LINEAR must be a no-op")
+    try:
+        MM.shape_values(lin, 1.0, 0.0, "bogus")
+        check(False, "an unknown curve name must be refused")
+    except ValueError:
+        pass
+
+    # As Link actually sends it: fade_surfaces defaults to perceptual,
+    # fade_audio never does, regardless of config.
+    cfg = _mm_cfg()
+    check(cfg.video_curve == MM.CURVE_PERCEPTUAL,
+         f"perceptual is the default: {cfg.video_curve}")
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link.fade_audio(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    surface_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    audio_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fade_surfaces must actually apply the curve: {surface_vals}")
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"fade_audio must stay plain linear regardless of "
+         f"video_curve: {audio_vals}")
+
+    # A show file can still ask for plain linear video explicitly.
+    cfg2 = _mm_cfg(video_curve="linear")
+    link2, socks2, _s = _mm_link(cfg=cfg2)
+    link2.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link2.close()
+    vals2 = [MM.decode_float(p)[1] for p, _a in socks2[0].sent
+            if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(vals2 == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"video_curve: linear must actually turn the shaping off: "
+         f"{vals2}")
+    print("  ok")
+
+
+def test_madmapper_ramp_is_cancellable():
+    section("madmapper: a new ramp, or an explicit cancel(), stops an "
+            "in-flight ramp at once (S3)")
+    import threading as _threading
+    import time as _time
+    from ltcplay import madmapper as MM
+
+    # A real thread and a real (short) clock this time: cancellation is a
+    # genuine race against a ramp actually running on the worker thread,
+    # which a purely virtual clock (as in the tests above) can never
+    # exercise, since sleep() there never really yields control.
+    cfg = _mm_cfg(fade_s=0.3, ramp_steps=30)      # 10 ms/step, real time
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory)
+    link.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)                              # a handful of steps in
+    link.cancel()
+    _time.sleep(0.05)                              # let it actually stop
+    stopped_at = len(socks[0].sent)
+    _time.sleep(0.3)                                # long past the full ramp
+    check(0 < stopped_at < 30,
+         f"cancel() must stop the ramp partway through, not let it "
+         f"finish: {stopped_at} of 30 packets went out")
+    check(len(socks[0].sent) == stopped_at,
+         f"nothing more may be sent after cancel(): sent "
+         f"{len(socks[0].sent)} total, {stopped_at} at cancel time")
+    link.close()
+
+    # Starting a NEW ramp must cancel an old one still in flight, with no
+    # explicit cancel() call at all.
+    socks.clear()
+    link2 = MM.Link(cfg, socket_factory=factory)
+    link2.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    partial = len(socks[0].sent)
+    link2.fade_audio(0.0, 1.0, seconds=0.05, steps=5)   # supersedes it
+    link2.close()
+    from_first_ramp = [v for p, _a in socks[0].sent
+                       for _addr, v in [MM.decode_float(p)]]
+    check(0 < partial < 30, f"setup: the first ramp must be interrupted "
+                           f"partway: {partial}")
+    # The interrupting ramp's own 5 values (0 -> 1) must all be present at
+    # the end, and the very last value sent must be its end value (1.0),
+    # not something left over from the cancelled ramp being resumed.
+    check(from_first_ramp[-1] == 1.0,
+         f"the new ramp must finish normally after superseding the old "
+         f"one: last value sent was {from_first_ramp[-1]}")
+    print("  ok")
+
+
+def test_madmapper_restore_levels():
+    section("madmapper: restore_levels() sets audio and every surface "
+            "back to 1.0, instantly, no ramp (B3 -- MadMapper keeps "
+            "whatever level a fade last left it at)")
+    from ltcplay import madmapper as MM
+    link, socks, steps = _mm_link()
+    link.restore_levels()
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 3, f"audio (1) + 2 surfaces (2) = 3 packets, no "
+                         f"ramp: {len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(value == 1.0, f"every level must be set to exactly 1.0: "
+                            f"{addr} = {value}")
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"],
+         f"restore_levels must touch audio then every surface: {addrs}")
+    check(steps.t == 0.0, "restore_levels must not pace or sleep at all")
+
+    # set_audio/set_surfaces on their own, the same way: instant, no ramp.
+    link2, socks2, steps2 = _mm_link()
+    link2.set_audio(0.5)
+    link2.set_surfaces(0.25)
+    link2.close()
+    vals = [MM.decode_float(p)[1] for p, _a in socks2[0].sent]
+    check(vals == [0.5, 0.25, 0.25], f"set_audio/set_surfaces: {vals}")
+    print("  ok")
+
+
+def test_madmapper_fade_all_sends_audio_and_surfaces_together():
+    section("madmapper: fade_all() ramps audio (linear) and every "
+            "surface (the configured curve) in ONE worker job, so they "
+            "land in the same real time instead of audio finishing "
+            "before video starts (used by devices.on_abort)")
+    from ltcplay import madmapper as MM
+    cfg = _mm_cfg()
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_all(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    sent = socks[0].sent
+    # Every step must send audio THEN both surfaces before the next step's
+    # sleep, proving they are interleaved within one job rather than
+    # audio's whole ramp completing first.
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"] * 5,
+         f"each step must send audio then every surface, all 5 steps "
+         f"interleaved, not audio's ramp finishing before surfaces "
+         f"start: {addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    surface_vals = [MM.decode_float(p)[1] for p, _a in sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"audio must stay plain linear inside fade_all(), same as "
+         f"fade_audio() on its own: {audio_vals}")
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"surfaces must still get the configured (perceptual) curve "
+         f"inside fade_all(): {surface_vals}")
+    check(steps.t >= 0.4 - 1e-9,
+         f"fade_all must actually pace over the requested duration: "
+         f"{steps.t}")
+
+    # Cancellable exactly like fade_audio()/fade_surfaces(): a newer ramp
+    # supersedes an in-flight fade_all().
+    import time as _time
+    cfg2 = _mm_cfg(fade_s=0.3, ramp_steps=30)
+    socks2 = []
+
+    def factory2():
+        s = _FakeMMSock()
+        socks2.append(s)
+        return s
+    link2 = MM.Link(cfg2, socket_factory=factory2)
+    link2.fade_all(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    link2.cancel()
+    _time.sleep(0.05)
+    stopped_at = len(socks2[0].sent)
+    _time.sleep(0.3)
+    check(stopped_at < len(socks2[0].sent) + 1
+          and len(socks2[0].sent) == stopped_at,
+         f"cancel() must stop fade_all() mid-ramp, same as the other "
+         f"ramps: {stopped_at} then {len(socks2[0].sent)}")
+    check(0 < stopped_at < 30 * 3,
+         f"must have been interrupted partway, not run to completion: "
+         f"{stopped_at}")
+    link2.close()
+    print("  ok")
+
+
+def test_madmapper_config_refusals():
+    section("madmapper: config refusals are clear sentences, not stack "
+            "traces")
+    from ltcplay import madmapper as MM
+
+    def refused(doc, contains):
+        try:
+            MM.MadMapperConfig.parse(doc)
+        except MM.MadMapperConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"host": "", "surfaces": ["Quad-1"]}, "host")
+    refused({"surfaces": []}, "surfaces")
+    refused({"surfaces": ["Quad-1", "Quad-1"]}, "twice")
+    refused({"surfaces": ["Quad-1"], "show_bank": "Bank-1",
+            "intermission_bank": "Bank-1"}, "cannot share one name")
+    refused({"surfaces": ["Quad-1"], "port": 70000}, "port")
+    refused({"surfaces": ["Quad-1"], "port": True}, "port")
+    refused({"surfaces": ["Quad-1"], "ramp_steps": 1}, "ramp_steps")
+    refused({"surfaces": ["Quad-1"], "fade_s": 0}, "fade_s")
+    refused({"surfaces": ["Quad-1"], "typo_field": 1}, "typo_field")
+    refused({"surfaces": ["Quad-1"], "heartbeat": {}}, "show_len_s")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "address": "float-1"}},
+           "start with /")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "port": 0}}, "port")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "bind": "0.0.0.0"}},
+           "not loopback")
+
+    # A valid, minimal config must not raise, and must round-trip through
+    # summary() (used by the health route) without error.
+    cfg = MM.MadMapperConfig.parse({"surfaces": ["Quad-1"],
+                                    "heartbeat": {"show_len_s": 444.42}})
+    check("Bank-1" in cfg.summary(), f"summary(): {cfg.summary()}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_bind_must_be_loopback():
+    section("madmapper: the heartbeat listener refuses to bind off "
+            "loopback unless explicitly told to (handoff section 4)")
+    from ltcplay import madmapper as MM
+    for good in ("127.0.0.1", "127.5.5.5", "::1", "localhost"):
+        hb = MM.HeartbeatConfig.parse({"bind": good, "show_len_s": 10.0},
+                                      "timeline")
+        check(hb.bind == good, f"{good!r} is loopback and must be "
+                              f"accepted: {hb.bind}")
+    try:
+        MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0},
+                                 "timeline")
+        check(False, "a non-loopback bind must be refused by default")
+    except MM.MadMapperConfigError as e:
+        check("not loopback" in str(e) and "allow_non_loopback_bind" in
+              str(e), f"the refusal must name the escape hatch: {e}")
+    hb2 = MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0,
+                                   "allow_non_loopback_bind": True},
+                                  "timeline")
+    check(hb2.bind == "0.0.0.0" and hb2.allow_non_loopback_bind,
+         "the escape hatch must actually work when set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_start_bind_failure_has_its_own_sentence():
+    section("madmapper: a heartbeat bind failure names the heartbeat "
+            "port, never the web server's own port message")
+    from ltcplay import madmapper as MM
+    j = []
+
+    def bad_factory():
+        raise OSError(48, "Address already in use")
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0),
+                     socket_factory=bad_factory, journal=_mm_journal(j))
+    ok = wd.start()
+    check(ok is False, "start() must report failure, not raise or hang")
+    check(wd.bind_error is not None and "9001" in wd.bind_error and
+          "heartbeat" in wd.bind_error.lower(),
+         f"the bind error must name the heartbeat port specifically: "
+         f"{wd.bind_error}")
+    check(any("9001" in t and "heartbeat" in t.lower() for t, _e in j),
+         f"the journal must carry the same specific sentence: {j}")
+    wd.stop()
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed():
+    section("madmapper: a lone heartbeat packet while disarmed is fully "
+            "ignored (bench B9, the 4 hour soak) -- MadMapper re-sends "
+            "its Float track's last value, one packet, the instant the "
+            "show bank is selected, about 2 s before the show actually "
+            "starts, while ltcplay's own clock is not running yet")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)                # ltcplay: not running, at zero
+
+    # The exact bench shape: value 1.0 (the track's last, end-of-show
+    # value), arriving while disarmed.
+    wd.on_packet(1.0)
+    check(wd.packets_in == 0, f"a packet while disarmed must not even be "
+                             f"counted: {wd.packets_in}")
+    check(wd._last_packet_at is None, "a packet while disarmed must never "
+                                     "set the last-packet time -- it must "
+                                     "not be read as a position later")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"a packet while disarmed must never be compared for drift, "
+         f"even though 1.0 x show_len_s (10.0) against ltcplay's own 0.0 "
+         f"would be a huge, false drift if it were: "
+         f"{wd.last_drift_ms}")
+    check(j == [], f"a packet while disarmed must never journal anything "
+                  f"at all: {j}")
+
+    health = wd.health()
+    check(health["state"] == "quiet" and health["age_ms"] is None,
+         f"health() must not show this packet as any kind of liveness: "
+         f"{health}")
+
+    # Then the real show starts (arm()) and packets flow normally --
+    # proving the ignore above is a gate on being disarmed, not a
+    # permanent latch.
+    wd.arm(show=7)
+    wd.on_packet(0.1)
+    check(wd.packets_in == 1 and wd._last_packet_at is not None,
+         "once armed, and near the start, a real packet must count "
+         "normally")
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start():
+    section("madmapper: the SAME B9 lone packet, but armed BEFORE it "
+            "arrives (S1) -- any real wiring arms before or at bank "
+            "select, so disarmed alone is not enough; the packet must "
+            "still be ignored until one reads near the show's own start")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.42, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)                        # armed first, as any real wiring
+                                          # would (the bank must be
+                                          # selected before a show starts)
+    wd.on_packet(1.0)                     # MadMapper's re-sent stale value
+    check(wd.packets_in == 0, f"the lone stale packet must not be counted "
+                             f"even while armed: {wd.packets_in}")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"and must never be read as a position or compared for drift: "
+         f"{wd.last_drift_ms}, flagged={wd.drift_flagged}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no drift alarm may ever come from it: {j}")
+
+    # The real show then actually starts: a packet near 0 clears the gate.
+    steps.t += 2.0
+    wd.on_packet(0.002)                   # 0.002 * 444.42 = 0.89 s: near 0
+    check(wd.packets_in == 1, f"the first real, near-start packet must be "
+                             f"counted: {wd.packets_in}")
+
+    # And a genuine drift once tracking has begun still works normally.
+    wd.note_position(50.0, at=steps.t)
+    wd.on_packet(50.3 / 444.42, at=steps.t)   # 300 ms of real drift
+    check(wd.drift_flagged, f"drift must still be caught once real "
+                           f"tracking has begun: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_nan_is_a_drift_fault():
+    section("madmapper: a NaN heartbeat value counts as bad -- a drift "
+            "fault, never silently read as zero drift")
+    import math as _math
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0), clock=steps.clock,
+                     journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)
+    wd.on_packet(0.0)                     # clears the awaiting-start gate
+    check(wd.packets_in == 1, "setup: the clean packet must count")
+
+    wd.note_position(1.0, at=steps.t)
+    wd.on_packet(float("nan"), at=steps.t)
+    check(wd.drift_flagged, f"a NaN value must flag a drift fault: "
+                           f"{wd.last_drift_ms}")
+    check(wd.last_drift_ms is None,
+         f"a NaN value has no meaningful drift number to report: "
+         f"{wd.last_drift_ms}")
+    check(any("NaN" in t or "nan" in t for t, _e in j),
+         f"the journal sentence must say the value was not usable: {j}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_alarms_only_while_armed():
+    section("madmapper: the watchdog alarms on silence only while "
+            "armed -- quiet on Hold, between shows, and on a bank with no "
+            "heartbeat track of its own (bench B3.3)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+
+    # Disarmed: an hour of silence is not news.
+    steps.t += 3600.0
+    wd._check()
+    check(not wd._alarmed, "disarmed silence must never alarm")
+    check(j == [], f"disarmed silence must never journal anything: {j}")
+
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 2.9
+    wd._check()
+    check(not wd._alarmed, "under the 3 s timeout must stay quiet")
+    steps.t += 0.2                       # 3.1 s since the last packet
+    wd._check()
+    check(wd._alarmed, "past the 3 s timeout while armed must alarm")
+    check(any("stopped answering" in t and "show 4" in t for t, _e in j),
+         f"the fault must be a plain sentence naming the show: {j}")
+
+    # Disarming an active alarm (Hold arriving mid-fault) must not leave a
+    # stale alarm armed the moment it is re-armed later.
+    wd.disarm()
+    wd.arm(show=5)
+    check(not wd._alarmed, "arm() must always start with a clean slate")
+
+    # Defense in depth, on top of on_packet()'s own refusal to touch
+    # anything while disarmed: _check() must independently refuse to
+    # alarm while disarmed even if _last_packet_at were somehow left set
+    # -- poked directly here, bypassing the public API, because
+    # on_packet()'s own guard already makes this unreachable through it
+    # alone; a future change to on_packet() must not silently remove the
+    # only thing standing between a stray packet and a false alarm.
+    wd.disarm()
+    with wd._lock:
+        wd._last_packet_at = steps.t - 3600.0
+    wd._check()
+    check(not wd._alarmed, "_check() must never alarm while disarmed, "
+                          "even if the last-packet time were somehow set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_recovery():
+    section("madmapper: the watchdog logs recovery the moment a packet "
+            "returns, exactly once")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 3.5
+    wd._check()
+    check(wd._alarmed, "setup: must be alarmed first")
+    wd.on_packet(0.4)
+    check(not wd._alarmed, "one packet clears the alarm")
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must be logged exactly once: "
+                              f"{recovered}")
+    # A second packet must not log recovery again.
+    wd.on_packet(0.41)
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must not repeat: {recovered}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_drift_flag():
+    section("madmapper: the drift flag compares MadMapper's reported "
+            "position against ltcplay's own, independent of the silence "
+            "alarm (handoff section 4, default 100 ms)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.note_position(0.0)
+    wd.on_packet(0.0)                    # a clean start: clears the
+                                         # awaiting-start gate (S1)
+    j.clear()
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # MadMapper says 5.0 s too: 0 drift
+    check(wd.last_drift_ms == 0.0 and not wd.drift_flagged,
+         f"no drift, nothing flagged: {wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         "a clean position must never be journaled")
+
+    wd.note_position(4.7)                # ltcplay says 4.7 s
+    wd.on_packet(0.5)                    # MadMapper still says 5.0 s: 300ms
+    check(wd.drift_flagged and abs(wd.last_drift_ms - 300.0) < 1e-6,
+         f"300 ms of drift must be flagged past the 100 ms default: "
+         f"{wd.last_drift_ms}")
+    flagged = [t for t, e in j if e.get("outcome") == "drift"]
+    check(len(flagged) == 1, f"the flag must be logged once, not every "
+                            f"packet: {flagged}")
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # back in step
+    check(not wd.drift_flagged, "back within 100 ms clears the flag")
+    cleared = [t for t, e in j if e.get("outcome") == "drift clear"]
+    check(len(cleared) == 1, f"clearing must be logged once: {cleared}")
+
+    health = wd.health()
+    check(health["drift_ms"] is not None and health["state"] == "ok",
+         f"health() must expose the drift and a state: {health}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_suspend_and_resume():
+    section("madmapper: MadMapper's process suspended mid-show (bench "
+            "B3.4) -- heartbeats stop at once, resume already at the "
+            "live position, and the watchdog treats it as one clean "
+            "alarm-then-recovery, never a crash")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    # 60/s for a second, then nothing for 10 s (suspended), matching the
+    # bench's own numbers (mean 16.7 ms between packets, silent at once on
+    # suspend). Starts at value 0.2 (2.0/10.0), inside the START_WINDOW_S
+    # gate, so tracking begins on the very first packet.
+    for i in range(60):
+        wd.note_position(2.0 + i / 60.0, at=steps.t)
+        wd.on_packet((2.0 + i / 60.0) / 10.0)
+        steps.t += 1.0 / 60.0
+    check(not wd._alarmed, "must be quiet while packets are still arriving")
+    steps.t += 10.0
+    wd._check()
+    check(wd._alarmed, "10 s of silence while armed must alarm")
+    # Resume: the bench found the first packet already at the LIVE
+    # position (20.10 s in its own run), not the one it stopped at.
+    steps.t += 0.051
+    wd.note_position(13.0, at=steps.t)   # ltcplay kept its own clock moving
+    wd.on_packet(1.3)                    # MadMapper: 1.3 * 10 = 13.0 s
+    check(not wd._alarmed, "the first packet back must clear the alarm")
+    # The recovery packet itself is settle-gated (bench B14, see
+    # test_madmapper_watchdog_skips_drift_right_after_recovery): drift is
+    # simply not computed on it, so last_drift_ms here is whatever it was
+    # from the clean tracking just before the suspend -- still near 0,
+    # but the real proof that this is not a stale carry-over is that the
+    # VERY NEXT packet resumes fresh, correct tracking.
+    steps.t += 1.0 / 60.0
+    wd.note_position(13.0 + 1.0 / 60.0, at=steps.t)
+    wd.on_packet((13.0 + 1.0 / 60.0) / 10.0)
+    check(wd.last_drift_ms is not None and abs(wd.last_drift_ms) < 1.0,
+         f"a suspend-and-resume with both sides caught up must show ~0 "
+         f"drift once tracking has resumed, not a stale comparison: "
+         f"{wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_skips_drift_right_after_recovery():
+    section("madmapper: the first heartbeat right after a recovery is "
+            "never judged for drift either (bench B14, on the Pico "
+            "against the real MadMapper: the first packet back from a "
+            "Hold carried a stale position -- '5016 ms behind', then "
+            "'back in step' 9 ms later)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0,
+                                        drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=1)
+    wd.note_position(0.0, at=0.0)
+    wd.on_packet(0.0, at=0.0)             # clears awaiting-start
+    check(not wd.drift_flagged, "setup: clean tracking begins")
+
+    steps.t = 5.0
+    wd._check()
+    check(wd._alarmed, "setup: silence past the timeout must alarm")
+
+    # The bench's own shape: ltcplay's own clock kept moving (now at
+    # 5.0 s), but MadMapper's first packet back still reports something
+    # stale (here, still 0 -- a full 5 s "behind", the same order of
+    # magnitude the bench saw).
+    j.clear()
+    wd.note_position(5.0, at=5.0)
+    wd.on_packet(0.0, at=5.0)
+    check(not wd._alarmed, "the recovery packet must still clear the "
+                          "alarm -- the video really is back")
+    check(not wd.drift_flagged, f"but it must NOT be judged for drift: "
+                               f"{wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no false drift alarm may be journaled from it: {j}")
+
+    # The very next packet, back in step, resumes normal tracking.
+    wd.note_position(5.01, at=5.01)
+    wd.on_packet(0.501, at=5.01)
+    check(not wd.drift_flagged, f"normal tracking must resume "
+                               f"immediately after: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_submit_has_a_timeout():
+    section("madmapper: a wedged worker cannot make _submit() wait "
+            "forever (item 9)")
+    import time as _time
+    from ltcplay import madmapper as MM
+    j = []
+    link = MM.Link(_mm_cfg(), socket_factory=lambda: _FakeMMSock(),
+                  journal=_mm_journal(j))
+    link._submit_timeout_s = 0.05
+    t0 = _time.monotonic()
+    link._submit(lambda: _time.sleep(0.3), wait=True)
+    elapsed = _time.monotonic() - t0
+    check(elapsed < 0.2, f"_submit() must give up after its own timeout, "
+                        f"not the job's: waited {elapsed:.2f}s")
+    check(any("did not finish" in t and "timeout" == e.get("outcome")
+              for t, e in j), f"a timeout must be journaled as a fault: "
+                             f"{j}")
+    link.close()
+    print("  ok")
+
+
+def test_madmapper_no_clock_is_ever_mixed_with_another():
+    section("madmapper: perf_counter only, never time.monotonic")
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "madmapper.py"),
+              encoding="utf-8").read()
+    check("time.monotonic" not in src,
+         "madmapper.py must read time.perf_counter only, never "
+         "time.monotonic (test_no_clock_is_ever_mixed_with_another's own "
+         "rule, applied here too): a UI age computed from one against a "
+         "timestamp taken from the other is simply wrong, not merely "
+         "imprecise")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_madmapper():
+    section("madmapper: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('madmapper')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/madmapper', '/api/madmapper/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.madmapper is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'madmapper' in "
+        "m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded madmapper.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no madmapper configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_madmapper_web_route_reports_health():
+    section("madmapper: web.py's /api/madmapper/state answers the health "
+            "panel's dot with no scheduler required")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    steps = _Steps()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock(),
+                  clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(cfg.heartbeat, clock=steps.clock)
+    wd.arm(show=1)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(link, wd))
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/madmapper/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        link.close()
+        wd.stop()
+    check(body["watchdog"]["armed"] is True,
+         f"the route must expose the watchdog's own health dict: {body}")
+    check("Bank-1" in body["config"], f"and the link's config summary: "
+                                     f"{body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_madmapper_link():
+    section("madmapper: web.py only closes a link IT built from a "
+            "config -- a ready-made pair passed in is the caller's own")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock())
+    wd = MM.Watchdog(cfg.heartbeat)
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), madmapper=(link, wd))
+    h.server_close()
+    check(not link._closed, "a ready-made link must not be closed by "
+                           "serve()'s own server_close()")
+    link.close()
+    wd.stop()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_madmapper_link():
+    section("madmapper: web.py DOES close a link it built itself from a "
+            "config, on server_close()")
+    from ltcplay import web, madmapper as MM
+    real_build = MM.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, link_socket_factory=lambda: _FakeMMSock(),
+                          watchdog_socket_factory=lambda: _FakeMMSock(),
+                          **kw)
+    MM.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), madmapper=_mm_cfg())
+        link, wd = h.madmapper
+        # Independent review of PR #29, finding A: a failed MadMapper send
+        # from a link web.py built must land in a journal, not nowhere.
+        check(callable(link.journal) and callable(wd.journal),
+              "web.serve() gives the MadMapper link and watchdog a journal")
+        h.server_close()
+        check(link._closed, "a config-built link must be closed by "
+                           "server_close()")
+    finally:
+        MM.build = real_build
+    print("  ok")
+
+
+# ============================================================== beyond ====
+# The laser blank/unblank device layer, unblocked by the Pico's B8 bench
+# result. Device layer only, like madmapper.py -- see its module docstring.
+
+def _beyond_link(cfg=None, journal=None):
+    from ltcplay import beyond as B
+    cfg = cfg or B.BeyondConfig.parse({})
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = B.Beyond(cfg, socket_factory=factory, clock=steps.clock,
+                    sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def test_beyond_osc_bytes_and_config_refusals():
+    section("beyond: the brightness message's bytes, and clear config "
+            "refusals")
+    from ltcplay import beyond as B, madmapper as MM
+    pkt0 = MM.encode(B.BRIGHTNESS_ADDR, (0.0,))
+    got = MM.decode_float(pkt0)
+    check(got == (B.BRIGHTNESS_ADDR, 0.0), f"blank must encode brightness "
+                                          f"0.0 exactly: {got}")
+    pkt100 = MM.encode(B.BRIGHTNESS_ADDR, (100.0,))
+    check(MM.decode_float(pkt100) == (B.BRIGHTNESS_ADDR, 100.0),
+         f"unblank must encode brightness 100.0 exactly: "
+         f"{MM.decode_float(pkt100)}")
+
+    cfg = B.BeyondConfig.parse({})
+    check(cfg.host == B.DEFAULT_HOST and cfg.port == B.DEFAULT_PORT,
+         f"defaults: 127.0.0.1:8100, got {cfg.host}:{cfg.port}")
+
+    def refused(doc, contains):
+        try:
+            B.BeyondConfig.parse(doc)
+        except B.BeyondConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"port": 8000}, "MadMapper's own OSC input port")
+    refused({"port": 70000}, "port")
+    refused({"host": ""}, "host")
+    refused({"typo": 1}, "typo")
+    refused({"address": "/beyond/general/BlackOut"}, "no setting")
+    # Independent review of PR #29, finding D: a name would be looked up on
+    # every one of a blank's 3 packets; with no working name server that
+    # can take seconds. Only an IP address is taken, refused at load.
+    for name in ("beyond-pc", "localhost", "beyond-pc.invalid",
+                 "127.0.0.1.nip.io", "192.168.1"):
+        refused({"host": name}, "has to be an IPv4 address")
+    for ip in ("127.0.0.2", "192.168.1.20"):
+        check(B.BeyondConfig.parse({"host": ip}).host == ip,
+              f"an IP address is taken: {ip}")
+    # Review round 3: the socket is IPv4 (AF_INET), so an IPv6 address was
+    # accepted here and then every blank failed with "address family not
+    # supported". Refused at load instead, saying why.
+    for ip in ("::1", "fe80::1", "::ffff:127.0.0.2"):
+        refused({"host": ip}, "IPv6 address cannot be reached")
+    print("  ok")
+
+
+def test_beyond_allow_list_rejects_everything_but_brightness():
+    section("beyond: the allow-list refuses everything but the exact "
+            "brightness address with 0.0 or 100.0 (S5, R6's own variants)")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+
+    def refused(address, value=0.0):
+        try:
+            link._send(address, value)
+        except B.BeyondConfigError:
+            return True
+        return False
+
+    variants = ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
+               "/beyond/general/blackout", "/BEYOND/general/BlackOut",
+               "/beyond/general/BlackOut/", "/beyond/general/BlackOut ",
+               "/beyond//general/BlackOut", "/beyond/general/Black*",
+               "/beyond/general/{BlackOut,Nothing}",
+               "/beyond/*/MasterPause", "/beyond/general/Master?ause",
+               "#bundle", "/beyond/master/livecontrol/brightness ")
+    for v in variants:
+        check(refused(v), f"{v!r} must be refused, not sent")
+    # The right address, but a wrong value.
+    for bad_value in (50.0, 1.0, -0.0 - 1, float("nan"), "0.0", True):
+        check(refused(B.BRIGHTNESS_ADDR, bad_value),
+             f"{B.BRIGHTNESS_ADDR!r} with value {bad_value!r} must be "
+             f"refused: only exactly 0.0 or 100.0 is allowed")
+    # The right address, right values: must NOT be refused.
+    check(not refused(B.BRIGHTNESS_ADDR, 0.0), "0.0 must be allowed")
+    check(not refused(B.BRIGHTNESS_ADDR, 100.0), "100.0 must be allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_lowest_level_socket_also_enforces_allow_list():
+    section("beyond: the guard holds even below _send() -- an audit "
+            "(R6) found a direct call to the socket's own send() went "
+            "straight through with no guard at all")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    try:
+        link._osc.send("/beyond/general/BlackOut", 0.0)
+        check(False, "the socket's own send() must refuse this too")
+    except B.BeyondConfigError:
+        pass
+    try:
+        link._osc.send(B.BRIGHTNESS_ADDR, 42.0)
+        check(False, "the socket's own send() must refuse a bad value "
+                    "even for the right address")
+    except B.BeyondConfigError:
+        pass
+    check(socks == [], "nothing refused at the socket layer may open a "
+                      "socket at all")
+    ok = link._osc.send(B.BRIGHTNESS_ADDR, 0.0)
+    check(ok, "the socket's own send() must still work for what IS "
+             "allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_and_unblank_succeed_and_report_ok():
+    section("beyond: blank()/unblank() each send the brightness packet "
+            "3 times, about 20 ms apart, and report success")
+    from ltcplay import beyond as B, madmapper as MM
+    link, socks, steps = _beyond_link()
+    ok = link.blank(4)
+    check(ok is True, "blank() must return True when at least one packet "
+                     "got out")
+    sent = socks[0].sent
+    check(len(sent) == B.RETRY_COUNT, f"blank() must send exactly "
+                                     f"{B.RETRY_COUNT} packets: "
+                                     f"{len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(addr == B.BRIGHTNESS_ADDR and value == 0.0,
+             f"every retry must send the same brightness 0.0: "
+             f"{addr} {value}")
+    check(abs(steps.t - (B.RETRY_COUNT - 1) * B.RETRY_INTERVAL_S) < 1e-9,
+         f"the retries must be paced about {B.RETRY_INTERVAL_S * 1000:g} "
+         f"ms apart: took {steps.t}s")
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"health fields: {link.last_command} {link.last_result}")
+
+    ok2 = link.unblank(4, in_show=True)
+    check(ok2 is True, "unblank() must return True too")
+    vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent[B.RETRY_COUNT:]]
+    check(all(v == 100.0 for v in vals),
+         f"unblank must send exactly 100.0 every time: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_retries_and_reports_failure():
+    section("beyond: a blank that never gets a packet out is reported "
+            "as a failure, never silently journaled as 'blanked' (S4, "
+            "the audit's R5)")
+    from ltcplay import beyond as B
+    journal = []
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   journal=_mm_journal_beyond(journal),
+                   socket_factory=lambda: Dead())
+    ok = link.blank(3)
+    check(ok is False, "blank() must return False when nothing got out")
+    check(link.last_result == "failed", f"health must show failed: "
+                                       f"{link.health()}")
+    texts = [t for t, _e in journal]
+    check(not any("BEYOND blanked" in t for t in texts),
+         f"a failed blank must NEVER be journaled as a plain success: "
+         f"{texts}")
+    fault_lines = [(t, e) for t, e in journal if e.get("fault")]
+    check(any("failed to blank" in t for t, _e in fault_lines),
+         f"a failure must be journaled as its own, flagged sentence: "
+         f"{journal}")
+
+    # A failed socket OPEN, retried within the same call rather than
+    # silently dropped by the normal 1 s reopen backoff (which exists for
+    # ordinary traffic, not a deliberate ~40 ms retry burst).
+    journal.clear()
+    calls = [0]
+
+    def bad_factory():
+        calls[0] += 1
+        raise OSError(24, "Too many open files")
+    link2 = B.Beyond(B.BeyondConfig.parse({}),
+                     journal=_mm_journal_beyond(journal),
+                     socket_factory=bad_factory)
+    link2.blank(3)
+    check(calls[0] == B.RETRY_COUNT,
+         f"every one of the {B.RETRY_COUNT} retries must attempt to "
+         f"reopen the socket, not be swallowed by the reopen backoff: "
+         f"{calls[0]} attempts")
+    check(link2.last_result == "failed", "still reported as failed")
+    print("  ok")
+
+
+def _mm_journal_beyond(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def test_beyond_health_reports_last_result_and_packets_sent():
+    section("beyond: health() reports the last result and the packets "
+            "actually sent, never a liveness claim")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    h0 = link.health()
+    check(h0["last_command"] is None and h0["last_result"] is None,
+         f"before any command: {h0}")
+    check("armed" not in h0 and "state" not in h0,
+         f"beyond's health dict must never claim 'armed' or 'state' the "
+         f"way the watchdog's does -- there is no heartbeat to base "
+         f"either on: {h0}")
+    link.blank(4)
+    h1 = link.health()
+    check(h1["last_command"] == "blank" and h1["last_result"] == "ok"
+          and h1["packets_sent"] == B.RETRY_COUNT, f"after blank(): {h1}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_builds_blank_at_construction_and_close_blanks_again():
+    section("beyond: build() blanks once immediately; close() blanks "
+            "again before closing the socket (S6, safe defaults)")
+    from ltcplay import beyond as B
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+    steps = _Steps()
+    link = B.build(B.BeyondConfig.parse({}), clock=steps.clock,
+                   sleep=steps.sleep, socket_factory=factory)
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"build() must blank once before returning: {link.health()}")
+    check(len(socks[0].sent) == B.RETRY_COUNT,
+         f"that first blank must go through the same 3x retry: "
+         f"{len(socks[0].sent)}")
+    link.close()
+    check(len(socks[0].sent) == B.RETRY_COUNT * 2,
+         f"close() must blank again, its own full 3x retry, before "
+         f"closing the socket: {len(socks[0].sent)}")
+    print("  ok")
+
+
+def test_beyond_never_sends_blackout_or_masterpause():
+    section("beyond: BlackOut and MasterPause are never sent, under any "
+            "path -- the exact-name deny list, kept as a second, "
+            "explicit layer on top of the allow-list")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    for addr in B.FORBIDDEN_ADDRESSES:
+        try:
+            link._send(addr)
+            check(False, f"_send() must refuse {addr!r}")
+        except B.BeyondConfigError:
+            pass
+    for i in range(20):
+        link.blank(i)
+        link.unblank(i, in_show=True)
+    link.close()
+    seen = set()
+    for pkt, _addr in socks[0].sent:
+        from ltcplay import madmapper as MM
+        addr, _at = MM._read_osc_string(pkt, 0)
+        seen.add(addr)
+    check(seen == {B.BRIGHTNESS_ADDR},
+         f"only the brightness address may ever be sent: {seen}")
+    check(not (seen & B.FORBIDDEN_ADDRESSES),
+         f"a forbidden address was sent: {seen & B.FORBIDDEN_ADDRESSES}")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_beyond():
+    section("beyond: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('beyond')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/beyond', '/api/beyond/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.beyond is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if '.beyond' in m or "
+        "m == 'beyond')}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded beyond.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no beyond configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_beyond_web_route_reports_health():
+    section("beyond: web.py's /api/beyond/state answers 'command sent' "
+            "only, with no scheduler wiring at all")
+    from ltcplay import web, madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_cfg = _mm_cfg()
+    mm_link = MM.Link(mm_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    b_cfg = B.BeyondConfig.parse({})
+    b_link = B.Beyond(b_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(mm_cfg.heartbeat, clock=steps.clock)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(mm_link, wd), beyond=b_link)
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/beyond/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        mm_link.close()
+        wd.stop()
+    check(body["beyond"]["last_command"] is None,
+         f"nothing sent yet: {body}")
+    check("armed" not in body["beyond"], f"no liveness claim: {body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_beyond_link():
+    section("beyond: web.py only closes a link IT built from a config "
+            "-- a ready-made Beyond passed in is the caller's own")
+    from ltcplay import web, beyond as B
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _FakeMMSock())
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), beyond=link)
+    before = link.health()["packets_sent"]
+    h.server_close()
+    check(link.health()["packets_sent"] == before,
+         "a ready-made beyond link must not be blanked by serve()'s own "
+         "server_close()")
+    link.close()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_beyond_link():
+    section("beyond: web.py DOES close (and so blank) a beyond link it "
+            "built itself from a config, on server_close()")
+    from ltcplay import web, beyond as B
+    real_build = B.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, socket_factory=lambda: _FakeMMSock(), **kw)
+    B.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), beyond=B.BeyondConfig.parse({}))
+        link = h.beyond
+        before = link.health()["packets_sent"]
+        h.server_close()
+        check(link.health()["packets_sent"] > before,
+             "closing a config-built beyond link must blank it again")
+    finally:
+        B.build = real_build
+    print("  ok")
+
+
+# ============================================================= devices ====
+# on_hold()/on_resume()/on_abort(): plain synchronous functions composing
+# madmapper.py's and beyond.py's own primitives with the handoff's ordering
+# already built in, for a future conductor to call. See devices.py's own
+# module docstring for why these are not scheduler hooks.
+
+def _devices_pair(mm_cfg=None, b_cfg=None):
+    from ltcplay import madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_socks = []
+    b_socks = []
+
+    def mm_factory():
+        s = _FakeMMSock()
+        mm_socks.append(s)
+        return s
+
+    def b_factory():
+        s = _FakeMMSock()
+        b_socks.append(s)
+        return s
+    mm_link = MM.Link(mm_cfg or _mm_cfg(), socket_factory=mm_factory,
+                      clock=steps.clock, sleep=steps.sleep)
+    b_link = B.Beyond(b_cfg or B.BeyondConfig.parse({}),
+                      socket_factory=b_factory, clock=steps.clock,
+                      sleep=steps.sleep)
+    return mm_link, mm_socks, b_link, b_socks, steps
+
+
+def test_devices_on_hold_blanks_beyond_then_fades_music_down():
+    section("devices: on_hold() blanks BEYOND first (a real command), "
+            "then fades MadMapper's music down over 0.25 s -- never "
+            "touches the surfaces (video freezes via timecode, not an "
+            "OSC fade)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(mm_link, b_link, show=3, fade_seconds=0.25, wait=True)
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_hold() never blanking
+    # BEYOND itself (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must actually get the blank packets, before close() "
+         f"ever runs: {[s.sent for s in b_socks]}")
+    b_addrs = _mm_addrs(b_socks[0])
+    check(all(a == B.BRIGHTNESS_ADDR for a in b_addrs),
+         f"only the brightness address: {b_addrs}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_hold must blank (0.0), not unblank: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(all(a == MM.AUDIO_ADDR for a in mm_addrs),
+         f"on_hold must never touch the surfaces, only the master audio "
+         f"level: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"music must fade from 1.0 to 0.0: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_in_show_fades_up_then_unblanks():
+    section("devices: on_resume(in_show=True) fades the music back up "
+            "then unblanks BEYOND")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_resume(mm_link, b_link, in_show=True, show=3, fade_seconds=0.25)
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"music must fade from 0.0 back up to 1.0: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default (never leave the lasers live by omission), which would
+    # otherwise add 3 more (0.0) packets after the unblank this test is
+    # actually checking for.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+         f"on_resume(in_show=True) must unblank (100.0): {b_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_refuses_to_unblank():
+    section("devices: on_resume(in_show=False) fades the music up, never "
+            "sends an unblank, but DOES re-send a defensive blank -- "
+            "never assume the earlier blank (Hold, or whenever it was "
+            "last sent) actually got out -- and the refusal is "
+            "journalled, not silent")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    notes = []
+    result = D.on_resume(mm_link, b_link, in_show=False, show=None,
+                         fade_seconds=0.25, journal=_mm_journal(notes))
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"the music still fades up between shows: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_resume() sending its own
+    # defensive blank (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must get a defensive re-blank, not silence, when not "
+         f"in a show: {[s.sent for s in b_socks]}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"the defensive re-send must be a blank (0.0), never an "
+         f"unblank: {b_vals}")
+    check(result is True, "the defensive re-blank got out, so on_resume "
+                          "must report True, not None")
+    # A successful defensive re-blank must be journalled as the calm
+    # "stays blanked" refusal, NOT the fault-flagged "FAILED" wording --
+    # both sentences happen to mention "intermission", so this checks the
+    # non-fault note specifically (an audit found the loose check missed
+    # a mutation that always took the FAILED branch, fault or not).
+    non_fault = [(t, e) for t, e in notes if not e.get("fault")]
+    check(any("intermission" in t for t, _e in non_fault),
+         f"the refusal must be journalled in plain words, not silent: "
+         f"{notes}")
+    check(not any(e.get("fault") for _t, e in notes),
+         f"a defensive re-blank that DID get out must never be "
+         f"journalled as a fault: {notes}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_reports_a_failed_reblank():
+    section("devices: on_resume(in_show=False) reports it, fault-flagged, "
+            "when even the defensive re-blank fails -- the lasers may "
+            "still be live through intermission, and that must never be "
+            "folded into the calm 'stays blanked' wording")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    notes = []
+    result = D.on_resume(mm_link, dead, in_show=False, show=None,
+                         fade_seconds=0.1, journal=_mm_journal(notes))
+    check(result is False, "a failed defensive re-blank must report "
+                           "False, never None or True")
+    fault_notes = [(t, e) for t, e in notes if e.get("fault")]
+    check(any("FAILED" in t for t, _e in fault_notes),
+         f"a failed defensive re-blank must be journalled as its own, "
+         f"flagged fault, not silently folded into the refusal note: "
+         f"{notes}")
+    mm_link.close()
+    print("  ok")
+
+
+def test_beyond_unblank_itself_refuses_in_show_false():
+    section("beyond: unblank() enforces its own in_show guard, "
+            "independently of devices.py's on_resume() -- a caller that "
+            "reaches unblank() directly, bypassing on_resume() entirely, "
+            "still cannot bring the lasers back during intermission")
+    from ltcplay import beyond as B
+    notes = []
+    link, socks, steps = _beyond_link(journal=_mm_journal_beyond(notes))
+    ok = link.unblank(5, in_show=False)
+    check(ok is False, "unblank(in_show=False) must return False, never "
+                       "True or None")
+    check(socks == [], "unblank(in_show=False) must send NO packet, and "
+                       "not even open a socket")
+    check(link.last_command == "unblank" and link.last_result == "refused",
+         f"health fields must reflect the refusal: {link.health()}")
+    check(any("intermission" in t for t, _e in notes),
+         f"a direct unblank(in_show=False) must still leave a trace in "
+         f"this Beyond's own journal: {notes}")
+
+    # The two real values still work, exactly like on_resume()'s own rule.
+    ok_true = link.unblank(5, in_show=True)
+    check(ok_true is True, "unblank(in_show=True) must still send and "
+                           "succeed")
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        try:
+            link.unblank(5, in_show=bad)
+            check(False, f"unblank(in_show={bad!r}) must raise TypeError, "
+                        f"not be read as truthy/falsy")
+        except TypeError:
+            pass
+    link.close()
+    print("  ok")
+
+
+def test_devices_on_abort_blanks_beyond_then_fades_everything_together():
+    section("devices: on_abort() blanks BEYOND at once, then fades "
+            "MadMapper's music AND every surface to black TOGETHER over "
+            "the show's fade_s (fade_all(), not fade_audio()+"
+            "fade_surfaces() back to back)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_cfg = _mm_cfg(fade_s=0.4, ramp_steps=5)
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair(mm_cfg=mm_cfg)
+    D.on_abort(mm_link, b_link, show=7)
+    # Snapshot BEFORE close(): see the note in the on_resume tests above --
+    # close() blanks BEYOND again as its own safe default.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_abort must blank BEYOND: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(mm_addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                       "/surfaces/Quad-2/opacity"] * 5,
+         f"audio and both surfaces must be interleaved step by step, "
+         f"proving they ran together (fade_all), not one after the "
+         f"other: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"must fade to black: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+
+    # An explicit fade_seconds must actually override the show's own
+    # fade_s (0.4 s above) rather than being silently ignored.
+    mm_link2, mm_socks2, b_link2, b_socks2, steps2 = _devices_pair(
+        mm_cfg=mm_cfg)
+    D.on_abort(mm_link2, b_link2, show=7, fade_seconds=0.1)
+    mm_link2.close()
+    b_link2.close()
+    check(steps2.t < 0.4 - 1e-9,
+         f"an explicit fade_seconds=0.1 must actually pace faster than "
+         f"the show's own fade_s=0.4, not be ignored: took {steps2.t:g} s")
+    print("  ok")
+
+
+def test_devices_skip_gracefully_with_no_madmapper_or_no_beyond():
+    section("devices: on_hold/on_resume/on_abort skip cleanly when a "
+            "show has no madmapper block, no beyond block, or neither -- "
+            "the same optional-link rule web.py already follows")
+    from ltcplay import devices as D
+    # Neither configured: nothing to call, nothing raises.
+    D.on_hold(None, None)
+    D.on_resume(None, None, in_show=True)
+    D.on_resume(None, None, in_show=False)
+    D.on_abort(None, None)
+
+    # Only BEYOND configured (a show with lasers but no MadMapper link).
+    _mm, _s1, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(None, b_link, show=1)
+    D.on_abort(None, b_link, show=1)
+    b_link.close()
+    check(len(b_socks[0].sent) > 0, "BEYOND must still get its commands "
+                                    "with no MadMapper link at all")
+
+    # Only MadMapper configured (a show with video but no lasers).
+    mm_link, mm_socks, _b, _s2, steps2 = _devices_pair()
+    D.on_hold(mm_link, None, fade_seconds=0.1)
+    mm_link.close()
+    check(len(mm_socks[0].sent) > 0, "MadMapper must still get its fade "
+                                     "with no BEYOND link at all")
+    print("  ok")
+
+
+def test_devices_in_show_must_be_a_real_bool():
+    section("devices: on_resume() refuses anything but in_show=True or "
+            "in_show=False -- a truthy state name or number must never "
+            "unblank the lasers during intermission")
+    from ltcplay import devices as D, beyond as B, madmapper as MM
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+        try:
+            D.on_resume(mm_link, b_link, in_show=bad, fade_seconds=0.1)
+            raised = False
+        except TypeError:
+            raised = True
+        sent_b = [MM.decode_float(p)[1] for s in b_socks for p, _a in s.sent]
+        sent_mm = [p for s in mm_socks for p, _a in s.sent]
+        mm_link.close()
+        b_link.close()
+        check(raised, f"in_show={bad!r} must raise TypeError, not be "
+                      f"read as truthy/falsy")
+        check(B.UNBLANK_VALUE not in sent_b and sent_mm == [],
+              f"in_show={bad!r}: nothing may be sent before refusing: "
+              f"BEYOND {sent_b}, MadMapper {len(sent_mm)} packet(s)")
+    # The two real values still work.
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_resume(mm_link, b_link, in_show=True, fade_seconds=0.1)
+          is True, "in_show=True unblanks and reports True")
+    check(D.on_resume(mm_link, b_link, in_show=False, fade_seconds=0.1)
+          is True, "in_show=False refuses the unblank but still sends "
+                   "its own defensive re-blank, which gets out here")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_report_a_failed_blank_to_the_caller():
+    section("devices: on_hold()/on_abort() hand BEYOND's own blank() "
+            "result back -- a blank that never got out returns False, "
+            "never a silent 'done'")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    check(D.on_hold(mm_link, dead, fade_seconds=0.1) is False,
+          "on_hold must return False when the blank never got out")
+    check(D.on_abort(mm_link, dead, fade_seconds=0.1) is False,
+          "on_abort must return False when the blank never got out")
+    mm_link.close()
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_hold(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_hold returns True when the blank got out")
+    check(D.on_abort(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_abort returns True when the blank got out")
+    check(D.on_hold(mm_link, None, fade_seconds=0.1) is None,
+          "no BEYOND configured: None")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_devices():
+    section("devices: the real GPL path (web.serve() with nothing "
+            "configured) never imports it -- nothing in this codebase "
+            "wires it in yet; it exists only for a future conductor to "
+            "call")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, tempfile\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port=0)\n"
+        "h.server_close()\n"
+        "print(sorted(m for m in sys.modules if m.endswith('.devices') "
+        "or m == 'devices'))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    loaded = (rc.stdout or "").strip().splitlines()[-1:] or ["<no output>"]
+    check(loaded == ["[]"], f"the GPL path loaded devices.py: {loaded}; "
+                            f"stderr: {rc.stderr[-800:]}")
     print("  ok")
 
 
@@ -19403,7 +21436,8 @@ def test_the_gpl_path_never_loads_the_journal():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
         "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
-        "                     or 'schedule' in m)}))\n")
+        "                     or 'schedule' in m)}))\n"
+        "import logging, shutil; logging.shutdown(); shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     try:
@@ -21510,6 +23544,7 @@ for label, clock_doc in (("gpl", None),
                         if m == "ltcplay.showaudio"
                         or m.startswith("multiprocessing"))
 print(json.dumps(res))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -22515,12 +24550,15 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     T.t = 200.0
     r = c.abort("Andy", "rack screen")
     check(r.ok, f"Abort accepted: {r}")
-    # Before the executor has run at all: the flames are already cut.
-    check(rig.names() == ["flames_zero", "flames_disarm_all"],
-          f"Abort cuts and disarms the flames before it returns, and "
-          f"nothing else yet: {rig.names()}")
+    # Before the executor has run at all: the flames are already cut, and
+    # the lasers blanked on the pressing thread (independent review of PR
+    # #29, finding D: never queued behind the executor).
+    check(rig.names() == ["flames_zero", "flames_disarm_all",
+                          "lasers_fade_out"],
+          f"Abort cuts and disarms the flames, then sends the lasers dark, "
+          f"before it returns, and nothing else yet: {rig.names()}")
     check(all(t == 200.0 for _n, _a, t in rig.calls),
-          "the flame cut has zero delay")
+          "the flame cut and the lasers' dark command have zero delay")
     check(c.latched, "Abort latches at once")
     c.run_pending()
     for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
@@ -22530,6 +24568,11 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
               f"{name} starts at the press, over 1 s: {got}")
     check(rig.count("lasers_blank") == 0,
           "Abort ramps the lasers (BEYOND brightness), not an instant blank")
+    check(rig.count("lasers_fade_out") == 1,
+          "the executor does not send the lasers dark again once the "
+          "press's command got out")
+    check(any("lasers blanked at the press" in t for t, _f in lines),
+          "the journal says the lasers were blanked at the press")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
           f"the video stops once the 1 s fade is done: {stop}")
@@ -22608,8 +24651,9 @@ def test_conductor_double_abort_is_idempotent():
     c.abort("Andy", "rack screen")
     gen = c._gen
     r2 = c.abort("Jeff", "Stream Deck")
-    check(r2.ok and "Already aborted" in r2.sentence,
-          f"a second Abort is a calm no-op: {r2}")
+    check(r2.ok and "Already aborted" in r2.sentence
+          and "blank was sent again" in r2.sentence,
+          f"a second Abort starts nothing new but blanks again: {r2}")
     check(c._gen == gen, "a second Abort starts no new effect")
     resets = []
     T.at(300.5, lambda: resets.append(c.reset("Andy", "rack screen")))
@@ -22621,6 +24665,12 @@ def test_conductor_double_abort_is_idempotent():
                  "video_stop"):
         check(rig.count(name) == 1, f"{name} sent exactly once for three "
                                     f"Abort presses ({rig.count(name)})")
+    # Finding B: each press while latched sends the laser blank again (a
+    # blank only makes it darker), so a blank that did not get out the
+    # first time is not stuck that way until Reset.
+    check(rig.count("lasers_blank") == 2,
+          f"each later Abort press sends the laser blank again "
+          f"({rig.count('lasers_blank')})")
     check(resets and not resets[0].ok and "still fading" in
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
     check(c.latched, "a refused Reset leaves it latched")
@@ -22646,13 +24696,15 @@ def test_conductor_abort_mid_hold_fade_wins():
 
     def press():
         seen["r"] = c.abort("Andy", "rack screen")
-        seen["cut"] = rig.names()[-2:]
+        seen["cut"] = rig.names()[-3:]
     T.at(400.1, press)
     check(c.hold("Andy", "rack screen").ok, "Hold accepted")
     c.run_pending()
     check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
-    check(seen.get("cut") == ["flames_zero", "flames_disarm_all"],
-          f"the flames were cut inside the press itself: {seen.get('cut')}")
+    check(seen.get("cut") == ["flames_zero", "flames_disarm_all",
+                              "lasers_fade_out"],
+          f"the flames were cut and the lasers sent dark inside the press "
+          f"itself: {seen.get('cut')}")
     hold = rig.first("music_hold")
     check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
           f"the Hold had started its 0.25 s fade: {hold}")
@@ -22668,11 +24720,25 @@ def test_conductor_abort_mid_hold_fade_wins():
           and halt[1] == (1.0,),
           f"music_halt starts the moment Abort lands, not after the Hold's "
           f"fade: {halt}")
-    check(rig.count("lasers_fade_out") == 0 and rig.count("lasers_blank")
-          == 1, "the lasers the Hold already blanked are not sent again")
-    check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
-          == 1, "Abort does not re-send video or pixels: the Hold's fade "
-          "already left them black")
+    # The Hold blanked the lasers; Abort sends their dark command again
+    # anyway (BEYOND never confirms, so "already dark" is never trusted),
+    # on the pressing thread, before the music fade.
+    check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
+    las = rig.first("lasers_fade_out")
+    check(las is not None and abs(las[2] - 400.1) < 1e-9
+          and rig.names().index("lasers_fade_out")
+          < rig.names().index("music_halt"),
+          f"Abort sends the lasers dark again at its press, before "
+          f"anything else it fades: {las} {rig.names()}")
+    # Finding C: Abort fades the video again, from wherever the Hold's fade
+    # had got to, never trusting a record that says black. Pixels are
+    # ltcplay's own and their record is the truth.
+    vf = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+    check(len(vf) == 2 and vf[1][1] == (1.0,)
+          and abs(vf[1][2] - 400.1) < 1e-9,
+          f"Abort fades the video again at its press, over 1 s: {vf}")
+    check(rig.count("pixels_fade_out") == 1,
+          "Abort does not re-send pixels: the Hold's fade left them black")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
           f"Abort's own 1 s runs from its press: {stop}")
@@ -22720,9 +24786,11 @@ def test_conductor_resume_before_the_hold_fade_finishes():
     n, gen = len(rig.calls), c._gen
     r = c.hold("Jeff", "Stream Deck")
     check(r.ok and "Already on hold" in r.sentence and c._gen == gen,
-          f"a double Hold is a no-op: {r}")
+          f"a double Hold starts nothing new: {r}")
     c.run_pending()
-    check(len(rig.calls) == n, "a double Hold sends nothing")
+    check(rig.names(n) == ["lasers_blank"],
+          f"a double Hold sends only the laser blank again (finding B): "
+          f"{rig.names(n)}")
     print("  ok")
 
 
@@ -22761,10 +24829,20 @@ def test_conductor_generation_guard_stops_a_stale_effect():
           rig.count("flames_release") == 0,
           f"no step of a superseded effect runs after the press: "
           f"{rig.names()}")
-    las = rig.first("lasers_fade_out")
-    check(las is not None and rig.calls.index(las) >
-          rig.calls.index(rig.first("lasers_restore")),
+    ri = rig.calls.index(rig.first("lasers_restore"))
+    check(any(cl[0] in ("lasers_blank", "lasers_fade_out")
+              for cl in rig.calls[ri + 1:]),
           "and Abort takes the lasers that did come up back down")
+    check(c.snapshot()["applied"]["lasers"] == "black",
+          f"and the record says dark, not the restore's lit: "
+          f"{c.snapshot()['applied']}")
+    # The restore returned after the Abort's blank: its "lit" must not
+    # overwrite the newer record (finding D), or the Abort's effect would
+    # think its blank had not landed and blank again.
+    check(rig.count("lasers_blank") == 1 and
+          any("lasers blanked at the press" in t for t, _f in lines),
+          f"the Abort's own blank stands; nothing had to blank again: "
+          f"{rig.names()}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
     C = _cond_mod()
@@ -22863,12 +24941,15 @@ def test_conductor_announcements_hold_go_dark_then_play():
     check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
           f"played 0.5 s after the 0.25 s fade ended: {plays}")
     # Another announcement once that one has started: already dark, so it
-    # plays at once with nothing sent.
+    # plays at once with nothing sent but the lasers' blank, which is always
+    # re-sent (conductor.ALWAYS_RESENT), and is not a change worth 0.5 s.
     n = len(rig.calls)
     T.t = 810.0
     c.announce("cancellation", "Andy", "rack screen")
     c.run_pending()
-    check(len(rig.calls) == n, "already dark: nothing more is sent")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"already dark: only the lasers' blank is sent again: "
+          f"{rig.names(n)}")
     check(plays[-1][3] == 810.0, "and it plays at once")
     # Resume from the dark: everything comes back.
     T.t = 820.0
@@ -22894,9 +24975,9 @@ def test_conductor_announcements_hold_go_dark_then_play():
     T.t = 900.0
     c.announce("delayed", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == [],
-          f"an announcement during a Hold sends nothing: already dark: "
-          f"{rig.names(n)}")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"an announcement during a Hold sends nothing but the lasers' "
+          f"blank again (always re-sent): already dark: {rig.names(n)}")
     check(plays[-1][3] == 900.0,
           f"and it plays at once, with nothing left to fade: {plays[-1]}")
     # A Hold pressed during the wait in the dark changes nothing.
@@ -23271,11 +25352,22 @@ def test_conductor_on_real_threads():
         check(all(v[2] is not None for v in cut.values()),
               "the flames were disarmed before either press returned")
         check(c.wait_idle(5), "the Abort finished")
-        for name in ("lasers_blank", "video_fade_out", "pixels_fade_out",
+        for name in ("pixels_fade_out",
                      "music_halt", "video_stop", "flames_disarm_all"):
             check(rig.count(name) == 1, f"{name} once for two presses "
                                         f"({rig.count(name)})")
-        vf = rig.first("video_fade_out")
+        # The Hold's blank, then one per Abort press (finding B); the
+        # Hold's video fade, then Abort's own from where it got to (C).
+        check(rig.count("lasers_fade_out") == 1 and
+              rig.count("lasers_blank") == 2,
+              f"lasers blanked by the Hold, sent dark by the first Abort "
+              f"press and blanked again by the second "
+              f"({rig.count('lasers_fade_out')}, "
+              f"{rig.count('lasers_blank')})")
+        vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+        check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
+                             f"({len(vfs)})")
+        vf = vfs[-1] if vfs else None
         check(vf is not None and vf[2] - pressed < 0.15,
               f"Abort's fade started at once, not after the Hold's "
               f"({(vf[2] - pressed) if vf else None})")
@@ -25502,6 +27594,3069 @@ def test_schedule_conductor_line_round3_details():
     print("  ok")
 
 
+def test_streamdeck_pure_logic():
+    section("Stream Deck (real wiring): the pure logic, no hardware needed")
+    from ltcplay import streamdeck as sd
+
+    # The literal hold/refractory durations, Jeff's own decisions (module
+    # docstring, 2026-10-01). Every other test reads these SYMBOLICALLY
+    # (sd.ARM_HOLD_S, not a literal 0.6) so its own timing always tracks
+    # whatever the constant currently says -- which means changing the
+    # constant itself would otherwise sail through every test unnoticed
+    # (round 3 of the safety review, item 4: a hand-mutation proved this).
+    # This is the one place that pins down the actual numbers.
+    check(sd.ABORT_HOLD_S == 0.5,
+          f"Abort's hold is unchanged from the approved bench demo: "
+          f"{sd.ABORT_HOLD_S}")
+    check(sd.ARM_HOLD_S == 0.6,
+          f"arming requires a hold a little longer than Abort's own, "
+          f"short enough to still read as 'hold this key': "
+          f"{sd.ARM_HOLD_S}")
+    check(sd.REARM_REFRACTORY_S == 2.0,
+          f"a key refuses to even start a new arm-hold for this long "
+          f"after its own disarm or an Abort: {sd.REARM_REFRACTORY_S}")
+
+    check(sd.group_look(None) == ("NO", "LINK", (26, 24, 21), sd.DIM_TEXT, True),
+          "no status ever received (or stale): NO LINK, flashing, never a guess")
+    check(sd.group_look({"armed": "armed"})[0] == "ARMED",
+          "a real 'armed' status reads ARMED")
+    check(sd.group_look({"armed": "disarmed"})[0] == "OFF",
+          "a real 'disarmed' status reads OFF")
+    held_dwell = sd.group_look({"armed": "held", "reason": "re-arm dwell",
+                                "amber": "steady", "dwell_s": 4})
+    check(held_dwell[0] == "4" and held_dwell[4] is False,
+          f"a dwell counts down from the REAL dwell_s, steady: {held_dwell}")
+    held_cycle = sd.group_look({"armed": "held", "reason": "cycle the arm",
+                                "amber": "flashing", "dwell_s": 0})
+    check(held_cycle[:2] == ("CYCLE", "ARM") and held_cycle[4] is True,
+          f"'cycle the arm' flashes and reads CYCLE ARM: {held_cycle}")
+    held_lost = sd.group_look({"armed": "held", "reason":
+                               "Show program stopped answering: disarmed. "
+                               "Cycle the arm to re-arm once it is back.",
+                               "amber": "steady", "dwell_s": 0})
+    check((held_lost[0], held_lost[1]) == ("SHOW", "LOST"),
+          f"the exact CONTRACT.md sentence for a lost show program maps to "
+          f"SHOW LOST: {held_lost}")
+    held_unknown = sd.group_look({"armed": "held", "reason": "something new",
+                                  "amber": "steady", "dwell_s": 0})
+    check(held_unknown[0] == "HELD",
+          "a reason not in the table still shows something (HELD), never "
+          "a crash or a blank key")
+
+    # Item 4: a non-empty top-level `fault` is red for EVERY group, even
+    # one flamesafe itself still reports armed -- the wire is not being
+    # written, so "armed" is not "fine" (CONTRACT.md).
+    faulted = sd.group_look({"armed": "armed"}, fault="sACN send failed")
+    check(faulted[0] == "FAULT" and faulted[2] == sd.RED,
+          f"a fault overrides even a reported ARMED: {faulted}")
+    # Item 5 (round 2 of the safety review): confirmed=False used to blank
+    # every group's real state to "NOT CONFIRMED" -- flamesafe.example.json
+    # SHIPS confirmed:false, so the shipped deck showed nothing useful.
+    # Now the real state is shown exactly as with confirmed=True, plus a
+    # 6th tuple element (`caveat`) a caller can draw an overlay from; it is
+    # never a replacement.
+    unconfirmed = sd.group_look({"armed": "armed"}, confirmed=False)
+    check(unconfirmed[:5] == sd.group_look({"armed": "armed"})
+          and len(unconfirmed) == 6 and unconfirmed[5] is True,
+          f"confirmed=False shows the REAL state (ARMED) with a caveat "
+          f"flag appended, never blanking it: {unconfirmed}")
+    unconfirmed_held = sd.group_look(
+        {"armed": "held", "reason": "cycle the arm", "amber": "flashing",
+         "dwell_s": 0}, confirmed=False)
+    check(unconfirmed_held[:2] == ("CYCLE", "ARM")
+          and unconfirmed_held[5] is True,
+          f"the caveat is additive on a two-line held reason too, never "
+          f"overwriting either line: {unconfirmed_held}")
+    both = sd.group_look({"armed": "armed"}, fault="overrun",
+                         confirmed=False)
+    check(both[0] == "FAULT" and len(both) == 5,
+          f"a real fault wins over an unconfirmed config too, and carries "
+          f"no caveat element of its own (a fault already means 'do not "
+          f"trust this key'): {both}")
+    check(sd.group_look({"armed": "armed"})[0] == "ARMED",
+          "fault='' and confirmed=True (the defaults) change nothing: "
+          "every existing caller keeps working")
+
+    # Item 2: Abort's own gate takes (any_group_active, show_running); the
+    # old single-arg meaning ("is the show running") is GONE -- the first
+    # arg is now "is there anything to abort", as the deck itself knows
+    # it, and show_running is only ever an ADDITIONAL reason to light up.
+    check((sd.abort_is_live(True), sd.abort_is_live(False),
+          sd.abort_is_live(None)) == (True, False, False),
+          "any_group_active alone decides it when show_running is omitted")
+    check(sd.abort_is_live(False, True) is True,
+          "show_running=True lights the key even with nothing armed (a "
+          "wired conductor's own lasers/video/pixels/music cascade)")
+    check(sd.abort_is_live(True, False) is True,
+          "REVIEW ITEM 2, the proven bug: something armed must light the "
+          "key even while the scheduler says no show is running")
+    check(sd.abort_is_live(False, None) is False,
+          "nothing armed and an unreachable scheduler: dim, the safe "
+          "default")
+
+    check(sd.operator_gate("", "arm") and sd.operator_gate("", "start")
+          and sd.operator_gate("", "hold"),
+          "arm, start and hold are refused with no operator chosen")
+    check(sd.operator_gate("", "abort") is None
+          and sd.operator_gate("", "disarm") is None,
+          "Abort and disarm are NEVER gated on an operator: a risk-reducing "
+          "press must never wait on a picker (item 7, Jeff's policy, "
+          "blessed explicitly)")
+    check(sd.operator_gate("Andy", "arm") is None,
+          "a chosen operator unlocks arm")
+
+    check(sd.edges([False, True, False], [True, True, True]) == [0, 2],
+          "edges() finds every up-to-down transition, in key order")
+    check(sd.releases([True, True], [False, True]) == [0],
+          "releases() finds every down-to-up transition")
+
+    h = sd.AbortHold(hold_s=0.5)
+    check(h.fraction(0.0) == 0.0, "not pressed: fraction 0")
+    h.press(10.0)
+    check(h.fraction(10.25) == 0.5, "half way through the 0.5 s hold")
+    check(h.fired(10.3) is False, "not yet: fired() is False before the hold")
+    check(h.fired(10.5) is True, "fired() is True exactly at the hold time")
+    check(h.fired(10.5) is False,
+          "fired() consumes the press: it does not fire twice for one hold")
+    h.press(20.0)
+    h.release()
+    check(h.fraction(20.4) == 0.0,
+          "letting go before the hold completes resets to nothing, exactly "
+          "like the approved demo")
+
+    try:
+        sd.Controller(_FakeArmSocket(4), _FakeStatusSocket(),
+                     ["a", "b", "c", "d"])
+        check(False, "4 group names were accepted (the deck has 3 arm keys)")
+    except ValueError as e:
+        check("3" in str(e) or "arm key" in str(e), str(e))
+
+
+class _FakeArmSocket:
+    def __init__(self, n):
+        self.n = n
+        self.wanted = [False] * n
+        self.sends = []
+        self.opens = 0
+        self.closes = 0
+        self.restarts = 0
+        self.is_open = False
+        self.seq = 0
+
+    def open(self):
+        self.opens += 1
+        self.is_open = True
+        self.wanted = [False] * self.n
+        self.seq = 0
+
+    def restart(self):
+        # Mirrors sd.ArmSocket.restart (round 4, item A): same socket.
+        if not self.is_open:
+            self.open()
+            return
+        self.restarts += 1
+        self.wanted = [False] * self.n
+        self.seq = 0
+
+    def close(self):
+        self.closes += 1
+        self.is_open = False
+
+    def set_group(self, i, on):
+        self.wanted[i] = bool(on)
+
+    def set_all(self, on):
+        self.wanted = [bool(on)] * self.n
+
+    def send(self, names):
+        self.seq += 1
+        self.sends.append(list(self.wanted))
+
+
+class _FakeStatusSocket:
+    last = None
+
+    def stale(self, clock=None):
+        return True
+
+    def poll(self, clock=None):
+        pass
+
+
+class _FakeConductor:
+    """Enough of ltcplay.conductor.Conductor's shape to drive Controller,
+    without constructing a real one (Conductor needs real DeviceOutputs/
+    ShowOutputs, which this test is not about)."""
+
+    def __init__(self):
+        self.calls = []
+        self._latched = False
+        self._look = "PLAYING"
+
+    def hold(self, who, screen):
+        self.calls.append(("hold", who, screen))
+        self._look = "HELD"
+        return _Result(True, "Hold: ok.")
+
+    def resume(self, who, screen):
+        self.calls.append(("resume", who, screen))
+        self._look = "PLAYING"
+        return _Result(True, "Resume: ok.")
+
+    def abort(self, who, screen):
+        self.calls.append(("abort", who, screen))
+        self._latched = True
+        return _Result(True, "Abort: ok.")
+
+    def reset(self, who, screen):
+        self.calls.append(("reset", who, screen))
+        self._latched = False
+        return _Result(True, "Reset.")
+
+    def snapshot(self):
+        return {"latched": self._latched, "look": self._look}
+
+
+class _Result:
+    def __init__(self, ok, sentence):
+        self.ok, self.sentence = ok, sentence
+
+
+def test_streamdeck_controller_with_fakes():
+    section("Stream Deck (real wiring): the controller, with a fake deck, "
+            "fake sockets and a fake conductor")
+    from ltcplay import streamdeck as sd
+
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    names = ["front row", "cat-walk", "wave flamer"]
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    down = [False] * 6
+
+    def press(k):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = True
+        c.run_once(d2)
+        down = d2
+
+    def release(k):
+        nonlocal down
+        d2 = list(down)
+        d2[k] = False
+        c.run_once(d2)
+        down = d2
+
+    press(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False],
+          "arming is refused with no operator chosen: wanted stays false, "
+          "and the hold never even starts")
+    check("no operator is chosen" in events[-1][0], events[-1])
+    check(c._arm_holds[0].fraction(t[0]) == 0.0,
+          "the hold itself never started: nothing to let go of")
+    release(sd.GROUP_KEYS[0])
+
+    # Item 8 (Jeff, 2026-10-01): arming now needs a HOLD. A plain
+    # press-and-release, even with an operator chosen, sends nothing.
+    c.operator_provider = lambda: "Andy"
+    press(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False],
+          "pressing starts the hold, but nothing is sent until it "
+          f"completes: {arm.wanted}")
+    check(c._arm_holds[0]._down_at is not None, "the hold is now running")
+    release(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False],
+          "letting go before ARM_HOLD_S cancels the hold: nothing sent, "
+          "exactly like letting go of Abort early")
+
+    # Held the full ARM_HOLD_S this time: arms for real.
+    press(sd.GROUP_KEYS[0])
+    down_held = list(down)
+    t[0] += sd.ARM_HOLD_S / 2
+    c.run_once(down_held)           # still held, short of ARM_HOLD_S
+    c.tick()                        # item 2: hold completion is tick()'s job
+    check(arm.wanted == [False, False, False],
+          f"held for only half of ARM_HOLD_S: nothing fired yet: "
+          f"{arm.wanted}")
+    t[0] += sd.ARM_HOLD_S
+    c.run_once(down_held)           # held past ARM_HOLD_S
+    c.tick()                        # tick() fires the now-completed hold
+    check(arm.wanted == [True, False, False],
+          f"holding the full ARM_HOLD_S arms front row: {arm.wanted}")
+    release(sd.GROUP_KEYS[0])
+
+    # Disarm stays an instant single tap, no hold.
+    press(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False],
+          "a single press disarms an armed group instantly, no hold "
+          f"needed (Jeff, 2026-10-01): {arm.wanted}")
+    release(sd.GROUP_KEYS[0])
+
+    # Item 8's refractory window: pressing the SAME key again right after
+    # its own disarm must not even start a hold.
+    press(sd.GROUP_KEYS[0])
+    check(arm.wanted == [False, False, False]
+          and c._arm_holds[0].fraction(t[0]) == 0.0,
+          "an immediate re-press right after a disarm is refused before "
+          "the hold can even start")
+    check("refractory" in events[-1][0], events[-1])
+    release(sd.GROUP_KEYS[0])
+    t[0] += sd.REARM_REFRACTORY_S + 0.1
+    press(sd.GROUP_KEYS[0])
+    check(c._arm_holds[0]._down_at is not None,
+          "once the refractory window has passed, the same key can start "
+          "a hold again")
+    release(sd.GROUP_KEYS[0])
+
+    # Start Now and Hold: no conductor connected, journaled, nothing done.
+    press(sd.TOP_START)
+    check("no real 'start the show now' entry point" in events[-1][0],
+          events[-1])
+    release(sd.TOP_START)
+    press(sd.TOP_HOLD)
+    check("no show conductor is connected" in events[-1][0], events[-1])
+    release(sd.TOP_HOLD)
+
+    # Item 2: Abort must respond whenever anything is armed or wanted,
+    # REGARDLESS of what the scheduler reports -- tested here with
+    # show_running explicitly False/None, the exact case the review found
+    # broken.
+    arm2 = _FakeArmSocket(3)
+    events2 = []
+    c_noshow = sd.Controller(arm2, status, names,
+                             operator_provider=lambda: "Andy",
+                             show_running_provider=lambda: False,
+                             journal=lambda t_, **kw: events2.append(
+                                 (t_, kw)), clock=lambda: t[0])
+    down_noabort = [False] * 6
+    down_noabort[sd.TOP_ABORT] = True
+    c_noshow.run_once(down_noabort)
+    check(events2 and "nothing armed or wanted" in events2[-1][0],
+          f"nothing armed or wanted, and no show running: Abort's hold "
+          f"does not even start, and the refusal is journaled at once, "
+          f"never a silent no-op: {events2}")
+    c_noshow.run_once([False] * 6)
+    arm2.set_group(0, True)   # a group armed before any show starts
+    events2.clear()
+    c_noshow.run_once(down_noabort)
+    t[0] += sd.ABORT_HOLD_S + 0.1
+    c_noshow.run_once(down_noabort)
+    c_noshow.tick()                 # item 2: hold completion is tick()'s job
+    check(arm2.wanted == [False, False, False],
+          f"Abort fires with a group armed, even though the scheduler "
+          f"says no show is running (review item 2, PR #31): {arm2.wanted}")
+
+    # Abort: a 0.5 s hold, real disarm-all sent regardless of the conductor.
+    arm.set_group(0, True)
+    down2 = [False] * 6
+    down2[sd.TOP_ABORT] = True
+    c2 = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       journal=lambda t_, **kw: events.append((t_, kw)),
+                       clock=lambda: t[0])
+    c2.run_once(down2)             # press (edge)
+    t[0] += 0.2
+    c2.run_once(down2)             # still held, not yet fired
+    c2.tick()                      # item 2: hold completion is tick()'s job
+    check(arm.wanted == [True, False, False],
+          "held for only 0.2 s of the 0.5 s: nothing fired yet")
+    t[0] += 0.4
+    c2.run_once(down2)             # held past 0.5 s
+    c2.tick()                      # tick() fires the now-completed hold
+    check(arm.wanted == [False, False, False],
+          f"Abort disarms every group over the arm link: {arm.wanted}")
+    check(c2._latched_now() is True, "Abort latches (no conductor: locally)")
+    check(all(f > 0 for f in
+              (c2._in_rearm_refractory(i, t[0]) for i in range(3))),
+          "Abort also starts every group's own re-arm refractory window "
+          "(item 8): a panicked re-press right after Reset cannot quietly "
+          "re-arm either")
+    down3 = [False] * 6
+    c2.run_once(down3)
+    press_reset = list(down3)
+    press_reset[sd.GROUP_KEYS[1]] = True
+    c2.run_once(press_reset)
+    check(arm.wanted == [False, False, False],
+          "a group key does nothing while latched")
+
+    # With a real (fake) conductor: Hold/Resume/Abort/Reset all reach it,
+    # and the flame disarm still happens regardless.
+    cond = _FakeConductor()
+    arm3 = _FakeArmSocket(3)
+    c3 = sd.Controller(arm3, status, names, operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True, conductor=cond,
+                       journal=lambda t_, **kw: None, clock=lambda: t[0])
+    down4 = [False] * 6
+    down4[sd.TOP_HOLD] = True
+    c3.run_once(down4)
+    check(cond.calls[-1] == ("hold", "Andy", "Stream Deck"),
+          f"Hold reaches the real conductor, named Stream Deck: {cond.calls}")
+    down5 = [False] * 6
+    down5[sd.TOP_HOLD] = True
+    c3.run_once([False] * 6)
+    c3.run_once(down5)
+    check(cond.calls[-1] == ("resume", "Andy", "Stream Deck"),
+          f"pressing Hold again while held calls resume: {cond.calls}")
+    t[0] = 200.0
+    down6 = [False] * 6
+    down6[sd.TOP_ABORT] = True
+    c3.run_once(down6)
+    t[0] = 200.6
+    c3.run_once(down6)
+    c3.tick()                       # item 2: hold completion is tick()'s job
+    check(arm3.wanted == [False, False, False]
+          and cond.calls[-1] == ("abort", "Andy", "Stream Deck"),
+          f"Abort disarms the real arm link AND reaches the conductor: "
+          f"{arm3.wanted} {cond.calls}")
+    check(c3._latched_now() is True,
+          "latched is read from the real conductor's own snapshot, not a "
+          "local flag, once one is connected")
+    down7 = [False] * 6
+    c3.run_once(down7)
+    down8 = [False] * 6
+    down8[sd.TOP_ABORT] = True
+    c3.run_once(down8)
+    check(cond.calls[-1] == ("reset", "Andy", "Stream Deck"),
+          f"Reset while latched reaches the real conductor: {cond.calls}")
+
+
+class _FakeStatus:
+    """A controllable fake StatusSocket for the spoof-alarm and group_look
+    wiring tests: unlike _FakeStatusSocket (always stale), this one can
+    hold a real status dict and say it is fresh."""
+
+    def __init__(self):
+        self.last = None
+        self._stale = True
+
+    def set(self, doc):
+        self.last = doc
+        self._stale = False
+
+    def stale(self, clock=None):
+        return self._stale
+
+    def poll(self, clock=None):
+        pass
+
+
+def _deck_draw_stubs(sd):
+    """For a test that drives the REAL sd.run_forever(): stub the drawing
+    it does on every pass, which is hardware-adjacent rendering, not the
+    logic under test. Fonts.text_block is always stubbed (no font file on
+    CI). Where Pillow itself is missing, as on the CI runners, which never
+    install it, Fonts and Controller.draw are stubbed too: Fonts() calls
+    _import_pil(), which raises SystemExit without Pillow. Before this
+    (found in round 5) that SystemExit ended the whole suite at the first
+    of these tests on every OS since round 3, so none of the Stream Deck
+    tests after it ever ran in CI. Returns a function that undoes it all."""
+    real_fonts, real_draw = sd.Fonts, sd.Controller.draw
+    real_text_block = real_fonts.text_block
+    real_fonts.text_block = lambda self, *a, **kw: None
+    try:
+        import PIL.Image  # noqa: F401
+        have_pillow = True
+    except Exception:                     # noqa: BLE001
+        have_pillow = False
+    if not have_pillow:
+        class _Img:
+            def crop(self, box):
+                return self
+
+        class _NoPillowFonts:
+            Image = None
+
+        sd.Fonts = _NoPillowFonts
+        sd.Controller.draw = lambda self, fonts, blink_on, chase: _Img()
+
+    def restore():
+        sd.Fonts = real_fonts
+        sd.Controller.draw = real_draw
+        real_fonts.text_block = real_text_block
+    return restore
+
+
+def test_streamdeck_tick_drives_holds_without_new_key_snapshots():
+    section("Stream Deck: tick() advances the abort-hold and every group's "
+            "arm-hold on EVERY main-loop pass, even when keys_down() "
+            "reports a key's state only on CHANGE and hands back nothing "
+            "while it is held (item 2, round 2 of the safety review). "
+            "Round 3 of the safety review found the regression test added "
+            "for this mirrored run_forever()'s OWN loop body instead of "
+            "calling it -- so a regression that removed the tick() call "
+            "from run_forever entirely would NOT have been caught. This "
+            "version calls the REAL sd.run_forever() with a fake deck and "
+            "a fake clock/sleep (no hardware, no PIL fonts needed): only "
+            "Fonts.text_block is stubbed out, since drawing needs a real "
+            "font file this CI box does not have, and that is hardware-"
+            "adjacent rendering, not the logic under test.")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    # 2 s holds for this test, independent of the real ARM_HOLD_S /
+    # ABORT_HOLD_S constants: what is under test is the tick() mechanism
+    # itself (does a hold complete without a new snapshot), not any
+    # particular duration.
+    c._abort_hold = sd.AbortHold(hold_s=2.0)
+    c._arm_holds = [sd.AbortHold(hold_s=2.0) for _ in names]
+
+    class _StopTest(BaseException):
+        """Not an Exception at all, like KeyboardInterrupt: run_forever()
+        treats every Exception as an unplug (round 5, item 2) and lets only
+        a deliberate stop through, so raising this from keys_down() is how
+        this test ends a loop that is otherwise infinite by design."""
+
+    down_all_false = [False] * 6
+    press_group0 = list(down_all_false)
+    press_group0[sd.GROUP_KEYS[0]] = True
+    press_abort = list(down_all_false)
+    press_abort[sd.TOP_ABORT] = True
+    results = {}
+
+    class _ChangeOnlyDeck:
+        """Deck.keys_down(): hands back a new 6-key snapshot exactly once,
+        on the pass it actually changes, and an EMPTY list on every other
+        pass -- what the safety review believed the real Stream Deck Mini
+        hardware does, and the more demanding of the two possibilities
+        (module docstring, "What NOT to do": this test covers it without
+        settling the hardware question either way). A caller that only
+        checks hold completion inside run_once() -- which this fake would
+        never call again between the press and the release -- could never
+        see the hold complete. The checks themselves run INSIDE
+        keys_down(), at the pass index where the right number of tick()
+        calls (driven by the real run_forever(), not this test) have
+        already happened: that is the only place this test can read state
+        mid-run, since run_forever() does not return until it raises."""
+
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            i, self.i = self.i, self.i + 1
+            if i == 0:
+                return [press_group0]            # start the arm-hold
+            if i == 50:                          # 50 passes @ 0.05 s = 2.5 s
+                results["armed_from_tick_alone"] = list(arm.wanted)
+                return [list(down_all_false)]    # release
+            if i == 51:
+                return [press_abort]             # start the abort-hold
+            if i == 101:                         # another 50 passes
+                results["disarmed_from_tick_alone"] = list(arm.wanted)
+                return [list(down_all_false)]    # release
+            if i >= 102:
+                raise _StopTest()
+            return []
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+
+    deck = _ChangeOnlyDeck()
+    restore_drawing = _deck_draw_stubs(sd)
+    try:
+        sd.run_forever(c, deck_factory=lambda: deck,
+                       journal=lambda t_, **kw: events.append((t_, kw)),
+                       sleep=lambda s: t.__setitem__(0, t[0] + s),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        restore_drawing()
+
+    check(results.get("armed_from_tick_alone") == [True, False, False],
+          f"a 2 s arm-hold completes from tick() alone, inside the REAL "
+          f"run_forever() loop, even though keys_down() never reported "
+          f"anything after the initial press: "
+          f"{results.get('armed_from_tick_alone')}")
+    check(results.get("disarmed_from_tick_alone") == [False, False, False],
+          f"a 2 s Abort-hold ALSO completes from tick() alone, inside the "
+          f"REAL run_forever() loop, under the same condition: "
+          f"{results.get('disarmed_from_tick_alone')}")
+
+
+def test_streamdeck_reconnect_resets_hold_state_and_key_snapshot():
+    section("Stream Deck: a reconnect clears every hold-start timestamp "
+            "and the last-seen key snapshot, not only ArmSocket's own "
+            "`wanted`/seq (item 2, round 3 of the safety review -- a "
+            "PROVEN bug: a group key mid-hold when the deck unplugs, "
+            "released while it is unplugged, used to fire the arm on the "
+            "very FIRST pass after reconnecting, purely because real time "
+            "kept passing during the outage -- tick() runs unconditionally "
+            "every pass and checked the hold's elapsed time against a "
+            "press timestamp from before the gap that nothing had ever "
+            "cleared). This calls the REAL sd.run_forever() across a real "
+            "DeckDisconnected/reconnect cycle, with two fake decks.")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    # A short hold for this test: run_forever's own reconnect path sleeps a
+    # full second on a DeckDisconnected before trying again, which alone
+    # is already many times a short hold's own duration -- exactly the gap
+    # this fix has to survive, with no dependency on the real ARM_HOLD_S.
+    c._arm_holds = [sd.AbortHold(hold_s=0.1) for _ in names]
+
+    class _StopTest(BaseException):
+        """A deliberate stop, like KeyboardInterrupt: run_forever() does
+        not catch this (it handles every Exception as an unplug)."""
+
+    down_all_false = [False] * 6
+    press_group0 = list(down_all_false)
+    press_group0[sd.GROUP_KEYS[0]] = True
+
+    class _Deck1:
+        """The real deck: reports front row's key going down once, then
+        unplugs (DeckDisconnected) on its very next read -- disconnected
+        with the key held down mid-hold."""
+
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            self.i += 1
+            if self.i == 1:
+                return [press_group0]
+            raise sd.DeckDisconnected("unplugged mid-hold")
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+
+    class _Deck2:
+        """The reconnect. The operator physically released the key WHILE
+        the deck was unplugged (module docstring, failure mode 2's own
+        scenario) -- real hardware reports a key's state only on change,
+        and from ITS point of view nothing has changed since before the
+        gap (it never reported anything then either), so keys_down() hands
+        back nothing at all, pass after pass: the worst, most demanding
+        case, matching this file's own established choice for the other
+        tick() test above."""
+
+        def __init__(self):
+            self.i = 0
+
+        def keys_down(self):
+            self.i += 1
+            if self.i > 5:
+                raise _StopTest()
+            return []
+
+        def set_key(self, image, key, img):
+            pass
+
+        def close(self):
+            pass
+
+    decks = [_Deck1(), _Deck2()]
+
+    def deck_factory():
+        return decks.pop(0)
+
+    restore_drawing = _deck_draw_stubs(sd)
+    try:
+        sd.run_forever(c, deck_factory=deck_factory,
+                       journal=lambda t_, **kw: events.append((t_, kw)),
+                       sleep=lambda s: t.__setitem__(0, t[0] + s),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        restore_drawing()
+
+    check(arm.wanted == [False, False, False],
+          f"a hold in progress when the deck unplugged, released WHILE it "
+          f"was unplugged, must NOT fire on reconnect just because real "
+          f"time kept passing during the outage: {arm.wanted}")
+    check(not any(kw.get("action") == "arm" for _text, kw in events),
+          f"no arm line was journaled for a press that never really "
+          f"happened after the reconnect: {events}")
+
+
+def test_streamdeck_abort_same_pass_as_arm_hold_completion():
+    section("Stream Deck: an Abort firing in the SAME main-loop pass an "
+            "arm-hold completes in must never also arm the group Abort "
+            "just disarmed (item 3, round 2 of the safety review)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    # Start an arm-hold on front row, and (independently) an Abort hold,
+    # timed so BOTH reach their own fired() threshold in the same tick().
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    c.run_once(down)                         # front row hold starts at t=0
+    t[0] = 0.1
+    down2 = list(down)
+    down2[sd.TOP_ABORT] = True
+    c.run_once(down2)                        # Abort hold starts at t=0.1
+    # Abort's hold is shorter (ABORT_HOLD_S) than the arm-hold's remaining
+    # time only by construction of the real constants; force the exact
+    # same-pass race directly by calling tick() once at a time past BOTH
+    # thresholds.
+    t[0] = 0.1 + sd.ABORT_HOLD_S + 0.01
+    check(c._abort_hold.fraction(t[0]) >= 1.0
+          and c._arm_holds[0].fraction(t[0]) >= 1.0,
+          "both holds have reached completion by this instant: a real "
+          "race between an Abort and an in-progress arm-hold")
+    c.tick()
+    check(arm.wanted == [False, False, False],
+          f"Abort fired, and front row was NOT also armed in the same "
+          f"pass: {arm.wanted}")
+    check(not any(e for e in events if e[1].get("action") == "arm"
+                  and "front row" in e[0] and "refused" not in e[0]),
+          f"no successful arm line was journaled for front row: {events}")
+
+    # Round 3 of the safety review, item 4: the two guards are meant to be
+    # INDEPENDENT, but the checks above only prove the combination holds --
+    # _do_arm_fire's own latched/refractory refusal (set by _do_abort)
+    # masks a missing ordering fix completely. Prove the ordering fix (the
+    # `return` right after _do_abort() in tick()) on its own: in the pass
+    # Abort fires, _do_arm_fire must never even be reached.
+    arm2 = _FakeArmSocket(3)
+    t2 = [0.0]
+    c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t2[0])
+    reached = []
+    c2._do_arm_fire = lambda i, now: reached.append(i)
+    c2.run_once(down)
+    t2[0] = 0.1
+    c2.run_once(down2)
+    t2[0] = 0.1 + sd.ABORT_HOLD_S + 0.01
+    c2.tick()
+    check(arm2.wanted == [False, False, False] and not reached,
+          f"in the pass Abort fires, tick() returns before ANY arm-hold "
+          f"completion is even attempted -- the ordering guard on its own, "
+          f"not relying on _do_arm_fire's own refusal: reached={reached}")
+
+
+def test_streamdeck_arm_fire_refuses_latched_and_refractory():
+    section("Stream Deck: _do_arm_fire refuses to arm a latched rig or a "
+            "group still inside its own re-arm refractory window, as a "
+            "SECOND, independent guard -- not relying solely on ordering "
+            "within one pass (item 3, round 2 of the safety review)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      clock=lambda: t[0])
+
+    c._latched = True
+    c._do_arm_fire(0, t[0])
+    check(arm.wanted == [False, False, False],
+          "a latched rig refuses to arm even when _do_arm_fire is called "
+          "directly (the second, independent guard)")
+    c._latched = False
+
+    c._disarmed_at[0] = t[0]
+    c._do_arm_fire(0, t[0] + 0.1)
+    check(arm.wanted == [False, False, False],
+          "still inside the re-arm refractory window: refused even though "
+          "nothing re-checks ordering here")
+    t[0] += sd.REARM_REFRACTORY_S + 0.1
+    c._do_arm_fire(0, t[0])
+    check(arm.wanted == [True, False, False],
+          f"once the refractory window has passed, _do_arm_fire succeeds: "
+          f"{arm.wanted}")
+
+
+def test_streamdeck_refractory_also_starts_at_reset():
+    section("Stream Deck: the re-arm refractory window also starts at "
+            "Reset, not only at Abort's own timestamp (item 9, round 2 of "
+            "the safety review: with Reset delayed past the window, a "
+            "re-press right after Reset was NOT refused)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    events = []
+    t = [0.0]
+    cond = _FakeConductor()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, conductor=cond,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    down_abort = [False] * 6
+    down_abort[sd.TOP_ABORT] = True
+    c.run_once(down_abort)
+    t[0] += sd.ABORT_HOLD_S + 0.01
+    c.tick()
+    check(c._latched_now() is True, "Abort latched the rig")
+
+    # Reset is delayed well past REARM_REFRACTORY_S after Abort -- the
+    # exact gap the review found NOT refused, because only Abort's own
+    # timestamp started the window.
+    t[0] += sd.REARM_REFRACTORY_S + 5.0
+    down_reset = [False] * 6
+    c.run_once(down_reset)              # release
+    down_reset[sd.TOP_ABORT] = True
+    c.run_once(down_reset)              # Reset (instant, an edge, no hold)
+    check(c._latched_now() is False, "Reset cleared the latch")
+
+    # A press right immediately after THIS Reset -- long after Abort's own
+    # timestamp would have expired -- must still be refused.
+    down_group = [False] * 6
+    down_group[sd.GROUP_KEYS[0]] = True
+    c.run_once(down_group)
+    check(arm.wanted == [False, False, False]
+          and c._arm_holds[0].fraction(t[0]) == 0.0,
+          "a re-press right after Reset is refused before the hold can "
+          "even start, even though Abort's own timestamp is long expired")
+    check(any("refractory" in e[0] for e in events[-3:]), events[-3:])
+
+
+def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
+    section("Stream Deck: a latched screen (post-Abort, pre-Reset) must "
+            "show any group flamesafe is STILL actually reporting armed, "
+            "and must keep showing the spoof alarm, never a flat painted-"
+            "over OFF (item 1, round 2 of the safety review: a latched "
+            "screen that hides a real armed state is worse than no fix)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatus()
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True,
+                      clock=lambda: t[0])
+    c._latched = True
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+               "confirmed": True,
+               "groups": [{"name": "front row", "armed": "armed",
+                           "wanted": True, "reason": "", "amber": "",
+                           "dwell_s": 0},
+                          {"name": "cat-walk", "armed": "disarmed",
+                           "wanted": False, "reason": "", "amber": "",
+                           "dwell_s": 0},
+                          {"name": "wave flamer", "armed": "disarmed",
+                           "wanted": False, "reason": "", "amber": "",
+                           "dwell_s": 0}]})
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        # Pixels need Pillow. Without it Fonts() raises SystemExit, which
+        # used to end the whole suite here (round 5). CI installs Pillow
+        # so this runs there; a box without it says so and carries on.
+        print("  note: Pillow is not installed here, so the latched "
+              "screen's pixels are not checked on this machine.")
+        return
+    fonts = sd.Fonts()
+    # This CI box has none of the system font paths Fonts._sans_bold() /
+    # the serif fallback look for (all macOS/Windows paths) -- drawing is
+    # hardware-adjacent and, as this file's own closing comment says,
+    # "exercised on the bench, not in selftest.py". text_block is a no-op
+    # here so the REST of draw() (the fill colour decision this test is
+    # actually about) still runs without needing a real font file.
+    fonts.text_block = lambda *a, **kw: None
+    canvas = c.draw(fonts, blink_on=True, chase=0)
+    box = sd.face_box(sd.GROUP_KEYS[0])
+    # The real look for "armed" fills the body with sd.GREEN; a flat OFF
+    # look would never put a green pixel anywhere in that key's body.
+    body_pixels = [canvas.getpixel((x, y))
+                  for x in range(box[0], box[2], 3)
+                  for y in range(box[1] + 18, box[3], 3)]
+    check(any(p == sd.GREEN for p in body_pixels),
+          f"front row, still really armed, shows GREEN on the key even "
+          f"while latched, not the old flat dim OFF: "
+          f"{set(body_pixels)}")
+
+    # The spoof alarm must also stay visible while latched.
+    c._spoof_alarm = "flamesafe reports a mismatch"
+    canvas2 = c.draw(fonts, blink_on=True, chase=0)
+    body_pixels2 = [canvas2.getpixel((x, y))
+                   for x in range(box[0], box[2], 3)
+                   for y in range(box[1] + 18, box[3], 3)]
+    check(any(p == sd.RED for p in body_pixels2),
+          f"the spoof alarm (RED) stays visible on the key even while "
+          f"latched: {set(body_pixels2)}")
+
+
+def test_streamdeck_spoof_alarm():
+    section("Stream Deck: a visible, journaled alarm when flamesafe's "
+            "reported arm state diverges from what this deck itself sent "
+            "(item 1's second line of defence, safety review of PR #31)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def status_doc(seq, wanted):
+        return {"arm_input": {"state": "live", "seq": seq},
+               "groups": [{"name": n, "wanted": w}
+                          for n, w in zip(names, wanted)]}
+
+    arm.send(names)      # arm.seq == 1
+    status.set(status_doc(1, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm, "matching state, nothing to alarm about")
+    t[0] += sd.RECONNECT_GRACE_S + 0.1   # round 4: past the start-up grace
+
+    # Reported seq AHEAD of what this deck has sent: something else is
+    # feeding flamesafe arm frames. The debounce window has to PERSIST
+    # across two checks before it is trusted, so the first call only
+    # starts the clock.
+    status.set(status_doc(99, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a fresh mismatch does not alarm on the very first sighting: "
+          "the debounce clock has only just started")
+    t[0] += sd.SPOOF_GRACE_S + 0.1   # outlast the debounce grace window
+    c.check_links()
+    check(c._spoof_alarm and "ahead of" in c._spoof_alarm,
+          f"...but the SAME mismatch, still there after SPOOF_GRACE_S, "
+          f"raises the alarm: {c._spoof_alarm!r}")
+    check(any("ALARM" in t_ for t_, kw in events),
+          f"and it is journaled, loudly: {events}")
+
+    # Clears once the state matches again.
+    status.set(status_doc(1, [False, False, False]))
+    c.check_links()
+    check(not c._spoof_alarm, "the alarm clears once state matches again")
+    check(any("cleared" in t_ for t_, kw in events[-2:]),
+          f"and the clearing is itself journaled: {events[-2:]}")
+
+    # A brief one-tick lag (reported wanted momentarily behind what we
+    # just sent) must NOT alarm: only a mismatch that PERSISTS does.
+    arm.set_group(0, True)
+    arm.send(names)
+    status.set(status_doc(2, [False, False, False]))   # status lags behind
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a one-tick send/receive lag is not treated as a spoof")
+
+    # But a wanted mismatch that persists past SPOOF_GRACE_S IS an alarm.
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm and "front row" in c._spoof_alarm,
+          f"a persistent wanted mismatch raises the alarm, naming the "
+          f"group: {c._spoof_alarm!r}")
+
+    # A reconnect (ArmSocket.open() resets our own seq) must not itself
+    # read as a spoof: the grace window covers it.
+    arm.open()                       # arm.seq -> 0
+    status.set(status_doc(2, [False, False, False]))
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(not c._spoof_alarm,
+          "right after a reconnect, a stale-looking status is not an "
+          "alarm even after the debounce window: RECONNECT_GRACE_S "
+          "covers it")
+
+
+def test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone():
+    section("Stream Deck: flamesafe reporting a foreign sender interacting "
+            "with the arm link raises this deck's own alarm even when the "
+            "deck's OWN view of `wanted` happens to match (round 3 of the "
+            "safety review, item 6: the review found the deck usually "
+            "raised NO alarm at all while a rogue held the lock, because "
+            "the foreign-disarm AND (arminput.py) can leave `wanted` "
+            "looking exactly like what the deck itself expects, and the "
+            "seq check only fires if the rogue's own counter races ahead "
+            "of this deck's)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def status_doc(seq, wanted, foreign):
+        return {"arm_input": {"state": "live", "seq": seq,
+                              "foreign_senders": foreign},
+               "groups": [{"name": n, "wanted": w}
+                          for n, w in zip(names, wanted)]}
+
+    arm.send(names)      # arm.seq == 1
+    # The deck's own wanted ([False]*3) matches exactly what flamesafe
+    # reports, and the seq is not ahead either: by the two OLD checks
+    # alone, nothing here would ever alarm.
+    status.set(status_doc(1, [False, False, False], foreign=0))
+    c.check_links()
+    check(not c._spoof_alarm, "nothing foreign reported: no alarm")
+    t[0] += sd.RECONNECT_GRACE_S + 0.1   # round 4: past the start-up grace
+
+    status.set(status_doc(1, [False, False, False], foreign=1))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "a fresh foreign-sender report does not alarm on the very first "
+          "sighting: the debounce clock has only just started")
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm and "other sender" in c._spoof_alarm,
+          f"but the SAME foreign-sender report, still there after "
+          f"SPOOF_GRACE_S, raises the alarm even though wanted and seq "
+          f"both still look fine: {c._spoof_alarm!r}")
+    check(any("ALARM" in t_ for t_, kw in events),
+          f"and it is journaled: {events}")
+
+    status.set(status_doc(1, [False, False, False], foreign=0))
+    c.check_links()
+    check(not c._spoof_alarm,
+          "clears once flamesafe reports nobody else is on the link")
+
+
+def test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number():
+    section("Stream Deck: the spoof/divergence alarm logs ONCE for a "
+            "PERSISTENT condition, even though the arm-seq-ahead reason's "
+            "own text embeds this deck's own seq, which ArmSocket advances "
+            "on every single send (round 3 of the safety review, item 5 -- "
+            "a PROVEN bug, flagged once already and never actually fixed: "
+            "the dedup compared the FULL sentence, which was a brand new "
+            "string every main-loop pass, so the alarm line repeated once "
+            "per pass for as long as the condition lasted)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    for _ in range(5):
+        arm.send(names)                      # arm.seq is now 5
+    c.check_links()                          # round 4: start-up grace...
+    t[0] += sd.RECONNECT_GRACE_S + 0.1       # ...stepped past
+    status.set({"arm_input": {"state": "live", "seq": 99999}, "groups": []})
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+
+    before = len(events)
+    for i in range(30):
+        arm.send(names)                      # arm.seq keeps climbing
+        status.set({"arm_input": {"state": "live", "seq": 99999 + i},
+                   "groups": []})
+        c.check_links()
+    alarms = [e for e in events[before:] if "ALARM" in e[0]]
+    check(len(alarms) == 1,
+          f"30 passes of a PERSISTENT arm-seq-ahead condition, with this "
+          f"deck's own seq and flamesafe's reported seq both changing "
+          f"every pass, still produce exactly ONE alarm line, not 30: "
+          f"{len(alarms)}")
+
+
+def test_streamdeck_arm_socket_logs_failed_sends_once():
+    section("Stream Deck: ArmSocket logs a persistent send failure once, "
+            "not once per dropped frame (item 10)")
+    from ltcplay import streamdeck as sd
+
+    events = []
+
+    class _BoomSocket:
+        def sendto(self, *a):
+            raise OSError("Network is unreachable")
+
+        def close(self):
+            pass
+
+    arm = sd.ArmSocket("127.0.0.1", 1, "k" * 20, 1,
+                       journal=lambda t, **kw: events.append((t, kw)))
+    arm._sock = _BoomSocket()
+    for _ in range(5):
+        arm.send(["front row"])
+    faults = [e for e in events if e[1].get("fault")]
+    check(len(faults) == 1,
+          f"five dropped frames in a row log exactly one fault line, not "
+          f"five: {events}")
+
+    class _OkSocket:
+        def sendto(self, *a):
+            pass
+
+    arm._sock = _OkSocket()
+    arm._send_failing = True
+    arm.send(["front row"])
+    check(any("working again" in t for t, kw in events),
+          f"recovery is logged too: {events}")
+
+
+def test_streamdeck_local_schedule_never_blocks_the_main_loop():
+    section("Stream Deck: LocalSchedule polls the operator and show-"
+            "running state on a BACKGROUND thread; the main-loop-facing "
+            "reads never touch the network (item 5)")
+    from ltcplay import streamdeck as sd
+    import threading as _threading
+
+    calls = []
+    ready = _threading.Event()
+
+    def fetcher(path):
+        calls.append(path)
+        ready.set()
+        if path == "/api/schedule/operator":
+            return {"current_operator": "Andy"}
+        if path == "/api/schedule/state":
+            return {"ok": True, "state": "SHOW"}
+        return None
+
+    sched = sd.LocalSchedule("http://127.0.0.1:1", poll_hz=50.0,
+                             fetcher=fetcher)
+    check(sched.current_operator() == "" and sched.show_running() is None,
+          "before start(), both read their safe defaults forever, never "
+          "the network")
+    sched.start()
+    try:
+        check(wait_for(lambda: ready.is_set(), timeout=2.0),
+              "the background thread is actually polling")
+        check(wait_for(lambda: sched.current_operator() == "Andy",
+                       timeout=2.0),
+              "current_operator() reads the cache the background thread "
+              "filled")
+        check(sched.show_running() is True,
+              "show_running() reads the same cache")
+    finally:
+        sched.stop()
+    calls.clear()
+    t0 = time.monotonic()
+    check(sched.current_operator() == "Andy", "still cached after stop()")
+    check(time.monotonic() - t0 < 0.05,
+          "reading the cache after stop() is instant: no network call")
+    check(not calls, "and no fetch happened: the thread is really stopped")
+
+
+def test_streamdeck_local_schedule_operator_reverts_when_server_drops():
+    section("Stream Deck: LocalSchedule reverts the cached operator to \"\" "
+            "the moment a poll fails, never keeping a stale name once the "
+            "server goes down (item 8, round 2 of the safety review: a "
+            "regression kept the LAST successfully fetched name forever, "
+            "which could let a group arm under a name no longer actually "
+            "confirmed present)")
+    from ltcplay import streamdeck as sd
+
+    up = [True]
+
+    def fetcher(path):
+        if not up[0]:
+            return None
+        if path == "/api/schedule/operator":
+            return {"current_operator": "Andy"}
+        if path == "/api/schedule/state":
+            return {"ok": True, "state": "SHOW"}
+        return None
+
+    sched = sd.LocalSchedule("http://127.0.0.1:1", poll_hz=50.0,
+                             fetcher=fetcher)
+    sched.start()
+    try:
+        check(wait_for(lambda: sched.current_operator() == "Andy",
+                       timeout=2.0),
+              "the operator is cached while the server answers")
+        up[0] = False
+        check(wait_for(lambda: sched.current_operator() == "",
+                       timeout=2.0),
+              "and reverts to \"\" on the very next failed poll, matching "
+              "the docstring's documented default -- not kept forever")
+        check(wait_for(lambda: sched.show_running() is None, timeout=2.0),
+              "show_running() already did this; unchanged")
+        up[0] = True
+        check(wait_for(lambda: sched.current_operator() == "Andy",
+                       timeout=2.0),
+              "and comes back once the server does")
+    finally:
+        sched.stop()
+
+
+def test_streamdeck_deck_journal_prints_and_posts():
+    section("Stream Deck: DeckJournal prints locally at once and posts to "
+            "ltc serve's real journal on its OWN background thread (item "
+            "9); a server that cannot be reached never blocks the caller")
+    from ltcplay import streamdeck as sd
+
+    printed = []
+    posted = []
+    dj = sd.DeckJournal("http://127.0.0.1:1",
+                        poster=lambda text, kw: posted.append((text, kw))
+                                              or True,
+                        echo=lambda line: printed.append(line))
+    dj("front row arm pressed by Andy.", action="arm", who="Andy",
+      screen="Stream Deck")
+    check(printed == ["front row arm pressed by Andy."],
+          f"printed at once, on the calling thread: {printed}")
+    check(wait_for(lambda: posted == [
+        ("front row arm pressed by Andy.",
+         {"action": "arm", "who": "Andy", "screen": "Stream Deck"})],
+        timeout=2.0),
+        f"and posted (here: handed to the injected poster) on the "
+        f"background thread: {posted}")
+    check(dj.dropped == 0, "a poster returning True never counts as dropped")
+
+    # The real _post must never raise into the background thread even when
+    # the server cannot be reached at all -- it is caught by the loop, but
+    # _post itself should also degrade quietly.
+    dj2 = sd.DeckJournal("http://127.0.0.1:1")   # the real HTTP poster
+    dj2("a line nobody is listening for.", action="deck")
+    time.sleep(0.2)   # give the background thread a moment; nothing to
+                      # assert except that the process is still alive
+
+    # Item 7 (round 2 of the safety review): `dropped` and the FAULT line
+    # used to exist in name only -- a poster that actually FAILS (as
+    # opposed to a queue-full drop) silently vanished, counted nowhere,
+    # logged nowhere beyond this process's own console. Now it counts, and
+    # logs once per OUTAGE (not once per event), with a matching recovery
+    # line once posting works again.
+    printed3 = []
+    failing = [True]
+    dj3 = sd.DeckJournal(
+        "http://127.0.0.1:1",
+        poster=lambda text, kw: False if failing[0] else True,
+        echo=lambda line: printed3.append(line))
+    dj3("event one.", action="arm")
+    dj3("event two.", action="arm")
+    dj3("event three.", action="arm")
+    check(wait_for(lambda: dj3.dropped == 3, timeout=2.0),
+          f"every failed post is counted, not just a queue-full drop: "
+          f"dropped={dj3.dropped}")
+    fault_lines = [p for p in printed3 if p.startswith("FAULT")
+                  and "journal" in p.lower()]
+    check(len(fault_lines) == 1,
+          f"one FAULT line for the whole outage, not one per failed event: "
+          f"{fault_lines}")
+    failing[0] = False
+    dj3("event four.", action="arm")
+    check(wait_for(lambda: dj3.dropped == 3, timeout=2.0),
+          "a successful post after an outage is not itself counted dropped")
+    check(wait_for(lambda: any("reachable again" in p for p in printed3),
+                   timeout=2.0),
+          f"and a recovery line is printed once posting works again: "
+          f"{printed3}")
+
+
+def test_streamdeck_reconnect_never_remembers_old_state():
+    section("Stream Deck: a reconnect (or first connect) always starts "
+            "every group OFF, never replaying what was armed before")
+    from ltcplay import streamdeck as sd
+    arm = _FakeArmSocket(3)
+    arm.set_group(0, True)          # pretend it was armed before a gap
+    check(arm.wanted == [True, False, False], "set up: group 0 was wanted")
+    arm.open()
+    check(arm.wanted == [False, False, False],
+          "open() (every connect and reconnect) resets wanted to all-false, "
+          "exactly as a real ArmSocket's open() does -- see module "
+          "docstring, failure mode 2")
+
+
+def _round4_run_forever(c, decks, t, on_sleep=None, journal=None):
+    """Drive the REAL sd.run_forever() through `decks`: each element is a
+    fake deck object, or None for "deck_factory raises DeckDisconnected"
+    (no deck plugged in), or an Exception instance deck_factory raises
+    as-is (round 5). Ends when the list runs out. Fake clock/sleep;
+    drawing stubbed by _deck_draw_stubs, as the tests above."""
+    from ltcplay import streamdeck as sd
+
+    class _StopTest(BaseException):
+        pass        # a deliberate stop: run_forever lets only these through
+
+    def deck_factory():
+        if not decks:
+            raise _StopTest()
+        d = decks.pop(0)
+        if d is None:
+            raise sd.DeckDisconnected("probe: nothing plugged in")
+        if isinstance(d, Exception):
+            raise d             # round 5: any other error opening the deck
+        return d
+
+    restore_drawing = _deck_draw_stubs(sd)
+    try:
+        sd.run_forever(c, deck_factory=deck_factory,
+                       journal=journal or (lambda t_, **kw: None),
+                       sleep=lambda s: (t.__setitem__(0, t[0] + s),
+                                        on_sleep and on_sleep()),
+                       clock=lambda: t[0])
+    except _StopTest:
+        pass
+    finally:
+        restore_drawing()
+
+
+class _Round4Deck:
+    """A fake deck: on_pass(i) runs on each keys_down() call; after
+    `passes` calls it unplugs (DeckDisconnected)."""
+
+    def __init__(self, passes, on_pass=None):
+        self.passes = passes
+        self.on_pass = on_pass
+        self.i = 0
+
+    def keys_down(self):
+        from ltcplay import streamdeck as sd
+        self.i += 1
+        if self.on_pass is not None:
+            self.on_pass(self.i)
+        if self.i > self.passes:
+            raise sd.DeckDisconnected("probe: unplugged")
+        return []
+
+    def set_key(self, image, key, img):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
+    section("Stream Deck: with NO deck plugged in (before the first "
+            "connect, and between a disconnect and the next one) this "
+            "process keeps sending every group OFF at ARM_SEND_HZ on the "
+            "SAME arm socket, and a reconnect restarts wanted/seq on that "
+            "socket instead of closing it (round 4 of the safety review, "
+            "item A: it used to go silent, flamesafe's sender lock lapsed, "
+            "and the round-4 review had another local process take the lock "
+            "and arm every group while the deck was unplugged)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = []          # (fake time, wanted) of every send on an OPEN socket
+    orig_send = arm.send
+
+    def send(names_):
+        if arm.is_open:
+            stamps.append((t[0], list(arm.wanted)))
+        orig_send(names_)
+    arm.send = send
+    seen = {}
+
+    def deck_a(i):
+        if i == 1:
+            seen["a_first"] = (arm.seq, list(arm.wanted))
+            arm.set_group(0, True)     # the operator arms front row
+        if i == 3:
+            seen["armed_sent"] = any(w[0] for _, w in stamps)
+
+    def deck_b(i):
+        if i == 1:
+            seen["b_first"] = (arm.seq, list(arm.wanted))
+
+    _round4_run_forever(c, [None, _Round4Deck(3, deck_a), None,
+                            _Round4Deck(2, deck_b)], t)
+    period = 1.0 / sd.ARM_SEND_HZ
+    gaps = [b[0] - a[0] for a, b in zip(stamps, stamps[1:])]
+    check(stamps and stamps[0][0] == 0.0,
+          f"the very first arm frame goes out at once, before any deck has "
+          f"ever been found: {stamps[:1]}")
+    check(gaps and max(gaps) <= period + 1e-9,
+          f"no gap between two arm frames is ever longer than one "
+          f"ARM_SEND_HZ period, through no-deck, connect, unplug and "
+          f"reconnect: longest {max(gaps) if gaps else None} s")
+    check(t[0] >= 4.0 and len(stamps) >= int(t[0] * sd.ARM_SEND_HZ) - 2,
+          f"frames went out the whole time: {len(stamps)} in {t[0]:.2f} s")
+    check(seen.get("armed_sent") is True,
+          "set up: front row really was sent armed while the deck was in")
+    first_true = next(i for i, (_, w) in enumerate(stamps) if w[0])
+    last_true = max(i for i, (_, w) in enumerate(stamps) if w[0])
+    check(all(not any(w) for _, w in stamps[last_true + 1:]),
+          "from the unplug on, every frame says every group OFF")
+    check(all(not any(w) for _, w in stamps[:first_true]),
+          "and before the first deck, every frame said OFF too")
+    check(arm.opens == 1 and arm.closes == 0,
+          f"ONE socket the whole time, never closed (so flamesafe's sender "
+          f"lock never changes hands): opens={arm.opens} "
+          f"closes={arm.closes}")
+    check(arm.restarts == 2,
+          f"each connect restarts wanted/seq on that socket: "
+          f"{arm.restarts}")
+    check(seen.get("a_first") == (0, [False, False, False])
+          and seen.get("b_first") == (0, [False, False, False]),
+          f"after each connect the counter is back at 0 and every group "
+          f"OFF before anything is sent: {seen}")
+
+
+def test_streamdeck_round4_unplug_keeps_one_real_source_port():
+    section("Stream Deck: the same, over a REAL ArmSocket and a real UDP "
+            "receiver: every arm frame through no-deck, connect, unplug "
+            "and reconnect comes from ONE source port (the one flamesafe's "
+            "sender lock holds), the no-deck frames all say OFF, and each "
+            "connect restarts the counter (round 4, item A)")
+    import json as _json
+    import socket as _socket
+    from ltcplay import streamdeck as sd
+
+    rx = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.setblocking(False)
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = sd.ArmSocket("127.0.0.1", rx.getsockname()[1], "probe-key-0123456789",
+                       3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    got = []
+
+    def drain():
+        while True:
+            try:
+                data, addr = rx.recvfrom(65535)
+            except (BlockingIOError, OSError):
+                return
+            got.append((addr, _json.loads(data)))
+
+    def deck_a(i):
+        drain()
+        if i == 1:
+            arm.set_group(1, True)
+
+    try:
+        _round4_run_forever(c, [None, _Round4Deck(2, deck_a), None,
+                                _Round4Deck(1)], t, on_sleep=drain)
+        time.sleep(0.05)
+        drain()
+    finally:
+        arm.close()
+        rx.close()
+    ports = {a for a, _ in got}
+    check(len(got) > 100 and len(ports) == 1,
+          f"{len(got)} arm frames, all from one source address: {ports}")
+    seqs = [f["seq"] for _, f in got]
+    restarts = sum(1 for a, b in zip(seqs, seqs[1:]) if b < a)
+    check(restarts == 2,
+          f"the counter restarts exactly at each of the 2 connects: "
+          f"{restarts}")
+    last_on = max(i for i, (_, f) in enumerate(got) if any(f["wanted"]))
+    check(all(not any(f["wanted"]) for _, f in got[last_on + 1:])
+          and len(got) - last_on > 40,
+          f"after the unplug, a steady run of all-OFF frames: "
+          f"{len(got) - last_on - 1}")
+
+
+def test_streamdeck_round4_reconnect_releases_every_hold():
+    section("Stream Deck: reset_on_reconnect releases the Abort hold, EVERY "
+            "group's arm hold and the key snapshot, each on its own (round "
+            "4: the review's hand mutations that skipped only the Abort "
+            "hold, or only the arm holds, survived the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    c._prev_keys = [True] * 6
+    c._abort_hold.press(0.0)
+    for h in c._arm_holds:
+        h.press(0.0)
+    c.reset_on_reconnect()
+    t[0] = 10.0
+    check(c._prev_keys == [False] * 6, "every key reads released")
+    check(c._abort_hold.fraction(t[0]) == 0.0,
+          "the Abort hold is released (no fill drawn, nothing to fire)")
+    check(all(h.fraction(t[0]) == 0.0 for h in c._arm_holds),
+          f"every arm hold is released: "
+          f"{[h.fraction(t[0]) for h in c._arm_holds]}")
+
+    # What a stale Abort hold would do: after the reconnect nothing is
+    # armed, so a press of Abort is refused (it never starts a hold)...
+    down = [False] * 6
+    down[sd.TOP_ABORT] = True
+    c.run_once(down)
+    c.tick()
+    check(not c._latched and not any(kw.get("action") == "abort"
+                                     and "every flame group" in t_
+                                     for t_, kw in events),
+          f"...and a refused press must never fire an Abort off a hold "
+          f"timer left over from before the gap: latched={c._latched}")
+
+
+def test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves():
+    section("Stream Deck: the foreign-sender alarm journals ONCE while the "
+            "condition lasts, even as flamesafe's count of other senders "
+            "goes 1, 2, 1 (round 4: a dedup key that embedded the count "
+            "survived the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def doc(foreign):
+        return {"arm_input": {"state": "live", "seq": arm.seq,
+                              "foreign_senders": foreign},
+                "groups": [{"name": n, "wanted": False} for n in names]}
+
+    arm.send(names)
+    status.set(doc(0))
+    c.check_links()
+    t[0] += sd.RECONNECT_GRACE_S + 0.1
+    for foreign in (1, 1, 2, 2, 1, 1):
+        status.set(doc(foreign))
+        c.check_links()
+        t[0] += sd.SPOOF_GRACE_S + 0.1
+        c.check_links()
+    alarms = [e for e in events if "ALARM" in e[0]]
+    check(c._spoof_alarm and len(alarms) == 1,
+          f"one alarm line for one continuous episode: {len(alarms)}")
+
+
+def test_streamdeck_round4_fresh_process_gets_the_reconnect_grace():
+    section("Stream Deck: a deck PROCESS that has just started gets the "
+            "same RECONNECT_GRACE_S a reconnect does (round 4, item E: a "
+            "restart quicker than flamesafe's arm_stale_ms finds the old "
+            "process still holding the sender lock for a moment, which "
+            "used to raise a false spoof alarm)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+    old = {"arm_input": {"state": "live", "seq": 5000, "foreign_senders": 1},
+           "groups": [{"name": n, "wanted": False} for n in names]}
+    arm.send(names)
+    status.set(old)
+    while t[0] < sd.RECONNECT_GRACE_S - 0.05:
+        c.check_links()
+        arm.send(names)
+        t[0] += 0.05
+    check(not c._spoof_alarm and not any("ALARM" in e[0] for e in events),
+          f"the old process's lock, still there for under a second, is not "
+          f"an alarm: {c._spoof_alarm!r}")
+    t[0] += sd.SPOOF_GRACE_S + 0.2
+    c.check_links()
+    t[0] += sd.SPOOF_GRACE_S + 0.1
+    c.check_links()
+    check(c._spoof_alarm,
+          "but the same report persisting past the grace IS an alarm")
+
+
+def test_streamdeck_round4_other_sender_reason_has_a_label():
+    section("Stream Deck: flamesafe's new held reason (a cycle refused while "
+            "another sender is on the arm link, round 4 item B) has its own "
+            "short label on the key, and the hand-copied sentence matches "
+            "flamesafe's own, checked in a separate process so this one "
+            "never imports flamesafe")
+    import subprocess as _sp
+    from ltcplay import streamdeck as sd
+    r = _sp.run([sys.executable, "-c",
+                 "from flamesafe import composer; "
+                 "print(composer.OTHER_SENDER)"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True, text=True, timeout=60)
+    sentence = r.stdout.strip()
+    check(sentence in sd._SHORT_REASON,
+          f"the deck knows flamesafe's exact sentence: {sentence!r}")
+    look = sd.group_look({"armed": "held", "reason": sentence,
+                          "amber": "steady", "dwell_s": 0})
+    check(look[:2] == ("OTHER", "SENDER") and look[4] is False,
+          f"drawn as OTHER SENDER, steady: {look}")
+
+
+def _round5_stamped(arm, t):
+    """Record (fake time, wanted) of every send while the socket is open."""
+    stamps = []
+    orig_send = arm.send
+
+    def send(names_):
+        if arm.is_open:
+            stamps.append((t[0], list(arm.wanted)))
+        orig_send(names_)
+    arm.send = send
+    return stamps
+
+
+def test_streamdeck_round5_a_long_unplug_never_goes_quiet():
+    section("Stream Deck: a deck unplugged for 120 s (fake clock) is held "
+            "OFF on the arm link the WHOLE time: no gap between two arm "
+            "frames is ever longer than one ARM_SEND_HZ period, from the "
+            "unplug to the reconnect (round 5 of the safety review, item 1: "
+            "the round-4 test's no-deck time added up to exactly 6 s, so "
+            "the hand mutation 'the OFF sender stops for good after 6 s' "
+            "passed the whole suite)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = _round5_stamped(arm, t)
+    seen = {}
+
+    def deck_a(i):
+        if i == 1:
+            arm.set_group(0, True)     # the operator arms front row
+
+    def deck_b(i):
+        if i == 1:
+            seen.setdefault("back_at", t[0])
+
+    # 60 failed opens at 2 s each, plus the 1 s hold after the unplug
+    # itself: about 121 s with no deck.
+    _round4_run_forever(c, [_Round4Deck(3, deck_a)] + [None] * 60
+                        + [_Round4Deck(2, deck_b)], t)
+    period = 1.0 / sd.ARM_SEND_HZ
+    armed = [i for i, (_, w) in enumerate(stamps) if w[0]]
+    check(bool(armed), "set up: front row really was sent armed first")
+    back = seen.get("back_at")
+    check(back is not None, "set up: the deck came back at the end")
+    if not armed or back is None:
+        return
+    # From the last armed frame through the reconnect's own first frame,
+    # so a sender that went silent part way shows as one long gap.
+    off = [s for s in stamps[armed[-1]:] if s[0] <= back]
+    off_span = off[-1][0] - off[0][0] if off else 0.0
+    check(off_span >= 120.0,
+          f"set up: the deck really was away for 120 s or more "
+          f"({off_span:.2f} s)")
+    gaps = [b[0] - a[0] for a, b in zip(off, off[1:])]
+    worst = max(gaps) if gaps else None
+    worst_at = off[gaps.index(worst)][0] if gaps else None
+    check(gaps and worst <= period + 1e-9,
+          f"through the whole 120 s unplug no gap between two arm frames "
+          f"is longer than one {period:g} s send period: longest "
+          f"{worst} s, starting at t={worst_at}")
+    check(all(not any(w) for _, w in off[1:]),
+          "every frame from the unplug to the reconnect says every group "
+          "OFF")
+    check(len(off) >= int(120.0 * sd.ARM_SEND_HZ),
+          f"{len(off)} OFF frames went out in {off_span:.1f} s")
+
+
+def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
+    section("Stream Deck: ANY exception from opening the deck, or from one "
+            "main-loop pass, is handled as an unplug: run_forever keeps "
+            "every group held OFF on the arm link and only a deliberate "
+            "stop ends it, and each kind of failure is journaled once per "
+            "outage (round 5 of the safety review, item 2: a plain OSError "
+            "from hidapi's set_nonblocking or send_feature_report on a "
+            "reconnect ended run_forever after 40 OFF frames, the link went "
+            "silent and flamesafe's sender lock lapsed)")
+    from ltcplay import streamdeck as sd
+
+    # Part 1: Deck() itself turns every hidapi failure after the import
+    # into DeckDisconnected, and closes a half-opened handle.
+    class _Dev:
+        def __init__(self, fail):
+            self.fail = fail
+            self.closed = False
+
+        def _maybe(self, what):
+            if self.fail == what:
+                raise OSError(f"probe: {what} failed mid-plug")
+
+        def open(self, vid, pid):
+            self._maybe("open")
+
+        def set_nonblocking(self, on):
+            self._maybe("set_nonblocking")
+
+        def send_feature_report(self, data):
+            self._maybe("send_feature_report")
+
+        def close(self):
+            self.closed = True
+
+    devs = []
+
+    class _Hid:
+        fail = None
+
+        def device(self):
+            if self.fail == "device":
+                raise OSError("probe: no HID device object")
+            d = _Dev(self.fail)
+            devs.append(d)
+            return d
+
+    fake = _Hid()
+    orig_import = sd._import_hid
+    sd._import_hid = lambda: fake
+    try:
+        for what in ("device", "open", "set_nonblocking",
+                     "send_feature_report"):
+            fake.fail = what
+            del devs[:]
+            try:
+                sd.Deck()
+                got = "opened"
+            except sd.DeckDisconnected as e:
+                got = ("DeckDisconnected", type(e.__cause__).__name__)
+            except Exception as e:            # noqa: BLE001
+                got = f"escaped as {type(e).__name__}: {e}"
+            check(got == ("DeckDisconnected", "OSError"),
+                  f"Deck(): a {what} failure is raised as DeckDisconnected "
+                  f"(from the OSError): {got}")
+            check(all(d.closed for d in devs),
+                  f"and a half-opened handle is closed again after a "
+                  f"{what} failure: {[d.closed for d in devs]}")
+        fake.fail = None
+        d = sd.Deck()
+        check(d.h is devs[-1] and not devs[-1].closed,
+              "set up: with nothing failing, Deck() opens and keeps the "
+              "handle")
+    finally:
+        sd._import_hid = orig_import
+
+    # Part 2: the round-5 review's deck_exit probe through the REAL
+    # run_forever, plus errors from a pass, a handful of each.
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    stamps = _round5_stamped(arm, t)
+
+    class _PassDeck(_Round4Deck):
+        """keys_down() raises `exc` on pass `at`; set_key() raises `key_exc`
+        once `key_at` passes have run."""
+
+        def __init__(self, passes, at=None, exc=None, key_at=None,
+                     key_exc=None, on_pass=None):
+            super().__init__(passes, on_pass)
+            self.at, self.exc = at, exc
+            self.key_at, self.key_exc = key_at, key_exc
+
+        def keys_down(self):
+            if self.at is not None and self.i + 1 == self.at:
+                self.i += 1
+                raise self.exc
+            return super().keys_down()
+
+        def set_key(self, image, key, img):
+            if self.key_at is not None and self.i >= self.key_at:
+                raise self.key_exc
+
+    def arm_front_row(i):
+        if i == 1:
+            arm.set_group(0, True)
+
+    oserr = [OSError("probe: hid send_feature_report failed mid-plug")
+             for _ in range(30)]                       # 60 s of these
+    decks = ([None] + oserr
+             + [_PassDeck(50, at=3, exc=RuntimeError("probe: a bug in a "
+                                                     "pass"),
+                          on_pass=arm_front_row)]
+             + [OSError("probe: again"), OSError("probe: and again")]
+             + [_PassDeck(50, key_at=2,
+                          key_exc=ValueError("probe: bad key image"))]
+             + [_PassDeck(int(12 * sd.ARM_SEND_HZ))]   # 12 s clean, unplug
+             + [None, None])
+    died = None
+    try:
+        _round4_run_forever(c, decks, t,
+                            journal=lambda t_, **kw: events.append((t_, kw)))
+    except Exception as e:                    # noqa: BLE001
+        died = e
+    check(died is None and not decks,
+          f"run_forever never died: every error was handled as an unplug "
+          f"and only the deliberate stop ended it (died with "
+          f"{type(died).__name__ if died else None}: {died}; "
+          f"{len(decks)} scripted steps never reached)")
+    period = 1.0 / sd.ARM_SEND_HZ
+    gaps = [b[0] - a[0] for a, b in zip(stamps, stamps[1:])]
+    check(t[0] >= 70.0 and gaps and max(gaps) <= period + 1e-9,
+          f"arm frames went out without a gap longer than one period the "
+          f"whole {t[0]:.1f} s: longest {max(gaps) if gaps else None} s")
+    armed = [i for i, (_, w) in enumerate(stamps) if w[0]]
+    check(bool(armed) and all(not any(w) for _, w in stamps[armed[-1] + 1:]),
+          "front row was sent armed before the pass error, and every frame "
+          "after it says every group OFF")
+    check(bool(armed) and len(stamps) > armed[-1] + 1
+          and stamps[armed[-1] + 1][0] - stamps[armed[-1]][0]
+          <= period + 1e-9,
+          "the first all-OFF frame follows the error within one period")
+
+    def lines(sub):
+        return [t_ for t_, kw in events if sub in t_]
+    check(len(lines("OSError")) == 1,
+          f"32 OSErrors opening the deck in one outage: ONE journal line, "
+          f"not one per 2 s retry: {lines('OSError')}")
+    check(len(lines("RuntimeError")) == 1 and len(lines("ValueError")) == 1,
+          f"an error from a pass and from drawing a key are each "
+          f"journaled once: {lines('RuntimeError')} {lines('ValueError')}")
+    check(all(kw.get("fault") for t_, kw in events
+              if "Error" in t_ or "probe:" in t_),
+          "every failure line is a fault")
+    check(len(lines("probe: nothing plugged in")) == 1
+          and len(lines("probe: unplugged")) == 1,
+          f"the deck running {sd.DECK_STABLE_S:g} s clean ends the outage, "
+          f"so the next unplug is journaled again: "
+          f"{lines('probe: nothing plugged in')} {lines('probe: unplugged')}")
+    check(len(lines("running cleanly")) == 1
+          and "more failure" in lines("running cleanly")[0],
+          f"and the end of the outage says how many went unlogged: "
+          f"{lines('running cleanly')}")
+    check(len(lines("Stream Deck connected")) == 1,
+          f"one connect line per outage (3 reconnects inside one outage, "
+          f"1 journaled): "
+          f"{len(lines('Stream Deck connected'))}")
+
+    # Part 3: a socket that cannot be opened (no file descriptors left)
+    # is retried on the next frame, never the end of run_forever.
+    class _StubbornArm(_FakeArmSocket):
+        fails = 3
+
+        def open(self):
+            if self.fails:
+                self.fails -= 1
+                raise OSError("probe: too many open files")
+            super().open()
+
+    arm2 = _StubbornArm(3)
+    t2 = [0.0]
+    c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t2[0])
+    stamps2 = _round5_stamped(arm2, t2)
+    died = None
+    try:
+        _round4_run_forever(c2, [None, None], t2)
+    except Exception as e:                    # noqa: BLE001
+        died = e
+    check(died is None and arm2.opens == 1 and stamps2
+          and stamps2[0][0] <= 3 * period + 1e-9,
+          f"an arm socket that fails to open 3 times is opened on the 4th "
+          f"frame and sends from then on (died: {died!r}, opens "
+          f"{arm2.opens}, first frame at "
+          f"{stamps2[0][0] if stamps2 else None})")
+
+
+def test_streamdeck_never_imports_flamesafe():
+    section("Stream Deck: never imports flamesafe (it is an ltcplay module, "
+            "already covered by the wall test, checked again here by name), "
+            "and can be imported without hid or Pillow installed")
+    import ast
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "ltcplay", "streamdeck.py")
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    top_level = set()
+    for node in tree.body:          # module top level only: a lazy import
+        if isinstance(node, ast.Import):               # inside a function
+            top_level |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            top_level.add(node.module.split(".")[0])
+    all_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            all_names |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            all_names.add(node.module.split(".")[0])
+    check("flamesafe" not in all_names,
+          f"ltcplay/streamdeck.py imports flamesafe, anywhere in the file: "
+          f"{sorted(all_names)}")
+    check("hid" not in top_level and "PIL" not in top_level,
+          f"hid and PIL are imported lazily, inside functions, never at "
+          f"module top level: {sorted(top_level)}")
+    import subprocess as _sp
+    r = _sp.run([sys.executable, "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import ltcplay.streamdeck; "
+                "print('hid' in sys.modules, 'PIL' in sys.modules)", here],
+               capture_output=True, text=True, timeout=30)
+    check(r.returncode == 0 and r.stdout.strip() == "False False",
+          f"importing ltcplay.streamdeck never pulls in hid or PIL as a "
+          f"side effect (so the rest of ltcplay keeps working without "
+          f"them): rc={r.returncode} {r.stdout!r} {r.stderr[-300:]!r}")
+
+
+# ---------------------------------------------------------------------------
+# The conductor wired to the real device layer: a real Conductor, driven
+# through conductor.ConductorDevices into a real beyond.Beyond and a real
+# madmapper.Link, whose sockets are fakes that stamp every packet into the
+# same call log as the show side (_CondRig). So one ordered list holds the
+# flame cut, every BEYOND packet, the music, the pixels and every MadMapper
+# packet, and the ordering guarantees devices.py's on_hold()/on_resume()/
+# on_abort() were written to give can be checked against what the
+# conductor actually sends.
+# ---------------------------------------------------------------------------
+
+class _StampSock(_FakeMMSock):
+    """A fake socket that also writes (kind, (address, value), now) into a
+    shared log as each packet goes out. value is None for an OSC message
+    with no float (MadMapper's conductor/stop)."""
+
+    def __init__(self, kind, log, now):
+        super().__init__()
+        self.kind, self.log, self.now = kind, log, now
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        super().sendto(pkt, addr)
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        self.log.append((self.kind, (address, None if f is None else f[1]),
+                         self.now()))
+
+
+def _cond_devices(gate=None, mm=True, beyond=True, beyond_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    steps = _Steps()
+    link = bey = None
+    if mm:
+        link = MM.Link(_mm_cfg(ramp_steps=5),
+                       socket_factory=lambda: _StampSock("mm", rig.calls,
+                                                         T.now),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+        # Packets leave from the Link's own worker thread, so their place
+        # in the log depends on thread timing. The CALL into the Link is
+        # made on the conductor's thread: log that too ("mm_call"), so an
+        # order check never passes by luck of scheduling.
+        for name in ("fade_surfaces", "set_surfaces", "cancel", "stop_bank",
+                     "fade_audio", "set_audio", "fade_all",
+                     "restore_levels", "select_bank", "play",
+                     "play_from_beginning"):
+            def rec(*a, _name=name, _fn=getattr(link, name), **k):
+                rig.calls.append(("mm_call", (_name,) + a, T.now()))
+                return _fn(*a, **k)
+            setattr(link, name, rec)
+    if beyond:
+        bey = B.Beyond(B.BeyondConfig.parse({}),
+                       socket_factory=beyond_factory or (
+                           lambda: _StampSock("beyond", rig.calls, T.now)),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate if gate is not None else (lambda: None),
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False)
+    return c, rig, T, lines, link, bey
+
+
+def _mm_flush(link):
+    """Wait for the Link's worker to finish every job already queued (the
+    conductor starts video fades with wait=False)."""
+    if link is not None:
+        link._submit(lambda: None, wait=True)
+
+
+def _cd_live(c, rig, link):
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    _mm_flush(link)
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def _cd_idx(calls, kind):
+    return [i for i, e in enumerate(calls) if e[0] == kind]
+
+
+def _cd_sends(calls):
+    """The log without the Link's cancel() calls. A cancel sends nothing:
+    it only stops a fade still running where it is, at a Hold's or an
+    Abort's press (independent review of PR #29, finding C)."""
+    return [e for e in calls if e[:2] != ("mm_call", ("cancel",))]
+
+
+def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
+    section("conductor + devices: a Hold sends BEYOND a real blank, and it "
+            "is out before the music or the video starts to fade; "
+            "MadMapper's audio is never touched")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.wired and c.snapshot()["devices_wired"],
+          "with BEYOND and MadMapper both given, the conductor is wired")
+    check(not any("not connected" in t for t, _f in lines),
+          f"no 'not connected' fault line when wired: {lines}")
+    _cd_live(c, rig, link)
+    T.t = 300.0
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    check(rig.calls and rig.calls[0][:2] == ("mm_call", ("cancel",)),
+          f"the press stops any video fade where it is, sending nothing: "
+          f"{rig.calls[:1]}")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check(names[0] == "flames_zero", f"the flame cues go first: {names}")
+    check(len(b) == B.RETRY_COUNT and
+          all(ev[i][1] == (B.BRIGHTNESS_ADDR, B.BLANK_VALUE) for i in b),
+          f"BEYOND gets a real blank, brightness 0, {B.RETRY_COUNT} "
+          f"packets: {[ev[i] for i in b]}")
+    check(b and max(b) < names.index("music_hold"),
+          f"the blank is out before the music starts to fade: {names}")
+    check(m and b and min(m) > max(b),
+          f"every MadMapper packet comes after the blank: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check(mc and b and min(mc) > max(b),
+          f"the conductor calls MadMapper only after the blank is out: "
+          f"{names}")
+    check([ev[i][1][:3] for i in mc] == [("fade_surfaces", 1.0, 0.0)],
+          f"one call: the surfaces fade from 1 to 0, nothing else: "
+          f"{[ev[i][1] for i in mc]}")
+    check(all(ev[i][2] == 300.0 for i in b),
+          "the blank goes at the press, with no fade of its own")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (C.HOLD_FADE_S,),
+          f"the music fades over 0.25 s, then the clock freezes: {hold}")
+    check(all(ev[i][1][0] != MM.AUDIO_ADDR for i in m),
+          "MadMapper's audio level is never sent: ltcplay plays the music "
+          "(clock source audio_master), MadMapper only the video")
+    surf = [ev[i][1] for i in m]
+    check(all(a.startswith("/surfaces/") for a, _v in surf),
+          f"a production Hold fades the video surfaces (Jeff 2026-09-30): "
+          f"{surf}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in surf if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades from 1 to black: {vals}")
+    check(not any(f for t, f in lines),
+          f"no fault, and no slow call: {[t for t, f in lines if f]}")
+    check(c.snapshot()["applied"]["lasers"] == "black", "lasers black")
+    # Finding A: the video is recorded black only once the Link says the
+    # packets went out (it has: flushed above).
+    check(c.snapshot()["applied"]["video"] == "black",
+          f"video black, as reported by the Link: {c.snapshot()['applied']}")
+    link.close()
+
+    # Rehearsal: still a real blank first, but the video freezes in place.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.set_mode(C.REHEARSAL)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    check([e[1][1] for e in ev if e[0] == "beyond"]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"a rehearsal Hold blanks BEYOND too: {ev}")
+    check(_cd_idx(ev, "mm") == [] and _cd_idx(ev, "mm_call") == [],
+          f"a rehearsal Hold sends MadMapper nothing: the video freezes "
+          f"with the timecode: {ev}")
+    check(rig.first("music_hold")[1] == (0.0,), "and the music stops at once")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_abort_blanks_at_once_never_ramps():
+    section("conductor + devices: Abort blanks BEYOND at once (never a "
+            "brightness ramp; beyond.py's 0/100 allow-list is unchanged), "
+            "before the video and music fade, then stops the video bank")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    check(B.ALLOWED_VALUES == (0.0, 100.0),
+          f"beyond.py's allow-list is still exactly 0.0 and 100.0: "
+          f"{B.ALLOWED_VALUES}")
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.show_starting("Andy", "rack screen").ok, "show start")
+    c.run_pending()
+    _mm_flush(link)
+    check([e[1][1] for e in rig.calls if e[0] == "beyond"]
+          == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"the show starts with the lasers up: {rig.calls}")
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+    T.t = 400.0
+    check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+    pressed = _cd_sends(rig.calls)
+    check([e[0] for e in pressed][:2] == ["flames_zero", "flames_disarm_all"]
+          and [e[1][1] for e in pressed[2:]]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the flames are cut on the press, before anything else, and "
+          f"BEYOND is blanked before the press returns (finding D): "
+          f"{rig.calls}")
+    check(("mm_call", ("cancel",), 400.0) in rig.calls,
+          "and any video fade is stopped where it is, at the press")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check([ev[i][1] for i in b]
+          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * B.RETRY_COUNT,
+          f"Abort sends BEYOND brightness 0 only, never anything between "
+          f"0 and 100: {[ev[i] for i in b]}")
+    check(all(ev[i][2] == 400.0 for i in b),
+          f"all at the press, not spread over the 1 s fade: "
+          f"{[ev[i][2] for i in b]}")
+    for later in ("pixels_fade_out", "music_halt"):
+        check(later in names and max(b) < names.index(later),
+              f"BEYOND is dark before {later} starts: {names}")
+    check(m and min(m) > max(b),
+          f"BEYOND is dark before MadMapper is sent anything: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check([ev[i][1][0] for i in mc] == ["fade_surfaces", "stop_bank"]
+          and min(mc) > max(b),
+          f"the conductor calls MadMapper (fade, then stop) only after "
+          f"BEYOND is dark: {names}")
+    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
+          f"the journal says the lasers were blanked, not faded: {lines}")
+    mm_ev = [ev[i][1] for i in m]
+    check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
+          f"MadMapper's audio level is not sent: {mm_ev}")
+    stop = f"/timelines/{link.cfg.show_bank}/conductor/stop"
+    check(mm_ev and mm_ev[-1] == (stop, None),
+          f"the show bank is stopped last, after the fade: {mm_ev[-3:]}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in mm_ev if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades to black before the stop: {vals}")
+    check(rig.first("music_halt")[1] == (C.ABORT_FADE_S,),
+          "the music fades over 1 s")
+    link.close()
+
+    # Abort after a Hold: the lasers are already dark, and the blank is
+    # sent again anyway (never trusted to have landed), still first.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    T.t = 450.0
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"Abort after a Hold sends BEYOND the blank again: {ev}")
+    check(b and max(b) < names.index("music_halt"),
+          f"and still before the music: {names}")
+    mm_ev = [e[1] for e in ev if e[0] == "mm"]
+    check([e[1][0] for e in ev if e[0] == "mm_call"]
+          == ["fade_surfaces", "stop_bank"]
+          and names.index("mm_call") > max(b),
+          f"after the blank, MadMapper is told black again, then stop: "
+          f"{names}")
+    stop = (f"/timelines/{link.cfg.show_bank}/conductor/stop", None)
+    check(mm_ev == [("/surfaces/Quad-1/opacity", 0.0),
+                    ("/surfaces/Quad-2/opacity", 0.0), stop],
+          f"the video the Hold already faded is not faded up and down "
+          f"again (finding C: it starts where it is, black, so one 0 per "
+          f"surface), then stopped: {mm_ev}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_resume_unblanks_only_after_timecode_and_gate():
+    section("conductor + devices: Resume unblanks BEYOND only once the "
+            "timecode moves and the laser gate says yes; in intermission it "
+            "re-sends the blank instead, every time")
+    from ltcplay import beyond as B
+    C = _cond_mod()
+    state = ["SHOW"]
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    rig.move_s = 0.3
+    T.t = 500.0
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"BEYOND comes back up (100): {[ev[i] for i in b]}")
+    check(b and min(b) > names.index("music_resume"),
+          f"after the music starts back: {names}")
+    check(min(b) > names.index("mm_call"),
+          f"and after the video has been asked back up: {names}")
+    check(all(ev[i][2] >= 500.3 - 1e-9 for i in b),
+          f"and not before the timecode moves (0.3 s): "
+          f"{[ev[i][2] for i in b]}")
+    check(names.index("flames_release") > max(b),
+          f"the flame cues are released last, after the lasers: {names}")
+    up = [e[1] for e in ev if e[0] == "mm"]
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in up if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 0.0 and vals[-1] == 1.0,
+              f"{s} fades back up: {vals}")
+    link.close()
+
+    # A Resume in intermission: no unblank, ever, and a real blank re-sent
+    # even though the record already says black (devices.py's defensive
+    # re-blank, kept).
+    state[0] = "SHOW"
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["lasers"] == "black", "held: black")
+    del rig.calls[:]
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(B.UNBLANK_VALUE not in vals,
+          f"no unblank during intermission: {vals}")
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the blank is re-sent, not assumed: {vals}")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "the journal says why")
+    check(bey.last_command == "blank" and bey.last_result == "ok",
+          f"BEYOND's own record agrees: {bey.health()}")
+    # Leaving the show blanks them again too.
+    del rig.calls[:]
+    c.intermission("scheduler")
+    c.run_pending()
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"intermission() sends BEYOND the blank: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_failures_missing_links_and_speed():
+    section("conductor + devices: a failed or broken device is a failed "
+            "Result, never a raise; a show without BEYOND or MadMapper says "
+            "it is not wired; every call returns at once")
+    import time as _time
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+
+    def no_socket():
+        raise OSError("no network")
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=no_socket)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          f"a blank that never got out leaves the lasers UNKNOWN, never "
+          f"black: {c.snapshot()['applied']}")
+    check(any(f and "may still be showing" in t for t, f in lines),
+          f"and says so as a fault: {[t for t, f in lines if f]}")
+    link.close()
+
+    # Missing links: nothing sent, every call still a Result, and a
+    # Conductor built with it says it is not wired.
+    for mm_ok, b_ok in ((False, True), (True, False), (False, False)):
+        c, rig, T, lines, link, bey = _cond_devices(mm=mm_ok, beyond=b_ok)
+        check(not c.wired and any("not connected" in t and f
+                                  for t, f in lines),
+              f"MadMapper {mm_ok}, BEYOND {b_ok}: the conductor says the "
+              f"rig is not wired: {lines}")
+        if link is not None:
+            link.close()
+    dev = C.ConductorDevices(None, None)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (0.0,)), ("video_stop", ())):
+        r = getattr(dev, name)(*args)
+        check(isinstance(r, C.Result) and r.ok and "no " in r.sentence,
+              f"{name} with nothing configured: {r}")
+        r = getattr(C.ConductorDevices(object(), object()), name)(*args)
+        check(isinstance(r, C.Result) and not r.ok,
+              f"{name} on a broken device is a failed Result, not a "
+              f"raise: {r}")
+    link, socks, _steps = _mm_link()
+    link.close()
+    r = C.ConductorDevices(link, None).video_fade_out(1.0)
+    check(not r.ok and "closed" in r.sentence,
+          f"a closed MadMapper link is not reported as sent: {r}")
+
+    # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
+    # fade included (it runs on the Link's own worker).
+    link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
+    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
+                   sleep=_on_time_sleep)
+    dev = C.ConductorDevices(link, bey)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (1.0,)), ("video_fade_out", (0.0,)),
+                       ("video_stop", ())):
+        t0 = _time.perf_counter()
+        r = getattr(dev, name)(*args)
+        took = _time.perf_counter() - t0
+        check(r.ok and took < C.SLOW_CALL_S,
+              f"{name}{args} returns at once: {took * 1000:.0f} ms, {r}")
+    link.close()
+    bey.close()
+    print("  ok")
+
+
+def test_conductor_devices_instant_video_lands_after_a_running_fade():
+    section("conductor + devices: an instant video level (rehearsal) "
+            "cancels a fade still running and lands after its last step")
+    C = _cond_mod()
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    gate = threading.Event()
+    link._submit(gate.wait, wait=False)       # hold the worker
+    dev.video_restore(1.0)                    # a fade up, queued
+    dev.video_fade_out(0.0)                   # then black at once
+    gate.set()
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and sent[-2:] == [0.0, 0.0],
+          f"black is the last thing each surface is told: {sent[-4:]}")
+    check(len(sent) < 31 * 2,
+          f"the fade up was cancelled, not run to the end first: "
+          f"{len(sent)} packets")
+    link.close()
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# The independent review of PR #29 (real UDP, real time probes), findings A
+# to E. These run on real threads and real time, through a real
+# beyond.Beyond and a real madmapper.Link whose sockets stamp every packet
+# with perf_counter: when sendto() was entered and when it returned.
+# ---------------------------------------------------------------------------
+
+class _RTSock:
+    """A real-time fake socket: logs (kind, address, value, entered,
+    returned) for every packet. `delay(value)` makes sendto() take that
+    long first, the way a stalled send buffer or an ARP wait would."""
+
+    def __init__(self, kind, log, delay=None):
+        self.kind, self.log, self.delay = kind, log, delay
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        v = None if f is None else f[1]
+        t_in = time.perf_counter()
+        d = self.delay(v) if self.delay else 0
+        if d:
+            time.sleep(d)
+        self.log.append((self.kind, address, v, t_in, time.perf_counter()))
+
+    def close(self):
+        pass
+
+
+def _on_time_sleep(seconds):
+    """time.sleep that ends on time. BEYOND spaces its 3 packets 20 ms
+    apart, and the conductor calls anything slower than SLOW_CALL_S a
+    fault. macOS CI runners overshoot a 20 ms time.sleep() by up to
+    ~130 ms (seen in PR #29 round 3: a blank took 298 ms), which is the
+    runner, not the code under test. Any single sleep can overshoot like
+    that, so this only ever yields (time.sleep(0) lets other threads run)
+    until the deadline. It is only used for those 20 ms gaps."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        time.sleep(0)
+
+
+def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    log, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    rig = _CondRig(time.perf_counter)
+    link = MM.Link(_mm_cfg(ramp_steps=31),
+                   socket_factory=mm_factory or (lambda: _RTSock("mm", log)),
+                   journal=journal)
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _RTSock("beyond", log,
+                                                  beyond_delay),
+                   sleep=_on_time_sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate or (lambda: None),
+                    hold_gate=lambda *a: (None, 1), announcer=announcer,
+                    journal=journal)
+    return c, rig, log, lines, link, bey
+
+
+def _rt_vals(log, kind, since=None, value=None):
+    return [e for e in log if e[0] == kind
+            and (since is None or e[3] >= since)
+            and (value is None or e[2] == value)]
+
+
+def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
+    section("beyond: a blank on another thread stops an unblank before its "
+            "next packet, never waits for it, and 0 is BEYOND's last word")
+    from ltcplay import beyond as B
+    log = []
+    release = threading.Event()
+
+    class Stall(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if MM.decode_float(pkt)[1] == 100.0:
+                release.wait(2.0)        # the 100 is stuck on its way out
+            _RTSock.sendto(self, pkt, addr)
+
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: Stall("beyond", log),
+                   sleep=_on_time_sleep)      # see _on_time_sleep: macOS CI
+    got = {}
+    t = threading.Thread(target=lambda: got.setdefault(
+        "r", bey.unblank(in_show=True)))
+    t.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    t0 = time.perf_counter()
+    ok = bey.blank()
+    took = time.perf_counter() - t0
+    check(ok and took < 0.2,
+          f"the blank went out without waiting for the stuck unblank "
+          f"({took * 1000:.0f} ms)")
+    release.set()
+    t.join(2)
+    vals = [e[2] for e in sorted(log, key=lambda e: e[4])]
+    check(vals.count(100.0) == 1,
+          f"no 100 was started after the blank began: {vals}")
+    check(vals and vals[-1] == 0.0,
+          f"the 100 already on its way out is followed by a 0: {vals}")
+    check(got.get("r") is False and bey.last_result in ("cut", "ok"),
+          f"the cut unblank does not report success: {got} "
+          f"{bey.last_result}")
+    # still_wanted: a newer request stops an unblank before any blank.
+    log2 = []
+    bey2 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: _RTSock("beyond", log2))
+    asked = []
+
+    def wanted():
+        asked.append(1)
+        return len(asked) < 2
+    r = bey2.unblank(in_show=True, still_wanted=wanted)
+    check(r is False and [e[2] for e in log2] == [100.0]
+          and bey2.last_result == "cut",
+          f"still_wanted turning false stops the unblank: {log2}")
+
+    # Review round 3: a blank that lands in the 20 ms gap between two
+    # unblank packets, with NO still_wanted, means no further 100 is sent.
+    # Both ways round: the unblank wakes while the blank is still sending
+    # its 0s (catches a blank that counts itself only after its packets),
+    # and after the blank has finished (catches an unblank that takes a
+    # fresh count before every packet, so never sees a blank at all).
+    for mid in (True, False):
+        log3 = []
+        in_gap, go = threading.Event(), threading.Event()
+
+        def sleeper(s, mid=mid, in_gap=in_gap, go=go):
+            who = threading.current_thread().name
+            if who == "unblanker" and not in_gap.is_set():
+                in_gap.set()             # after the first 100: the gap
+                go.wait(2.0)
+                return
+            if who == "blanker" and mid and not go.is_set():
+                go.set()                 # wake the unblank mid blank
+                time.sleep(0.15)
+                return
+            time.sleep(s)
+        bey3 = B.Beyond(B.BeyondConfig.parse({}),
+                        socket_factory=lambda log3=log3: _RTSock("beyond",
+                                                                 log3),
+                        sleep=sleeper)
+        got3 = {}
+        u = threading.Thread(target=lambda: got3.setdefault(
+            "r", bey3.unblank(in_show=True)), name="unblanker")
+        u.start()
+        check(in_gap.wait(2.0), "the unblank reached its first gap")
+        bt = threading.Thread(target=bey3.blank, name="blanker")
+        bt.start()
+        bt.join(2)
+        go.set()
+        u.join(2)
+        when = "while the blank was sending" if mid else \
+            "after the blank had finished"
+        seq = sorted(log3, key=lambda e: e[3])
+        first0 = next((e[3] for e in seq if e[2] == 0.0), None)
+        late100 = [e for e in seq if e[2] == 100.0 and first0 is not None
+                   and e[3] >= first0]
+        check(first0 is not None and not late100,
+              f"an unblank woken {when} sends no further 100: "
+              f"{[e[2] for e in seq]}")
+        out = [e[2] for e in sorted(log3, key=lambda e: e[4])]
+        check(out.count(100.0) == 1 and out[-1] == 0.0,
+              f"one 100 before the blank, and 0 last ({when}): {out}")
+        check(got3.get("r") is False and bey3.last_result in ("cut", "ok"),
+              f"the cut unblank does not report success ({when}): {got3}")
+
+    # Review round 3: the 0 that follows a 100 caught on its way out is
+    # retried like any blank. The blank has already returned True by then,
+    # so a single lost 0 left BEYOND lit with everything above it sure the
+    # lasers were dark.
+    log4 = []
+    release4 = threading.Event()
+    lost = []
+
+    class StallThenLose(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            v = MM.decode_float(pkt)[1]
+            if threading.current_thread().name == "unblanker4":
+                if v == 100.0:
+                    release4.wait(2.0)
+                elif v == 0.0 and not lost:
+                    lost.append(1)
+                    raise OSError("the first 0 after the 100 is lost")
+            _RTSock.sendto(self, pkt, addr)
+
+    bey4 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: StallThenLose("beyond", log4))
+    u4 = threading.Thread(target=lambda: bey4.unblank(in_show=True),
+                          name="unblanker4")
+    u4.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    check(bey4.blank(), "the blank itself got out")
+    release4.set()
+    u4.join(2)
+    out4 = [e[2] for e in sorted(log4, key=lambda e: e[4])]
+    check(lost and out4 and out4[-1] == 0.0,
+          f"one lost 0 after the late 100 does not leave BEYOND lit: "
+          f"{out4}")
+    print("  ok")
+
+
+def test_conductor_abort_is_never_held_up_by_a_slow_device():
+    section("conductor: Abort's flame cut and laser blank go out within a "
+            "few ms of the press, whatever BEYOND, the laser gate or an "
+            "announcement is doing (review of PR #29, finding D)")
+    C = _cond_mod()
+    FEW = 0.02
+    # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
+    #    show start's unblank is part way out.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW,
+              f"the flame cut went out within {FEW * 1000:.0f} ms "
+              f"({(fz[0][2] - t0) * 1000 if fz else None} ms)")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.8)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        check(zeros and zeros[0][3] - t0 < FEW,
+              f"the first blank packet was handed to the socket within "
+              f"{FEW * 1000:.0f} ms of the press "
+              f"({(zeros[0][3] - t0) * 1000 if zeros else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "no unblank packet was started after the press")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"recorded dark: {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        link.close()
+
+    # 1b) The same, with a Hold: its blank waits its turn on the executor,
+    #     but the restore stops before its next packet all the same (the
+    #     conductor's restore guard), so no 100 starts after the press.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+        check(c.wait_idle(5), "the Hold finished")
+        time.sleep(0.5)
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"no unblank packet was started after the Hold press: "
+              f"{[(e[2], round(e[3] - t0, 3)) for e in log if e[0] == 'beyond']}")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 2) A laser gate that takes 500 ms: the Abort's fade does not wait.
+    def slow_gate():
+        time.sleep(0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=slow_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        c.resume("Andy", "rack screen")
+        time.sleep(0.2)                  # the executor is in the gate
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        px = [cl for cl in rig.calls if cl[0] == "pixels_fade_out"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during a "
+              f"slow gate")
+        check(px and px[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the gate "
+              f"({(px[0][2] - t0) * 1000 if px else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "the gate's late yes lit nothing")
+    finally:
+        c.close()
+        link.close()
+
+    # 2b) Review round 3: a laser gate that hangs past GATE_TIMEOUT_S and
+    #     only then says yes. No Abort this time: the timeout itself has to
+    #     be a no, and the late yes must light nothing.
+    def hung_gate():
+        time.sleep(C.GATE_TIMEOUT_S + 0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=hung_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        t0 = time.perf_counter()
+        c.resume("Andy", "rack screen")
+        check(c.wait_idle(C.GATE_TIMEOUT_S + 3), "the Resume finished")
+        time.sleep(0.8)                  # past the gate's late yes
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
+              f"{[e[2] for e in _rt_vals(log, 'beyond', since=t0)]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"and the lasers are recorded dark: "
+              f"{c.snapshot()['applied']['lasers']}")
+        check(any("did not answer within" in t for t, _f in lines),
+              f"the journal says the gate did not answer: "
+              f"{[t for t, _f in lines if 'gate' in t]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 3) An announcement still reading its file (400 ms).
+    c, rig, log, lines, link, bey = _rt_rig(
+        announcer=lambda *a: time.sleep(0.4))
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.announce("welcome", "Andy", "rack screen")
+        time.sleep(C.ANNOUNCE_FADE_S + C.ANNOUNCE_DARK_S + 0.2)
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        mh = [cl for cl in rig.calls if cl[0] == "music_halt"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during an "
+              f"announcement's file read")
+        check(mh and mh[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the file "
+              f"({(mh[0][2] - t0) * 1000 if mh else None} ms)")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_hears_about_madmapper_failures_and_stalls():
+    section("conductor: a MadMapper send that fails, or a MadMapper sender "
+            "that stalls, is a fault and leaves the video UNKNOWN, and a "
+            "later Abort fades it anyway (review of PR #29, finding A)")
+    C = _cond_mod()
+
+    def no_net():
+        raise OSError("network is down")
+    c, rig, log, lines, link, bey = _rt_rig(mm_factory=no_net)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.4)                  # the Link's worker has run it
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN,
+              f"a video fade that never got out is UNKNOWN, never black: "
+              f"{snap['applied']}")
+        check(snap["faults"] >= 1 and any(
+            f and "not sent to MadMapper" in t for t, f in lines),
+              f"and a fault line says so: {[t for t, f in lines if f]}")
+        check(not any(len(t) > 600 for t, _f in lines),
+              "the fault line names each reason once, not once a packet")
+        n = sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                in t)
+        c.abort("Andy", "rack screen")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.3)
+        check(sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                  in t) > n,
+              "a later Abort sends the video fade again (and says it "
+              "failed again)")
+    finally:
+        c.close()
+        link.close()
+
+    # A stalled sender: the Link's worker is stuck behind another job.
+    saved = C.VIDEO_STALL_S
+    C.VIDEO_STALL_S = 0.4
+    c, rig, log, lines, link, bey = _rt_rig()
+    stuck = threading.Event()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        time.sleep(0.1)
+        link._submit(lambda: stuck.wait(3.0), wait=False)
+        t0 = time.perf_counter()
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        early = c.snapshot()["applied"]["video"]
+        check(time.perf_counter() - t0 > C.HOLD_FADE_S + 0.4 or
+              early == C.UNKNOWN,
+              f"a fade MadMapper has not sent yet is not recorded black: "
+              f"{early}")
+        time.sleep(max(0.0, t0 + C.HOLD_FADE_S + 0.4 + 0.3
+                       - time.perf_counter()))
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN and any(
+            f and "has not sent it yet" in t for t, f in lines),
+              f"a stalled MadMapper sender is a fault and the video is "
+              f"UNKNOWN: {snap['applied']} {[t for t, f in lines if f]}")
+    finally:
+        stuck.set()
+        C.VIDEO_STALL_S = saved
+        c.close()
+        link.close()
+
+    # Only the latest video command's success counts: a Hold's fade that
+    # goes out after a Resume asked for the video back up does not make
+    # the record say black.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    g1, g2 = threading.Event(), threading.Event()
+    link._submit(lambda: g1.wait(3.0), wait=False)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    hold_ran = threading.Event()          # queued right after the Hold's
+    link._submit(hold_ran.set, wait=False)
+    link._submit(lambda: g2.wait(3.0), wait=False)
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          "neither command has gone out yet: UNKNOWN")
+    g1.set()
+    check(hold_ran.wait(2.0), "the Hold's video command has run")
+    time.sleep(0.05)
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          f"the Hold's fade went out, but the Resume's is the latest: not "
+          f"black: {c.snapshot()['applied']}")
+    g2.set()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["video"] == C.LIT,
+          f"and once the Resume's goes out, lit: {c.snapshot()['applied']}")
+    link.close()
+
+    # And when it all goes out, the record says so (and only then).
+    c, rig, log, lines, link, bey = _rt_rig()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.2)
+        check(c.snapshot()["applied"]["video"] == C.BLACK,
+              f"a fade the Link sent is recorded black: "
+              f"{c.snapshot()['applied']}")
+        check(not any(f for _t, f in lines),
+              f"and nothing is a fault: {[t for t, f in lines if f]}")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_a_failed_abort_blank_can_be_sent_again():
+    section("conductor: BEYOND unreachable at Abort; a second Abort, a "
+            "second Hold and intermission() all send the blank again and "
+            "say how the lasers really stand (review of PR #29, finding B)")
+    C = _cond_mod()
+    down = [False]
+    vals = []                            # every brightness that got out
+
+    class Flaky(_FakeMMSock):
+        def __init__(self):
+            if down[0]:
+                raise OSError("no route to host")
+            super().__init__()
+
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if down[0]:
+                raise OSError("no route to host")
+            super().sendto(pkt, addr)
+            vals.append(MM.decode_float(pkt)[1])
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    r = c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check("did NOT get out" in r.sentence,
+          f"the Abort says its blank did not get out: {r.sentence}")
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          "the lasers are UNKNOWN after a blank that did not get out")
+    r = c.abort("Jeff", "Stream Deck")
+    check(r.ok and "may still be lit" in r.sentence,
+          f"a second Abort while BEYOND is still down says so: {r}")
+    down[0] = False
+    del vals[:]
+    r = c.abort("Jeff", "Stream Deck")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence,
+          f"once BEYOND is back, a second Abort blanks it: {b} {r}")
+    check(c.snapshot()["applied"]["lasers"] == C.BLACK, "recorded dark")
+    # intermission() while latched: blank again, and the real state.
+    del vals[:]
+    r = c.intermission("scheduler")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence
+          and "already dark" not in r.sentence,
+          f"intermission() while aborted blanks again and reports the real "
+          f"state: {b} {r}")
+    check(c.latched, "and the Abort stays latched")
+    link.close()
+    # A second Hold while held, with the first blank lost.
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN, "hold blank lost")
+    down[0] = False
+    del vals[:]
+    r = c.hold("Andy", "rack screen")
+    b = list(vals)
+    check(b == [0.0] * 3 and "Already on hold" in r.sentence
+          and c.snapshot()["applied"]["lasers"] == C.BLACK,
+          f"a second Hold blanks again: {b} {r}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_video_never_rises_after_abort_or_hold():
+    section("conductor: Abort or Hold during a Resume's video fade-up stops "
+            "it where it is and fades down from there, never up to full "
+            "first (review of PR #29, finding C)")
+    C = _cond_mod()
+    for press in ("abort", "hold"):
+        for delay in (0.03, 0.12, 0.2):
+            c, rig, log, lines, link, bey = _rt_rig()
+            rig.move_s = 0.3
+            try:
+                c.show_starting("Andy", "rack screen")
+                check(c.wait_idle(5), "show start done")
+                c.hold("Andy", "rack screen")
+                check(c.wait_idle(5), "hold done")
+                time.sleep(0.4)
+                c.resume("Andy", "rack screen")
+                time.sleep(delay)
+                t0 = time.perf_counter()
+                getattr(c, press)("Andy", "rack screen")
+                check(c.wait_idle(5), f"{press} done")
+                time.sleep(1.3)
+                q1 = [e for e in log if e[0] == "mm"
+                      and e[1] == "/surfaces/Quad-1/opacity"]
+                before = [e[2] for e in q1 if e[3] < t0]
+                after = [e[2] for e in q1 if e[3] >= t0]
+                at = before[-1] if before else None
+                # One ramp step may already have been on its way out at
+                # the press (the perceptual fade-up's biggest is 2/30).
+                step = 2.0 / 30
+                ok = (at is not None and after and after[-1] == 0.0
+                      and after[0] <= at + step + 1e-6
+                      and all(b <= a + 1e-6 for a, b in
+                              zip(after, after[1:])))
+                check(ok, f"{press} {delay * 1000:.0f} ms into a Resume: "
+                          f"level at the press {at}, then never up: "
+                          f"{[round(v, 3) for v in after[:6]]} ... "
+                          f"{after[-1:] if after else None}")
+            finally:
+                c.close()
+                link.close()
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
+    section("conductor: a rehearsal Hold that stops a Resume's video fade-up "
+            "part way leaves the video recorded unknown, not lit, and the "
+            "next Resume brings it back up (review round 3)")
+    C = _cond_mod()
+    # The Hold has to land inside a 0.25 s fade-up. On a loaded machine it
+    # may land after the fade has finished; that run proves nothing, so the
+    # setup is tried again (up to 3 times) rather than passed or failed.
+    for attempt in range(3):
+        c, rig, log, lines, link, bey = _rt_rig()
+        rig.move_s = 0.3
+        try:
+            c.show_starting("Andy", "rack screen")
+            check(c.wait_idle(5), "show start done")
+            c.hold("Andy", "rack screen")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(0.5)
+            c.resume("Andy", "rack screen")        # a production fade-up
+            time.sleep(0.06)
+            c.set_mode(C.REHEARSAL)
+            check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(1.5)   # the stopped fade's own report has arrived
+            q1 = [e for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity"]
+            last = q1[-1][2] if q1 else None
+            if last is not None and not 0.0 < last < 1.0 and attempt < 2:
+                continue                 # the Hold missed the fade
+            rec = c.snapshot()["applied"]["video"]
+            # video_cancel() has to make the stopped fade's success stale:
+            # if it does not, that report lands after the Hold and records
+            # the video lit at whatever level the fade had reached.
+            check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
+                  f"the fade stopped part way ({last}) and the video is "
+                  f"not recorded lit: {rec}")
+            t1 = time.perf_counter()
+            c.resume("Andy", "rack screen")
+            check(c.wait_idle(5), "rehearsal Resume done")
+            time.sleep(1.0)
+            up = [e[2] for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= t1]
+            check(up and up[-1] == 1.0,
+                  f"the next Resume brings the video back to full: {up}")
+            break
+        finally:
+            c.close()
+            link.close()
+    print("  ok")
+
+
+def test_conductor_announcement_after_abort_and_reset():
+    section("conductor: an announcement between shows after Abort and Reset "
+            "does not run the Abort again (review of PR #29, finding E)")
+    C = _cond_mod()
+    played = []
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: played.append(a))
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(c.reset("Andy", "rack screen").ok, "Reset")
+    rig.cue = False
+    del rig.calls[:]
+    n = len(lines)
+    r = c.announce("welcome", "Andy", "rack screen")
+    c.run_pending()
+    later = [t for t, _f in lines[n:]]
+    check(r.ok and played, f"the announcement plays: {r}")
+    check(not any("Abort finished" in t or "Latched until Reset" in t
+                  for t in later),
+          f"and nothing says the Abort ran again or is latched: {later}")
+    check(not any(n_ in ("video_fade_out", "music_halt", "video_stop",
+                         "flames_disarm_all") for n_ in rig.names()),
+          f"none of the Abort's steps are sent again: {rig.names()}")
+    check(any("lasers blanked" in t for t, _f in lines),
+          "journal lines say the lasers were blanked")
+    check(not any("lasers faded" in t for t, _f in lines),
+          f"and never that they were faded: {lines}")
+    print("  ok")
+
+
+def _mm_values(socks):
+    from ltcplay import madmapper as MM
+    out = []
+    for s in socks:
+        for pkt, _addr in s.sent:
+            f = MM.decode_float(pkt)
+            if f is not None:
+                out.append(f)
+    return out
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
@@ -25527,8 +30682,1374 @@ def test_the_gpl_path_never_loads_the_conductor():
     print("  ok")
 
 
+# ------------------------------------------------ the flame link ----
+# ltcplay/flamelink.py: ltcplay's side of flamesafe/CONTRACT.md's flame
+# link. The unit tests drive it with fakes; the end-to-end test runs the
+# REAL flamesafe as its own process (python -m flamesafe) and talks to it
+# over real loopback UDP, so this process still never imports flamesafe.
+
+# flamesafe's lamp words for a group its Abort disarmed (CONTRACT.md). Not
+# imported (the wall): the test below checks the two files still say it.
+FLAME_ABORT_WORDS = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+
+
+def _fl_key():
+    import secrets
+    # Made up per run: a real key is never written into this repo.
+    return "selftest-" + secrets.token_hex(12)
+
+
+class _FlJournal:
+    def __init__(self):
+        self.lines = []
+
+    def __call__(self, text, **kw):
+        self.lines.append((text, kw))
+
+    def faults(self):
+        return [t for t, kw in self.lines if kw.get("fault")]
+
+    def outcomes(self):
+        return [kw.get("outcome") for _t, kw in self.lines]
+
+
+class _FlSock:
+    """A socket that records what was sent, and fails while `failing`."""
+
+    def __init__(self):
+        self.sent = []
+        self.failing = False
+
+    def sendto(self, data, addr):
+        if self.failing:
+            raise OSError(111, "Connection refused")
+        self.sent.append((data, addr))
+
+    def close(self):
+        pass
+
+
+def test_flame_link_unit():
+    section("flame link: config, what goes in a frame, the wire format, "
+            "zero/release/disarm_all, failing loud, the lock alarm")
+    import json
+    from ltcplay import flamelink as fl
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    # Config. Every refusal is a sentence; the key is read, never built in.
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    c = fl.FlameLinkConfig.parse(good)
+    check((c.ip, c.port, c.universe, c.key, c.send_hz, c.frame_stale_ms)
+          == ("127.0.0.1", 5571, 1, key, 40, 500), "a minimal block parses")
+    for bad in ({**good, "ip": "10.0.0.5"}, {**good, "ip": "localhost"},
+                {k: v for k, v in good.items() if k != "frame_stale_ms"},
+                {**good, "port": 0}, {**good, "port": True},
+                {**good, "universe": 0}, {**good, "key": "short"},
+                {**good, "key": "has a space in it ok"},
+                {**good, "key": key + "\n"},
+                {**good, "frame_stale_ms": 99},
+                {**good, "frame_stale_ms": 2501},
+                {**good, "frame_stale_ms": "500"},
+                {k: v for k, v in good.items() if k != "key"},
+                {**good, "send_hz": 19}, {**good, "send_hz": 101},
+                {**good, "send_hz": 30.0}, {**good, "sendhz": 40}, []):
+        try:
+            fl.FlameLinkConfig.parse(bad)
+            check(False, f"accepted a bad flame link block: {bad!r}")
+        except fl.FlameLinkConfigError as e:
+            check(str(e) and "—" not in str(e) and "–" not in str(e),
+                  f"refused in a sentence with no dashes: {e}")
+    ex = fl.FlameLinkConfig.from_flamesafe_config(
+        os.path.join(here, "flamesafe", "flamesafe.example.json"))
+    check((ex.ip, ex.port, ex.universe) == ("127.0.0.1", 5571, 1)
+          and ex.key == fl.EXAMPLE_KEY,
+          "flamesafe's own example config gives the link's address, "
+          "universe and key, read as plain JSON")
+    # Fix round 2, item 1 (the review's p11): flamesafe's OWN frame_stale_ms
+    # is carried through, so the Abort repeats long enough for the real
+    # flamesafe; and a flame_link block without it is refused above.
+    import json as _json
+    import tempfile as _tf
+    exd = _json.load(open(os.path.join(here, "flamesafe",
+                                       "flamesafe.example.json"),
+                          encoding="utf-8"))
+    exd["frame_stale_ms"] = 2500
+    tmpd = _tf.mkdtemp()
+    try:
+        p = os.path.join(tmpd, "flamesafe.json")
+        _json.dump(exd, open(p, "w", encoding="utf-8"))
+        c25 = fl.FlameLinkConfig.from_flamesafe_config(p)
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpd, ignore_errors=True)
+    check(c25.frame_stale_ms == 2500 and c25.abort_repeat_s == 2.75,
+          f"flamesafe's frame_stale_ms 2500 is read from its config: the "
+          f"Abort repeats {c25.abort_repeat_s} s")
+    check(ex.frame_stale_ms == 500,
+          f"and the example config's 500: {ex.frame_stale_ms}")
+    check(fl.FlameLinkConfig("127.0.0.1", 5571, 1, key).frame_stale_ms
+          == 2500, "a config built in code without it assumes the largest "
+                   "frame_stale_ms flamesafe accepts, never a short one")
+    src = open(os.path.join(here, "ltcplay", "flamelink.py"),
+               encoding="utf-8").read()
+    check(src.count(fl.EXAMPLE_KEY) == 1 and "EXAMPLE_KEY = " in src,
+          "the only key written in flamelink.py is the example key, kept "
+          "only to warn about it")
+
+    # A link on fakes.
+    t = [100.0]
+    j = _FlJournal()
+    state = {"tc": "00:00:10:00", "live": True}
+    cues = {"v": None}
+
+    def provider(tc):
+        v = cues["v"]
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    link = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=provider,
+                        show_state=lambda: (state["tc"], state["live"]),
+                        journal=j, clock=lambda: t[0])
+    sock = _FlSock()
+    link._sock = sock
+    fire = [0] * 512
+    fire[410] = 200
+
+    def last():
+        return json.loads(sock.sent[-1][0])
+
+    check(link.zeroed, "a new link starts with its cues zeroed")
+    cues["v"] = fire
+    link.send_frame()
+    f = last()
+    check(set(f) == {"v", "k", "t", "seq", "tc", "mono", "universe",
+                     "values"} and f["v"] == 2 and f["k"] == key
+          and f["t"] == "flame" and f["universe"] == 1
+          and len(f["values"]) == 512 and f["tc"] == "00:00:10:00"
+          and isinstance(f["mono"], float),
+          f"a flame frame is exactly CONTRACT.md's: {sorted(f)}")
+    check(sock.sent[-1][1] == ("127.0.0.1", 5571), "sent to flamesafe")
+    check(not any(f["values"]), "zeroed: all zeros though the cue has fire")
+    check(link.release() is True, "release() answers True with the link open")
+    link.send_frame()
+    check(last()["values"][410] == 200, "released and live: the cue goes out")
+    for what, setup in (
+            ("not live (held, stopped or fading)",
+             lambda: state.update(live=False)),
+            ("no timecode", lambda: state.update(tc=None)),
+            ("a timecode that is not HH:MM:SS:FF",
+             lambda: state.update(tc="10 seconds")),
+            ("a timecode with a trailing newline",
+             lambda: state.update(tc="00:00:10:00\n")),
+            ("a timecode with something after it",
+             lambda: state.update(tc="00:00:10:00:00")),
+            ("a timecode in non-ASCII digits",
+             lambda: state.update(tc="٠٠:٠٠:١"
+                                     "٠:٠٠")),
+            ("live given as something other than True",
+             lambda: state.update(live=1)),
+            ("the provider raised", lambda: cues.update(v=RuntimeError("x"))),
+            ("the provider answered 511 values",
+             lambda: cues.update(v=fire[:511])),
+            ("the provider answered a 256", lambda: cues.update(
+                v=[256] + [0] * 511)),
+            ("the provider answered a bool", lambda: cues.update(
+                v=[True] + [0] * 511)),
+            ("the provider answered None", lambda: cues.update(v=None))):
+        state.update(tc="00:00:10:00", live=True)
+        cues["v"] = fire
+        setup()
+        link.send_frame()
+        check(not any(last()["values"]), f"{what}: all zeros")
+    state.update(tc="00:00:10:00", live=True)
+    cues["v"] = fire
+    link.send_frame()
+    check(last()["values"][410] == 200, "and back once it clears")
+    probs = [t_ for t_, kw in j.lines if kw.get("outcome") == "cues_zero"]
+    check(len(probs) == 2 and "raised" in probs[0] and "512" in probs[1],
+          f"each kind of provider problem is one fault line, not one per "
+          f"frame: {probs}")
+    check("cues_back" in [kw.get("outcome") for _t, kw in j.lines],
+          "and its end is a line")
+    link.send_frame()
+    link.send_frame()
+    check(len([1 for _t, kw in j.lines if kw.get("outcome") == "cues_zero"])
+          == 2, "a healthy frame writes nothing")
+    state["tc"] = None
+
+    def bad_state():
+        raise RuntimeError("clock gone")
+    link.show_state = bad_state
+    link.send_frame()
+    check(not any(last()["values"]) and last()["tc"] is None,
+          "a show state that raises: zeros, no timecode")
+    link.show_state = lambda: (state["tc"], state["live"])
+
+    # seq and mono: up by one per datagram, mono never backwards, even when
+    # the clock steps back.
+    seqs = [json.loads(d)["seq"] for d, _a in sock.sent]
+    check(seqs == list(range(seqs[0], seqs[0] + len(seqs))),
+          "seq goes up by one per datagram")
+    t[0] = 50.0
+    link.send_frame()
+    check(last()["mono"] >= 100.0, "mono never goes backwards")
+    t[0] = 101.0
+
+    # zero(): sends a zero frame at once.
+    n = len(sock.sent)
+    check(link.zero() is True and len(sock.sent) == n + 1
+          and not any(last()["values"]) and link.zeroed,
+          "zero() sends one all-zero frame at once and stays zeroed")
+
+    # disarm_all: a zero frame, then the copies, one abort id, own seqs.
+    link.release()
+    n = len(sock.sent)
+    check(link.disarm_all("Abort from the rack screen") is True,
+          "disarm_all answers True when it went out")
+    sent = [json.loads(d) for d, _a in sock.sent[n:]]
+    check(len(sent) == 1 + fl.DISARM_COPIES and sent[0]["t"] == "flame"
+          and not any(sent[0]["values"]),
+          "first a zero flame frame, then the disarm copies")
+    d = sent[1:]
+    aid1 = link.abort_id
+    check(all(set(x) == {"v", "k", "t", "seq", "mono", "id", "reason"}
+              and x["t"] == "disarm_all" and x["k"] == key and x["v"] == 2
+              and x["id"] == aid1
+              and x["reason"] == "Abort from the rack screen"
+              for x in d), f"each copy is exactly CONTRACT.md's: {d[0]}")
+    check([x["seq"] for x in sent] == list(range(sent[0]["seq"],
+                                                 sent[0]["seq"] + len(sent))),
+          "every datagram, flame or disarm, takes the next seq")
+    check(link.zeroed, "and the cues stay zero until a new release()")
+    check(fl.DISARM_COPIES == 3 and fl.SEND_HZ_DEFAULT == 40
+          and fl.LOCK_ALARM_S == 1.0 and fl.CONFIRM_S == 1.0,
+          "the flame link's constants are pinned: changing one is a "
+          "decision, made here on purpose")
+    link.disarm_all("x" * 500 + "\n")
+    d2 = json.loads(sock.sent[-1][0])
+    check(d2["id"] == aid1 + 1 and len(d2["reason"]) <= 200,
+          "a new Abort is a new id; a long reason is cut to the contract")
+
+    # Sends that fail: one line when it starts, one when it ends. (First
+    # let the Abort's repeat window run out, so each pass is one datagram.)
+    t[0] += 1.0
+    link.send_frame()
+    check(link._abort_repeat is None, "the Abort's repeat window ends")
+    j.lines.clear()
+    sock.failing = True
+    for _ in range(20):
+        check(link.send_frame() is False, "a failed send answers False") \
+            if _ == 0 else link.send_frame()
+    check(link.zero() is False, "zero() answers False when it did not go out")
+    check(link.disarm_all("Abort") is False,
+          "disarm_all answers False when nothing went out")
+    fails = [t_ for t_, kw in j.lines if kw.get("outcome") == "send_failed"]
+    check(len(fails) == 1 and "Connection refused" in fails[0],
+          f"one line for the whole outage: {fails}")
+    check(any(kw.get("outcome") == "disarm_failed" and kw.get("fault")
+              for _t, kw in j.lines),
+          "a disarm that did not go out is its own fault line")
+    t[0] += 3.0
+    sock.failing = False
+    link.send_frame()
+    rec = [t_ for t_, kw in j.lines if kw.get("outcome") == "send_recovered"]
+    check(len(rec) == 1 and "3.0 s" in rec[0] and "25 frame" in rec[0],
+          f"and one when it ends, with how long and how many: {rec}")
+    check(link.send_errors == 25 and link.snapshot()["sending_ok"],
+          "the count stays; the snapshot says sending is fine again")
+
+    # The lock alarm: flamesafe's last accepted seq not ours for > 1 s.
+    j.lines.clear()
+    ok = {"frames": {"seq": link.seq}}
+    check(link.note_status(ok) == "", "our own seq: no alarm")
+    rogue = {"frames": {"seq": link.seq + 10 ** 6}}
+    link.note_status(rogue)
+    t[0] += 0.9
+    check(link.note_status(rogue) == "", "not ours for 0.9 s: no alarm yet")
+    t[0] += 0.2
+    check("not one this program sent" in link.note_status(rogue),
+          "not ours for over 1 s: the alarm")
+    link.note_status(rogue)
+    check(len([1 for _t, kw in j.lines if kw.get("outcome") == "lock_alarm"])
+          == 1, "journaled once")
+    link.note_status({"frames": {"seq": None}})
+    check(link.lock_alarm, "a status with no seq at all is not ours either")
+    link.note_status(ok)
+    check(link.lock_alarm == "" and "lock_back" in j.outcomes(),
+          "clears, with a line, when ours again")
+
+    # The disarm confirmation.
+    j.lines.clear()
+    link.release()
+    link.disarm_all("Abort")
+    aid = link.abort_id
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid - 1}})
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid + 1}})
+    check(link._pending_abort is not None,
+          "another Abort's id, larger or smaller, does not confirm this one")
+    t[0] += 1.5
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid - 1}})
+    check("disarm_unconfirmed" in j.outcomes()
+          and link.snapshot()["disarm_unconfirmed"],
+          "not confirmed by flamesafe after 1 s: a fault")
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid}})
+    check("disarm_confirmed" in j.outcomes()
+          and not link.snapshot()["disarm_unconfirmed"],
+          "confirmed late: said so")
+    check(link.note_status("garbage") == "", "a garbage status never raises")
+
+    # Status frames: only ours.
+    good_st = json.dumps({"v": 2, "t": "status", "k": key}).encode()
+    check(fl.decode_status(good_st, key) is not None, "our status decodes")
+    for bad in (json.dumps({"v": 2, "t": "status", "k": "other"}).encode(),
+                json.dumps({"v": 1, "t": "status", "k": key}).encode(),
+                json.dumps({"v": 2, "t": "flame", "k": key}).encode(),
+                b"\xff", b"[]", None):
+        check(fl.decode_status(bad, key) is None,
+              f"not our status frame: {bad!r}")
+
+    # The example key is a fault line at open.
+    j2 = _FlJournal()
+    l2 = fl.FlameLink(fl.FlameLinkConfig.parse({**good,
+                                                "key": fl.EXAMPLE_KEY}),
+                      journal=j2)
+    l2.open()
+    check("example_key" in j2.outcomes() and j2.faults(),
+          "the repo's example key is a fault line at open")
+    l2.stop()
+    check(l2.zero() is False and l2.release() is False,
+          "a stopped link says its calls did not go out")
+
+    # audio_master_state on a stand-in clock.
+    class Clk:
+        playing, paused, _halting, last_sent = True, False, False, (0, 1, 2, 3)
+    clk = Clk()
+    st = fl.audio_master_state(lambda: clk)
+    check(st() == ("00:01:02:03", True), f"a playing clock is live: {st()}")
+    clk.paused = True
+    check(st() == ("00:01:02:03", False), "paused (or fading into it): not "
+                                          "live")
+    clk.paused, clk._halting = False, True
+    check(st()[1] is False, "fading out on an Abort: not live")
+    clk._halting, clk.playing = False, False
+    check(st() == (None, False), "stopped: no timecode, not live")
+    check(fl.audio_master_state(lambda: None)() == (None, False),
+          "no clock: not live")
+
+    # The lamp words, in flamesafe and on the deck, without importing either
+    # side into the other.
+    comp = open(os.path.join(here, "flamesafe", "composer.py"),
+                encoding="utf-8").read()
+    contract = open(os.path.join(here, "flamesafe", "CONTRACT.md"),
+                    encoding="utf-8").read()
+    check(FLAME_ABORT_WORDS in comp and FLAME_ABORT_WORDS in contract,
+          "the abort lamp words are the same in composer.py and CONTRACT.md")
+    from ltcplay import streamdeck as sd
+    look = sd.group_look({"armed": "held", "reason": FLAME_ABORT_WORDS,
+                          "amber": "flashing", "dwell_s": 0})
+    check(look[0] == "ABORTED" and look[4] is True,
+          f"the deck shows ABORTED, flashing (cycle the arm): {look}")
+    print("  ok")
+
+
+class _FlBadSock(_FlSock):
+    """sendto raises something that is not an OSError while `mode` says
+    so: "raise" an ordinary exception, "die" a BaseException."""
+
+    class Die(BaseException):
+        pass
+
+    def __init__(self):
+        super().__init__()
+        self.mode = None
+
+    def sendto(self, data, addr):
+        if self.mode == "raise":
+            raise RuntimeError("not a socket error")
+        if self.mode == "die":
+            raise self.Die("gone")
+        super().sendto(data, addr)
+
+
+def test_flame_link_fix_round_1():
+    section("flame link, fix round 1 of PR #34: the Abort repeats past "
+            "frame_stale_ms, only its own id confirms it, seq and ids start "
+            "at random, a still timecode is zeros, the sender thread "
+            "survives and says so, zero() and disarm_all() never ask the "
+            "providers")
+    import json
+    import threading
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    fire = [0] * 512
+    fire[410] = 200
+
+    def make(clock, sock=None, cfg=None, **kw):
+        lk = fl.FlameLink(fl.FlameLinkConfig.parse({**good, **(cfg or {})}),
+                          clock=clock, **kw)
+        lk._sock = sock if sock is not None else _FlSock()
+        return lk, lk._sock
+
+    def sent(sock, since=0):
+        return [json.loads(d) for d, _a in sock.sent[since:]]
+
+    # -- item 1: one Abort, repeated once per frame past frame_stale_ms ----
+    check(fl.ABORT_REPEAT_MIN_S == 0.75 and fl.TC_STILL_S == 0.1,
+          "the repeat and still-timecode constants are pinned")
+    check(fl.FlameLinkConfig.parse(good).abort_repeat_s == 0.75
+          and fl.FlameLinkConfig.parse(
+              {**good, "frame_stale_ms": 2000}).abort_repeat_s == 2.25,
+          "an Abort repeats for 0.75 s, or 0.25 s past a longer "
+          "frame_stale_ms")
+    t = [100.0]
+    j = _FlJournal()
+    lk, sock = make(lambda: t[0], journal=j)
+    check(lk.disarm_all("Abort from the rack screen") is True, "sent")
+    aid = lk.abort_id
+    line = [x for x, kw in j.lines if kw.get("outcome") == "disarm_sent"]
+    check(len(line) == 1 and "NOT yet confirmed by flamesafe" in line[0]
+          and "repeating it every frame for 0.75 s" in line[0],
+          f"the journal says sent, not done: {line}")
+    check(lk.snapshot()["abort"] == "sent, not yet confirmed by flamesafe",
+          f"and so does the snapshot: {lk.snapshot()['abort']!r}")
+    copies, flames = [], 0
+    for _ in range(48):                  # 1.2 s at 40 Hz
+        t[0] += 0.025
+        n = len(sock.sent)
+        lk.send_frame()
+        new = sent(sock, n)
+        flames += sum(1 for x in new if x["t"] == "flame")
+        copies += [(t[0] - 100.0, x) for x in new if x["t"] == "disarm_all"]
+    times = [round(tt, 3) for tt, _x in copies]
+    check(flames == 48 and 29 <= len(copies) <= 30
+          and {x["id"] for _tt, x in copies} == {aid}
+          and max(times) <= 0.75 and min(times) == 0.025,
+          f"one copy of the same Abort after every frame for 0.75 s, then "
+          f"none: {len(copies)} copies, {times[:2]}..{times[-2:]}")
+    seqs = [x["seq"] for x in sent(sock)]
+    check(seqs == list(range(seqs[0], seqs[0] + len(seqs))),
+          "every copy takes the next seq")
+    lk.note_status({"frames": {"seq": lk.seq},
+                    "disarm_all": {"last_id": aid}})
+    ok = [x for x, kw in j.lines if kw.get("outcome") == "disarm_confirmed"]
+    check(lk.snapshot()["abort"] == "confirmed by flamesafe" and len(ok) == 1
+          and "late" not in ok[0],
+          f"flamesafe's own status confirms it, and only then is it said: "
+          f"{ok}")
+    # Every immediate copy lost (the review's p6): the repeats carry it.
+    lk2, sock2 = make(lambda: t[0], cfg={"frame_stale_ms": 2000})
+    sock2.failing = True
+    check(lk2.disarm_all("Abort") is False,
+          "nothing went out at once: disarm_all says so")
+    sock2.failing = False
+    got = []
+    for _ in range(100):                 # 2.5 s
+        t[0] += 0.025
+        n = len(sock2.sent)
+        lk2.send_frame()
+        got += [(t[0], x) for x in sent(sock2, n) if x["t"] == "disarm_all"]
+    check(got and {x["id"] for _t, x in got} == {lk2.abort_id}
+          and got[-1][0] - got[0][0] > 2.0,
+          f"...and the same Abort still reaches flamesafe on the next "
+          f"frames, for longer than its frame_stale_ms: {len(got)} copies")
+
+    # -- items 3 and 4: random starts; only this Abort's id confirms it ----
+    a, _sa = make(time.perf_counter)
+    b, _sb = make(time.perf_counter)
+    check(min(a.seq, b.seq, a.abort_id, b.abort_id) >= fl.RANDOM_START_MIN
+          and a.seq != b.seq and a.abort_id != b.abort_id,
+          f"seq and abort ids start at a random large number per link: "
+          f"{a.seq} {b.seq} {a.abort_id} {b.abort_id}")
+    # A rogue holding flamesafe's lock, counting up from 1 like any fresh
+    # sender (the review's p4 a20): its seq is never "ours".
+    t5 = [0.0]
+    j5 = _FlJournal()
+    lk5, _s5 = make(lambda: t5[0], journal=j5)
+    alarm = ""
+    for i in range(30):
+        t5[0] += 0.05
+        lk5.send_frame()
+        alarm = lk5.note_status({"frames": {"seq": 2 + i}}) or alarm
+    check("not one this program sent" in alarm
+          and "lock_alarm" in j5.outcomes(),
+          f"a rogue counting from 1 raises the lock alarm: {alarm!r}")
+    # A restarted ltcplay whose Abort flamesafe refused, with flamesafe
+    # still reporting an earlier run's Abort (the review's p4 b).
+    t6 = [0.0]
+    j6 = _FlJournal()
+    lk6, _s6 = make(lambda: t6[0], journal=j6)
+    lk6.disarm_all("Abort from the rack screen")
+    for _ in range(30):
+        t6[0] += 0.05
+        lk6.note_status({"frames": {"seq": 2},
+                         "disarm_all": {"accepted": 12, "last_id": 4}})
+    check(lk6._pending_abort is not None and "disarm_unconfirmed"
+          in j6.outcomes()
+          and lk6.snapshot()["abort"] == "sent but NOT confirmed by flamesafe",
+          f"an earlier run's Abort never confirms this one: "
+          f"{lk6.snapshot()['abort']!r}")
+
+    # -- item 5: a timecode that is not moving is zeros --------------------
+    t7 = [10.0]
+    j7 = _FlJournal()
+    st7 = {"tc": "00:00:10:00"}
+    lk7, s7 = make(lambda: t7[0], journal=j7, cues=lambda tc: fire,
+                   show_state=lambda: (st7["tc"], True))
+    lk7.release()
+
+    def val7():
+        lk7.send_frame()
+        return json.loads(s7.sent[-1][0])["values"][410]
+
+    check(val7() == 200, "a moving show: the cue goes out")
+    t7[0] += 0.05
+    check(val7() == 200, "the same frame 50 ms later: still moving")
+    t7[0] += 0.06
+    check(val7() == 0, "the same frame 110 ms after it last changed: zeros")
+    for _ in range(10):
+        t7[0] += 0.025
+        val7()
+    still = [x for x, kw in j7.lines if kw.get("outcome") == "cues_zero"]
+    check(len(still) == 1 and "has not moved" in still[0],
+          f"one fault line for the whole stall: {still}")
+    st7["tc"] = "00:00:10:01"
+    check(val7() == 200 and "cues_back" in j7.outcomes(),
+          "it moves again: the cue goes out, and that is a line")
+
+    class Frozen:      # the review's p9: a clock thread that stopped
+        playing, paused, _halting, last_sent = True, False, False, (0, 1, 2, 3)
+    t8 = [0.0]
+    lk8, s8 = make(lambda: t8[0], cues=lambda tc: fire,
+                   show_state=fl.audio_master_state(lambda: Frozen()))
+    lk8.release()
+    nz = 0
+    for _ in range(120):               # 3 s at 40 Hz
+        t8[0] += 0.025
+        lk8.send_frame()
+        nz += any(json.loads(s8.sent[-1][0])["values"])
+    check(nz <= 5, f"a frozen AudioMaster: zeros after 0.1 s (5 frames at "
+                   f"40 Hz), not 3 s of "
+                   f"cue ({nz} of 120 frames carried it)")
+
+    # -- item 6: the sender thread survives, and says when it cannot -------
+    class Weird(Exception):
+        def __str__(self):
+            raise RuntimeError("no words")
+
+    def weird_state():
+        raise Weird()
+    j9 = _FlJournal()
+    lk9, s9 = make(time.perf_counter, journal=j9, show_state=weird_state)
+    check(lk9.send_frame() is True and not any(
+        json.loads(s9.sent[-1][0])["values"]),
+          "a show state raising an exception whose str() raises: zeros")
+    check(any("could not be read" in x for x in j9.faults()),
+          f"and a fault line, not a dead sender: {j9.faults()}")
+    j10 = _FlJournal()
+    bad = _FlBadSock()
+    lk10, _s10 = make(time.perf_counter, sock=bad, journal=j10)
+
+    def settle(cond, secs=1.0):
+        end = time.perf_counter() + secs
+        while time.perf_counter() < end and not cond():
+            time.sleep(0.01)
+        return cond()
+    lk10.start()
+    try:
+        check(settle(lambda: len(bad.sent) > 3)
+              and lk10.snapshot()["sender"] == "running"
+              and lk10.snapshot()["sending_ok"],
+              f"running: {lk10.snapshot()['sender']}")
+        bad.mode = "raise"
+        check(settle(lambda: lk10.run_errors > 3)
+              and lk10.snapshot()["sender"] == "failing"
+              and not lk10.snapshot()["sending_ok"],
+              f"a pass that raises: the snapshot says failing: "
+              f"{lk10.snapshot()['sender']}")
+        check(j10.outcomes().count("sender_failed") == 1,
+              f"one line for the episode: {j10.outcomes()}")
+        n = len(bad.sent)
+        bad.mode = None
+        check(settle(lambda: len(bad.sent) > n + 3)
+              and lk10.snapshot()["sender"] == "running"
+              and "sender_recovered" in j10.outcomes(),
+              "the loop carried on, and its recovery is a line")
+        bad.mode = "die"
+        check(settle(lambda: lk10.snapshot()["sender"] == "dead")
+              and not lk10.snapshot()["sending_ok"]
+              and "sender_dead" in j10.outcomes(),
+              f"a thread that ends without stop(): dead, and journaled: "
+              f"{lk10.snapshot()['sender']} {j10.outcomes()}")
+    finally:
+        bad.mode = None
+        lk10.stop()
+
+    # -- item 7: zero() and disarm_all() never ask the providers -----------
+    t11 = [0.0]
+    calls = [0]
+    st11 = {"n": 0, "zero_inside": False}
+
+    def state11():
+        calls[0] += 1
+        st11["n"] += 1
+        return (f"00:00:{st11['n'] // 25 % 60:02d}:{st11['n'] % 25:02d}",
+                True)
+
+    def cues11(tc):
+        if st11["zero_inside"]:
+            # A zero() and then a release() land while this frame's cues
+            # are being read: the frame was read before the zero, so it
+            # must not go out with those values, released or not.
+            st11["zero_inside"] = False
+            lk11.zero()
+            lk11.release()
+        return fire
+    lk11, s11 = make(lambda: t11[0], show_state=state11, cues=cues11)
+    lk11.release()
+    lk11.send_frame()
+    check(json.loads(s11.sent[-1][0])["values"][410] == 200,
+          "released, live, moving: the cue goes out")
+    c0, n0 = calls[0], len(s11.sent)
+    lk11.zero()
+    f = sent(s11, n0)
+    check(calls[0] == c0 and len(f) == 1 and not any(f[0]["values"]),
+          "zero()'s own frame is zeros and asked no provider")
+    lk11.release()
+    lk11.send_frame()
+    c0, n0 = calls[0], len(s11.sent)
+    lk11.disarm_all("Abort")
+    f = sent(s11, n0)
+    check(calls[0] == c0 and f[0]["t"] == "flame" and not any(f[0]["values"]),
+          "disarm_all's own first frame is zeros and asked no provider")
+    lk11.release()
+    st11["zero_inside"] = True
+    n0 = len(s11.sent)
+    lk11.send_frame()
+    f = [x for x in sent(s11, n0) if x["t"] == "flame"]
+    check(len(f) == 2 and not any(f[0]["values"]) and not any(f[1]["values"]),
+          "a frame whose cues were read before a zero() landed goes out as "
+          "zeros, even if a release() followed it")
+    n0 = len(s11.sent)
+    lk11.send_frame()
+    f = [x for x in sent(s11, n0) if x["t"] == "flame"]
+    check(len(f) == 1 and f[0]["values"][410] == 200,
+          "and the next frame, read after the release, carries the cue")
+    # Zeroed, the cue provider is not even asked (send_frame would zero its
+    # answer anyway; not asking it means a broken provider cannot fill the
+    # journal while no show is released).
+    asked = []
+    t13 = [0.0]
+    lk13, s13 = make(lambda: t13[0], cues=lambda tc: asked.append(tc) or fire,
+                     show_state=lambda: (f"00:00:00:{len(s13.sent) % 25:02d}",
+                                         True))
+    for _ in range(5):
+        lk13.send_frame()
+    check(not asked and not any(json.loads(s13.sent[-1][0])["values"]),
+          f"zeroed: zeros, and the cue provider was never asked: {asked}")
+    lk13.release()
+    lk13.send_frame()
+    check(len(asked) == 1, "released: it is asked")
+
+    # A provider that hangs, on the real thread: the Abort does not wait.
+    gate = threading.Event()
+    hang = {"on": False}
+
+    def state12():
+        if hang["on"]:
+            gate.wait(3.0)
+        return (None, False)
+    lk12, _s12 = make(time.perf_counter, show_state=state12)
+    lk12.start()
+    try:
+        time.sleep(0.05)
+        hang["on"] = True
+        time.sleep(0.1)            # the sender thread is now stuck in it
+        t0 = time.perf_counter()
+        ok1 = lk12.disarm_all("Abort from the rack screen")
+        ok2 = lk12.zero()
+        dt = time.perf_counter() - t0
+        check(ok1 and ok2 and dt < 0.5,
+              f"a show state hung for 3 s does not hold up disarm_all() or "
+              f"zero(): {dt:.3f} s")
+    finally:
+        gate.set()
+        lk12.stop()
+    print("  ok")
+
+
+def test_flame_link_fix_round_2():
+    section("flame link, fix round 2 of PR #34: a sender stuck without "
+            "raising reads as stalled and says so once; an Abort voids a "
+            "frame read before it; a resume is not a stuck timecode")
+    import json
+    import threading
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    fire = [0] * 512
+    fire[410] = 200
+
+    def settle(cond, secs=2.0):
+        end = time.perf_counter() + secs
+        while time.perf_counter() < end and not cond():
+            time.sleep(0.01)
+        return cond()
+
+    # -- item 2: a provider that blocks without raising (the review's p13)
+    gate = threading.Event()
+    hang = {"on": False}
+    n = {"i": 0}
+
+    def state():
+        if hang["on"]:
+            gate.wait(5.0)
+        n["i"] += 1
+        return (f"00:00:{n['i'] // 25 % 60:02d}:{n['i'] % 25:02d}", True)
+    j = _FlJournal()
+    lk = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state,
+                      journal=j)
+    lk._sock = _FlSock()
+    check(lk.stall_s() == 0.25, f"stalled after half of frame_stale_ms: "
+                                f"{lk.stall_s()}")
+    lk.start()
+    try:
+        check(settle(lambda: len(lk._sock.sent) > 3)
+              and lk.snapshot()["sender"] == "running", "running at first")
+        hang["on"] = True
+        check(settle(lambda: lk.snapshot()["sender"] == "stalled"),
+              f"a provider blocking without raising: stalled: "
+              f"{lk.snapshot()['sender']}")
+        check(not lk.snapshot()["sending_ok"], "and sending_ok is False")
+        time.sleep(0.6)
+        check(j.outcomes().count("sender_stalled") == 1
+              and any("no flame frame" in t for t in j.faults()),
+              f"journaled once for the episode, as a fault: {j.outcomes()}")
+        hang["on"] = False
+        gate.set()
+        check(settle(lambda: lk.snapshot()["sender"] == "running")
+              and settle(lambda: "sender_unstalled" in j.outcomes()),
+              f"frames again: running, and that is a line: {j.outcomes()}")
+    finally:
+        hang["on"] = False
+        gate.set()
+        lk.stop()
+
+    # The journal itself blocking (a stuck console or file write): the
+    # snapshot still answers at once, and says stalled.
+    block = threading.Event()
+    release = threading.Event()
+
+    def stuck_journal(text, **kw):
+        if block.is_set() and "cues are zero" in text:
+            release.wait(5.0)
+    m = {"i": 0}
+
+    def state2():
+        m["i"] += 1
+        return (f"00:00:01:{m['i'] % 25:02d}", True)
+    lk2 = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state2,
+                       cues=lambda tc: "garbage" if block.is_set() else None,
+                       journal=stuck_journal)
+    lk2._sock = _FlSock()
+    lk2.start()
+    lk2.release()
+    try:
+        time.sleep(0.15)
+        block.set()
+        time.sleep(0.5)
+        t0 = time.perf_counter()
+        snap = lk2.snapshot()
+        dt = time.perf_counter() - t0
+        check(snap["sender"] == "stalled" and not snap["sending_ok"]
+              and dt < 0.1,
+              f"a journal call stuck in the sender: the snapshot answers in "
+              f"{dt * 1000:.0f} ms and says {snap['sender']!r}")
+    finally:
+        release.set()
+        lk2.stop()
+
+    # -- item 3 (R33): a disarm_all landing while a frame's cues are read
+    # voids that frame, even if a release() follows it.
+    t3 = [0.0]
+    st3 = {"n": 0, "abort_inside": False}
+
+    def state3():
+        st3["n"] += 1
+        return (f"00:00:{st3['n'] // 25 % 60:02d}:{st3['n'] % 25:02d}",
+                True)
+
+    def cues3(tc):
+        if st3["abort_inside"]:
+            st3["abort_inside"] = False
+            lk3.disarm_all("Abort")
+            lk3.release()
+        return fire
+    lk3 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t3[0],
+                       show_state=state3, cues=cues3)
+    lk3._sock = _FlSock()
+    lk3.release()
+    lk3.send_frame()
+    st3["abort_inside"] = True
+    n0 = len(lk3._sock.sent)
+    lk3.send_frame()
+    flames = [json.loads(d) for d, _a in lk3._sock.sent[n0:]]
+    flames = [x for x in flames if x["t"] == "flame"]
+    check(len(flames) == 2 and not any(flames[-1]["values"]),
+          "a frame whose cues were read before an Abort landed goes out as "
+          "zeros, even if a release() followed it")
+
+    # A resume is not a stuck timecode: with the timecode moving through
+    # the hold, the first live frame after it carries its cue.
+    t4 = [0.0]
+    st4 = {"n": 0, "live": False}
+
+    def state4():
+        return (f"00:00:{st4['n'] // 25 % 60:02d}:{st4['n'] % 25:02d}",
+                st4["live"])
+    lk4 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t4[0],
+                       show_state=state4, cues=lambda tc: fire)
+    lk4._sock = _FlSock()
+    lk4.release()
+    for _ in range(40):            # a second of a held show, clock moving
+        t4[0] += 0.025
+        st4["n"] += 1
+        lk4.send_frame()
+    st4["live"] = True             # resume: same moment, timecode moving
+    t4[0] += 0.025
+    st4["n"] += 1
+    lk4.send_frame()
+    check(json.loads(lk4._sock.sent[-1][0])["values"][410] == 200,
+          "the first frame after a resume carries the cue")
+    print("  ok")
+
+
+# How long a Stream Deck may take, beyond its arm-hold, to deliver the
+# hold's "wanted" after a press it began before a screen Abort, and still
+# be refused by flamesafe's post-Abort window (fix round 2, item 4; the
+# review's probe p12 found the edge at a 0.45 s deck stall).
+DECK_LATENCY_SLACK_S = 0.3
+
+
+def test_the_deck_arm_hold_fits_inside_the_post_abort_window():
+    section("the Stream Deck's arm-hold is shorter than flamesafe's "
+            "post-Abort window, with room for the deck to be late")
+    # flamesafe refuses, for min_arm_dwell_ms after the last copy of a
+    # screen Abort, a low that was already going on at it. A hold begun
+    # before the Abort completes at most ARM_HOLD_S after it, so it is
+    # refused only while ARM_HOLD_S (plus the deck's own lateness) is
+    # under the SHORTEST dwell flamesafe allows. Read from both files as
+    # text: this process never imports flamesafe (the wall).
+    import re as _re
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_src = open(os.path.join(here, "flamesafe", "config.py"),
+                   encoding="utf-8").read()
+    mm = _re.search(r"^DWELL_MS_MIN, DWELL_MS_MAX = (\d+), (\d+)", cfg_src,
+                    _re.M)
+    check(mm is not None, "flamesafe/config.py still states DWELL_MS_MIN")
+    dwell_min_s = int(mm.group(1)) / 1000.0 if mm else 0.0
+    check(sd.ARM_HOLD_S + DECK_LATENCY_SLACK_S <= dwell_min_s,
+          f"the deck's arm-hold ({sd.ARM_HOLD_S} s) plus "
+          f"{DECK_LATENCY_SLACK_S} s for the deck to be late must fit in "
+          f"flamesafe's shortest re-arm dwell ({dwell_min_s} s), or a hold "
+          f"begun before a screen Abort can arm after it")
+    print("  ok")
+
+
+def test_flame_link_sends_at_its_rate_on_one_socket():
+    section("flame link: a real socket, at send_hz, all from one source "
+            "port, zeros when idle")
+    import json
+    import socket as _so
+    from ltcplay import flamelink as fl
+    rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(0.5)
+    cfg = fl.FlameLinkConfig.parse({"port": rx.getsockname()[1],
+                                    "universe": 1, "key": _fl_key(),
+                                    "send_hz": 40, "frame_stale_ms": 500})
+    link = fl.FlameLink(cfg).start()
+    got, srcs = [], set()
+    end = time.perf_counter() + 1.0
+    try:
+        while time.perf_counter() < end:
+            try:
+                d, a = rx.recvfrom(65535)
+            except _so.timeout:
+                break
+            got.append(json.loads(d))
+            srcs.add(a)
+    finally:
+        link.stop()
+        rx.close()
+    check(len(srcs) == 1, f"every frame from ONE socket: {srcs}")
+    check(all(not any(f["values"]) and f["tc"] is None for f in got),
+          "idle, nothing wired: every frame is all zeros with no timecode")
+    # Fix round 1, item 8: this used to say "never more than 50 ms between
+    # frames" of a real thread on a shared machine, and failed at 0.051 s
+    # when the OS was slow to wake it. What the CODE schedules is proved
+    # exactly below, on a fake clock; here the real thread has to keep its
+    # rate (mean gap near 25 ms), keep 95% of its gaps inside the
+    # contract's 50 ms floor, and never leave a gap anywhere near
+    # flamesafe's smallest frame_stale_ms (100 ms), the gap that matters.
+    # The mean, not the median: on Windows a wait lands on a 15.6 ms timer
+    # tick, so the gaps alternate about 31 and 16 ms around a true 25 ms.
+    gaps = sorted(b["mono"] - a["mono"] for a, b in zip(got, got[1:]))
+    mean = sum(gaps) / len(gaps) if gaps else 0
+    p95 = gaps[int(len(gaps) * 0.95)] if gaps else 0
+    # The same calibration as test_pixel_output_frame_jitter: these bounds
+    # only mean anything on a machine that can keep a 25 ms sleep AT ALL.
+    # macOS CI was seen taking 80 to 170 ms over time.sleep(0.025) at this
+    # point in the run; there the fake-clock proof below carries it.
+    import threading as _th
+    sl = []
+    for _ in range(20):
+        w0 = time.perf_counter()
+        time.sleep(0.025)
+        sl.append(time.perf_counter() - w0)
+    fit = sorted(sl)[len(sl) // 2] < 0.035 and max(sl) <= 0.075
+    print(f"  note: {len(got)} frames in 1 s, mean gap {mean * 1000:.1f}ms, "
+          f"95% under {p95 * 1000:.1f}ms, longest "
+          f"{(gaps[-1] if gaps else 0) * 1000:.1f}ms; time.sleep(0.025) here "
+          f"took {min(sl) * 1000:.0f} to {max(sl) * 1000:.0f}ms; "
+          f"{_th.active_count()} threads alive (fit={fit})")
+    check(len(got) > 0, "the real sender thread sent nothing in 1 s")
+    if fit:
+        check(len(got) >= 30, f"about 40 frames in a second, at least the "
+                              f"contract's 20 Hz floor with room: {len(got)}")
+        check(gaps and 0.02 <= mean <= 0.03 and p95 < 0.05 and gaps[-1] < 0.1,
+              f"at its rate on a real thread: mean gap {mean:.4f} s, 95% "
+              f"under {p95:.3f} s, longest {gaps[-1] if gaps else 0:.3f} s "
+              f"(flamesafe's shortest frame_stale_ms is 0.100 s)")
+    else:
+        print("  note: this machine cannot keep a 25 ms sleep right now, so "
+              "the real-thread rate bounds are not applied here; the "
+              "fake-clock schedule check below proves the pacing regardless "
+              "of the machine")
+
+    # The schedule itself, on a fake clock: exactly one period between
+    # frames, and after a stall (the OS late to wake the thread) the next
+    # frame comes straight away and then one period at a time again, never
+    # a burst to catch up.
+    clk = [0.0]
+    late = {50: 0.2}
+
+    class FakeStop:
+        def __init__(self, n):
+            self.n = n
+            self.waits = 0
+
+        def is_set(self):
+            return self.n <= 0
+
+        def set(self):
+            self.n = 0
+
+        def clear(self):
+            pass
+    stop_after = FakeStop(120)
+
+    def fake_sleep(d):
+        stop_after.waits += 1
+        clk[0] += d + late.get(stop_after.waits, 0.0)
+        stop_after.n -= 1
+    paced = fl.FlameLink(cfg, clock=lambda: clk[0], sleep=fake_sleep)
+    psock = _FlSock()
+    paced._sock = psock
+    paced._stop = stop_after
+    paced._run()
+    monos = [json.loads(d)["mono"] for d, _a in psock.sent]
+    pg = [round(b - a, 6) for a, b in zip(monos, monos[1:])]
+    period = 1.0 / 40
+    stall = [g for g in pg if g > period + 1e-6]
+    check(len(monos) >= 100 and len(stall) == 1
+          and abs(stall[0] - (period + 0.2)) < 1e-6
+          and all(abs(g - period) < 1e-6 for g in pg if g not in stall),
+          f"the schedule: one period between frames, the stall once, no "
+          f"burst after it: {sorted(set(pg))}")
+
+
+def test_flame_link_end_to_end_against_the_real_flamesafe():
+    section("flame link end to end: the real flamesafe in its own process, "
+            "the real FlameLink, a deck sending real arm frames, over "
+            "loopback UDP")
+    import json
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen, arm = free_port(), free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    json.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1],
+                 "arm_port": arm, "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]},
+                   {"name": "cat-walk", "safety": 402, "fire": [421]},
+                   {"name": "wave flamer", "safety": 403, "fire": [431]}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    out_lines = []
+    stop = threading.Event()
+    statuses = []           # (perf_counter, status dict)
+    j = _FlJournal()
+    state = {"live": True}
+    cue = {"v": None}
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t_show = time.perf_counter()
+
+    def show_tc():
+        # A moving timecode at 30 fps: a still one is zeros (fix round 1,
+        # item 5).
+        n = int((time.perf_counter() - t_show) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, cues=lambda tc: cue["v"],
+                        show_state=lambda: (show_tc(), state["live"]),
+                        journal=j)
+    deck = {"wanted": [False, False, False], "on": True}
+
+    def read_out():
+        for line in proc.stdout:
+            out_lines.append(line.rstrip())
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            obj = fl.decode_status(d, key)
+            if obj is not None:
+                statuses.append((time.perf_counter(), obj))
+                link.note_status(obj)
+
+    def run_deck():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        seq = 0
+        while not stop.is_set():
+            if deck["on"]:
+                seq += 1
+                s.sendto(sd.encode_arm_frame(seq, deck["wanted"], names, key),
+                         ("127.0.0.1", arm))
+            time.sleep(0.05)
+        s.close()
+
+    def latest():
+        return statuses[-1][1] if statuses else None
+
+    def wait_for(pred, timeout):
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:
+            s = latest()
+            if s is not None:
+                try:
+                    if pred(s):
+                        return s
+                except (KeyError, IndexError, TypeError):
+                    pass
+            time.sleep(0.01)
+        return None
+
+    def armed(s, i):
+        return s["groups"][i]["armed"] == "armed" and \
+            s["groups"][i]["sent_safety"] == 78
+
+    def journal(fragment):
+        return [l for l in out_lines if fragment in l]
+
+    threads = [threading.Thread(target=f, daemon=True)
+               for f in (read_out, read_status, run_deck)]
+    for th in threads:
+        th.start()
+    try:
+        s = wait_for(lambda s: s["heartbeat"] > 0, 10.0)
+        check(s is not None and s["frames"]["state"] == "never",
+              f"the real flamesafe is up, and has had no flame frame yet: "
+              f"{s and s['frames']}")
+        if s is None:
+            print("\n".join(out_lines[-20:]))
+            return
+        link.start()
+        s = wait_for(lambda s: s["frames"]["state"] == "fresh", 3.0)
+        check(s is not None, "flamesafe accepts the real sender's frames")
+        t0 = time.perf_counter()
+        time.sleep(1.0)
+        window = [x for t_, x in statuses if t_ > t0]
+        check(window and all(x["frames"]["state"] == "fresh"
+                             and x["frames"]["rejected"] == 0
+                             for x in window),
+              "a second of zeros keeps the link fresh, nothing rejected")
+        check(link.lock_alarm == "" and link.first_seq is not None
+              and link.first_seq <= latest()["frames"]["seq"] <= link.seq,
+              "the last accepted seq is ours: no lock alarm")
+
+        # The operator arms two groups with a genuine cycle.
+        time.sleep(0.3)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0) and armed(s, 1), 3.0)
+        check(s is not None, f"a genuine deck cycle arms two groups: "
+                             f"{latest()['groups'][:2]}")
+
+        # Cue values: none while zeroed, through once released.
+        fire = [0] * 512
+        fire[410] = 200
+        cue["v"] = fire
+        time.sleep(0.2)
+        check(latest()["groups"][0]["commanded_fire"][0] == 0,
+              "zeroed (no release yet): flamesafe is commanded nothing")
+        link.release()
+        s = wait_for(lambda s: s["groups"][0]["sent_fire"][0] == 200, 2.0)
+        check(s is not None, "released and live: the cue reaches the wire "
+                             "through flamesafe")
+
+        # The show's Abort.
+        hb = latest()["heartbeat"]
+        check(link.disarm_all("Abort from the rack screen") is True,
+              "disarm_all went out")
+        s = wait_for(lambda s: s["heartbeat"] >= hb + 2, 2.0)
+        firsts = [x for _t, x in statuses if x["heartbeat"] >= hb + 2]
+        s = firsts[0] if firsts else None
+        check(s is not None and all(g["sent_safety"] == 0
+                                    and not any(g["sent_fire"])
+                                    for g in s["groups"]),
+              f"within one tick every group is off the wire: "
+              f"{s and [(g['sent_safety'], g['sent_fire']) for g in s['groups']]}")
+        check(s is not None and s["disarm_all"]["last_id"] == link.abort_id
+              and s["groups"][0]["reason"] == FLAME_ABORT_WORDS
+              and s["groups"][0]["amber"] == "flashing",
+              f"and flamesafe says which Abort, and why, on the lamp: "
+              f"{s and (s['disarm_all'], s['groups'][0]['reason'])}")
+        time.sleep(0.1)
+        check(link._pending_abort is None
+              and "disarm_unconfirmed" not in j.outcomes(),
+              "the sender saw flamesafe confirm it")
+
+        # The deck never stopped asking. Nothing comes back by itself, even
+        # with the cues released again (a new show) and well past the dwell.
+        cue["v"] = None
+        link.release()
+        t0 = time.perf_counter()
+        time.sleep(2.0)
+        window = [x for t_, x in statuses if t_ > t0]
+        check(window and not any(g["sent_safety"] for x in window
+                                 for g in x["groups"]),
+              "2 s of the deck still asking: no group re-arms")
+        check(len(journal("disarm-all: the show program's Abort")) == 1,
+              f"flamesafe journaled the Abort once, though it got "
+              f"{fl.DISARM_COPIES} copies: "
+              f"{journal('disarm-all')}")
+
+        # A fresh genuine cycle re-arms that group only.
+        deck["wanted"] = [False, True, False]
+        time.sleep(0.4)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0), 3.0)
+        check(s is not None and not armed(s, 1)
+              and s["groups"][1]["reason"] == FLAME_ABORT_WORDS,
+              f"a fresh genuine cycle re-arms that group, and only that "
+              f"one: {latest()['groups'][:2]}")
+
+        # Fix round 1, item 1 (the review's p6): every one of an Abort's
+        # immediate copies lost. The repeats on the following frames carry
+        # the same Abort, and flamesafe's status confirms it.
+        class DropFirstCopies:
+            def __init__(self, real, n):
+                self.real, self.n = real, n
+
+            def sendto(self, data, addr):
+                if self.n and b'"t":"disarm_all"' in data:
+                    self.n -= 1
+                    return len(data)
+                return self.real.sendto(data, addr)
+
+            def close(self):
+                self.real.close()
+        real_sock = link._sock
+        link._sock = DropFirstCopies(real_sock, fl.DISARM_COPIES)
+        try:
+            link.disarm_all("Abort, its first copies lost")
+            s = wait_for(lambda s: s["disarm_all"]["last_id"] == link.abort_id
+                         and not armed(s, 0), 1.5)
+        finally:
+            link._sock = real_sock
+        check(s is not None, f"every immediate copy lost: the repeats still "
+                             f"disarm: {latest()['disarm_all']}")
+        end = time.perf_counter() + 1.0
+        while time.perf_counter() < end and \
+                link.snapshot()["abort"] != "confirmed by flamesafe":
+            time.sleep(0.02)
+        check(link.snapshot()["abort"] == "confirmed by flamesafe",
+              f"and only flamesafe's own status says it was taken: "
+              f"{link.snapshot()['abort']!r}")
+
+        # Fix round 1, item 2 (the review's p2 s2): an arm-hold begun before
+        # a screen Abort completes after it. The deck kept reporting group
+        # 2 low all through the hold; that low must not count.
+        time.sleep(2.0)            # past that Abort's repeats and window
+        t_ab = time.perf_counter()
+        link.disarm_all("Abort during an arm-hold")
+        time.sleep(0.3)
+        deck["wanted"] = [True, True, True]     # the hold completes
+        time.sleep(2.0)
+        window = [x for t_, x in statuses if t_ > t_ab]
+        check(window and not any(x["groups"][2]["sent_safety"]
+                                 for x in window)
+              and latest()["groups"][2]["reason"] == FLAME_ABORT_WORDS,
+              f"a hold begun before the Abort and finished after it arms "
+              f"nothing: {latest()['groups'][2]}")
+        # A fresh cycle afterwards still works (group 0, for what follows).
+        deck["wanted"] = [False, True, False]
+        time.sleep(0.4)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0), 3.0)
+        check(s is not None, f"and a fresh cycle afterwards re-arms as "
+                             f"before: {latest()['groups'][0]}")
+
+        # A foreign sender with the right key: refused, journaled once.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        for i in range(20):
+            rogue.sendto(fl.encode_disarm_all(10 ** 7 + i, 1e9, 99, "rogue",
+                                              key), ("127.0.0.1", listen))
+            time.sleep(0.005)
+        time.sleep(0.2)
+        s = latest()
+        check(armed(s, 0) and "another sender" in s["frames"]["last_reject"],
+              f"a disarm_all from another socket is refused: "
+              f"{s['frames']['last_reject']!r} {s['groups'][0]['armed']}")
+        # The wrong key and the wrong version, from the locked socket itself.
+        for i in range(10):
+            link._sock.sendto(fl.encode_disarm_all(
+                link.seq + 1, 1e9, 98, "x", "wrong-" + key),
+                (cfg.ip, cfg.port))
+            d = json.loads(fl.encode_disarm_all(link.seq + 1, 1e9, 97, "x",
+                                                key))
+            d["v"] = 3
+            link._sock.sendto(json.dumps(d).encode(), (cfg.ip, cfg.port))
+            time.sleep(0.005)
+        time.sleep(0.2)
+        check(armed(latest(), 0), "a wrong-key or wrong-version disarm_all "
+                                  "from the locked sender disarms nothing")
+        time.sleep(0.3)
+        t_last_reject = time.perf_counter()
+        check(len(journal(": disarm_all: another sender.")) == 1,
+              f"the foreign disarm_alls: one journal line: "
+              f"{journal('another sender')}")
+        check(len(journal(": wrong key.")) == 1
+              and len(journal(": wrong contract version")) == 1,
+              f"wrong key, wrong version: one line each: "
+              f"{journal('datagram rejected')}")
+        check(latest()["disarm_all"]["last_id"] == link.abort_id,
+              "no refused disarm_all was counted as an Abort")
+        rogue.close()
+
+        # The sender stops: flamesafe fails safe inside frame_stale_ms.
+        t_stop = time.perf_counter()
+        link.stop()
+        s = wait_for(lambda s: s["frames"]["fire"] == "zeroed", 1.0)
+        t_fire = time.perf_counter() - t_stop
+        s = wait_for(lambda s: s["frames"]["state"] == "stale", 2.0)
+        t_stale = time.perf_counter() - t_stop
+        check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
+                                   f"sender stopped (fire_hold_ms 100)")
+        check(s is not None and t_stale < 0.5 + 0.2
+              and all(g["sent_safety"] == 0 for g in s["groups"]),
+              f"link stale and every group disarmed {t_stale:.3f} s after "
+              f"the sender stopped (frame_stale_ms 500)")
+        check(link.disarm_all("Abort") is False,
+              "a disarm_all on a stopped link answers False")
+        # The rejection episodes close after 5 s of quiet (the arm link's
+        # own throttle), each with one line and its count.
+        time.sleep(max(0.0, 5.6 - (time.perf_counter() - t_last_reject)))
+        check(len(journal("(disarm_all: another sender) stopped after 20 "
+                          "rejected")) == 1
+              and len(journal("(wrong key) stopped after 10 rejected")) == 1
+              and len(journal("(wrong contract version) stopped after 10 "
+                              "rejected")) == 1,
+              f"and one closing line per episode with its count: "
+              f"{journal('stopped after')}")
+    finally:
+        stop.set()
+        try:
+            link.stop()
+        except Exception:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except Exception:
+            proc.kill()
+        for th in threads:
+            th.join(2)
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_the_gpl_path_never_loads_the_flame_link():
+    section("GPL: the flame link is never imported by the program")
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "flamelink.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.search(r"\bflamelink\b", line) and \
+                    re.match(r"\s*(from|import)\s", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the flame link is imported by the program: {top}")
+    r = _sp.run([sys.executable, "-c",
+                 "import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
+                 "print('ltcplay.flamelink' in sys.modules)", here],
+                capture_output=True, text=True, timeout=60)
+    check(r.stdout.strip() == "False",
+          f"loading the program loads no flame link: {r.stdout!r} "
+          f"{r.stderr[-300:]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
+    _TEMPRUN = _TempRun()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -25787,6 +32308,52 @@ if __name__ == "__main__":
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
+    test_madmapper_osc_bytes_match_the_bench_capture()
+    test_madmapper_primitives_send_the_right_addresses()
+    test_madmapper_ramp_step_count_and_values()
+    test_madmapper_fade_surfaces_perceptual_curve_step_values()
+    test_madmapper_ramp_is_cancellable()
+    test_madmapper_restore_levels()
+    test_madmapper_fade_all_sends_audio_and_surfaces_together()
+    test_madmapper_config_refusals()
+    test_madmapper_watchdog_bind_must_be_loopback()
+    test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
+    test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed()
+    test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start()
+    test_madmapper_watchdog_nan_is_a_drift_fault()
+    test_madmapper_watchdog_alarms_only_while_armed()
+    test_madmapper_watchdog_recovery()
+    test_madmapper_watchdog_drift_flag()
+    test_madmapper_watchdog_suspend_and_resume()
+    test_madmapper_watchdog_skips_drift_right_after_recovery()
+    test_madmapper_submit_has_a_timeout()
+    test_madmapper_no_clock_is_ever_mixed_with_another()
+    test_the_gpl_path_never_loads_madmapper()
+    test_madmapper_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_madmapper_link()
+    test_web_closes_a_config_built_madmapper_link()
+    test_beyond_osc_bytes_and_config_refusals()
+    test_beyond_allow_list_rejects_everything_but_brightness()
+    test_beyond_lowest_level_socket_also_enforces_allow_list()
+    test_beyond_blank_and_unblank_succeed_and_report_ok()
+    test_beyond_blank_retries_and_reports_failure()
+    test_beyond_health_reports_last_result_and_packets_sent()
+    test_beyond_builds_blank_at_construction_and_close_blanks_again()
+    test_beyond_never_sends_blackout_or_masterpause()
+    test_the_gpl_path_never_loads_beyond()
+    test_beyond_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_beyond_link()
+    test_web_closes_a_config_built_beyond_link()
+    test_devices_on_hold_blanks_beyond_then_fades_music_down()
+    test_devices_on_resume_in_show_fades_up_then_unblanks()
+    test_devices_on_resume_not_in_show_refuses_to_unblank()
+    test_devices_on_resume_not_in_show_reports_a_failed_reblank()
+    test_beyond_unblank_itself_refuses_in_show_false()
+    test_devices_on_abort_blanks_beyond_then_fades_everything_together()
+    test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
+    test_devices_in_show_must_be_a_real_bool()
+    test_devices_report_a_failed_blank_to_the_caller()
+    test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
@@ -25820,7 +32387,51 @@ if __name__ == "__main__":
     test_schedule_abort_latch_survives_a_damaged_disk()
     test_schedule_reset_never_overtakes_an_abort()
     test_schedule_conductor_line_round3_details()
+    test_streamdeck_pure_logic()
+    test_streamdeck_controller_with_fakes()
+    test_streamdeck_tick_drives_holds_without_new_key_snapshots()
+    test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
+    test_streamdeck_abort_same_pass_as_arm_hold_completion()
+    test_streamdeck_arm_fire_refuses_latched_and_refractory()
+    test_streamdeck_refractory_also_starts_at_reset()
+    test_streamdeck_draw_latched_shows_real_state_not_flat_off()
+    test_streamdeck_spoof_alarm()
+    test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
+    test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off()
+    test_streamdeck_round4_unplug_keeps_one_real_source_port()
+    test_streamdeck_round4_reconnect_releases_every_hold()
+    test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
+    test_streamdeck_round4_fresh_process_gets_the_reconnect_grace()
+    test_streamdeck_round4_other_sender_reason_has_a_label()
+    test_streamdeck_round5_a_long_unplug_never_goes_quiet()
+    test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit()
+    test_streamdeck_spoof_alarm_dedup_survives_a_changing_sequence_number()
+    test_streamdeck_arm_socket_logs_failed_sends_once()
+    test_streamdeck_local_schedule_never_blocks_the_main_loop()
+    test_streamdeck_local_schedule_operator_reverts_when_server_drops()
+    test_streamdeck_deck_journal_prints_and_posts()
+    test_streamdeck_reconnect_never_remembers_old_state()
+    test_streamdeck_never_imports_flamesafe()
+    test_conductor_devices_hold_blanks_beyond_before_anything_fades()
+    test_conductor_devices_abort_blanks_at_once_never_ramps()
+    test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
+    test_conductor_devices_failures_missing_links_and_speed()
+    test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
+    test_conductor_abort_is_never_held_up_by_a_slow_device()
+    test_conductor_hears_about_madmapper_failures_and_stalls()
+    test_conductor_a_failed_abort_blank_can_be_sent_again()
+    test_conductor_video_never_rises_after_abort_or_hold()
+    test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
+    test_conductor_announcement_after_abort_and_reset()
     test_the_gpl_path_never_loads_the_conductor()
+    test_flame_link_unit()
+    test_flame_link_fix_round_1()
+    test_flame_link_fix_round_2()
+    test_the_deck_arm_hold_fits_inside_the_post_abort_window()
+    test_flame_link_sends_at_its_rate_on_one_socket()
+    test_flame_link_end_to_end_against_the_real_flamesafe()
+    test_the_gpl_path_never_loads_the_flame_link()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
@@ -25844,6 +32455,17 @@ if __name__ == "__main__":
             for t in touched:
                 print(f"    {t}")
 
+    # Last check: this run's own temp folder must be empty once the tests'
+    # folders are gone. A test that leaves a file or a child process's folder
+    # behind is caught here, not discovered later as a full disk.
+    _left = _TEMPRUN.finish()
+    if _left:
+        _what = "; ".join(_TEMPRUN.describe(_left))
+        FAILS.append(f"this run left {len(_left)} temp entries behind: "
+                     + _what)
+        print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
+              f"its own temp folder: {_what}")
+
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
         print(f"{len(SHOW_PROBLEMS)} thing(s) to fix in the SHOW FILE. The "
@@ -25853,8 +32475,21 @@ if __name__ == "__main__":
         print("  Open Tools and run 'Set the Advatek triggers.command'.")
         print()
     if FAILS:
+        if os.environ.get("GITHUB_ACTIONS"):
+            for _f in FAILS[:10]:
+                print("::error title=selftest::"
+                      + _f.replace("%", "%25").replace("\r", "%0D")
+                      .replace("\n", "%0A")[:900])
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Job logs cannot always be fetched (a cloud session's proxy
+            # blocks the log store); annotations can, so each failure is
+            # also written as one.
+            for f in FAILS[:20]:
+                msg = (str(f)[:1500].replace("%", "%25")
+                       .replace("\r", "%0D").replace("\n", "%0A"))
+                print(f"::error title=selftest failure::{msg}")
         sys.exit(1)
     print(f"all checks passed in {time.time()-t0:.1f}s")

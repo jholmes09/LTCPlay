@@ -283,3 +283,14 @@ def synthetic_show_dir():
 
     _cache[key] = root
     return root
+
+
+def cleanup():
+    """Delete the synthetic show folder this process built, if it built one.
+    selftest.py calls it when a run ends so the folder (about 9MB) does not
+    stay in the temp folder. Safe to call twice; the next call to
+    synthetic_show_dir() builds it again."""
+    import shutil
+    root = _cache.pop("dir", None)
+    if root:
+        shutil.rmtree(root, ignore_errors=True)

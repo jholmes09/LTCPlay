@@ -1749,11 +1749,10 @@ MUTATIONS = [
 
  ("flamesafe: an operator disarm does not start the dwell",
   "flamesafe/composer.py",
-  "                if self._wanted[i]:\n"
-  "                    # The operator disarmed this group.  The dwell applies.\n"
-  "                    self._disarmed_at[i] = t",
-  "                if self._wanted[i]:\n"
-  "                    pass"),
+  "                    # bounce straight back up, forced or not.\n"
+  "                    self._disarmed_at[i] = t\n",
+  "                    # bounce straight back up, forced or not.\n"
+  "                    pass\n"),
 
  ("flamesafe: the dwell countdown rounds down and reads 0 with time to go",
   "flamesafe/composer.py",
@@ -1920,8 +1919,18 @@ MUTATIONS = [
  # the link
  ("flamesafe: a frame with the wrong contract version is accepted",
   "flamesafe/link.py",
-  '    if obj.get("v") != CONTRACT_VERSION:',
-  "    if False:"),
+  '    if obj.get("v") != CONTRACT_VERSION:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":',
+  '    if False:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a frame that is not 512 values is accepted",
   "flamesafe/link.py",
@@ -1981,8 +1990,12 @@ MUTATIONS = [
  # finding 1: any local process could fire an armed head with one datagram
  ("flamesafe: a frame with the wrong key is accepted",
   "flamesafe/link.py",
-  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:',
-  "    if False:"),
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":',
+  '    if False:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "flame":'),
 
  ("flamesafe: a second sender's frames are taken while the link is live",
   "flamesafe/composer.py",
@@ -2012,9 +2025,9 @@ MUTATIONS = [
  # finding 3: a surviving consent mutation
  ("flamesafe: a down edge no longer clears the latch",
   "flamesafe/composer.py",
-  "                self._seen_down[i] = consent_ok\n"
-  "                self._latched[i] = False",
-  "                self._seen_down[i] = consent_ok"),
+  "                self._seen_down[i] = consent_ok and not f[i]\n"
+  "                self._latched[i] = False\n",
+  "                self._seen_down[i] = consent_ok and not f[i]\n"),
 
  # finding 4: send failures while armed showed green
  ("flamesafe: a failed sACN send is not a fault",
@@ -2084,12 +2097,15 @@ MUTATIONS = [
 
  ("flamesafe: the flame universe may be sent to a link port",
   "flamesafe/config.py",
-  "            c.destination_port in (c.link_listen_port, c.link_status_port):",
+  "            c.destination_port in (c.link_listen_port, c.link_status_port,\n"
+  "                                   c.link_arm_port):",
   "            False:"),
 
  ("flamesafe: wrong group names in an assertion are accepted",
   "flamesafe/composer.py",
-  "                if list(names) != [g.name for g in self.groups]:",
+  "                want_names = [g.name for g in self.groups]\n"
+  "                if list(names) != want_names:",
+  "                want_names = [g.name for g in self.groups]\n"
   "                if False:"),
 
  ("flamesafe: a negative arm seq is taken as a real assertion",
@@ -2570,6 +2586,338 @@ MUTATIONS = [
   '            self._frozen_n = n\n'
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
+
+ # -- madmapper.py: device layer (OSC transport, watchdog) --
+
+ ("a cancelled ramp keeps sending anyway", "ltcplay/madmapper.py",
+  "            if self._gen_current() != gen:\n"
+  "                break",
+  "            pass"),
+
+ ("restore_levels never touches the surfaces, only the audio",
+  "ltcplay/madmapper.py",
+  "        self.set_audio(1.0, wait=wait)\n"
+  "        self.set_surfaces(1.0, wait=wait)",
+  "        self.set_audio(1.0, wait=wait)"),
+
+ ("the watchdog counts MadMapper's stale re-sent value at bank select "
+  "as a real position again (S1)", "ltcplay/madmapper.py",
+  "            if self._awaiting_start:\n"
+  "                near_start = (show_len_s is not None\n"
+  "                             and isinstance(value, (int, float))\n"
+  "                             and not math.isnan(value)\n"
+  "                             and value * show_len_s <= START_WINDOW_S)\n"
+  "                if not near_start:\n"
+  "                    return\n"
+  "                self._awaiting_start = False",
+  "            if self._awaiting_start:\n"
+  "                self._awaiting_start = False"),
+
+ ("a NaN heartbeat value is read as zero drift", "ltcplay/madmapper.py",
+  "            bad = not isinstance(value, (int, float)) or "
+  "math.isnan(value)",
+  "            bad = False"),
+
+ ("the heartbeat listener can be bound off loopback by accident",
+  "ltcplay/madmapper.py",
+  "        if not _is_loopback(bind) and not allow_non_loopback:",
+  "        if False:"),
+
+ ("a heartbeat bind failure crashes instead of naming the heartbeat "
+  "port", "ltcplay/madmapper.py",
+  "        try:\n"
+  "            self._sock = self._factory()\n"
+  "        except OSError as e:\n"
+  "            # Its own sentence, naming the heartbeat port "
+  "specifically:\n"
+  "            # a bind failure here must never read as the web "
+  "server's own\n"
+  "            # port being unavailable, which is a different problem "
+  "with a\n"
+  "            # different fix.\n"
+  "            self.bind_error = (",
+  "        self._sock = self._factory()\n"
+  "        if False:\n"
+  "            self.bind_error = ("),
+
+ ("a MadMapper command can hang _submit() forever again",
+  "ltcplay/madmapper.py",
+  "            got = done.wait(self._submit_timeout_s)",
+  "            done.wait()\n"
+  "            got = True"),
+
+ # -- beyond.py: the laser blank/unblank device layer --
+
+ ("the allow-list accepts any brightness value, not only 0.0/100.0",
+  "ltcplay/beyond.py",
+  "    return any(value == v for v in ALLOWED_VALUES)",
+  "    return True"),
+
+ ("the allow-list no longer checks for OSC special characters",
+  "ltcplay/beyond.py",
+  "    if any(c in _SPECIAL_CHARS for c in address):\n"
+  "        return False\n"
+  "    if address != BRIGHTNESS_ADDR:",
+  "    if address != BRIGHTNESS_ADDR:"),
+
+ ("_send()'s guard is removed, so anything can reach the socket",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py refuses to send {address!r} with value \"\n"
+  "                f\"{value!r}: only the brightness address, with 0.0 or \"\n"
+  "                f\"100.0, is ever allowed (S5), and BlackOut/MasterPause \"\n"
+  "                f\"are refused by name as well (BlackOut restarts "
+  "BEYOND's \"\n"
+  "                f\"own core and needs a manual recovery; MasterPause \"\n"
+  "                f\"freezes the beams, a static-beam hazard).\")\n"
+  "        return self._osc.send(address, value, force=force)",
+  "        return self._osc.send(address, value, force=force)"),
+
+ ("the socket's own send() no longer enforces the allow-list at all",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py's socket layer refuses to send {address!r} \"\n"
+  "                f\"with value {value!r}: only the brightness address, \"\n"
+  "                f\"with 0.0 or 100.0, is ever allowed off this module "
+  "(S5).\")\n"
+  "        now = self._clock()",
+  "        now = self._clock()"),
+
+ ("blank() only sends the packet once, not 3 times", "ltcplay/beyond.py",
+  "    def _send_retried(self, value):\n        ok = False\n"
+  "        for i in range(RETRY_COUNT):",
+  "    def _send_retried(self, value):\n        ok = False\n"
+  "        for i in range(1):"),
+
+ ("a failed blank is still reported and journaled as a success",
+  "ltcplay/beyond.py",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\" if ok else \"failed\"\n"
+  "        if ok:",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\"\n"
+  "        ok = True\n"
+  "        if ok:"),
+
+ ("build() no longer blanks at construction", "ltcplay/beyond.py",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)\n"
+  "    link.blank()",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)"),
+
+ ("close() no longer blanks before closing the socket",
+  "ltcplay/beyond.py",
+  "        try:\n"
+  "            self.blank()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        self._osc.close()",
+  "        self._osc.close()"),
+
+ ("BEYOND's port 8000 clash with MadMapper is no longer refused",
+  "ltcplay/beyond.py",
+  "        if port == 8000:",
+  "        if False:"),
+
+ ("unblank()'s in_show type check is removed, so a truthy value like "
+  "\"STANDBY\" or 1 unblanks the lasers during intermission",
+  "ltcplay/beyond.py",
+  "        if not isinstance(in_show, bool):\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")",
+  "        if False:\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")"),
+
+ ("unblank() ignores in_show=False and unblanks BEYOND during "
+  "intermission anyway", "ltcplay/beyond.py",
+  "        if in_show is not True:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\"",
+  "        if False:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\""),
+
+ ("unblank(in_show=False)'s refusal is never journalled, a silent skip "
+  "instead", "ltcplay/beyond.py",
+  "            self.last_result = \"refused\"\n"
+  "            self._note(\n"
+  "                f\"BEYOND stays blanked{_for_show(show)}: unblank() "
+  "was \"\n"
+  "                f\"called with in_show=False (no lasers during \"\n"
+  "                f\"intermission).\", action=\"unblank\", "
+  "outcome=\"refused\",\n"
+  "                show=show)\n"
+  "            return False",
+  "            self.last_result = \"refused\"\n"
+  "            return False"),
+
+ ("the first heartbeat after a recovery is judged for drift again "
+  "(bench B14)", "ltcplay/madmapper.py",
+  "            if self._settle_count > 0:\n"
+  "                self._settle_count -= 1\n"
+  "                skip_drift = True",
+  "            pass"),
+
+ ("the perceptual video curve fades down the same as up (no longer "
+  "mirrored)", "ltcplay/madmapper.py",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (1 - (1 - frac) ** 2) * (end - start)",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (frac ** 2) * (end - start)"),
+
+ # -- madmapper.py: fade_all() -- audio and surfaces ramped TOGETHER,
+ # in one worker job (devices.on_abort's own fade) --
+
+ ("fade_all()'s cancellation check is removed, so a superseded ramp "
+  "keeps sending anyway", "ltcplay/madmapper.py",
+  "                if self._gen_current() != gen:\n"
+  "                    break\n"
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))"),
+
+ ("fade_all()'s surfaces are no longer shaped by the configured video "
+  "curve, only plain linear", "ltcplay/madmapper.py",
+  "            surface_values = shape_values(ramp_values(start, end, steps),\n"
+  "                                          start, end, surface_curve)",
+  "            surface_values = ramp_values(start, end, steps)"),
+
+ ("fade_all() stops sending the master audio level, only the surfaces",
+  "ltcplay/madmapper.py",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))\n"
+  "                for addr in addrs:",
+  "                for addr in addrs:"),
+
+ # -- devices.py: on_hold()/on_resume()/on_abort(), composing madmapper.py
+ # and beyond.py's own primitives with the handoff's ordering built in --
+
+ ("on_hold() no longer blanks BEYOND, only fades the music",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_hold() fades the music UP instead of down", "ltcplay/devices.py",
+  "madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_resume() ignores in_show and unblanks BEYOND during intermission "
+  "too", "ltcplay/devices.py",
+  "        if in_show is True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:",
+  "        if True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:"),
+
+ ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
+  "unblanks the lasers during intermission", "ltcplay/devices.py",
+  "    if not isinstance(in_show, bool):\n"
+  "        raise TypeError(",
+  "    if False:\n"
+  "        raise TypeError("),
+
+ ("on_resume() checks in_show's type but unblanks on anything truthy",
+  "ltcplay/devices.py",
+  "        if in_show is True:\n",
+  "        if in_show or True:\n"),
+
+ ("on_hold() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return blanked",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return True"),
+
+ ("on_abort() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return blanked",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return True"),
+
+ ("on_resume()'s intermission refusal is never journalled, a silent "
+  "skip instead", "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND stays blanked{_for_show(show)} (re-sent "
+  "as \"\n"
+  "                     f\"a defensive check): Resume is between shows "
+  "(no \"\n"
+  "                     f\"lasers during intermission), not during a "
+  "show.\",\n"
+  "                     action=\"unblank\", outcome=\"refused\", "
+  "show=show)",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if False:\n"
+  "                pass"),
+
+ ("on_resume()'s defensive re-blank is sent but a FAILED re-blank is "
+  "never journalled as a fault, only the calm refusal wording",
+  "ltcplay/devices.py",
+  "            else:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND was told to stay blanked{_for_show(show)} "
+  "\"\n"
+  "                     f\"(Resume is between shows, no lasers during \"\n"
+  "                     f\"intermission), but the defensive re-blank "
+  "FAILED: \"\n"
+  "                     f\"no packet got out. The lasers may still be "
+  "live \"\n"
+  "                     f\"through intermission.\", action=\"unblank\",\n"
+  "                     outcome=\"refused\", show=show, fault=True)\n"
+  "            return reblanked",
+  "            return reblanked"),
+
+ ("on_resume(in_show=False) no longer re-sends a defensive blank at all",
+  "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:",
+  "            reblanked = True\n"
+  "            if reblanked:"),
+
+ ("on_abort() no longer blanks BEYOND, only fades MadMapper",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}",
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}"),
+
+ ("on_abort() fades everything UP to full instead of down to black",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)",
+  "        madmapper.fade_all(0.0, 1.0, **kwargs)"),
+
+ ("on_abort() ignores an explicit fade_seconds override", "ltcplay/devices.py",
+  "        if fade_seconds is not None:\n"
+  "            kwargs[\"seconds\"] = fade_seconds",
+  "        if False:\n"
+  "            kwargs[\"seconds\"] = fade_seconds"),
 
  ("show length no longer follows the show's own media when nothing is "
   "configured", "ltcplay/clock.py",
@@ -3334,8 +3682,8 @@ def build():
 
  ("conductor: Abort's flame cut waits for the executor",
   "ltcplay/conductor.py",
-  "            self._flames_cut()\n            self._accept(\"Abort\"",
-  "            self._accept(\"Abort\""),
+  "                self._flames_cut()\n                self._video_cancel()\n",
+  "                self._video_cancel()\n"),
 
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
@@ -3350,8 +3698,10 @@ def build():
 
  ("conductor: a second Abort starts a second fade",
   "ltcplay/conductor.py",
-  "            if self._latched:\n                # Idempotent:",
-  "            if False:\n                # Idempotent:"),
+  "            latched = self._latched\n            if not latched:\n"
+  "                if not self._playing():",
+  "            latched = False\n            if not latched:\n"
+  "                if not self._playing():"),
 
  ("conductor: the Abort latch no longer refuses other presses",
   "ltcplay/conductor.py",
@@ -3365,18 +3715,21 @@ def build():
 
  ("conductor: Abort is taken with nothing playing",
   "ltcplay/conductor.py",
-  "            if not self._playing():\n                return self._refused(\"Abort\",",
-  "            if False:\n                return self._refused(\"Abort\","),
+  "                if not self._playing():\n"
+  "                    return self._refused(\"Abort\",",
+  "                if False:\n"
+  "                    return self._refused(\"Abort\","),
 
  ("conductor: Abort blanks the lasers instead of ramping them",
   "ltcplay/conductor.py",
-  "\"lasers faded\", progress,\n                            self.devices.lasers_fade_out, fade)",
-  "\"lasers faded\", progress,\n                            self.devices.lasers_blank)"),
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
+  "                           ABORT_FADE_S)",
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)"),
 
  ("conductor: Abort never stops the video",
   "ltcplay/conductor.py",
   "        self._step(gen, \"video\", STOPPED, \"video stopped\", progress,\n"
-  "                   self.devices.video_stop)",
+  "                   self.devices.video_stop, force=True)",
   "        pass"),
 
  ("conductor: the Abort fade is not 1 s",
@@ -3498,8 +3851,8 @@ def build():
 
  ("conductor: a second Hold starts a new effect",
   "ltcplay/conductor.py",
-  "            if self._look in HOLDING_LOOKS:\n                return done(",
-  "            if False:\n                return done("),
+  "            held = self._look in HOLDING_LOOKS\n",
+  "            held = False\n"),
 
  ("conductor: Resume is taken when nothing is held",
   "ltcplay/conductor.py",
@@ -3552,9 +3905,1440 @@ def build():
 
  ("conductor: intermission cuts an Abort's fade short",
   "ltcplay/conductor.py",
-  "            if self._latched:\n                return done(\"The show is aborted, so",
-  "            if False:\n                return done(\"The show is aborted, so"),
+  "            latched = self._latched\n            if not latched:\n"
+  "                self._accept(\"Intermission\"",
+  "            latched = False\n            if not latched:\n"
+  "                self._accept(\"Intermission\""),
 
+ # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
+ # the lasers-dark re-send that keeps devices.py's "never assume a blank
+ # landed" rule). Still "conductor:", so `mutate.py conductor:` runs them.
+ ("conductor: lasers already dark are trusted and not blanked again",
+  "ltcplay/conductor.py",
+  "            if again and not force and (output, value) not in ALWAYS_RESENT:",
+  "            if again and not force:"),
+
+ ("conductor: a laser blank re-sent to lasers already dark earns another "
+  "0.5 s in the dark",
+  "ltcplay/conductor.py",
+  "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
+  "        want[\"changed\"] = bool(progress)"),
+
+ ("conductor: Abort's laser blank waits for the executor, so the video "
+  "fades first (review of PR #29, finding D)",
+  "ltcplay/conductor.py",
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
+  "                           ABORT_FADE_S)",
+  "            r = failed(\"left to the executor\")"),
+
+ ("conductor: a Hold fades the music before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n",
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n"
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"),
+
+ ("conductor: the real device layer says it is wired without BEYOND or "
+  "MadMapper",
+  "ltcplay/conductor.py",
+  "        self.wired = madmapper is not None and beyond is not None",
+  "        self.wired = True"),
+
+ ("conductor: a BEYOND command that never got out is reported as sent",
+  "ltcplay/conductor.py",
+  "        if ok is True:\n            return done(f\"{what}: sent to BEYOND.\")",
+  "        if True:\n            return done(f\"{what}: sent to BEYOND.\")"),
+
+ ("conductor: a broken BEYOND raises into the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n"
+  "            ok = getattr(self.beyond, method)(show=self.show, **kw)\n"
+  "        except Exception as e:\n"
+  "            return failed(f\"{what} failed: {type(e).__name__}: {e}. \"\n"
+  "                          f\"{failed_means}\")\n",
+  "        ok = getattr(self.beyond, method)(show=self.show, **kw)\n"),
+
+ ("conductor: the Abort's instant laser blank is not journaled as not a fade",
+  "ltcplay/conductor.py",
+  "        if self.beyond is not None and r.ok:\n            _device_note(",
+  "        if False:\n            _device_note("),
+
+ ("conductor: the Abort's laser command lights the lasers instead",
+  "ltcplay/conductor.py",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
+  "                         in_show=True)"),
+
+ ("conductor: a Resume never lights the lasers through the real device layer",
+  "ltcplay/conductor.py",
+  "        r = self._beyond(\"Laser restore\", \"unblank\",\n"
+  "                         \"The lasers stay dark.\", **kw)",
+  "        r = self._beyond(\"Laser restore\", \"blank\",\n"
+  "                         \"The lasers stay dark.\")"),
+
+ ("conductor: the video fade blocks the conductor until it ends",
+  "ltcplay/conductor.py",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False,\n",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=True,\n"),
+
+ ("conductor: an instant video level does not stop a fade still running",
+  "ltcplay/conductor.py",
+  "        self.mm.cancel()\n        start = self._from_level(end)\n"
+  "        with self._vlock:\n"
+  "            self._ramp = (start, end, max(seconds, 0.0), self._clock())\n"
+  "        if seconds <= 0 or start == end:\n"
+  "            # One level, at once, still cancellable by a newer command.\n"
+  "            self.mm.fade_surfaces(end, end, seconds=0.0, steps=1,\n"
+  "                                  wait=False, on_done=on_done)\n",
+  "        start = self._from_level(end)\n"
+  "        with self._vlock:\n"
+  "            self._ramp = (start, end, max(seconds, 0.0), self._clock())\n"
+  "        if seconds <= 0 or start == end:\n"
+  "            self.mm.set_surfaces(end, wait=False)\n"),
+
+ ("conductor: Abort stops the intermission bank instead of the show's",
+  "ltcplay/conductor.py",
+  "self.mm.stop_bank(self.mm.cfg.show_bank, wait=False,",
+  "self.mm.stop_bank(self.mm.cfg.intermission_bank, wait=False,"),
+
+ ("conductor: a closed MadMapper link is reported as sent",
+  "ltcplay/conductor.py",
+  "        if getattr(self.mm, \"_closed\", False):",
+  "        if False:"),
+
+ ("conductor: the video fade to black fades up instead",
+  "ltcplay/conductor.py",
+  "            lambda cb: self._surfaces(0.0, seconds, cb), BLACK, seconds)",
+  "            lambda cb: self._surfaces(1.0, seconds, cb), BLACK, seconds)"),
+
+ # -- the independent review of PR #29 (real UDP, real time probes),
+ # findings A to E. Still "conductor:", so `mutate.py conductor` runs them.
+ ("conductor: a failed MadMapper send never reaches the conductor "
+  "(finding A)",
+  "ltcplay/conductor.py",
+  "        if not ok:\n            why = why or \"no reason given\"",
+  "        if False:\n            why = why or \"no reason given\""),
+
+ ("conductor: a stalled MadMapper sender is never reported (finding A)",
+  "ltcplay/conductor.py",
+  "            if seq not in self._open:\n                return",
+  "            if True:\n                return"),
+
+ ("conductor: a queued video command is recorded as done before MadMapper "
+  "sends it (finding A)",
+  "ltcplay/conductor.py",
+  "                    self._set(output, UNKNOWN)\n"
+  "                    self._async_seq[output]",
+  "                    self._set(output, value)\n"
+  "                    self._async_seq[output]"),
+
+ ("conductor: an older MadMapper command's success overwrites a newer "
+  "video record (finding A)",
+  "ltcplay/conductor.py",
+  "            elif seq is None or seq == self._async_seq.get(output):",
+  "            elif True:"),
+
+ ("conductor: the Link's failed send is reported as a success (finding A)",
+  "ltcplay/madmapper.py",
+  "                    self._tell(on_done, not errors, why)",
+  "                    self._tell(on_done, True, why)"),
+
+ ("conductor: web.py builds the MadMapper link with no journal (finding A)",
+  "ltcplay/web.py",
+  "            madmapper = madmapper_mod.build(\n"
+  "                madmapper, journal=_device_journal(httpd_schedule))",
+  "            madmapper = madmapper_mod.build(madmapper)"),
+
+ ("conductor: a second Abort sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "            return done(f\"Already aborted. {self._reblank('Abort')} Press \"",
+  "            return done(f\"Already aborted. Press \""),
+
+ ("conductor: intermission while aborted sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "                    f\"Reset. {self._reblank('Intermission')}\")",
+  "                    f\"Reset. The rig is already dark.\")"),
+
+ ("conductor: a second Hold sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "        return done(f\"Already on hold. {self._reblank('Hold')}\")",
+  "        return done(\"Already on hold. Nothing was changed.\")"),
+
+ ("conductor: a re-blank says the lasers are dark whatever happened "
+  "(finding B)",
+  "ltcplay/conductor.py",
+  "        if now == BLACK:\n"
+  "            return \"The laser blank was sent again: the lasers are dark.\"",
+  "        if True:\n"
+  "            return \"The laser blank was sent again: the lasers are dark.\""),
+
+ ("conductor: a video fade starts from a fixed level again (finding C)",
+  "ltcplay/conductor.py",
+  "        return min(levels) if end <= 0.0 else max(levels)",
+  "        return 1.0 if end <= 0.0 else 0.0"),
+
+ ("conductor: Hold does not stop a running video fade at the press "
+  "(finding C)",
+  "ltcplay/conductor.py",
+  "                self._video_cancel()\n"
+  "                self._accept(\"Hold\"",
+  "                self._accept(\"Hold\""),
+
+ ("conductor: Abort does not stop a running video fade at the press "
+  "(finding C)",
+  "ltcplay/conductor.py",
+  "                self._flames_cut()\n                self._video_cancel()\n",
+  "                self._flames_cut()\n"),
+
+ ("conductor: Abort trusts a video record that says black (finding C)",
+  "ltcplay/conductor.py",
+  "                            self.devices.video_fade_out, fade, force=True)",
+  "                            self.devices.video_fade_out, fade)"),
+
+ ("conductor: BEYOND is called with the lock an Abort needs held "
+  "(finding D)",
+  "ltcplay/conductor.py",
+  "UNLOCKED_OUTPUTS = frozenset((\"lasers\",))",
+  "UNLOCKED_OUTPUTS = frozenset()"),
+
+ ("conductor: a laser restore ignores the conductor's guard (finding D)",
+  "ltcplay/conductor.py",
+  "        return (self._restore_gen is not None",
+  "        return True or (self._restore_gen is not None"),
+
+ ("conductor: a laser record written outside the lock overwrites a newer "
+  "one (finding D)",
+  "ltcplay/conductor.py",
+  "                if self._ver[output] == ver:\n"
+  "                    self._set(output, value if r.ok else UNKNOWN)",
+  "                if True:\n"
+  "                    self._set(output, value if r.ok else UNKNOWN)"),
+
+ ("conductor: BEYOND's unblank is not stopped before its next packet "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "                if self._blank_epoch != epoch or \\\n"
+  "                        not self._wanted(still_wanted):\n"
+  "                    return ok, True",
+  "                if False:\n"
+  "                    return ok, True"),
+
+ ("conductor: a 100 already on its way out is not followed by a 0 "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "            if late:\n",
+  "            if False:\n"),
+
+ ("conductor: a blank does not stop an unblank on another thread "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "        with self._lock:\n            self._blank_epoch += 1\n",
+  ""),
+
+ ("conductor: the laser gate is asked on the executor again (finding D)",
+  "ltcplay/conductor.py",
+  "        if not self.threaded:\n            return ask()",
+  "        if True:\n            return ask()"),
+
+ ("conductor: the announcement is played on the executor again "
+  "(finding D)",
+  "ltcplay/conductor.py",
+  "        if self.threaded:\n            # announce.play reads",
+  "        if False:\n            # announce.play reads"),
+
+ ("conductor: BEYOND takes a host name again (finding D)",
+  "ltcplay/beyond.py",
+  "        try:\n            ipaddress.IPv4Address(host)\n",
+  "        try:\n            pass\n"),
+
+ ("conductor: an announcement after Abort and Reset runs the Abort again "
+  "(finding E)",
+  "ltcplay/conductor.py",
+  "                look = BETWEEN if self._look == ABORTED else self._look",
+  "                look = self._look"),
+
+ # -- review round 3 of PR #29: the second independent review's surviving
+ # hand mutations, and its two beyond.py fixes.
+ ("conductor: the 0 after a late 100 is one packet with no retry again "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "                self._send_retried(BLANK_VALUE)\n"
+  "                return ok, True",
+  "                self._send(BRIGHTNESS_ADDR, BLANK_VALUE, force=True)\n"
+  "                return ok, True"),
+
+ ("conductor: BEYOND takes an IPv6 address its IPv4 socket cannot reach "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "            ipaddress.IPv4Address(host)\n",
+  "            ipaddress.ip_address(host)\n"),
+
+ ("conductor: an unblank takes a fresh blank count before every packet, "
+  "so never sees a blank (round 3)",
+  "ltcplay/beyond.py",
+  "            with self._lock:\n"
+  "                if self._blank_epoch != epoch or \\",
+  "            with self._lock:\n"
+  "                epoch = self._blank_epoch\n"
+  "                if self._blank_epoch != epoch or \\"),
+
+ ("conductor: a blank counts itself only after its packets, so 100s go "
+  "out while it is sending (round 3)",
+  "ltcplay/beyond.py",
+  "        with self._lock:\n            self._blank_epoch += 1\n"
+  "        ok = self._send_retried(BLANK_VALUE)\n",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        with self._lock:\n            self._blank_epoch += 1\n"),
+
+ ("conductor: a laser gate that never answers counts as a yes (round 3)",
+  "ltcplay/conductor.py",
+  "        return (f\"the laser gate did not answer within \"",
+  "        return None\n"
+  "        return (f\"the laser gate did not answer within \""),
+
+ ("conductor: stopping a video fade leaves its success report current, "
+  "so a rehearsal Hold records the video lit (round 3)",
+  "ltcplay/conductor.py",
+  "            self.video_seq += 1      # no older command's success counts "
+  "now",
+  "            pass"),
+
+ ("conductor: a fade's last value is computed, so a fade to black can end "
+  "on 1e-32 instead of 0 (round 3)",
+  "ltcplay/madmapper.py",
+  "    return [float(start + step * i) for i in range(steps - 1)] + "
+  "[float(end)]",
+  "    return [float(start + step * i) for i in range(steps)]"),
+
+
+ # ---------------------------------------------------------------------
+ # the arm link (build step 7b, 2026-10-01): the Stream Deck's wire into
+ # flamesafe's real ArmInput, and the deck's own pure logic in ltcplay.
+ # ---------------------------------------------------------------------
+
+ ("flamesafe: an arm frame with the wrong key is accepted",
+  "flamesafe/link.py",
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "arm":',
+  '    if obj.get("t") != "arm":'),
+
+ ("flamesafe: an arm frame of the wrong contract version is accepted",
+  "flamesafe/link.py",
+  '    if obj.get("v") != CONTRACT_VERSION:\n'
+  '        raise LinkError(f"wrong contract version {obj.get(\'v\')!r}, "\n'
+  '                        f"this program speaks {CONTRACT_VERSION}")\n'
+  '    if not isinstance(obj.get("k"), str) or obj.get("k") != key:\n'
+  '        raise LinkError("wrong key")\n'
+  '    if obj.get("t") != "arm":',
+  '    if obj.get("t") != "arm":'),
+
+ ("flamesafe: an arm frame with the wrong number of wanted values is accepted",
+  "flamesafe/link.py",
+  '    wanted = obj.get("wanted")\n'
+  '    if not isinstance(wanted, list) or len(wanted) != expect_n \\\n'
+  "            or any(not isinstance(w, bool) for w in wanted):",
+  '    wanted = obj.get("wanted")\n'
+  "    if not isinstance(wanted, list):"),
+
+ ("flamesafe: an arm frame with the wrong number of names is accepted",
+  "flamesafe/link.py",
+  '    names = obj.get("names")\n'
+  '    if not isinstance(names, list) or len(names) != expect_n \\\n'
+  "            or any(not isinstance(n, str) for n in names):",
+  '    names = obj.get("names")\n'
+  "    if not isinstance(names, list):"),
+
+ ("flamesafe: SocketArmInput accepts a frame it could not decode",
+  "flamesafe/arminput.py",
+  '                    f"arm frame rejected: {msg[:120]} (from {addr[0]}:"\n'
+  '                    f"{addr[1]}).")\n'
+  "                continue\n",
+  '                    f"arm frame rejected: {msg[:120]} (from {addr[0]}:"\n'
+  '                    f"{addr[1]}).")\n'
+  "                wanted, seq, names = [False] * self._n, 0, None\n"),
+
+ ("flamesafe: SocketArmInput keeps asserting after close()",
+  "flamesafe/arminput.py",
+  "    def poll(self):\n"
+  "        sock = self._sock\n"
+  "        if sock is None:\n"
+  "            return None",
+  "    def poll(self):\n"
+  "        sock = self._sock"),
+
+ ("flamesafe: arm_port is allowed to collide with listen_port or status_port",
+  "flamesafe/config.py",
+  "            if c.link_arm_ip == other_ip and c.link_arm_port == other_port:\n"
+  '                raise ConfigError(f"link arm_port is the same as {other_name}; "\n'
+  '                                  f"flamesafe would be talking to itself.")',
+  "            pass"),
+
+ ("flamesafe: a non-loopback arm_ip is accepted",
+  "flamesafe/config.py",
+  '        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),\n'
+  '                            "link arm_ip", loopback_only=True)',
+  '        c.link_arm_ip = _ip(link.get("arm_ip", c.link_listen_ip),\n'
+  '                            "link arm_ip", loopback_only=False)'),
+
+ # ---------------------------------------------------------------------
+ # Safety review of PR #31 (2026-10-01): the arm-link sender lock, the
+ # name-mismatch journal lines, and the deck's own journal route.
+ # ---------------------------------------------------------------------
+
+ ("flamesafe: a second sender's arm frame is accepted once the first is "
+  "locked in",
+  "flamesafe/arminput.py",
+  """            if self._sender is None:
+                self._sender = addr
+            elif addr != self._sender:
+                # Round 2 of the safety review (item 1): rejected for every
+                # purpose EXCEPT disarming -- this sender never becomes the
+                # lock holder, never advances seq/names/consent -- but its
+                # `wanted` is remembered so a real "disarm" from it still
+                # takes effect below, even while a rogue holds the lock.
+                self._note_foreign(addr, wanted, now)
+                continue
+""",
+  """            if self._sender is None:
+                self._sender = addr
+"""),
+
+ ("flamesafe: the arm-link sender lock never releases once stale",
+  "flamesafe/arminput.py",
+  "        if self._sender is not None and self._sender_at is not None and \\\n"
+  "                (now - self._sender_at) * 1000.0 > self._stale_ms:",
+  "        if False:"),
+
+ ("flamesafe: a flame-group name mismatch on the arm link is rejected in "
+  "total silence again",
+  "flamesafe/composer.py",
+  """                    self.stats["arm_rejected"] += 1
+                    self._name_mismatch_count += 1
+                    if not self._name_mismatch_logging:
+                        # Round 2 of the safety review, item 10: logged once
+                        # per continuous episode, with a running count, not
+                        # once per assertion -- at 10 Hz or faster a
+                        # misconfigured deck would otherwise flood the
+                        # bounded journal queue (1000 lines) within a
+                        # couple of minutes, pushing out everything else.
+                        self._name_mismatch_logging = True
+                        self._event(
+                            "arm-link",
+                            f"arm assertion rejected: its group names "
+                            f"{list(names)!r} do not match this config's "
+                            f"{want_names!r}; a deck built against a "
+                            f"different group map cannot arm the wrong "
+                            f"head. Further rejections for this same "
+                            f"reason will not be logged individually "
+                            f"until it stops.")
+                    return False
+""",
+  """                    self.stats["arm_rejected"] += 1
+                    return False
+"""),
+
+ ("flamesafe: service.py drops a raising assert_arm with no journal line",
+  "flamesafe/service.py",
+  "            self.input_errors += 1\n"
+  '            self._event("arm-input", f"assert_arm raised "\n'
+  '                                     f"{type(e).__name__}: {e}; this is a "\n'
+  '                                     f"bug in the composer, which must "\n'
+  '                                     f"never raise here. The assertion "\n'
+  '                                     f"was dropped.")',
+  "            self.input_errors += 1"),
+
+ ("ltcplay: the deck's own journal route accepts an event with no text",
+  "ltcplay/schedule_service.py",
+  '        if not text:\n'
+  '            raise ValueError("A deck event needs its text. Nothing was "\n'
+  '                             "written.")',
+  "        if False:\n"
+  '            raise ValueError("unreachable")'),
+
+ # ---------------------------------------------------------------------
+ # Round 3 of the safety review (2026-10-02): a fourth review re-ran the
+ # round 1 and round 2 attacks (still closed) and found round 2's own
+ # foreign-disarm fix had opened a new hole (a forced low-then-high edge
+ # read as operator consent), plus coverage gaps in the Stream Deck's own
+ # safety logic (zero mutations existed for it at all) and in the
+ # journal/alarm rate limits. Every name starts with "round3:" so
+ # `mutate.py round3:` runs just these.
+ # ---------------------------------------------------------------------
+
+ ("round3: a forced low from a foreign sender can still register as "
+  "operator consent",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = consent_ok\n"),
+
+ ("round3: SocketArmInput stops marking which bits it forced False",
+  "flamesafe/arminput.py",
+  "                    forced[i] = True\n                    changed = True\n",
+  "                    changed = True\n"),
+
+ ("round3: SocketArmInput.foreign_count always reads zero",
+  "flamesafe/arminput.py",
+  "        poll() itself had anything new to decode and return.\"\"\"\n"
+  "        return len(self._foreign)\n",
+  "        poll() itself had anything new to decode and return.\"\"\"\n"
+  "        return 0\n"),
+
+ ("round3: the composer's status frame stops carrying foreign_senders",
+  "flamesafe/composer.py",
+  '            "arm_input": {\n'
+  '                "state": ("never" if self._arm_fresh_at is None\n'
+  '                          else "live" if live else "stale"),\n'
+  '                "seq": self._arm_seq,\n'
+  '                "age_ms": arm_age,\n'
+  '                "foreign_senders": self._foreign_arm_senders,\n'
+  '                "flooded": self._arm_link_flooded,\n'
+  '            },\n',
+  '            "arm_input": {\n'
+  '                "state": ("never" if self._arm_fresh_at is None\n'
+  '                          else "live" if live else "stale"),\n'
+  '                "seq": self._arm_seq,\n'
+  '                "age_ms": arm_age,\n'
+  '                "flooded": self._arm_link_flooded,\n'
+  '            },\n'),
+
+ ("round3: a sustained foreign-sender flood floods the journal again, one "
+  "line per datagram",
+  "flamesafe/arminput.py",
+  "        ep = self._episodes.get(reason)\n"
+  "        if ep is None:\n",
+  "        ep = None\n"
+  "        if ep is None:\n"),
+
+ ("round3: the deck never alarms on a foreign sender alone",
+  "ltcplay/streamdeck.py",
+  "        elif isinstance(foreign, int) and not isinstance(foreign, bool) "
+  "\\\n                and foreign > 0:\n",
+  "        elif False:\n"),
+
+ ("round3: the spoof-alarm dedup compares the changing sentence again, "
+  "not a stable category",
+  "ltcplay/streamdeck.py",
+  "    def _raise_spoof_alarm(self, category, reason):\n"
+  "        self._spoof_alarm = reason      # always the LATEST text, for "
+  "draw()\n"
+  "        if self._spoof_category == category:\n"
+  "            return    # already alarming for this exact CATEGORY; no "
+  "spam,\n"
+  "                      # even though `reason`'s own numbers keep moving\n"
+  "        self._spoof_category = category\n",
+  "    def _raise_spoof_alarm(self, category, reason):\n"
+  "        if self._spoof_alarm == reason:\n"
+  "            return\n"
+  "        self._spoof_alarm = reason\n"
+  "        self._spoof_category = category\n"),
+
+ ("round3: tick() is no longer called from the Stream Deck's main loop",
+  "ltcplay/streamdeck.py",
+  "                controller.tick()\n"
+  "                controller.status.poll(clock)",
+  "                controller.status.poll(clock)"),
+
+ ("round3: an Abort can also complete a same-pass arm-hold again",
+  "ltcplay/streamdeck.py",
+  "            self._do_abort()\n"
+  "            # Item 3 (round 2 of the safety review): never ALSO "
+  "complete an\n"
+  "            # arm-hold in the SAME pass an Abort just fired in. "
+  "_do_abort()\n"
+  "            # just told every group's wanted false; finishing a hold "
+  "a\n"
+  "            # moment later in this same pass would re-arm the very "
+  "group\n"
+  "            # Abort was supposed to clear. _do_arm_fire's own "
+  "latched/\n"
+  "            # refractory guard (now set by _do_abort, just above) is "
+  "a\n"
+  "            # second, independent backstop -- this return is the "
+  "ordering\n"
+  "            # fix itself, not a substitute for that guard, nor the "
+  "other\n"
+  "            # way round.\n"
+  "            return\n",
+  "            self._do_abort()\n"),
+
+ ("round3: a Stream Deck reconnect no longer resets in-progress hold "
+  "state",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.restart()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            controller.arm.restart()\n"),
+
+ ("round3: the arm-hold duration changes without any test noticing",
+  "ltcplay/streamdeck.py",
+  "ARM_HOLD_S = 0.6",
+  "ARM_HOLD_S = 6.0"),
+
+ ("round3: the re-arm refractory window changes without any test noticing",
+  "ltcplay/streamdeck.py",
+  "REARM_REFRACTORY_S = 2.0",
+  "REARM_REFRACTORY_S = 0.02"),
+
+ # ---- round 4 of the safety review (PR #31) ------------------------------
+ # A: the deck process keeps the arm link held OFF on ONE socket while no
+ # deck is connected.
+ ("round4: with no deck the hold-off sends nothing (the link goes silent "
+  "and flamesafe's sender lock lapses)",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.set_all(False)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round4: the deck process sends nothing until the first deck is found",
+  "ltcplay/streamdeck.py",
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
+  "            controller.arm.set_all(False)\n",
+  "            if not controller.arm.is_open:\n"
+  "                pass\n"
+  "            controller.arm.set_all(False)\n"),
+
+ ("round4: a reconnect closes and reopens the arm socket (a new source "
+  "port, so the sender lock changes hands)",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.restart()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            controller.arm.close()\n"
+  "            controller.arm.open()\n"
+  "            controller.reset_on_reconnect()\n"),
+
+ ("round4: an unplug closes the arm socket again",
+  "ltcplay/streamdeck.py",
+  "            # NOT arm.close() (round 4, item A): see _hold_link_off.\n"
+  "            try:\n"
+  "                controller.arm.set_all(False)\n",
+  "            controller.arm.close()\n"
+  "            try:\n"
+  "                controller.arm.set_all(False)\n"),
+
+ # B: no consent while anyone else is on the link.
+ ("round4: consent ignores another sender on the arm link",
+  "flamesafe/composer.py",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded)\n",
+  "        disturbed = self._arm_link_flooded\n"),
+
+ ("round4: consent ignores a flood on the arm link",
+  "flamesafe/composer.py",
+  "        disturbed = (self._foreign_arm_senders != 0\n"
+  "                     or self._arm_link_flooded)\n",
+  "        disturbed = self._foreign_arm_senders != 0\n"),
+
+ ("round4: a down edge from before another sender turned up can be "
+  "finished while it is there",
+  "flamesafe/composer.py",
+  "            # has gone (the deck keeps re-asserting its own False, so a\n"
+  "            # genuine low is re-proved on the first frame after it goes).\n"
+  "            self._seen_down = [False] * self.n\n",
+  "            # has gone (the deck keeps re-asserting its own False, so a\n"
+  "            # genuine low is re-proved on the first frame after it goes).\n"
+  "            pass\n"),
+
+ ("round4: a change of locked sender keeps the old sender's down edges",
+  "flamesafe/composer.py",
+  "        elif sender is not None and self._arm_sender is not None and \\\n"
+  "                sender != self._arm_sender:\n",
+  "        elif False:\n"),
+
+ ("round4: SocketArmInput never reports a flood",
+  "flamesafe/arminput.py",
+  "        if n_read > FLOOD_DATAGRAMS_PER_POLL or \\\n"
+  "                n_bytes > self.flood_bytes:\n",
+  "        if False:\n"),
+
+ ("round4: SocketArmInput stops naming the locked sender",
+  "flamesafe/arminput.py",
+  "            best = ArmAssertion(wanted, seq, names, sender=addr)\n",
+  "            best = ArmAssertion(wanted, seq, names)\n"),
+
+ ("round4: the service never hands the flood flag to the composer",
+  "flamesafe/service.py",
+  "            self.composer.note_arm_link_flooded(\n"
+  "                bool(getattr(self.arm_input, \"flooded\", False)))\n",
+  "            self.composer.note_arm_link_flooded(False)\n"),
+
+ ("round4: the deck has no label for the OTHER SENDER reason",
+  "ltcplay/streamdeck.py",
+  "    \"stops. Cycle the arm again once it has gone.\": \"OTHER SENDER\",\n",
+  "    \"stops. Cycle the arm again once it has gone.x\": \"OTHER SENDER\",\n"),
+
+ # C: decode rejections throttled like every other arm-link rejection.
+ ("round4: decode rejections are journaled one line per datagram again",
+  "flamesafe/arminput.py",
+  "                msg = str(e)\n"
+  "                self._rejects.note(\n",
+  "                msg = str(e)\n"
+  "                self._event(\"arm-link\", f\"arm frame rejected: {msg}\")\n"
+  "                (lambda *a: None)(\n"),
+
+ ("round4: a decode rejection is throttled under its raw message, so a "
+  "sender varying it gets a line every datagram",
+  "flamesafe/arminput.py",
+  "                    \"decode:\" + _decode_reason(msg), now, addr,\n",
+  "                    \"decode:\" + msg, now, addr,\n"),
+
+ ("round4: an arm-link rejection episode ends after half a second again",
+  "flamesafe/arminput.py",
+  "EPISODE_QUIET_S = 5.0\n",
+  "EPISODE_QUIET_S = 0.5\n"),
+
+ ("round4: no per-minute cap on arm-link rejection lines",
+  "flamesafe/arminput.py",
+  "LINES_PER_MINUTE = 4\n",
+  "LINES_PER_MINUTE = 10 ** 6\n"),
+
+ # D: the round-4 review's hand mutations that survived the whole suite.
+ ("round4: reset_on_reconnect skips only the Abort hold",
+  "ltcplay/streamdeck.py",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n",
+  "        self._prev_keys = [False] * 6\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n"),
+
+ ("round4: reset_on_reconnect skips only the arm holds",
+  "ltcplay/streamdeck.py",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"
+  "        for h in self._arm_holds:\n"
+  "            h.release()\n",
+  "        self._prev_keys = [False] * 6\n"
+  "        self._abort_hold.release()\n"),
+
+ ("round4: any forced bit blocks consent on every group",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = consent_ok and not any(f)\n"),
+
+ ("round4: the locked sender's own genuine lows are marked forced",
+  "flamesafe/arminput.py",
+  "                if not fw[i] and wanted[i]:\n"
+  "                    wanted[i] = False\n"
+  "                    forced[i] = True\n",
+  "                if not fw[i]:\n"
+  "                    wanted[i] = False\n"
+  "                    forced[i] = True\n"),
+
+ ("round4: the foreign-sender alarm's dedup key embeds the sender count",
+  "ltcplay/streamdeck.py",
+  "            category = \"foreign-senders\"\n",
+  "            category = f\"foreign-senders:{foreign}\"\n"),
+
+ ("round4: a forced low keeps an earlier genuine down edge",
+  "flamesafe/composer.py",
+  "                self._seen_down[i] = consent_ok and not f[i]\n",
+  "                self._seen_down[i] = (consent_ok and not f[i]) or "
+  "(f[i] and self._seen_down[i])\n"),
+
+ ("round4: a malformed forced vector is accepted",
+  "flamesafe/composer.py",
+  "                if len(f) != self.n or any(not isinstance(x, bool) for x "
+  "in f):\n                    raise ValueError(\"forced\")\n",
+  "                pass\n"),
+
+ ("round4: the foreign-sender count only reaches the composer on ticks "
+  "with an assertion",
+  "flamesafe/service.py",
+  "            self.composer.note_foreign_arm_senders(\n"
+  "                getattr(self.arm_input, \"foreign_count\", 0))\n",
+  "            a is not None and self.composer.note_foreign_arm_senders(\n"
+  "                getattr(self.arm_input, \"foreign_count\", 0))\n"),
+
+ ("round4: an arm-link rejection episode never closes",
+  "flamesafe/arminput.py",
+  "                       if now - e[\"at\"] > self.quiet_s]:\n",
+  "                       if False]:\n"),
+
+ # E: a freshly started deck process gets the reconnect grace.
+ ("round4: a freshly started deck process gets no reconnect grace",
+  "ltcplay/streamdeck.py",
+  "        self._spoof_last_seq = None\n",
+  "        self._spoof_last_seq = 0\n"),
+
+ # -- the flame link: flamesafe's disarm_all (2026-10-02) ----------------
+ ("flamelink: a disarm_all from another sender is accepted",
+  "flamesafe/composer.py",
+  '''                raise ValueError("no live flame link to accept it from")
+            if sender != self._frame_sender:
+                raise ValueError("another sender")''',
+  '''                raise ValueError("no live flame link to accept it from")'''),
+
+ ("flamelink: a disarm_all is accepted with no live flame link",
+  "flamesafe/composer.py",
+  '''            if not self._frame_is_fresh(t):
+                raise ValueError("no live flame link to accept it from")''',
+  '''            if False:
+                raise ValueError("no live flame link to accept it from")'''),
+
+ ("flamelink: a disarm_all out of sequence is accepted",
+  "flamesafe/composer.py",
+  '''            if msg.seq <= self._frame_seq:
+                raise ValueError(f"out of order: seq {msg.seq} after "''',
+  '''            if False:
+                raise ValueError(f"out of order: seq {msg.seq} after "'''),
+
+ ("flamelink: a disarm_all whose sender clock went backwards is accepted",
+  "flamesafe/composer.py",
+  '''            if msg.mono < self._frame_mono:
+                raise ValueError("sender clock went backwards")
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1''',
+  '''            pass
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1'''),
+
+ ("flamelink: disarm_all leaves the latches standing",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: disarm_all ARMS every group",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._latched = [True] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: a consent edge from before the Abort survives it",
+  "flamesafe/composer.py",
+  '''        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1''',
+  '''        self._latched = [False] * self.n
+        self.stats["disarm_all"] += 1'''),
+
+ ("flamelink: the lamp never says the show's Abort disarmed it",
+  "flamesafe/composer.py",
+  '''            if self._aborted[i]:
+                return (ABORT_DISARMED, "flashing")''',
+  '''            if False:
+                return (ABORT_DISARMED, "flashing")'''),
+
+ ("flamelink: a re-armed group still blames the old Abort",
+  "flamesafe/composer.py",
+  '''                self._latched[i] = True
+                self._aborted[i] = False''',
+  '''                self._latched[i] = True'''),
+
+ ("flamelink: every copy of one Abort is journaled",
+  "flamesafe/composer.py",
+  "        new_abort = key != self._disarm_last_key",
+  "        new_abort = True"),
+
+ # -- fix round 1 of PR #34: flamesafe's side ------------------------------
+ ("fix1: a new sender's Abort with a repeated id is not journaled",
+  "flamesafe/composer.py",
+  "        key = (msg.abort_id, sender)",
+  "        key = (msg.abort_id, None)"),
+
+ ("fix1: an arm-hold begun before the Abort can complete after it",
+  "flamesafe/composer.py",
+  "                if in_abort_window and self._low_predates_abort[i]:",
+  "                if False and self._low_predates_abort[i]:"),
+
+ ("fix1: disarm_all does not mark the lows going on at the Abort",
+  "flamesafe/composer.py",
+  "        self._low_predates_abort = [True] * self.n",
+  "        self._low_predates_abort = [False] * self.n"),
+
+ ("fix1: the post-Abort window never ends",
+  "flamesafe/composer.py",
+  "            and (t - self._disarm_at) * 1000.0 < self.cfg.min_arm_dwell_ms)",
+  "            and (t - self._disarm_at) * 1000.0 < 10 ** 9)"),
+
+ ("fix1: a fresh low after the Abort is still treated as an old one",
+  "flamesafe/composer.py",
+  "                        self._low_predates_abort[i] = False",
+  "                        pass"),
+
+ ("fix1 H1: disarm_all does not advance the sequence",
+  "flamesafe/composer.py",
+  "        self._frame_seq = msg.seq\n        self._frame_mono = msg.mono\n"
+  "        was_up",
+  "        was_up"),
+
+ ("fix1 H2: a disarm_all with the same seq as the last frame is taken",
+  "flamesafe/composer.py",
+  "            if msg.seq <= self._frame_seq:\n"
+  "                raise ValueError(f\"out of order: seq {msg.seq} after \"",
+  "            if msg.seq < self._frame_seq:\n"
+  "                raise ValueError(f\"out of order: seq {msg.seq} after \""),
+
+ ("fix1 H3: disarm_all refreshes the flame link's liveness",
+  "flamesafe/composer.py",
+  "        self._disarm_at = t\n",
+  "        self._disarm_at = t\n        self._frame_at = t\n"),
+
+ ("fix1: flamesafe takes a timecode with a trailing newline",
+  "flamesafe/link.py",
+  "isinstance(tc, str) and _TC.fullmatch(tc)):",
+  "isinstance(tc, str) and re.match(r\"^\\d{2}:\\d{2}:\\d{2}[:;]\\d{2}$\", tc)):"),
+
+ ("fix1: flamesafe takes a key with a trailing newline",
+  "flamesafe/link.py",
+  "            and bool(_KEY.fullmatch(key)))",
+  "            and bool(re.match(r\"^[\\x21-\\x7e]+$\", key)))"),
+
+ ("flamelink: the service drops every disarm_all on the floor",
+  "flamesafe/service.py",
+  "                self.composer.disarm_all(msg, sender=tuple(addr[:2]))",
+  "                pass"),
+
+ ("flamelink: a disarm_all is decoded as a flame frame",
+  "flamesafe/link.py",
+  '''    if isinstance(obj, dict) and obj.get("t") == "disarm_all":''',
+  '''    if isinstance(obj, dict) and obj.get("t") == "disarm-all":'''),
+
+ ("flamelink: a disarm_all with the wrong key is decoded",
+  "flamesafe/link.py",
+  '''        raise LinkError("wrong key")
+    if obj.get("t") != "disarm_all":''',
+  '''        pass
+    if obj.get("t") != "disarm_all":'''),
+
+ ("flamelink: a disarm_all with extra fields is decoded",
+  "flamesafe/link.py",
+  '''    if extra:
+        raise LinkError("disarm_all has a field this contract does not "''',
+  '''    if False:
+        raise LinkError("disarm_all has a field this contract does not "'''),
+
+ ("flamelink: a disarm_all with abort id 0 is decoded",
+  "flamesafe/link.py",
+  "    if not _is_int(abort_id) or abort_id < 1:",
+  "    if not _is_int(abort_id) or abort_id < 0:"),
+
+ ("flamelink: rejections are keyed by the raw message, so a sender varying it floods the journal",
+  "flamesafe/composer.py",
+  "            reason = _flame_reason(why)",
+  "            reason = why"),
+
+ ("flamelink: an episode of rejections never says how many",
+  "flamesafe/composer.py",
+  "            self._rejects.sweep(",
+  "            (lambda *a, **k: None)("),
+
+ ("flamelink: an undecodable datagram is not journaled",
+  "flamesafe/composer.py",
+  '''        self._last_reject = str(why)
+        self._note_reject(self._last_reject, sender)''',
+  '''        self._last_reject = str(why)'''),
+
+ ("flamelink: a refused flame frame is not journaled",
+  "flamesafe/composer.py",
+  '''            self._last_reject = str(e) or type(e).__name__
+            self._note_reject(self._last_reject, sender)''',
+  '''            self._last_reject = str(e) or type(e).__name__'''),
+
+ ("flamelink: a sender's long text goes into the journal uncut",
+  "flamesafe/composer.py",
+  "            if len(why) > 200:          # sender-chosen text, kept short",
+  "            if False:"),
+
+ # -- the flame link: ltcplay's sender -----------------------------------
+ ("flamelink: a new link starts with its cues released",
+  "ltcplay/flamelink.py",
+  "        self.zeroed = True          # until the conductor releases the cues",
+  "        self.zeroed = False"),
+
+ ("flamelink: cues go out while the show is held or stopped",
+  "ltcplay/flamelink.py",
+  "        if self.zeroed or live is not True or tc is None:",
+  "        if self.zeroed:"),
+
+ ("flamelink: cues go out after the conductor zeroed them",
+  "ltcplay/flamelink.py",
+  "        if self.zeroed or live is not True or tc is None:",
+  "        if live is not True or tc is None:"),
+
+ ("flamelink: a provider's wrong-sized or out-of-range answer goes out",
+  "ltcplay/flamelink.py",
+  '''            if len(vals) != UNIVERSE_SIZE or \\
+                    any(not _is_int(x) or not 0 <= x <= 255 for x in vals):
+                raise ValueError''',
+  '''            if False:
+                raise ValueError'''),
+
+ ("flamelink: zero() waits for the next tick instead of sending at once",
+  "ltcplay/flamelink.py",
+  '''            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            self._zero_gen += 1
+            return self._sock is not None'''),
+
+ ("flamelink: disarm_all leaves the cues released",
+  "ltcplay/flamelink.py",
+  '''                self.zeroed = True
+                self._zero_gen += 1
+                self._send_zero_frame()
+                self.abort_id += 1''',
+  '''                self._zero_gen += 1
+                self._send_zero_frame()
+                self.abort_id += 1'''),
+
+ # -- fix round 1 of PR #34: ltcplay's sender -----------------------------
+ ("fix1 H10: disarm_all's immediate frame is built from the providers before zeroing",
+  "ltcplay/flamelink.py",
+  '''                self.zeroed = True
+                self._zero_gen += 1
+                self._send_zero_frame()
+                self.abort_id += 1''',
+  '''                self.send_frame()
+                self.zeroed = True
+                self._zero_gen += 1
+                self.abort_id += 1'''),
+
+ ("fix1 H11: zero()'s immediate frame is built from the providers before zeroing",
+  "ltcplay/flamelink.py",
+  '''            self.zeroed = True
+            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            ok = self.send_frame()
+            self.zeroed = True
+            self._zero_gen += 1
+            return ok'''),
+
+ ("fix1: zero() asks the providers for its frame",
+  "ltcplay/flamelink.py",
+  '''            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''            self._zero_gen += 1
+            return self.send_frame()'''),
+
+ ("fix1: the sender asks the providers under the link's lock",
+  "ltcplay/flamelink.py",
+  '''        with self._read_lock:
+            tc, values = self.values_now()''',
+  '''        with self._lock:
+            tc, values = self.values_now()'''),
+
+ ("fix1: a frame read before a zero() goes out with its values",
+  "ltcplay/flamelink.py",
+  "            if self.zeroed or gen != self._zero_gen:",
+  "            if self.zeroed:"),
+
+ ("fix1: an Abort is not repeated",
+  "ltcplay/flamelink.py",
+  "                self._abort_repeat = (aid, why, self._clock() + repeat_s)",
+  "                self._abort_repeat = None"),
+
+ ("fix1: an Abort repeats forever",
+  "ltcplay/flamelink.py",
+  "        if self._clock() > until:",
+  "        if False:"),
+
+ ("fix1: an Abort's repeat ignores flamesafe's frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "                   self.frame_stale_ms / 1000.0 + ABORT_REPEAT_MARGIN_S)",
+  "                   0.0)"),
+
+ ("fix1: any larger last_id confirms the Abort",
+  "ltcplay/flamelink.py",
+  "                if _is_int(last) and last == pend[0]:",
+  "                if _is_int(last) and last >= pend[0]:"),
+
+ ("fix1: seq starts at 0",
+  "ltcplay/flamelink.py",
+  "        self.seq = _random_start()",
+  "        self.seq = 0"),
+
+ ("fix1: abort ids start at 0",
+  "ltcplay/flamelink.py",
+  "        self.abort_id = _random_start()",
+  "        self.abort_id = 0"),
+
+ ("fix1: a timecode that has stopped moving still carries cues",
+  "ltcplay/flamelink.py",
+  "        if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:",
+  "        if self._tc_moved_at is None:"),
+
+ ("fix1: a sender pass that raises ends the thread",
+  "ltcplay/flamelink.py",
+  '''                except Exception as e:
+                    self._run_failed(e)''',
+  '''                except ZeroDivisionError as e:
+                    self._run_failed(e)'''),
+
+ ("fix1: a dead sender thread reads as fine",
+  "ltcplay/flamelink.py",
+  '''        if self._run_dead or (t is not None and not t.is_alive()
+                              and not self._stop.is_set()):''',
+  '''        if False:'''),
+
+ ("fix1: a failing sender reads as fine",
+  "ltcplay/flamelink.py",
+  '''                               and sender not in ("failing", "dead",
+                                                  "stalled")),''',
+  '''                               and sender not in ("dead",
+                                                  "stalled")),'''),
+
+ # -- fix round 2 of PR #34 ------------------------------------------------
+ ("fix2: flamesafe's frame_stale_ms is not read from its config",
+  "ltcplay/flamelink.py",
+  '''                          "frame_stale_ms": doc.get("frame_stale_ms")},''',
+  '''                          },'''),
+
+ ("fix2: a flame_link block without frame_stale_ms quietly defaults to 500",
+  "ltcplay/flamelink.py",
+  '''        stale = doc.get("frame_stale_ms")''',
+  '''        stale = doc.get("frame_stale_ms", 500)'''),
+
+ ("fix2: a config built in code assumes a short frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "FRAME_STALE_MS_DEFAULT = STALE_MS_MAX",
+  "FRAME_STALE_MS_DEFAULT = 500"),
+
+ ("fix2: a stalled sender reads as running",
+  "ltcplay/flamelink.py",
+  '''        if self._stalled_now():
+            return "stalled"''',
+  '''        if False:
+            return "stalled"'''),
+
+ ("fix2: a stalled sender reads as sending fine",
+  "ltcplay/flamelink.py",
+  '''                               and sender not in ("failing", "dead",
+                                                  "stalled")),''',
+  '''                               and sender not in ("failing", "dead")),'''),
+
+ ("fix2: a stall is never journaled",
+  "ltcplay/flamelink.py",
+  "                if stalled and not self._stall_noted:",
+  "                if False:"),
+
+ ("fix2: a stall is journaled over and over",
+  "ltcplay/flamelink.py",
+  "                    self._stall_noted = True\n",
+  "                    self._stall_noted = False\n"),
+
+ ("fix2: a sender is stalled only after the whole frame_stale_ms",
+  "ltcplay/flamelink.py",
+  "        return self.cfg.frame_stale_ms / 2000.0",
+  "        return self.cfg.frame_stale_ms / 1000.0"),
+
+ ("fix2: disarm_all does not invalidate a frame read before it",
+  "ltcplay/flamelink.py",
+  "                self.zeroed = True\n                self._zero_gen += 1\n"
+  "                self._send_zero_frame()\n                self.abort_id",
+  "                self.zeroed = True\n"
+  "                self._send_zero_frame()\n                self.abort_id"),
+
+ ("fix2: repeat copies do not restart the post-Abort window",
+  "flamesafe/composer.py",
+  "        self._disarm_at = t\n        if new_abort:\n",
+  "        if new_abort:\n            self._disarm_at = t\n"),
+
+ ("fix2: the deck's arm-hold grows past the post-Abort window",
+  "ltcplay/streamdeck.py",
+  "ARM_HOLD_S = 0.6\n",
+  "ARM_HOLD_S = 0.8\n"),
+
+ ("fix1: an exception whose str() raises escapes the error handling",
+  "ltcplay/flamelink.py",
+  '''        text = "(its message could not be read)"''',
+  '''        raise'''),
+
+ ("fix1: the journal says an unconfirmed Abort was done",
+  "ltcplay/flamelink.py",
+  '''                       f"for {repeat_s:g} s. Sent, NOT yet confirmed by "''',
+  '''                       f"for {repeat_s:g} s. Done, every group disarmed by "'''),
+
+ ("fix1 H13: a late sender bursts to catch up",
+  "ltcplay/flamelink.py",
+  "                        next_at = now + period",
+  "                        pass"),
+
+ ("fix1: ltcplay takes a timecode with a trailing newline",
+  "ltcplay/flamelink.py",
+  "        if not (isinstance(tc, str) and _TC.fullmatch(tc)):",
+  "        if not (isinstance(tc, str) and re.match(r\"^\\d{2}:\\d{2}:\\d{2}[:;]\\d{2}$\", tc)):"),
+
+ ("fix1: ltcplay takes a key with a trailing newline",
+  "ltcplay/flamelink.py",
+  "            and bool(_KEY.fullmatch(key)))",
+  "            and bool(re.match(r\"^[\\x21-\\x7e]+$\", key)))"),
+
+ ("flamelink: one Abort is a single datagram",
+  "ltcplay/flamelink.py",
+  "DISARM_COPIES = 3",
+  "DISARM_COPIES = 1"),
+
+ ("flamelink: a new socket for every frame",
+  "ltcplay/flamelink.py",
+  "            s.sendto(data, (self.cfg.ip, self.cfg.port))",
+  "            socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(\n"
+  "                data, (self.cfg.ip, self.cfg.port))"),
+
+ ("flamelink: seq does not advance",
+  "ltcplay/flamelink.py",
+  '''        self.seq += 1
+        if self.first_seq is None:''',
+  '''        if self.first_seq is None:'''),
+
+ ("flamelink: mono goes backwards with the clock",
+  "ltcplay/flamelink.py",
+  '''        if self._mono_last is not None and mono < self._mono_last:
+            mono = self._mono_last''',
+  '''        if False:
+            mono = self._mono_last'''),
+
+ ("flamelink: a failed send is journaled every frame",
+  "ltcplay/flamelink.py",
+  "            if self._fail_since is None:\n                self._fail_since = self._clock()",
+  "            if True:\n                self._fail_since = self._clock()"),
+
+ ("flamelink: the end of a send outage is never journaled",
+  "ltcplay/flamelink.py",
+  '''        if self._fail_since is not None:
+            gone = self._clock() - self._fail_since''',
+  '''        if False:
+            gone = self._clock() - self._fail_since'''),
+
+ ("flamelink: a send failure is silent",
+  "ltcplay/flamelink.py",
+  '''                self._note(f"Flame link: a frame to flamesafe could not be "''',
+  '''                (lambda *a, **k: None)(f"Flame link: a frame to flamesafe could not be "'''),
+
+ ("flamelink: the lock alarm never fires",
+  "ltcplay/flamelink.py",
+  "                if now - self._not_ours_since > LOCK_ALARM_S and \\",
+  "                if False and \\"),
+
+ ("flamelink: the lock alarm fires on one stray status",
+  "ltcplay/flamelink.py",
+  "LOCK_ALARM_S = 1.0",
+  "LOCK_ALARM_S = 0.0"),
+
+ ("flamelink: an unconfirmed disarm is never reported",
+  "ltcplay/flamelink.py",
+  "                elif now - pend[1] > CONFIRM_S and \\",
+  "                elif False and \\"),
+
+ ("flamelink: a held clock reads as live",
+  "ltcplay/flamelink.py",
+  '''        live = (playing and not getattr(clk, "paused", True)''',
+  '''        live = (playing'''),
+
+ ("flamelink: a clock fading out on Abort reads as live",
+  "ltcplay/flamelink.py",
+  '''                and not getattr(clk, "_halting", False) and tc is not None)''',
+  '''                and tc is not None)'''),
+
+ ("flamelink: the config accepts a send rate below the contract floor",
+  "ltcplay/flamelink.py",
+  "SEND_HZ_MIN = 20",
+  "SEND_HZ_MIN = 1"),
+
+ ("flamelink: the config accepts a non-loopback address",
+  "ltcplay/flamelink.py",
+  '''        if not isinstance(ip, str) or not ip.startswith("127.") or \\''',
+  '''        if not isinstance(ip, str) or \\'''),
+
+ ("flamelink: a long Abort reason is sent uncut",
+  "ltcplay/flamelink.py",
+  '''            why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \\''',
+  '''            why = " ".join(str(reason or "Abort").split()) \\'''),
+
+ ("flamelink: a status frame with another key is taken",
+  "ltcplay/flamelink.py",
+  '''            or obj.get("t") != "status" or obj.get("k") != key:''',
+  '''            or obj.get("t") != "status":'''),
+
+ ("flamelink: the example key passes without a word",
+  "ltcplay/flamelink.py",
+  "        if self.cfg.key == EXAMPLE_KEY:",
+  "        if False:"),
+
+ ("flamelink: the deck does not say ABORTED",
+  "ltcplay/streamdeck.py",
+  '''    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",''',
+  ""),
+
+ # ---- round 5 of the safety review (PR #31) ------------------------------
+ # 1: a long unplug. The round-4 test's no-deck time added up to exactly 6 s,
+ # so this one (the review's hand mutation) passed the whole suite.
+ ("round5: the OFF sender stops for good after 6 s with no deck",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.set_all(False)\n"
+  "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
+  "            _n[0] += 1\n"
+  "            if _n[0] <= 120:\n"
+  "                controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round5: the OFF sender stops for good after 60 s with no deck",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.set_all(False)\n"
+  "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
+  "            _n[0] += 1\n"
+  "            if _n[0] <= 1200:\n"
+  "                controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ # 2: any error from the deck process is an unplug, never the end of it.
+ ("round5: a plain error opening the deck ends run_forever again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Retrying in 2 s;",
+  "        except DeckDisconnected as e:\n"
+  "            outage.failed(e, \"Retrying in 2 s;"),
+
+ ("round5: a plain error in a main-loop pass ends run_forever again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Every group is sent OFF",
+  "        except DeckDisconnected as e:\n"
+  "            outage.failed(e, \"Every group is sent OFF"),
+
+ ("round5: Deck() lets a raw hidapi OSError escape as itself again",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:\n"
+  "            if h is not None:\n",
+  "        except OSError:\n"
+  "            raise\n"
+  "        except Exception as e:\n"
+  "            if h is not None:\n"),
+
+ ("round5: Deck() leaves a half-opened HID handle open",
+  "ltcplay/streamdeck.py",
+  "                    h.close()     # a half-opened handle must not keep the\n",
+  "                    pass          # a half-opened handle must not keep the\n"),
+
+ ("round5: the hold-off dies on an arm socket that will not open",
+  "ltcplay/streamdeck.py",
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "            controller.arm.send(controller.names)\n"
+  "        except DeckDisconnected:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
+
+ ("round5: every deck retry is journaled again (no once-per-outage)",
+  "ltcplay/streamdeck.py",
+  "        if kind in self._kinds:\n"
+  "            self._unlogged += 1\n"
+  "            return\n",
+  ""),
+
+ ("round5: a deck outage never ends, so a later unplug is never journaled",
+  "ltcplay/streamdeck.py",
+  "        if not self.active or secs < DECK_STABLE_S:\n",
+  "        if True:\n"),
+
+ # 4: a flood is measured in bytes as well as datagrams, and the arm
+ # socket asks for a bigger receive buffer. The review's hand mutations
+ # ">=" and "50 -> 65" passed the old suite (it flooded with 70).
+ ("round5: the flood datagram threshold is off by one (>=)",
+  "flamesafe/arminput.py",
+  "        if n_read > FLOOD_DATAGRAMS_PER_POLL or \\\n",
+  "        if n_read >= FLOOD_DATAGRAMS_PER_POLL or \\\n"),
+
+ ("round5: the flood datagram threshold moves from 50 to 65",
+  "flamesafe/arminput.py",
+  "FLOOD_DATAGRAMS_PER_POLL = 50\n",
+  "FLOOD_DATAGRAMS_PER_POLL = 65\n"),
+
+ ("round5: a flood is counted in datagrams only, never bytes",
+  "flamesafe/arminput.py",
+  "                n_bytes > self.flood_bytes:\n",
+  "                False:\n"),
+
+ ("round5: the flood byte threshold is off by one (>=)",
+  "flamesafe/arminput.py",
+  "                n_bytes > self.flood_bytes:\n",
+  "                n_bytes >= self.flood_bytes:\n"),
+
+ ("round5: the flood byte threshold doubles",
+  "flamesafe/arminput.py",
+  "FLOOD_BYTES_PER_POLL = 64 * 1024\n",
+  "FLOOD_BYTES_PER_POLL = 128 * 1024\n"),
+
+ ("round5: the byte limit ignores a small receive buffer (a flood can "
+  "fill a capped or refused buffer without ever reading as one)",
+  "flamesafe/arminput.py",
+  "    return max(FLOOD_BYTES_FLOOR, min(FLOOD_BYTES_PER_POLL, rcvbuf // 4))\n",
+  "    return FLOOD_BYTES_PER_POLL\n"),
+
+ ("round5: the arm socket keeps the kernel's default receive buffer",
+  "flamesafe/arminput.py",
+  "            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,\n"
+  "                            ARM_RCVBUF_BYTES)\n",
+  "            pass\n"),
+
+ # 5: a ceiling across every arm-link rejection reason, and half the
+ # journal queue kept free of arm-link lines.
+ ("round5: no global ceiling across arm-link rejection reasons",
+  "flamesafe/arminput.py",
+  "GLOBAL_LINES_PER_MINUTE = 8\n",
+  "GLOBAL_LINES_PER_MINUTE = 10 ** 6\n"),
+
+ ("round5: the global ceiling is checked but lines are never counted "
+  "against it",
+  "flamesafe/arminput.py",
+  "        self._all_lines.append(now)\n",
+  ""),
+
+ ("round5: arm-link lines can fill the whole journal queue again",
+  "flamesafe/journal.py",
+  "LOW_PRIORITY_MAX = QUEUE_MAX // 2\n",
+  "LOW_PRIORITY_MAX = QUEUE_MAX\n"),
+
+ ("round5: the journal's arm-link limit drops important lines too",
+  "flamesafe/journal.py",
+  "            if kind in LOW_PRIORITY_KINDS and \\\n",
+  "            if True and \\\n"),
 
 
  # -- PR #30 fix round (independent review), 2026-10-02. All named
@@ -4319,6 +6103,11 @@ def _run():
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
     if not run_suite():
+        for _l in _LAST_FAILS:
+            print("  " + _l)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print("::error title=mutate baseline::" + " | ".join(
+                _LAST_FAILS)[:900].replace("%", "%25").replace("\n", "%0A"))
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
