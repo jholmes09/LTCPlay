@@ -648,7 +648,7 @@ class FlameCues:
     current frame; the show folder has a usable flame controller; the frame
     is inside the cue's render. Never raises."""
 
-    def __init__(self, control, name, journal=None):
+    def __init__(self, control, name, journal=None, background=False):
         self.control = control
         self.name = name
         self._journal = journal
@@ -659,6 +659,17 @@ class FlameCues:
         self._why = ""
         self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
         self.link = None    # the FlameLink (closing it closes the files)
+        # background (ltc serve): every file is read, and every file's date
+        # looked at, on a thread of its own, never on the flame link's
+        # sender, so a stalled drive can never hold up a flame frame (the
+        # show PC's SSD stalled on 2026-09-25). The render is read whole
+        # into memory. Without it (the selftest), the same work is done in
+        # the call, as before.
+        self._bg = bool(background)
+        self._layout = None      # (session, span, total), background mode
+        self._by_path = {}       # fseq path -> (FSEQ, spans) or an error
+        self._stop = threading.Event()
+        self._thread = None
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -728,8 +739,11 @@ class FlameCues:
                     self._open.pop(old)[0].close()
                 except Exception:
                     pass
+            import io
             from .fseq import FSEQ
-            f = FSEQ(path)
+            with open(path, "rb") as fh:
+                data = fh.read()
+            f = FSEQ(path, fileobj=io.BytesIO(data))
             spans, src = [], 0
             for start0, length in (f.sparse_ranges or
                                    [(0, f.channel_count)]):
@@ -738,7 +752,37 @@ class FlameCues:
             got = self._open[key] = (f, spans)
         return got
 
+    def _refresh_once(self):
+        """Background mode: the channels and every cue's render of the
+        running session, read and published for the sender to use."""
+        s = getattr(self.control, "session", None)
+        if s is None or not getattr(s, "running", False):
+            return
+        span = self._locate(s)
+        self._layout = (s, span, self._total)
+        by = {}
+        for c in (getattr(getattr(s, "tl", None), "cues", None) or ()):
+            path = getattr(c, "path", None)
+            if path:
+                try:
+                    by[path] = self._render(path)
+                except Exception as e:
+                    by[path] = e
+        self._by_path = by
+
+    def _refresher(self):
+        while not self._stop.is_set():
+            try:
+                self._refresh_once()
+            except Exception:
+                pass
+            self._stop.wait(0.25)
+
     def close(self):
+        self._stop.set()
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(2.0)
         for f, _spans in self._open.values():
             try:
                 f.close()
@@ -769,7 +813,21 @@ class FlameCues:
         if not tc or not last or tc != (f"{last[0]:02d}:{last[1]:02d}:"
                                          f"{last[2]:02d}:{last[3]:02d}"):
             return self._zero("")
-        span = self._locate(s)
+        if self._bg:
+            if self._thread is None and not self._stop.is_set():
+                self._thread = threading.Thread(
+                    target=self._refresher, daemon=True,
+                    name="ltcplay-flame-cues-read")
+                self._thread.start()
+            lay = self._layout
+            if lay is None or lay[0] is not s:
+                return self._zero("the flame controller's channels are "
+                                  "still being read (off the flame link's "
+                                  "sender)")
+            span, total = lay[1], lay[2]
+        else:
+            span = self._locate(s)
+            total = self._total
         if span is None:
             return None
         tl = getattr(s, "tl", None)
@@ -780,17 +838,27 @@ class FlameCues:
             return self._zero(f"the show audio is playing {label!r}, which "
                               f"is not one cue of this show file")
         try:
-            f, spans = self._render(hits[0].path)
+            if self._bg:
+                got = self._by_path.get(hits[0].path)
+                if got is None:
+                    return self._zero("the show's render is still being "
+                                      "read into memory (off the flame "
+                                      "link's sender)")
+                if isinstance(got, Exception):
+                    raise got
+                f, spans = got
+            else:
+                f, spans = self._render(hits[0].path)
             # A render whose one range starts at channel 1 is a whole
             # render and must match the map exactly; a truly sparse one
             # must at least lie inside it.
             have = max(s + n for s, _src, n in spans)
             whole = len(spans) == 1 and spans[0][0] == 0
-            if self._total is None or (have != self._total if whole
-                                       else have > self._total):
+            if total is None or (have != total if whole
+                                 else have > total):
                 return self._zero(
                     f"the show's render has {have} channels but "
-                    f"xlights_networks.xml lays out {self._total}: they were "
+                    f"xlights_networks.xml lays out {total}: they were "
                     f"not made for each other, so which channels are the "
                     f"flames cannot be told. Render the show again for this "
                     f"layout")
@@ -964,7 +1032,8 @@ def build_flame_link(cfg, control, show, journal=None):
     # of its own, so nothing the night journal or the console does can
     # hold up a flame frame (CONTRACT.md's 50 ms floor).
     journal = OffThreadJournal(journal) if journal is not None else None
-    cues = (FlameCues(control, cfg.flame_controller, journal)
+    cues = (FlameCues(control, cfg.flame_controller, journal,
+                      background=True)
             if cfg.flame_controller else flamelink.zero_cues)
     link = flamelink.FlameLink(
         lcfg, cues=cues,
