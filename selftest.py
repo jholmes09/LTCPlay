@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import struct
 import tempfile
 import threading
 import sys
@@ -17808,6 +17809,1753 @@ import shutil; shutil.rmtree(os.path.dirname(lockpath), ignore_errors=True)
     print("  ok")
 
 
+# ============================================================ madmapper ====
+# Step 3 of the Fire & Ice handoff: the MadMapper OSC transport link and the
+# heartbeat watchdog -- DEVICE LAYER ONLY. Anchored to
+# bench_report_2026-09-25.md (branch bench/2026-09-25), B1-B4 and B9.
+#
+# An earlier version of this PR also wired Hold/Resume/Abort/Closing
+# sequencing straight into a Link.on_transition hook, driven by the
+# scheduler's own state transitions. An opus review (round 2) found two
+# real races in that design -- deriving an action from a PAIR of scheduler
+# states, on the scheduler's own unordered per-transition hook threads,
+# means a Hold immediately followed by a quick Resume can interleave or
+# run out of order (audit17_repros.py, R1/R2) -- so that whole mechanism
+# was removed. This module is now pure primitives; a future "conductor"
+# module will run the scheduler's own ORDERED effects list through one
+# serialized executor and call these.
+
+class _FakeMMSock:
+    """Stands in for a real UDP socket: records every (packet, addr) sent,
+    never touches the network. Also inert for the INBOUND side (bind/
+    settimeout/recvfrom): a couple of tests hand this to a real Watchdog
+    through web.serve()'s own construction path, which starts a real
+    listener thread against whatever socket_factory it was given -- these
+    stubs let that thread idle harmlessly (a timeout loop, exactly like a
+    real socket with nothing arriving) instead of crashing with an
+    AttributeError on a background thread."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, pkt, addr):
+        self.sent.append((pkt, addr))
+
+    def bind(self, addr):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def recvfrom(self, n):
+        import socket as _socket
+        raise _socket.timeout()
+
+    def close(self):
+        pass
+
+
+class _Steps:
+    """A perf_counter stand-in a test moves by hand: sleep() advances it
+    rather than actually waiting, so a 1 s ramp runs in no real time at all
+    and its pacing is still exactly provable."""
+
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _mm_cfg(**over):
+    from ltcplay import madmapper as MM
+    doc = {"surfaces": ["Quad-1", "Quad-2"],
+          "intermission_bank": "Bank-2",
+          "heartbeat": {"show_len_s": 10.0}}
+    doc.update(over)
+    return MM.MadMapperConfig.parse(doc)
+
+
+def _mm_link(cfg=None, journal=None):
+    from ltcplay import madmapper as MM
+    cfg = cfg or _mm_cfg()
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory, clock=steps.clock,
+                  sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def _mm_journal(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def _mm_addrs(sock):
+    """The OSC address of every packet one fake socket saw, in order."""
+    from ltcplay import madmapper as MM
+    out = []
+    for pkt, _addr in sock.sent:
+        addr, at = MM._read_osc_string(pkt, 0)
+        out.append(addr)
+    return out
+
+
+def test_madmapper_osc_bytes_match_the_bench_capture():
+    section("madmapper: OSC bytes match the bench's captured bytes exactly")
+    from ltcplay import madmapper as MM
+    pkt = MM.encode("/timelines/Bank-2/select", (True,))
+    expected = bytes.fromhex(
+        "2f74696d656c696e65732f42616e6b2d322f73656c656374"
+        "000000002c540000")
+    check(pkt == expected,
+         f"select bytes do not match the bench capture: {pkt.hex()} != "
+         f"{expected.hex()}")
+
+    # A False bool, and an address whose length is not already a multiple
+    # of 4, to prove the padding rule generally, not only on this one
+    # bench-sized string.
+    pkt2 = MM.encode("/timelines/Bank-1/conductor/play", (False,))
+    check(pkt2.endswith(b",F\x00\x00"), f"a bool False must be the bare "
+                                       f"tag F, no data bytes: {pkt2!r}")
+    check(len(pkt2) % 4 == 0, "every OSC message is a multiple of 4 bytes")
+
+    pkt3 = MM.encode("/timelines/Bank-1/conductor/stop")
+    check(pkt3 == MM._pad(b"/timelines/Bank-1/conductor/stop")
+          + MM._pad(b","), f"an argument-less message still needs a bare "
+                          f"comma type tag: {pkt3!r}")
+
+    # The heartbeat's own captured bytes (bench B3.2): /float-1 ,f 1.0
+    hb = bytes.fromhex("2f666c6f61742d3100000000" "2c660000" "3f800000")
+    got = MM.decode_float(hb)
+    check(got == ("/float-1", 1.0),
+         f"the heartbeat's captured bytes did not decode to ('/float-1', "
+         f"1.0): {got}")
+    check(MM.decode_float(b"not an osc packet at all") is None,
+         "decode_float must return None, not raise, for garbage")
+    check(MM.decode_float(MM.encode("/float-1", (1,))) is None,
+         "decode_float must refuse a message that is not exactly one "
+         "float (an int, here) rather than mis-read it")
+
+    try:
+        MM.encode("not-a-slash-address")
+        check(False, "encode() must refuse an address with no leading /")
+    except ValueError:
+        pass
+    print("  ok")
+
+
+def test_madmapper_primitives_send_the_right_addresses():
+    section("madmapper: each primitive sends exactly the address it "
+            "should, and nothing else")
+    link, socks, steps = _mm_link()
+    link.select_bank("Bank-1")
+    link.stop_bank("Bank-1")
+    link.play("Bank-1")
+    link.play_from_beginning("Bank-2")
+    link.close()
+    addrs = _mm_addrs(socks[0])
+    check(addrs == ["/timelines/Bank-1/select",
+                   "/timelines/Bank-1/conductor/stop",
+                   "/timelines/Bank-1/conductor/play",
+                   "/timelines/Bank-2/conductor/play_from_beginning"],
+         f"primitives sent the wrong sequence: {addrs}")
+    print("  ok")
+
+
+def test_madmapper_ramp_step_count_and_values():
+    section("madmapper: the ramp's step count and its endpoints")
+    from ltcplay import madmapper as MM
+    vals = MM.ramp_values(1.0, 0.0, 31)
+    check(len(vals) == 31, f"31 steps over 1 s (bench B2/B4): got "
+                          f"{len(vals)}")
+    check(vals[0] == 1.0 and vals[-1] == 0.0,
+         f"a ramp's first and last values must be exact: {vals[0]} .. "
+         f"{vals[-1]}")
+    check(all(vals[i] > vals[i + 1] for i in range(len(vals) - 1)),
+         "a 1 -> 0 ramp must fall monotonically")
+    up = MM.ramp_values(0.0, 1.0, 31)
+    check(up[0] == 0.0 and up[-1] == 1.0, "a fade-up ramp's endpoints")
+    check(MM.ramp_values(0.0, 1.0, 1) == [1.0],
+         "fewer than 2 steps just sends the end value once")
+    # From ANY start, not just 1.0 (PR #29 review round 3, seen on macOS
+    # CI: a fade down from a level a stopped fade-up had reached ended on
+    # 1e-32, not 0.0). About 1 start in 30 missed before the fix.
+    rnd = random.Random(29)
+    missed = []
+    for _ in range(2000):
+        a, b = rnd.random(), rnd.choice((0.0, 1.0))
+        for curve in MM.VIDEO_CURVES:
+            v = MM.shape_values(MM.ramp_values(a, b, 31), a, b, curve)
+            if v[0] != a or v[-1] != b:
+                missed.append((a, b, curve, v[0], v[-1]))
+    check(not missed, f"a ramp from any level starts and ends exactly: "
+                      f"{len(missed)} missed, e.g. {missed[:2]}")
+
+    # The ramp as Link actually sends it: right address(es), right step
+    # count, right pacing (31 steps over 1 s = 30 gaps of 1/30 s each).
+    link, socks, steps = _mm_link()
+    link.fade_audio(1.0, 0.0, seconds=1.0, steps=31)
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 31, f"fade_audio must send exactly 31 packets: "
+                          f"{len(sent)}")
+    check(all(MM._read_osc_string(p, 0)[0] == MM.AUDIO_ADDR
+              for p, _a in sent),
+         "every packet in an audio fade goes to master_audio_level only")
+    check(abs(steps.t - 1.0) < 1e-9,
+         f"31 steps over 1 s must take exactly 1 s of paced time: "
+         f"{steps.t}")
+
+    link2, socks2, steps2 = _mm_link()
+    link2.fade_surfaces(0.0, 1.0, seconds=0.5, steps=5)
+    link2.close()
+    addrs2 = _mm_addrs(socks2[0])
+    check(addrs2 == (["/surfaces/Quad-1/opacity",
+                     "/surfaces/Quad-2/opacity"] * 5),
+         f"fade_surfaces must send both surfaces together, every step: "
+         f"{addrs2}")
+    print("  ok")
+
+
+def test_madmapper_fade_surfaces_perceptual_curve_step_values():
+    section("madmapper: fade_surfaces defaults to a perceptual curve "
+            "(bench B14: a plain linear opacity fade looks like it "
+            "holds, then drops in the last 0.5 s); fade_audio always "
+            "stays linear")
+    from ltcplay import madmapper as MM
+
+    # The pure math, exactly, with no socket at all.
+    lin = MM.ramp_values(1.0, 0.0, 5)
+    down = MM.shape_values(lin, 1.0, 0.0, MM.CURVE_PERCEPTUAL)
+    check(down == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fading down must be an ease-in-quad (steep first, lingers "
+         f"near black): {down}")
+    lin_up = MM.ramp_values(0.0, 1.0, 5)
+    up = MM.shape_values(lin_up, 0.0, 1.0, MM.CURVE_PERCEPTUAL)
+    check(up == [0.0, 0.4375, 0.75, 0.9375, 1.0],
+         f"fading up must be the mirrored ease-out: {up}")
+    check(MM.shape_values(lin, 1.0, 0.0, MM.CURVE_LINEAR) == lin,
+         "CURVE_LINEAR must be a no-op")
+    try:
+        MM.shape_values(lin, 1.0, 0.0, "bogus")
+        check(False, "an unknown curve name must be refused")
+    except ValueError:
+        pass
+
+    # As Link actually sends it: fade_surfaces defaults to perceptual,
+    # fade_audio never does, regardless of config.
+    cfg = _mm_cfg()
+    check(cfg.video_curve == MM.CURVE_PERCEPTUAL,
+         f"perceptual is the default: {cfg.video_curve}")
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link.fade_audio(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    surface_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    audio_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fade_surfaces must actually apply the curve: {surface_vals}")
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"fade_audio must stay plain linear regardless of "
+         f"video_curve: {audio_vals}")
+
+    # A show file can still ask for plain linear video explicitly.
+    cfg2 = _mm_cfg(video_curve="linear")
+    link2, socks2, _s = _mm_link(cfg=cfg2)
+    link2.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link2.close()
+    vals2 = [MM.decode_float(p)[1] for p, _a in socks2[0].sent
+            if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(vals2 == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"video_curve: linear must actually turn the shaping off: "
+         f"{vals2}")
+    print("  ok")
+
+
+def test_madmapper_ramp_is_cancellable():
+    section("madmapper: a new ramp, or an explicit cancel(), stops an "
+            "in-flight ramp at once (S3)")
+    import threading as _threading
+    import time as _time
+    from ltcplay import madmapper as MM
+
+    # A real thread and a real (short) clock this time: cancellation is a
+    # genuine race against a ramp actually running on the worker thread,
+    # which a purely virtual clock (as in the tests above) can never
+    # exercise, since sleep() there never really yields control.
+    cfg = _mm_cfg(fade_s=0.3, ramp_steps=30)      # 10 ms/step, real time
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory)
+    link.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)                              # a handful of steps in
+    link.cancel()
+    _time.sleep(0.05)                              # let it actually stop
+    stopped_at = len(socks[0].sent)
+    _time.sleep(0.3)                                # long past the full ramp
+    check(0 < stopped_at < 30,
+         f"cancel() must stop the ramp partway through, not let it "
+         f"finish: {stopped_at} of 30 packets went out")
+    check(len(socks[0].sent) == stopped_at,
+         f"nothing more may be sent after cancel(): sent "
+         f"{len(socks[0].sent)} total, {stopped_at} at cancel time")
+    link.close()
+
+    # Starting a NEW ramp must cancel an old one still in flight, with no
+    # explicit cancel() call at all.
+    socks.clear()
+    link2 = MM.Link(cfg, socket_factory=factory)
+    link2.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    partial = len(socks[0].sent)
+    link2.fade_audio(0.0, 1.0, seconds=0.05, steps=5)   # supersedes it
+    link2.close()
+    from_first_ramp = [v for p, _a in socks[0].sent
+                       for _addr, v in [MM.decode_float(p)]]
+    check(0 < partial < 30, f"setup: the first ramp must be interrupted "
+                           f"partway: {partial}")
+    # The interrupting ramp's own 5 values (0 -> 1) must all be present at
+    # the end, and the very last value sent must be its end value (1.0),
+    # not something left over from the cancelled ramp being resumed.
+    check(from_first_ramp[-1] == 1.0,
+         f"the new ramp must finish normally after superseding the old "
+         f"one: last value sent was {from_first_ramp[-1]}")
+    print("  ok")
+
+
+def test_madmapper_restore_levels():
+    section("madmapper: restore_levels() sets audio and every surface "
+            "back to 1.0, instantly, no ramp (B3 -- MadMapper keeps "
+            "whatever level a fade last left it at)")
+    from ltcplay import madmapper as MM
+    link, socks, steps = _mm_link()
+    link.restore_levels()
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 3, f"audio (1) + 2 surfaces (2) = 3 packets, no "
+                         f"ramp: {len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(value == 1.0, f"every level must be set to exactly 1.0: "
+                            f"{addr} = {value}")
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"],
+         f"restore_levels must touch audio then every surface: {addrs}")
+    check(steps.t == 0.0, "restore_levels must not pace or sleep at all")
+
+    # set_audio/set_surfaces on their own, the same way: instant, no ramp.
+    link2, socks2, steps2 = _mm_link()
+    link2.set_audio(0.5)
+    link2.set_surfaces(0.25)
+    link2.close()
+    vals = [MM.decode_float(p)[1] for p, _a in socks2[0].sent]
+    check(vals == [0.5, 0.25, 0.25], f"set_audio/set_surfaces: {vals}")
+    print("  ok")
+
+
+def test_madmapper_fade_all_sends_audio_and_surfaces_together():
+    section("madmapper: fade_all() ramps audio (linear) and every "
+            "surface (the configured curve) in ONE worker job, so they "
+            "land in the same real time instead of audio finishing "
+            "before video starts (used by devices.on_abort)")
+    from ltcplay import madmapper as MM
+    cfg = _mm_cfg()
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_all(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    sent = socks[0].sent
+    # Every step must send audio THEN both surfaces before the next step's
+    # sleep, proving they are interleaved within one job rather than
+    # audio's whole ramp completing first.
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"] * 5,
+         f"each step must send audio then every surface, all 5 steps "
+         f"interleaved, not audio's ramp finishing before surfaces "
+         f"start: {addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    surface_vals = [MM.decode_float(p)[1] for p, _a in sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"audio must stay plain linear inside fade_all(), same as "
+         f"fade_audio() on its own: {audio_vals}")
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"surfaces must still get the configured (perceptual) curve "
+         f"inside fade_all(): {surface_vals}")
+    check(steps.t >= 0.4 - 1e-9,
+         f"fade_all must actually pace over the requested duration: "
+         f"{steps.t}")
+
+    # Cancellable exactly like fade_audio()/fade_surfaces(): a newer ramp
+    # supersedes an in-flight fade_all().
+    import time as _time
+    cfg2 = _mm_cfg(fade_s=0.3, ramp_steps=30)
+    socks2 = []
+
+    def factory2():
+        s = _FakeMMSock()
+        socks2.append(s)
+        return s
+    link2 = MM.Link(cfg2, socket_factory=factory2)
+    link2.fade_all(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    link2.cancel()
+    _time.sleep(0.05)
+    stopped_at = len(socks2[0].sent)
+    _time.sleep(0.3)
+    check(stopped_at < len(socks2[0].sent) + 1
+          and len(socks2[0].sent) == stopped_at,
+         f"cancel() must stop fade_all() mid-ramp, same as the other "
+         f"ramps: {stopped_at} then {len(socks2[0].sent)}")
+    check(0 < stopped_at < 30 * 3,
+         f"must have been interrupted partway, not run to completion: "
+         f"{stopped_at}")
+    link2.close()
+    print("  ok")
+
+
+def test_madmapper_config_refusals():
+    section("madmapper: config refusals are clear sentences, not stack "
+            "traces")
+    from ltcplay import madmapper as MM
+
+    def refused(doc, contains):
+        try:
+            MM.MadMapperConfig.parse(doc)
+        except MM.MadMapperConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"host": "", "surfaces": ["Quad-1"]}, "host")
+    refused({"surfaces": []}, "surfaces")
+    refused({"surfaces": ["Quad-1", "Quad-1"]}, "twice")
+    refused({"surfaces": ["Quad-1"], "show_bank": "Bank-1",
+            "intermission_bank": "Bank-1"}, "cannot share one name")
+    refused({"surfaces": ["Quad-1"], "port": 70000}, "port")
+    refused({"surfaces": ["Quad-1"], "port": True}, "port")
+    refused({"surfaces": ["Quad-1"], "ramp_steps": 1}, "ramp_steps")
+    refused({"surfaces": ["Quad-1"], "fade_s": 0}, "fade_s")
+    refused({"surfaces": ["Quad-1"], "typo_field": 1}, "typo_field")
+    refused({"surfaces": ["Quad-1"], "heartbeat": {}}, "show_len_s")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "address": "float-1"}},
+           "start with /")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "port": 0}}, "port")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "bind": "0.0.0.0"}},
+           "not loopback")
+
+    # A valid, minimal config must not raise, and must round-trip through
+    # summary() (used by the health route) without error.
+    cfg = MM.MadMapperConfig.parse({"surfaces": ["Quad-1"],
+                                    "heartbeat": {"show_len_s": 444.42}})
+    check("Bank-1" in cfg.summary(), f"summary(): {cfg.summary()}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_bind_must_be_loopback():
+    section("madmapper: the heartbeat listener refuses to bind off "
+            "loopback unless explicitly told to (handoff section 4)")
+    from ltcplay import madmapper as MM
+    for good in ("127.0.0.1", "127.5.5.5", "::1", "localhost"):
+        hb = MM.HeartbeatConfig.parse({"bind": good, "show_len_s": 10.0},
+                                      "timeline")
+        check(hb.bind == good, f"{good!r} is loopback and must be "
+                              f"accepted: {hb.bind}")
+    try:
+        MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0},
+                                 "timeline")
+        check(False, "a non-loopback bind must be refused by default")
+    except MM.MadMapperConfigError as e:
+        check("not loopback" in str(e) and "allow_non_loopback_bind" in
+              str(e), f"the refusal must name the escape hatch: {e}")
+    hb2 = MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0,
+                                   "allow_non_loopback_bind": True},
+                                  "timeline")
+    check(hb2.bind == "0.0.0.0" and hb2.allow_non_loopback_bind,
+         "the escape hatch must actually work when set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_start_bind_failure_has_its_own_sentence():
+    section("madmapper: a heartbeat bind failure names the heartbeat "
+            "port, never the web server's own port message")
+    from ltcplay import madmapper as MM
+    j = []
+
+    def bad_factory():
+        raise OSError(48, "Address already in use")
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0),
+                     socket_factory=bad_factory, journal=_mm_journal(j))
+    ok = wd.start()
+    check(ok is False, "start() must report failure, not raise or hang")
+    check(wd.bind_error is not None and "9001" in wd.bind_error and
+          "heartbeat" in wd.bind_error.lower(),
+         f"the bind error must name the heartbeat port specifically: "
+         f"{wd.bind_error}")
+    check(any("9001" in t and "heartbeat" in t.lower() for t, _e in j),
+         f"the journal must carry the same specific sentence: {j}")
+    wd.stop()
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed():
+    section("madmapper: a lone heartbeat packet while disarmed is fully "
+            "ignored (bench B9, the 4 hour soak) -- MadMapper re-sends "
+            "its Float track's last value, one packet, the instant the "
+            "show bank is selected, about 2 s before the show actually "
+            "starts, while ltcplay's own clock is not running yet")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)                # ltcplay: not running, at zero
+
+    # The exact bench shape: value 1.0 (the track's last, end-of-show
+    # value), arriving while disarmed.
+    wd.on_packet(1.0)
+    check(wd.packets_in == 0, f"a packet while disarmed must not even be "
+                             f"counted: {wd.packets_in}")
+    check(wd._last_packet_at is None, "a packet while disarmed must never "
+                                     "set the last-packet time -- it must "
+                                     "not be read as a position later")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"a packet while disarmed must never be compared for drift, "
+         f"even though 1.0 x show_len_s (10.0) against ltcplay's own 0.0 "
+         f"would be a huge, false drift if it were: "
+         f"{wd.last_drift_ms}")
+    check(j == [], f"a packet while disarmed must never journal anything "
+                  f"at all: {j}")
+
+    health = wd.health()
+    check(health["state"] == "quiet" and health["age_ms"] is None,
+         f"health() must not show this packet as any kind of liveness: "
+         f"{health}")
+
+    # Then the real show starts (arm()) and packets flow normally --
+    # proving the ignore above is a gate on being disarmed, not a
+    # permanent latch.
+    wd.arm(show=7)
+    wd.on_packet(0.1)
+    check(wd.packets_in == 1 and wd._last_packet_at is not None,
+         "once armed, and near the start, a real packet must count "
+         "normally")
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start():
+    section("madmapper: the SAME B9 lone packet, but armed BEFORE it "
+            "arrives (S1) -- any real wiring arms before or at bank "
+            "select, so disarmed alone is not enough; the packet must "
+            "still be ignored until one reads near the show's own start")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.42, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)                        # armed first, as any real wiring
+                                          # would (the bank must be
+                                          # selected before a show starts)
+    wd.on_packet(1.0)                     # MadMapper's re-sent stale value
+    check(wd.packets_in == 0, f"the lone stale packet must not be counted "
+                             f"even while armed: {wd.packets_in}")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"and must never be read as a position or compared for drift: "
+         f"{wd.last_drift_ms}, flagged={wd.drift_flagged}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no drift alarm may ever come from it: {j}")
+
+    # The real show then actually starts: a packet near 0 clears the gate.
+    steps.t += 2.0
+    wd.on_packet(0.002)                   # 0.002 * 444.42 = 0.89 s: near 0
+    check(wd.packets_in == 1, f"the first real, near-start packet must be "
+                             f"counted: {wd.packets_in}")
+
+    # And a genuine drift once tracking has begun still works normally.
+    wd.note_position(50.0, at=steps.t)
+    wd.on_packet(50.3 / 444.42, at=steps.t)   # 300 ms of real drift
+    check(wd.drift_flagged, f"drift must still be caught once real "
+                           f"tracking has begun: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_nan_is_a_drift_fault():
+    section("madmapper: a NaN heartbeat value counts as bad -- a drift "
+            "fault, never silently read as zero drift")
+    import math as _math
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0), clock=steps.clock,
+                     journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)
+    wd.on_packet(0.0)                     # clears the awaiting-start gate
+    check(wd.packets_in == 1, "setup: the clean packet must count")
+
+    wd.note_position(1.0, at=steps.t)
+    wd.on_packet(float("nan"), at=steps.t)
+    check(wd.drift_flagged, f"a NaN value must flag a drift fault: "
+                           f"{wd.last_drift_ms}")
+    check(wd.last_drift_ms is None,
+         f"a NaN value has no meaningful drift number to report: "
+         f"{wd.last_drift_ms}")
+    check(any("NaN" in t or "nan" in t for t, _e in j),
+         f"the journal sentence must say the value was not usable: {j}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_alarms_only_while_armed():
+    section("madmapper: the watchdog alarms on silence only while "
+            "armed -- quiet on Hold, between shows, and on a bank with no "
+            "heartbeat track of its own (bench B3.3)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+
+    # Disarmed: an hour of silence is not news.
+    steps.t += 3600.0
+    wd._check()
+    check(not wd._alarmed, "disarmed silence must never alarm")
+    check(j == [], f"disarmed silence must never journal anything: {j}")
+
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 2.9
+    wd._check()
+    check(not wd._alarmed, "under the 3 s timeout must stay quiet")
+    steps.t += 0.2                       # 3.1 s since the last packet
+    wd._check()
+    check(wd._alarmed, "past the 3 s timeout while armed must alarm")
+    check(any("stopped answering" in t and "show 4" in t for t, _e in j),
+         f"the fault must be a plain sentence naming the show: {j}")
+
+    # Disarming an active alarm (Hold arriving mid-fault) must not leave a
+    # stale alarm armed the moment it is re-armed later.
+    wd.disarm()
+    wd.arm(show=5)
+    check(not wd._alarmed, "arm() must always start with a clean slate")
+
+    # Defense in depth, on top of on_packet()'s own refusal to touch
+    # anything while disarmed: _check() must independently refuse to
+    # alarm while disarmed even if _last_packet_at were somehow left set
+    # -- poked directly here, bypassing the public API, because
+    # on_packet()'s own guard already makes this unreachable through it
+    # alone; a future change to on_packet() must not silently remove the
+    # only thing standing between a stray packet and a false alarm.
+    wd.disarm()
+    with wd._lock:
+        wd._last_packet_at = steps.t - 3600.0
+    wd._check()
+    check(not wd._alarmed, "_check() must never alarm while disarmed, "
+                          "even if the last-packet time were somehow set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_recovery():
+    section("madmapper: the watchdog logs recovery the moment a packet "
+            "returns, exactly once")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 3.5
+    wd._check()
+    check(wd._alarmed, "setup: must be alarmed first")
+    wd.on_packet(0.4)
+    check(not wd._alarmed, "one packet clears the alarm")
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must be logged exactly once: "
+                              f"{recovered}")
+    # A second packet must not log recovery again.
+    wd.on_packet(0.41)
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must not repeat: {recovered}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_drift_flag():
+    section("madmapper: the drift flag compares MadMapper's reported "
+            "position against ltcplay's own, independent of the silence "
+            "alarm (handoff section 4, default 100 ms)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.note_position(0.0)
+    wd.on_packet(0.0)                    # a clean start: clears the
+                                         # awaiting-start gate (S1)
+    j.clear()
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # MadMapper says 5.0 s too: 0 drift
+    check(wd.last_drift_ms == 0.0 and not wd.drift_flagged,
+         f"no drift, nothing flagged: {wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         "a clean position must never be journaled")
+
+    wd.note_position(4.7)                # ltcplay says 4.7 s
+    wd.on_packet(0.5)                    # MadMapper still says 5.0 s: 300ms
+    check(wd.drift_flagged and abs(wd.last_drift_ms - 300.0) < 1e-6,
+         f"300 ms of drift must be flagged past the 100 ms default: "
+         f"{wd.last_drift_ms}")
+    flagged = [t for t, e in j if e.get("outcome") == "drift"]
+    check(len(flagged) == 1, f"the flag must be logged once, not every "
+                            f"packet: {flagged}")
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # back in step
+    check(not wd.drift_flagged, "back within 100 ms clears the flag")
+    cleared = [t for t, e in j if e.get("outcome") == "drift clear"]
+    check(len(cleared) == 1, f"clearing must be logged once: {cleared}")
+
+    health = wd.health()
+    check(health["drift_ms"] is not None and health["state"] == "ok",
+         f"health() must expose the drift and a state: {health}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_suspend_and_resume():
+    section("madmapper: MadMapper's process suspended mid-show (bench "
+            "B3.4) -- heartbeats stop at once, resume already at the "
+            "live position, and the watchdog treats it as one clean "
+            "alarm-then-recovery, never a crash")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    # 60/s for a second, then nothing for 10 s (suspended), matching the
+    # bench's own numbers (mean 16.7 ms between packets, silent at once on
+    # suspend). Starts at value 0.2 (2.0/10.0), inside the START_WINDOW_S
+    # gate, so tracking begins on the very first packet.
+    for i in range(60):
+        wd.note_position(2.0 + i / 60.0, at=steps.t)
+        wd.on_packet((2.0 + i / 60.0) / 10.0)
+        steps.t += 1.0 / 60.0
+    check(not wd._alarmed, "must be quiet while packets are still arriving")
+    steps.t += 10.0
+    wd._check()
+    check(wd._alarmed, "10 s of silence while armed must alarm")
+    # Resume: the bench found the first packet already at the LIVE
+    # position (20.10 s in its own run), not the one it stopped at.
+    steps.t += 0.051
+    wd.note_position(13.0, at=steps.t)   # ltcplay kept its own clock moving
+    wd.on_packet(1.3)                    # MadMapper: 1.3 * 10 = 13.0 s
+    check(not wd._alarmed, "the first packet back must clear the alarm")
+    # The recovery packet itself is settle-gated (bench B14, see
+    # test_madmapper_watchdog_skips_drift_right_after_recovery): drift is
+    # simply not computed on it, so last_drift_ms here is whatever it was
+    # from the clean tracking just before the suspend -- still near 0,
+    # but the real proof that this is not a stale carry-over is that the
+    # VERY NEXT packet resumes fresh, correct tracking.
+    steps.t += 1.0 / 60.0
+    wd.note_position(13.0 + 1.0 / 60.0, at=steps.t)
+    wd.on_packet((13.0 + 1.0 / 60.0) / 10.0)
+    check(wd.last_drift_ms is not None and abs(wd.last_drift_ms) < 1.0,
+         f"a suspend-and-resume with both sides caught up must show ~0 "
+         f"drift once tracking has resumed, not a stale comparison: "
+         f"{wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_skips_drift_right_after_recovery():
+    section("madmapper: the first heartbeat right after a recovery is "
+            "never judged for drift either (bench B14, on the Pico "
+            "against the real MadMapper: the first packet back from a "
+            "Hold carried a stale position -- '5016 ms behind', then "
+            "'back in step' 9 ms later)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0,
+                                        drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=1)
+    wd.note_position(0.0, at=0.0)
+    wd.on_packet(0.0, at=0.0)             # clears awaiting-start
+    check(not wd.drift_flagged, "setup: clean tracking begins")
+
+    steps.t = 5.0
+    wd._check()
+    check(wd._alarmed, "setup: silence past the timeout must alarm")
+
+    # The bench's own shape: ltcplay's own clock kept moving (now at
+    # 5.0 s), but MadMapper's first packet back still reports something
+    # stale (here, still 0 -- a full 5 s "behind", the same order of
+    # magnitude the bench saw).
+    j.clear()
+    wd.note_position(5.0, at=5.0)
+    wd.on_packet(0.0, at=5.0)
+    check(not wd._alarmed, "the recovery packet must still clear the "
+                          "alarm -- the video really is back")
+    check(not wd.drift_flagged, f"but it must NOT be judged for drift: "
+                               f"{wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no false drift alarm may be journaled from it: {j}")
+
+    # The very next packet, back in step, resumes normal tracking.
+    wd.note_position(5.01, at=5.01)
+    wd.on_packet(0.501, at=5.01)
+    check(not wd.drift_flagged, f"normal tracking must resume "
+                               f"immediately after: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_submit_has_a_timeout():
+    section("madmapper: a wedged worker cannot make _submit() wait "
+            "forever (item 9)")
+    import time as _time
+    from ltcplay import madmapper as MM
+    j = []
+    link = MM.Link(_mm_cfg(), socket_factory=lambda: _FakeMMSock(),
+                  journal=_mm_journal(j))
+    link._submit_timeout_s = 0.05
+    t0 = _time.monotonic()
+    link._submit(lambda: _time.sleep(0.3), wait=True)
+    elapsed = _time.monotonic() - t0
+    check(elapsed < 0.2, f"_submit() must give up after its own timeout, "
+                        f"not the job's: waited {elapsed:.2f}s")
+    check(any("did not finish" in t and "timeout" == e.get("outcome")
+              for t, e in j), f"a timeout must be journaled as a fault: "
+                             f"{j}")
+    link.close()
+    print("  ok")
+
+
+def test_madmapper_no_clock_is_ever_mixed_with_another():
+    section("madmapper: perf_counter only, never time.monotonic")
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "madmapper.py"),
+              encoding="utf-8").read()
+    check("time.monotonic" not in src,
+         "madmapper.py must read time.perf_counter only, never "
+         "time.monotonic (test_no_clock_is_ever_mixed_with_another's own "
+         "rule, applied here too): a UI age computed from one against a "
+         "timestamp taken from the other is simply wrong, not merely "
+         "imprecise")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_madmapper():
+    section("madmapper: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('madmapper')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/madmapper', '/api/madmapper/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.madmapper is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'madmapper' in "
+        "m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded madmapper.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no madmapper configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_madmapper_web_route_reports_health():
+    section("madmapper: web.py's /api/madmapper/state answers the health "
+            "panel's dot with no scheduler required")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    steps = _Steps()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock(),
+                  clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(cfg.heartbeat, clock=steps.clock)
+    wd.arm(show=1)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(link, wd))
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/madmapper/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        link.close()
+        wd.stop()
+    check(body["watchdog"]["armed"] is True,
+         f"the route must expose the watchdog's own health dict: {body}")
+    check("Bank-1" in body["config"], f"and the link's config summary: "
+                                     f"{body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_madmapper_link():
+    section("madmapper: web.py only closes a link IT built from a "
+            "config -- a ready-made pair passed in is the caller's own")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock())
+    wd = MM.Watchdog(cfg.heartbeat)
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), madmapper=(link, wd))
+    h.server_close()
+    check(not link._closed, "a ready-made link must not be closed by "
+                           "serve()'s own server_close()")
+    link.close()
+    wd.stop()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_madmapper_link():
+    section("madmapper: web.py DOES close a link it built itself from a "
+            "config, on server_close()")
+    from ltcplay import web, madmapper as MM
+    real_build = MM.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, link_socket_factory=lambda: _FakeMMSock(),
+                          watchdog_socket_factory=lambda: _FakeMMSock(),
+                          **kw)
+    MM.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), madmapper=_mm_cfg())
+        link, wd = h.madmapper
+        # Independent review of PR #29, finding A: a failed MadMapper send
+        # from a link web.py built must land in a journal, not nowhere.
+        check(callable(link.journal) and callable(wd.journal),
+              "web.serve() gives the MadMapper link and watchdog a journal")
+        h.server_close()
+        check(link._closed, "a config-built link must be closed by "
+                           "server_close()")
+    finally:
+        MM.build = real_build
+    print("  ok")
+
+
+# ============================================================== beyond ====
+# The laser blank/unblank device layer, unblocked by the Pico's B8 bench
+# result. Device layer only, like madmapper.py -- see its module docstring.
+
+def _beyond_link(cfg=None, journal=None):
+    from ltcplay import beyond as B
+    cfg = cfg or B.BeyondConfig.parse({})
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = B.Beyond(cfg, socket_factory=factory, clock=steps.clock,
+                    sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def test_beyond_osc_bytes_and_config_refusals():
+    section("beyond: the brightness message's bytes, and clear config "
+            "refusals")
+    from ltcplay import beyond as B, madmapper as MM
+    pkt0 = MM.encode(B.BRIGHTNESS_ADDR, (0.0,))
+    got = MM.decode_float(pkt0)
+    check(got == (B.BRIGHTNESS_ADDR, 0.0), f"blank must encode brightness "
+                                          f"0.0 exactly: {got}")
+    pkt100 = MM.encode(B.BRIGHTNESS_ADDR, (100.0,))
+    check(MM.decode_float(pkt100) == (B.BRIGHTNESS_ADDR, 100.0),
+         f"unblank must encode brightness 100.0 exactly: "
+         f"{MM.decode_float(pkt100)}")
+
+    cfg = B.BeyondConfig.parse({})
+    check(cfg.host == B.DEFAULT_HOST and cfg.port == B.DEFAULT_PORT,
+         f"defaults: 127.0.0.1:8100, got {cfg.host}:{cfg.port}")
+
+    def refused(doc, contains):
+        try:
+            B.BeyondConfig.parse(doc)
+        except B.BeyondConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"port": 8000}, "MadMapper's own OSC input port")
+    refused({"port": 70000}, "port")
+    refused({"host": ""}, "host")
+    refused({"typo": 1}, "typo")
+    refused({"address": "/beyond/general/BlackOut"}, "no setting")
+    # Independent review of PR #29, finding D: a name would be looked up on
+    # every one of a blank's 3 packets; with no working name server that
+    # can take seconds. Only an IP address is taken, refused at load.
+    for name in ("beyond-pc", "localhost", "beyond-pc.invalid",
+                 "127.0.0.1.nip.io", "192.168.1"):
+        refused({"host": name}, "has to be an IPv4 address")
+    for ip in ("127.0.0.2", "192.168.1.20"):
+        check(B.BeyondConfig.parse({"host": ip}).host == ip,
+              f"an IP address is taken: {ip}")
+    # Review round 3: the socket is IPv4 (AF_INET), so an IPv6 address was
+    # accepted here and then every blank failed with "address family not
+    # supported". Refused at load instead, saying why.
+    for ip in ("::1", "fe80::1", "::ffff:127.0.0.2"):
+        refused({"host": ip}, "IPv6 address cannot be reached")
+    print("  ok")
+
+
+def test_beyond_allow_list_rejects_everything_but_brightness():
+    section("beyond: the allow-list refuses everything but the exact "
+            "brightness address with 0.0 or 100.0 (S5, R6's own variants)")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+
+    def refused(address, value=0.0):
+        try:
+            link._send(address, value)
+        except B.BeyondConfigError:
+            return True
+        return False
+
+    variants = ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
+               "/beyond/general/blackout", "/BEYOND/general/BlackOut",
+               "/beyond/general/BlackOut/", "/beyond/general/BlackOut ",
+               "/beyond//general/BlackOut", "/beyond/general/Black*",
+               "/beyond/general/{BlackOut,Nothing}",
+               "/beyond/*/MasterPause", "/beyond/general/Master?ause",
+               "#bundle", "/beyond/master/livecontrol/brightness ")
+    for v in variants:
+        check(refused(v), f"{v!r} must be refused, not sent")
+    # The right address, but a wrong value.
+    for bad_value in (50.0, 1.0, -0.0 - 1, float("nan"), "0.0", True):
+        check(refused(B.BRIGHTNESS_ADDR, bad_value),
+             f"{B.BRIGHTNESS_ADDR!r} with value {bad_value!r} must be "
+             f"refused: only exactly 0.0 or 100.0 is allowed")
+    # The right address, right values: must NOT be refused.
+    check(not refused(B.BRIGHTNESS_ADDR, 0.0), "0.0 must be allowed")
+    check(not refused(B.BRIGHTNESS_ADDR, 100.0), "100.0 must be allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_lowest_level_socket_also_enforces_allow_list():
+    section("beyond: the guard holds even below _send() -- an audit "
+            "(R6) found a direct call to the socket's own send() went "
+            "straight through with no guard at all")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    try:
+        link._osc.send("/beyond/general/BlackOut", 0.0)
+        check(False, "the socket's own send() must refuse this too")
+    except B.BeyondConfigError:
+        pass
+    try:
+        link._osc.send(B.BRIGHTNESS_ADDR, 42.0)
+        check(False, "the socket's own send() must refuse a bad value "
+                    "even for the right address")
+    except B.BeyondConfigError:
+        pass
+    check(socks == [], "nothing refused at the socket layer may open a "
+                      "socket at all")
+    ok = link._osc.send(B.BRIGHTNESS_ADDR, 0.0)
+    check(ok, "the socket's own send() must still work for what IS "
+             "allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_and_unblank_succeed_and_report_ok():
+    section("beyond: blank()/unblank() each send the brightness packet "
+            "3 times, about 20 ms apart, and report success")
+    from ltcplay import beyond as B, madmapper as MM
+    link, socks, steps = _beyond_link()
+    ok = link.blank(4)
+    check(ok is True, "blank() must return True when at least one packet "
+                     "got out")
+    sent = socks[0].sent
+    check(len(sent) == B.RETRY_COUNT, f"blank() must send exactly "
+                                     f"{B.RETRY_COUNT} packets: "
+                                     f"{len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(addr == B.BRIGHTNESS_ADDR and value == 0.0,
+             f"every retry must send the same brightness 0.0: "
+             f"{addr} {value}")
+    check(abs(steps.t - (B.RETRY_COUNT - 1) * B.RETRY_INTERVAL_S) < 1e-9,
+         f"the retries must be paced about {B.RETRY_INTERVAL_S * 1000:g} "
+         f"ms apart: took {steps.t}s")
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"health fields: {link.last_command} {link.last_result}")
+
+    ok2 = link.unblank(4, in_show=True)
+    check(ok2 is True, "unblank() must return True too")
+    vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent[B.RETRY_COUNT:]]
+    check(all(v == 100.0 for v in vals),
+         f"unblank must send exactly 100.0 every time: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_retries_and_reports_failure():
+    section("beyond: a blank that never gets a packet out is reported "
+            "as a failure, never silently journaled as 'blanked' (S4, "
+            "the audit's R5)")
+    from ltcplay import beyond as B
+    journal = []
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   journal=_mm_journal_beyond(journal),
+                   socket_factory=lambda: Dead())
+    ok = link.blank(3)
+    check(ok is False, "blank() must return False when nothing got out")
+    check(link.last_result == "failed", f"health must show failed: "
+                                       f"{link.health()}")
+    texts = [t for t, _e in journal]
+    check(not any("BEYOND blanked" in t for t in texts),
+         f"a failed blank must NEVER be journaled as a plain success: "
+         f"{texts}")
+    fault_lines = [(t, e) for t, e in journal if e.get("fault")]
+    check(any("failed to blank" in t for t, _e in fault_lines),
+         f"a failure must be journaled as its own, flagged sentence: "
+         f"{journal}")
+
+    # A failed socket OPEN, retried within the same call rather than
+    # silently dropped by the normal 1 s reopen backoff (which exists for
+    # ordinary traffic, not a deliberate ~40 ms retry burst).
+    journal.clear()
+    calls = [0]
+
+    def bad_factory():
+        calls[0] += 1
+        raise OSError(24, "Too many open files")
+    link2 = B.Beyond(B.BeyondConfig.parse({}),
+                     journal=_mm_journal_beyond(journal),
+                     socket_factory=bad_factory)
+    link2.blank(3)
+    check(calls[0] == B.RETRY_COUNT,
+         f"every one of the {B.RETRY_COUNT} retries must attempt to "
+         f"reopen the socket, not be swallowed by the reopen backoff: "
+         f"{calls[0]} attempts")
+    check(link2.last_result == "failed", "still reported as failed")
+    print("  ok")
+
+
+def _mm_journal_beyond(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def test_beyond_health_reports_last_result_and_packets_sent():
+    section("beyond: health() reports the last result and the packets "
+            "actually sent, never a liveness claim")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    h0 = link.health()
+    check(h0["last_command"] is None and h0["last_result"] is None,
+         f"before any command: {h0}")
+    check("armed" not in h0 and "state" not in h0,
+         f"beyond's health dict must never claim 'armed' or 'state' the "
+         f"way the watchdog's does -- there is no heartbeat to base "
+         f"either on: {h0}")
+    link.blank(4)
+    h1 = link.health()
+    check(h1["last_command"] == "blank" and h1["last_result"] == "ok"
+          and h1["packets_sent"] == B.RETRY_COUNT, f"after blank(): {h1}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_builds_blank_at_construction_and_close_blanks_again():
+    section("beyond: build() blanks once immediately; close() blanks "
+            "again before closing the socket (S6, safe defaults)")
+    from ltcplay import beyond as B
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+    steps = _Steps()
+    link = B.build(B.BeyondConfig.parse({}), clock=steps.clock,
+                   sleep=steps.sleep, socket_factory=factory)
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"build() must blank once before returning: {link.health()}")
+    check(len(socks[0].sent) == B.RETRY_COUNT,
+         f"that first blank must go through the same 3x retry: "
+         f"{len(socks[0].sent)}")
+    link.close()
+    check(len(socks[0].sent) == B.RETRY_COUNT * 2,
+         f"close() must blank again, its own full 3x retry, before "
+         f"closing the socket: {len(socks[0].sent)}")
+    print("  ok")
+
+
+def test_beyond_never_sends_blackout_or_masterpause():
+    section("beyond: BlackOut and MasterPause are never sent, under any "
+            "path -- the exact-name deny list, kept as a second, "
+            "explicit layer on top of the allow-list")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    for addr in B.FORBIDDEN_ADDRESSES:
+        try:
+            link._send(addr)
+            check(False, f"_send() must refuse {addr!r}")
+        except B.BeyondConfigError:
+            pass
+    for i in range(20):
+        link.blank(i)
+        link.unblank(i, in_show=True)
+    link.close()
+    seen = set()
+    for pkt, _addr in socks[0].sent:
+        from ltcplay import madmapper as MM
+        addr, _at = MM._read_osc_string(pkt, 0)
+        seen.add(addr)
+    check(seen == {B.BRIGHTNESS_ADDR},
+         f"only the brightness address may ever be sent: {seen}")
+    check(not (seen & B.FORBIDDEN_ADDRESSES),
+         f"a forbidden address was sent: {seen & B.FORBIDDEN_ADDRESSES}")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_beyond():
+    section("beyond: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('beyond')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/beyond', '/api/beyond/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.beyond is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if '.beyond' in m or "
+        "m == 'beyond')}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded beyond.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no beyond configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_beyond_web_route_reports_health():
+    section("beyond: web.py's /api/beyond/state answers 'command sent' "
+            "only, with no scheduler wiring at all")
+    from ltcplay import web, madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_cfg = _mm_cfg()
+    mm_link = MM.Link(mm_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    b_cfg = B.BeyondConfig.parse({})
+    b_link = B.Beyond(b_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(mm_cfg.heartbeat, clock=steps.clock)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(mm_link, wd), beyond=b_link)
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/beyond/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        mm_link.close()
+        wd.stop()
+    check(body["beyond"]["last_command"] is None,
+         f"nothing sent yet: {body}")
+    check("armed" not in body["beyond"], f"no liveness claim: {body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_beyond_link():
+    section("beyond: web.py only closes a link IT built from a config "
+            "-- a ready-made Beyond passed in is the caller's own")
+    from ltcplay import web, beyond as B
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _FakeMMSock())
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), beyond=link)
+    before = link.health()["packets_sent"]
+    h.server_close()
+    check(link.health()["packets_sent"] == before,
+         "a ready-made beyond link must not be blanked by serve()'s own "
+         "server_close()")
+    link.close()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_beyond_link():
+    section("beyond: web.py DOES close (and so blank) a beyond link it "
+            "built itself from a config, on server_close()")
+    from ltcplay import web, beyond as B
+    real_build = B.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, socket_factory=lambda: _FakeMMSock(), **kw)
+    B.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), beyond=B.BeyondConfig.parse({}))
+        link = h.beyond
+        before = link.health()["packets_sent"]
+        h.server_close()
+        check(link.health()["packets_sent"] > before,
+             "closing a config-built beyond link must blank it again")
+    finally:
+        B.build = real_build
+    print("  ok")
+
+
+# ============================================================= devices ====
+# on_hold()/on_resume()/on_abort(): plain synchronous functions composing
+# madmapper.py's and beyond.py's own primitives with the handoff's ordering
+# already built in, for a future conductor to call. See devices.py's own
+# module docstring for why these are not scheduler hooks.
+
+def _devices_pair(mm_cfg=None, b_cfg=None):
+    from ltcplay import madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_socks = []
+    b_socks = []
+
+    def mm_factory():
+        s = _FakeMMSock()
+        mm_socks.append(s)
+        return s
+
+    def b_factory():
+        s = _FakeMMSock()
+        b_socks.append(s)
+        return s
+    mm_link = MM.Link(mm_cfg or _mm_cfg(), socket_factory=mm_factory,
+                      clock=steps.clock, sleep=steps.sleep)
+    b_link = B.Beyond(b_cfg or B.BeyondConfig.parse({}),
+                      socket_factory=b_factory, clock=steps.clock,
+                      sleep=steps.sleep)
+    return mm_link, mm_socks, b_link, b_socks, steps
+
+
+def test_devices_on_hold_blanks_beyond_then_fades_music_down():
+    section("devices: on_hold() blanks BEYOND first (a real command), "
+            "then fades MadMapper's music down over 0.25 s -- never "
+            "touches the surfaces (video freezes via timecode, not an "
+            "OSC fade)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(mm_link, b_link, show=3, fade_seconds=0.25, wait=True)
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_hold() never blanking
+    # BEYOND itself (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must actually get the blank packets, before close() "
+         f"ever runs: {[s.sent for s in b_socks]}")
+    b_addrs = _mm_addrs(b_socks[0])
+    check(all(a == B.BRIGHTNESS_ADDR for a in b_addrs),
+         f"only the brightness address: {b_addrs}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_hold must blank (0.0), not unblank: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(all(a == MM.AUDIO_ADDR for a in mm_addrs),
+         f"on_hold must never touch the surfaces, only the master audio "
+         f"level: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"music must fade from 1.0 to 0.0: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_in_show_fades_up_then_unblanks():
+    section("devices: on_resume(in_show=True) fades the music back up "
+            "then unblanks BEYOND")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_resume(mm_link, b_link, in_show=True, show=3, fade_seconds=0.25)
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"music must fade from 0.0 back up to 1.0: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default (never leave the lasers live by omission), which would
+    # otherwise add 3 more (0.0) packets after the unblank this test is
+    # actually checking for.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+         f"on_resume(in_show=True) must unblank (100.0): {b_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_refuses_to_unblank():
+    section("devices: on_resume(in_show=False) fades the music up, never "
+            "sends an unblank, but DOES re-send a defensive blank -- "
+            "never assume the earlier blank (Hold, or whenever it was "
+            "last sent) actually got out -- and the refusal is "
+            "journalled, not silent")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    notes = []
+    result = D.on_resume(mm_link, b_link, in_show=False, show=None,
+                         fade_seconds=0.25, journal=_mm_journal(notes))
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"the music still fades up between shows: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_resume() sending its own
+    # defensive blank (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must get a defensive re-blank, not silence, when not "
+         f"in a show: {[s.sent for s in b_socks]}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"the defensive re-send must be a blank (0.0), never an "
+         f"unblank: {b_vals}")
+    check(result is True, "the defensive re-blank got out, so on_resume "
+                          "must report True, not None")
+    # A successful defensive re-blank must be journalled as the calm
+    # "stays blanked" refusal, NOT the fault-flagged "FAILED" wording --
+    # both sentences happen to mention "intermission", so this checks the
+    # non-fault note specifically (an audit found the loose check missed
+    # a mutation that always took the FAILED branch, fault or not).
+    non_fault = [(t, e) for t, e in notes if not e.get("fault")]
+    check(any("intermission" in t for t, _e in non_fault),
+         f"the refusal must be journalled in plain words, not silent: "
+         f"{notes}")
+    check(not any(e.get("fault") for _t, e in notes),
+         f"a defensive re-blank that DID get out must never be "
+         f"journalled as a fault: {notes}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_reports_a_failed_reblank():
+    section("devices: on_resume(in_show=False) reports it, fault-flagged, "
+            "when even the defensive re-blank fails -- the lasers may "
+            "still be live through intermission, and that must never be "
+            "folded into the calm 'stays blanked' wording")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    notes = []
+    result = D.on_resume(mm_link, dead, in_show=False, show=None,
+                         fade_seconds=0.1, journal=_mm_journal(notes))
+    check(result is False, "a failed defensive re-blank must report "
+                           "False, never None or True")
+    fault_notes = [(t, e) for t, e in notes if e.get("fault")]
+    check(any("FAILED" in t for t, _e in fault_notes),
+         f"a failed defensive re-blank must be journalled as its own, "
+         f"flagged fault, not silently folded into the refusal note: "
+         f"{notes}")
+    mm_link.close()
+    print("  ok")
+
+
+def test_beyond_unblank_itself_refuses_in_show_false():
+    section("beyond: unblank() enforces its own in_show guard, "
+            "independently of devices.py's on_resume() -- a caller that "
+            "reaches unblank() directly, bypassing on_resume() entirely, "
+            "still cannot bring the lasers back during intermission")
+    from ltcplay import beyond as B
+    notes = []
+    link, socks, steps = _beyond_link(journal=_mm_journal_beyond(notes))
+    ok = link.unblank(5, in_show=False)
+    check(ok is False, "unblank(in_show=False) must return False, never "
+                       "True or None")
+    check(socks == [], "unblank(in_show=False) must send NO packet, and "
+                       "not even open a socket")
+    check(link.last_command == "unblank" and link.last_result == "refused",
+         f"health fields must reflect the refusal: {link.health()}")
+    check(any("intermission" in t for t, _e in notes),
+         f"a direct unblank(in_show=False) must still leave a trace in "
+         f"this Beyond's own journal: {notes}")
+
+    # The two real values still work, exactly like on_resume()'s own rule.
+    ok_true = link.unblank(5, in_show=True)
+    check(ok_true is True, "unblank(in_show=True) must still send and "
+                           "succeed")
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        try:
+            link.unblank(5, in_show=bad)
+            check(False, f"unblank(in_show={bad!r}) must raise TypeError, "
+                        f"not be read as truthy/falsy")
+        except TypeError:
+            pass
+    link.close()
+    print("  ok")
+
+
+def test_devices_on_abort_blanks_beyond_then_fades_everything_together():
+    section("devices: on_abort() blanks BEYOND at once, then fades "
+            "MadMapper's music AND every surface to black TOGETHER over "
+            "the show's fade_s (fade_all(), not fade_audio()+"
+            "fade_surfaces() back to back)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_cfg = _mm_cfg(fade_s=0.4, ramp_steps=5)
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair(mm_cfg=mm_cfg)
+    D.on_abort(mm_link, b_link, show=7)
+    # Snapshot BEFORE close(): see the note in the on_resume tests above --
+    # close() blanks BEYOND again as its own safe default.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_abort must blank BEYOND: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(mm_addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                       "/surfaces/Quad-2/opacity"] * 5,
+         f"audio and both surfaces must be interleaved step by step, "
+         f"proving they ran together (fade_all), not one after the "
+         f"other: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"must fade to black: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+
+    # An explicit fade_seconds must actually override the show's own
+    # fade_s (0.4 s above) rather than being silently ignored.
+    mm_link2, mm_socks2, b_link2, b_socks2, steps2 = _devices_pair(
+        mm_cfg=mm_cfg)
+    D.on_abort(mm_link2, b_link2, show=7, fade_seconds=0.1)
+    mm_link2.close()
+    b_link2.close()
+    check(steps2.t < 0.4 - 1e-9,
+         f"an explicit fade_seconds=0.1 must actually pace faster than "
+         f"the show's own fade_s=0.4, not be ignored: took {steps2.t:g} s")
+    print("  ok")
+
+
+def test_devices_skip_gracefully_with_no_madmapper_or_no_beyond():
+    section("devices: on_hold/on_resume/on_abort skip cleanly when a "
+            "show has no madmapper block, no beyond block, or neither -- "
+            "the same optional-link rule web.py already follows")
+    from ltcplay import devices as D
+    # Neither configured: nothing to call, nothing raises.
+    D.on_hold(None, None)
+    D.on_resume(None, None, in_show=True)
+    D.on_resume(None, None, in_show=False)
+    D.on_abort(None, None)
+
+    # Only BEYOND configured (a show with lasers but no MadMapper link).
+    _mm, _s1, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(None, b_link, show=1)
+    D.on_abort(None, b_link, show=1)
+    b_link.close()
+    check(len(b_socks[0].sent) > 0, "BEYOND must still get its commands "
+                                    "with no MadMapper link at all")
+
+    # Only MadMapper configured (a show with video but no lasers).
+    mm_link, mm_socks, _b, _s2, steps2 = _devices_pair()
+    D.on_hold(mm_link, None, fade_seconds=0.1)
+    mm_link.close()
+    check(len(mm_socks[0].sent) > 0, "MadMapper must still get its fade "
+                                     "with no BEYOND link at all")
+    print("  ok")
+
+
+def test_devices_in_show_must_be_a_real_bool():
+    section("devices: on_resume() refuses anything but in_show=True or "
+            "in_show=False -- a truthy state name or number must never "
+            "unblank the lasers during intermission")
+    from ltcplay import devices as D, beyond as B, madmapper as MM
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+        try:
+            D.on_resume(mm_link, b_link, in_show=bad, fade_seconds=0.1)
+            raised = False
+        except TypeError:
+            raised = True
+        sent_b = [MM.decode_float(p)[1] for s in b_socks for p, _a in s.sent]
+        sent_mm = [p for s in mm_socks for p, _a in s.sent]
+        mm_link.close()
+        b_link.close()
+        check(raised, f"in_show={bad!r} must raise TypeError, not be "
+                      f"read as truthy/falsy")
+        check(B.UNBLANK_VALUE not in sent_b and sent_mm == [],
+              f"in_show={bad!r}: nothing may be sent before refusing: "
+              f"BEYOND {sent_b}, MadMapper {len(sent_mm)} packet(s)")
+    # The two real values still work.
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_resume(mm_link, b_link, in_show=True, fade_seconds=0.1)
+          is True, "in_show=True unblanks and reports True")
+    check(D.on_resume(mm_link, b_link, in_show=False, fade_seconds=0.1)
+          is True, "in_show=False refuses the unblank but still sends "
+                   "its own defensive re-blank, which gets out here")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_report_a_failed_blank_to_the_caller():
+    section("devices: on_hold()/on_abort() hand BEYOND's own blank() "
+            "result back -- a blank that never got out returns False, "
+            "never a silent 'done'")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    check(D.on_hold(mm_link, dead, fade_seconds=0.1) is False,
+          "on_hold must return False when the blank never got out")
+    check(D.on_abort(mm_link, dead, fade_seconds=0.1) is False,
+          "on_abort must return False when the blank never got out")
+    mm_link.close()
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_hold(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_hold returns True when the blank got out")
+    check(D.on_abort(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_abort returns True when the blank got out")
+    check(D.on_hold(mm_link, None, fade_seconds=0.1) is None,
+          "no BEYOND configured: None")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_devices():
+    section("devices: the real GPL path (web.serve() with nothing "
+            "configured) never imports it -- nothing in this codebase "
+            "wires it in yet; it exists only for a future conductor to "
+            "call")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, tempfile\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port=0)\n"
+        "h.server_close()\n"
+        "print(sorted(m for m in sys.modules if m.endswith('.devices') "
+        "or m == 'devices'))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    loaded = (rc.stdout or "").strip().splitlines()[-1:] or ["<no output>"]
+    check(loaded == ["[]"], f"the GPL path loaded devices.py: {loaded}; "
+                            f"stderr: {rc.stderr[-800:]}")
+    print("  ok")
+
+
 def test_flamesafe_in_its_own_process():
     """The flame safety program's own suite (flamesafe/test_flamesafe.py),
     run in a SUBPROCESS so that the wall holds: that process never has
@@ -22392,6 +24140,2129 @@ def test_journal_summary_is_written_however_the_night_closes():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The show conductor (ltcplay/conductor.py): Hold, Resume, Abort, Reset and
+# announcements on the rig. Driven on a fake clock, single threaded, so every
+# "arrives mid fade" case lands at an exact, repeatable instant; one test at
+# the end does the same on real threads and real time.
+# ---------------------------------------------------------------------------
+
+def _cond_mod():
+    from ltcplay import conductor
+    return conductor
+
+
+class _CondTime:
+    """A fake perf_counter. The conductor's waits advance it, and a test can
+    schedule a press at an exact time: it fires inside the wait that spans
+    it, which is exactly where a real press would land."""
+
+    def __init__(self, t=100.0):
+        self.t = t
+        self.events = []
+
+    def now(self):
+        return self.t
+
+    def at(self, when, fn):
+        self.events.append((when, fn))
+
+    def wait(self, left):
+        target = self.t + left
+        due = [e for e in self.events if e[0] <= target + 1e-12]
+        if due:
+            e = min(due, key=lambda x: x[0])
+            self.events.remove(e)
+            self.t = max(self.t, e[0])
+            e[1]()
+        else:
+            self.t = target
+
+
+class _CondRig:
+    """Both sides at once: DeviceOutputs (lasers, video) and ShowOutputs
+    (clock, pixels, flames). Records every call with the fake time. The
+    clock freezes `fade` after music_hold and moves `move_s` after
+    music_resume, like AudioMaster; either can be told never to."""
+
+    def __init__(self, time_fn):
+        self.now = time_fn
+        self.calls = []
+        self.cue = True
+        self.frozen_at = None
+        self.moving_at = None
+        self.frozen = False
+        self.move_s = 0.05
+        self.never_freeze = False
+        self.never_move = False
+        self.fail = set()
+        self.raise_on = set()
+        self.bad = set()
+        self.slow = {}
+        self.slow_by = None
+        self.on_call = {}      # name -> fn: a press landing mid call
+
+    def _rec(self, name, *args):
+        self.calls.append((name, args, self.now()))
+        hook = self.on_call.pop(name, None)
+        if hook is not None:
+            hook()
+        if name in self.slow and self.slow_by is not None:
+            self.slow_by(self.slow[name])
+        if name in self.raise_on:
+            raise OSError(f"{name} exploded")
+        if name in self.bad:
+            return None
+        C = _cond_mod()
+        if name in self.fail:
+            return C.failed(f"{name} could not be sent")
+        return C.done()
+
+    def names(self, since=0):
+        return [c[0] for c in self.calls[since:]]
+
+    def first(self, name, since=0):
+        for c in self.calls[since:]:
+            if c[0] == name:
+                return c
+        return None
+
+    def count(self, name):
+        return sum(1 for c in self.calls if c[0] == name)
+
+    # DeviceOutputs
+    def lasers_blank(self):
+        return self._rec("lasers_blank")
+
+    def lasers_fade_out(self, s):
+        return self._rec("lasers_fade_out", s)
+
+    def lasers_restore(self):
+        return self._rec("lasers_restore")
+
+    def video_fade_out(self, s):
+        return self._rec("video_fade_out", s)
+
+    def video_restore(self, s):
+        return self._rec("video_restore", s)
+
+    def video_stop(self):
+        return self._rec("video_stop")
+
+    # ShowOutputs
+    def playing(self):
+        return self.cue
+
+    def music_hold(self, fade):
+        r = self._rec("music_hold", fade)
+        self.frozen_at = None if self.never_freeze else self.now() + fade
+        self.moving_at = None
+        return r
+
+    def music_resume(self, fade):
+        r = self._rec("music_resume", fade)
+        self.moving_at = None if self.never_move else self.now() + self.move_s
+        return r
+
+    def music_halt(self, fade):
+        return self._rec("music_halt", fade)
+
+    def music_frozen(self):
+        t = self.now()
+        if self.moving_at is not None and t >= self.moving_at:
+            return False
+        if self.moving_at is None and self.frozen_at is not None \
+                and t >= self.frozen_at:
+            return True
+        # Held but not yet frozen reads False; resuming but not yet moving
+        # still reads True (the timecode is still frozen).
+        return self.moving_at is not None
+
+    def pixels_fade_out(self, s):
+        return self._rec("pixels_fade_out", s)
+
+    def pixels_restore(self, s):
+        return self._rec("pixels_restore", s)
+
+    def flames_zero(self):
+        return self._rec("flames_zero")
+
+    def flames_release(self):
+        return self._rec("flames_release")
+
+    def flames_disarm_all(self, reason):
+        return self._rec("flames_disarm_all", reason)
+
+
+def _cond(gate=None, hold_gate=None, announcer=None, devices=None, **kw):
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    c = C.Conductor(devices or rig, rig,
+                    gate if gate is not None else (lambda: None),
+                    hold_gate=hold_gate, announcer=announcer,
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False, **kw)
+    return c, rig, T, lines
+
+
+def _cond_live(c, rig):
+    """A show running with everything up, and the call log cleared."""
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
+    section("conductor: Abort zeroes and disarms the flames at once, fades "
+            "lasers, video, pixels and music together over 1 s, and latches")
+    C = _cond_mod()
+    check(C.HOLD_FADE_S == 0.25, "production Hold fades over 0.25 s")
+    check(C.ABORT_FADE_S == 1.0, "Abort fades over 1 s")
+    check(C.ANNOUNCE_DARK_S == 0.5, "an announcement waits 0.5 s in the dark")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 200.0
+    r = c.abort("Andy", "rack screen")
+    check(r.ok, f"Abort accepted: {r}")
+    # Before the executor has run at all: the flames are already cut, and
+    # the lasers blanked on the pressing thread (independent review of PR
+    # #29, finding D: never queued behind the executor).
+    check(rig.names() == ["flames_zero", "flames_disarm_all",
+                          "lasers_fade_out"],
+          f"Abort cuts and disarms the flames, then sends the lasers dark, "
+          f"before it returns, and nothing else yet: {rig.names()}")
+    check(all(t == 200.0 for _n, _a, t in rig.calls),
+          "the flame cut and the lasers' dark command have zero delay")
+    check(c.latched, "Abort latches at once")
+    c.run_pending()
+    for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
+                 "music_halt"):
+        got = rig.first(name)
+        check(got is not None and got[1] == (1.0,) and got[2] == 200.0,
+              f"{name} starts at the press, over 1 s: {got}")
+    check(rig.count("lasers_blank") == 0,
+          "Abort ramps the lasers (BEYOND brightness), not an instant blank")
+    check(rig.count("lasers_fade_out") == 1,
+          "the executor does not send the lasers dark again once the "
+          "press's command got out")
+    check(any("lasers blanked at the press" in t for t, _f in lines),
+          "the journal says the lasers were blanked at the press")
+    stop = rig.first("video_stop")
+    check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
+          f"the video stops once the 1 s fade is done: {stop}")
+    check(rig.count("lasers_restore") == 0 and rig.count("flames_release")
+          == 0, "nothing comes back up after an Abort")
+    # Latched: nothing else responds.
+    for what, fn in (("Hold", lambda: c.hold("Andy", "rack screen")),
+                     ("Resume", lambda: c.resume("Andy", "rack screen")),
+                     ("Show start", lambda: c.show_starting()),
+                     ("an announcement", lambda: c.announce("delayed")),
+                     ("a mode change", lambda: c.set_mode(C.REHEARSAL))):
+        r = fn()
+        check(not r.ok and "Reset" in r.sentence,
+              f"{what} is refused while aborted, saying to Reset: {r}")
+    n = len(rig.calls)
+    c.run_pending()
+    check(len(rig.calls) == n, "a refused press sends nothing")
+    r = c.reset("Andy", "rack screen")
+    check(r.ok and not c.latched, f"one Reset press clears the latch: {r}")
+    c.run_pending()
+    check(len(rig.calls) == n, "Reset leaves the rig dark")
+    check(not c.reset().ok, "a second Reset has nothing to reset")
+    check(any("Reset" in t for t, _f in lines), "Reset is journaled")
+    print("  ok")
+
+
+def test_conductor_double_abort_is_idempotent():
+    section("conductor: a second Abort does nothing, Reset waits for the "
+            "fade, and Abort needs something playing")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 300.0
+    c.abort("Andy", "rack screen")
+    gen = c._gen
+    r2 = c.abort("Jeff", "Stream Deck")
+    check(r2.ok and "Already aborted" in r2.sentence
+          and "blank was sent again" in r2.sentence,
+          f"a second Abort starts nothing new but blanks again: {r2}")
+    check(c._gen == gen, "a second Abort starts no new effect")
+    resets = []
+    T.at(300.5, lambda: resets.append(c.reset("Andy", "rack screen")))
+    c.run_pending()
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    for name in ("flames_zero", "flames_disarm_all", "lasers_fade_out",
+                 "video_fade_out", "pixels_fade_out", "music_halt",
+                 "video_stop"):
+        check(rig.count(name) == 1, f"{name} sent exactly once for three "
+                                    f"Abort presses ({rig.count(name)})")
+    # Finding B: each press while latched sends the laser blank again (a
+    # blank only makes it darker), so a blank that did not get out the
+    # first time is not stuck that way until Reset.
+    check(rig.count("lasers_blank") == 2,
+          f"each later Abort press sends the laser blank again "
+          f"({rig.count('lasers_blank')})")
+    check(resets and not resets[0].ok and "still fading" in
+          resets[0].sentence, f"Reset during the fade is refused: {resets}")
+    check(c.latched, "a refused Reset leaves it latched")
+    check(c.reset().ok, "Reset once the fade is done")
+    # Nothing playing: nothing to abort.
+    c2, rig2, _T2, _l2 = _cond()
+    rig2.cue = False
+    r = c2.abort("Andy", "rack screen")
+    check(not r.ok and "nothing is playing" in r.sentence,
+          f"Abort with nothing playing is refused: {r}")
+    check(rig2.calls == [] and not c2.latched,
+          "a refused Abort cuts nothing and latches nothing")
+    print("  ok")
+
+
+def test_conductor_abort_mid_hold_fade_wins():
+    section("conductor: Abort during a Hold's fade takes over at once and "
+            "the Hold never finishes")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 400.0
+    seen = {}
+
+    def press():
+        seen["r"] = c.abort("Andy", "rack screen")
+        seen["cut"] = rig.names()[-3:]
+    T.at(400.1, press)
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    c.run_pending()
+    check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
+    check(seen.get("cut") == ["flames_zero", "flames_disarm_all",
+                              "lasers_fade_out"],
+          f"the flames were cut and the lasers sent dark inside the press "
+          f"itself: {seen.get('cut')}")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
+          f"the Hold had started its 0.25 s fade: {hold}")
+    # The Hold's own video and pixels fade (Jeff 2026-09-30) had already
+    # gone out at the press, over the Hold's 0.25 s, before Abort landed.
+    for name in ("video_fade_out", "pixels_fade_out"):
+        got = rig.first(name)
+        check(got is not None and abs(got[2] - 400.0) < 1e-9
+              and got[1] == (0.25,),
+              f"{name} went with the Hold at the press: {got}")
+    halt = rig.first("music_halt")
+    check(halt is not None and abs(halt[2] - 400.1) < 1e-9
+          and halt[1] == (1.0,),
+          f"music_halt starts the moment Abort lands, not after the Hold's "
+          f"fade: {halt}")
+    # The Hold blanked the lasers; Abort sends their dark command again
+    # anyway (BEYOND never confirms, so "already dark" is never trusted),
+    # on the pressing thread, before the music fade.
+    check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
+    las = rig.first("lasers_fade_out")
+    check(las is not None and abs(las[2] - 400.1) < 1e-9
+          and rig.names().index("lasers_fade_out")
+          < rig.names().index("music_halt"),
+          f"Abort sends the lasers dark again at its press, before "
+          f"anything else it fades: {las} {rig.names()}")
+    # Finding C: Abort fades the video again, from wherever the Hold's fade
+    # had got to, never trusting a record that says black. Pixels are
+    # ltcplay's own and their record is the truth.
+    vf = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+    check(len(vf) == 2 and vf[1][1] == (1.0,)
+          and abs(vf[1][2] - 400.1) < 1e-9,
+          f"Abort fades the video again at its press, over 1 s: {vf}")
+    check(rig.count("pixels_fade_out") == 1,
+          "Abort does not re-send pixels: the Hold's fade left them black")
+    stop = rig.first("video_stop")
+    check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
+          f"Abort's own 1 s runs from its press: {stop}")
+    check(any("Hold stopped part way because Abort" in t for t, _f in lines),
+          "the journal says the Hold was cut short by Abort")
+    check(c.snapshot()["look"] == "ABORTED", "the look is Abort's")
+    print("  ok")
+
+
+def test_conductor_resume_before_the_hold_fade_finishes():
+    section("conductor: Resume during a Hold's fade undoes exactly what the "
+            "Hold did, lasers and flames only once the timecode moves")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.move_s = 0.3
+    T.t = 500.0
+    T.at(500.1, lambda: c.resume("Andy", "rack screen"))
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    names = rig.names()
+    check(names[:5] == ["flames_zero", "lasers_blank", "music_hold",
+                        "video_fade_out", "pixels_fade_out"],
+          f"Hold: flames, lasers, the music fade, then video and pixels "
+          f"fade to black with it (Jeff 2026-09-30): {names}")
+    res = rig.first("music_resume")
+    check(res is not None and abs(res[2] - 500.1) < 1e-9,
+          f"the music resumes at the Resume press: {res}")
+    las = rig.first("lasers_restore")
+    fl = rig.first("flames_release")
+    check(las is not None and las[2] >= 500.4 - 1e-9,
+          f"the lasers come back only once the timecode moves: {las}")
+    check(fl is not None and fl[2] >= 500.4 - 1e-9,
+          f"the flame cues are released only once the timecode moves: {fl}")
+    check(names.index("flames_release") > names.index("lasers_restore"),
+          "flame cues last")
+    snap = c.snapshot()
+    check(snap["look"] == "PLAYING" and snap["applied"]["flames"] == "live"
+          and snap["applied"]["lasers"] == "lit", f"back to playing: {snap}")
+    # Resume when nothing is held is refused.
+    r = c.resume("Andy", "rack screen")
+    check(not r.ok and "not on hold" in r.sentence, f"{r}")
+    # A second Hold press while held changes nothing.
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    n, gen = len(rig.calls), c._gen
+    r = c.hold("Jeff", "Stream Deck")
+    check(r.ok and "Already on hold" in r.sentence and c._gen == gen,
+          f"a double Hold starts nothing new: {r}")
+    c.run_pending()
+    check(rig.names(n) == ["lasers_blank"],
+          f"a double Hold sends only the laser blank again (finding B): "
+          f"{rig.names(n)}")
+    print("  ok")
+
+
+def test_conductor_generation_guard_stops_a_stale_effect():
+    section("conductor: a superseded effect never applies its last steps")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.move_s = 0.3
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    T.t = 600.0
+    # Resume is waiting for the timecode to move (it will at 600.3); Abort
+    # lands at 600.1. The Resume's last two steps must never happen.
+    T.at(600.1, lambda: c.abort("Andy", "rack screen"))
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0,
+          "a stale Resume never lights the lasers after an Abort")
+    check(rig.count("flames_release") == 0,
+          "a stale Resume never releases the flames after an Abort")
+    a = c.snapshot()["applied"]
+    check(a["flames"] == "zero" and a["lasers"] == "black",
+          f"the rig ends as Abort left it: {a}")
+    check(any("Resume stopped part way because Abort" in t
+              for t, _f in lines), "the journal says so")
+    # A press landing DURING a step: the step itself happened (the lasers
+    # came up), but the Resume's next step, releasing the flames, must not.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    rig.on_call["lasers_restore"] = lambda: c.abort("Andy", "rack screen")
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 1 and
+          rig.count("flames_release") == 0,
+          f"no step of a superseded effect runs after the press: "
+          f"{rig.names()}")
+    ri = rig.calls.index(rig.first("lasers_restore"))
+    check(any(cl[0] in ("lasers_blank", "lasers_fade_out")
+              for cl in rig.calls[ri + 1:]),
+          "and Abort takes the lasers that did come up back down")
+    check(c.snapshot()["applied"]["lasers"] == "black",
+          f"and the record says dark, not the restore's lit: "
+          f"{c.snapshot()['applied']}")
+    # The restore returned after the Abort's blank: its "lit" must not
+    # overwrite the newer record (finding D), or the Abort's effect would
+    # think its blank had not landed and blank again.
+    check(rig.count("lasers_blank") == 1 and
+          any("lasers blanked at the press" in t for t, _f in lines),
+          f"the Abort's own blank stands; nothing had to blank again: "
+          f"{rig.names()}")
+    # Straight at the guard: a step or an announcement for an older
+    # generation does nothing at all.
+    C = _cond_mod()
+    played = []
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: played.append(a))
+    stale = c._gen
+    c._gen += 1
+    n = len(rig.calls)
+    for what, fn in (
+            ("a step", lambda: c._step(stale, "lasers", "lit", "x", [],
+                                       rig.lasers_restore)),
+            ("an announcement", lambda: c._run_announce(
+                stale, {"announce": ("delayed", "Andy", "rack"),
+                        "look": "DARK", "changed": False}, []))):
+        try:
+            fn()
+            check(False, f"{what} for an older generation must be refused")
+        except C._Superseded:
+            pass
+    check(len(rig.calls) == n and played == [],
+          "and it sent nothing and played nothing")
+    # The same for an announcement waiting in the dark.
+    plays = []
+    gate_calls = []
+
+    def hold_gate(who, screen, detail):
+        gate_calls.append((who, screen, detail))
+        return None, 1
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    T.t = 700.0
+    T.at(700.4, lambda: c.abort("Andy", "rack screen"))
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(plays == [], "an announcement superseded in the dark never plays")
+    halt = rig.first("music_halt")
+    check(halt is not None and abs(halt[2] - 700.4) < 1e-9,
+          f"the wait in the dark wakes for the Abort at once: {halt}")
+    check(any("delayed announcement did not play: Abort" in t
+              for t, _f in lines), "and the journal says why")
+    # Superseded before its effect even started: the claim is released.
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    c.announce("delayed", "Andy", "rack screen")
+    c.resume("Jeff", "Stream Deck")
+    c.run_pending()
+    check(plays == [], "a Resume before the announcement started cancels it")
+    r = c.announce("cancellation", "Andy", "rack screen")
+    check(r.ok, f"the cancelled claim does not block the next one: {r}")
+    c.run_pending()
+    check(plays == [("cancellation", "Andy", "rack screen")],
+          f"the next announcement plays: {plays}")
+    print("  ok")
+
+
+def _in_the_dark(played_at, dark_at):
+    """Played 0.5 s after the rig went dark, give or take the conductor's
+    own polling of the clock (POLL_S)."""
+    C = _cond_mod()
+    late = played_at - dark_at - C.ANNOUNCE_DARK_S
+    return -1e-9 <= late <= C.POLL_S + 1e-9
+
+
+def test_conductor_announcements_hold_go_dark_then_play():
+    section("conductor: an announcement holds the show, fades lasers, video "
+            "and pixels to black, waits 0.5 s in the dark, then plays")
+    plays, gates = [], []
+    refusal = [None]
+
+    def hold_gate(who, screen, detail):
+        gates.append((who, screen, detail))
+        return refusal[0], len(gates)
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    T.t = 800.0
+    r = c.announce("delayed", "Andy", "rack screen")
+    check(r.ok, f"accepted: {r}")
+    check(len(gates) == 1 and gates[0][:2] == ("Andy", "rack screen"),
+          f"the scheduler's hold gate is asked once, with who and where: "
+          f"{gates}")
+    r2 = c.announce("cancellation", "Jeff", "Stream Deck")
+    check(not r2.ok and "still starting" in r2.sentence,
+          f"a second announcement while one starts is refused: {r2}")
+    c.run_pending()
+    for name in ("flames_zero", "lasers_fade_out", "music_hold",
+                 "video_fade_out", "pixels_fade_out"):
+        got = rig.first(name)
+        check(got is not None and got[2] == 800.0 and
+              (name == "flames_zero" or got[1] == (0.25,)),
+              f"{name} at the press, fading with the music: {got}")
+    check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
+          f"played 0.5 s after the 0.25 s fade ended: {plays}")
+    # Another announcement once that one has started: already dark, so it
+    # plays at once with nothing sent but the lasers' blank, which is always
+    # re-sent (conductor.ALWAYS_RESENT), and is not a change worth 0.5 s.
+    n = len(rig.calls)
+    T.t = 810.0
+    c.announce("cancellation", "Andy", "rack screen")
+    c.run_pending()
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"already dark: only the lasers' blank is sent again: "
+          f"{rig.names(n)}")
+    check(plays[-1][3] == 810.0, "and it plays at once")
+    # Resume from the dark: everything comes back.
+    T.t = 820.0
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    for name in ("music_resume", "video_restore", "pixels_restore",
+                 "lasers_restore", "flames_release"):
+        check(rig.first(name, n) is not None, f"Resume sends {name}")
+    # During a production Hold: a production Hold already faded video and
+    # pixels to black with the lasers (Jeff 2026-09-30), so there is
+    # nothing left for the announcement to send, and it plays at once
+    # rather than waiting 0.5 s in a dark that is already there.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("video_fade_out") is not None and
+          rig.first("pixels_fade_out") is not None,
+          "the Hold itself already faded video and pixels to black")
+    n = len(rig.calls)
+    T.t = 900.0
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"an announcement during a Hold sends nothing but the lasers' "
+          f"blank again (always re-sent): already dark: {rig.names(n)}")
+    check(plays[-1][3] == 900.0,
+          f"and it plays at once, with nothing left to fade: {plays[-1]}")
+    # A Hold pressed during the wait in the dark changes nothing.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    _cond_live(c, rig)
+    got = []
+    T.t = 1000.0
+    T.at(1000.5, lambda: got.append(c.hold("Jeff", "Stream Deck")))
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(got and got[0].ok and "Already on hold" in got[0].sentence,
+          f"Hold during the announcement's wait: {got}")
+    check(_in_the_dark(plays[-1][3], 1000.25), "and it still plays on time")
+    # The scheduler refuses the Hold: the announcement is refused, nothing
+    # is sent.
+    c, rig, T, lines = _cond(hold_gate=hold_gate,
+                             announcer=lambda *a: plays.append(a))
+    _cond_live(c, rig)
+    refusal[0] = "the night is closed"
+    k = len(plays)
+    r = c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    refusal[0] = None
+    check(not r.ok and "the night is closed" in r.sentence,
+          f"the gate's refusal is the announcement's: {r}")
+    check(rig.calls == [] and len(plays) == k, "and nothing happens")
+    # Between shows: no fade, no wait, it just plays.
+    c, rig, T, lines = _cond(
+        hold_gate=hold_gate,
+        announcer=lambda *a: plays.append(a + (T.now(),)))
+    rig.cue = False
+    T.t = 1100.0
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(rig.calls == [] and plays[-1][3] == 1100.0,
+          f"between shows it plays at once and touches nothing: "
+          f"{rig.calls}")
+    # No scheduler connected: refused, as announce.py is inert without one.
+    c, rig, T, lines = _cond()
+    r = c.announce("delayed", "Andy", "rack screen")
+    check(not r.ok and "no scheduler" in r.sentence, f"{r}")
+    # A refusal from the player itself is written down, not raised.
+    def refuse(*a):
+        raise ValueError("Delayed is not available: the file is missing.")
+    c, rig, T, lines = _cond(hold_gate=hold_gate, announcer=refuse)
+    _cond_live(c, rig)
+    c.announce("delayed", "Andy", "rack screen")
+    c.run_pending()
+    check(any("file is missing" in t for t, _f in lines),
+          "the player's refusal reaches the journal")
+    print("  ok")
+
+
+def test_conductor_no_lasers_during_intermission():
+    section("conductor: the lasers are only ever lit through the gate, and "
+            "never in intermission")
+    C = _cond_mod()
+    state = ["SHOW"]
+
+    def boom():
+        raise RuntimeError("scheduler gone")
+    for st, lit in (("SHOW", True), ("PAUSED", True), ("REHEARSAL", True),
+                    ("STANDBY", False), ("HOLD", False), ("IDLE", False),
+                    ("CLOSING", False), (None, False), ("", False),
+                    (boom, False)):
+        gate = C.laser_gate_for(st if callable(st) else (lambda s=st: s))
+        c, rig, T, lines = _cond(gate=gate)
+        c.show_starting("Andy", "rack screen")
+        c.run_pending()
+        check((rig.count("lasers_restore") == 1) == lit,
+              f"show start in state {st!r}: lasers "
+              f"{'lit' if lit else 'dark'} ({rig.names()})")
+        if not lit:
+            check(any("lasers stay dark" in t for t, _f in lines),
+                  f"state {st!r}: the journal says why")
+        check(rig.count("flames_release") == 1,
+              f"state {st!r}: the gate is for lasers only")
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines = _cond(gate=gate)
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0,
+          "a Resume in intermission keeps the lasers dark")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "in those words")
+    check(c.snapshot()["applied"]["lasers"] == "black", "still black")
+    def broken_gate():
+        raise RuntimeError("gate broke")
+    c, rig, T, lines = _cond(gate=broken_gate)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0 and
+          any("laser gate failed" in t for t, _f in lines),
+          "a laser gate that raises keeps the lasers dark")
+    for bad in (None, "yes"):
+        try:
+            C.Conductor(rig, rig, bad)
+            check(False, f"a conductor without a laser gate ({bad!r}) must "
+                         f"be refused")
+        except ValueError:
+            pass
+    # Enforced, not assumed: lasers already lit are blanked when the gate
+    # says no, and leaving the show blanks them whatever the gate says.
+    state[0] = "SHOW"
+    c, rig, T, lines = _cond(gate=gate)
+    _cond_live(c, rig)
+    check(c.snapshot()["applied"]["lasers"] == "lit", "lit in the show")
+    state[0] = "STANDBY"
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_blank") == 1 and
+          c.snapshot()["applied"]["lasers"] == "black",
+          f"a gate that says no blanks lasers left lit: {rig.names()}")
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    r = c.intermission("scheduler")
+    c.run_pending()
+    check(r.ok and rig.names() == ["flames_zero", "lasers_blank"],
+          f"leaving the show zeroes the flame cues and blanks the lasers, "
+          f"nothing else: {rig.names()} {r}")
+    a = c.snapshot()["applied"]
+    check(a["lasers"] == "black" and a["flames"] == "zero", f"{a}")
+    check(not c.resume("Andy", "rack screen").ok,
+          "there is nothing to resume in intermission")
+    # While an Abort is fading, intermission must not cut the fade short.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    T.t = 1300.0
+    got = []
+    T.at(1300.3, lambda: got.append(c.intermission("scheduler")))
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    stop = rig.first("video_stop")
+    check(got and got[0].ok and stop is not None and
+          abs(stop[2] - 1301.0) < 1e-9 and c.latched,
+          f"intermission during Abort's fade leaves it alone: {got} {stop}")
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_is_instant():
+    section("conductor: in rehearsal Hold and Resume are instant; Abort is "
+            "still 1 s")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    check(c.mode == C.PRODUCTION, "production by default")
+    check(not c.set_mode("practice").ok, "an unknown mode is refused")
+    check(c.set_mode(C.REHEARSAL).ok and c.mode == C.REHEARSAL, "rehearsal")
+    _cond_live(c, rig)
+    T.t = 1200.0
+    c.hold("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_hold")[1] == (0.0,), "the music stops at once")
+    check(T.t == 1200.0, f"the Hold took no time: {T.t}")
+    c.resume("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_resume")[1] == (0.0,), "and comes back at once")
+    n = len(rig.calls)
+    plays = []
+    c.hold_gate = lambda *a: (None, 1)
+    c.announcer = lambda *a: plays.append(a)
+    c.announce("delayed", "Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("lasers_blank", n) is not None and
+          rig.first("lasers_fade_out", n) is None and
+          rig.first("video_fade_out", n)[1] == (0.0,),
+          f"a rehearsal announcement goes dark at once: {rig.names(n)}")
+    c.resume("Andy", "rehearsal page")
+    c.run_pending()
+    c.abort("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("music_halt")[1] == (1.0,), "Abort still fades 1 s")
+    c.reset()
+    check(c.set_mode(C.PRODUCTION).ok, "back to production")
+    c.show_starting()
+    c.run_pending()
+    c.hold()
+    c.run_pending()
+    holds = [x for x in rig.calls if x[0] == "music_hold"]
+    check(holds[-1][1] == (0.25,), f"production fades again: {holds}")
+    print("  ok")
+
+
+def test_conductor_hold_video_pixels_freeze_or_fade():
+    section("conductor: rehearsal Hold leaves video and pixels frozen in "
+            "place; production Hold fades them to black with the lasers "
+            "(Jeff 2026-09-30)")
+    C = _cond_mod()
+    # Rehearsal: video and pixels are never touched, so they hold on
+    # whatever frame they were already showing (frozen, not black).
+    c, rig, T, lines = _cond()
+    check(c.set_mode(C.REHEARSAL).ok, "rehearsal")
+    _cond_live(c, rig)
+    c.hold("Andy", "rehearsal page")
+    c.run_pending()
+    check(rig.first("video_fade_out") is None and
+          rig.first("pixels_fade_out") is None,
+          f"a rehearsal Hold never calls video or pixel fade: "
+          f"{rig.names()}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"neither was ever sent a command, so they stay exactly as they "
+          f"were (lit, showing the frozen frame), not black: {a}")
+    # Production: video and pixels fade out over the same 0.25 s as the
+    # music and the lasers, and land on black.
+    c, rig, T, lines = _cond()
+    check(c.mode == C.PRODUCTION, "production by default")
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    vcall, pcall = rig.first("video_fade_out"), rig.first("pixels_fade_out")
+    check(vcall is not None and vcall[1] == (0.25,),
+          f"a production Hold fades the video out over 0.25 s: {vcall}")
+    check(pcall is not None and pcall[1] == (0.25,),
+          f"and the pixels too: {pcall}")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.BLACK and a["pixels"] == C.BLACK,
+          f"both land on black, not merely frozen: {a}")
+    # Resume brings them back either way.
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.first("video_restore") is not None and
+          rig.first("pixels_restore") is not None,
+          "Resume brings video and pixels back up")
+    a = c.snapshot()["applied"]
+    check(a["video"] == C.LIT and a["pixels"] == C.LIT,
+          f"and they are lit again: {a}")
+    print("  ok")
+
+
+def test_conductor_output_failures_are_loud_and_never_crash_it():
+    section("conductor: a failed, raising, wrong or slow output is a fault "
+            "sentence; the rest still runs and the command is sent again")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.fail = {"lasers_blank"}
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "lasers_blank could not be sent" in t for t, f in lines),
+          "a failed blank is a fault, with the device's sentence")
+    check(rig.count("music_hold") == 1, "the Hold carried on past it")
+    check(c.snapshot()["applied"]["lasers"] == "unknown",
+          "a failed blank is not counted as dark")
+    rig.fail = set()
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_fade_out") == 1,
+          "so the Abort sends the lasers to black again")
+    # A raise, and a return that is not a Result.
+    for mode in ("raise_on", "bad"):
+        c, rig, T, lines = _cond()
+        _cond_live(c, rig)
+        setattr(rig, mode, {"lasers_blank", "flames_zero"})
+        r = c.hold("Andy", "rack screen")
+        c.run_pending()
+        check(r.ok, f"{mode}: the press itself is fine")
+        check(rig.count("music_hold") == 1, f"{mode}: the Hold carried on")
+        a = c.snapshot()["applied"]
+        check(a["lasers"] == "unknown" and a["flames"] == "unknown",
+              f"{mode}: neither counts as done: {a}")
+        check(sum(1 for _t, f in lines if f) >= 2,
+              f"{mode}: both are faults: {lines}")
+        setattr(rig, mode, set())
+        c.abort("Andy", "rack screen")
+        c.run_pending()
+        check(rig.count("flames_zero") == 2,
+              f"{mode}: Abort cuts the flames again")
+    # Abort's inline disarm fails: the executor sends it again.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.fail = {"flames_disarm_all"}
+    c.abort("Andy", "rack screen")
+    rig.fail = set()
+    c.run_pending()
+    check(rig.count("flames_disarm_all") == 2,
+          "a failed disarm is sent again by the Abort's own effect")
+    # A slow call.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.slow = {"lasers_blank": 0.2}
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "took 200 ms" in t for t, f in lines),
+          f"a slow output call is a fault: {lines}")
+    # The clock never freezes: the safety half still stands.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    rig.never_freeze = True
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(any(f and "did not say it had frozen" in t for t, f in lines),
+          "a Hold the clock never confirms is a fault")
+    a = c.snapshot()["applied"]
+    check(a["flames"] == "zero" and a["lasers"] == "black",
+          f"flames zero and lasers dark anyway: {a}")
+    # The clock never moves again: lasers and flames stay down.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    rig.never_move = True
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(rig.count("lasers_restore") == 0 and
+          rig.count("flames_release") == 0,
+          "no timecode movement: lasers and flame cues stay down")
+    check(any(f and "was moving" in t for t, f in lines),
+          "and that is a fault sentence")
+    # The stand-in device layer says it is one.
+    c, rig, T, lines = _cond(devices=C.NotWiredDevices())
+    check(c.snapshot()["devices_wired"] is False,
+          "the stand-in shows as not wired")
+    check(any(f and "not connected" in t for t, f in lines),
+          "and a fault line says so at start")
+    # A journal that raises never stops a show.
+    def bad_journal(text, **f):
+        raise OSError("disk full")
+    c = C.Conductor(rig, rig, lambda: None, journal=bad_journal,
+                    clock=T.now, waiter=T.wait, threaded=False)
+    rig.cue = True
+    rig.never_freeze = False
+    check(c.show_starting().ok and c.abort().ok,
+          "a broken journal does not stop Abort")
+    c.run_pending()
+    check(c.journal_errors > 0, "its failures are counted")
+    print("  ok")
+
+
+def test_conductor_on_real_threads():
+    section("conductor: real threads and real time, Abort pressed twice at "
+            "once during a Hold")
+    import threading as _th
+    C = _cond_mod()
+    rig = _CondRig(time.perf_counter)
+    c = C.Conductor(rig, rig, lambda: None, clock=time.perf_counter)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        del rig.calls[:]
+        c.hold("Andy", "rack screen")
+        time.sleep(0.08)
+        cut = {}
+        go = _th.Event()
+
+        def press(who):
+            go.wait()
+            t0 = time.perf_counter()
+            r = c.abort(who, "rack screen")
+            cut[who] = (r, t0, rig.first("flames_disarm_all"))
+        ts = [_th.Thread(target=press, args=(w,)) for w in ("Andy", "Jeff")]
+        for t in ts:
+            t.start()
+        go.set()
+        for t in ts:
+            t.join(5)
+        pressed = min(v[1] for v in cut.values())
+        check(all(v[0].ok for v in cut.values()), f"both answered: {cut}")
+        check(all(v[2] is not None for v in cut.values()),
+              "the flames were disarmed before either press returned")
+        check(c.wait_idle(5), "the Abort finished")
+        for name in ("pixels_fade_out",
+                     "music_halt", "video_stop", "flames_disarm_all"):
+            check(rig.count(name) == 1, f"{name} once for two presses "
+                                        f"({rig.count(name)})")
+        # The Hold's blank, then one per Abort press (finding B); the
+        # Hold's video fade, then Abort's own from where it got to (C).
+        check(rig.count("lasers_fade_out") == 1 and
+              rig.count("lasers_blank") == 2,
+              f"lasers blanked by the Hold, sent dark by the first Abort "
+              f"press and blanked again by the second "
+              f"({rig.count('lasers_fade_out')}, "
+              f"{rig.count('lasers_blank')})")
+        vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+        check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
+                             f"({len(vfs)})")
+        vf = vfs[-1] if vfs else None
+        check(vf is not None and vf[2] - pressed < 0.15,
+              f"Abort's fade started at once, not after the Hold's "
+              f"({(vf[2] - pressed) if vf else None})")
+        vs = rig.first("video_stop")
+        check(vs is not None and 0.95 <= vs[2] - vf[2] < 1.5,
+              f"then 1 s of fade ({(vs[2] - vf[2]) if vs else None})")
+        check(rig.count("flames_release") == 0 and
+              rig.count("lasers_restore") == 0, "and nothing came back")
+    finally:
+        c.close()
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# The conductor wired to the real device layer: a real Conductor, driven
+# through conductor.ConductorDevices into a real beyond.Beyond and a real
+# madmapper.Link, whose sockets are fakes that stamp every packet into the
+# same call log as the show side (_CondRig). So one ordered list holds the
+# flame cut, every BEYOND packet, the music, the pixels and every MadMapper
+# packet, and the ordering guarantees devices.py's on_hold()/on_resume()/
+# on_abort() were written to give can be checked against what the
+# conductor actually sends.
+# ---------------------------------------------------------------------------
+
+class _StampSock(_FakeMMSock):
+    """A fake socket that also writes (kind, (address, value), now) into a
+    shared log as each packet goes out. value is None for an OSC message
+    with no float (MadMapper's conductor/stop)."""
+
+    def __init__(self, kind, log, now):
+        super().__init__()
+        self.kind, self.log, self.now = kind, log, now
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        super().sendto(pkt, addr)
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        self.log.append((self.kind, (address, None if f is None else f[1]),
+                         self.now()))
+
+
+def _cond_devices(gate=None, mm=True, beyond=True, beyond_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    steps = _Steps()
+    link = bey = None
+    if mm:
+        link = MM.Link(_mm_cfg(ramp_steps=5),
+                       socket_factory=lambda: _StampSock("mm", rig.calls,
+                                                         T.now),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+        # Packets leave from the Link's own worker thread, so their place
+        # in the log depends on thread timing. The CALL into the Link is
+        # made on the conductor's thread: log that too ("mm_call"), so an
+        # order check never passes by luck of scheduling.
+        for name in ("fade_surfaces", "set_surfaces", "cancel", "stop_bank",
+                     "fade_audio", "set_audio", "fade_all",
+                     "restore_levels", "select_bank", "play",
+                     "play_from_beginning"):
+            def rec(*a, _name=name, _fn=getattr(link, name), **k):
+                rig.calls.append(("mm_call", (_name,) + a, T.now()))
+                return _fn(*a, **k)
+            setattr(link, name, rec)
+    if beyond:
+        bey = B.Beyond(B.BeyondConfig.parse({}),
+                       socket_factory=beyond_factory or (
+                           lambda: _StampSock("beyond", rig.calls, T.now)),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate if gate is not None else (lambda: None),
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False)
+    return c, rig, T, lines, link, bey
+
+
+def _mm_flush(link):
+    """Wait for the Link's worker to finish every job already queued (the
+    conductor starts video fades with wait=False)."""
+    if link is not None:
+        link._submit(lambda: None, wait=True)
+
+
+def _cd_live(c, rig, link):
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    _mm_flush(link)
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def _cd_idx(calls, kind):
+    return [i for i, e in enumerate(calls) if e[0] == kind]
+
+
+def _cd_sends(calls):
+    """The log without the Link's cancel() calls. A cancel sends nothing:
+    it only stops a fade still running where it is, at a Hold's or an
+    Abort's press (independent review of PR #29, finding C)."""
+    return [e for e in calls if e[:2] != ("mm_call", ("cancel",))]
+
+
+def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
+    section("conductor + devices: a Hold sends BEYOND a real blank, and it "
+            "is out before the music or the video starts to fade; "
+            "MadMapper's audio is never touched")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.wired and c.snapshot()["devices_wired"],
+          "with BEYOND and MadMapper both given, the conductor is wired")
+    check(not any("not connected" in t for t, _f in lines),
+          f"no 'not connected' fault line when wired: {lines}")
+    _cd_live(c, rig, link)
+    T.t = 300.0
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    check(rig.calls and rig.calls[0][:2] == ("mm_call", ("cancel",)),
+          f"the press stops any video fade where it is, sending nothing: "
+          f"{rig.calls[:1]}")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check(names[0] == "flames_zero", f"the flame cues go first: {names}")
+    check(len(b) == B.RETRY_COUNT and
+          all(ev[i][1] == (B.BRIGHTNESS_ADDR, B.BLANK_VALUE) for i in b),
+          f"BEYOND gets a real blank, brightness 0, {B.RETRY_COUNT} "
+          f"packets: {[ev[i] for i in b]}")
+    check(b and max(b) < names.index("music_hold"),
+          f"the blank is out before the music starts to fade: {names}")
+    check(m and b and min(m) > max(b),
+          f"every MadMapper packet comes after the blank: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check(mc and b and min(mc) > max(b),
+          f"the conductor calls MadMapper only after the blank is out: "
+          f"{names}")
+    check([ev[i][1][:3] for i in mc] == [("fade_surfaces", 1.0, 0.0)],
+          f"one call: the surfaces fade from 1 to 0, nothing else: "
+          f"{[ev[i][1] for i in mc]}")
+    check(all(ev[i][2] == 300.0 for i in b),
+          "the blank goes at the press, with no fade of its own")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (C.HOLD_FADE_S,),
+          f"the music fades over 0.25 s, then the clock freezes: {hold}")
+    check(all(ev[i][1][0] != MM.AUDIO_ADDR for i in m),
+          "MadMapper's audio level is never sent: ltcplay plays the music "
+          "(clock source audio_master), MadMapper only the video")
+    surf = [ev[i][1] for i in m]
+    check(all(a.startswith("/surfaces/") for a, _v in surf),
+          f"a production Hold fades the video surfaces (Jeff 2026-09-30): "
+          f"{surf}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in surf if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades from 1 to black: {vals}")
+    check(not any(f for t, f in lines),
+          f"no fault, and no slow call: {[t for t, f in lines if f]}")
+    check(c.snapshot()["applied"]["lasers"] == "black", "lasers black")
+    # Finding A: the video is recorded black only once the Link says the
+    # packets went out (it has: flushed above).
+    check(c.snapshot()["applied"]["video"] == "black",
+          f"video black, as reported by the Link: {c.snapshot()['applied']}")
+    link.close()
+
+    # Rehearsal: still a real blank first, but the video freezes in place.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.set_mode(C.REHEARSAL)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    check([e[1][1] for e in ev if e[0] == "beyond"]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"a rehearsal Hold blanks BEYOND too: {ev}")
+    check(_cd_idx(ev, "mm") == [] and _cd_idx(ev, "mm_call") == [],
+          f"a rehearsal Hold sends MadMapper nothing: the video freezes "
+          f"with the timecode: {ev}")
+    check(rig.first("music_hold")[1] == (0.0,), "and the music stops at once")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_abort_blanks_at_once_never_ramps():
+    section("conductor + devices: Abort blanks BEYOND at once (never a "
+            "brightness ramp; beyond.py's 0/100 allow-list is unchanged), "
+            "before the video and music fade, then stops the video bank")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    check(B.ALLOWED_VALUES == (0.0, 100.0),
+          f"beyond.py's allow-list is still exactly 0.0 and 100.0: "
+          f"{B.ALLOWED_VALUES}")
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.show_starting("Andy", "rack screen").ok, "show start")
+    c.run_pending()
+    _mm_flush(link)
+    check([e[1][1] for e in rig.calls if e[0] == "beyond"]
+          == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"the show starts with the lasers up: {rig.calls}")
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+    T.t = 400.0
+    check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+    pressed = _cd_sends(rig.calls)
+    check([e[0] for e in pressed][:2] == ["flames_zero", "flames_disarm_all"]
+          and [e[1][1] for e in pressed[2:]]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the flames are cut on the press, before anything else, and "
+          f"BEYOND is blanked before the press returns (finding D): "
+          f"{rig.calls}")
+    check(("mm_call", ("cancel",), 400.0) in rig.calls,
+          "and any video fade is stopped where it is, at the press")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check([ev[i][1] for i in b]
+          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * B.RETRY_COUNT,
+          f"Abort sends BEYOND brightness 0 only, never anything between "
+          f"0 and 100: {[ev[i] for i in b]}")
+    check(all(ev[i][2] == 400.0 for i in b),
+          f"all at the press, not spread over the 1 s fade: "
+          f"{[ev[i][2] for i in b]}")
+    for later in ("pixels_fade_out", "music_halt"):
+        check(later in names and max(b) < names.index(later),
+              f"BEYOND is dark before {later} starts: {names}")
+    check(m and min(m) > max(b),
+          f"BEYOND is dark before MadMapper is sent anything: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check([ev[i][1][0] for i in mc] == ["fade_surfaces", "stop_bank"]
+          and min(mc) > max(b),
+          f"the conductor calls MadMapper (fade, then stop) only after "
+          f"BEYOND is dark: {names}")
+    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
+          f"the journal says the lasers were blanked, not faded: {lines}")
+    mm_ev = [ev[i][1] for i in m]
+    check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
+          f"MadMapper's audio level is not sent: {mm_ev}")
+    stop = f"/timelines/{link.cfg.show_bank}/conductor/stop"
+    check(mm_ev and mm_ev[-1] == (stop, None),
+          f"the show bank is stopped last, after the fade: {mm_ev[-3:]}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in mm_ev if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades to black before the stop: {vals}")
+    check(rig.first("music_halt")[1] == (C.ABORT_FADE_S,),
+          "the music fades over 1 s")
+    link.close()
+
+    # Abort after a Hold: the lasers are already dark, and the blank is
+    # sent again anyway (never trusted to have landed), still first.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    T.t = 450.0
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"Abort after a Hold sends BEYOND the blank again: {ev}")
+    check(b and max(b) < names.index("music_halt"),
+          f"and still before the music: {names}")
+    mm_ev = [e[1] for e in ev if e[0] == "mm"]
+    check([e[1][0] for e in ev if e[0] == "mm_call"]
+          == ["fade_surfaces", "stop_bank"]
+          and names.index("mm_call") > max(b),
+          f"after the blank, MadMapper is told black again, then stop: "
+          f"{names}")
+    stop = (f"/timelines/{link.cfg.show_bank}/conductor/stop", None)
+    check(mm_ev == [("/surfaces/Quad-1/opacity", 0.0),
+                    ("/surfaces/Quad-2/opacity", 0.0), stop],
+          f"the video the Hold already faded is not faded up and down "
+          f"again (finding C: it starts where it is, black, so one 0 per "
+          f"surface), then stopped: {mm_ev}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_resume_unblanks_only_after_timecode_and_gate():
+    section("conductor + devices: Resume unblanks BEYOND only once the "
+            "timecode moves and the laser gate says yes; in intermission it "
+            "re-sends the blank instead, every time")
+    from ltcplay import beyond as B
+    C = _cond_mod()
+    state = ["SHOW"]
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    rig.move_s = 0.3
+    T.t = 500.0
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"BEYOND comes back up (100): {[ev[i] for i in b]}")
+    check(b and min(b) > names.index("music_resume"),
+          f"after the music starts back: {names}")
+    check(min(b) > names.index("mm_call"),
+          f"and after the video has been asked back up: {names}")
+    check(all(ev[i][2] >= 500.3 - 1e-9 for i in b),
+          f"and not before the timecode moves (0.3 s): "
+          f"{[ev[i][2] for i in b]}")
+    check(names.index("flames_release") > max(b),
+          f"the flame cues are released last, after the lasers: {names}")
+    up = [e[1] for e in ev if e[0] == "mm"]
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in up if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 0.0 and vals[-1] == 1.0,
+              f"{s} fades back up: {vals}")
+    link.close()
+
+    # A Resume in intermission: no unblank, ever, and a real blank re-sent
+    # even though the record already says black (devices.py's defensive
+    # re-blank, kept).
+    state[0] = "SHOW"
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["lasers"] == "black", "held: black")
+    del rig.calls[:]
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(B.UNBLANK_VALUE not in vals,
+          f"no unblank during intermission: {vals}")
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the blank is re-sent, not assumed: {vals}")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "the journal says why")
+    check(bey.last_command == "blank" and bey.last_result == "ok",
+          f"BEYOND's own record agrees: {bey.health()}")
+    # Leaving the show blanks them again too.
+    del rig.calls[:]
+    c.intermission("scheduler")
+    c.run_pending()
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"intermission() sends BEYOND the blank: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_failures_missing_links_and_speed():
+    section("conductor + devices: a failed or broken device is a failed "
+            "Result, never a raise; a show without BEYOND or MadMapper says "
+            "it is not wired; every call returns at once")
+    import time as _time
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+
+    def no_socket():
+        raise OSError("no network")
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=no_socket)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          f"a blank that never got out leaves the lasers UNKNOWN, never "
+          f"black: {c.snapshot()['applied']}")
+    check(any(f and "may still be showing" in t for t, f in lines),
+          f"and says so as a fault: {[t for t, f in lines if f]}")
+    link.close()
+
+    # Missing links: nothing sent, every call still a Result, and a
+    # Conductor built with it says it is not wired.
+    for mm_ok, b_ok in ((False, True), (True, False), (False, False)):
+        c, rig, T, lines, link, bey = _cond_devices(mm=mm_ok, beyond=b_ok)
+        check(not c.wired and any("not connected" in t and f
+                                  for t, f in lines),
+              f"MadMapper {mm_ok}, BEYOND {b_ok}: the conductor says the "
+              f"rig is not wired: {lines}")
+        if link is not None:
+            link.close()
+    dev = C.ConductorDevices(None, None)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (0.0,)), ("video_stop", ())):
+        r = getattr(dev, name)(*args)
+        check(isinstance(r, C.Result) and r.ok and "no " in r.sentence,
+              f"{name} with nothing configured: {r}")
+        r = getattr(C.ConductorDevices(object(), object()), name)(*args)
+        check(isinstance(r, C.Result) and not r.ok,
+              f"{name} on a broken device is a failed Result, not a "
+              f"raise: {r}")
+    link, socks, _steps = _mm_link()
+    link.close()
+    r = C.ConductorDevices(link, None).video_fade_out(1.0)
+    check(not r.ok and "closed" in r.sentence,
+          f"a closed MadMapper link is not reported as sent: {r}")
+
+    # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
+    # fade included (it runs on the Link's own worker).
+    link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
+    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
+                   sleep=_on_time_sleep)
+    dev = C.ConductorDevices(link, bey)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (1.0,)), ("video_fade_out", (0.0,)),
+                       ("video_stop", ())):
+        t0 = _time.perf_counter()
+        r = getattr(dev, name)(*args)
+        took = _time.perf_counter() - t0
+        check(r.ok and took < C.SLOW_CALL_S,
+              f"{name}{args} returns at once: {took * 1000:.0f} ms, {r}")
+    link.close()
+    bey.close()
+    print("  ok")
+
+
+def test_conductor_devices_instant_video_lands_after_a_running_fade():
+    section("conductor + devices: an instant video level (rehearsal) "
+            "cancels a fade still running and lands after its last step")
+    C = _cond_mod()
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    gate = threading.Event()
+    link._submit(gate.wait, wait=False)       # hold the worker
+    dev.video_restore(1.0)                    # a fade up, queued
+    dev.video_fade_out(0.0)                   # then black at once
+    gate.set()
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and sent[-2:] == [0.0, 0.0],
+          f"black is the last thing each surface is told: {sent[-4:]}")
+    check(len(sent) < 31 * 2,
+          f"the fade up was cancelled, not run to the end first: "
+          f"{len(sent)} packets")
+    link.close()
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# The independent review of PR #29 (real UDP, real time probes), findings A
+# to E. These run on real threads and real time, through a real
+# beyond.Beyond and a real madmapper.Link whose sockets stamp every packet
+# with perf_counter: when sendto() was entered and when it returned.
+# ---------------------------------------------------------------------------
+
+class _RTSock:
+    """A real-time fake socket: logs (kind, address, value, entered,
+    returned) for every packet. `delay(value)` makes sendto() take that
+    long first, the way a stalled send buffer or an ARP wait would."""
+
+    def __init__(self, kind, log, delay=None):
+        self.kind, self.log, self.delay = kind, log, delay
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        v = None if f is None else f[1]
+        t_in = time.perf_counter()
+        d = self.delay(v) if self.delay else 0
+        if d:
+            time.sleep(d)
+        self.log.append((self.kind, address, v, t_in, time.perf_counter()))
+
+    def close(self):
+        pass
+
+
+def _on_time_sleep(seconds):
+    """time.sleep that ends on time. BEYOND spaces its 3 packets 20 ms
+    apart, and the conductor calls anything slower than SLOW_CALL_S a
+    fault. macOS CI runners overshoot a 20 ms time.sleep() by up to
+    ~130 ms (seen in PR #29 round 3: a blank took 298 ms), which is the
+    runner, not the code under test. Any single sleep can overshoot like
+    that, so this only ever yields (time.sleep(0) lets other threads run)
+    until the deadline. It is only used for those 20 ms gaps."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        time.sleep(0)
+
+
+def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    log, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    rig = _CondRig(time.perf_counter)
+    link = MM.Link(_mm_cfg(ramp_steps=31),
+                   socket_factory=mm_factory or (lambda: _RTSock("mm", log)),
+                   journal=journal)
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _RTSock("beyond", log,
+                                                  beyond_delay),
+                   sleep=_on_time_sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate or (lambda: None),
+                    hold_gate=lambda *a: (None, 1), announcer=announcer,
+                    journal=journal)
+    return c, rig, log, lines, link, bey
+
+
+def _rt_vals(log, kind, since=None, value=None):
+    return [e for e in log if e[0] == kind
+            and (since is None or e[3] >= since)
+            and (value is None or e[2] == value)]
+
+
+def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
+    section("beyond: a blank on another thread stops an unblank before its "
+            "next packet, never waits for it, and 0 is BEYOND's last word")
+    from ltcplay import beyond as B
+    log = []
+    release = threading.Event()
+
+    class Stall(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if MM.decode_float(pkt)[1] == 100.0:
+                release.wait(2.0)        # the 100 is stuck on its way out
+            _RTSock.sendto(self, pkt, addr)
+
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: Stall("beyond", log),
+                   sleep=_on_time_sleep)      # see _on_time_sleep: macOS CI
+    got = {}
+    t = threading.Thread(target=lambda: got.setdefault(
+        "r", bey.unblank(in_show=True)))
+    t.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    t0 = time.perf_counter()
+    ok = bey.blank()
+    took = time.perf_counter() - t0
+    check(ok and took < 0.2,
+          f"the blank went out without waiting for the stuck unblank "
+          f"({took * 1000:.0f} ms)")
+    release.set()
+    t.join(2)
+    vals = [e[2] for e in sorted(log, key=lambda e: e[4])]
+    check(vals.count(100.0) == 1,
+          f"no 100 was started after the blank began: {vals}")
+    check(vals and vals[-1] == 0.0,
+          f"the 100 already on its way out is followed by a 0: {vals}")
+    check(got.get("r") is False and bey.last_result in ("cut", "ok"),
+          f"the cut unblank does not report success: {got} "
+          f"{bey.last_result}")
+    # still_wanted: a newer request stops an unblank before any blank.
+    log2 = []
+    bey2 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: _RTSock("beyond", log2))
+    asked = []
+
+    def wanted():
+        asked.append(1)
+        return len(asked) < 2
+    r = bey2.unblank(in_show=True, still_wanted=wanted)
+    check(r is False and [e[2] for e in log2] == [100.0]
+          and bey2.last_result == "cut",
+          f"still_wanted turning false stops the unblank: {log2}")
+
+    # Review round 3: a blank that lands in the 20 ms gap between two
+    # unblank packets, with NO still_wanted, means no further 100 is sent.
+    # Both ways round: the unblank wakes while the blank is still sending
+    # its 0s (catches a blank that counts itself only after its packets),
+    # and after the blank has finished (catches an unblank that takes a
+    # fresh count before every packet, so never sees a blank at all).
+    for mid in (True, False):
+        log3 = []
+        in_gap, go = threading.Event(), threading.Event()
+
+        def sleeper(s, mid=mid, in_gap=in_gap, go=go):
+            who = threading.current_thread().name
+            if who == "unblanker" and not in_gap.is_set():
+                in_gap.set()             # after the first 100: the gap
+                go.wait(2.0)
+                return
+            if who == "blanker" and mid and not go.is_set():
+                go.set()                 # wake the unblank mid blank
+                time.sleep(0.15)
+                return
+            time.sleep(s)
+        bey3 = B.Beyond(B.BeyondConfig.parse({}),
+                        socket_factory=lambda log3=log3: _RTSock("beyond",
+                                                                 log3),
+                        sleep=sleeper)
+        got3 = {}
+        u = threading.Thread(target=lambda: got3.setdefault(
+            "r", bey3.unblank(in_show=True)), name="unblanker")
+        u.start()
+        check(in_gap.wait(2.0), "the unblank reached its first gap")
+        bt = threading.Thread(target=bey3.blank, name="blanker")
+        bt.start()
+        bt.join(2)
+        go.set()
+        u.join(2)
+        when = "while the blank was sending" if mid else \
+            "after the blank had finished"
+        seq = sorted(log3, key=lambda e: e[3])
+        first0 = next((e[3] for e in seq if e[2] == 0.0), None)
+        late100 = [e for e in seq if e[2] == 100.0 and first0 is not None
+                   and e[3] >= first0]
+        check(first0 is not None and not late100,
+              f"an unblank woken {when} sends no further 100: "
+              f"{[e[2] for e in seq]}")
+        out = [e[2] for e in sorted(log3, key=lambda e: e[4])]
+        check(out.count(100.0) == 1 and out[-1] == 0.0,
+              f"one 100 before the blank, and 0 last ({when}): {out}")
+        check(got3.get("r") is False and bey3.last_result in ("cut", "ok"),
+              f"the cut unblank does not report success ({when}): {got3}")
+
+    # Review round 3: the 0 that follows a 100 caught on its way out is
+    # retried like any blank. The blank has already returned True by then,
+    # so a single lost 0 left BEYOND lit with everything above it sure the
+    # lasers were dark.
+    log4 = []
+    release4 = threading.Event()
+    lost = []
+
+    class StallThenLose(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            v = MM.decode_float(pkt)[1]
+            if threading.current_thread().name == "unblanker4":
+                if v == 100.0:
+                    release4.wait(2.0)
+                elif v == 0.0 and not lost:
+                    lost.append(1)
+                    raise OSError("the first 0 after the 100 is lost")
+            _RTSock.sendto(self, pkt, addr)
+
+    bey4 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: StallThenLose("beyond", log4))
+    u4 = threading.Thread(target=lambda: bey4.unblank(in_show=True),
+                          name="unblanker4")
+    u4.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    check(bey4.blank(), "the blank itself got out")
+    release4.set()
+    u4.join(2)
+    out4 = [e[2] for e in sorted(log4, key=lambda e: e[4])]
+    check(lost and out4 and out4[-1] == 0.0,
+          f"one lost 0 after the late 100 does not leave BEYOND lit: "
+          f"{out4}")
+    print("  ok")
+
+
+def test_conductor_abort_is_never_held_up_by_a_slow_device():
+    section("conductor: Abort's flame cut and laser blank go out within a "
+            "few ms of the press, whatever BEYOND, the laser gate or an "
+            "announcement is doing (review of PR #29, finding D)")
+    C = _cond_mod()
+    FEW = 0.02
+    # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
+    #    show start's unblank is part way out.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW,
+              f"the flame cut went out within {FEW * 1000:.0f} ms "
+              f"({(fz[0][2] - t0) * 1000 if fz else None} ms)")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.8)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        check(zeros and zeros[0][3] - t0 < FEW,
+              f"the first blank packet was handed to the socket within "
+              f"{FEW * 1000:.0f} ms of the press "
+              f"({(zeros[0][3] - t0) * 1000 if zeros else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "no unblank packet was started after the press")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"recorded dark: {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        link.close()
+
+    # 1b) The same, with a Hold: its blank waits its turn on the executor,
+    #     but the restore stops before its next packet all the same (the
+    #     conductor's restore guard), so no 100 starts after the press.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+        check(c.wait_idle(5), "the Hold finished")
+        time.sleep(0.5)
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"no unblank packet was started after the Hold press: "
+              f"{[(e[2], round(e[3] - t0, 3)) for e in log if e[0] == 'beyond']}")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 2) A laser gate that takes 500 ms: the Abort's fade does not wait.
+    def slow_gate():
+        time.sleep(0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=slow_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        c.resume("Andy", "rack screen")
+        time.sleep(0.2)                  # the executor is in the gate
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        px = [cl for cl in rig.calls if cl[0] == "pixels_fade_out"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during a "
+              f"slow gate")
+        check(px and px[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the gate "
+              f"({(px[0][2] - t0) * 1000 if px else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "the gate's late yes lit nothing")
+    finally:
+        c.close()
+        link.close()
+
+    # 2b) Review round 3: a laser gate that hangs past GATE_TIMEOUT_S and
+    #     only then says yes. No Abort this time: the timeout itself has to
+    #     be a no, and the late yes must light nothing.
+    def hung_gate():
+        time.sleep(C.GATE_TIMEOUT_S + 0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=hung_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        t0 = time.perf_counter()
+        c.resume("Andy", "rack screen")
+        check(c.wait_idle(C.GATE_TIMEOUT_S + 3), "the Resume finished")
+        time.sleep(0.8)                  # past the gate's late yes
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
+              f"{[e[2] for e in _rt_vals(log, 'beyond', since=t0)]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"and the lasers are recorded dark: "
+              f"{c.snapshot()['applied']['lasers']}")
+        check(any("did not answer within" in t for t, _f in lines),
+              f"the journal says the gate did not answer: "
+              f"{[t for t, _f in lines if 'gate' in t]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 3) An announcement still reading its file (400 ms).
+    c, rig, log, lines, link, bey = _rt_rig(
+        announcer=lambda *a: time.sleep(0.4))
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.announce("welcome", "Andy", "rack screen")
+        time.sleep(C.ANNOUNCE_FADE_S + C.ANNOUNCE_DARK_S + 0.2)
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        mh = [cl for cl in rig.calls if cl[0] == "music_halt"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during an "
+              f"announcement's file read")
+        check(mh and mh[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the file "
+              f"({(mh[0][2] - t0) * 1000 if mh else None} ms)")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_hears_about_madmapper_failures_and_stalls():
+    section("conductor: a MadMapper send that fails, or a MadMapper sender "
+            "that stalls, is a fault and leaves the video UNKNOWN, and a "
+            "later Abort fades it anyway (review of PR #29, finding A)")
+    C = _cond_mod()
+
+    def no_net():
+        raise OSError("network is down")
+    c, rig, log, lines, link, bey = _rt_rig(mm_factory=no_net)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.4)                  # the Link's worker has run it
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN,
+              f"a video fade that never got out is UNKNOWN, never black: "
+              f"{snap['applied']}")
+        check(snap["faults"] >= 1 and any(
+            f and "not sent to MadMapper" in t for t, f in lines),
+              f"and a fault line says so: {[t for t, f in lines if f]}")
+        check(not any(len(t) > 600 for t, _f in lines),
+              "the fault line names each reason once, not once a packet")
+        n = sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                in t)
+        c.abort("Andy", "rack screen")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.3)
+        check(sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                  in t) > n,
+              "a later Abort sends the video fade again (and says it "
+              "failed again)")
+    finally:
+        c.close()
+        link.close()
+
+    # A stalled sender: the Link's worker is stuck behind another job.
+    saved = C.VIDEO_STALL_S
+    C.VIDEO_STALL_S = 0.4
+    c, rig, log, lines, link, bey = _rt_rig()
+    stuck = threading.Event()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        time.sleep(0.1)
+        link._submit(lambda: stuck.wait(3.0), wait=False)
+        t0 = time.perf_counter()
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        early = c.snapshot()["applied"]["video"]
+        check(time.perf_counter() - t0 > C.HOLD_FADE_S + 0.4 or
+              early == C.UNKNOWN,
+              f"a fade MadMapper has not sent yet is not recorded black: "
+              f"{early}")
+        time.sleep(max(0.0, t0 + C.HOLD_FADE_S + 0.4 + 0.3
+                       - time.perf_counter()))
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN and any(
+            f and "has not sent it yet" in t for t, f in lines),
+              f"a stalled MadMapper sender is a fault and the video is "
+              f"UNKNOWN: {snap['applied']} {[t for t, f in lines if f]}")
+    finally:
+        stuck.set()
+        C.VIDEO_STALL_S = saved
+        c.close()
+        link.close()
+
+    # Only the latest video command's success counts: a Hold's fade that
+    # goes out after a Resume asked for the video back up does not make
+    # the record say black.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    g1, g2 = threading.Event(), threading.Event()
+    link._submit(lambda: g1.wait(3.0), wait=False)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    hold_ran = threading.Event()          # queued right after the Hold's
+    link._submit(hold_ran.set, wait=False)
+    link._submit(lambda: g2.wait(3.0), wait=False)
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          "neither command has gone out yet: UNKNOWN")
+    g1.set()
+    check(hold_ran.wait(2.0), "the Hold's video command has run")
+    time.sleep(0.05)
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          f"the Hold's fade went out, but the Resume's is the latest: not "
+          f"black: {c.snapshot()['applied']}")
+    g2.set()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["video"] == C.LIT,
+          f"and once the Resume's goes out, lit: {c.snapshot()['applied']}")
+    link.close()
+
+    # And when it all goes out, the record says so (and only then).
+    c, rig, log, lines, link, bey = _rt_rig()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.2)
+        check(c.snapshot()["applied"]["video"] == C.BLACK,
+              f"a fade the Link sent is recorded black: "
+              f"{c.snapshot()['applied']}")
+        check(not any(f for _t, f in lines),
+              f"and nothing is a fault: {[t for t, f in lines if f]}")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_a_failed_abort_blank_can_be_sent_again():
+    section("conductor: BEYOND unreachable at Abort; a second Abort, a "
+            "second Hold and intermission() all send the blank again and "
+            "say how the lasers really stand (review of PR #29, finding B)")
+    C = _cond_mod()
+    down = [False]
+    vals = []                            # every brightness that got out
+
+    class Flaky(_FakeMMSock):
+        def __init__(self):
+            if down[0]:
+                raise OSError("no route to host")
+            super().__init__()
+
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if down[0]:
+                raise OSError("no route to host")
+            super().sendto(pkt, addr)
+            vals.append(MM.decode_float(pkt)[1])
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    r = c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check("did NOT get out" in r.sentence,
+          f"the Abort says its blank did not get out: {r.sentence}")
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          "the lasers are UNKNOWN after a blank that did not get out")
+    r = c.abort("Jeff", "Stream Deck")
+    check(r.ok and "may still be lit" in r.sentence,
+          f"a second Abort while BEYOND is still down says so: {r}")
+    down[0] = False
+    del vals[:]
+    r = c.abort("Jeff", "Stream Deck")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence,
+          f"once BEYOND is back, a second Abort blanks it: {b} {r}")
+    check(c.snapshot()["applied"]["lasers"] == C.BLACK, "recorded dark")
+    # intermission() while latched: blank again, and the real state.
+    del vals[:]
+    r = c.intermission("scheduler")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence
+          and "already dark" not in r.sentence,
+          f"intermission() while aborted blanks again and reports the real "
+          f"state: {b} {r}")
+    check(c.latched, "and the Abort stays latched")
+    link.close()
+    # A second Hold while held, with the first blank lost.
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN, "hold blank lost")
+    down[0] = False
+    del vals[:]
+    r = c.hold("Andy", "rack screen")
+    b = list(vals)
+    check(b == [0.0] * 3 and "Already on hold" in r.sentence
+          and c.snapshot()["applied"]["lasers"] == C.BLACK,
+          f"a second Hold blanks again: {b} {r}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_video_never_rises_after_abort_or_hold():
+    section("conductor: Abort or Hold during a Resume's video fade-up stops "
+            "it where it is and fades down from there, never up to full "
+            "first (review of PR #29, finding C)")
+    C = _cond_mod()
+    for press in ("abort", "hold"):
+        for delay in (0.03, 0.12, 0.2):
+            c, rig, log, lines, link, bey = _rt_rig()
+            rig.move_s = 0.3
+            try:
+                c.show_starting("Andy", "rack screen")
+                check(c.wait_idle(5), "show start done")
+                c.hold("Andy", "rack screen")
+                check(c.wait_idle(5), "hold done")
+                time.sleep(0.4)
+                c.resume("Andy", "rack screen")
+                time.sleep(delay)
+                t0 = time.perf_counter()
+                getattr(c, press)("Andy", "rack screen")
+                check(c.wait_idle(5), f"{press} done")
+                time.sleep(1.3)
+                q1 = [e for e in log if e[0] == "mm"
+                      and e[1] == "/surfaces/Quad-1/opacity"]
+                before = [e[2] for e in q1 if e[3] < t0]
+                after = [e[2] for e in q1 if e[3] >= t0]
+                at = before[-1] if before else None
+                # One ramp step may already have been on its way out at
+                # the press (the perceptual fade-up's biggest is 2/30).
+                step = 2.0 / 30
+                ok = (at is not None and after and after[-1] == 0.0
+                      and after[0] <= at + step + 1e-6
+                      and all(b <= a + 1e-6 for a, b in
+                              zip(after, after[1:])))
+                check(ok, f"{press} {delay * 1000:.0f} ms into a Resume: "
+                          f"level at the press {at}, then never up: "
+                          f"{[round(v, 3) for v in after[:6]]} ... "
+                          f"{after[-1:] if after else None}")
+            finally:
+                c.close()
+                link.close()
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
+    section("conductor: a rehearsal Hold that stops a Resume's video fade-up "
+            "part way leaves the video recorded unknown, not lit, and the "
+            "next Resume brings it back up (review round 3)")
+    C = _cond_mod()
+    # The Hold has to land inside a 0.25 s fade-up. On a loaded machine it
+    # may land after the fade has finished; that run proves nothing, so the
+    # setup is tried again (up to 3 times) rather than passed or failed.
+    for attempt in range(3):
+        c, rig, log, lines, link, bey = _rt_rig()
+        rig.move_s = 0.3
+        try:
+            c.show_starting("Andy", "rack screen")
+            check(c.wait_idle(5), "show start done")
+            c.hold("Andy", "rack screen")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(0.5)
+            c.resume("Andy", "rack screen")        # a production fade-up
+            time.sleep(0.06)
+            c.set_mode(C.REHEARSAL)
+            check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(1.5)   # the stopped fade's own report has arrived
+            q1 = [e for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity"]
+            last = q1[-1][2] if q1 else None
+            if last is not None and not 0.0 < last < 1.0 and attempt < 2:
+                continue                 # the Hold missed the fade
+            rec = c.snapshot()["applied"]["video"]
+            # video_cancel() has to make the stopped fade's success stale:
+            # if it does not, that report lands after the Hold and records
+            # the video lit at whatever level the fade had reached.
+            check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
+                  f"the fade stopped part way ({last}) and the video is "
+                  f"not recorded lit: {rec}")
+            t1 = time.perf_counter()
+            c.resume("Andy", "rack screen")
+            check(c.wait_idle(5), "rehearsal Resume done")
+            time.sleep(1.0)
+            up = [e[2] for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= t1]
+            check(up and up[-1] == 1.0,
+                  f"the next Resume brings the video back to full: {up}")
+            break
+        finally:
+            c.close()
+            link.close()
+    print("  ok")
+
+
+def test_conductor_announcement_after_abort_and_reset():
+    section("conductor: an announcement between shows after Abort and Reset "
+            "does not run the Abort again (review of PR #29, finding E)")
+    C = _cond_mod()
+    played = []
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: played.append(a))
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(c.reset("Andy", "rack screen").ok, "Reset")
+    rig.cue = False
+    del rig.calls[:]
+    n = len(lines)
+    r = c.announce("welcome", "Andy", "rack screen")
+    c.run_pending()
+    later = [t for t, _f in lines[n:]]
+    check(r.ok and played, f"the announcement plays: {r}")
+    check(not any("Abort finished" in t or "Latched until Reset" in t
+                  for t in later),
+          f"and nothing says the Abort ran again or is latched: {later}")
+    check(not any(n_ in ("video_fade_out", "music_halt", "video_stop",
+                         "flames_disarm_all") for n_ in rig.names()),
+          f"none of the Abort's steps are sent again: {rig.names()}")
+    check(any("lasers blanked" in t for t, _f in lines),
+          "journal lines say the lasers were blanked")
+    check(not any("lasers faded" in t for t, _f in lines),
+          f"and never that they were faded: {lines}")
+    print("  ok")
+
+
+def _mm_values(socks):
+    from ltcplay import madmapper as MM
+    out = []
+    for s in socks:
+        for pkt, _addr in s.sent:
+            f = MM.decode_float(pkt)
+            if f is not None:
+                out.append(f)
+    return out
+
+
+def test_the_gpl_path_never_loads_the_conductor():
+    section("GPL: the conductor is never imported by the program")
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "conductor.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.search(r"\bconductor\b", line) and \
+                    re.match(r"\s*(from|import)\s", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the conductor is imported by the program: {top}")
+    r = _sp.run([sys.executable, "-c",
+                 "import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
+                 "print('ltcplay.conductor' in sys.modules)", here],
+                capture_output=True, text=True, timeout=60)
+    check(r.stdout.strip() == "False",
+          f"loading the program loads no conductor: {r.stdout!r} "
+          f"{r.stderr[-300:]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _TEMPRUN = _TempRun()
@@ -22652,8 +26523,78 @@ if __name__ == "__main__":
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
+    test_madmapper_osc_bytes_match_the_bench_capture()
+    test_madmapper_primitives_send_the_right_addresses()
+    test_madmapper_ramp_step_count_and_values()
+    test_madmapper_fade_surfaces_perceptual_curve_step_values()
+    test_madmapper_ramp_is_cancellable()
+    test_madmapper_restore_levels()
+    test_madmapper_fade_all_sends_audio_and_surfaces_together()
+    test_madmapper_config_refusals()
+    test_madmapper_watchdog_bind_must_be_loopback()
+    test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
+    test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed()
+    test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start()
+    test_madmapper_watchdog_nan_is_a_drift_fault()
+    test_madmapper_watchdog_alarms_only_while_armed()
+    test_madmapper_watchdog_recovery()
+    test_madmapper_watchdog_drift_flag()
+    test_madmapper_watchdog_suspend_and_resume()
+    test_madmapper_watchdog_skips_drift_right_after_recovery()
+    test_madmapper_submit_has_a_timeout()
+    test_madmapper_no_clock_is_ever_mixed_with_another()
+    test_the_gpl_path_never_loads_madmapper()
+    test_madmapper_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_madmapper_link()
+    test_web_closes_a_config_built_madmapper_link()
+    test_beyond_osc_bytes_and_config_refusals()
+    test_beyond_allow_list_rejects_everything_but_brightness()
+    test_beyond_lowest_level_socket_also_enforces_allow_list()
+    test_beyond_blank_and_unblank_succeed_and_report_ok()
+    test_beyond_blank_retries_and_reports_failure()
+    test_beyond_health_reports_last_result_and_packets_sent()
+    test_beyond_builds_blank_at_construction_and_close_blanks_again()
+    test_beyond_never_sends_blackout_or_masterpause()
+    test_the_gpl_path_never_loads_beyond()
+    test_beyond_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_beyond_link()
+    test_web_closes_a_config_built_beyond_link()
+    test_devices_on_hold_blanks_beyond_then_fades_music_down()
+    test_devices_on_resume_in_show_fades_up_then_unblanks()
+    test_devices_on_resume_not_in_show_refuses_to_unblank()
+    test_devices_on_resume_not_in_show_reports_a_failed_reblank()
+    test_beyond_unblank_itself_refuses_in_show_false()
+    test_devices_on_abort_blanks_beyond_then_fades_everything_together()
+    test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
+    test_devices_in_show_must_be_a_real_bool()
+    test_devices_report_a_failed_blank_to_the_caller()
+    test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
+    test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
+    test_conductor_double_abort_is_idempotent()
+    test_conductor_abort_mid_hold_fade_wins()
+    test_conductor_resume_before_the_hold_fade_finishes()
+    test_conductor_generation_guard_stops_a_stale_effect()
+    test_conductor_announcements_hold_go_dark_then_play()
+    test_conductor_no_lasers_during_intermission()
+    test_conductor_rehearsal_hold_is_instant()
+    test_conductor_hold_video_pixels_freeze_or_fade()
+    test_conductor_output_failures_are_loud_and_never_crash_it()
+    test_conductor_on_real_threads()
+    test_conductor_devices_hold_blanks_beyond_before_anything_fades()
+    test_conductor_devices_abort_blanks_at_once_never_ramps()
+    test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
+    test_conductor_devices_failures_missing_links_and_speed()
+    test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
+    test_conductor_abort_is_never_held_up_by_a_slow_device()
+    test_conductor_hears_about_madmapper_failures_and_stalls()
+    test_conductor_a_failed_abort_blank_can_be_sent_again()
+    test_conductor_video_never_rises_after_abort_or_hold()
+    test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
+    test_conductor_announcement_after_abort_and_reset()
+    test_the_gpl_path_never_loads_the_conductor()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
@@ -22705,5 +26646,13 @@ if __name__ == "__main__":
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Job logs cannot always be fetched (a cloud session's proxy
+            # blocks the log store); annotations can, so each failure is
+            # also written as one.
+            for f in FAILS[:20]:
+                msg = (str(f)[:1500].replace("%", "%25")
+                       .replace("\r", "%0D").replace("\n", "%0A"))
+                print(f"::error title=selftest failure::{msg}")
         sys.exit(1)
     print(f"all checks passed in {time.time()-t0:.1f}s")
