@@ -31634,7 +31634,6 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
         bad = {
             "broadcast": {"source": "artnet_master",
                           "artnet": {"broadcast": "10.0.0.255"}},
-            "none": None,
             "no BEYOND": {"source": "artnet_master", "artnet": {
                 "nodes": {"MadMapper": "127.0.0.1", "Lasers": "10.0.0.40"}}},
             "two": {"source": "artnet_master", "artnet": {
@@ -31642,7 +31641,6 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
                           "Lasers": "127.0.0.3"}}},
         }
         words = {"broadcast": "reaches BEYOND directly",
-                 "none": "no Art-Net timecode",
                  "no BEYOND": "no Art-Net timecode destination is named "
                               "BEYOND",
                  "two": "2 Art-Net timecode destinations"}
@@ -31655,7 +31653,8 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
                 check(words[label] in str(e) and "\u2014" not in str(e) and
                       "\u2013" not in str(e),
                       f"{label}: refused in a sentence: {e}")
-            cfg = F.FireIceConfig(beyond_timecode_ip="127.0.0.3")
+            cfg = F.FireIceConfig(beyond_timecode_ip="127.0.0.3"
+                                  if label == "two" else "127.0.0.2")
             try:
                 F.check_beyond_timecode_routes(folder, cfg)
                 check(False, f"{label}: ltc serve must refuse it at start")
@@ -31666,6 +31665,36 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
             F.check_beyond_timecode_routes(
                 folder, F.FireIceConfig(beyond_blank="osc"))
             check(True, "by OSC alone there is nothing to route")
+        # Re-review P2-a: a show that sends no Art-Net timecode, or names no
+        # BEYOND when no BEYOND is configured, has nothing to route: passed
+        # over at serve start and said, never a refusal.
+        p = show_file("bad", None)
+        check(F.beyond_timecode_route(p, "127.0.0.2") is None,
+              "a show file with no Art-Net timecode has no route")
+        skipped = F.check_beyond_timecode_routes(
+            folder, F.FireIceConfig(beyond_timecode_ip="127.0.0.2"))
+        check(len(skipped) == 1 and "bad.json" in skipped[0] and
+              "sends no Art-Net timecode" in skipped[0],
+              f"serve starts, saying which show it passed over: {skipped}")
+        p = show_file("bad", bad["no BEYOND"])
+        check(F.beyond_timecode_route(p, None, lasers=False) is None,
+              "no BEYOND configured and none named: nothing to route")
+        skipped = F.check_beyond_timecode_routes(folder, F.FireIceConfig())
+        check(len(skipped) == 1 and "no BEYOND is configured" in skipped[0],
+              f"a bench with no lasers starts: {skipped}")
+        # Re-review P2-h: beyond_timecode_ip and the show file's BEYOND
+        # must be the same address.
+        try:
+            F.beyond_timecode_route(good, "127.0.0.3",
+                                    timecode_ip="127.0.0.3")
+            check(False, "a BEYOND elsewhere than beyond_timecode_ip passed")
+        except F.FireIceConfigError as e:
+            check("must be the same address" in str(e) and
+                  "127.0.0.2" in str(e) and "127.0.0.3" in str(e),
+                  f"refused in a sentence naming both: {e}")
+        check(F.beyond_timecode_route(good, "127.0.0.2",
+                                      timecode_ip="127.0.0.2") ==
+              ("BEYOND", "127.0.0.2"), "the same address: fine")
         # The real `ltc serve` start refuses it before binding anything.
         import contextlib
         import io
@@ -31692,7 +31721,9 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
         if n.S is None:
             return
         control = web_mod.Control(folder, sd=FakeSD())
-        w = F.attach(n.svc, control, F.FireIceConfig(), threaded=False)
+        lines = []
+        w = F.attach(n.svc, control, F.FireIceConfig(), threaded=False,
+                     journal=lambda text, **k: lines.append(text))
         try:
             g = w.devices.beyond.gate
             check(g.ip is None, "setup: the gate has no address yet")
@@ -31707,6 +31738,26 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
             except SessionError as e:
                 check("will not start" in str(e) and "broadcast" in str(e),
                       f"Run refuses it: {e}")
+            # Re-review P1-B: a check that cannot be made refuses.
+            p = show_file("bad", {"source": "artnet_master", "artnet": {
+                "nodes": {"BEYOND": "not an address"}}})
+            try:
+                control.before_open(p)
+                check(False, "Run must refuse a show whose route check "
+                             "could not be made")
+            except SessionError as e:
+                check("will not start" in str(e) and
+                      "could not be checked" in str(e),
+                      f"Run refuses it: {e}")
+            # Re-review P2-a: no Art-Net timecode: Run goes on, journaled.
+            n_lines = len(lines)
+            p = show_file("bad", None)
+            check(control.before_open(p) == {} and any(
+                "no BEYOND timecode to keep dark" in t
+                for t in lines[n_lines:]),
+                f"a show with no Art-Net timecode runs, and the journal "
+                f"says the black zone is not used for it: "
+                f"{lines[n_lines:]}")
         finally:
             w.close()
     finally:

@@ -7218,35 +7218,10 @@ def build():
   '    if art.broadcast:\n        raise FireIceConfigError(',
   '    if False:\n        raise FireIceConfigError('),
 
- ('review43: a show file with no BEYOND route passes the check',
-  'ltcplay/fire_ice.py',
-  '    if len(hits) == 1:\n        return hits[0]\n    if not hits:\n        raise',
-  '    if len(hits) == 1:\n        return hits[0]\n    if not hits:\n        return (None, None)\n        raise'),
-
- ('review43: two BEYOND routes pass the check',
-  'ltcplay/fire_ice.py',
-  '    if len(hits) == 1:\n        return hits[0]',
-  '    if len(hits) >= 1:\n        return hits[0]'),
-
- ('review43: a show file with no Art-Net timecode passes the BEYOND check',
-  'ltcplay/fire_ice.py',
-  '    if art is None:\n        raise FireIceConfigError(',
-  '    if art is None:\n        return (None, None)\n        raise FireIceConfigError('),
-
- ("review43: ltc serve never checks BEYOND's timecode routes",
-  'ltcplay/cli.py',
-  '            fire_ice_mod.check_beyond_timecode_routes(\n',
-  '            (lambda *a: None)(\n'),
-
  ("review43: Run never checks BEYOND's timecode route",
   'ltcplay/fire_ice.py',
   '        opens.append(laser_check)\n',
   '        pass\n'),
-
- ("review43: the gate never takes the show file's BEYOND address",
-  'ltcplay/fire_ice.py',
-  '            _gate.adopt(ip)\n',
-  '            pass\n'),
 
  # -- review of PR #43: P0-3, a restore never outruns an Abort's blank --
  ("review43: the gate lights whatever blank ran since the restore's check",
@@ -7442,6 +7417,52 @@ def build():
   'ltcplay/remote.py',
   '            lasers = self._lasers_dark_now()\n',
   '            lasers = (None, "")\n'),
+
+ # -- review of PR #43 P0-2 re-anchored, and re-review P1-B, P2-a, P2-h: the BEYOND route check --
+ ('review43: a show file with no BEYOND route passes the check',
+  'ltcplay/fire_ice.py',
+  '    if not hits and not lasers:\n        return None\n    if not hits:\n        raise',
+  '    if not hits and not lasers:\n        return None\n    if not hits:\n        return None\n        raise'),
+
+ ('review43: two BEYOND routes pass the check',
+  'ltcplay/fire_ice.py',
+  '    if len(hits) == 1:\n        if timecode_ip',
+  '    if len(hits) >= 1:\n        if timecode_ip'),
+
+ ("review43: ltc serve never checks BEYOND's timecode routes",
+  'ltcplay/cli.py',
+  '            for _line in fire_ice_mod.check_beyond_timecode_routes(\n',
+  '            for _line in (lambda *a: [])(\n'),
+
+ ("review43: the gate never takes the show file's BEYOND address",
+  'ltcplay/fire_ice.py',
+  '            _gate.adopt(got[1])\n',
+  '            pass\n'),
+
+ ('rereview: a BEYOND route check that cannot be made passes the show',
+  'ltcplay/fire_ice.py',
+  '            except Exception as e:\n                # Re-review P1-B',
+  '            except Exception as e:\n                return None\n                # Re-review P1-B'),
+
+ ('rereview: a show with no Art-Net timecode stops serve again',
+  'ltcplay/fire_ice.py',
+  '    if art is None:\n        return None\n    if art.broadcast:',
+  '    if art is None:\n        raise FireIceConfigError("no timecode")\n    if art.broadcast:'),
+
+ ('rereview: a bench with no lasers stops serve again',
+  'ltcplay/fire_ice.py',
+  '    if not hits and not lasers:\n        return None\n',
+  ''),
+
+ ("rereview: beyond_timecode_ip and the show file's BEYOND may differ",
+  'ltcplay/fire_ice.py',
+  '        if timecode_ip and hits[0][1] != timecode_ip:',
+  '        if False:'),
+
+ ('rereview: a show passed over for its laser route is not journaled',
+  'ltcplay/fire_ice.py',
+  '                if journal is not None:\n                    journal(no_route_sentence(',
+  '                if False:\n                    journal(no_route_sentence('),
 
 ]
 

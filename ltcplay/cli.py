@@ -1288,9 +1288,10 @@ def _cmd_serve(args):
             fire_ice_mod.check_flame_groups(
                 os.path.abspath(args.folder or settings_mod.folder()),
                 fire_ice)
-            fire_ice_mod.check_beyond_timecode_routes(
-                os.path.abspath(args.folder or settings_mod.folder()),
-                fire_ice)
+            for _line in fire_ice_mod.check_beyond_timecode_routes(
+                    os.path.abspath(args.folder or settings_mod.folder()),
+                    fire_ice):
+                print(f"Lasers: {_line}")
         except ValueError as e:
             return _err(str(e))
     announce = None
