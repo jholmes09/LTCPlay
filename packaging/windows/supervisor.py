@@ -714,29 +714,37 @@ def refusal_page(text):
     return path
 
 
-def say_engine_refused(text, said):
-    """Logged, and put on the rack screen, once per distinct sentence."""
+def say_engine_refused(text, said, show=None):
+    """Logged, and put on the rack screen, once per distinct sentence.
+    `show` opens the page (show_refusal_page, which starts a browser);
+    the selftest passes its own so no browser is started on a runner."""
     if not text or text == said[0]:
         return False
     said[0] = text
     log(f"the engine refused to start: {text}")
     try:
         page = refusal_page(text)
-        if ltcwin.WINDOWS:
-            cmd = rack_page_command(0, load_settings().get("page_monitor", 1),
-                                    monitors(), edge_exe(),
-                                    os.path.join(appdata_dir(),
-                                                 "rack-screen"))
-            if cmd:
-                cmd[2] = "file:///" + page.replace("\\", "/")
-                subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, close_fds=True)
-            else:
-                os.startfile(page)
+        (show or show_refusal_page)(page)
     except Exception as e:
         log(f"could not show the engine's refusal on the rack screen: {e}")
     return True
+
+
+def show_refusal_page(page):
+    """The refusal page full screen on the rack monitor (Edge kiosk), or in
+    the default browser."""
+    if not ltcwin.WINDOWS:
+        return
+    cmd = rack_page_command(0, load_settings().get("page_monitor", 1),
+                            monitors(), edge_exe(),
+                            os.path.join(appdata_dir(), "rack-screen"))
+    if cmd:
+        cmd[2] = "file:///" + page.replace("\\", "/")
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+    else:
+        os.startfile(page)
 
 
 def run_loop(open_page=False):

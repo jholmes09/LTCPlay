@@ -11671,7 +11671,11 @@ def test_windows_supervisor_end_of_session_and_engine_refusal():
         check(SUP.engine_refusal(t0) == "",
               "an old refusal from an earlier start is not this one")
         said = [""]
-        check(SUP.say_engine_refused(why, said) and
+        shown = []
+        # Never a real browser on a test runner (it left Edge's files in
+        # the run's temp folder on windows-latest, #48).
+        check(SUP.say_engine_refused(why, said, show=shown.append) and
+              shown and
               any("refused to start" in l and "flamesafe configs" in l
                   for l in logged), f"logged: {logged}")
         page = os.path.join(SUP.appdata_dir(), "engine-refused.html")
@@ -11679,7 +11683,8 @@ def test_windows_supervisor_end_of_session_and_engine_refusal():
               open(page, encoding="utf-8").read(),
               "and a page for the rack screen says it")
         n = len(logged)
-        check(not SUP.say_engine_refused(why, said) and len(logged) == n,
+        check(not SUP.say_engine_refused(why, said, show=shown.append) and
+              len(logged) == n and len(shown) == 1,
               "the same refusal is said once, not at every restart")
         src = open(SUP.__file__, encoding="utf-8").read()
         check("            leave_at_end_of_session(ending)\n" in src and
