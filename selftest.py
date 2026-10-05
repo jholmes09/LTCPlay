@@ -33691,7 +33691,7 @@ def test_onlyone_named_lock_is_machine_wide_or_says_so():
     from ltcplay import onlyone as O
     made, warned = [], []
 
-    def run(results):
+    def run(results, there=None):
         it = iter(results)
         cur = [None]
 
@@ -33700,7 +33700,8 @@ def test_onlyone_named_lock_is_machine_wide_or_says_so():
             cur[0] = next(it)
             return cur[0][0]
         return O._named_mutex("ltcplay-x.lock", create,
-                              lambda: cur[0][1], warn=warned.append)
+                              lambda: cur[0][1], warn=warned.append,
+                              exists=there)
     got = run([(77, 0)])
     check(got == (77, False) and made == ["Global\\ltcplay-x.lock"] and
           not warned, f"Global\\ first, and that is all: {got} {made}")
@@ -33708,11 +33709,21 @@ def test_onlyone_named_lock_is_machine_wide_or_says_so():
     got = run([(77, O.ERROR_ALREADY_EXISTS)])
     check(got == (77, True), f"a copy in this session: running: {got}")
     del made[:]
-    got = run([(0, O.ERROR_ACCESS_DENIED)])
+    got = run([(0, O.ERROR_ACCESS_DENIED)], there=lambda full: True)
     check(got == (None, True) and made == ["Global\\ltcplay-x.lock"] and
           not warned,
-          f"another user's copy (access denied) is running, and never a "
-          f"reason to fall back to Local\\: {got} {made}")
+          f"another user's copy (access denied, and the mutex is there) is "
+          f"running, and never a reason to fall back to Local\\: {got} "
+          f"{made}")
+    del made[:]
+    got = run([(0, O.ERROR_ACCESS_DENIED), (88, 0)],
+              there=lambda full: False)
+    check(got == (88, False) and made[-1] == "Local\\ltcplay-x.lock" and
+          warned and "falls back to Local" in warned[-1],
+          f"access denied with no such mutex anywhere (this account may not "
+          f"make Global\\ names) is NOT a running copy: Local\\, loudly: "
+          f"{got} {warned[-1:]}")
+    del warned[:]
     del made[:]
     got = run([(0, 1450), (88, 0)])
     check(got == (88, False) and made[-1] == "Local\\ltcplay-x.lock" and
@@ -33724,6 +33735,46 @@ def test_onlyone_named_lock_is_machine_wide_or_says_so():
     got = run([(0, 1450), (0, 1450)])
     check(got is None and len(warned) == 2,
           f"neither: the file lock alone, and said: {warned}")
+    # The same lock file: the refusal is the running copy's own note (who,
+    # the show, the port), not the named mutex's generic sentence.
+    held = {}
+
+    def fake_create(name):
+        held[name] = held.get(name, 0) + 1
+        return name, held[name] > 1
+
+    def fake_close(h):
+        held[h] -= 1
+    saved = (O.NAMED, O._create_named, O._close_named)
+    O.NAMED, O._create_named, O._close_named = True, fake_create, fake_close
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp()
+    try:
+        first = O.OutputLock(where=os.path.join(d, O.SHOW_LOCK),
+                             note="pid 4242: ltc serve, show Ignite").acquire()
+        try:
+            O.OutputLock(where=os.path.join(d, O.SHOW_LOCK)).acquire()
+            check(False, "a second copy on the same lock file must refuse")
+        except O.AlreadyRunning as e:
+            check("Ignite" in str(e.holder) and "4242" in str(e.holder),
+                  f"the refusal carries the running copy's note: "
+                  f"{e.holder!r}")
+        check(held.get("ltcplay-" + O.SHOW_LOCK) == 1,
+              f"and the refused copy let go of its mutex handle: {held}")
+        first.release()
+    finally:
+        O.NAMED, O._create_named, O._close_named = saved
+        shutil.rmtree(d, ignore_errors=True)
+    import warnings
+    src = open(O.__file__, encoding="utf-8").read()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            compile(src, O.__file__, "exec")
+            check(True, "")
+        except SyntaxError as e:
+            check(False, f"onlyone.py compiles with no warning: {e}")
     # A lock whose mutex another user holds refuses, closing nothing.
     saved = (O.NAMED, O._create_named, O._close_named)
     closed = []
