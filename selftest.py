@@ -29313,7 +29313,12 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     svc._apply(_op(S, S.HOLD_ON))
     svc._apply(_op(S, S.RESUME))
     c_ = time.perf_counter() - t0
-    check(a < 0.2 and b < 0.2 and c_ < 0.2,
+    # Each press waiting for the conductor would take 0.6 s or more (its
+    # requests here sleep 0.6 s), so anything well under that proves none
+    # waited. The bound used to be 0.2 s, which also timed the presses'
+    # own tonight.json saves: two fsyncs on a windows-latest runner's disk
+    # came to 0.22 s on #46 with nothing waiting on the conductor.
+    check(a < 0.45 and b < 0.45 and c_ < 0.45,
           f"nothing waits for a 0.6 s conductor: confirm {a:.2f} s, a "
           f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
     _settle(svc)
