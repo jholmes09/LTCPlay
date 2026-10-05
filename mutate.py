@@ -7256,8 +7256,8 @@ def build():
 
  ("review43: a blank does not move the gate's blank epoch",
   'ltcplay/beyondtc.py',
-  '            self._blank_epoch += 1\n',
-  '            pass\n'),
+  '            self._blank_epoch += 1\n            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        return self.send_black()',
+  '            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        return self.send_black()'),
 
  ('review43: the restore reads the blank epoch only as it lights',
   'ltcplay/beyondtc.py',
@@ -7356,6 +7356,27 @@ def build():
   'ltcplay/streamdeck.py',
   '        elif cues_fault:\n            # Review of PR #43, P1-3',
   '        elif False:\n            # Review of PR #43, P1-3'),
+
+ # -- review of PR #43: P1-1, the lasers dark when the engine stops --
+ ('review43: closing the BEYOND timecode gate sends no black frames',
+  'ltcplay/beyondtc.py',
+  '        sent = self.black_burst()\n',
+  '        sent = 0\n'),
+
+ ('review43: the closing black frames go out in one burst',
+  'ltcplay/beyondtc.py',
+  '            if i:\n                sleep(1.0 / FPS)\n',
+  ''),
+
+ ("review43: the engine's stop does not blank the lasers first",
+  'ltcplay/cli.py',
+  '    _lasers_dark_first(httpd)\n',
+  ''),
+
+ ('review43: the closing black frames leave the gate lit',
+  'ltcplay/beyondtc.py',
+  '        with self._lock:\n            self._blank_epoch += 1\n            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        sent = 0\n',
+  '        sent = 0\n'),
 
 ]
 

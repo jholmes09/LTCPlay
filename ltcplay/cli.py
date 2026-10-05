@@ -1400,12 +1400,33 @@ def _cmd_serve(args):
     return 0
 
 
+def _lasers_dark_first(httpd):
+    """Fire & Ice: BEYOND's timecode into the black zone, a few black frames
+    over about 100 ms, before anything else on the way out (review of PR
+    #43, P1-1). Ctrl-C, a closed console window and the Windows app's stop
+    (Ctrl-Break, and a shutdown's WM_QUERYENDSESSION) all come through
+    here. The gate sends them again when it closes."""
+    gate = getattr(getattr(getattr(getattr(httpd, "fire_ice", None),
+                                   "devices", None), "beyond", None),
+                   "gate", None)
+    if gate is None:
+        return
+    try:
+        sent = gate.black_burst()
+        print(f"Lasers: BEYOND's timecode sent to the black zone "
+              f"({sent} black frame(s)).")
+    except Exception as e:
+        print(f"Lasers: the black zone could NOT be sent on the way out "
+              f"({e}). Check the lasers are dark.")
+
+
 def _shutdown(httpd):
     """The way out, in the order that keeps the rig safe: the show's own
     stop (the blackout) first, then the announcements, then the scheduler
     and its journal, which may be waiting on a disk, then the page. Nothing that writes a log may
     stand between Ctrl-C and the blackout. The scheduler's ticking is
     halted before the rig stops, so no tick can start anything after it."""
+    _lasers_dark_first(httpd)
     halt = getattr(httpd.schedule, "halt", None)
     if halt is not None:
         try:

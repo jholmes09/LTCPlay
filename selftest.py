@@ -31807,6 +31807,63 @@ def test_beyond_restore_never_outruns_an_abort_blank():
     print("  ok")
 
 
+def test_beyond_lasers_dark_when_the_engine_stops():
+    section("fire & ice: when the engine stops (Ctrl-C, a closed console, the "
+            "Windows app's stop), BEYOND's timecode goes to the black zone "
+            "first, a few black frames over about 100 ms, and again as the "
+            "gate closes (review of PR #43, P1-1)")
+    import types
+    from ltcplay import beyondtc as BT, cli as _cli
+    sent, lines = [], []
+    gate = BT.TimecodeGate("127.0.0.2", socket_factory=lambda: _TcSock(sent),
+                           journal=lambda text, **k: lines.append(
+                               (text, k.get("fault", False))))
+    gate.light()
+    t0 = time.monotonic()
+    gate.close()
+    took = time.monotonic() - t0
+    black = [p for p, _a in sent if BT.tc_of(p)[0] == 23]
+    check(len(black) == BT.CLOSE_BLACK_FRAMES >= 3 and gate.lit is False,
+          f"closing sends {BT.CLOSE_BLACK_FRAMES} black frames and leaves "
+          f"the gate dark: {len(black)} lit={gate.lit}")
+    check(0.06 <= took < 1.0,
+          f"spread over about 100 ms, not one burst: {took:.3f} s")
+    check(any("black frames sent last" in t and not f for t, f in lines),
+          f"journaled: {lines[-1:]}")
+    nowhere = BT.TimecodeGate(None, journal=lambda text, **k: lines.append(
+        (text, k.get("fault", False))))
+    nowhere.close()
+    check(lines[-1][1] and "check the lasers are dark" in lines[-1][0],
+          f"a close that could send no black frame is a fault: {lines[-1]}")
+    # The engine's way out: the black zone before anything else stops.
+    order = []
+    sent2 = []
+    g2 = BT.TimecodeGate("127.0.0.2", socket_factory=lambda: _TcSock(sent2))
+    g2.light()
+    real_black = g2.send_black
+
+    def black():
+        order.append("black")
+        return real_black()
+    g2.send_black = black
+    httpd = types.SimpleNamespace(
+        schedule=None, loopback=None,
+        control=types.SimpleNamespace(stop=lambda: order.append("stop")),
+        fire_ice=types.SimpleNamespace(devices=types.SimpleNamespace(
+            beyond=types.SimpleNamespace(gate=g2))),
+        server_close=lambda: order.append("close"))
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        _cli._shutdown(httpd)
+    check(order[:BT.CLOSE_BLACK_FRAMES] == ["black"] *
+          BT.CLOSE_BLACK_FRAMES and order.index("stop") ==
+          BT.CLOSE_BLACK_FRAMES and g2.lit is False,
+          f"the engine's stop sends the black frames before it stops the "
+          f"show: {order}")
+    print("  ok")
+
+
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
@@ -38710,6 +38767,7 @@ if __name__ == "__main__":
     test_beyond_timecode_blanking()
     test_beyond_timecode_needs_one_route_through_the_gate()
     test_beyond_restore_never_outruns_an_abort_blank()
+    test_beyond_lasers_dark_when_the_engine_stops()
     test_fire_ice_serves_the_rack_screen_not_the_old_page()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()

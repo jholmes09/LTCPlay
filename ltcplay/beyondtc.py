@@ -37,6 +37,10 @@ MODES = ("timecode", "osc", "both")
 DEFAULT_MODE = "timecode"
 DEFAULT_BLACK_HOUR = 23
 FPS = 30                         # clock.MASTER_FPS
+# Black frames sent when the gate closes (the engine stopping, Ctrl-C, a
+# console closed, a Windows shutdown): four, one frame apart, about 100 ms,
+# so BEYOND is left in the black zone and not on the last show frame.
+CLOSE_BLACK_FRAMES = 4
 ARTNET_PORT = 6454
 LABEL = "beyond"                 # clock.artnet.nodes name, any case
 
@@ -229,6 +233,22 @@ class TimecodeGate:
         self._thread.start()
         return self
 
+    def black_burst(self, frames=CLOSE_BLACK_FRAMES, sleep=time.sleep):
+        """Into the black zone and `frames` black frames, one frame apart:
+        the last thing BEYOND hears from this program is dark (review of
+        PR #43, P1-1). Returns how many went out."""
+        with self._lock:
+            self._blank_epoch += 1
+            if self.lit:
+                self.lit = False
+                self._zone_start = self._clock()
+        sent = 0
+        for i in range(frames):
+            if i:
+                sleep(1.0 / FPS)
+            sent += 1 if self.send_black() else 0
+        return sent
+
     def close(self):
         for k in [k for k, v in _clock().DIVERT.items()
                   if v == self.divert]:
@@ -236,6 +256,14 @@ class TimecodeGate:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(2)
+        # The engine is stopping: nothing will keep BEYOND in the black zone
+        # after this, so leave it there (review of PR #43, P1-1).
+        sent = self.black_burst()
+        self._note(f"BEYOND's timecode stream closed: {sent} of "
+                   f"{CLOSE_BLACK_FRAMES} black frames sent last"
+                   + ("." if sent else ", so BEYOND may be left on the last "
+                      "frame it was sent: check the lasers are dark."),
+                   fault=not sent, outcome="closed")
         if self._sock is not None:
             try:
                 self._sock.close()
