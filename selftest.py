@@ -10866,6 +10866,61 @@ def _winpkg():
     return ltcwin, supervisor, done
 
 
+def test_windows_supervisor_lock_is_machine_wide():
+    section("Windows app: the supervisor's single-copy lock is a Global\\ "
+            "mutex, so a second supervisor in another Windows session or "
+            "for another user sees the first (locked decision 21)")
+    import ctypes
+    W, SUP, gone = _winpkg()
+    real_err = getattr(ctypes, "get_last_error", None)
+    try:
+        check(SUP.MUTEX_NAME == "Global\\LTCPlayerSupervisor",
+              f"the name is in the Global namespace: {SUP.MUTEX_NAME!r}")
+        made, err = [], [0]
+
+        class K:
+            class _F:
+                def __init__(self, fn):
+                    self.fn = fn
+
+                def __call__(self, *a):
+                    return self.fn(*a)
+            def __init__(self, handle, e):
+                self.CreateMutexW = K._F(lambda sa, own, name: (
+                    made.append(name), err.__setitem__(0, e), handle)[2])
+                self.OpenMutexW = K._F(lambda acc, inh, name: (
+                    made.append(name), err.__setitem__(0, e), handle)[2])
+                self.CloseHandle = K._F(lambda h: True)
+        ctypes.get_last_error = lambda: err[0]
+        was_win, was_k32 = W.WINDOWS, SUP._k32
+        W.WINDOWS = True
+        try:
+            SUP._k32 = lambda: K(0, 5)          # another user's supervisor
+            check(SUP.take_mutex() is False and
+                  made[-1] == "Global\\LTCPlayerSupervisor",
+                  "a lock another user's supervisor holds (access denied) "
+                  "means one is running: this one does not start")
+            check(SUP.supervisor_running() is True,
+                  "and it reads as running")
+            SUP._k32 = lambda: K(0, 2)
+            check(SUP.supervisor_running() is False,
+                  "no such lock anywhere: not running")
+            SUP._k32 = lambda: K(1234, 183)
+            check(SUP.take_mutex() is False, "already exists: not started")
+            SUP._k32 = lambda: K(1234, 0)
+            check(SUP.take_mutex() is True, "made fresh: this is the one")
+        finally:
+            W.WINDOWS, SUP._k32 = was_win, was_k32
+            SUP._MUTEX = None
+    finally:
+        if real_err is None:
+            del ctypes.get_last_error
+        else:
+            ctypes.get_last_error = real_err
+        gone()
+    print("  ok")
+
+
 def test_windows_shutdown_stops_the_show_programs_cleanly():
     section("Windows app: a shutdown or sign-out (WM_QUERYENDSESSION, "
             "WM_ENDSESSION) gives flamesafe, the engine and the supervisor "
@@ -26905,6 +26960,7 @@ if __name__ == "__main__":
     test_schedule_routes()
     test_the_gpl_path_never_loads_the_scheduler()
     test_windows_shutdown_stops_the_show_programs_cleanly()
+    test_windows_supervisor_lock_is_machine_wide()
     test_the_scheduler_engine_is_pure()
     test_schedule_restart_keeps_tonight()
     test_schedule_clock_check_never_delays_a_show()

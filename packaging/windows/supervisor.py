@@ -59,7 +59,12 @@ import urllib.request
 
 import ltcwin
 
-MUTEX_NAME = "LTCPlayerSupervisor"
+# Global\, not the session's own namespace (locked decision 21): a second
+# supervisor started in another Windows session (a second sign-in, Remote
+# Desktop, a task running as another user) must see the first one too, or two
+# would start two sets of show programs.
+MUTEX_NAME = "Global\\LTCPlayerSupervisor"
+ERROR_ACCESS_DENIED = 5
 TASK_NAME = "LTC Player"
 DEFAULT_PORT = 7878
 STOP_WAIT_S = 20.0
@@ -224,6 +229,12 @@ def take_mutex():
     h = k.CreateMutexW(None, False, MUTEX_NAME)
     err = ctypes.get_last_error()
     if not h:
+        # ERROR_ACCESS_DENIED: another user's supervisor made it, so one is
+        # running. Anything else: it could not be made, and one supervisor
+        # must never be started on a guess.
+        if err != ERROR_ACCESS_DENIED:
+            log(f"the supervisor's lock {MUTEX_NAME} could not be made "
+                f"(error {err}); not starting a second one on a guess")
         return False
     if err == 183:          # ERROR_ALREADY_EXISTS
         k.CloseHandle(ctypes.c_void_p(h))
@@ -242,7 +253,8 @@ def supervisor_running():
     if h:
         k.CloseHandle(ctypes.c_void_p(h))
         return True
-    return False
+    # Another user's supervisor holds it: there, but not ours to open.
+    return ctypes.get_last_error() == ERROR_ACCESS_DENIED
 
 
 _HANDLER = []

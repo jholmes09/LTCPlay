@@ -4705,6 +4705,17 @@ def build():
   '    ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)\n',
   '    pass\n'),
 
+ # -- review of PR #38: P2, the supervisor's lock is machine wide --
+ ("review38: the supervisor's lock is per Windows session again",
+  'packaging/windows/supervisor.py',
+  'MUTEX_NAME = "Global\\\\LTCPlayerSupervisor"',
+  'MUTEX_NAME = "LTCPlayerSupervisor"'),
+
+ ("review38: another user's supervisor reads as not running",
+  'packaging/windows/supervisor.py',
+  '    return ctypes.get_last_error() == ERROR_ACCESS_DENIED',
+  '    return False'),
+
 ]
 
 
