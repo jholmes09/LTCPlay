@@ -58,18 +58,24 @@ def _warn(text):
         pass
 
 
-def _named_mutex(name, create, last_error, warn=_warn):
-    """(handle or None, already_existed) for the named mutex `name`, or None
+ERROR_FILE_NOT_FOUND = 2
+
+
+def _named_mutex(name, create, last_error, warn=_warn, exists=None):
+    r"""(handle or None, already_existed) for the named mutex `name`, or None
     when it cannot be made at all (the file lock still guards). Global\
-    first, so a copy in any Windows session or for any user is seen. A
-    Global\ name another user's process holds answers "access denied":
-    that means it EXISTS, and is never a reason to fall back. Only another
-    failure falls back to Local\ (this sign-in only), and says so."""
+    first, so a copy in any Windows session or for any user is seen. When
+    Global\ is refused, `exists(full_name)` asks whether it is there at all
+    (OpenMutexW): one another user's process holds is refused to us too,
+    and that means another copy is RUNNING, never a reason to fall back.
+    Only a Global\ name that is not there and cannot be made falls back to
+    Local\ (this sign-in only), and says so."""
     h = create("Global\\" + name)
     err = last_error()
     if h:
         return h, err == ERROR_ALREADY_EXISTS
-    if err == ERROR_ACCESS_DENIED:
+    if err == ERROR_ACCESS_DENIED and exists is not None and \
+            exists("Global\\" + name):
         return None, True
     warn(f"the single-copy lock {name} could not be made machine wide "
          f"(Global\\, Windows error {err}), so it falls back to Local\\: "
@@ -93,9 +99,21 @@ def _win_create_named(name):
     k32.CreateMutexW.restype = wintypes.HANDLE
     k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
                                  wintypes.LPCWSTR)
+    k32.OpenMutexW.restype = wintypes.HANDLE
+    k32.OpenMutexW.argtypes = (wintypes.DWORD, wintypes.BOOL,
+                               wintypes.LPCWSTR)
+
+    def exists(full):
+        """True when `full` names a mutex that is there, even one we may
+        not open (another user's): only "not found" means it is not."""
+        h = k32.OpenMutexW(0x00100000, False, full)       # SYNCHRONIZE
+        if h:
+            k32.CloseHandle(h)
+            return True
+        return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
     return _named_mutex(name, lambda full: k32.CreateMutexW(None, False,
                                                             full),
-                        ctypes.get_last_error)
+                        ctypes.get_last_error, exists=exists)
 
 
 def _win_close_named(handle):
@@ -177,14 +195,26 @@ class OutputLock:
 
     def acquire(self):
         if NAMED:
-            self._take_named()
+            # The named mutex is taken first, but a copy it finds is named
+            # by the lock FILE when that file is the same one: its holder
+            # note says who is running (the show, the port, the command).
+            # Only a copy whose files went elsewhere (another app's
+            # container) gets the named mutex's own sentence.
+            busy = None
             try:
-                if WINDOWS:
-                    return self._acquire_windows()
-                return self._acquire_posix()
+                self._take_named()
+            except AlreadyRunning as e:
+                busy = e
+            try:
+                got = (self._acquire_windows() if WINDOWS
+                       else self._acquire_posix())
             except BaseException:
                 self._drop_named()
                 raise
+            if busy is not None:
+                self.release()
+                raise busy
+            return got
         if WINDOWS:
             return self._acquire_windows()
         return self._acquire_posix()

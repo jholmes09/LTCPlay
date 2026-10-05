@@ -7406,11 +7406,6 @@ def build():
   '        snap["latched"] = bool(snap.get("latched"))'),
 
  # -- review of PR #38: P2, the single-copy lock is machine wide or says so --
- ("review38: another user's copy makes the lock fall back to Local",
-  'ltcplay/onlyone.py',
-  '    if err == ERROR_ACCESS_DENIED:\n        return None, True\n',
-  ''),
-
  ('review38: the fall back to Local is quiet',
   'ltcplay/onlyone.py',
   '    warn(f"the single-copy lock {name} could not be made machine wide "',
@@ -7420,6 +7415,27 @@ def build():
   'ltcplay/onlyone.py',
   '    h = create("Global\\\\" + name)',
   '    h = create("Local\\\\" + name)'),
+
+ # -- review of PR #38: P2, CI fix: a refused Global name is a running copy only if it is there; the file's note wins --
+ ("review38: another user's copy makes the lock fall back to Local",
+  'ltcplay/onlyone.py',
+  '    if err == ERROR_ACCESS_DENIED and exists is not None and \\\n            exists("Global\\\\" + name):\n        return None, True\n',
+  ''),
+
+ ('review38: a refused Global name is a running copy even when it is not there',
+  'ltcplay/onlyone.py',
+  '    if err == ERROR_ACCESS_DENIED and exists is not None and \\\n            exists("Global\\\\" + name):',
+  '    if err == ERROR_ACCESS_DENIED:'),
+
+ ("review38: the named mutex's sentence hides the running copy's note",
+  'ltcplay/onlyone.py',
+  '            busy = None\n            try:\n                self._take_named()\n            except AlreadyRunning as e:\n                busy = e\n',
+  '            busy = None\n            self._take_named()\n'),
+
+ ('review38: onlyone.py has an invalid escape in a docstring again',
+  'ltcplay/onlyone.py',
+  '    r"""(handle or None, already_existed)',
+  '    """(handle or None, already_existed)'),
 
 ]
 
