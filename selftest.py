@@ -11839,6 +11839,20 @@ def _windows_end_session_window_check(W):
     u32.PostMessageW(th.hwnd, 0x0012, 0, 0)          # WM_QUIT
 
 
+def _flamesafe_said(proc, out_f, work):
+    """What a flamesafe the selftest started has said so far, for a failure
+    message: whether it is still running, its exit code, and its output."""
+    rc = proc.poll()
+    try:
+        out_f.flush()
+        said = open(os.path.join(work, "flamesafe.out"),
+                    encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        said = f"(its output could not be read: {e})"
+    state = "still running" if rc is None else f"exited {rc}"
+    return f"{state}; it said: {said.strip()[-1500:] or '(nothing)'}"
+
+
 def _windows_flamesafe_stops_at_query_end_session(W):
     """Windows: the real flamesafe entry, from source, puts its zeros and
     the stream-terminated flag on the wire when its window is sent
@@ -11901,16 +11915,28 @@ def _windows_flamesafe_stops_at_query_end_session(W):
         while not found and time.monotonic() < deadline:
             u32.EnumWindows(cb, 0)
             time.sleep(0.1)
-        check(found, "flamesafe made its shutdown window")
+        check(found, "flamesafe made its shutdown window"
+                     + ("" if found else ": " + _flamesafe_said(proc, out_f,
+                                                               work)))
         if not found:
             return
         # Its SIGBREAK handler is in place once it is sending: wait for a
-        # first packet before asking it to stop.
-        rx.settimeout(10.0)
-        try:
-            rx.recv(1024)
-        except OSError:
-            check(False, "flamesafe never started sending")
+        # first packet before asking it to stop. Event-based: the first
+        # packet ends the wait, flamesafe exiting ends it with what it
+        # said, and the deadline is only for a real hang (a loaded
+        # windows-latest went past a fixed 10 s on #47).
+        first = None
+        deadline = time.monotonic() + 60
+        rx.settimeout(0.25)
+        while first is None and time.monotonic() < deadline:
+            try:
+                first = rx.recv(1024)
+            except OSError:
+                if proc.poll() is not None:
+                    break
+        if first is None:
+            check(False, "flamesafe never started sending: "
+                         + _flamesafe_said(proc, out_f, work))
             return
         # Drain what it sent while running. Bounded by what is queued NOW:
         # flamesafe sends 40 packets a second, so "until a recv times out"
