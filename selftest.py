@@ -38400,12 +38400,15 @@ def test_screen_arm_end_to_end_probes():
     def status_now():
         return http("/api/remote/status", cookie=andy)[1]
 
+    whys = {}
+
     def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
              during=None):
         """Hold like the page: a heartbeat every 100 ms, each after the
         last answered, with the latest status's served_at."""
         hid, end = None, time.perf_counter() + seconds
         started = time.perf_counter()
+        why = whys.setdefault(group, [])
         answers = []
         while time.perf_counter() < end:
             if drop_at is not None and \
@@ -38422,6 +38425,8 @@ def test_screen_arm_end_to_end_probes():
             code, out, _h = http("/api/remote/arm-hold", body, cookie)
             answers.append(code)
             if code != 200:
+                why.append((round(time.perf_counter() - started, 2),
+                            out.get("error")))
                 break
             hid = out["hold_id"]
             time.sleep(0.1)
@@ -38463,7 +38468,9 @@ def test_screen_arm_end_to_end_probes():
             time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
                         f"wire: {status.last and status.last['groups'][0]}; "
-                        f"the engine's answers to each hold: {tries}")
+                        f"the engine's answers to each hold: {tries}; "
+                        f"why each ended: {whys.get('front row')}; the "
+                        f"deck's lines: {events[-6:]}")
         check(any("arm pressed (held 1 s on the iPad) by Andy" in e
                   for e in events), "and the deck journaled who and where")
         # Disarm it from the page: a tap through the deck.
