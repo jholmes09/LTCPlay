@@ -16,10 +16,11 @@ The exerciser presses only the real paths, with the real consent rules:
   - Hold, Resume, Abort and Reset go through the same screen routes a
     person presses.
 
-Each show (the bench schedule's 100 s show): arm every group not armed at
-ARM_AT_S into the show, Hold at HOLD_AT_S for HOLD_FOR_S, then Resume; on
-every ABORT_EVERY-th show, Abort at ABORT_AT_S, then Reset once the
-conductor takes it. The next show arms the groups again.
+Each show (a full-length bench show, 7 min 24 s by default): arm every
+group not armed at ARM_AT_S into the show, Hold every 2 minutes from 30 s
+for HOLD_FOR_S each, then Resume; on every other show (1, 3, 5, ...),
+Abort 40 s before the end, then Reset once the conductor takes it. The
+next show arms the groups again (plan_for).
 
 SacnJudge judges every flamesafe sACN packet against what it may carry:
 a group's channels non-zero only while flamesafe reports that group armed,
@@ -37,10 +38,24 @@ import urllib.request
 OPERATOR = "Andy"
 PIN = "2468"
 ARM_AT_S = 8.0
-HOLD_AT_S = 30.0
+HOLD_AT_S = 30.0         # the first Hold; then one every HOLD_EVERY_S
+HOLD_EVERY_S = 120.0
 HOLD_FOR_S = 5.0
-ABORT_AT_S = 60.0
-ABORT_EVERY = 2          # shows 2, 4, 6, ...
+ABORT_BEFORE_END_S = 40.0  # the Abort, on every other show (1, 3, 5, ...)
+ABORT_AT_LEAST_S = 60.0
+
+
+def plan_for(show_s):
+    """(hold times, abort time) through a show `show_s` long: Holds every
+    2 minutes from 30 s, the Abort 40 s before the end (60 s at least),
+    each Hold over well before it (Jeff, 2026-10-05: a full-length show)."""
+    abort_at = max(ABORT_AT_LEAST_S, show_s - ABORT_BEFORE_END_S)
+    holds = []
+    t = HOLD_AT_S
+    while t + HOLD_FOR_S + 20.0 <= abort_at:
+        holds.append(t)
+        t += HOLD_EVERY_S
+    return holds, abort_at
 BEAT_S = 0.1             # the page's own heartbeat while a finger is down
 GRACE_S = 0.3            # a change reaching flamesafe and back
 REFRACTORY_S = 2.5       # the deck's re-arm refractory (2 s) and a margin
@@ -85,8 +100,9 @@ class Exerciser:
     name: True/False} from flamesafe's own status; `note(text)`."""
 
     def __init__(self, http, groups, show_time, show_number, armed, note,
-                 clock=time.monotonic, sleep=time.sleep):
+                 clock=time.monotonic, sleep=time.sleep, show_s=100.0):
         self.http = http
+        self.hold_at, self.abort_at = plan_for(show_s)
         self.groups = list(groups)
         self.show_time = show_time
         self.show_number = show_number
@@ -222,8 +238,10 @@ class Exerciser:
                 if not self.armed().get(g):
                     self.arm(i)
             self._close("abort")       # re-armed: an Abort's window ends
-        if t >= HOLD_AT_S and "hold" not in done:
-            done.add("hold")
+        due = [h for h in self.hold_at if t >= h and f"hold{h}" not in done]
+        if due and t < self.abort_at:
+            for h in due:
+                done.add(f"hold{h}")
             sent = time.time()
             st, doc = self.press("hold")
             if st == 200:
@@ -244,7 +262,7 @@ class Exerciser:
                 self._close("hold")
             else:
                 self._fail("Hold", doc)
-        if t >= ABORT_AT_S and k % ABORT_EVERY == 0 and "abort" not in done:
+        if t >= self.abort_at and k % 2 == 1 and "abort" not in done:
             done.add("abort")
             st, doc = self.press("abort", confirmed=True)
             if st != 200:
@@ -548,7 +566,9 @@ def self_test():
 
     def sleep(s):
         clock[0] += s
-    show = {"t": 0.0, "k": 2}
+    assert plan_for(100) == ([30.0], 60.0)
+    assert plan_for(444) == ([30.0, 150.0, 270.0], 404.0), plan_for(444)
+    show = {"t": 0.0, "k": 1}
     ex = Exerciser(http, [g[0] for g in groups],
                    show_time=lambda: show["t"], show_number=lambda: show["k"],
                    armed=lambda: dict(state["armed"]), note=lambda t: None,
@@ -576,7 +596,7 @@ def self_test():
     assert ex.in_window(time.time() + 1) == "abort"
     assert ex.in_window(time.time() + 1, ("hold", "aborted")) is None, \
         "the lasers' Abort window ends at Reset"
-    show["k"] = 3
+    show["k"] = 2
     show["t"] = 9.0
     state["armed"] = {"front row": False, "cat-walk": False}
     state["beats"] = {0: 99, 1: 99}      # still asked for: held, not armed

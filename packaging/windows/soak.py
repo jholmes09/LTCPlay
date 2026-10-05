@@ -80,8 +80,11 @@ SOAK_IP = "127.0.0.9"
 # listens there and times the black zone against the show zone.
 BEYOND_TC_IP = "127.0.0.2"
 BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
-SHOW_S = 100               # each generated show's length
-SHOW_EVERY_MIN = 3         # the bench schedule: a show every 3 minutes
+# Jeff, 2026-10-05: "Make sure your stress test is against a 7 minute
+# show, not a little short stack." The real show is about 7:20.
+SHOW_S = 444               # each generated show's length (7 min 24 s)
+SHOW_EVERY_MIN = 15        # the bench schedule: a show every 15 minutes
+GUARD_S = 30               # the schedule's guard after each show
 TC_PERIOD_MS = 1000.0 / 30  # Art-Net timecode, one packet per frame at 30
 TC_GAP_MS = 100.0          # this soak: inside a show, never 3 frames missing
 SHOW_GAP_S = 1.0           # timecode silent this long: between two shows
@@ -405,6 +408,8 @@ class Soak:
         self.tc_last_wall = None
         self.hold_continued = 0
         self.measured = ""
+        self.show_s = SHOW_S
+        self.every_min = SHOW_EVERY_MIN
         self.priority = True        # the scheduling protection (bench)
         self.window_script = False  # maximize/restore MadMapper every 2 min
         self.window_events = []     # (time, what)
@@ -471,23 +476,26 @@ class Soak:
                                           f'IP="{SOAK_IP}"').replace(
                          'ComPort="127.0.0.1"', f'ComPort="{SOAK_IP}"'))
         fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
-                      frame_count=SHOW_S * 40, channel_count=1022,
+                      frame_count=int(self.show_s * 40), channel_count=1022,
                       step_ms=25, compression="zlib", block_frames=400,
                       fill=lambda i: (i * 3) & 0xFF, media_file="bench.wav")
-        n = SHOW_S * 48000
+        n = int(self.show_s * 48000)
         amp = int(0.03 * 8388607)
+        # 440 Hz is a whole number of cycles in one second at 48 kHz, so one
+        # second is made once and written as many times as the show is long.
+        second = bytearray()
+        for k in range(48000):
+            v = int(amp * math.sin(2 * math.pi * 440 * k / 48000))
+            b = _st.pack("<i", v)[:3]
+            second += b + b
+        second = bytes(second)
         with wave.open(os.path.join(self.show_dir, "bench.wav"), "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(3)
             w.setframerate(48000)
-            step = 48000
-            for start in range(0, n, step):
-                frames = bytearray()
-                for k in range(start, min(n, start + step)):
-                    v = int(amp * math.sin(2 * math.pi * 440 * k / 48000))
-                    b = _st.pack("<i", v)[:3]
-                    frames += b + b
-                w.writeframes(bytes(frames))
+            for start in range(0, n, 48000):
+                left = min(48000, n - start)
+                w.writeframes(second[:left * 6])
         self.audio_name = self.pick_audio_device()
         doc = {"fps": 30, "show_dir": self.show_dir, "on_lost": "freerun",
                "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
@@ -540,22 +548,43 @@ class Soak:
         return None
 
     def make_schedule(self):
-        """A show every SHOW_EVERY_MIN minutes from 02:00 to midnight (a
-        show night's hours: the 2 AM nightly reset comes in between), every
-        day, in this PC's own clock time, for today and the next two days,
-        and the Fire & Ice settings that make the scheduler perform, with
-        BEYOND and MadMapper on this PC."""
+        """A show night that covers the whole run: a show every
+        `every_min` minutes, the first about 2 minutes after this soak
+        starts, every day, for today and the next two days, and the Fire &
+        Ice settings that make the scheduler perform, with BEYOND and
+        MadMapper on this PC.
+
+        A night's shows run from the 2 AM nightly reset to midnight in the
+        schedule's own time zone (schedule.py). So the schedule's zone is
+        the whole-hour UTC zone in which this run starts just after 2 AM:
+        the real scheduler, its real nightly reset and real time, with the
+        night's 22 hours ahead of the run instead of a midnight-to-2-AM gap
+        in the middle of it. Only a run longer than about 21 hours reaches
+        that night's midnight, and then the 2 hours to the next 2 AM have
+        no shows, as on any show night."""
         import datetime as _dt
+        need = self.show_s + 5 + GUARD_S
+        if self.every_min * 60 < need:
+            raise RuntimeError(
+                f"A show every {self.every_min:g} minutes does not fit a "
+                f"{self.show_s:g} s show and its {GUARD_S} s guard: use "
+                f"--every-min {int(-(-need // 60))} or more.")
         self.sched_dir = os.path.join(self.dir, "schedule")
         os.makedirs(self.sched_dir, exist_ok=True)
-        local = _dt.datetime.now().astimezone()
-        hours = round(local.utcoffset().total_seconds() / 3600)
+        utc = _dt.datetime.now(_dt.timezone.utc)
+        hours = (2 - utc.hour) % 24
+        if hours > 14:
+            hours -= 24
         # Etc/GMT zones count the other way round: UTC-4 is Etc/GMT+4.
         tz = "UTC" if hours == 0 else f"Etc/GMT{-hours:+d}"
+        local = utc + _dt.timedelta(hours=hours)
+        first = (local + _dt.timedelta(minutes=3)).replace(second=0,
+                                                           microsecond=0)
         today = local.date()
-        night = {"first_start": "02:00", "interval_min": SHOW_EVERY_MIN,
-                 "last_end": "23:59"}
+        night = {"first_start": first.strftime("%H:%M"),
+                 "interval_min": self.every_min, "last_end": "23:59"}
         self.tz_name = tz
+        self.first_start = night["first_start"]
         rule = {"timezone": tz,
                 "season": {"first_date": (today - _dt.timedelta(days=1))
                            .isoformat(),
@@ -564,7 +593,8 @@ class Soak:
                 "weekly": {d: dict(night) for d in
                            ("mon", "tue", "wed", "thu", "fri", "sat",
                             "sun")},
-                "exceptions": {}, "show_len_s": SHOW_S + 5, "guard_s": 30,
+                "exceptions": {}, "show_len_s": int(self.show_s) + 5,
+                "guard_s": GUARD_S,
                 "late_grace_s": 15}
         self.rule_path = os.path.join(self.sched_dir,
                                       "ltcplay_schedule.json")
@@ -593,7 +623,7 @@ class Soak:
             fi["madmapper"]["heartbeat"] = {
                 "port": soak_apps.HEARTBEAT_PORT,
                 "address": soak_apps.HEARTBEAT_ADDRESS,
-                "show_len_s": SHOW_S + 5}
+                "show_len_s": int(self.show_s) + 5}
         with open(os.path.join(self.sched_dir, "ltcplay_fire_ice.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(fi, fh, indent=1)
@@ -1380,7 +1410,8 @@ class Soak:
             soak_exercise.Http(f"http://127.0.0.1:{PORT}"),
             [g["name"] for g in self.fs_cfg_doc["groups"]],
             show_time=self.show_time, show_number=lambda: self.show_starts,
-            armed=lambda: dict(self.fs_armed), note=note).start()
+            armed=lambda: dict(self.fs_armed), note=note,
+            show_s=self.show_s).start()
         t0 = time.perf_counter()
         next_sample = next_report = t0
         last_wall = time.time()
@@ -1825,9 +1856,13 @@ class Soak:
                  in str(r).lower()]
         failed = [(n, r) for n, (st, r) in sorted(self.slots.items())
                   if st == "FAULT" and n not in early]
-        out.append(("PASS" if done and not failed else "FAIL",
+        # The exerciser Aborts every other show 40 s before its end: an
+        # Abort it pressed is a show that ran, not a failure.
+        aborted = sum(1 for st, _r in self.slots.values() if st == "ABORTED")
+        out.append(("PASS" if (done or aborted) and not failed else "FAIL",
                     "Scheduled shows (the scheduler starting each show)",
-                    f"{done} show(s) played to the end, {len(failed)} failed "
+                    f"{done} show(s) played to the end, {aborted} stopped by "
+                    f"the exerciser's Abort near the end, {len(failed)} failed "
                     f"to start (limit 0)" + (": " + "; ".join(
                         f"show {n}: {r}" for n, r in failed[:5])
                         if failed else "") + (
@@ -2141,9 +2176,13 @@ class Soak:
             "Show audio: " + ("FAKE stand-in device (CI run)"
                               if self.fake_audio else
                               (self.audio_name or "NO interface found")),
-            f"Bench schedule: a {SHOW_S} s show every {SHOW_EVERY_MIN} "
-            f"minutes from 02:00 to midnight ({getattr(self, 'tz_name', '')}"
-            f"), started by the scheduler itself",
+            f"Bench schedule: a {self.show_s:g} s show "
+            f"({int(self.show_s // 60)} min {int(self.show_s % 60)} s) every "
+            f"{self.every_min:g} minutes, the first at "
+            f"{getattr(self, 'first_start', '?')} "
+            f"({getattr(self, 'tz_name', '')}, the zone in which this run "
+            f"starts just after the 2 AM nightly reset; shows until "
+            f"midnight there), started by the scheduler itself",
             (f"WARNING: ran inside another app's container "
              f"({self.container}); its files went to that app's folder. "
              f"Start the soak from the Start menu." if getattr(
@@ -2383,6 +2422,8 @@ class ABRun:
                 s = Soak(self.seconds, self.audio_device,
                          folder=os.path.join(self.dir, f"{i} {label}"),
                          block=(i, len(self.PLAN)))
+                s.show_s = getattr(self, "show_s", SHOW_S)
+                s.every_min = getattr(self, "every_min", SHOW_EVERY_MIN)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all" if resolved == "all programs" else \
                     "fallback"
@@ -2492,6 +2533,8 @@ class Blocks:
                 s = Soak(secs, self.audio_device,
                          folder=os.path.join(self.dir, f"block {i}"),
                          block=(i, n))
+                s.show_s = getattr(self, "show_s", SHOW_S)
+                s.every_min = getattr(self, "every_min", SHOW_EVERY_MIN)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
                 s.priority = getattr(self, "priority", True)
@@ -2668,6 +2711,8 @@ def main(argv=None):
     device = None
     fake = False
     mode = "auto"
+    show_s = SHOW_S
+    every_min = SHOW_EVERY_MIN
     priority = True
     ab = None
     i = 0
@@ -2684,6 +2729,20 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a in ("--show-seconds", "--every-min"):
+            try:
+                v = float(argv[i + 1])
+            except (IndexError, ValueError):
+                print(f"{a} takes a number")
+                return 2
+            if v <= 0:
+                print(f"{a} takes a number above 0")
+                return 2
+            if a == "--show-seconds":
+                show_s = v
+            else:
+                every_min = v
+            i += 1
         elif a == "--priority":
             if argv[i + 1] not in ("on", "off"):
                 print("--priority is on or off")
@@ -2705,7 +2764,8 @@ def main(argv=None):
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
                   f"--mode auto|all|fallback, --priority on|off, "
-                  f"--ab [MINUTES]")
+                  f"--ab [MINUTES], --show-seconds N (default {SHOW_S}), "
+                  f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
     if seconds is None and ab is None:
@@ -2749,15 +2809,18 @@ def main(argv=None):
     try:
         if ab is not None:
             soak = ABRun(ab, device, fake, mode)
+            soak.show_s, soak.every_min = show_s, every_min
             ok = soak.run()
             raise _Done()
         resolved, _found, why = resolve_mode(mode)
         if resolved == "all programs":
             note(why)
             soak = Blocks(seconds, device, fake)
+            soak.show_s, soak.every_min = show_s, every_min
             soak.priority = priority
         else:
             soak = Soak(seconds, device)
+            soak.show_s, soak.every_min = show_s, every_min
             soak.fake_audio = fake
             soak.want_mode = mode
             soak.priority = priority

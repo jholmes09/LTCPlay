@@ -257,8 +257,11 @@ def soak_check():
     # BENCH BUILD: the full stack, scheduler included. 7 minutes holds at
     # least one whole 100 s show (one every 3 minutes, 02:00 to midnight in
     # the runner's clock). The runner has no audio interface: --fake-audio.
+    # A short show on CI (a runner has 7 minutes); the show PC's soak runs
+    # the full-length one by default.
     rc, out = run([os.path.join(APP, "ltcplay-soak.exe"), "--minutes", "7",
-                   "--no-wait", "--fake-audio", "--mode", "fallback"],
+                   "--no-wait", "--fake-audio", "--mode", "fallback",
+                   "--show-seconds", "100", "--every-min", "3"],
                   timeout=1200)
     reports = sorted(glob.glob(os.path.join(LOCAL, "soak", "*",
                                             "LTC Player soak report *.txt")))
