@@ -1129,6 +1129,17 @@ class Soak:
             os.makedirs(self.engine_env_dir, exist_ok=True)
             env["LOCALAPPDATA"] = self.engine_env_dir
             env["XDG_STATE_HOME"] = self.engine_env_dir
+            self.screen_arming_on()
+        if name == "deck":
+            # The deck reads screen_arming from its own settings folder, so
+            # it shares the soak engine's (as the two share one on the show
+            # PC), never the show account's real one.
+            if not self.engine_env_dir:
+                self.engine_env_dir = os.path.join(self.dir, "engine-data")
+                os.makedirs(self.engine_env_dir, exist_ok=True)
+                self.screen_arming_on()
+            env["LOCALAPPDATA"] = self.engine_env_dir
+            env["XDG_STATE_HOME"] = self.engine_env_dir
             if self.fake_audio:
                 env[FAKE_AUDIO_ENV] = self.audio_name or "1"
         if name == "engine":
@@ -1149,6 +1160,28 @@ class Soak:
                             "crashes": old["crashes"] if old else [],
                             "ps": None}
         note(f"started {name} (pid {p.pid})")
+
+    def screen_arming_on(self):
+        """BENCH ONLY: screen arming is off by default since the review of
+        PR #43 (P0-4: on only when ltcplay_remote.json says
+        "screen_arming": true, until PR #41's own review decides). The
+        exerciser arms through the rack screen's route, so the soak switches
+        it on in ITS engine's and deck's settings folder only."""
+        d = os.path.join(self.engine_env_dir, "ltcplay")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "ltcplay_remote.json")
+        doc = {}
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh) or {}
+        except (OSError, ValueError):
+            doc = {}
+        if doc.get("screen_arming") is not True:
+            doc["screen_arming"] = True
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+            note(f"screen arming switched ON for the soak's own engine and "
+                 f"deck only ({path}); it is off by default")
 
     def stop_program(self, name):
         c = self.procs.get(name)
