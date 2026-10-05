@@ -29062,7 +29062,13 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
             "few ms of the press, whatever BEYOND, the laser gate or an "
             "announcement is doing (review of PR #29, finding D)")
     C = _cond_mod()
-    FEW = 0.02
+    # A press held up by any of the stalls below would show it: BEYOND's
+    # packets take 0.3 s, the announcer 0.4 s, the laser gate its timeout.
+    # The bound is under all of them; 20 ms was runner scheduling on a
+    # loaded macOS runner (112.7 ms on #49, with the blank still handed to
+    # the socket before abort() returned). The order is checked too: the
+    # flame cut and the blank are out before the press returns.
+    FEW = 0.25
     # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
     #    show start's unblank is part way out.
     c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
@@ -29071,6 +29077,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         time.sleep(0.15)
         t0 = time.perf_counter()
         check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+        t_ret = time.perf_counter()
         fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
               and cl[2] >= t0]
         check(fz and fz[0][2] - t0 < FEW,
@@ -29083,6 +29090,11 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               f"the first blank packet was handed to the socket within "
               f"{FEW * 1000:.0f} ms of the press "
               f"({(zeros[0][3] - t0) * 1000 if zeros else None} ms)")
+        check(fz and zeros and fz[0][2] <= zeros[0][3] <= t_ret,
+              f"the flame cut, then the first blank packet, both before the "
+              f"press returned: cut {(fz[0][2] - t0) * 1000 if fz else None}"
+              f" ms, blank {(zeros[0][3] - t0) * 1000 if zeros else None} "
+              f"ms, returned {(t_ret - t0) * 1000:.1f} ms")
         check(not _rt_vals(log, "beyond", since=t0, value=100.0),
               "no unblank packet was started after the press")
         b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
@@ -29840,7 +29852,12 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     svc._apply(_op(S, S.HOLD_ON))
     svc._apply(_op(S, S.RESUME))
     c_ = time.perf_counter() - t0
-    check(a < 0.2 and b < 0.2 and c_ < 0.2,
+    # Each press waiting for the conductor would take 0.6 s or more (its
+    # requests here sleep 0.6 s), so anything well under that proves none
+    # waited. The bound used to be 0.2 s, which also timed the presses'
+    # own tonight.json saves: two fsyncs on a windows-latest runner's disk
+    # came to 0.22 s on #46 with nothing waiting on the conductor.
+    check(a < 0.45 and b < 0.45 and c_ < 0.45,
           f"nothing waits for a 0.6 s conductor: confirm {a:.2f} s, a "
           f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
     _settle(svc)
