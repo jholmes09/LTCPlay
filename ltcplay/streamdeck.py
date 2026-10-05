@@ -853,6 +853,9 @@ class EngineConductor:
         # for), for the deck's own keys to show, not only its console; ""
         # once a press is taken again (fix round 2, E).
         self.fault = ""
+        # The engine's flame cue fault from /api/conductor (review of PR
+        # #43, P1-3), "" when none: shown on the deck's own keys.
+        self.cues_fault = ""
         self._last_ok = None      # when the engine last answered a poll
 
     def start(self):
@@ -987,6 +990,9 @@ class EngineConductor:
         while not self._stop.is_set():
             got = self._fetch("/api/conductor")
             snap = got.get("conductor") if isinstance(got, dict) else None
+            cues = got.get("flame_cues") if isinstance(got, dict) else None
+            self.cues_fault = str((cues or {}).get("fault") or "") \
+                if isinstance(cues, dict) else ""
             with self._lock:
                 self._engine = ((snap, self._clock())
                                 if isinstance(snap, dict) else None)
@@ -2263,10 +2269,19 @@ class Controller:
                         (self.conductor is not None and
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
+        cues_fault = getattr(self.conductor, "cues_fault", "") or ""
         if engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
             # reached): said on the deck itself, not only its console.
             fonts.show_key(d, b0, ["ENGINE", "FAULT"],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=16)
+        elif cues_fault:
+            # Review of PR #43, P1-3: the show's flame cues are refused (a
+            # render that does not fit the layout, and the like): every
+            # flame cue is zero, and that is a fault, not a quiet zero.
+            fonts.show_key(d, b0, ["CUES", "FAULT"],
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
                            max_size=16)

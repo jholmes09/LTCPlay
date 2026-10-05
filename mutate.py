@@ -7321,6 +7321,42 @@ def build():
   '                           **({"fault": True} if fault else {}))',
   '                           **{})'),
 
+ # -- review of PR #43: P1-3, flame cue refusals are faults on the screens --
+ ('review43: a render that does not fit the layout is a quiet zero',
+  'ltcplay/fire_ice.py',
+  '                    f"flames cannot be told. Render the show again for this "\n                    f"layout", fault=True)',
+  '                    f"flames cannot be told. Render the show again for this "\n                    f"layout")'),
+
+ ("review43: a timecode past the render's end is a quiet zero",
+  'ltcplay/fire_ice.py',
+  '                                  "show\'s render", fault=True)',
+  '                                  "show\'s render")'),
+
+ ('review43: a render that cannot be read is a quiet zero',
+  'ltcplay/fire_ice.py',
+  '                              f"({type(e).__name__}: {e})", fault=True)',
+  '                              f"({type(e).__name__}: {e})")'),
+
+ ('review43: /api/conductor leaves out the flame cue fault',
+  'ltcplay/web.py',
+  '            out["flame_cues"] = {"fault": str(cues.fault or "")}',
+  '            pass'),
+
+ ('review43: the rack screen is never told the flame cue fault',
+  'ltcplay/remote.py',
+  '        out["flames"]["cues_fault"] = str(\n            getattr(self.flame_cues, "fault", "") or "")',
+  '        out["flames"]["cues_fault"] = ""'),
+
+ ('review43: the deck never reads the flame cue fault',
+  'ltcplay/streamdeck.py',
+  '            self.cues_fault = str((cues or {}).get("fault") or "") \\\n                if isinstance(cues, dict) else ""',
+  '            self.cues_fault = ""'),
+
+ ('review43: the deck never draws the flame cue fault',
+  'ltcplay/streamdeck.py',
+  '        elif cues_fault:\n            # Review of PR #43, P1-3',
+  '        elif False:\n            # Review of PR #43, P1-3'),
+
 ]
 
 

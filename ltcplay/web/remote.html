@@ -594,6 +594,7 @@ function render(){
   else if(fl.stale) fmsg = "flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms/1000).toFixed(1) + " s") + ". These lamps are not live.";
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
+  if(fl.cues_fault) fmsg += (fmsg ? " " : "") + "Flame cues are zero, a fault: " + fl.cues_fault + ".";
   fw.hidden = !fmsg; fw.textContent = fmsg;
   renderLamps(fl);
 

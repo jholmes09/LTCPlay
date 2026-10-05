@@ -32829,6 +32829,124 @@ def test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout():
     print("  ok")
 
 
+def test_fire_ice_flame_cue_refusals_are_faults_on_the_screens():
+    section("fire & ice: flame cues refused because the render does not fit "
+            "the layout, runs out, or cannot be read are faults: journaled "
+            "as faults, on /api/conductor, on the rack screen and on the "
+            "Stream Deck (review of PR #43, P1-3)")
+    import shutil
+    import tempfile
+    import types
+    F = _fi_mod()
+    from ltcplay import streamdeck as sd
+    work = tempfile.mkdtemp()
+    try:
+        lines = []
+        rig = _fi_cue_rig(work)
+        rig.layout("A")
+        rig.rerender(1534, 50)
+        cues = F.FlameCues(rig.control, "Flames",
+                           lambda text, **f: lines.append(
+                               (text, f.get("fault", False))))
+        check(cues("00:00:02:15") == [50] * 512 and cues.fault == "",
+              "setup: cues out, no fault")
+        rig.rerender(1022, 50)
+        check(cues("00:00:02:15") is None and
+              "render has 1022 channels but" in cues.fault and
+              lines[-1][1], f"a render that does not fit the layout: a "
+                            f"fault: {cues.fault!r} {lines[-1:]}")
+        rig.rerender(1534, 50, frames=40)
+        check(cues("00:00:02:15") is None and
+              "past the end" in cues.fault and lines[-1][1],
+              f"a timecode past the render's end: a fault: {cues.fault!r}")
+        rig.rerender(1534, 50)
+        size = os.path.getsize(rig.render)
+        with open(rig.render, "r+b") as fh:
+            fh.truncate(size // 3)
+        st = os.stat(rig.render)
+        os.utime(rig.render, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+        check(cues("00:00:02:15") is None and
+              "could not be read" in cues.fault and lines[-1][1],
+              f"a render that cannot be read: a fault: {cues.fault!r}")
+        rig.clk.paused = True
+        check(cues("00:00:02:15") is None and cues.fault == "",
+              "a paused show is zero without a fault")
+        rig.clk.paused = False
+        rig.rerender(1022, 50)
+        cues("00:00:02:15")
+        why = cues.fault
+        # /api/conductor (what the Stream Deck reads) and the rack screen.
+        S = _sched()
+        if S is not None:
+            R = _RemoteRig(S)
+            try:
+                R.httpd.conductor = R.c
+                R.httpd.fire_ice = types.SimpleNamespace(
+                    flame_link=types.SimpleNamespace(
+                        snapshot=lambda: {}, cues=cues), devices=None)
+                R.remote.flame_cues = cues
+                st, _h, out = _ask(R.httpd, "GET", "/api/conductor",
+                                   client=("127.0.0.1", 5000))
+                check(st == 200 and out.get("flame_cues", {}).get(
+                    "fault") == why,
+                    f"/api/conductor carries the fault: {st} {out}")
+                R.sign_in()
+                st, _h, out = R.ask("GET", "/api/remote/status")
+                check(st == 200 and out["flames"]["cues_fault"] == why,
+                      f"the rack screen's status carries it: "
+                      f"{out.get('flames')}")
+            finally:
+                R.close()
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        check("fl.cues_fault" in page and "Flame cues are zero, a fault"
+              in page, "the rack screen shows it")
+        # The deck: read from /api/conductor, drawn on its own key.
+        e = sd.EngineConductor(
+            "http://127.0.0.1:1", poster=lambda p, b: (True, "ok"),
+            fetcher=lambda path: {"conductor": {"latched": False,
+                                                "look": ""},
+                                  "flame_cues": {"fault": why}},
+            poll_hz=50.0)
+        e.start()
+        try:
+            deadline = time.time() + 2
+            while not e.cues_fault and time.time() < deadline:
+                time.sleep(0.01)
+            check(e.cues_fault == why, f"the deck reads it: {e.cues_fault!r}")
+            try:
+                import PIL.Image  # noqa: F401
+                have_pil = True
+            except Exception:                     # noqa: BLE001
+                have_pil = False
+                print("  note: Pillow is not installed here, so the deck's "
+                      "CUES FAULT key is not checked on this machine.")
+            if have_pil:
+                fonts = sd.Fonts()
+                fonts.text_block = lambda *a, **kw: None
+                c2 = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                                   ["front row", "cat-walk", "wave flamer"],
+                                   operator_provider=lambda: "Andy",
+                                   show_running_provider=lambda: True,
+                                   conductor=e, clock=lambda: 100.0)
+                e._last_ok = None
+                e._threads = []           # not "unreachable": just this
+                canvas = c2.draw(fonts, blink_on=True, chase=0)
+                box = sd.face_box(sd.TOP_START)
+                px = {canvas.getpixel((x, y))
+                      for x in range(box[0], box[2], 3)
+                      for y in range(box[1], box[3], 3)}
+                check(sd.RED in px, "the deck shows CUES FAULT on its "
+                                    "Start key")
+        finally:
+            e.stop()
+        cues.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_flame_node_address_never_in_the_pixel_output():
     section("fire & ice: a renamed, miscased, doubled or missing flame "
             "controller is refused at serve and at Run, and so is any Active "
@@ -38602,6 +38720,7 @@ if __name__ == "__main__":
     test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
     test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout()
+    test_fire_ice_flame_cue_refusals_are_faults_on_the_screens()
     test_fire_ice_flame_node_address_never_in_the_pixel_output()
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()

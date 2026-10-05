@@ -882,6 +882,12 @@ class Handler(BaseHTTPRequestHandler):
                 out["flame_link"] = fl.snapshot()
             except Exception:
                 pass
+        cues = getattr(fl, "cues", None)
+        if hasattr(cues, "fault"):
+            # Review of PR #43, P1-3: a show whose flame cues are refused
+            # (a render that does not fit the layout, and the like) is a
+            # fault the Stream Deck shows, not a quiet zero.
+            out["flame_cues"] = {"fault": str(cues.fault or "")}
         lasers = getattr(getattr(fi, "devices", None), "beyond", None)
         if lasers is not None and hasattr(lasers, "health"):
             # How the lasers are kept dark, and BEYOND's timecode stream's
@@ -1440,6 +1446,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             journal=_beyond_journal(httpd_schedule))
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
+        # The rack screen shows a flame cue fault too (P1-3).
+        httpd.remote.flame_cues = getattr(wiring.flame_link, "cues", None)
         httpd_schedule.start()
         _close_before_fire_ice = httpd.server_close
 

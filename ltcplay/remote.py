@@ -666,6 +666,7 @@ class Remote:
         self.throttle = Throttle(clock)
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
+        self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
         self.clock = clock
         self.wall = wall
         self._log = log
@@ -1472,6 +1473,10 @@ class Remote:
                                     "Deck."}
         else:
             out["flames"] = self.flame_status.view()
+        # Review of PR #43, P1-3: the flame cues refused for a reason that
+        # is a fault (the render and the layout do not fit, and the like).
+        out["flames"]["cues_fault"] = str(
+            getattr(self.flame_cues, "fault", "") or "")
         out["disarm_connected"] = self._disarm_fn() is not None
         now = self.clock()
         tok = ctx.session["token"] if ctx.session else None

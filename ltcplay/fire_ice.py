@@ -1086,7 +1086,7 @@ class FlameCues:
                     f"xlights_networks.xml lays out {total}: they were "
                     f"not made for each other, so which channels are the "
                     f"flames cannot be told. Render the show again for this "
-                    f"layout")
+                    f"layout", fault=True)
             if made is not None and laid is not None and made < laid:
                 # Review of PR #43, P0-6: a layout changed after the render
                 # was made can keep the same channel total and move the
@@ -1107,11 +1107,11 @@ class FlameCues:
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
                 return self._zero("the timecode is past the end of the "
-                                  "show's render")
+                                  "show's render", fault=True)
             data = f.frame(idx)
         except Exception as e:
             return self._zero(f"the show's render could not be read "
-                              f"({type(e).__name__}: {e})")
+                              f"({type(e).__name__}: {e})", fault=True)
         start, count = span
         first, end = start - 1, start - 1 + count
         out = [0] * 512
