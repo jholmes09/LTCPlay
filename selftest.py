@@ -32726,6 +32726,109 @@ def test_fire_ice_flame_cues_follow_a_changed_layout():
     print("  ok")
 
 
+def _fi_cue_rig(work, total_after=True):
+    """A show folder with layout A (Pixels A 1-510, Flames 511-1022,
+    Pixels B 1023-1534), a FlameCues on a fake running session, and
+    helpers: layout(order) rewrites xlights_networks.xml ("A", or "B" with
+    Pixels B before Flames, the same 1534 channels), rerender(channels,
+    fill) writes the render newer than the layout."""
+    import types
+    import test_show_fixtures as _fx
+    show = os.path.join(work, "show")
+    os.makedirs(show, exist_ok=True)
+    net = os.path.join(show, "xlights_networks.xml")
+    render = os.path.join(show, "Show.fseq")
+
+    def layout(order="A"):
+        pix = _fi2_ctl("Pixels B", "Active")
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(_FI2_NETWORKS.format(
+                extra=pix if order == "B" else "", name="Flames",
+                state="Inactive", after="" if order == "B" else pix))
+
+    def rerender(channels, fill, frames=400):
+        _fx.write_fseq(render, frame_count=frames, channel_count=channels,
+                       step_ms=25, compression="zlib", block_frames=100,
+                       fill=fill)
+        lay = os.stat(net).st_mtime_ns
+        os.utime(render, ns=(lay, max(lay, os.stat(render).st_mtime_ns)
+                             + 10 ** 9))
+    clk = types.SimpleNamespace(source="audio_master", paused=False,
+                                _cue={"label": "Show", "position_s": 0.0},
+                                last_sent=(0, 0, 2, 15))
+    player = types.SimpleNamespace(override=None, freerun_epoch=None)
+    cue = types.SimpleNamespace(name="Show", path=render)
+    sess = types.SimpleNamespace(running=True, clock=clk, player=player,
+                                 tl=types.SimpleNamespace(show_dir=show,
+                                                          cues=[cue]))
+    return types.SimpleNamespace(show=show, net=net, render=render,
+                                 layout=layout, rerender=rerender, clk=clk,
+                                 control=types.SimpleNamespace(session=sess))
+
+
+def test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout():
+    section("fire & ice: a layout changed with the same channel total moves "
+            "the flames; a render older than xlights_networks.xml, or made "
+            "when the flame controller started at another channel, is "
+            "refused as a fault, never read as flames (review of PR #43, "
+            "P0-6)")
+    import shutil
+    import tempfile
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    try:
+        for bg in (False, True):
+            lines = []
+            rig = _fi_cue_rig(os.path.join(work, f"bg{bg}"))
+            rig.layout("A")
+            rig.rerender(1534, 50)
+            cues = F.FlameCues(rig.control, "Flames",
+                               lambda text, **f: lines.append(
+                                   (text, f.get("fault", False))),
+                               background=bg)
+            if bg:
+                cues._stop.set()          # no thread: refreshed by hand
+
+            def ask():
+                if bg:
+                    cues._refresh_once()
+                return cues("00:00:02:15")
+            mode = "background" if bg else "in the call"
+            check(ask() == [50] * 512 and cues.fault == "",
+                  f"{mode}: setup: the flames from channel 511")
+            # The same 1534 channels, the flames now at 1023: the render
+            # still has the right count, so only its age can tell.
+            rig.layout("B")
+            r = os.stat(rig.render).st_mtime_ns
+            os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+            got = ask()
+            check(got is None and "older than xlights_networks.xml" in
+                  cues.fault and any(f and "older than" in t
+                                     for t, f in lines),
+                  f"{mode}: a render older than the layout is refused, as a "
+                  f"fault: {got and got[:2]} {cues.fault!r}")
+            # The layout file made to look older than the render (copied
+            # with its old date): the start channel the render was checked
+            # at still tells.
+            r = os.stat(rig.render).st_mtime_ns
+            os.utime(rig.net, ns=(r - 10 ** 9, r - 10 ** 9))
+            got = ask()
+            check(got is None and "at channel 511 when this render was "
+                                  "checked" in cues.fault,
+                  f"{mode}: a render checked when the flames started at 511 "
+                  f"is refused now they start at 1023: {cues.fault!r}")
+            check("\u2014" not in cues.fault and "\u2013" not in cues.fault,
+                  "no dashes")
+            rig.rerender(1534, 70)
+            check(ask() == [70] * 512 and cues.fault == "",
+                  f"{mode}: rendered again for this layout: the cues come "
+                  f"back and the fault clears: {cues.fault!r}")
+            cues.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_flame_node_address_never_in_the_pixel_output():
     section("fire & ice: a renamed, miscased, doubled or missing flame "
             "controller is refused at serve and at Run, and so is any Active "
@@ -33027,6 +33130,10 @@ def test_fire_ice_flame_link_from_flamesafe_config():
           "the same refusal is journaled once, not every frame")
     fs, show, fsdoc = _fi_flame_files(work, state="Inactive")
     sess.tl.show_dir = show + os.sep + "."
+    # The layout file was just rewritten; the render is the one made for it
+    # (a render older than the layout is refused: review of PR #43, P0-6).
+    _lay = os.stat(os.path.join(show, "xlights_networks.xml")).st_mtime_ns
+    os.utime(render, ns=(_lay, _lay + 10 ** 9))
     # 2.5 s into the cue is frame 100 of a 25 ms render.
     vals = cues("00:00:02:15")
     check(vals == [100] * 512,
@@ -38494,6 +38601,7 @@ if __name__ == "__main__":
     test_onlyone_named_lock_sees_a_copy_in_another_folder()
     test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
+    test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout()
     test_fire_ice_flame_node_address_never_in_the_pixel_output()
     test_fire_ice_active_flame_controller_refused()
     test_fire_ice_auto_start_off_and_start_now()

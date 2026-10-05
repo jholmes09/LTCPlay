@@ -7295,6 +7295,32 @@ def build():
   '        return load()["screen_arming"] is True',
   '        return bool(load()["screen_arming"])'),
 
+ # -- review of PR #43: P0-6, a render older than the layout, or checked at another flame start, is refused --
+ ('review43: a render older than xlights_networks.xml is read as flames',
+  'ltcplay/fire_ice.py',
+  '            if made is not None and laid is not None and made < laid:',
+  '            if False:'),
+
+ ('review43: the flame start a render was checked at is never compared',
+  'ltcplay/fire_ice.py',
+  '            if checked_at is not None and checked_at != span[0]:',
+  '            if False:'),
+
+ ("review43: a render's flame start is recorded at every read, not at its check",
+  'ltcplay/fire_ice.py',
+  '                f, spans, made, checked_at = got\n',
+  '                f, spans, made, checked_at = got\n                checked_at = span[0]\n'),
+
+ ("review43: the layout's date is never kept",
+  'ltcplay/fire_ice.py',
+  '        self._layout_mtime = stamp[0] if stamp else None\n',
+  '        self._layout_mtime = None\n'),
+
+ ('review43: a flame cue refusal that is a fault is not journaled as one',
+  'ltcplay/fire_ice.py',
+  '                           **({"fault": True} if fault else {}))',
+  '                           **{})'),
+
 ]
 
 

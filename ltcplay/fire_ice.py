@@ -865,7 +865,14 @@ class FlameCues:
         self._total = None       # the map's channel count, for the render
         self._problem = ""
         self._why = ""
-        self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
+        # The refusal now in force that is a FAULT (review of PR #43, P1-3:
+        # a render that does not fit the layout, a timecode past its end, a
+        # render that cannot be read, a render older than the layout or
+        # made for another flame controller start): "" when none. Read by
+        # /api/conductor (the Stream Deck) and the rack screen.
+        self.fault = ""
+        self._layout_mtime = None   # xlights_networks.xml's, at _locate
+        self._open = {}     # fseq path -> (FSEQ, spans, its mtime, start)
         self.link = None    # the FlameLink (closing it closes the files)
         # background (ltc serve): every file is read, and every file's date
         # looked at, on a thread of its own, never on the flame link's
@@ -874,8 +881,8 @@ class FlameCues:
         # into memory. Without it (the selftest), the same work is done in
         # the call, as before.
         self._bg = bool(background)
-        self._layout = None      # (session, span, total), background mode
-        self._by_path = {}       # fseq path -> (FSEQ, spans) or an error
+        self._layout = None      # (session, span, total, layout mtime)
+        self._by_path = {}       # fseq path -> _render's tuple, or an error
         self._stop = threading.Event()
         self._thread = None
 
@@ -886,14 +893,18 @@ class FlameCues:
             except Exception:
                 pass
 
-    def _zero(self, why):
+    def _zero(self, why, fault=False):
         """All zeros, saying why once each time the reason changes (an
-        episode); the cue going out again clears it."""
+        episode); the cue going out again clears it. A `fault` is
+        journaled as one and held in self.fault for the screens until
+        the reason changes."""
+        self.fault = why if fault else ""
         if why != self._why:
             self._why = why
             if why:
                 self._note(f"Flame cues are zero: {why}", action="flames",
-                           outcome="cues_zero")
+                           outcome="cues_refused" if fault else "cues_zero",
+                           **({"fault": True} if fault else {}))
         return None
 
     def _locate(self, session):
@@ -914,6 +925,7 @@ class FlameCues:
                 self._folder[1:] == (path, stamp):
             return self._span
         self._folder = (session, path, stamp)
+        self._layout_mtime = stamp[0] if stamp else None
         self._span, self._total = None, None
         try:
             if not path:
@@ -934,7 +946,9 @@ class FlameCues:
                            action="flames", outcome="cues_refused")
         return self._span
 
-    def _render(self, path):
+    def _render(self, path, start=None):
+        """(FSEQ, spans, the render's mtime, the flame controller's first
+        channel when this render was first read and checked)."""
         try:
             st = os.stat(path)
             key = (path, st.st_mtime_ns, st.st_size)
@@ -957,7 +971,7 @@ class FlameCues:
                                    [(0, f.channel_count)]):
                 spans.append((start0, src, length))
                 src += length
-            got = self._open[key] = (f, spans)
+            got = self._open[key] = (f, spans, key[1], start)
         return got
 
     def _refresh_once(self):
@@ -967,13 +981,14 @@ class FlameCues:
         if s is None or not getattr(s, "running", False):
             return
         span = self._locate(s)
-        self._layout = (s, span, self._total)
+        self._layout = (s, span, self._total, self._layout_mtime)
         by = {}
         for c in (getattr(getattr(s, "tl", None), "cues", None) or ()):
             path = getattr(c, "path", None)
             if path:
                 try:
-                    by[path] = self._render(path)
+                    by[path] = self._render(
+                        path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
         self._by_path = by
@@ -991,9 +1006,9 @@ class FlameCues:
         t = self._thread
         if t is not None and t is not threading.current_thread():
             t.join(2.0)
-        for f, _spans in self._open.values():
+        for got in self._open.values():
             try:
-                f.close()
+                got[0].close()
             except Exception:
                 pass
         self._open.clear()
@@ -1032,11 +1047,12 @@ class FlameCues:
                 return self._zero("the flame controller's channels are "
                                   "still being read (off the flame link's "
                                   "sender)")
-            span, total = lay[1], lay[2]
+            span, total, laid = lay[1], lay[2], lay[3]
         else:
             span = self._locate(s)
-            total = self._total
+            total, laid = self._total, self._layout_mtime
         if span is None:
+            self.fault = ""
             return None
         tl = getattr(s, "tl", None)
         label = cue.get("label") if isinstance(cue, dict) else None
@@ -1054,9 +1070,10 @@ class FlameCues:
                                       "link's sender)")
                 if isinstance(got, Exception):
                     raise got
-                f, spans = got
+                f, spans, made, checked_at = got
             else:
-                f, spans = self._render(hits[0].path)
+                f, spans, made, checked_at = self._render(hits[0].path,
+                                                          span[0])
             # A render whose one range starts at channel 1 is a whole
             # render and must match the map exactly; a truly sparse one
             # must at least lie inside it.
@@ -1070,6 +1087,22 @@ class FlameCues:
                     f"not made for each other, so which channels are the "
                     f"flames cannot be told. Render the show again for this "
                     f"layout")
+            if made is not None and laid is not None and made < laid:
+                # Review of PR #43, P0-6: a layout changed after the render
+                # was made can keep the same channel total and move the
+                # flames, so the count alone cannot tell.
+                return self._zero(
+                    "the show's render is older than xlights_networks.xml: "
+                    "the layout was changed after the show was rendered, so "
+                    "which channels are the flames cannot be trusted. Render "
+                    "the show again for this layout", fault=True)
+            if checked_at is not None and checked_at != span[0]:
+                return self._zero(
+                    f"the flame controller starts at channel {span[0]} in "
+                    f"xlights_networks.xml now, but at channel {checked_at} "
+                    f"when this render was checked: the layout changed "
+                    f"under it. Render the show again for this layout",
+                    fault=True)
             rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
@@ -1088,6 +1121,7 @@ class FlameCues:
                 out[lo - first:hi - first] = data[src + lo - dst:
                                                   src + hi - dst]
         self._why = ""
+        self.fault = ""
         return out
 
 
