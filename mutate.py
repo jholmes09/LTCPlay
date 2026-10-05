@@ -7378,6 +7378,27 @@ def build():
   '        with self._lock:\n            self._blank_epoch += 1\n            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        sent = 0\n',
   '        sent = 0\n'),
 
+ # -- review of PR #43: P1-4, one flamesafe config or ltc serve does not start --
+ ('review43: differing flamesafe configs are accepted',
+  'ltcplay/cli.py',
+  '    if len({same(p) for _w, p in named}) > 1:',
+  '    if False:'),
+
+ ('review43: ltc serve starts on differing flamesafe configs',
+  'ltcplay/cli.py',
+  '    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)\n    if why:\n',
+  '    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)\n    if False:\n'),
+
+ ("review43: the Windows app's flamesafe config is ignored",
+  'ltcplay/cli.py',
+  '    env = os.environ.get(FLAMESAFE_ENV)\n',
+  '    env = None\n'),
+
+ ("review43: ltcplay_remote.json's flamesafe config is ignored",
+  'ltcplay/cli.py',
+  '        if rs.get("flamesafe_config"):\n            named.append(',
+  '        if False:\n            named.append('),
+
 ]
 
 

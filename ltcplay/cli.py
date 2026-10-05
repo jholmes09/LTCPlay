@@ -1301,7 +1301,9 @@ def _cmd_serve(args):
         from . import announce as announce_mod
         announce = os.path.abspath(os.path.expanduser(
             args.announce or announce_mod.default_config_path()))
-    flamesafe_config = getattr(args, "flamesafe_config", None)
+    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)
+    if why:
+        return _err(why)
     if getattr(args, "network", False):
         # The show network: one address, saved on the page (Show network),
         # on the fixed port. Never every interface.
@@ -1398,6 +1400,49 @@ def _cmd_serve(args):
         _shutdown(httpd)
         _say_blackout(sess)
     return 0
+
+
+# Set by the Windows app's supervisor from showpc.json: the ONE flamesafe
+# config flamesafe and the Stream Deck were started with (review of PR #38,
+# P1-4; packaging/windows/ltcwin.py FLAMESAFE_ENV).
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
+
+
+def _one_flamesafe_config(args, fire_ice):
+    """(path or None, refusal or None). Up to four places can name
+    flamesafe's config: the Windows app (FLAMESAFE_ENV, from showpc.json),
+    --flamesafe-config, ltcplay_fire_ice.json and ltcplay_remote.json. They
+    must all name the same file, or the flame link, the flame lamps and the
+    flamesafe that is really running could be three different ones (review
+    of PR #43, P1-4): a mismatch is refused in one sentence."""
+    named = []
+    env = os.environ.get(FLAMESAFE_ENV)
+    if env:
+        named.append(("the Windows app's showpc.json", env))
+    if getattr(args, "flamesafe_config", None):
+        named.append(("--flamesafe-config", args.flamesafe_config))
+    if fire_ice is not None and fire_ice.flamesafe_config:
+        named.append((fire_ice.path or "ltcplay_fire_ice.json",
+                      fire_ice.flamesafe_config))
+    try:
+        from . import remote as remote_mod
+        rs = remote_mod.load_settings()
+        if rs.get("flamesafe_config"):
+            named.append((rs["path"], rs["flamesafe_config"]))
+    except (ValueError, OSError):
+        pass                 # read again, and refused, where it is used
+
+    def same(p):
+        return os.path.normcase(os.path.realpath(os.path.expanduser(p)))
+    if len({same(p) for _w, p in named}) > 1:
+        lines = "; ".join(f"{w} names {p}" for w, p in named)
+        return None, (f"The settings name different flamesafe configs: "
+                      f"{lines}. The flame link, the flame lamps and the "
+                      f"flamesafe that is running must all use the same one, "
+                      f"so nothing was started. Make every one of them name "
+                      f"the same file (on the show PC, the one in "
+                      f"showpc.json).")
+    return (named[0][1] if named else None), None
 
 
 def _lasers_dark_first(httpd):

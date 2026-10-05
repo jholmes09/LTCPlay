@@ -31939,6 +31939,78 @@ def test_flame_groups_are_a_settings_change_only():
     print("  ok")
 
 
+def test_fire_ice_one_flamesafe_config_or_none_starts():
+    section("fire & ice: the Windows app's showpc.json, --flamesafe-config, "
+            "ltcplay_fire_ice.json and ltcplay_remote.json must name the "
+            "same flamesafe config, or ltc serve refuses to start in a "
+            "sentence (review of PR #43, P1-4)")
+    import contextlib
+    import io
+    import json as _json
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import cli as _cli, remote as RM
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_load = RM.load_settings
+    saved = os.environ.pop(_cli.FLAMESAFE_ENV, None)
+    try:
+        a = os.path.join(work, "a.json")
+        b = os.path.join(work, "b.json")
+        remote = {"flamesafe_config": None, "show_network_address": None,
+                  "screen_arming": False, "path": "ltcplay_remote.json"}
+        RM.load_settings = lambda folder=None: dict(remote)
+        fi = F.FireIceConfig(flamesafe_config=a,
+                             path=os.path.join(work, "ltcplay_fire_ice.json"))
+        args = types.SimpleNamespace(flamesafe_config=None)
+        check(_cli._one_flamesafe_config(args, fi) == (a, None),
+              "one place names it: that one")
+        os.environ[_cli.FLAMESAFE_ENV] = os.path.join(work, ".", "a.json")
+        remote["flamesafe_config"] = a
+        check(_cli._one_flamesafe_config(args, fi) == (os.path.join(
+            work, ".", "a.json"), None),
+            "every place names the same file (spelt differently): fine")
+        for where, setup in (
+                ("showpc.json", lambda: os.environ.__setitem__(
+                    _cli.FLAMESAFE_ENV, b)),
+                ("--flamesafe-config", lambda: setattr(
+                    args, "flamesafe_config", b)),
+                ("ltcplay_remote.json", lambda: remote.__setitem__(
+                    "flamesafe_config", b))):
+            os.environ[_cli.FLAMESAFE_ENV] = a
+            args.flamesafe_config = None
+            remote["flamesafe_config"] = a
+            setup()
+            got, why = _cli._one_flamesafe_config(args, fi)
+            check(got is None and why and "different flamesafe configs" in
+                  why and a in why and b in why and "\u2014" not in why,
+                  f"{where} naming another file is refused, naming both: "
+                  f"{why}")
+        # The real ltc serve start refuses it before binding anything.
+        os.environ[_cli.FLAMESAFE_ENV] = b
+        remote["flamesafe_config"] = None
+        args.flamesafe_config = None
+        fs, show, _doc = _fi_flame_files(work)
+        with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
+            _json.dump({"flamesafe_config": fs, "beyond_blank": "osc"}, fh)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(out):
+            rc = _cli._cmd_serve(types.SimpleNamespace(
+                folder=show, schedule=os.path.join(
+                    work, "ltcplay_schedule.json")))
+        check(rc and "different flamesafe configs" in out.getvalue(),
+              f"ltc serve refuses to start: {rc} {out.getvalue()!r}")
+    finally:
+        RM.load_settings = real_load
+        os.environ.pop(_cli.FLAMESAFE_ENV, None)
+        if saved is not None:
+            os.environ[_cli.FLAMESAFE_ENV] = saved
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_config_defaults_and_refusals():
     section("fire & ice: the config file defaults to today's dry run, and "
             "anything that is not exactly true or false is refused")
@@ -38763,6 +38835,7 @@ if __name__ == "__main__":
     test_schedule_reset_never_overtakes_an_abort()
     test_schedule_conductor_line_round3_details()
     test_fire_ice_config_defaults_and_refusals()
+    test_fire_ice_one_flamesafe_config_or_none_starts()
     test_flame_groups_are_a_settings_change_only()
     test_beyond_timecode_blanking()
     test_beyond_timecode_needs_one_route_through_the_gate()
