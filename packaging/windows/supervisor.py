@@ -218,43 +218,60 @@ def _k32():
 _MUTEX = None
 
 
+LOCAL_MUTEX_NAME = "Local\\LTCPlayerSupervisor"
+ERROR_FILE_NOT_FOUND = 2
+
+
+def _mutex_there(k, name):
+    """True when a mutex called `name` exists, even one this account may
+    not open (another user's): only "not found" means it is not."""
+    import ctypes
+    k.OpenMutexW.restype = ctypes.c_void_p
+    h = k.OpenMutexW(0x00100000, False, name)          # SYNCHRONIZE
+    if h:
+        k.CloseHandle(ctypes.c_void_p(h))
+        return True
+    return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
+
+
 def take_mutex():
-    """True if this is now the only supervisor in this Windows session."""
+    """True if this is now the only supervisor on this machine. Global\
+    first; "access denied" there means another user's supervisor holds it
+    only when that mutex is really there. An account that may not make
+    Global\ names at all falls back to Local\ and logs it loudly."""
     global _MUTEX
     if not ltcwin.WINDOWS:
         return True
     import ctypes
     k = _k32()
     k.CreateMutexW.restype = ctypes.c_void_p
-    h = k.CreateMutexW(None, False, MUTEX_NAME)
-    err = ctypes.get_last_error()
-    if not h:
-        # ERROR_ACCESS_DENIED: another user's supervisor made it, so one is
-        # running. Anything else: it could not be made, and one supervisor
-        # must never be started on a guess.
-        if err != ERROR_ACCESS_DENIED:
-            log(f"the supervisor's lock {MUTEX_NAME} could not be made "
-                f"(error {err}); not starting a second one on a guess")
-        return False
-    if err == 183:          # ERROR_ALREADY_EXISTS
-        k.CloseHandle(ctypes.c_void_p(h))
-        return False
-    _MUTEX = h
-    return True
+    for name in (MUTEX_NAME, LOCAL_MUTEX_NAME):
+        h = k.CreateMutexW(None, False, name)
+        err = ctypes.get_last_error()
+        if h:
+            if err == 183:          # ERROR_ALREADY_EXISTS
+                k.CloseHandle(ctypes.c_void_p(h))
+                return False
+            _MUTEX = h
+            if name == LOCAL_MUTEX_NAME:
+                log(f"WARNING: the supervisor's lock could not be made "
+                    f"machine wide ({MUTEX_NAME}), so it is {name}: a "
+                    f"supervisor in another Windows session would NOT be "
+                    f"seen. Run only one LTC Player on this machine.")
+            return True
+        if err == ERROR_ACCESS_DENIED and _mutex_there(k, name):
+            return False            # another user's supervisor
+        log(f"the supervisor's lock {name} could not be made (error {err})")
+    log("not starting a second supervisor on a guess: neither lock could "
+        "be made")
+    return False
 
 
 def supervisor_running():
     if not ltcwin.WINDOWS:
         return False
-    import ctypes
     k = _k32()
-    k.OpenMutexW.restype = ctypes.c_void_p
-    h = k.OpenMutexW(0x00100000, False, MUTEX_NAME)    # SYNCHRONIZE
-    if h:
-        k.CloseHandle(ctypes.c_void_p(h))
-        return True
-    # Another user's supervisor holds it: there, but not ours to open.
-    return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    return any(_mutex_there(k, n) for n in (MUTEX_NAME, LOCAL_MUTEX_NAME))
 
 
 _HANDLER = []

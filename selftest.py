@@ -10879,38 +10879,55 @@ def test_windows_supervisor_lock_is_machine_wide():
         made, err = [], [0]
 
         class K:
-            class _F:
-                def __init__(self, fn):
-                    self.fn = fn
+            """CreateMutexW answers `create[name]` (handle, error) and
+            OpenMutexW answers (0, `open_err`), as kernel32 would."""
 
-                def __call__(self, *a):
-                    return self.fn(*a)
-            def __init__(self, handle, e):
-                self.CreateMutexW = K._F(lambda sa, own, name: (
-                    made.append(name), err.__setitem__(0, e), handle)[2])
-                self.OpenMutexW = K._F(lambda acc, inh, name: (
-                    made.append(name), err.__setitem__(0, e), handle)[2])
-                self.CloseHandle = K._F(lambda h: True)
+            def __init__(self, create, open_err=2):
+                def cm(sa, own, name):
+                    made.append(name)
+                    h, e = create.get(name, (0, 2))
+                    err[0] = e
+                    return h
+
+                def om(acc, inh, name):
+                    err[0] = open_err
+                    return 0
+                self.CreateMutexW = type("F", (), {
+                    "__call__": lambda _s, *a: cm(*a)})()
+                self.OpenMutexW = type("F", (), {
+                    "__call__": lambda _s, *a: om(*a)})()
+                self.CloseHandle = lambda h: True
         ctypes.get_last_error = lambda: err[0]
-        was_win, was_k32 = W.WINDOWS, SUP._k32
+        was_win, was_k32, was_log = W.WINDOWS, SUP._k32, SUP.log
+        logged = []
         W.WINDOWS = True
+        SUP.log = logged.append
+        G, L = SUP.MUTEX_NAME, SUP.LOCAL_MUTEX_NAME
         try:
-            SUP._k32 = lambda: K(0, 5)          # another user's supervisor
-            check(SUP.take_mutex() is False and
-                  made[-1] == "Global\\LTCPlayerSupervisor",
-                  "a lock another user's supervisor holds (access denied) "
-                  "means one is running: this one does not start")
+            SUP._k32 = lambda: K({G: (0, 5)}, open_err=5)
+            check(SUP.take_mutex() is False and made[0] == G,
+                  "a lock another user's supervisor holds (access denied, "
+                  "and it is there) means one is running: this one does "
+                  "not start")
             check(SUP.supervisor_running() is True,
                   "and it reads as running")
-            SUP._k32 = lambda: K(0, 2)
+            SUP._k32 = lambda: K({}, open_err=2)
             check(SUP.supervisor_running() is False,
                   "no such lock anywhere: not running")
-            SUP._k32 = lambda: K(1234, 183)
+            SUP._k32 = lambda: K({G: (1234, 183)})
             check(SUP.take_mutex() is False, "already exists: not started")
-            SUP._k32 = lambda: K(1234, 0)
+            SUP._k32 = lambda: K({G: (1234, 0)})
             check(SUP.take_mutex() is True, "made fresh: this is the one")
+            del made[:], logged[:]
+            SUP._k32 = lambda: K({G: (0, 5), L: (4321, 0)}, open_err=2)
+            check(SUP.take_mutex() is True and made == [G, L] and
+                  any("WARNING" in t and "NOT be seen" in t
+                      for t in logged),
+                  f"access denied with no such Global\\ mutex (this "
+                  f"account may not make one) is not a running supervisor: "
+                  f"Local\\, said loudly: {made} {logged}")
         finally:
-            W.WINDOWS, SUP._k32 = was_win, was_k32
+            W.WINDOWS, SUP._k32, SUP.log = was_win, was_k32, was_log
             SUP._MUTEX = None
     finally:
         if real_err is None:
