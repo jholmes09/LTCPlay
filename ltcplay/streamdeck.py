@@ -197,6 +197,21 @@ AMBER = (245, 160, 30)
 BRONZE = (44, 36, 24)         # #2C2418, off and idle (Jeff: "The blue feels
 BRONZE_EDGE = (120, 96, 50)   # off brand"); its 1 px edge, as the demo draws
 AMBER_DIM = (70, 44, 8)       # a flashing amber key's off phase (CYCLE ARM)
+# The Start key during a show (Jeff, 2026-09-27, the approved demo): NOW
+# PLAYING flashing green; PAUSED, steady, while the show is held. A show
+# whose audio is lost reads AUDIO LOST, flashing amber, on that one key
+# only: Hold and Abort stay live and are never covered during a show (Jeff,
+# 2026-09-27 18:22, "Lock them in").
+PLAYING_ON = ((50, 205, 95), (4, 28, 10))      # (bg, text), the lit phase
+PLAYING_OFF = ((8, 40, 16), (60, 200, 100))    # the dark phase
+PAUSED_BG = BRONZE
+AUDIO_LOST_ON = (AMBER, (40, 20, 0))
+AUDIO_LOST_OFF = (AMBER_DIM, AMBER)
+# No link to flamesafe: the arm keys read NO / FLAME / LINK, one word per
+# key, red (Jeff, 2026-09-27, locked wording). Steady: with no status
+# frames there are no ticks to flash on. The arm link is held OFF meanwhile
+# exactly as before; only the drawing changed.
+NO_FLAME_LINK = ("NO", "FLAME", "LINK")
 
 ABORT_HOLD_S = 0.5          # Jeff: unchanged from the demo. Disarm itself
                             # (a bottom-row key) has NO hold; see module doc.
@@ -483,11 +498,12 @@ class StatusSocket:
 # Pure logic: visual state from real data. No socket, no hid, fully
 # unit-testable (see selftest.py).
 # --------------------------------------------------------------------------
-def group_look(group_status, fault="", confirmed=True):
+def group_look(group_status, fault="", confirmed=True, slot=0):
     """(line1, line2_or_None, bg, text, flashing) for one bottom-row key
     from the status frame's own per-group dict (CONTRACT.md section on the
     status frame), or from None (no status ever received / stale): drawn
-    as "NO LINK", matching CONTRACT.md's "ltcplay shows red for the safety
+    red, as its word of NO / FLAME / LINK (`slot` is which of the three
+    keys this is), matching CONTRACT.md's "ltcplay shows red for the safety
     program" rule -- the deck never claims a group is armed, disarmed or
     anything else when it cannot actually see flamesafe's answer. A 6th
     element, `caveat`, is appended only when `confirmed` is False (see
@@ -524,7 +540,7 @@ def group_look(group_status, fault="", confirmed=True):
     into this PR; this is a marker for whoever does that wiring next, not
     an implementation of it."""
     if group_status is None:
-        return "NO", "LINK", (26, 24, 21), DIM_TEXT, True
+        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False
     if fault:
         return "FAULT", None, RED, CHAMPAGNE, False
     armed = group_status.get("armed")
@@ -982,6 +998,10 @@ class EngineConductor:
         while not self._stop.is_set():
             got = self._fetch("/api/conductor")
             snap = got.get("conductor") if isinstance(got, dict) else None
+            if isinstance(snap, dict):
+                # The answer's own read-only audio field rides along with
+                # the conductor's state (audio_lost reads it).
+                snap = dict(snap, audio=got.get("audio"))
             with self._lock:
                 self._engine = ((snap, self._clock())
                                 if isinstance(snap, dict) else None)
@@ -1015,6 +1035,19 @@ class EngineConductor:
         so a frozen engine freezes them (Controller.engine_blink)."""
         with self._lock:
             return None if self._engine is None else self._engine[1]
+
+    def audio_lost(self):
+        """True while the engine's latest answer says the show audio is
+        lost mid-show (/api/conductor's read-only "audio" field: a cue is
+        playing and the show clock has stopped following the audio).
+        False while the engine is not answering: the deck then shows the
+        engine's silence (ENGINE FAULT), never a remembered loss."""
+        with self._lock:
+            engine = self._engine
+        if engine is None:
+            return False
+        audio = engine[0].get("audio")
+        return bool(isinstance(audio, dict) and audio.get("lost"))
 
     def snapshot(self):
         """{"latched", "look"}: never the network, never raises."""
@@ -1396,7 +1429,7 @@ RUN_FRACTION = 0.16     # share of the outside dots lit by each snake
 #   corner flame and the deck marquee step on this"). At the example 40 Hz
 #   (25 ms ticks) that is one step per 2.4 ticks, the demo's one dot per
 #   0.06 s. A re-read of the same frame, or no frame, is no step.
-# - a key flamesafe's status says to flash (CYCLE ARM, NO LINK, the spoof
+# - a key flamesafe's status says to flash (CYCLE ARM, ABORTED, the spoof
 #   alarm) changes phase every BLINK_HALF_S of flamesafe's ticks;
 # - a top-row key that flashes (RESUME, RESET, ENGINE FAULT) changes phase
 #   every ENGINE_ANSWERS_PER_BLINK fresh answers from the engine's
@@ -2330,7 +2363,7 @@ class Controller:
     def _top_fault_confirmed(self):
         """(fault, confirmed), flamesafe's own TOP-LEVEL status fields
         (item 4), or ("", True) while there is no fresh status at all --
-        status_for already draws "NO LINK" in that case, which takes
+        status_for already draws NO / FLAME / LINK in that case, which takes
         priority over fault/confirmed entirely, so the default here never
         has to mean anything on its own."""
         if self.status.stale(self._clock) or self.status.last is None:
@@ -2420,8 +2453,30 @@ class Controller:
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
         else:
+            running = self.show_running_provider() is True
+            held = self._held_hint()
             op = self.operator_provider()
-            if operator_gate(op, "start"):
+            if running and held:
+                # The approved demo's PAUSED: the operator's own Hold.
+                fonts.show_key(d, b0, ["PAUSED"], CHAMPAGNE, bg=PAUSED_BG,
+                               kind="sans")
+            elif running and self._audio_lost():
+                # Only this key says so; Hold and Abort stay as they are.
+                bg, text = AUDIO_LOST_ON if blink_on else AUDIO_LOST_OFF
+                fonts.show_key(d, b0, ["AUDIO", "LOST"], text, bg=bg,
+                               kind="sans")
+            elif running:
+                # Start Now does nothing during a show (_do_start_now
+                # journals and starts nothing), so the key says what the
+                # show is doing: NOW PLAYING, flashing green on the
+                # engine's own answers like every other top-row flash.
+                bg, text = PLAYING_ON if blink_on else PLAYING_OFF
+                fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
+                               kind="sans")
+            elif held:
+                # The demo's idle hold: START NOW dims while held.
+                fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
+            elif operator_gate(op, "start"):
                 fonts.show_key(d, b0, ["PICK", "OPERATOR"], DIM_TEXT, kind="sans",
                               max_size=16)
             else:
@@ -2475,7 +2530,8 @@ class Controller:
                 # link keeps its real look. Only a group that is really off
                 # (disarmed or held) greys out.
                 st = self.status_for(name)
-                look = group_look(st, fault=fault, confirmed=confirmed)
+                look = group_look(st, fault=fault, confirmed=confirmed,
+                                  slot=i)
                 if st is not None and not fault and \
                         st.get("armed") != "armed":
                     look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
@@ -2486,9 +2542,27 @@ class Controller:
                 draw_group_hold(fonts, d, box, name, hold_frac)
                 continue
             look = group_look(self.status_for(name), fault=fault,
-                              confirmed=confirmed)
+                              confirmed=confirmed, slot=i)
             arm_key_image(fonts, d, box, name, look, group_blink)
+        if self.status.stale(self._clock) or self.status.last is None:
+            # Fewer than three groups: the rest of NO / FLAME / LINK still
+            # reads whole, on the keys that have no group.
+            for i in range(len(self.names), len(GROUP_KEYS)):
+                arm_key_image(fonts, d, face_box(GROUP_KEYS[i]), "",
+                              group_look(None, slot=i), group_blink)
         return canvas
+
+    def _audio_lost(self):
+        """Whether the engine says the show audio is lost (an
+        EngineConductor's audio_lost); False with no conductor wired or
+        one that cannot say."""
+        lost = getattr(self.conductor, "audio_lost", None)
+        if not callable(lost):
+            return False
+        try:
+            return bool(lost())
+        except Exception:
+            return False
 
     def _reported_armed(self, i):
         st = self.status_for(self.names[i])

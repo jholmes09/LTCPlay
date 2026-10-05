@@ -25737,8 +25737,10 @@ def test_streamdeck_pure_logic():
           f"a key refuses to even start a new arm-hold for this long "
           f"after its own disarm or an Abort: {sd.REARM_REFRACTORY_S}")
 
-    check(sd.group_look(None) == ("NO", "LINK", (26, 24, 21), sd.DIM_TEXT, True),
-          "no status ever received (or stale): NO LINK, flashing, never a guess")
+    check([sd.group_look(None, slot=i) for i in range(3)] ==
+          [(w, None, sd.RED, sd.CHAMPAGNE, False) for w in ("NO", "FLAME", "LINK")],
+          "no status ever received (or stale): NO / FLAME / LINK, one red "
+          "word per key, steady, never a guess")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
           "a real 'armed' status reads ARMED")
     check(sd.group_look({"armed": "disarmed"})[0] == "OFF",
@@ -26455,6 +26457,233 @@ def test_streamdeck_idle_deck_draws_rarely():
           f"({frames:.0f} frames)")
     check(len(arm.sends) >= 335, f"the arm link went out every pass: "
                                  f"{len(arm.sends)}")
+    print("  ok")
+
+
+def _deck_face_recorder(sd):
+    """A real Fonts whose show_key and text_block only record what each
+    key was told to read (lines, colours, background), with the module's
+    arm_key_image recorded the same way. Returns (fonts, faces, restore),
+    `faces` a dict of key number -> (lines, text, bg) or, for a bottom-row
+    key, (name, look), refilled on every draw. None without Pillow."""
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        return None, None, lambda: None
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None
+    faces = {}
+    key_of = {sd.face_box(k): k for k in range(6)}
+
+    def show_key(d, box, lines, text, bg=None, kind="serif", max_size=24):
+        faces[key_of[tuple(box)]] = (list(lines), text, bg)
+    fonts.show_key = show_key
+    real_arm_key_image = sd.arm_key_image
+
+    def arm_key_image(fonts_, d, box, name, look, blink_on):
+        faces[key_of[tuple(box)]] = (name, tuple(look))
+    sd.arm_key_image = arm_key_image
+
+    def restore():
+        sd.arm_key_image = real_arm_key_image
+    return fonts, faces, restore
+
+
+def test_streamdeck_start_key_during_a_show():
+    section("Stream Deck: during a show the Start key reads NOW PLAYING, "
+            "flashing green on the engine's own answers; PAUSED while the "
+            "show is held; AUDIO LOST, flashing amber, while the engine "
+            "says the show audio is lost, on that one key only, Hold and "
+            "Abort never covered (Jeff, 2026-09-27, the approved demo and "
+            "\"Lock them in\")")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatus()
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": "", "amber": "", "dwell_s": 0}
+                    for n in names]})
+    running = [True]
+    lines = []
+
+    class _Engine:
+        look = "PLAYING"
+        lost = False
+        calls = []
+
+        def snapshot(self):
+            return {"latched": False, "look": self.look}
+
+        def audio_lost(self):
+            return self.lost
+
+        def hold(self, who, screen):
+            self.calls.append("hold")
+            return sd.EngineResult(True, "Hold: ok.")
+    eng = _Engine()
+    t = [10.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: running[0],
+                      conductor=eng, clock=lambda: t[0],
+                      journal=lambda text, **kw: lines.append((text, kw)))
+    # Pressing Start Now during the show: refused in the journal, nothing
+    # started, nothing asked of the engine. NOW PLAYING is honest.
+    c.run_once([True, False, False, False, False, False])
+    c.run_once([False] * 6)
+    check(len(lines) == 1 and "Nothing was started" in lines[0][0]
+          and lines[0][1].get("action") == "start" and not eng.calls,
+          f"Start Now during a show journals a refusal and does nothing: "
+          f"{lines}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  note: Pillow is not installed here, so the Start key's "
+              "words are not checked on this machine.")
+        print("  ok")
+        return
+    try:
+        for on in (True, False):
+            c.draw(fonts, blink_on=on, chase=0)
+            bg, text = sd.PLAYING_ON if on else sd.PLAYING_OFF
+            check(faces[0] == (["NOW", "PLAYING"], text, bg),
+                  f"show playing, flash phase {on}: NOW PLAYING in the "
+                  f"demo's green: {faces[0]}")
+            check(faces[1] == (["HOLD"], sd.CHAMPAGNE, None)
+                  and faces[2] == (["ABORT"], sd.RED, None),
+                  f"Hold and Abort are live: {faces[1]}, {faces[2]}")
+        check(sd.PLAYING_ON == ((50, 205, 95), (4, 28, 10))
+              and sd.PLAYING_OFF == ((8, 40, 16), (60, 200, 100)),
+              "the green is the approved demo's")
+        eng.look = "HELD"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG)
+              and faces[1] == (["RESUME"], sd.BLACK, sd.GOLD),
+              f"held: PAUSED on the Start key, RESUME on Hold: "
+              f"{faces[0]}, {faces[1]}")
+        eng.lost = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
+              f"held with the audio lost: still PAUSED, the operator's own "
+              f"Hold: {faces[0]}")
+        eng.look = "PLAYING"
+        eng.lost = False
+        c.draw(fonts, blink_on=True, chase=0)
+        calm = dict(faces)
+        eng.lost = True
+        for on in (True, False):
+            c.draw(fonts, blink_on=on, chase=0)
+            bg, text = sd.AUDIO_LOST_ON if on else sd.AUDIO_LOST_OFF
+            check(faces[0] == (["AUDIO", "LOST"], text, bg),
+                  f"audio lost mid-show, flash phase {on}: AUDIO LOST, "
+                  f"amber: {faces[0]}")
+            check({k: v for k, v in faces.items() if k} ==
+                  {k: v for k, v in calm.items() if k},
+                  f"only the Start key changed: Hold, Abort and the arm "
+                  f"keys read exactly as before: {faces}")
+        check(sd.AUDIO_LOST_ON == (sd.AMBER, (40, 20, 0))
+              and sd.AUDIO_LOST_OFF == (sd.AMBER_DIM, sd.AMBER),
+              "AUDIO LOST flashes amber like CYCLE ARM")
+        running[0] = False
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.CHAMPAGNE, None),
+              f"no show running: START NOW, lost audio or not: {faces[0]}")
+        eng.look = "HELD"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.DIM_TEXT, None),
+              f"held with no show: START NOW dims, as the demo has it: "
+              f"{faces[0]}")
+        eng.look = "PLAYING"
+        eng.lost = False
+        running[0] = True
+        # The flash is the engine's liveness, never the deck's own clock:
+        # the same phase whatever the clock says, a new phase on answers.
+        c.conductor = type("_AnsweringEngine", (), {
+            "at": [None],
+            "answered_at": lambda s: s.at[0],
+            "snapshot": lambda s: {"latched": False, "look": "PLAYING"},
+            "audio_lost": lambda s: False})()
+        seen = set()
+        for step in range(8):
+            t[0] = 10.0 + step * 0.26
+            c.conductor.at[0] = 1.0      # frozen engine: no new answer
+            c.draw(fonts, c.engine_blink(), chase=0)
+            seen.add(faces[0][2])
+        check(len(seen) == 1, f"a frozen engine freezes NOW PLAYING's "
+                              f"flash whatever the deck's clock says: "
+                              f"{seen}")
+        for n in range(2 * sd.ENGINE_ANSWERS_PER_BLINK):
+            c.conductor.at[0] = 2.0 + n
+            c.draw(fonts, c.engine_blink(), chase=0)
+            seen.add(faces[0][2])
+        check(seen == {sd.PLAYING_ON[0], sd.PLAYING_OFF[0]},
+              f"fresh answers change its phase: {seen}")
+    finally:
+        restore()
+    print("  ok")
+
+
+def test_streamdeck_no_flame_link_words():
+    section("Stream Deck: with no link to flamesafe the arm keys read "
+            "NO / FLAME / LINK, one red word per key, steady, in place of "
+            "the old dim flashing NO LINK (Jeff, 2026-09-27, locked "
+            "wording); the arm link is held OFF exactly as before")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [10.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      clock=lambda: t[0])
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  note: Pillow is not installed here, so the arm keys' "
+              "words are not checked on this machine.")
+        print("  ok")
+        return
+    words = [(w, None, sd.RED, sd.CHAMPAGNE, False)
+             for w in ("NO", "FLAME", "LINK")]
+    try:
+        for blink in (True, False):
+            c.draw(fonts, blink_on=blink, chase=0, group_blink=blink)
+            check([faces[k] for k in sd.GROUP_KEYS] ==
+                  list(zip(names, words)),
+                  f"no link, flash phase {blink}: the three arm keys read "
+                  f"NO / FLAME / LINK in red, steady, each over its own "
+                  f"group's name: {[faces[k] for k in sd.GROUP_KEYS]}")
+        c._latched = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check([faces[k] for k in sd.GROUP_KEYS] == list(zip(names, words)),
+              f"latched: the missing link still shows, never greyed over: "
+              f"{[faces[k] for k in sd.GROUP_KEYS]}")
+        c._latched = False
+        check(arm.wanted == [False] * 3 and not arm.sends,
+              "drawing changed nothing on the arm link: every group still "
+              "wanted off")
+        one = sd.Controller(_FakeArmSocket(1), _FakeStatusSocket(),
+                            ["front row"], operator_provider=lambda: "Andy",
+                            show_running_provider=lambda: False,
+                            clock=lambda: t[0])
+        one.draw(fonts, blink_on=True, chase=0)
+        check([faces[k] for k in sd.GROUP_KEYS] ==
+              [("front row", words[0]), ("", words[1]), ("", words[2])],
+              f"one group: the message still reads whole across the three "
+              f"keys: {[faces[k] for k in sd.GROUP_KEYS]}")
+        faces.clear()
+        st = _FakeStatus()
+        st.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": "front row", "armed": "disarmed",
+                     "wanted": False, "reason": "", "amber": "",
+                     "dwell_s": 0}]})
+        one.status = st
+        one.draw(fonts, blink_on=True, chase=0)
+        check(faces[sd.GROUP_KEYS[0]][1][0] == "OFF"
+              and sd.GROUP_KEYS[1] not in faces,
+              f"the link back: OFF, and the spare keys go blank: {faces}")
+    finally:
+        restore()
     print("  ok")
 
 
@@ -36191,6 +36420,117 @@ def test_deck_presses_reach_the_engine_conductor():
     print("  ok")
 
 
+def test_api_conductor_reports_audio_loss():
+    section("/api/conductor carries a read-only \"audio\" field: the show "
+            "audio is lost while a cue is playing and the show clock has "
+            "stopped following it (AudioMaster's freerun after a loss); "
+            "never between cues; the deck's EngineConductor reads it and "
+            "forgets it the moment the engine stops answering")
+    import tempfile
+    from ltcplay import web as web_mod
+    from ltcplay import streamdeck as sd
+
+    class _Cond:
+        def snapshot(self):
+            return {"look": "PLAYING", "latched": False}
+
+    class _Clk:
+        playing = True
+        _mode = "follow"
+        _fault = None
+
+    class _FI:
+        clk = _Clk()
+
+        def clock_nolock(self):
+            return self.clk
+    httpd = web_mod.serve(tempfile.mkdtemp(), port=0, bind="127.0.0.1")
+    try:
+        httpd.conductor = _Cond()
+        fi = _FI()
+        httpd.fire_ice = fi
+
+        def audio():
+            st, _h, out = _ask(httpd, "GET", "/api/conductor",
+                               client=("127.0.0.1", 50000))
+            check(st == 200 and out.get("conductor", {}).get("look") ==
+                  "PLAYING", f"/api/conductor answers: {st} {out}")
+            return out.get("audio")
+        check(audio() == {"playing": True, "lost": False, "fault": None},
+              f"a cue playing with the clock following it: not lost: "
+              f"{audio()}")
+        fi.clk._mode = "freerun"
+        fi.clk._fault = ("The show audio stopped playing at 00:01:02.000 "
+                         "of 00:07:20.000 with nothing asking it to.")
+        check(audio() == {"playing": True, "lost": True,
+                          "fault": fi.clk._fault},
+              f"the clock freerunning after a loss, a cue still playing: "
+              f"lost, with the clock's own sentence: {audio()}")
+        fi.clk._mode = "follow"
+        fi.clk._fault = None
+        check(audio()["lost"] is False, "the audio back: not lost")
+        fi.clk._mode = "freerun"
+        fi.clk.playing = False
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"the cue over: nothing is lost between cues: {audio()}")
+        fi.clk = None
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"no show audio clock (Run not pressed): not lost: {audio()}")
+        del httpd.fire_ice
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"no Fire & Ice wiring at all: the field is still there, not "
+              f"lost: {audio()}")
+    finally:
+        httpd.server_close()
+
+    # The deck's own reader of that field.
+    t = [100.0]
+    view = {"v": {"conductor": {"look": "PLAYING", "latched": False},
+                  "audio": {"playing": True, "lost": True, "fault": "x"}}}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: view["v"],
+                           clock=lambda: t[0], poll_hz=200.0)
+    check(e.audio_lost() is False, "before any answer: not lost")
+    e.start()
+    try:
+        for _ in range(100):
+            if e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is True and
+              e.snapshot() == {"latched": False, "look": "PLAYING"},
+              f"the engine says lost: the deck reads it, and its snapshot "
+              f"is unchanged: {e.snapshot()}")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False},
+                     "audio": {"playing": True, "lost": False,
+                               "fault": None}}
+        for _ in range(100):
+            if not e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is False, "the audio back: not lost")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False},
+                     "audio": {"playing": True, "lost": True, "fault": "x"}}
+        for _ in range(100):
+            if e.audio_lost():
+                break
+            time.sleep(0.01)
+        view["v"] = None
+        for _ in range(100):
+            if not e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is False,
+              "the engine gone quiet: the loss is not remembered (the deck "
+              "shows ENGINE FAULT instead)")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False}}
+        time.sleep(0.05)
+        check(e.audio_lost() is False,
+              "an older engine without the field: never lost")
+    finally:
+        e.stop()
+    print("  ok")
+
+
 def test_deck_fix_round_2_abort_reset_and_disarm():
     section("Stream Deck (PR #43 fix round 2, C to E): the arm link goes "
             "false before the engine is asked to Abort; while aborted the "
@@ -38030,6 +38370,8 @@ if __name__ == "__main__":
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
     test_streamdeck_look_a_marquee()
     test_streamdeck_idle_deck_draws_rarely()
+    test_streamdeck_start_key_during_a_show()
+    test_streamdeck_no_flame_link_words()
     test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
@@ -38127,6 +38469,7 @@ if __name__ == "__main__":
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
     test_deck_fix_round_2_abort_reset_and_disarm()
     test_deck_presses_reach_the_engine_conductor()
+    test_api_conductor_reports_audio_loss()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
     test_remote_stale_state_refused_and_banner()

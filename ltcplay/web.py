@@ -890,7 +890,29 @@ class Handler(BaseHTTPRequestHandler):
                 out["lasers"] = lasers.health()
             except Exception:
                 pass
+        out["audio"] = self._show_audio(fi)
         return 200, out
+
+    @staticmethod
+    def _show_audio(fi):
+        """Read-only: whether the show audio is lost mid-show, for the
+        Stream Deck's Start key (AUDIO LOST) and the screens. Off the
+        running session's show audio clock (clock.AudioMaster, duck-typed
+        as flamelink.audio_master_state reads it): "lost" is a cue playing
+        while the clock has stopped following the audio and runs on this
+        computer's time instead (its freerun after a loss), until the
+        audio comes back or the cue ends. Nothing playing: never lost.
+        "fault" is the clock's standing audio fault sentence, or None."""
+        get = getattr(fi, "clock_nolock", None)
+        clk = get() if callable(get) else None
+        if clk is None:
+            return {"playing": False, "lost": False, "fault": None}
+        playing = bool(getattr(clk, "playing", False))
+        mode = getattr(clk, "_mode", None) or "idle"
+        fault = getattr(clk, "_fault", None)
+        return {"playing": playing,
+                "lost": playing and mode == "freerun",
+                "fault": str(fault) if fault else None}
 
     def do_GET(self):
         self._ctx_cache = None          # one connection carries many requests
