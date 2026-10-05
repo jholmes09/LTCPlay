@@ -880,6 +880,10 @@ class Soak:
         vals = b[126:126 + 512]
         if any(vals):
             self.sacn_nonzero += 1
+        src = f"{addr[0]}:{addr[1]}" if addr else ""
+        if self.judge is not None:
+            self.judge.source(src, struct.unpack_from(">H", b, 113)[0],
+                              bytes(b[22:38]).hex())
         if self.judge is not None and not self.stopping:
             now = time.time()
             in_show = self.tc_last is not None and \
@@ -887,7 +891,7 @@ class Soak:
             self.judge.packet(vals, now, dict(self.fs_armed), in_show,
                               (lambda g, since, _n=now:
                                self.ex.fire_quiet(g, _n, since))
-                              if self.ex else None)
+                              if self.ex else None, src=src)
         if b[112] & 0x40:
             self.sacn_terminated += 1
 
@@ -902,6 +906,8 @@ class Soak:
         if st is None:
             return
         self.fs_status_frames += 1
+        if self.judge is not None:
+            self.judge.status(st.get("groups"), time.time())
         for g in st.get("groups") or []:
             if isinstance(g, dict) and g.get("name"):
                 self.fs_armed[g["name"]] = g.get("armed") == "armed"
@@ -1223,6 +1229,12 @@ class Soak:
         self.judge = soak_exercise.SacnJudge(
             [(g["name"], g["safety"], g["fire"])
              for g in self.fs_cfg_doc["groups"]])
+        ev_path = os.path.join(self.dir, "flame-violations.txt")
+
+        def evidence(lines, _p=ev_path):
+            with open(_p, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n\n")
+        self.judge.evidence = evidence
         self.make_schedule()
         self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.flame_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1845,6 +1857,13 @@ class Soak:
                     f"{len(viol)} violation(s) (limit 0)"
                     + (": " + "; ".join(f"{now_text(a)} {w}"
                                         for a, w in viol[:6]) if viol else "")
+                    + (" (the last 2 s before each, packet by packet, "
+                       "with flamesafe's own status: flame-violations.txt)"
+                       if viol else "")
+                    + "; sACN senders seen: " + (", ".join(
+                        f"{a or '?'} universe {u} CID {c[:8]} ({n} packets)"
+                        for (a, u, c), n in (j.sources.items() if j else []))
+                        or "none")
                     + "; fire packets per group: " + ", ".join(
                         f"{n} {c}" for n, c in
                         (j.fire_frames.items() if j else []))
@@ -1908,7 +1927,7 @@ class Soak:
                                     ex.arms_by_group.items())
                         + f"); {c['cycles']} arm cycle(s) after an Abort "
                         f"(Disarm, then hold again); {c['holds']} Holds, "
-                        f"{c['resumes']} Resumes, "
+                        f"{c['resumes']} Resumes ({ex.hold_tail_line()}), "
                         f"{c['aborts']} Aborts, {c['resets']} Resets; "
                         f"{self.hold_continued} Hold silence(s) in the "
                         f"timecode read as the same show"

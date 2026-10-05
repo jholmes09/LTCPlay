@@ -99,6 +99,7 @@ class Exerciser:
                        "resumes": 0, "aborts": 0, "resets": 0}
         self.arms_by_group = {g: 0 for g in self.groups}
         self.rearmed = {}            # group -> wall time it was last armed
+        self.hold_tails = {}         # hold window start -> timings
         self.failures = []           # (time, sentence)
         self.windows = []            # (start, end or None, why): no fire
         self.ready = False
@@ -223,11 +224,17 @@ class Exerciser:
             self._close("abort")       # re-armed: an Abort's window ends
         if t >= HOLD_AT_S and "hold" not in done:
             done.add("hold")
+            sent = time.time()
             st, doc = self.press("hold")
             if st == 200:
                 self.counts["holds"] += 1
                 start = time.time()
                 self.windows.append([start, None, "hold"])
+                # How long fire went on after the press (diagnostics, show
+                # PC 2026-10-04): the Hold's flame cut runs on the show
+                # conductor's own thread after the press returns.
+                self.hold_tails[start] = {"sent": sent, "back": start,
+                                          "last_fire": None}
                 self.sleep(HOLD_FOR_S)
                 st, doc = self.press("resume")
                 if st == 200:
@@ -292,6 +299,11 @@ class Exerciser:
         `armed_since`: when flamesafe's own status last turned it armed (it
         can fire a moment before the exerciser's hold returns)."""
         rearmed = max(self.rearmed.get(name, 0), armed_since or 0)
+        for s, e, why in self.windows:
+            h = self.hold_tails.get(s) if why == "hold" else None
+            if h is not None and at >= h["sent"] and (e is None or at <= e):
+                if h["last_fire"] is None or at > h["last_fire"]:
+                    h["last_fire"] = at
         # A Hold names itself first: an older Abort's window is open only
         # until the group is armed again, and must never label a Hold.
         for s, e, why in self.windows:
@@ -303,6 +315,26 @@ class Exerciser:
                         f"{time.strftime('%H:%M:%S', time.localtime(s))}, "
                         f"{name} not armed again since")
         return None
+
+    def hold_tail_line(self):
+        """How long fire went on after each Hold press, worst first."""
+        rows = []
+        for h in self.hold_tails.values():
+            if h["last_fire"] is not None:
+                rows.append((h["last_fire"] - h["sent"], h))
+        if not self.hold_tails:
+            return "no Hold pressed"
+        if not rows:
+            return (f"{len(self.hold_tails)} Hold(s); no fire after any press "
+                    f"(no group was firing)")
+        rows.sort(key=lambda r: -r[0])
+        worst, h = rows[0]
+        return (f"{len(self.hold_tails)} Hold(s); fire went on at most "
+                f"{worst * 1000:.0f} ms after a press was sent ("
+                f"{(h['back'] - h['sent']) * 1000:.0f} ms of that waiting "
+                f"for the engine to answer the press, at "
+                f"{time.strftime('%H:%M:%S', time.localtime(h['sent']))}); "
+                f"the judge allows {GRACE_S * 1000:.0f} ms after the answer")
 
     def in_window(self, at, kinds=("hold", "abort")):
         """The reason fire (by default) must be zero at wall time `at`, or
@@ -327,6 +359,14 @@ class SacnJudge:
         self._changed = {}           # group -> wall time its state changed
         self._last = {}
         self._mismatch = {}          # group -> [since, reported]
+        # Evidence (show PC, 2026-10-04, 18:33:34): the last 2 s of what was
+        # judged, written out with every violation, and every sACN source
+        # seen, so a violation can be settled from the files alone.
+        import collections
+        self.trace = collections.deque(maxlen=80)
+        self.sources = {}            # (address, universe, CID) -> packets
+        self.evidence = None         # callable(lines) the soak writes
+        self._status_seen = {}       # group -> (wall time, status dict)
 
     def armed_state(self, armed, at):
         """Remember when each group's reported state last changed."""
@@ -335,13 +375,14 @@ class SacnJudge:
                 self._last[n] = v
                 self._changed[n] = at
 
-    def packet(self, values, at, armed, in_show, quiet):
+    def packet(self, values, at, armed, in_show, quiet, src=None):
         """`values`: the 512 slot values; `armed`: {name: bool};
         `in_show`: timecode moving; `quiet`: the reason fire must be zero
         now (a Hold, an Abort), or None, or a callable(group) giving it per
         group."""
         self.packets += 1
         self.armed_state(armed, at)
+        self.trace.append(self._trace_row(values, at, armed, in_show, src))
         if any(values):
             self.nonzero += 1
         mine = set()
@@ -383,9 +424,41 @@ class SacnJudge:
             self._bad(at, f"channel(s) {stray[:4]} belong to no group but "
                           f"carry values")
 
+    def status(self, groups, at):
+        """flamesafe's own status frame, group by group, for the trace."""
+        for g in groups or ():
+            if isinstance(g, dict) and g.get("name"):
+                self._status_seen[g["name"]] = (at, {
+                    k: g.get(k) for k in ("armed", "wanted", "reason",
+                                          "sent_safety", "sent_fire",
+                                          "commanded_fire")})
+
+    def source(self, addr, universe, cid):
+        k = (addr, universe, cid)
+        self.sources[k] = self.sources.get(k, 0) + 1
+
+    def _trace_row(self, values, at, armed, in_show, src):
+        row = [f"{at:.3f}", src or "", "show" if in_show else "no show"]
+        for n, safety, fire in self.groups:
+            st = self._status_seen.get(n)
+            row.append(f"{n}: judged {'armed' if armed.get(n) else 'not'}"
+                       f" (changed {at - self._changed.get(n, at):.3f} s "
+                       f"ago); sACN safety {values[safety - 1]} fire "
+                       f"{[values[f - 1] for f in fire]}; status "
+                       + (f"{st[1]} {at - st[0]:.3f} s old" if st else
+                          "none"))
+        return " | ".join(row)
+
     def _bad(self, at, text):
-        if len(self.violations) < 500:
+        first = len(self.violations) < 500
+        if first:
             self.violations.append((at, text))
+        if self.evidence is not None and len(self.violations) <= 50:
+            try:
+                self.evidence([f"VIOLATION {at:.3f} {text}"]
+                              + list(self.trace))
+            except Exception:
+                pass
 
 
 def self_test():
