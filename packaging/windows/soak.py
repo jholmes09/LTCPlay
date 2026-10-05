@@ -109,6 +109,7 @@ PIXEL_DEV_RATE = 0.001     # this soak: fewer than 1 in 1000 frames past it
 PIXEL_GAP_MS = 100.0       # this soak: never four frames' worth of nothing
 LINK_GAP_MS = 50.0         # CONTRACT.md: never more than 50 ms between frames
 SACN_LATE_MS = 250.0       # flamesafe overrun_ms: a tick this late is a fault
+SACN_NOTE_MS = 100.0       # each heard sACN gap over this: its time, listed
 MEM_GROWTH_MB_H = 10.0     # this soak: steady growth past this is a leak
 DRIFT_MS = 50.0            # this soak: one and a half frames at 30 fps
 DECK_VID, DECK_PID = 0x0FD9, 0x0063   # the Stream Deck Mini streamdeck.py drives
@@ -122,8 +123,10 @@ def now_text(t=None):
 class Intervals:
     """Streaming statistics of the gaps between events."""
 
-    def __init__(self, period_ms, dev_ms=None, gap_ms=None):
+    def __init__(self, period_ms, dev_ms=None, gap_ms=None, note_ms=None):
         self.period = period_ms
+        self.note_ms = note_ms      # each gap over this: (wall time, ms)
+        self.noted = []
         self.dev_ms = dev_ms
         self.gap_ms = gap_ms
         self.lock = threading.Lock()
@@ -158,6 +161,9 @@ class Intervals:
                     self.over_dev += 1
                 if self.gap_ms is not None and g > self.gap_ms:
                     self.over_gap += 1
+                if self.note_ms is not None and g > self.note_ms and \
+                        len(self.noted) < 200:
+                    self.noted.append((time.time(), g))
             self.last = t
 
     def reset_gap(self):
@@ -371,7 +377,7 @@ class Soak:
         self.journal_real = []
         self.journal_expected = {}
         self.engine_env_dir = None
-        self.sacn = Intervals(25.0, None, SACN_LATE_MS)
+        self.sacn = Intervals(25.0, None, SACN_LATE_MS, SACN_NOTE_MS)
         self.sacn_nonzero = 0
         self.sacn_terminated = 0
         self.fs_state = "never"
@@ -682,7 +688,8 @@ class Soak:
         self.key = cfg["link"]["key"]
         self.status_port = int(cfg["link"]["status_port"])
         self.tick_hz = float(cfg.get("tick_hz", 40))
-        self.sacn = Intervals(1000.0 / self.tick_hz, None, SACN_LATE_MS)
+        self.sacn = Intervals(1000.0 / self.tick_hz, None, SACN_LATE_MS,
+                              SACN_NOTE_MS)
 
     def deck_plugged_in(self):
         try:
@@ -905,9 +912,17 @@ class Soak:
             return ("NOT TESTED", "Engine's own output timing (measured "
                     "inside the engine)", "the engine wrote no timings")
         parts = []
+        # The timecode is judged on its plainly running intervals: a Resume
+        # holds the frozen frame until the audio reaches the next one, by
+        # design (entry_engine._bench_send_gaps labels each interval).
+        tc_key = "timecode_running" if "timecode_running" in eng else \
+            "timecode"
         for kind, label, limit, soak_iv in (
                 ("pixels", "pixel frames", PIXEL_GAP_MS, self.pixels),
-                ("timecode", "timecode packets", TC_GAP_MS, self.tc)):
+                (tc_key, "timecode packets" + (
+                    " while running (Resume, Hold and show start left out, "
+                    "listed below)" if tc_key != "timecode" else ""),
+                 TC_GAP_MS, self.tc)):
             d = eng.get(kind) or {}
             if not d:
                 parts.append(f"{label}: none sent")
@@ -922,8 +937,23 @@ class Soak:
                 + (": " + ", ".join(
                     f"{time.strftime('%H:%M', time.localtime(m * 60))} "
                     f"{d[m]:.0f} ms" for m in over[:8]) if over else ""))
+        labelled = {}
+        for e in self.send_gap_events():
+            if len(e) > 3 and e[1] == "timecode":
+                labelled.setdefault(e[3], []).append(e)
+        if labelled:
+            parts.append(
+                "timecode intervals of 50 ms or more, by what the show clock "
+                "was doing: " + "; ".join(
+                    f"{what} {len(es)} (worst {max(x[2] for x in es):.0f} "
+                    f"ms" + (", " + ", ".join(
+                        f"{now_text(x[0])} {x[2]:.0f} ms"
+                        for x in sorted(es, key=lambda x: -x[2])[:4])
+                        if what.startswith("running") or what == "resync"
+                        else "") + ")"
+                    for what, es in sorted(labelled.items())))
         bad = any(v > lim for kind, lim in (("pixels", PIXEL_GAP_MS),
-                                            ("timecode", TC_GAP_MS))
+                                            (tc_key, TC_GAP_MS))
                   for v in (eng.get(kind) or {}).values())
         return ("FAIL" if bad else "PASS",
                 "Engine's own output timing (measured inside the engine, "
@@ -999,7 +1029,7 @@ class Soak:
         # Each long send interval: was the whole engine held at that moment
         # (the probe stalled too), or that sending thread alone (its own
         # wait: a disk read, a socket)?
-        gaps = self.send_gap_events()
+        gaps = [e[:3] for e in self.send_gap_events() if e[2] >= 100.0]
         whole = alone = 0
         for at, _kind, ms in gaps:
             hit = any(abs((e["at"] - e["late_ms"] / 2000.0) -
@@ -2294,8 +2324,14 @@ class Soak:
                     f"hears gaps flamesafe never had): {sc.events} packets, "
                     f"mean {sc.mean():.1f} ms (target "
                     f"{1000 / self.tick_hz:.0f}), longest gap "
-                    f"{sc.longest:.1f} ms, {sc.over_gap} over "
-                    f"{SACN_LATE_MS:g} ms"))
+                    f"{sc.longest:.1f} ms"
+                    + (f" at {now_text(sc.longest_at)}" if sc.longest_at
+                       else "")
+                    + f", {sc.over_gap} over {SACN_LATE_MS:g} ms; "
+                    f"{len(sc.noted)} over {SACN_NOTE_MS:g} ms"
+                    + (": " + ", ".join(f"{now_text(a)} {g:.0f} ms"
+                                        for a, g in sc.noted[:12])
+                       if sc.noted else "")))
         ex = self.ex
         if ex is not None:
             c = ex.counts
