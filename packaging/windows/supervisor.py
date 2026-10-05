@@ -118,9 +118,9 @@ def load_settings():
         "run_flamesafe": True,
         "run_deck": True,
         "open_page_at_sign_in": True,
-        # BENCH BUILD: the scheduling protection (engine and flamesafe at
-        # High, their show threads at Highest, the deck at Above normal).
-        # false turns it off, for A/B tests.
+        # The scheduling protection (show PC, 2026-10-04): the engine and
+        # flamesafe at High, their show threads at Highest, the deck at
+        # Above normal. false turns it off (A/B tests).
         "priority_boost": True,
         # The rack screen page (/remote), full screen on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
@@ -1020,6 +1020,28 @@ def self_check():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
+    if not (priority_boost_on({"priority_boost": True}) and
+            priority_boost_on({}) and
+            not priority_boost_on({"priority_boost": False})):
+        raise RuntimeError("the priority_boost setting is read wrongly")
+    got = []
+    import threading
+    stop = threading.Event()
+    th = threading.Thread(target=stop.wait, args=(5,),
+                          name="ltcplay-flame-link")
+    th.start()
+    ltcwin.boost_threads(("ltcplay-flame-link",), log=got.append,
+                         every_s=0.02, setter=lambda n, lv: lv == 2,
+                         stop=stop)
+    deadline = time.monotonic() + 2
+    while not got and time.monotonic() < deadline:
+        time.sleep(0.02)
+    stop.set()
+    th.join(1)
+    if not got or "Highest" not in got[0]:
+        raise RuntimeError(f"the show thread is not raised: {got}")
+    yield ("scheduling protection: on unless showpc.json says "
+           "\"priority_boost\": false; a show thread is raised to Highest")
     cmd = rack_page_command(7878, 2, [(0, 0, 1920, 1080),
                                       (1920, 0, 3840, 1080)],
                             r"C:\Edge\msedge.exe", r"C:\p")

@@ -202,9 +202,8 @@ def keep_time(above_normal=True):
         out.append("timer 1 ms" if rc == 0 else
                    f"timer NOT set to 1 ms (timeBeginPeriod returned {rc})")
         if above_normal == "high":
-            # BENCH BUILD (show PC, 2026-10-04): MadMapper decoding six
-            # 1080p videos on the CPU starved the engine for 0.4 s at a
-            # time. High, never Realtime; third-party programs are never
+            # Show PC, 2026-10-04: MadMapper decoding six 1080p videos on
+            # the CPU starved the engine for 0.4 s at a time. High, never Realtime; third-party programs are never
             # touched.
             ok = k32.SetPriorityClass(proc, 0x80)     # HIGH
             out.append("priority High" if ok else
@@ -225,8 +224,8 @@ PRIORITY_ENV = "LTCPLAY_PRIORITY"      # "high": set by the supervisor
 
 
 def boosted():
-    """True when the supervisor (or the soak) asked for the bench build's
-    scheduling protection (showpc.json "priority_boost")."""
+    """True when the supervisor (or the bench soak) asked for the
+    scheduling protection (showpc.json "priority_boost", on by default)."""
     return os.environ.get(PRIORITY_ENV) == "high"
 
 
