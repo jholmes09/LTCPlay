@@ -770,8 +770,8 @@ class LocalSchedule:
         """One blocking GET. Only ever called from the background thread
         (_loop); never from current_operator() or show_running()."""
         try:
-            with urllib.request.urlopen(self.base_url + path,
-                                        timeout=FETCH_TIMEOUT_S) as r:
+            with _opener().open(self.base_url + path,
+                                timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (OSError, ValueError, urllib.error.URLError):
             return None
@@ -1125,8 +1125,8 @@ class ScreenKeys:
 
     def _http_fetch(self, path):
         try:
-            with urllib.request.urlopen(self.base_url + path,
-                                        timeout=FETCH_TIMEOUT_S) as r:
+            with _opener().open(self.base_url + path,
+                                timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (OSError, ValueError, urllib.error.URLError):
             return None
@@ -1256,7 +1256,7 @@ class DeckJournal:
             self.base_url + "/api/schedule/deck-event", data=body,
             method="POST", headers={"Content-Type": "application/json"})
         try:
-            urllib.request.urlopen(req, timeout=JOURNAL_POST_TIMEOUT_S).read()
+            _opener().open(req, timeout=JOURNAL_POST_TIMEOUT_S).read()
             return True
         except (OSError, urllib.error.URLError):
             # Not running --schedule, not reachable, timed out, or a

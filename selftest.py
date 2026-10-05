@@ -37271,6 +37271,33 @@ def test_deck_reads_reset_after_an_engine_restart():
     print("  ok")
 
 
+def test_deck_requests_share_one_no_proxy_opener():
+    section("Stream Deck: the screen holds, the operator lookup and the "
+            "journal reach the engine through the one opener with no "
+            "proxies, never a fresh urlopen per request (on macOS that "
+            "looked up the system proxy every time, and the deck's screen "
+            "poll fell behind the engine's 0.3 s freshness)")
+    from ltcplay import streamdeck as sd
+    seen = []
+
+    class Opener:
+        def open(self, req, timeout=None):
+            seen.append(getattr(req, "full_url", req))
+            raise OSError("not reachable in this test")
+    saved = list(sd._OPENER)
+    sd._OPENER[:] = [Opener()]
+    try:
+        sd.ScreenKeys("http://127.0.0.1:9")._http_fetch(
+            "/api/remote/deck-input")
+        sd.LocalSchedule("http://127.0.0.1:9")._http_fetch("/api/state")
+        sd.DeckJournal("http://127.0.0.1:9")._post("a line", {})
+    finally:
+        sd._OPENER[:] = saved
+    check(len(seen) == 3 and any("deck-input" in str(u) for u in seen),
+          f"all three went through the shared opener: {seen}")
+    print("  ok")
+
+
 def test_deck_abort_with_no_show_reads_what_the_engine_did():
     section("Stream Deck: an Abort the engine answered with every group "
             "disarmed and no show stopped leaves the Abort key reading "
@@ -38450,6 +38477,10 @@ def test_screen_arm_end_to_end_probes():
                      kwargs={"poll_interval": 0.05}, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
 
+    # Like the page, no proxy lookup per request (on macOS urlopen asks the
+    # system's proxy settings every time, and the heartbeats fell behind).
+    _noproxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
     def http(path, body=None, cookie=None):
         req = urllib.request.Request(
             base + path, data=None if body is None else
@@ -38457,7 +38488,7 @@ def test_screen_arm_end_to_end_probes():
             headers={"Content-Type": "application/json",
                      **({"Cookie": cookie} if cookie else {})})
         try:
-            with urllib.request.urlopen(req, timeout=5) as r:
+            with _noproxy.open(req, timeout=5) as r:
                 return r.status, _j.loads(r.read()), r.headers
         except urllib.error.HTTPError as e:
             return e.code, _j.loads(e.read() or b"{}"), e.headers
@@ -39244,6 +39275,7 @@ if __name__ == "__main__":
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
     test_deck_abort_with_no_show_reads_what_the_engine_did()
+    test_deck_requests_share_one_no_proxy_opener()
     test_deck_reads_reset_after_an_engine_restart()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
