@@ -87,7 +87,16 @@ def _bench_send_gaps():
     sends: the worst interval between two pixel frames and between two
     timecode packets, per minute, written to that file every 5 s. The soak
     lays it beside its own view, so a starved soak is never mistaken for a
-    starved engine (show PC, 2026-10-04). Unset, it does nothing at all."""
+    starved engine (show PC, 2026-10-04). Unset, it does nothing at all.
+
+    Each timecode interval of 50 ms or more is also kept with what the
+    show clock was doing (show PC, 2026-10-05: isolated 100 ms readings in
+    a clean block): a Resume, where the timecode holds its frozen frame
+    until the audio, fading back in, reaches the next one (by design: the
+    timecode never runs backwards); a Hold beginning; the first frame of a
+    show; the clock following the audio after it really moved (a resync);
+    or plainly running. "timecode_running" is the per-minute worst of the
+    plainly running ones and resyncs only, the real hiccups."""
     import json
     import os
     import threading
@@ -96,9 +105,29 @@ def _bench_send_gaps():
     if not path:
         return
     from ltcplay import clock, output
-    meters = {"pixels": {}, "timecode": {}}
-    events = []     # (wall time, kind, ms): each interval of 100 ms or more
+    meters = {"pixels": {}, "timecode": {}, "timecode_running": {}}
+    events = []     # (wall time, kind, ms, label)
     last = {}
+    ctx = {"now": None, "prev": None}
+
+    def label():
+        """What the show clock was doing at this timecode send."""
+        cur, prev = ctx["now"], ctx["prev"]
+        if cur is None:
+            return "running"
+        if cur["frame"] == 0 and not cur["frozen"]:
+            return "show start"
+        if prev is None:
+            return "running"
+        if prev["frozen"] and not cur["frozen"]:
+            return "resume"
+        if cur["frozen"] and not prev["frozen"]:
+            return "hold begins"
+        if cur["outliers"] > prev["outliers"] or cur["resync"]:
+            return "resync"
+        if cur["skipped"] > prev["skipped"]:
+            return "running, frames skipped"
+        return "running"
 
     def note(kind):
         now = time.perf_counter()
@@ -106,12 +135,21 @@ def _bench_send_gaps():
         if prev is None or now - prev > 5.0:
             return
         m = int(time.time() // 60)
-        d = meters[kind]
         ms = (now - prev) * 1000.0
-        if ms > d.get(m, 0.0):
-            d[m] = ms
-        if ms >= 100.0 and len(events) < 500:
-            events.append((round(time.time(), 3), kind, round(ms, 1)))
+        what = label() if kind == "timecode" else ""
+        keys = [kind]
+        # A resync is judged too: the timecode then waited for audio that
+        # really stopped, a real hiccup in the sound.
+        if kind == "timecode" and (what.startswith("running") or
+                                   what == "resync"):
+            keys.append("timecode_running")
+        for k in keys:
+            d = meters[k]
+            if ms > d.get(m, 0.0):
+                d[m] = ms
+        floor = 50.0 if kind == "timecode" else 100.0
+        if ms >= floor and len(events) < 1000:
+            events.append((round(time.time(), 3), kind, round(ms, 1), what))
     real_frame = output.Sender.send_frame
     real_tc = clock.TimecodeOut.send
 
@@ -128,6 +166,16 @@ def _bench_send_gaps():
             note("timecode")
     output.Sender.send_frame = send_frame
     clock.TimecodeOut.send = send
+    real_sf = getattr(clock.AudioMaster, "_send_frame", None)
+    if real_sf is not None:
+        def send_frame_ctx(self, frame, now, frozen=False):
+            ctx["prev"] = ctx["now"]
+            ctx["now"] = {"frame": frame, "frozen": bool(frozen),
+                          "outliers": getattr(self, "outliers", 0),
+                          "skipped": getattr(self, "skipped", 0),
+                          "resync": bool(getattr(self, "_resync", False))}
+            return real_sf(self, frame, now, frozen)
+        clock.AudioMaster._send_frame = send_frame_ctx
 
     def writer():
         while True:

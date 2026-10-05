@@ -912,9 +912,17 @@ class Soak:
             return ("NOT TESTED", "Engine's own output timing (measured "
                     "inside the engine)", "the engine wrote no timings")
         parts = []
+        # The timecode is judged on its plainly running intervals: a Resume
+        # holds the frozen frame until the audio reaches the next one, by
+        # design (entry_engine._bench_send_gaps labels each interval).
+        tc_key = "timecode_running" if "timecode_running" in eng else \
+            "timecode"
         for kind, label, limit, soak_iv in (
                 ("pixels", "pixel frames", PIXEL_GAP_MS, self.pixels),
-                ("timecode", "timecode packets", TC_GAP_MS, self.tc)):
+                (tc_key, "timecode packets" + (
+                    " while running (Resume, Hold and show start left out, "
+                    "listed below)" if tc_key != "timecode" else ""),
+                 TC_GAP_MS, self.tc)):
             d = eng.get(kind) or {}
             if not d:
                 parts.append(f"{label}: none sent")
@@ -929,8 +937,23 @@ class Soak:
                 + (": " + ", ".join(
                     f"{time.strftime('%H:%M', time.localtime(m * 60))} "
                     f"{d[m]:.0f} ms" for m in over[:8]) if over else ""))
+        labelled = {}
+        for e in self.send_gap_events():
+            if len(e) > 3 and e[1] == "timecode":
+                labelled.setdefault(e[3], []).append(e)
+        if labelled:
+            parts.append(
+                "timecode intervals of 50 ms or more, by what the show clock "
+                "was doing: " + "; ".join(
+                    f"{what} {len(es)} (worst {max(x[2] for x in es):.0f} "
+                    f"ms" + (", " + ", ".join(
+                        f"{now_text(x[0])} {x[2]:.0f} ms"
+                        for x in sorted(es, key=lambda x: -x[2])[:4])
+                        if what.startswith("running") or what == "resync"
+                        else "") + ")"
+                    for what, es in sorted(labelled.items())))
         bad = any(v > lim for kind, lim in (("pixels", PIXEL_GAP_MS),
-                                            ("timecode", TC_GAP_MS))
+                                            (tc_key, TC_GAP_MS))
                   for v in (eng.get(kind) or {}).values())
         return ("FAIL" if bad else "PASS",
                 "Engine's own output timing (measured inside the engine, "
@@ -1006,7 +1029,7 @@ class Soak:
         # Each long send interval: was the whole engine held at that moment
         # (the probe stalled too), or that sending thread alone (its own
         # wait: a disk read, a socket)?
-        gaps = self.send_gap_events()
+        gaps = [e[:3] for e in self.send_gap_events() if e[2] >= 100.0]
         whole = alone = 0
         for at, _kind, ms in gaps:
             hit = any(abs((e["at"] - e["late_ms"] / 2000.0) -
