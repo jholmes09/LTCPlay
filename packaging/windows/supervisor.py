@@ -424,6 +424,7 @@ class Program:
         self.proc = None
         self.pid = None         # also set for a program adopted at start
         self.started = 0.0
+        self.started_wall = 0.0
         self.backoff = 2.0
         self.next_try = 0.0
         self.said_why_not = ""
@@ -463,6 +464,7 @@ class Program:
                                      creationflags=flags, env=env)
         self.pid = self.proc.pid
         self.started = time.monotonic()
+        self.started_wall = time.time()
         log(f"started {EXE[self.name]} (pid {self.pid}): {' '.join(args)}")
 
     def exited(self):
@@ -668,6 +670,75 @@ def _watch_end_session(progs):
     return handler
 
 
+def leave_at_end_of_session(ending, wait_s=ltcwin.END_SESSION_WAIT_S + 1.0):
+    """Before the supervisor ends for a shutdown: the clean stops are done
+    (or the wait is over), AND the window procedure's TRUE has reached
+    Windows (re-review of #47, P2-e: a process that ends first answers 0,
+    which Windows reads as a refusal)."""
+    if ending is None:
+        return
+    ending.done.wait(wait_s)
+    ending.let_windows_have_its_answer()
+
+
+REFUSED_FILE = "ltcplay_engine_refused.txt"   # ltcplay/cli.py writes it
+
+
+def engine_refusal(since):
+    """The engine's own sentence for refusing to start (re-review of #46
+    and #47, P2-g), when it wrote one at or after `since` (time.time()),
+    else ""."""
+    path = os.path.join(appdata_dir(), REFUSED_FILE)
+    try:
+        if os.path.getmtime(path) < since - 1.0:
+            return ""
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    return " ".join(l.strip() for l in lines[1:] if l.strip())
+
+
+def refusal_page(text):
+    """A page for the rack screen saying why the engine did not start (the
+    engine, which serves the rack screen, is not running to say it)."""
+    import html
+    path = os.path.join(appdata_dir(), "engine-refused.html")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("<!doctype html><meta charset=utf-8><title>LTC Player did "
+                 "not start</title><body style=\"background:#200;color:#fff;"
+                 "font:28px sans-serif;padding:40px\"><h1>The show engine did "
+                 "not start</h1><p>" + html.escape(text) + "</p><p>Fix it, "
+                 "then start LTC Player again. Nothing was sent to the "
+                 "rig.</p></body>")
+    return path
+
+
+def say_engine_refused(text, said):
+    """Logged, and put on the rack screen, once per distinct sentence."""
+    if not text or text == said[0]:
+        return False
+    said[0] = text
+    log(f"the engine refused to start: {text}")
+    try:
+        page = refusal_page(text)
+        if ltcwin.WINDOWS:
+            cmd = rack_page_command(0, load_settings().get("page_monitor", 1),
+                                    monitors(), edge_exe(),
+                                    os.path.join(appdata_dir(),
+                                                 "rack-screen"))
+            if cmd:
+                cmd[2] = "file:///" + page.replace("\\", "/")
+                subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, close_fds=True)
+            else:
+                os.startfile(page)
+    except Exception as e:
+        log(f"could not show the engine's refusal on the rack screen: {e}")
+    return True
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -699,14 +770,14 @@ def run_loop(open_page=False):
                 progs[n].pid = pids[0]
                 log(f"{name} was already running (pid {pids[0]}); adopted")
     handled_stop = 0.0
+    refused_said = [""]
     page_opened = not open_page
     ending = _watch_end_session(progs)
     while True:
         if ENDING.is_set():
             # The clean stops go out on the end-session thread; this
             # process must not end before they have.
-            if ending is not None:
-                ending.done.wait(ltcwin.END_SESSION_WAIT_S + 1.0)
+            leave_at_end_of_session(ending)
             log("Windows is ending the session; supervisor exiting")
             keep_awake(False)
             return 0
@@ -748,6 +819,9 @@ def run_loop(open_page=False):
             p = progs[n]
             args, why_not = want[n]
             if p.proc is not None and p.proc.poll() is not None:
+                if n == "engine":
+                    say_engine_refused(engine_refusal(p.started_wall),
+                                       refused_said)
                 p.exited()
             elif p.proc is None and p.pid is not None and not p.alive():
                 log(f"{EXE[n]} (adopted, pid {p.pid}) has stopped")

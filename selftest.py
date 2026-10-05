@@ -11627,6 +11627,75 @@ def test_windows_supervisor_one_flamesafe_config_for_all():
     print("  ok")
 
 
+def test_windows_supervisor_end_of_session_and_engine_refusal():
+    section("Windows app: the supervisor ends for a shutdown only once its "
+            "TRUE has reached Windows (re-review P2-e), and an engine that "
+            "refused to start is said in its log and on the rack screen "
+            "(re-review P2-g)")
+    import shutil
+    import tempfile
+    import threading
+    W, SUP, gone = _winpkg()
+    work = tempfile.mkdtemp()
+    old_local = os.environ.get("LOCALAPPDATA")
+    real_log = SUP.log
+    try:
+        order = []
+
+        class E:
+            done = threading.Event()
+
+            def let_windows_have_its_answer(self):
+                order.append("answer")
+        e = E()
+        e.done.set()
+        SUP.leave_at_end_of_session(e, wait_s=0.1)
+        check(order == ["answer"],
+              f"the supervisor waits for the window's answer: {order}")
+        SUP.leave_at_end_of_session(None)
+        check(True, "and with no window there is nothing to wait for")
+        # The engine's refusal.
+        os.environ["LOCALAPPDATA"] = work
+        logged = []
+        SUP.log = logged.append
+        t0 = time.time()
+        check(SUP.engine_refusal(t0) == "", "no refusal: nothing to say")
+        path = os.path.join(SUP.appdata_dir(), SUP.REFUSED_FILE)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("2026-10-05 10:00:00\nThe settings name different "
+                     "flamesafe configs: a; b.\n")
+        why = SUP.engine_refusal(t0)
+        check("different flamesafe configs" in why,
+              f"the engine's own sentence is read: {why!r}")
+        os.utime(path, (t0 - 60, t0 - 60))
+        check(SUP.engine_refusal(t0) == "",
+              "an old refusal from an earlier start is not this one")
+        said = [""]
+        check(SUP.say_engine_refused(why, said) and
+              any("refused to start" in l and "flamesafe configs" in l
+                  for l in logged), f"logged: {logged}")
+        page = os.path.join(SUP.appdata_dir(), "engine-refused.html")
+        check(os.path.exists(page) and "flamesafe configs" in
+              open(page, encoding="utf-8").read(),
+              "and a page for the rack screen says it")
+        n = len(logged)
+        check(not SUP.say_engine_refused(why, said) and len(logged) == n,
+              "the same refusal is said once, not at every restart")
+        src = open(SUP.__file__, encoding="utf-8").read()
+        check("            leave_at_end_of_session(ending)\n" in src and
+              "say_engine_refused(engine_refusal(p.started_wall)" in src,
+              "the supervisor's loop does both")
+    finally:
+        SUP.log = real_log
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        shutil.rmtree(work, ignore_errors=True)
+        gone()
+    print("  ok")
+
+
 def test_windows_shutdown_stops_the_show_programs_cleanly():
     section("Windows app: a shutdown or sign-out (WM_QUERYENDSESSION, "
             "WM_ENDSESSION) gives flamesafe, the engine and the supervisor "
@@ -39400,6 +39469,7 @@ if __name__ == "__main__":
     test_schedule_routes()
     test_the_gpl_path_never_loads_the_scheduler()
     test_windows_shutdown_stops_the_show_programs_cleanly()
+    test_windows_supervisor_end_of_session_and_engine_refusal()
     test_windows_supervisor_one_flamesafe_config_for_all()
     test_windows_supervisor_lock_is_machine_wide()
     test_the_scheduler_engine_is_pure()
