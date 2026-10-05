@@ -11455,6 +11455,357 @@ def test_the_gpl_path_never_loads_the_scheduler():
     print("  ok")
 
 
+def _winpkg():
+    """packaging/windows on the path, its modules loaded fresh; and a
+    function that takes them off again."""
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    sys.path.insert(0, sp)
+    for m in ("supervisor", "ltcwin"):
+        sys.modules.pop(m, None)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True      # no __pycache__ in packaging/
+    try:
+        import ltcwin
+        import supervisor
+    finally:
+        sys.dont_write_bytecode = was
+
+    def done():
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m in ("supervisor", "ltcwin"):
+            sys.modules.pop(m, None)
+    return ltcwin, supervisor, done
+
+
+def test_windows_supervisor_lock_is_machine_wide():
+    section("Windows app: the supervisor's single-copy lock is a Global\\ "
+            "mutex, so a second supervisor in another Windows session or "
+            "for another user sees the first (locked decision 21)")
+    import ctypes
+    W, SUP, gone = _winpkg()
+    real_err = getattr(ctypes, "get_last_error", None)
+    try:
+        check(SUP.MUTEX_NAME == "Global\\LTCPlayerSupervisor",
+              f"the name is in the Global namespace: {SUP.MUTEX_NAME!r}")
+        made, err = [], [0]
+
+        class K:
+            class _F:
+                def __init__(self, fn):
+                    self.fn = fn
+
+                def __call__(self, *a):
+                    return self.fn(*a)
+            def __init__(self, handle, e):
+                self.CreateMutexW = K._F(lambda sa, own, name: (
+                    made.append(name), err.__setitem__(0, e), handle)[2])
+                self.OpenMutexW = K._F(lambda acc, inh, name: (
+                    made.append(name), err.__setitem__(0, e), handle)[2])
+                self.CloseHandle = K._F(lambda h: True)
+        ctypes.get_last_error = lambda: err[0]
+        was_win, was_k32 = W.WINDOWS, SUP._k32
+        W.WINDOWS = True
+        try:
+            SUP._k32 = lambda: K(0, 5)          # another user's supervisor
+            check(SUP.take_mutex() is False and
+                  made[-1] == "Global\\LTCPlayerSupervisor",
+                  "a lock another user's supervisor holds (access denied) "
+                  "means one is running: this one does not start")
+            check(SUP.supervisor_running() is True,
+                  "and it reads as running")
+            SUP._k32 = lambda: K(0, 2)
+            check(SUP.supervisor_running() is False,
+                  "no such lock anywhere: not running")
+            SUP._k32 = lambda: K(1234, 183)
+            check(SUP.take_mutex() is False, "already exists: not started")
+            SUP._k32 = lambda: K(1234, 0)
+            check(SUP.take_mutex() is True, "made fresh: this is the one")
+        finally:
+            W.WINDOWS, SUP._k32 = was_win, was_k32
+            SUP._MUTEX = None
+    finally:
+        if real_err is None:
+            del ctypes.get_last_error
+        else:
+            ctypes.get_last_error = real_err
+        gone()
+    print("  ok")
+
+
+def test_windows_supervisor_one_flamesafe_config_for_all():
+    section("Windows app: the supervisor hands flamesafe, the Stream Deck "
+            "and the engine the one flamesafe config in showpc.json (review "
+            "of PR #38, P1-4)")
+    import shutil
+    import tempfile
+    W, SUP, gone = _winpkg()
+    work = tempfile.mkdtemp()
+    old_local = os.environ.get("LOCALAPPDATA")
+    real_popen = SUP.subprocess.Popen
+    try:
+        os.environ["LOCALAPPDATA"] = work
+        fs = os.path.join(work, "flamesafe.json")
+        open(fs, "w").write("{}")
+        settings = {"show_folder": os.path.join(work, "shows"),
+                    "flamesafe_config": fs, "port": 7878,
+                    "run_flamesafe": True, "run_deck": True,
+                    "show_mode": "fire_ice",
+                    "schedule": os.path.join(work, "s.json")}
+        want = SUP.wanted_args(settings)
+        check(want["flamesafe"][0] == [fs] and
+              want["deck"][0][want["deck"][0].index("--flamesafe-config")
+                              + 1] == fs,
+              f"flamesafe and the deck get the same path: {want}")
+        seen = []
+
+        class FakeProc:
+            pid = 4242
+
+            def __init__(self, cmd, **kw):
+                seen.append((cmd, kw.get("env") or {}))
+
+            def poll(self):
+                return None
+        SUP.subprocess.Popen = FakeProc
+        os.environ[W.FLAMESAFE_ENV] = "/somewhere/else.json"
+        for name in SUP.PROGRAMS:
+            p = SUP.Program(name)
+            p.start(want[name][0], settings)
+            p.out.close()
+        envs = [env.get(W.FLAMESAFE_ENV) for _cmd, env in seen]
+        check(envs == [fs] * 3,
+              f"every program is started with that path, never one left "
+              f"over in the supervisor's own environment: {envs}")
+        p = SUP.Program("engine")
+        p.start(want["engine"][0], dict(settings, flamesafe_config=""))
+        p.out.close()
+        check(W.FLAMESAFE_ENV not in seen[-1][1],
+              "with none named in showpc.json, none is passed on, not even "
+              "one in the supervisor's own environment")
+    finally:
+        SUP.subprocess.Popen = real_popen
+        os.environ.pop(W.FLAMESAFE_ENV, None)
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        if SUP._LOG is not None:
+            SUP._LOG.close()
+            SUP._LOG = None
+        shutil.rmtree(work, ignore_errors=True)
+        gone()
+    print("  ok")
+
+
+def test_windows_shutdown_stops_the_show_programs_cleanly():
+    section("Windows app: a shutdown or sign-out (WM_QUERYENDSESSION, "
+            "WM_ENDSESSION) gives flamesafe, the engine and the supervisor "
+            "their clean stop before Windows goes on, flamesafe last "
+            "(review of PR #38, P1-2)")
+    import threading
+    W, SUP, gone = _winpkg()
+    try:
+        # The window procedure's logic, on any OS.
+        calls, done = [], threading.Event()
+        h = W.EndSession(lambda: (calls.append("stop"), done.set()), done,
+                         wait_s=2.0)
+        check(h.on_message(W.WM_QUERYENDSESSION, 0) == 1 and
+              calls == ["stop"],
+              f"WM_QUERYENDSESSION: the clean stop, then TRUE: {calls}")
+        check(h.on_message(W.WM_ENDSESSION, 1) == 0 and calls == ["stop"],
+              "WM_ENDSESSION after it: never a second stop")
+        check(h.on_message(0x0010, 0) is None,
+              "any other message is the default window procedure's")
+        late = threading.Event()
+        h2 = W.EndSession(lambda: calls.append("stop2"), late, wait_s=0.3)
+        check(h2.on_message(W.WM_ENDSESSION, 0) == 0 and
+              "stop2" not in calls,
+              "a cancelled end of session stops nothing")
+        t0 = time.monotonic()
+        threading.Timer(0.1, late.set).start()
+        check(h2.on_message(W.WM_ENDSESSION, 1) == 0 and
+              "stop2" in calls and time.monotonic() - t0 >= 0.09,
+              "WM_ENDSESSION alone stops it, and answers only once it has "
+              "stopped")
+        h3 = W.EndSession(lambda: None, threading.Event(), wait_s=0.2)
+        t0 = time.monotonic()
+        check(h3.on_message(W.WM_QUERYENDSESSION, 0) == 1 and
+              time.monotonic() - t0 < 1.0,
+              "a stop that never finishes is waited for a bounded time, and "
+              "the shutdown is never refused")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "packaging", "windows",
+                                "entry_flamesafe.py"),
+                   encoding="utf-8").read()
+        check("stop_cleanly_at_shutdown(\"flamesafe\", stopped)" in src and
+              "stopped.set()" in src,
+              "flamesafe.exe makes its shutdown window and says when its "
+              "zeros are out")
+
+        # The supervisor: every program stopped, flamesafe last; nothing
+        # restarted after.
+        class P:
+            def __init__(self, name, pid):
+                self.name, self.pid, self.up = name, pid, True
+
+            def alive(self):
+                return self.up
+        progs = {n: P(n, 100 + i) for i, n in enumerate(SUP.PROGRAMS)}
+        order = []
+
+        def breaker(pid):
+            order.append(pid)
+            for p in progs.values():
+                if p.pid == pid:
+                    p.up = False
+            return ""
+        SUP.ENDING.clear()
+        left = SUP.end_session_stop(progs, wait_s=1.0, breaker=breaker)
+        check(left == [] and SUP.ENDING.is_set(),
+              f"every program stopped, and nothing is started after: {left}")
+        check(order == [progs["deck"].pid, progs["engine"].pid,
+                        progs["flamesafe"].pid],
+              f"deck, engine, then flamesafe: {order}")
+        stuck = {n: P(n, 200 + i) for i, n in enumerate(SUP.PROGRAMS)}
+        left = SUP.end_session_stop(stuck, wait_s=0.2,
+                                    breaker=lambda pid: "")
+        check(left == [SUP.EXE[n] for n in SUP.PROGRAMS],
+              f"a program that does not stop is named: {left}")
+        SUP.ENDING.clear()
+        if W.WINDOWS:
+            _windows_end_session_window_check(W)
+            _windows_flamesafe_stops_at_query_end_session(W)
+        else:
+            print("  note: the real window and the real flamesafe.exe are "
+                  "checked on Windows only (windows-latest CI and the show "
+                  "PC); a real `shutdown /r` on the show PC is still needed")
+    finally:
+        gone()
+    print("  ok")
+
+
+def _windows_end_session_window_check(W):
+    """Windows: the real hidden window answers a real WM_QUERYENDSESSION."""
+    import ctypes
+    import threading
+    from ctypes import wintypes
+    done = threading.Event()
+    calls = []
+    h = W.EndSession(lambda: (calls.append(1), done.set()), done,
+                     wait_s=2.0)
+    th = W.end_session_window(h, "ltcplay selftest end session")
+    check(th is not None and th.hwnd, "the hidden window was made")
+    if not th or not th.hwnd:
+        return
+    u32 = ctypes.WinDLL("user32")
+    u32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT,
+                                 wintypes.WPARAM, wintypes.LPARAM)
+    u32.SendMessageW.restype = ctypes.c_ssize_t
+    u32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    check(not u32.IsWindowVisible(th.hwnd), "and it is never shown")
+    r = u32.SendMessageW(th.hwnd, W.WM_QUERYENDSESSION, 0, 0)
+    check(r == 1 and calls == [1],
+          f"WM_QUERYENDSESSION to the real window ran the stop: {r} {calls}")
+    u32.PostMessageW(th.hwnd, 0x0012, 0, 0)          # WM_QUIT
+
+
+def _windows_flamesafe_stops_at_query_end_session(W):
+    """Windows: the real flamesafe entry, from source, puts its zeros and
+    the stream-terminated flag on the wire when its window is sent
+    WM_QUERYENDSESSION, and exits. The bench-only half of this is a real
+    `shutdown /r` on the show PC."""
+    import ctypes
+    import json as _json
+    import shutil
+    import socket as _s
+    import subprocess
+    import tempfile
+    from ctypes import wintypes
+    root = os.path.dirname(os.path.abspath(__file__))
+    work = tempfile.mkdtemp()
+    rx = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(0.2)
+    proc = None
+    try:
+        doc = _json.load(open(os.path.join(root, "flamesafe",
+                                           "flamesafe.example.json"),
+                              encoding="utf-8"))
+        ports = [_free_port() for _ in range(3)]
+        doc["destination"] = {"ip": "127.0.0.1",
+                              "port": rx.getsockname()[1]}
+        doc["link"].update(listen_port=ports[0], status_port=ports[1],
+                           arm_port=ports[2])
+        doc["log_dir"] = work
+        cfg = os.path.join(work, "fs.json")
+        _json.dump(doc, open(cfg, "w", encoding="utf-8"))
+        env = dict(os.environ, PYTHONPATH=root)
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(root, "packaging", "windows",
+                                          "entry_flamesafe.py"), cfg],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        u32 = ctypes.WinDLL("user32")
+        found = []
+        PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                  wintypes.LPARAM)
+
+        def each(hwnd, _l):
+            pid = wintypes.DWORD()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == proc.pid:
+                buf = ctypes.create_unicode_buffer(64)
+                u32.GetWindowTextW(hwnd, buf, 64)
+                if buf.value == "flamesafe end session":
+                    found.append(hwnd)
+            return True
+        cb = PROC(each)
+        deadline = time.monotonic() + 20
+        while not found and time.monotonic() < deadline:
+            u32.EnumWindows(cb, 0)
+            time.sleep(0.1)
+        check(found, "flamesafe made its shutdown window")
+        if not found:
+            return
+        while True:                    # drain what it sent while running
+            try:
+                rx.recv(1024)
+            except OSError:
+                break
+        u32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT,
+                                     wintypes.WPARAM, wintypes.LPARAM)
+        u32.SendMessageW.restype = ctypes.c_ssize_t
+        r = u32.SendMessageW(found[0], W.WM_QUERYENDSESSION, 0, 0)
+        got = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                got.append(rx.recv(1024))
+            except OSError:
+                if proc.poll() is not None:
+                    break
+        term = [p for p in got if len(p) > 125 and p[112] & 0x40]
+        check(r == 1, f"flamesafe answered WM_QUERYENDSESSION TRUE: {r}")
+        check(term and all(not any(p[126:]) for p in term),
+              f"its zeros and the stream-terminated flag went out before it "
+              f"answered ({len(got)} packets after, {len(term)} terminated)")
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            pass
+        check(proc.poll() is not None, "and flamesafe exited")
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(5)
+        if proc is not None and proc.stdout is not None:
+            proc.stdout.close()
+        rx.close()
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def test_the_scheduler_engine_is_pure():
     section("scheduler: the engine does no I/O and runs on Python 3.12")
     import ast
@@ -38752,6 +39103,9 @@ if __name__ == "__main__":
     test_schedule_clock_check()
     test_schedule_routes()
     test_the_gpl_path_never_loads_the_scheduler()
+    test_windows_shutdown_stops_the_show_programs_cleanly()
+    test_windows_supervisor_one_flamesafe_config_for_all()
+    test_windows_supervisor_lock_is_machine_wide()
     test_the_scheduler_engine_is_pure()
     test_schedule_restart_keeps_tonight()
     test_schedule_clock_check_never_delays_a_show()
