@@ -11412,7 +11412,10 @@ def test_the_gpl_path_never_loads_the_scheduler():
     if os.path.isdir(tools):
         files += [os.path.join(tools, n) for n in os.listdir(tools)]
     for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
-        files += [os.path.join(dirpath, n) for n in names]
+        if "__pycache__" in dirpath.split(os.sep):
+            continue        # compiled copies of the files checked here
+        files += [os.path.join(dirpath, n) for n in names
+                  if not n.endswith(".pyc")]
     for f in files:
         if f.replace(os.sep, "/").endswith("packaging/windows/soak.py"):
             # BENCH BUILD ONLY (branch bench-build, never merged): the bench
@@ -11436,6 +11439,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
     if os.path.isfile(os.path.join(sp, "supervisor.py")):
         sys.path.insert(0, sp)
         d = _tf.mkdtemp()
+        was_bc = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True    # no __pycache__ in packaging/
         try:
             import supervisor as _sup
             want = _sup.wanted_args({
@@ -11452,6 +11457,7 @@ def test_the_gpl_path_never_loads_the_scheduler():
             sys.path.remove(sp)
             sys.modules.pop("supervisor", None)
             sys.modules.pop("ltcwin", None)
+            sys.dont_write_bytecode = was_bc
     print("  ok")
 
 
@@ -15221,7 +15227,10 @@ def test_the_gpl_path_never_loads_announcements():
     if os.path.isdir(tools):
         files += [os.path.join(tools, n) for n in os.listdir(tools)]
     for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
-        files += [os.path.join(dirpath, n) for n in names]
+        if "__pycache__" in dirpath.split(os.sep):
+            continue        # compiled copies of the files checked here
+        files += [os.path.join(dirpath, n) for n in names
+                  if not n.endswith(".pyc")]
     for f in files:
         try:
             text = open(f, errors="replace", encoding="utf-8").read()
