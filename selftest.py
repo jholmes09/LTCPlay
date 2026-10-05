@@ -38872,7 +38872,7 @@ def test_screen_arm_end_to_end_probes():
     whys = {}
 
     def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
-             during=None):
+             during=None, on_beat=None):
         """Hold like the page: a heartbeat every 100 ms, each after the
         last answered, with the latest status's served_at. As on the page,
         the status is polled on its own, never between two heartbeats (a
@@ -38896,13 +38896,13 @@ def test_screen_arm_end_to_end_probes():
         poller.start()
         try:
             return _beats(group, cookie, end, started, why, answers, hid,
-                          latest, drop_at, seen_lag, during)
+                          latest, drop_at, seen_lag, during, on_beat)
         finally:
             polling.set()
             poller.join(2)
 
     def _beats(group, cookie, end, started, why, answers, hid, latest,
-               drop_at, seen_lag, during):
+               drop_at, seen_lag, during, on_beat=None):
         while time.perf_counter() < end:
             if drop_at is not None and \
                     time.perf_counter() - started >= drop_at:
@@ -38916,6 +38916,8 @@ def test_screen_arm_end_to_end_probes():
                 body["hold_id"] = hid
             code, out, _h = http("/api/remote/arm-hold", body, cookie)
             answers.append(code)
+            if on_beat is not None:
+                on_beat(answers)
             if code != 200:
                 why.append((round(time.perf_counter() - started, 2),
                             out.get("error")))
@@ -38990,20 +38992,26 @@ def test_screen_arm_end_to_end_probes():
               f"P4: an Abort during a browser hold: never arms: {ans}")
         # P5: a second browser on the same group.
         results = {}
+        andy_live = threading.Event()
 
         def second():
-            time.sleep(0.3)
+            # While Andy's hold is live (two heartbeats answered), not after
+            # a fixed time a slow runner may have used up.
+            andy_live.wait(3.0)
             st = http("/api/remote/status", cookie=jeff)[1]
             results["jeff"] = http("/api/remote/arm-hold",
                                    {"group": "wave flamer",
                                     "seen": st["served_at"]}, jeff)[0]
         th = threading.Thread(target=second)
         th.start()
-        hold("wave flamer", andy, 0.6)
+        p5 = hold("wave flamer", andy, 0.6, on_beat=lambda a: (
+            a.count(200) >= 2 and andy_live.set()))
         th.join()
         check(results.get("jeff") == 409 and never_armed(2, 2.0),
               f"P5: a second browser on the same group is refused, and a "
-              f"short first hold arms nothing: {results}")
+              f"short first hold arms nothing: {results}; the first "
+              f"hold's answers {p5}, why it ended "
+              f"{whys.get('wave flamer')}")
         # P6: arming switched off.
         RM.save_settings(work, screen_arming=False)
         ans = hold("wave flamer", andy, 1.5)
