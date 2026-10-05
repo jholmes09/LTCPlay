@@ -6,6 +6,7 @@
   "destination": {"ip": "127.0.0.1", "port": 5568},
   "link": {"listen_ip": "127.0.0.1", "listen_port": 5571,
            "status_ip": "127.0.0.1", "status_port": 5572,
+           "arm_port": 5573,
            "key": "fire-and-ice-2026-replace-this-key"},
   "gflame_range": "30-50%",
   "arm_value": 78,

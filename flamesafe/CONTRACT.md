@@ -165,6 +165,8 @@ Top level:
 | `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
+| `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now. Its `wanted` bits can only ever CLEAR a group's bit, never set one, while it is not the locked sender. It CAN become the locked sender: the lock goes to whoever sends next once the locked sender has been quiet for `arm_stale_ms`, and a flood that crowds the real deck's frames out of the receive buffer makes the real deck look quiet (the round-4 review did this). Once that has happened the real deck, still sending, is the one counted here. That is why, as of round 4, no consent edge counts while this is non-zero (see the arm link section): whoever holds the lock, nobody can arm a group while anyone else is on the link. ltcplay must alarm on this alone; the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
+| `arm_input.flooded` | true while flamesafe has seen a flood on the arm port (more than 50 datagrams, or more than 64 KiB, waiting in one poll, keyed or not; the byte limit added round 5) inside the last `arm_stale_ms` (added round 4 of the safety review, 2026-10-02). No consent edge counts while it is true |
 | `frames.state` | `never`, `fresh` or `stale` (by `frame_stale_ms`). `stale` or `never` means every group is disarmed and needs a cycle once the link is back |
 | `frames.fire` | `passing` while the last frame is younger than `fire_hold_ms`, else `zeroed`: every fire slot is zero |
 | `frames.last_reject` | why the last rejected datagram was rejected |
@@ -177,7 +179,7 @@ Per group, the two lamps of section 8 panel 5:
 |---|---|
 | `wanted` | what the arm input is asking for |
 | `armed` | the ARMED lamp: `disarmed` (dim blue), `armed` (green: the safety slot carries the arm value), `held` (amber: arm asked for and refused) |
-| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.` |
+| `reason` | why held, in words: `cycle the arm`, `dirty edge`, `re-arm dwell`, `chatter`, `arm input stale`, `arm input has never asserted`, `safety program fault`, `Show program stopped answering: disarmed. Cycle the arm to re-arm once it is back.`, `Show program has not answered yet: disarmed. Cycle the arm once it is running.`, `Another sender is on the arm link: a cycle cannot arm until it stops. Cycle the arm again once it has gone.` (round 4: shown instead of `cycle the arm` while `arm_input.foreign_senders` is non-zero or `arm_input.flooded` is true) |
 | `amber` | `flashing` when cycling the arm is the fix (`cycle the arm`, `dirty edge`); `steady` when cycling would only restart the wait or fix nothing (`re-arm dwell`, `chatter`, and every veto). Empty unless held |
 | `dwell_s` | whole seconds left in the re-arm dwell, 1 or more while held for it, else 0. The lamp shows this number; the screen never counts down on its own |
 | `sent_safety` | the SENT safety value this tick: 0 or the arm value |
@@ -191,6 +193,265 @@ flame universe.
 If no status frame arrives for 1 s, ltcplay shows red for the safety
 program and keeps running the rest of the show. It never takes over the
 flame universe. There is no fallback path, deliberately.
+
+## The arm link (build step 7b, landed 2026-10-01)
+
+A fourth loopback socket, `link.arm_port` on `link.arm_ip` (default: the
+same address as `link.listen_ip`), optional: a config without it runs with
+`NullArmInput`, exactly as before this build step, and every group stays
+disarmed. The Stream Deck (`ltcplay/streamdeck.py`, run as its own
+process by `ltc deck`, separate from both the ltcplay show program that
+sends the flame frames and flamesafe) sends one arm frame at 10 Hz or faster,
+always carrying every group's current wanted state, whether or not
+anything changed:
+
+```json
+{"v": 2, "k": "<link.key>", "t": "arm", "seq": 4410,
+ "wanted": [true, false, false], "names": ["front row", "cat-walk", "wave flamer"]}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | integer | must be 2 |
+| `k` | string | must equal flamesafe's `link.key` |
+| `t` | string | must be `"arm"` |
+| `seq` | integer, 0 or more | the deck's own liveness counter; see the arm input rules below |
+| `wanted` | list of exactly N booleans | N is flamesafe's configured group count; positional, in config order |
+| `names` | list of exactly N strings | the group names, in config order; required on this frame (unlike `arminput.ArmAssertion.names`, which is optional for the test driver) |
+
+Rejected, with the reason journaled: not JSON, not an object, longer than
+16384 bytes, wrong `v`, wrong or missing `k`, wrong `t`, `seq` missing or
+negative, `wanted` not exactly N booleans, `names` not exactly N strings, a
+sender other than the locked one (below), group names that do not match
+this config's (checked one layer up, in the arm input rules below, and
+also journaled). A rejected datagram changes nothing, exactly as for a
+rejected flame frame.
+
+**The sender lock (added 2026-10-01, after a second safety review).** This
+section used to end here: "Unlike the flame-frame link there is no sender
+lock: there is exactly one Stream Deck in this show, and the key already
+keeps out anything that has not read flamesafe's config... the cost of
+being wrong here is a DISARM, never a fire." Running the actual code
+proved that false. `wanted` can ask for EITHER state, so a second local
+process that has read flamesafe's config -- the key is not a secret in the
+cryptographic sense, it lives in a file -- can send `wanted=True` exactly
+as easily as `wanted=False`. Worse, because the service keeps only the
+LAST arm datagram it could decode each tick, a rogue sender racing the
+real Stream Deck can win a tick outright: if the operator's own Abort
+sends `wanted` all false and a rogue frame lands after it in the same
+tick, or the rogue simply keeps re-asserting `True` faster than anyone
+notices, the composer sees only the rogue's `True` that tick, and a group
+can read ARMED again a moment after the operator just told it not to be --
+an Abort visibly undone by a datagram the operator never sent, on the
+screen they are watching. That is not "only ever a disarm"; it is a way
+to MASK an Abort.
+
+So the arm link now has the same sender lock the flame-frame link always
+had: while a datagram has been accepted from one (ip, port) inside
+`arm_stale_ms` of another, a datagram from anywhere else is rejected as
+`another sender` and journaled, changing nothing. Once nothing has been
+accepted for `arm_stale_ms` the lock releases, so a restarted deck on a
+new port still takes over. **This does NOT bound how long a rogue can
+hold the lock once it is in.** An earlier draft of this section claimed
+"the window in which a genuinely different sender could slip in is never
+wider than the window in which a disconnect would have disarmed every
+group anyway" -- that is false, and a third safety review (round 2) found
+the gap it was hiding: the lock only ever decides whether a SECOND sender
+is accepted while a FIRST one is already live; it says nothing about how
+that first one got there. If the real deck is silent for `arm_stale_ms`
+(a reconnect, a restart, ordinary boot ordering before the real deck has
+sent its first frame), a rogue racing it can become the locked sender
+itself, for real, and arm groups the operator never asked for -- and it
+then holds that lock for as long as it keeps re-asserting faster than
+`arm_stale_ms`, which is indefinite, not bounded by anything. Worse, the
+real deck's own Abort, once it reconnects, is then rejected as "another
+sender" and does nothing: an Abort that visibly fails to disarm what the
+rogue armed.
+
+The actual fix (round 2) is in `SocketArmInput.poll()`: a datagram from
+any sender OTHER than the currently-locked one can still never ARM
+anything, but it can always DISARM. `poll()` tracks each foreign sender's
+last-reported `wanted` vector (while it keeps re-asserting inside its own
+`arm_stale_ms`) and ANDs every tracked foreign vector, bit for bit, into
+whatever assertion it returns: a foreign sender saying a group is
+`wanted=false` forces that group's bit false in the result no matter what
+the locked sender is asking for. This is what actually restores "a
+foreign frame can only ever disarm, never arm" even while a rogue holds
+the nominal lock -- the lock by itself only ever answered "is this the
+sender I already trust", never "should an ARM from a rogue be trusted",
+and never claimed to. This mechanism lives entirely in
+`flamesafe/arminput.py`'s `SocketArmInput`, not in the composer: every
+consent, dwell, chatter and edge-quiet rule is unchanged by this fix, and
+the lock holder still has to prove consent (rule 6 below) all over again.
+On the Stream Deck's own side (`ltcplay/streamdeck.py`), this is a second
+line of defence, not the only one: the deck compares flamesafe's reported
+arm counter and per-group `wanted` states against what it itself last
+sent, and raises a visible alarm the moment they diverge, because it
+should never see state on the wire that it did not set and does not
+expect -- and, as of round 2, that alarm (and any group flamesafe is
+still actually reporting armed) stays visible on the deck's screen even
+after an Abort has latched it: a latched screen must never paint a flat
+OFF over a group that is still really armed. As of round 3 the deck also
+raises this alarm on `arm_input.foreign_senders` alone (above), since the
+AND can leave `wanted` looking exactly like what the deck expects with
+nothing else to notice.
+
+**The forced-edge fix (round 3, after a fourth safety review).** The AND
+above closes "a rogue can mask an Abort", but a fourth review found it
+opened a different hole: a foreign sender saying a group is `wanted=false`
+for a while, then `wanted=true` again, puts a false-then-true sequence in
+front of the composer's consent rule (rule 6 below) -- and that rule reads
+ANY false-then-true sequence on a live counter as the operator cycling the
+arm, with no way to tell a bit that went low because the AND forced it
+from one the LOCKED sender genuinely reported low. The locked sender's own
+report never has to change at all for this to arm a group. Fixed by
+`SocketArmInput.poll()` also reporting, per group, which False bits in the
+result it just forced (`ArmAssertion.forced`); `Composer.assert_arm` never
+lets a forced low set up a future consent edge, so a forced low-then-high
+sequence can never read as the operator cycling the arm -- only a fresh,
+UN-forced low-to-high transition from the locked sender itself can. This
+is additive to the AND above, not a replacement for it: a foreign sender
+can still only ever clear a bit, never set one.
+
+**Round 4 (after the round-4 independent review): nobody arms anything
+while anyone else is on the link.** The sentence in the status table that
+a foreign sender "never becomes the locked sender itself" was false. The
+lock goes to whoever sends next once the locked sender has been quiet for
+`arm_stale_ms`, and two attacks proved a rogue can get there:
+
+- *The deck gap.* The Stream Deck used to close its arm socket and send
+  nothing while it was unplugged. The lock lapsed, a rogue took it, sent
+  its own low then high, and every group armed on the wire with no deck
+  plugged in. Fixed on the deck side (`ltcplay/streamdeck.py`): while no
+  deck is connected the deck process keeps sending every group OFF at its
+  normal rate on the SAME socket, and a reconnect restarts `wanted` and
+  `seq` on that socket instead of opening a new one, so the lock does not
+  lapse while the deck process is running, whether or not a deck is
+  plugged in. Since round 5 any error from the deck hardware or its main
+  loop is handled the same way, not only a clean unplug; only a deliberate
+  stop ends the deck process. **Residual, stated plainly: the deck process
+  is its own process (`ltc deck`), separate from the show program that
+  sends the flame frames. If the deck process alone dies, is killed or
+  freezes, the show link stays up, every group disarms within
+  `arm_stale_ms`, and the arm lock lapses with it. A local process holding
+  the key can then take the lock with nothing on the link to compete
+  against, and the "no consent while anyone else is on the link" rule
+  below has nobody else to see.** It still has to earn consent the normal
+  way, a genuine low then high from the lock holder on a live counter
+  (rule 6), and nothing it does can arm a group before that. This is a
+  residual, not something the link prevents: the key lives in a file that
+  any process running as the same user can read. Only when the show
+  program itself dies does the show link go too, and link loss disarms
+  every group (section above).
+- *The flood.* About 300,000 valid frames in 2 s crowd the real deck's
+  frames out of the receive buffer; the deck looks quiet for
+  `arm_stale_ms`, the arm input goes stale (every group disarms), and the
+  rogue becomes the locked sender. It then forged a low then a high on a
+  group the deck still wanted, and that group re-armed with no operator
+  action.
+
+The fix for both is in `Composer.assert_arm`: a down edge only counts as
+consent while `arm_input.foreign_senders` is zero AND `arm_input.flooded`
+is false, and while either is not, every pending down edge is cleared too,
+so nothing seen before the other sender turned up can be finished while it
+is there. After a takeover the real deck is the foreign sender, and it
+keeps sending (20 Hz, OFF frames included, unplugged or not), so a rogue
+that holds the lock can never collect consent for as long as the deck
+process (`ltc deck`) is alive; if it is not, see the residual above. Also: when the lock changes hands, the composer clears every latch
+and pending edge exactly as for an input restart, so a consent edge can
+never be half proved by one sender and finished by another
+(`ArmAssertion.sender`). The cost, accepted: a genuine cycle made while
+another sender is on the link does not count, and the operator cycles
+again once it has gone. Whether the lock itself should refuse to change
+hands during a flood was considered and left alone: a rule that pins the
+lock cannot tell "the real deck is crowded out" from "a rogue that grabbed
+the lock went quiet", and the second must hand the lock back to the real
+deck. Blocking consent instead is safe whichever one holds it.
+
+A flood is more than 50 datagrams, or more than 64 KiB, waiting in one
+poll (round 5: the kernel's receive buffer fills by bytes, and 12
+maximum-size frames filled the default one without ever reaching 50
+datagrams). The arm socket also asks the kernel for a 4 MiB receive
+buffer.
+
+Every rejection on the arm link (wrong key, wrong shape, garbage, another
+sender, a flood) is journaled once per reason per episode with a count on
+the closing line; an episode ends only after 5 s with none of that reason,
+no reason writes more than 4 lines a minute however the datagrams are
+spaced, and all the reasons together write no more than 8 a minute (round
+5). A flood of undecodable datagrams used to write one line per datagram
+and push real events out of the bounded journal queue. On top of that the
+journal never lets arm-link lines take more than half its queue, so the
+other half is always free for "show program stopped answering", arm and
+disarm lines and faults behind a blocked console.
+
+**This frame says only what the deck wants.** It decides nothing: every
+rule below (consent, the dirty-edge gate, the re-arm dwell, chatter,
+`arm_stale_ms`) runs in the composer exactly as it does for the test
+driver. The Stream Deck's bottom-row keys set `wanted` for one group each;
+they never encode "armed", "cycling" or "waiting" on the wire; those are
+read back from the status frame's per-group `armed`, `reason`, `amber` and
+`dwell_s` and drawn on the key. **Arming is a hold, disarming is a tap**
+(Jeff, 2026-10-01, safety review of PR #31, item 8): pressing an OFF (or
+SHOW LOST) group key starts a short hold-to-arm timer on the DECK side
+only (the same shape as the Abort key's own hold, with the same kind of
+fill feedback); only once it completes does the deck send `wanted=True`
+for that group, and letting go early sends nothing. Pressing an
+armed-or-held key sends `wanted=False` at once, no hold, same as always.
+A group key also refuses to even START a hold for a short refractory
+window right after that same key's last disarm, so pressing it again "to
+be sure" during a panic can never quietly re-arm it. None of this changes
+what is on the wire or what the composer does with it; `wanted` is still
+a plain boolean vector, asserted continuously, exactly as this whole
+section already describes -- only the deck's own button feel changed.
+
+**Abort disarms over this same link, not a new message to flamesafe.**
+Pressing and holding the Stream Deck's ABORT key sends `wanted` all false
+at once, on the same socket, before anything else happens; this is the
+"an Abort from the Stream Deck disarms (the safety program owns the deck)"
+referred to in `ltcplay/conductor.py`'s `ShowOutputs.flames_disarm_all`
+docstring. An Abort from the Rack screen or Phone has no such path yet: it
+can only zero ltcplay's own flame cue values (`flames_zero`), because
+flamesafe has no message on the EXISTING flame-frame link that means
+"disarm", on purpose -- the only thing that can disarm a group from outside
+flamesafe is the thing that is allowed to say what it wants armed.
+
+**Abort must respond whenever there is anything to abort** (Jeff,
+2026-10-01, safety review of PR #31, item 2): the deck's own hold-to-fire
+gate on the Abort key used to ask ltcplay's scheduler whether a show was
+PLAYING or HELD, and refused to even start the hold otherwise. That left
+Abort dead exactly when it still mattered: a group armed before a show
+has started, a group left armed between two shows, or any group at all
+while ltcplay's own web server (and so the scheduler's state) could not
+be reached. The gate is now whether any flame group is wanted or armed,
+as the deck itself knows it, never a scheduler's opinion; a scheduler
+that says a show is running is an ADDITIONAL reason to light the key (for
+a wired conductor's own lasers/video/pixels/music cascade), never the
+only one. Pressing Abort with nothing armed or wanted is refused and
+journaled, so it is never a silent no-op.
+
+**Losing the Stream Deck disarms every group at once.** Since round 4
+the deck process keeps sending, while no deck is connected, every group
+`wanted` false on the same socket, so every group disarms on the next
+frame and the sender lock stays with the deck process. If the deck
+PROCESS dies or freezes (it runs on its own, as `ltc deck`), `poll()`
+returns None once nothing has arrived for the input's own bookkeeping to
+call fresh, and the EXISTING `arm_stale_ms` rule below does the rest --
+every group disarms within `arm_stale_ms` of the last accepted frame, the
+same as a crashed or frozen test driver: silence is silence. The show link
+stays up in that case, and the arm lock lapses after `arm_stale_ms`, so a
+local process holding the key can then take the lock with nothing to
+compete against; it still needs a genuine low then high of its own to arm
+anything (the residual stated under round 4 above). **Reconnecting never re-arms anything by
+itself** (rule 6, consent): the deck's own `seq` restarts at 0 on every
+connect and reconnect (rule 3 below), so even a deck that remembered its
+last button states and resent them immediately would fail consent, which
+needs the counter proven to advance while already fresh -- the first
+assertion after any gap proves nothing. The Stream Deck driver additionally
+never tries to remember pre-disconnect state: on open (first connect, or a
+reconnect after the hardware was lost) it starts every group `wanted`
+false, so the operator sees every key read OFF and re-arms by pressing it,
+matching what the lamp already says ("cycle the arm").
 
 ## The arm input (for build step 7b)
 
@@ -277,3 +538,42 @@ Version 1 (2026-09-25, superseded the same day): no `k`, no sender lock, no
 
 Version 2, 2026-09-26: link loss disarms every group (no field changed;
 two new `reason` sentences).
+
+Version 2, 2026-10-01 (build step 7b): the arm input becomes a real,
+optional link -- a new `"t": "arm"` frame on `link.arm_port`/`link.arm_ip`,
+keyed exactly like the flame and status frames. No existing frame's field,
+meaning or type changed; a config without `link.arm_port` runs exactly as
+before this step.
+
+Version 2, 2026-10-01 (safety review follow-up, same day): the arm link
+gets the flame-frame link's own sender lock (a datagram from a second
+sender is now rejected as `another sender`, journaled), and a group-name
+mismatch the composer rejects is now journaled too. No field's name, type
+or wire meaning changed; a deck and a flamesafe that already spoke build
+step 7b's arm frame correctly see no difference at all.
+
+Version 2, 2026-10-02 (third safety review, round 2 of PR #31): the
+sender lock above closed one hole and quietly left another -- a rogue
+that becomes the locked sender while the real deck is briefly quiet holds
+that lock indefinitely, and the real deck's own Abort is then rejected as
+"another sender" once it reconnects. A rejected foreign datagram's
+`wanted` is now tracked and ANDed (bits cleared, never set) into whatever
+`SocketArmInput.poll()` returns, so a foreign disarm always takes effect;
+no field's name, type or wire meaning changed. Also fixed the same round:
+an Abort and an in-progress arm-hold completing in the same Stream Deck
+main-loop pass could re-arm a group right after the Abort that was meant
+to clear it (streamdeck.py only, no wire change); a latched Stream Deck
+screen no longer paints a flat OFF over a group flamesafe is still
+actually reporting armed, nor hides the spoof/divergence alarm, while
+latched; a `confirmed: false` config now shows the real per-group state
+with an added caveat instead of blanking it (CONTRACT.md's own "show it"
+was always about an overlay, never a replacement).
+
+Version 2, 2026-10-02 (round-4 independent review of PR #31): the
+status frame gains `arm_input.flooded` and one new `reason` sentence
+(another sender on the arm link); no existing field's name, type or wire
+meaning changed. No consent edge counts while another sender is on the arm
+link or a flood has been seen on it, a change of locked sender clears
+every latch and pending edge, the Stream Deck keeps the arm link held OFF
+on one socket while unplugged, and every arm-link rejection is journaled
+once per reason per episode with a per-minute cap.

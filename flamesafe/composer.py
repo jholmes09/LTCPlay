@@ -29,6 +29,9 @@ FAULT_CLEAR_S = 5.0
 # show program coming back, and then a cycle.
 LINK_LOST = ("Show program stopped answering: disarmed. Cycle the arm to "
              "re-arm once it is back.")
+# Round 4, item B: why a cycle is not being accepted right now.
+OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
+                "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
 
@@ -65,11 +68,26 @@ class Composer:
         self._seen_down = [False] * self.n
         self._latched = [False] * self.n
         self._arm_seq = None
+        self._arm_sender = None         # round 4: who the last one came from
         self._arm_fresh_at = None       # our clock, last time seq advanced
         self._arm_seen_at = None        # our clock, last assertion of any kind
         self._arm_live = False
         self._link_live = False         # ltcplay's frames fresh last tick
         self._link_lost_at = None       # tick clock when the link went stale
+        # Round 3 of the safety review, item 6: how many OTHER senders
+        # SocketArmInput is currently tracking on the arm link (fresh
+        # inside its own stale_ms), as of the last note_foreign_arm_senders
+        # call. Zero for every input that never has one (NullArmInput,
+        # ScriptedArmInput). Carried in the status frame so the deck can
+        # raise its own alarm the instant a foreign sender is interacting
+        # with the link at all, not only once a divergence it can actually
+        # observe (a forced bit that happens to already match what this
+        # deck expects leaves nothing else to notice).
+        self._foreign_arm_senders = 0
+        # Round 4 of the safety review, item B: whether the arm input has
+        # seen a flood (arminput.FLOOD_DATAGRAMS_PER_POLL) inside its own
+        # stale_ms, as of the last note_arm_link_flooded call.
+        self._arm_link_flooded = False
 
         # frames from ltcplay
         self._frame = None              # bytes(512) or None
@@ -88,6 +106,8 @@ class Composer:
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
         self._fire_refused = [False] * self.n
+        self._name_mismatch_logging = False   # item 10: once per episode
+        self._name_mismatch_count = 0
         self._last_tick = None
         self._fault = ""
         self._fault_at = None
@@ -103,7 +123,7 @@ class Composer:
 
     # ------------------------------------------------------------ arm input
 
-    def assert_arm(self, wanted, seq, names=None):
+    def assert_arm(self, wanted, seq, names=None, forced=None, sender=None):
         """The arm input says: I want these groups armed, and my liveness
         counter is `seq`.  Returns True if the assertion was well formed.
 
@@ -112,6 +132,24 @@ class Composer:
         assertion is rejected unless they match the config exactly, in
         order, so a deck built against a different group map cannot arm
         the wrong head.
+
+        `forced` (added round 3 of the safety review, item 1) is optional:
+        one bool per group, True where this call's False bit is not a
+        genuine report from the input -- SocketArmInput sets it where its
+        own foreign-disarm AND (arminput.py's FOREIGN DISARM section)
+        cleared a bit that the locked sender itself was not asking to
+        clear.  A forced low still disarms this tick (that is the entire
+        point of letting a foreign frame clear a bit), but it must never
+        be read as the operator's own down edge: see the consent loop
+        below.  None (every other input) means nothing is forced, exactly
+        like an all-False vector.
+
+        `sender` (round 4 of the safety review) is optional: who this
+        assertion came from (SocketArmInput: the locked (ip, port)).  When
+        it differs from the last assertion's sender, this is treated exactly
+        like an input restart: every latch and every pending down edge is
+        cleared, so no consent edge can ever be half proved by one sender
+        and finished by another.
 
         Never raises.  A malformed assertion is rejected and counted; the
         staleness rule then disarms within arm_stale_ms if nothing well
@@ -123,9 +161,49 @@ class Composer:
                 raise ValueError("wanted")
             if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
                 raise ValueError("seq")
+            if forced is None:
+                f = [False] * self.n
+            else:
+                f = list(forced)
+                if len(f) != self.n or any(not isinstance(x, bool) for x in f):
+                    raise ValueError("forced")
             if names is not None:
-                if list(names) != [g.name for g in self.groups]:
-                    raise ValueError("names")
+                want_names = [g.name for g in self.groups]
+                if list(names) != want_names:
+                    # Safety review of PR #31, item 6: this used to be
+                    # folded into the generic except below, which counted
+                    # it and journaled NOTHING -- a deck built against a
+                    # different group map failed to arm anything and the
+                    # night journal never said why. Named here instead, so
+                    # it says which names, and against what.
+                    self.stats["arm_rejected"] += 1
+                    self._name_mismatch_count += 1
+                    if not self._name_mismatch_logging:
+                        # Round 2 of the safety review, item 10: logged once
+                        # per continuous episode, with a running count, not
+                        # once per assertion -- at 10 Hz or faster a
+                        # misconfigured deck would otherwise flood the
+                        # bounded journal queue (1000 lines) within a
+                        # couple of minutes, pushing out everything else.
+                        self._name_mismatch_logging = True
+                        self._event(
+                            "arm-link",
+                            f"arm assertion rejected: its group names "
+                            f"{list(names)!r} do not match this config's "
+                            f"{want_names!r}; a deck built against a "
+                            f"different group map cannot arm the wrong "
+                            f"head. Further rejections for this same "
+                            f"reason will not be logged individually "
+                            f"until it stops.")
+                    return False
+                elif self._name_mismatch_logging:
+                    self._name_mismatch_logging = False
+                    self._event(
+                        "arm-link",
+                        f"arm assertions are matching this config's group "
+                        f"names again, after {self._name_mismatch_count} "
+                        f"rejected for a mismatch")
+                    self._name_mismatch_count = 0
         except Exception:                               # noqa: BLE001
             self.stats["arm_rejected"] += 1
             return False
@@ -147,6 +225,12 @@ class Composer:
             # once it has been SEEN to advance.  Rev 1 latched on the
             # synthetic all-down report a booting watcher emits.
             advanced = False
+        elif sender is not None and self._arm_sender is not None and \
+                sender != self._arm_sender:
+            # Round 4: the arm input's sender lock changed hands.  Whatever
+            # the counter says, this is a different input: start over.
+            self._reset_latches("arm input changed sender")
+            advanced = False
         elif seq < self._arm_seq:
             # The counter went BACKWARDS: the input rebooted.  That is an
             # interruption even though the assertions kept arriving, and
@@ -156,6 +240,7 @@ class Composer:
         elif seq > self._arm_seq:
             advanced = True
         self._arm_seq = seq
+        self._arm_sender = sender
         self._arm_seen_at = t
         if advanced:
             self._arm_fresh_at = t
@@ -165,18 +250,78 @@ class Composer:
         # this very assertion advanced the counter, and the counter was
         # already fresh before it.  An input that boots up already asking
         # for arm has not asked this program for anything.
-        consent_ok = advanced and was_live
+        #
+        # Round 4 of the safety review, item B: and nobody else is on the
+        # link.  A foreign sender's frames can only ever clear bits (the
+        # AND in arminput.py), but the round-4 review proved a sender can
+        # still BECOME the locked one with no deck gap at all, by flooding
+        # the port until the real deck's frames are crowded out for
+        # arm_stale_ms, and then forge its own low-then-high.  Once it holds
+        # the lock the real deck is the foreign one, still sending, so
+        # "nobody else on the link and no flood" is false for as long as
+        # the real deck is alive -- the rogue can never collect consent.
+        # The cost: a genuine cycle made while another sender is on the
+        # link does not count, and the operator cycles again once it has
+        # gone (CONTRACT.md, the arm link).
+        disturbed = (self._foreign_arm_senders != 0
+                     or self._arm_link_flooded)
+        consent_ok = advanced and was_live and not disturbed
+        if disturbed:
+            # And no down edge seen BEFORE the other sender turned up may be
+            # finished while it is here: the operator cycles again once it
+            # has gone (the deck keeps re-asserting its own False, so a
+            # genuine low is re-proved on the first frame after it goes).
+            self._seen_down = [False] * self.n
         for i in range(self.n):
             if not w[i]:
                 if self._wanted[i]:
-                    # The operator disarmed this group.  The dwell applies.
+                    # Something disarmed this group (the operator, or a
+                    # foreign sender's forced clear).  The dwell applies
+                    # either way: a value that just went to zero must not
+                    # bounce straight back up, forced or not.
                     self._disarmed_at[i] = t
-                self._seen_down[i] = consent_ok
+                # Round 3 of the safety review (item 1): seen_down is the
+                # "the operator pulled this down for real" flag a future
+                # True consumes as consent (just below).  A FORCED low --
+                # this bit went to False only because a foreign sender's
+                # AND cleared it, never because the locked sender itself
+                # reported it -- must never set that flag: it is not the
+                # operator cycling anything, and letting it count is
+                # exactly how a foreign False-then-True sequence used to
+                # forge a consent edge while the locked sender's own report
+                # never changed. A forced low also CLEARS any seen_down a
+                # genuine low already set: the bit the composer is looking
+                # at right now did not come from the locked sender, so
+                # there is nothing left here that proves the operator did
+                # anything, forced or not.
+                self._seen_down[i] = consent_ok and not f[i]
                 self._latched[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
             self._wanted[i] = w[i]
         return True
+
+    def note_foreign_arm_senders(self, count):
+        """How many OTHER senders the arm input is currently tracking on
+        the link (round 3 of the safety review, item 6).  Called by the
+        service every tick, independent of whether assert_arm was also
+        called this tick (a locked sender that goes briefly quiet must not
+        make this number look stale just because nothing else moved).
+        Never raises: a bad value is simply not counted, which is the safe
+        side -- the deck losing this one extra signal is never worse than
+        the deck crashing."""
+        try:
+            self._foreign_arm_senders = max(0, int(count))
+        except (TypeError, ValueError):
+            pass
+
+    def note_arm_link_flooded(self, flooded):
+        """Whether the arm input has seen a flood inside its own stale_ms
+        (round 4 of the safety review, item B).  Called by the service every
+        tick, BEFORE assert_arm, like note_foreign_arm_senders.  Never
+        raises."""
+        self._arm_link_flooded = bool(flooded) if isinstance(
+            flooded, bool) else True
 
     def _reset_latches(self, why, journal=True):
         # journal=False clears just the same but neither counts nor writes
@@ -495,6 +640,12 @@ class Composer:
             if self._frame_at is None:
                 return (LINK_NEVER, "steady")
             return (LINK_LOST, "steady")
+        if not self._latched[i] and (self._foreign_arm_senders
+                                     or self._arm_link_flooded):
+            # Round 4, item B: cycling now would not count; say so instead
+            # of flashing "cycle the arm" at an operator whose cycle is
+            # being refused.
+            return (OTHER_SENDER, "steady")
         if not self._latched[i]:
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
@@ -594,6 +745,8 @@ class Composer:
                           else "live" if live else "stale"),
                 "seq": self._arm_seq,
                 "age_ms": arm_age,
+                "foreign_senders": self._foreign_arm_senders,
+                "flooded": self._arm_link_flooded,
             },
             "frames": {
                 "state": ("never" if self._frame_at is None

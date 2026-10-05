@@ -1591,6 +1591,12 @@ def cmd_retime(args):
     return 0
 
 
+def cmd_deck(args):
+    from . import streamdeck
+    return streamdeck.main(["--flamesafe-config", args.flamesafe_config,
+                            "--ltcplay-url", args.ltcplay_url])
+
+
 def cmd_gen(args):
     """Write an LTC WAV. Play it into the input, or use it with --wav."""
     import wave, struct
@@ -1854,6 +1860,17 @@ def main(argv=None):
     g.add_argument("--rate", type=int, default=48000)
     g.add_argument("--level", type=float, default=0.4)
     g.set_defaults(func=cmd_gen)
+
+    dk = sub.add_parser("deck", help="run the real Stream Deck: arms and "
+                        "disarms real flamesafe groups, and reaches Start "
+                        "Now, Hold and Abort through a show conductor "
+                        "where one is connected")
+    dk.add_argument("--flamesafe-config", required=True,
+                    help="the flamesafe config this deck talks to")
+    dk.add_argument("--ltcplay-url", default="http://127.0.0.1:7878",
+                    help="ltcplay's own local web server, for the chosen "
+                    "operator and the show's state")
+    dk.set_defaults(func=cmd_deck)
 
     args = ap.parse_args(argv)
     try:
