@@ -38405,11 +38405,35 @@ def test_screen_arm_end_to_end_probes():
     def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
              during=None):
         """Hold like the page: a heartbeat every 100 ms, each after the
-        last answered, with the latest status's served_at."""
+        last answered, with the latest status's served_at. As on the page,
+        the status is polled on its own, never between two heartbeats (a
+        status round trip in the heartbeat loop let a slow macOS runner's
+        holds lapse: the engine lets go after 0.25 s with no beat)."""
         hid, end = None, time.perf_counter() + seconds
         started = time.perf_counter()
         why = whys.setdefault(group, [])
         answers = []
+        latest = [http("/api/remote/status", cookie=cookie)[1]["served_at"]]
+        polling = threading.Event()
+
+        def poll():
+            while not polling.wait(0.2):
+                try:
+                    latest[0] = http("/api/remote/status",
+                                     cookie=cookie)[1]["served_at"]
+                except Exception:
+                    pass
+        poller = threading.Thread(target=poll, daemon=True)
+        poller.start()
+        try:
+            return _beats(group, cookie, end, started, why, answers, hid,
+                          latest, drop_at, seen_lag, during)
+        finally:
+            polling.set()
+            poller.join(2)
+
+    def _beats(group, cookie, end, started, why, answers, hid, latest,
+               drop_at, seen_lag, during):
         while time.perf_counter() < end:
             if drop_at is not None and \
                     time.perf_counter() - started >= drop_at:
@@ -38417,9 +38441,8 @@ def test_screen_arm_end_to_end_probes():
             if during and time.perf_counter() - started >= during[0]:
                 during[1]()
                 during = None
-            st = http("/api/remote/status", cookie=cookie)[1]
             body = {"group": group,
-                    "seen": st["served_at"] - int(seen_lag * 1000)}
+                    "seen": latest[0] - int(seen_lag * 1000)}
             if hid is not None:
                 body["hold_id"] = hid
             code, out, _h = http("/api/remote/arm-hold", body, cookie)
