@@ -1304,7 +1304,9 @@ def _cmd_serve(args):
             args.announce or announce_mod.default_config_path()))
     flamesafe_config, why = _one_flamesafe_config(args, fire_ice)
     if why:
+        _say_refused(why)
         return _err(why)
+    _say_refused(None)
     if getattr(args, "network", False):
         # The show network: one address, saved on the page (Show network),
         # on the fixed port. Never every interface.
@@ -1444,6 +1446,28 @@ def _one_flamesafe_config(args, fire_ice):
                       f"the same file (on the show PC, the one in "
                       f"showpc.json).")
     return (named[0][1] if named else None), None
+
+
+REFUSED_FILE = "ltcplay_engine_refused.txt"
+
+
+def _say_refused(why):
+    """The engine's refusal to start, where the Windows supervisor (and so
+    the rack screen) can find it, not only in the engine's own log (re-review
+    of #46, P2-g): REFUSED_FILE in this machine's settings folder, first
+    line the time, then the sentence. None removes it (a start that got
+    past the check). Never raises."""
+    try:
+        from . import remote as remote_mod
+        path = os.path.join(remote_mod.settings_folder(), REFUSED_FILE)
+        if why is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{why}\n")
+    except Exception:
+        pass
 
 
 def _lasers_dark_first(httpd):

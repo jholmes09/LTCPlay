@@ -32012,6 +32012,8 @@ def test_fire_ice_one_flamesafe_config_or_none_starts():
         remote = {"flamesafe_config": None, "show_network_address": None,
                   "screen_arming": False, "path": "ltcplay_remote.json"}
         RM.load_settings = lambda folder=None: dict(remote)
+        real_folder = RM.settings_folder
+        RM.settings_folder = lambda: work
         fi = F.FireIceConfig(flamesafe_config=a,
                              path=os.path.join(work, "ltcplay_fire_ice.json"))
         args = types.SimpleNamespace(flamesafe_config=None)
@@ -32053,8 +32055,21 @@ def test_fire_ice_one_flamesafe_config_or_none_starts():
                     work, "ltcplay_schedule.json")))
         check(rc and "different flamesafe configs" in out.getvalue(),
               f"ltc serve refuses to start: {rc} {out.getvalue()!r}")
+        refused = os.path.join(work, _cli.REFUSED_FILE)
+        got = open(refused, encoding="utf-8").read() \
+            if os.path.exists(refused) else ""
+        check("different flamesafe configs" in got,
+              f"and leaves the reason in the settings folder for the Windows "
+              f"supervisor and the rack screen (re-review P2-g): {got!r}")
+        _cli._say_refused(None)
+        check(not os.path.exists(refused),
+              "a start that gets past the check clears it")
     finally:
         RM.load_settings = real_load
+        try:
+            RM.settings_folder = real_folder
+        except NameError:
+            pass
         os.environ.pop(_cli.FLAMESAFE_ENV, None)
         if saved is not None:
             os.environ[_cli.FLAMESAFE_ENV] = saved

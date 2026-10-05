@@ -7464,6 +7464,12 @@ def build():
   '                if journal is not None:\n                    journal(no_route_sentence(',
   '                if False:\n                    journal(no_route_sentence('),
 
+ # -- re-review of #46: P2-g, the engine's refusal reaches the supervisor --
+ ("rereview: the flamesafe config refusal is only in the engine's log",
+  'ltcplay/cli.py',
+  '    if why:\n        _say_refused(why)\n',
+  '    if why:\n'),
+
 ]
 
 
