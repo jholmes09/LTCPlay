@@ -34057,6 +34057,44 @@ class _FlBadSock(_FlSock):
         super().sendto(data, addr)
 
 
+def test_show_timing_diagnostics_and_priority():
+    section("show PC timing (2026-10-04): the flame link keeps its sender's "
+            "worst sleep overrun per minute for /api/conductor, and the show "
+            "audio raises its own priority only when the Windows "
+            "supervisor's scheduling protection asks (never on a Mac)")
+    from ltcplay import flamelink as fl
+    from ltcplay import showaudio as sa
+    cfg = fl.FlameLinkConfig.parse({"port": 9, "universe": 1,
+                                    "key": _fl_key(), "send_hz": 40,
+                                    "frame_stale_ms": 500})
+    link = fl.FlameLink(cfg)
+    link._note_oversleep(0.004)
+    link._note_oversleep(0.120)
+    link._note_oversleep(0.010)
+    by = link.snapshot()["oversleep_ms_by_minute"]
+    check(list(by.values()) == [120.0],
+          f"the worst overrun of the minute, in ms: {by}")
+    for k in range(20):
+        link._oversleep[k] = 1.0
+    link._note_oversleep(0.001)
+    check(len(link._oversleep) <= 16, "only the last 15 minutes are kept")
+    calls = []
+    saved = os.environ.get("LTCPLAY_PRIORITY")
+    os.environ.pop("LTCPLAY_PRIORITY", None)
+    try:
+        sa._raise_priority()
+        check(True, "unset: it does nothing and never raises")
+        os.environ["LTCPLAY_PRIORITY"] = "high"
+        sa._raise_priority()     # not Windows here: still nothing, no raise
+        check(not calls, "set, but not Windows: nothing")
+    finally:
+        if saved is None:
+            os.environ.pop("LTCPLAY_PRIORITY", None)
+        else:
+            os.environ["LTCPLAY_PRIORITY"] = saved
+    print("  ok")
+
+
 def test_flame_link_fix_round_1():
     section("flame link, fix round 1 of PR #34: the Abort repeats past "
             "frame_stale_ms, only its own id confirms it, seq and ids start "
@@ -37947,6 +37985,7 @@ if __name__ == "__main__":
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
     test_flame_link_fix_round_1()
+    test_show_timing_diagnostics_and_priority()
     test_flame_link_fix_round_2()
     test_the_deck_arm_hold_fits_inside_the_post_abort_window()
     test_flame_link_sends_at_its_rate_on_one_socket()

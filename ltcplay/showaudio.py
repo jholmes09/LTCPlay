@@ -1251,11 +1251,12 @@ def take_lock(spec, clock=time.monotonic, sleep=time.sleep):
             sleep(0.05)
 
 
-def _bench_priority():
-    """BENCH BUILD (show PC, 2026-10-04): with LTCPLAY_PRIORITY=high (the
-    Windows supervisor's scheduling protection), the audio process runs at
-    High priority and this thread at Highest. Unset (every other use), it
-    does nothing. Never raises."""
+def _raise_priority():
+    """Windows, with LTCPLAY_PRIORITY=high (the Windows supervisor's
+    scheduling protection, show PC 2026-10-04: MadMapper's video decoding
+    starved the show programs): the audio process runs at High priority and
+    this thread at Highest. Unset (the Mac, and every other use), it does
+    nothing. Never raises."""
     if os.environ.get("LTCPLAY_PRIORITY") != "high" or \
             not sys.platform.startswith("win"):
         return
@@ -1278,7 +1279,7 @@ def child_main(conn, arr, spec):
     program goes away (its end of the pipe closes), so the sound never
     outlives the program that started it. Only one runs at a time on this
     computer: a second refuses, says so, and exits."""
-    _bench_priority()
+    _raise_priority()
     try:
         from . import onlyone
         try:

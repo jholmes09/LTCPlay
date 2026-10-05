@@ -665,7 +665,7 @@ class FlameLink:
     LATE_NOTE_EVERY_S = 10.0
 
     def _note_oversleep(self, over):
-        """Diagnostics only (bench, 2026-10-04): the worst amount the
+        """Diagnostics only (show PC, 2026-10-04): the worst amount the
         sender's sleep overran, per wall-clock minute, the last 15 minutes.
         One dict write; never raises."""
         try:
@@ -673,7 +673,7 @@ class FlameLink:
             d = self.__dict__.setdefault("_oversleep", {})
             if over > d.get(m, 0.0):
                 d[m] = over
-            if len(d) > 15:
+            while len(d) > 15:
                 del d[min(d)]
         except Exception:
             pass

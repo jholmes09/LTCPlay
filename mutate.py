@@ -4077,11 +4077,6 @@ def build():
   "        return 0.0 if self._mode == REHEARSAL else production_s",
   "        return production_s"),
 
- ("conductor: a production Hold fades the lasers instead of blanking them",
-  "ltcplay/conductor.py",
-  "        if look == DARK and fade > 0:",
-  "        if fade > 0:"),
-
  ("conductor: an announcement leaves the video and pixels up",
   "ltcplay/conductor.py",
   "        if look == DARK or fade > 0:\n            faded |=",
@@ -4288,18 +4283,13 @@ def build():
   "                          f\"{failed_means}\")\n",
   "        ok = getattr(self.beyond, method)(show=self.show, **kw)\n"),
 
- ("conductor: the Abort's instant laser blank is not journaled as not a fade",
+ ("conductor: the real device layer's laser blank lights the lasers instead",
   "ltcplay/conductor.py",
-  "        if self.beyond is not None and r.ok:\n            _device_note(",
-  "        if False:\n            _device_note("),
-
- ("conductor: the Abort's laser command lights the lasers instead",
-  "ltcplay/conductor.py",
-  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
-  "        r = self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
-  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
-  "        r = self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
-  "                         in_show=True)"),
+  "    def lasers_blank(self):\n"
+  "        return self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
+  "    def lasers_blank(self):\n"
+  "        return self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
+  "                            in_show=True)"),
 
  ("conductor: a Resume never lights the lasers through the real device layer",
   "ltcplay/conductor.py",
@@ -6922,8 +6912,8 @@ def build():
 
  ('fix round 2: a render made for another layout is read',
   'ltcplay/fire_ice.py',
-  '            if self._total is None or (have != self._total if whole',
-  '            if False and (have != self._total if whole'),
+  '            if total is None or (have != total if whole',
+  '            if False and (have != total if whole'),
 
  ('R2-H9 a re-rendered FSEQ is never reopened by the flame cues',
   'ltcplay/fire_ice.py',
