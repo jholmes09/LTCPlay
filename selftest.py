@@ -38521,28 +38521,47 @@ def test_screen_arm_end_to_end_probes():
                               jeff)))
         check(409 in ans and never_armed(1, 3.0),
               f"P4: an Abort during a browser hold: never arms: {ans}")
-        # P5: a second browser on the same group.
-        results = {}
-        andy_live = threading.Event()
+        # P5: a second browser on the same group, asked while the first
+        # hold is live: two of its heartbeats answered before, and another
+        # answered after (so it never lapsed in between). A slow runner can
+        # let the first hold lapse on its own HTTP (the engine's 0.25 s
+        # rule working); such a try proves nothing and is made again, up to
+        # three times.
+        tries = []
+        for _try in range(3):
+            results = {}
+            andy_live = threading.Event()
+            seen_at = {}
+            beats = []
 
-        def second():
-            # While Andy's hold is live (two heartbeats answered), not after
-            # a fixed time a slow runner may have used up.
-            andy_live.wait(3.0)
-            st = http("/api/remote/status", cookie=jeff)[1]
-            results["jeff"] = http("/api/remote/arm-hold",
-                                   {"group": "wave flamer",
-                                    "seen": st["served_at"]}, jeff)[0]
-        th = threading.Thread(target=second)
-        th.start()
-        p5 = hold("wave flamer", andy, 0.6, on_beat=lambda a: (
-            a.count(200) >= 2 and andy_live.set()))
-        th.join()
-        check(results.get("jeff") == 409 and never_armed(2, 2.0),
+            def second():
+                andy_live.wait(3.0)
+                st = http("/api/remote/status", cookie=jeff)[1]
+                results["jeff"] = http("/api/remote/arm-hold",
+                                       {"group": "wave flamer",
+                                        "seen": st["served_at"]}, jeff)[0]
+                seen_at["n"] = len(beats)
+            th = threading.Thread(target=second)
+            th.start()
+
+            def on_beat(a):
+                beats[:] = list(a)
+                if a.count(200) >= 2:
+                    andy_live.set()
+            p5 = hold("wave flamer", andy, 0.8, on_beat=on_beat)
+            th.join()
+            n = seen_at.get("n")
+            live = (andy_live.is_set() and n is not None and
+                    200 in p5[n:])
+            tries.append((p5, results.get("jeff"), live))
+            if live:
+                break
+            time.sleep(0.3)
+        check(live and results.get("jeff") == 409 and never_armed(2, 2.0),
               f"P5: a second browser on the same group is refused, and a "
-              f"short first hold arms nothing: {results}; the first "
-              f"hold's answers {p5}, why it ended "
-              f"{whys.get('wave flamer')}")
+              f"short first hold arms nothing: tries (first hold's answers, "
+              f"the second browser's, first hold live throughout) {tries}; "
+              f"why the first holds ended {whys.get('wave flamer')}")
         # P6: arming switched off.
         RM.save_settings(work, screen_arming=False)
         ans = hold("wave flamer", andy, 1.5)
