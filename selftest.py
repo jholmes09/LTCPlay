@@ -36189,6 +36189,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
 
         # The sender stops: flamesafe fails safe inside frame_stale_ms.
         t_stop = time.perf_counter()
+        n_before = len(statuses)
         link.stop()
         t_stopped = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["fire"] == "zeroed", 1.0)
@@ -36209,10 +36210,25 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
                  f"frames.age_ms {first_zero[1]['frames']['age_ms']}"
                  if first_zero else f"stop() took {t_stopped:.3f} s; no "
                  f"zeroed status")
-        check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
-                                   f"sender stopped (fire_hold_ms 100): "
-                                   f"{where}; largest gap between status "
-                                   f"frames {max(gaps or [0]):.3f} s")
+        # By flamesafe's own clock, which this test's threads cannot delay:
+        # every status still saying "passing" is for a frame younger than
+        # fire_hold_ms, and the first "zeroed" one comes within a tick or
+        # two of it (a status is sent every 25 ms tick).
+        fs_after = [x["frames"] for _t, x in statuses[n_before:]]
+        passing = [f.get("age_ms") for f in fs_after if f["fire"] == "passing"]
+        zeroed = [f.get("age_ms") for f in fs_after if f["fire"] == "zeroed"]
+        check(all(a is not None and a < 100 + 25 for a in passing),
+              f"fire passed only while the last frame was younger than "
+              f"fire_hold_ms 100, by flamesafe's clock: ages {passing}")
+        check(zeroed and zeroed[0] is not None and zeroed[0] <= 100 + 2 * 25,
+              f"fire zeroed by flamesafe's clock {zeroed[:1]} ms after the "
+              f"last frame (fire_hold_ms 100, tick 25 ms)")
+        # And on the wall clock, as seen by this test (its own status
+        # reader and polling add their lateness on a slow runner).
+        check(t_fire < 0.5, f"fire zeroed {t_fire:.3f} s after the sender "
+                            f"stopped (fire_hold_ms 100): {where}; largest "
+                            f"gap between status frames "
+                            f"{max(gaps or [0]):.3f} s")
         check(s is not None and t_stale < 0.5 + 0.2
               and all(g["sent_safety"] == 0 for g in s["groups"]),
               f"link stale and every group disarmed {t_stale:.3f} s after "
