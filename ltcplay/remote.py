@@ -231,8 +231,11 @@ def load_settings(folder=None):
     """{"show_network_address": str or None, "flamesafe_config": str or
     None}. A missing file is all None; a broken one raises ValueError."""
     path = os.path.join(folder or settings_folder(), SETTINGS_FILE)
+    # screen_arming is OFF unless the file says true (review of PR #43,
+    # P0-4): arming from a screen came in from PR #41, whose own safety
+    # review decides whether it is switched on.
     out = {"show_network_address": None, "flamesafe_config": None,
-           "screen_arming": True, "path": path}
+           "screen_arming": False, "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -248,9 +251,9 @@ def load_settings(folder=None):
     if doc.get("flamesafe_config"):
         out["flamesafe_config"] = str(doc["flamesafe_config"])
     if "screen_arming" in doc:
-        # One switch to turn screen and browser arming off without a code
-        # change. Only the JSON word false turns it off; anything else
-        # that is not true is refused rather than guessed at.
+        # One switch for screen and browser arming, off by default. Only
+        # the JSON word true turns it on; anything else that is not false
+        # is refused rather than guessed at.
         v = doc["screen_arming"]
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
@@ -1161,6 +1164,13 @@ class Remote:
         """The page's hold to arm one group: the first call starts it, and
         the page repeats it every 100 ms while the finger stays down. Each
         call checks everything again; any check that fails lets go."""
+        if not self.arming_enabled():
+            # First, before anything else is looked at (review of PR #43,
+            # P0-4): with screen arming switched off nothing about a hold
+            # is accepted, whoever asks.
+            return 403, {"error": "Arming from a screen is switched off in "
+                                  "ltcplay_remote.json. Arm from the Stream "
+                                  "Deck.", "let_go": True}
         s = ctx.session
         if s is None:
             return 401, {"error": "Arming needs your own PIN sign in, even "
@@ -1178,9 +1188,6 @@ class Remote:
                               f"{who}'s hold to arm {gname} on the "
                               f"{device} was refused. {why}")
             return code, {"error": why, "let_go": True}
-        if not self.arming_enabled():
-            return refuse(403, "Arming from a screen is switched off in "
-                               "ltcplay_remote.json.")
         try:
             seen = float(body.get("seen"))
         except (TypeError, ValueError):
@@ -1275,6 +1282,18 @@ class Remote:
         except ValueError as e:
             return 400, {"error": str(e)}
         who, device = self._actor(ctx, body)
+        if not self.arming_enabled():
+            # The Stream Deck reads a screen's per-group disarm only while
+            # screen arming is on (review of PR #43, P0-4): said, never
+            # "sent" to nobody.
+            why = ("Disarming one group from a screen goes through the "
+                   "Stream Deck's screen link, which is off with screen "
+                   "arming. Use Disarm every flame group, or the group's key "
+                   "on the Stream Deck. Nothing was changed.")
+            self._journal(who, device, "disarm", "refused",
+                          f"{who or 'Someone'}'s Disarm {gname} on the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
         self._drop_hold(i)
         with self._arm_lock:
             self._disarm_ids += 1

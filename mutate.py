@@ -755,11 +755,8 @@ MUTATIONS = [
   "{\"error\": \"Arming needs your own PIN sign in, even \""),
 
  ("arm: the screen_arming switch is ignored", "ltcplay/remote.py",
-  "        if not self.arming_enabled():", "        if False:"),
-
- ("arm: screen arming defaults off", "ltcplay/remote.py",
-  "           \"screen_arming\": True, \"path\": path}",
-  "           \"screen_arming\": False, \"path\": path}"),
+  "            return load_settings(self.folder)[\"screen_arming\"] is True",
+  "            return True"),
 
  ("arm: a stale page can hold to arm", "ltcplay/remote.py",
   "        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:",
@@ -7271,6 +7268,32 @@ def build():
   'ltcplay/conductor.py',
   '        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,\n                   self.devices.lasers_blank, force=True)\n',
   '        pass\n'),
+
+ # -- review of PR #43: P0-4, screen arming is off unless switched on --
+ ('review43: screen arming is on with no settings file again',
+  'ltcplay/remote.py',
+  '           "screen_arming": False, "path": path}',
+  '           "screen_arming": True, "path": path}'),
+
+ ('review43: arm-hold looks at the session before the switch',
+  'ltcplay/remote.py',
+  '        if not self.arming_enabled():\n            # First, before anything else',
+  '        if False:\n            # First, before anything else'),
+
+ ("review43: a screen's per-group Disarm is 'sent' with arming off",
+  'ltcplay/remote.py',
+  '        if not self.arming_enabled():\n            # The Stream Deck reads',
+  '        if False:\n            # The Stream Deck reads'),
+
+ ('review43: ltc deck makes ScreenKeys with screen arming off',
+  'ltcplay/streamdeck.py',
+  '        if screen_arming_switched_on() else None',
+  '        if True else None'),
+
+ ('review43: the deck reads any truthy screen_arming as on',
+  'ltcplay/streamdeck.py',
+  '        return load()["screen_arming"] is True',
+  '        return bool(load()["screen_arming"])'),
 
 ]
 

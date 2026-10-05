@@ -37293,6 +37293,9 @@ def _arm_rig(S):
                           "groups": R.groups}).encode())
     R.feed = feed
     feed()
+    # Off by default (review of PR #43, P0-4): the rules below are of
+    # screen arming switched on.
+    RM.save_settings(R.work, screen_arming=True)
     return R
 
 
@@ -37302,6 +37305,110 @@ def _hold(R, group, hold_id=None, **kw):
         body["hold_id"] = hold_id
     body.update(kw)
     return R.ask("POST", "/api/remote/arm-hold", body)
+
+
+def test_screen_arming_is_off_unless_switched_on():
+    section("screen arming is OFF by default (review of PR #43, P0-4): with "
+            "no ltcplay_remote.json every arm-hold is refused before "
+            "anything else, a screen's per-group Disarm says it cannot go, "
+            "and ltc deck makes no ScreenKeys")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    R = _RemoteRig(S)
+    try:
+        check(RM.load_settings(R.work)["screen_arming"] is False,
+              "no settings file: off")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm-hold",
+                           {"group": "front row", "seen": R.seen()},
+                           client=("127.0.0.1", 5000))
+        check(st == 403 and "switched off" in out.get("error", ""),
+              f"an arm-hold on the show machine with no session at all is "
+              f"refused as switched off, before anything else is looked "
+              f"at: {st} {out}")
+        R.sign_in()
+        st, _h, out = R.ask("POST", "/api/remote/arm-hold",
+                            {"group": "front row", "seen": R.seen()})
+        check(st == 403 and "switched off" in out.get("error", ""),
+              f"and with a PIN session: {st} {out}")
+        check(R.remote.deck_input()["enabled"] is False,
+              "the deck is told it is off")
+        R.remote.flame_status = RM.FlameStatus("127.0.0.1", 0, "k" * 20,
+                                               [], clock=lambda: R.mono[0])
+        import json as _j
+        R.remote.flame_status.note(_j.dumps({
+            "t": "status", "k": "k" * 20, "fault": "",
+            "groups": [{"name": "front row", "armed": "armed",
+                        "wanted": True, "reason": ""}]}).encode())
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row"})
+        check(st == 409 and "Disarm every flame group" in
+              out.get("error", "") and not R.remote.deck_input()["disarms"],
+              f"a per-group Disarm from a screen says it cannot go and "
+              f"where to disarm instead: {st} {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(st == 200 and out["arming"]["enabled"] is False,
+              "the page is told it is off")
+    finally:
+        R.close()
+    # The deck: on only for the JSON word true; anything else, off.
+    check(sd.screen_arming_switched_on(lambda: {"screen_arming": True}),
+          "true is on")
+    for v in (False, "true", 1, None):
+        check(not sd.screen_arming_switched_on(
+            lambda v=v: {"screen_arming": v}), f"{v!r} is off")
+
+    def broken():
+        raise ValueError("ltcplay_remote.json could not be read")
+    check(not sd.screen_arming_switched_on(broken), "a broken file is off")
+    # ltc deck itself: no ScreenKeys made while it is off.
+    work = tempfile.mkdtemp()
+    made = []
+    real = (sd.ScreenKeys, sd.run_forever, sd.screen_arming_switched_on,
+            sd.Controller)
+    try:
+        fs, _show, _doc = _fi_flame_files(work)
+
+        class Keys:
+            def __init__(self, *a, **k):
+                made.append("ScreenKeys")
+
+            def start(self):
+                return self
+
+            def stop(self):
+                pass
+        got = {}
+
+        class Ctl(sd.Controller):
+            def __init__(self, *a, **k):
+                got["screen"] = k.get("screen")
+                super().__init__(*a, **k)
+
+        def stop_at_once(controller, **kw):
+            raise KeyboardInterrupt
+        sd.ScreenKeys, sd.run_forever, sd.Controller = Keys, stop_at_once, Ctl
+        args = types.SimpleNamespace(flamesafe_config=fs,
+                                     ltcplay_url="http://127.0.0.1:9")
+        for on in (False, True):
+            del made[:]
+            sd.screen_arming_switched_on = lambda on=on: on
+            sd._main(args)
+            check((made == ["ScreenKeys"]) == on and
+                  (got.get("screen") is None) == (not on),
+                  f"ltc deck with screen arming {'on' if on else 'off'}: "
+                  f"ScreenKeys made {made}, the controller's screen "
+                  f"{got.get('screen')!r}")
+    finally:
+        (sd.ScreenKeys, sd.run_forever, sd.screen_arming_switched_on,
+         sd.Controller) = real
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
 
 
 def test_screen_arm_engine_rules():
@@ -37348,8 +37455,13 @@ def test_screen_arm_engine_rules():
               "and true is on")
         import os as _os
         _os.remove(_os.path.join(R.work, RM.SETTINGS_FILE))
-        check(RM.load_settings(R.work)["screen_arming"] is True,
-              "with no settings file arming defaults on (Jeff)")
+        check(RM.load_settings(R.work)["screen_arming"] is False,
+              "with no settings file screen arming is OFF (review of PR "
+              "#43, P0-4)")
+        st, _h, out = _hold(R, "front row")
+        check(st == 403 and "switched off" in out["error"],
+              f"and every hold is refused: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
         # A stale page.
         st, _h, out = _hold(R, "front row", seen=R.seen() - 1200)
         check(st == 409 and "1 s old" in out["error"],
@@ -37692,6 +37804,9 @@ def test_screen_arm_end_to_end_probes():
     httpd = web_mod.serve(folder, port=0, bind="127.0.0.1",
                           remote_folder=work, flamesafe_config=cfg_path)
     rem = httpd.remote
+    # Screen arming is off by default (review of PR #43, P0-4): these
+    # probes are of arming switched on.
+    RM.save_settings(work, screen_arming=True)
     rem.pins = RM.PinStore(work, iterations=1000)
     rem.pins.set("Andy", "2468")
     rem.pins.set("Jeff", "1357")
@@ -38419,6 +38534,7 @@ if __name__ == "__main__":
     test_remote_scrubbing_only_in_a_programming_session()
     test_player_free_run_pause_and_loop()
     test_flame_link_seek_guard()
+    test_screen_arming_is_off_unless_switched_on()
     test_screen_arm_engine_rules()
     test_screen_arm_deck_rules()
     test_screen_arm_end_to_end_probes()

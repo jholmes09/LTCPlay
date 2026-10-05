@@ -681,6 +681,11 @@ function renderLamps(fl){
     const ab = el.querySelector("[data-arm]");
     if(!(HOLD && HOLD.group === i)) ab.disabled = !as.ok;
     ab.title = as.why;
+    // Screen arming switched off (the default): no hold and no per-group
+    // Disarm here; Disarm every flame group and the Stream Deck still work.
+    const on = !!(ST && ST.arming && ST.arming.enabled);
+    ab.hidden = !on;
+    el.querySelector("[data-gdis]").hidden = !on;
   });
 }
 

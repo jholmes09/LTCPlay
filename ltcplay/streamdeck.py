@@ -1050,6 +1050,17 @@ SCREEN_STALE_S = 0.3
 SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
 
 
+def screen_arming_switched_on(load=None):
+    """True only when ltcplay_remote.json says "screen_arming": true. A
+    missing or broken file, or any error reading it, is off."""
+    try:
+        if load is None:
+            from .remote import load_settings as load
+        return load()["screen_arming"] is True
+    except Exception:
+        return False
+
+
 class ScreenKeys:
     """The remote page's arm holds and per-group disarms, read from the
     engine's /api/remote/deck-input on a BACKGROUND thread, like
@@ -2667,8 +2678,12 @@ def _main(args):
     engine = EngineConductor(args.ltcplay_url, journal=journal)
     engine.start()
     # Screen and browser arming: the remote page's holds, read on their own
-    # background thread (ScreenKeys), never on the main loop.
-    screen = ScreenKeys(args.ltcplay_url).start()
+    # background thread (ScreenKeys), never on the main loop. Only when
+    # ltcplay_remote.json switches it on (review of PR #43, P0-4: off by
+    # default); otherwise no ScreenKeys is made and no screen hold can
+    # reach a group key, whatever the engine answers.
+    screen = ScreenKeys(args.ltcplay_url).start() \
+        if screen_arming_switched_on() else None
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
@@ -2677,7 +2692,9 @@ def _main(args):
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
          f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
          f"Hold, Resume and Reset go to the show conductor in ltc serve at "
-         f"{args.ltcplay_url}; Start Now journals a refusal. Ctrl-C to stop.")
+         f"{args.ltcplay_url}; Start Now journals a refusal. "
+         f"{'Screen arming is ON (ltcplay_remote.json).' if screen else 'Screen arming is off.'}"
+         f" Ctrl-C to stop.")
     try:
         run_forever(controller, journal=journal)
     except KeyboardInterrupt:
@@ -2687,7 +2704,8 @@ def _main(args):
         status.close()
         sched.stop()
         engine.stop()
-        screen.stop()
+        if screen is not None:
+            screen.stop()
     return 0
 
 
