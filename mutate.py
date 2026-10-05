@@ -7062,13 +7062,13 @@ def build():
 
  ('show PC 2026-10-04: the idle deck draws every pass',
   'ltcplay/streamdeck.py',
-  '                        t0 - last_draw >= DRAW_IDLE_S:',
+  '                        t0 - last_draw >= DRAW_IDLE_S or motion != drawn:',
   '                        True:'),
 
  ('show PC 2026-10-04: a held key is drawn only every DRAW_IDLE_S',
   'ltcplay/streamdeck.py',
-  '                if moved or controller.animating() or last_draw is None or \\',
-  '                if moved or last_draw is None or \\'),
+  '                    if motion != drawn or controller.animating():\n',
+  '                    if motion != drawn:\n'),
 
 
  ('SSD 2026-10-04: the flame link sender reads the render itself',
@@ -7585,6 +7585,147 @@ def build():
   'ltcplay/schedule_service.py',
   '                self._abort_pressed = (self._press_stamp\n',
   '                self._abort_pressed = 0 and (self._press_stamp\n'),
+
+ # Look A, the deck artwork Jeff approved on the real deck (2026-09-27).
+ ("deck look: the two snakes run opposite ways",
+  "ltcplay/streamdeck.py",
+  "        for head in (chase, chase + n // 2):\n",
+  "        for head in (chase, n // 2 - chase):\n"),
+
+ ("deck look: Abort fills only the deck's outside dots",
+  "ltcplay/streamdeck.py",
+  "            ring = key_ring(k)\n            for p in ring[:round(abort_frac * len(ring))]:\n",
+  "            ring = [p for p in key_ring(k) if p in OUTER_DOTS]\n            for p in ring[:round(abort_frac * len(ring))]:\n"),
+
+ ("deck look: the arm-hold ring fills red, like Abort",
+  "ltcplay/streamdeck.py",
+  "            for p in ring[:round(frac * len(ring))]:\n                lit[p] = GOLD\n",
+  "            for p in ring[:round(frac * len(ring))]:\n                lit[p] = RED\n"),
+
+ ("deck look: the solid outline round every key comes back",
+  "ltcplay/streamdeck.py",
+  "def draw_marquee(d, chase, abort_frac, arm_fills=None):\n",
+  "def draw_marquee(d, chase, abort_frac, arm_fills=None):\n"
+  "    for k in range(6):\n"
+  "        ox, oy = key_origin(k)\n"
+  "        d.rounded_rectangle((ox + 4, oy + 4, ox + K - 4, oy + K - 4),\n"
+  "                            radius=7, outline=(92, 72, 32), width=3)\n"),
+
+ ("deck look: the faces keep look B's 8 px margin",
+  "ltcplay/streamdeck.py",
+  "FACE_MARGIN = 12\n",
+  "FACE_MARGIN = 8\n"),
+
+ # The deck's motion is evidence of life (Jeff, 2026-10-05): it never
+ # runs on the deck's own clock.
+ ("deck liveness: the snakes run on the deck's own clock",
+  "ltcplay/streamdeck.py",
+  "        return 0 if ms is None else int(ms / (CHASE_STEP_S * 1000.0))\n",
+  "        return int(self._clock() / CHASE_STEP_S)\n"),
+
+ ("deck liveness: the top row flashes on the deck's own clock",
+  "ltcplay/streamdeck.py",
+  "        n = getattr(self, \"_answers\", 0)\n",
+  "        n = int(self._clock() * 4)\n"),
+
+ ("deck liveness: a re-read engine answer counts as a fresh one",
+  "ltcplay/streamdeck.py",
+  "        if at is not None and at != getattr(self, \"_answer_seen\", None):\n",
+  "        if at is not None:\n"),
+
+ ("deck liveness: the bottom row flashes on the deck's own clock",
+  "ltcplay/streamdeck.py",
+  "        return ms is None or int(ms / (BLINK_HALF_S * 1000.0)) % 2 == 0\n",
+  "        return int(self._clock() * 2) % 2 == 0\n"),
+
+ # The approved states the deck never drew before (Jeff, 2026-09-27): NOW
+ # PLAYING, PAUSED, AUDIO LOST on the Start key; NO / FLAME / LINK.
+ ("deck states: NOW PLAYING flashes on the deck's own clock",
+  "ltcplay/streamdeck.py",
+  "                bg, text = PLAYING_ON if blink_on else PLAYING_OFF\n",
+  "                bg, text = PLAYING_ON if int(now * 2) % 2 == 0 "
+  "else PLAYING_OFF\n"),
+
+ ("deck states: START NOW stays on the Start key during a show",
+  "ltcplay/streamdeck.py",
+  "            elif running:\n                # Start Now does nothing",
+  "            elif False:\n                # Start Now does nothing"),
+
+ ("deck states: a held show reads NOW PLAYING, never PAUSED",
+  "ltcplay/streamdeck.py",
+  "            if running and held:\n",
+  "            if False:\n"),
+
+ ("deck states: AUDIO LOST never shows",
+  "ltcplay/streamdeck.py",
+  "            elif running and self._audio_lost():\n",
+  "            elif False:\n"),
+
+ ("deck states: AUDIO LOST is drawn steady",
+  "ltcplay/streamdeck.py",
+  "                bg, text = AUDIO_LOST_ON if blink_on else AUDIO_LOST_OFF\n",
+  "                bg, text = AUDIO_LOST_ON\n"),
+
+ ("deck states: AUDIO LOST covers the Hold key too",
+  "ltcplay/streamdeck.py",
+  "        elif self._held_hint() and blink_on:\n"
+  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n",
+  "        elif self._audio_lost():\n"
+  "            fonts.show_key(d, b1, [\"AUDIO\", \"LOST\"], AMBER, kind=\"sans\")\n"
+  "        elif self._held_hint() and blink_on:\n"
+  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n"),
+
+ ("deck states: the deck ignores the engine's audio field",
+  "ltcplay/streamdeck.py",
+  "                snap = dict(snap, audio=got.get(\"audio\"))\n",
+  "                snap = dict(snap)\n"),
+
+ ("deck states: a remembered audio loss outlives the engine's answers",
+  "ltcplay/streamdeck.py",
+  "        if engine is None:\n            return False\n"
+  "        audio = engine[0].get(\"audio\")\n",
+  "        if engine is None:\n"
+  "            return getattr(self, \"_audio_was\", False)\n"
+  "        audio = engine[0].get(\"audio\")\n"
+  "        self._audio_was = bool(isinstance(audio, dict) "
+  "and audio.get(\"lost\"))\n"),
+
+ ("deck states: the missing link reads a dim flashing NO LINK again",
+  "ltcplay/streamdeck.py",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False\n",
+  "        return \"NO\", \"LINK\", (26, 24, 21), DIM_TEXT, True\n"),
+
+ ("deck states: the missing link flashes",
+  "ltcplay/streamdeck.py",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False\n",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, True\n"),
+
+ ("deck states: the missing link's words stop at the groups that exist",
+  "ltcplay/streamdeck.py",
+  "            for i in range(len(self.names), len(GROUP_KEYS)):\n",
+  "            for i in range(len(self.names), len(self.names)):\n"),
+
+ ("deck states: the latched deck reads NO / NO / NO",
+  "ltcplay/streamdeck.py",
+  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
+  "                                  slot=i)\n",
+  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
+  "                                  slot=0)\n"),
+
+ ("audio field: /api/conductor never says the show audio is lost",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": False,\n"),
+
+ ("audio field: /api/conductor says lost between cues too",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": mode == \"freerun\",\n"),
+
+ ("audio field: /api/conductor says lost while the clock follows the audio",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": playing,\n"),
 
 ]
 

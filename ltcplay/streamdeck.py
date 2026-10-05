@@ -190,11 +190,28 @@ BLACK = (7, 6, 5)
 GOLD = (212, 168, 74)
 CHAMPAGNE = (246, 227, 174)
 BULB_OFF = (52, 41, 20)
-OUTLINE_DIM = (92, 72, 32)
 RED = (230, 30, 24)
 DIM_TEXT = (72, 66, 58)
 GREEN = (40, 190, 90)
 AMBER = (245, 160, 30)
+BRONZE = (44, 36, 24)         # #2C2418, off and idle (Jeff: "The blue feels
+BRONZE_EDGE = (120, 96, 50)   # off brand"); its 1 px edge, as the demo draws
+AMBER_DIM = (70, 44, 8)       # a flashing amber key's off phase (CYCLE ARM)
+# The Start key during a show (Jeff, 2026-09-27, the approved demo): NOW
+# PLAYING flashing green; PAUSED, steady, while the show is held. A show
+# whose audio is lost reads AUDIO LOST, flashing amber, on that one key
+# only: Hold and Abort stay live and are never covered during a show (Jeff,
+# 2026-09-27 18:22, "Lock them in").
+PLAYING_ON = ((50, 205, 95), (4, 28, 10))      # (bg, text), the lit phase
+PLAYING_OFF = ((8, 40, 16), (60, 200, 100))    # the dark phase
+PAUSED_BG = BRONZE
+AUDIO_LOST_ON = (AMBER, (40, 20, 0))
+AUDIO_LOST_OFF = (AMBER_DIM, AMBER)
+# No link to flamesafe: the arm keys read NO / FLAME / LINK, one word per
+# key, red (Jeff, 2026-09-27, locked wording). Steady: with no status
+# frames there are no ticks to flash on. The arm link is held OFF meanwhile
+# exactly as before; only the drawing changed.
+NO_FLAME_LINK = ("NO", "FLAME", "LINK")
 
 ABORT_HOLD_S = 0.5          # Jeff: unchanged from the demo. Disarm itself
                             # (a bottom-row key) has NO hold; see module doc.
@@ -221,12 +238,16 @@ ARM_HOLD_S = 0.6
 # flinch-press, short enough that a deliberate re-arm a few seconds later
 # is never mistaken for one.
 REARM_REFRACTORY_S = 2.0
-# The keys are drawn every pass only while something on them moves (a key
-# held, a screen hold, a hold ring filling); otherwise every DRAW_IDLE_S,
-# fast enough for the 2 Hz blink. Show PC, 2026-10-04: drawing all six keys
-# at 20 Hz took 14% of a core with nothing happening. The arm link, key
-# reads and holds still run every pass.
+# The keys are drawn as the approved demo draws them: once per marquee step
+# (CHASE_STEP_S), and every FRAME_S while something on them moves (a key
+# held, a screen hold, a hold ring filling); at least every DRAW_IDLE_S for
+# the 2 Hz blink when the marquee is still. Only keys whose image changed go
+# to the deck. Jeff, 2026-10-05: drawing only every 0.2 s (a CPU saving of
+# 2026-10-04, when all six keys at 20 Hz took 14% of a core) made the
+# animation look slow and low frame rate. The arm link, key reads and holds
+# still run once per pass.
 DRAW_IDLE_S = 0.2
+FRAME_S = 0.02
 # Reset (Jeff's approved design, decisions of 2026-09-26): Abort fires
 # after a 0.5 s hold and latches. While latched the deck border is solid
 # red, the Abort key reads RESET (flashing), every other key is greyed, and
@@ -239,7 +260,7 @@ DRAW_IDLE_S = 0.2
 # apply (an operator chosen; refused while the Abort is still fading), and
 # after Reset every flame group stays disarmed until it is armed again.
 RESET_SHOWN_S = 0.5
-LATCHED_GREY = (30, 28, 26)   # a key with nothing to do while latched
+LATCHED_GREY = (26, 24, 21)   # a key with nothing to do while latched
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -477,11 +498,12 @@ class StatusSocket:
 # Pure logic: visual state from real data. No socket, no hid, fully
 # unit-testable (see selftest.py).
 # --------------------------------------------------------------------------
-def group_look(group_status, fault="", confirmed=True):
+def group_look(group_status, fault="", confirmed=True, slot=0):
     """(line1, line2_or_None, bg, text, flashing) for one bottom-row key
     from the status frame's own per-group dict (CONTRACT.md section on the
     status frame), or from None (no status ever received / stale): drawn
-    as "NO LINK", matching CONTRACT.md's "ltcplay shows red for the safety
+    red, as its word of NO / FLAME / LINK (`slot` is which of the three
+    keys this is), matching CONTRACT.md's "ltcplay shows red for the safety
     program" rule -- the deck never claims a group is armed, disarmed or
     anything else when it cannot actually see flamesafe's answer. A 6th
     element, `caveat`, is appended only when `confirmed` is False (see
@@ -518,14 +540,14 @@ def group_look(group_status, fault="", confirmed=True):
     into this PR; this is a marker for whoever does that wiring next, not
     an implementation of it."""
     if group_status is None:
-        return "NO", "LINK", (26, 24, 21), DIM_TEXT, True
+        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False
     if fault:
         return "FAULT", None, RED, CHAMPAGNE, False
     armed = group_status.get("armed")
     if armed == "armed":
         look = ("ARMED", None, GREEN, (6, 30, 12), False)
     elif armed == "disarmed":
-        look = ("OFF", None, (44, 36, 24), CHAMPAGNE, False)
+        look = ("OFF", None, BRONZE, CHAMPAGNE, False)
     else:
         # held: dwell_s counts down (re-arm dwell, chatter); otherwise the
         # reason is shown, flashing exactly when CONTRACT.md's own `amber`
@@ -539,7 +561,12 @@ def group_look(group_status, fault="", confirmed=True):
             short = _SHORT_REASON.get(reason, "HELD")
             line1, line2 = (short.split(" ", 1) if " " in short
                            else (short, None))
-            look = (line1, line2, AMBER, (40, 20, 0), flashing)
+            if short == "SHOW LOST":
+                # The approved look draws SHOW LOST like OFF (bronze), not
+                # amber: the group is disarmed until the arm is cycled.
+                look = (line1, line2, BRONZE, CHAMPAGNE, flashing)
+            else:
+                look = (line1, line2, AMBER, (40, 20, 0), flashing)
     if not confirmed:
         return (*look, True)
     return look
@@ -993,6 +1020,10 @@ class EngineConductor:
             cues = got.get("flame_cues") if isinstance(got, dict) else None
             self.cues_fault = str((cues or {}).get("fault") or "") \
                 if isinstance(cues, dict) else ""
+            if isinstance(snap, dict):
+                # The answer's own read-only audio field rides along with
+                # the conductor's state (audio_lost reads it).
+                snap = dict(snap, audio=got.get("audio"))
             with self._lock:
                 self._engine = ((snap, self._clock())
                                 if isinstance(snap, dict) else None)
@@ -1018,6 +1049,27 @@ class EngineConductor:
             return bool(self._threads) and self._clock() - \
                 self._started_at > 2.0
         return self._clock() - last > 2.0
+
+    def answered_at(self):
+        """This process's clock time of the engine's latest answer to the
+        /api/conductor poll, or None while it is not answering. A new
+        value is a fresh answer: the deck's top-row keys flash on these,
+        so a frozen engine freezes them (Controller.engine_blink)."""
+        with self._lock:
+            return None if self._engine is None else self._engine[1]
+
+    def audio_lost(self):
+        """True while the engine's latest answer says the show audio is
+        lost mid-show (/api/conductor's read-only "audio" field: a cue is
+        playing and the show clock has stopped following the audio).
+        False while the engine is not answering: the deck then shows the
+        engine's silence (ENGINE FAULT), never a remembered loss."""
+        with self._lock:
+            engine = self._engine
+        if engine is None:
+            return False
+        audio = engine[0].get("audio")
+        return bool(isinstance(audio, dict) and audio.get("lost"))
 
     def snapshot(self):
         """{"latched", "look"}: never the network, never raises."""
@@ -1290,6 +1342,7 @@ class Fonts:
         ]) or _first_font(["/System/Library/Fonts/Helvetica.ttc"])
         self._serif_path = serif
         self._cache = {}
+        self._fit = {}
         self.ImageFont = ImageFont
         self.Image = Image
 
@@ -1306,17 +1359,23 @@ class Fonts:
                 name = " ".join(f.getname()).lower()
                 if "bold" in name and "italic" not in name and "ultra" not in name:
                     return f
-        for path in (r"C:\Windows\Fonts\bahnschrift.ttf",
-                     r"C:\Windows\Fonts\arialnb.ttf",
+        # Windows has no Avenir Next Condensed: the closest condensed bold
+        # it has. Bahnschrift's Bold Condensed instance first; a Pillow or
+        # FreeType that cannot pick a variable font's instance would draw
+        # Bahnschrift Regular, which is neither, so it then falls through
+        # to Arial Narrow Bold.
+        path = r"C:\Windows\Fonts\bahnschrift.ttf"
+        if os.path.exists(path):
+            try:
+                f = self.ImageFont.truetype(path, size)
+                f.set_variation_by_name("Bold Condensed")
+                return f
+            except Exception:
+                pass
+        for path in (r"C:\Windows\Fonts\arialnb.ttf",
                      r"C:\Windows\Fonts\arialbd.ttf"):
             if os.path.exists(path):
-                f = self.ImageFont.truetype(path, size)
-                if path.endswith("bahnschrift.ttf"):
-                    try:
-                        f.set_variation_by_name("Bold SemiCondensed")
-                    except Exception:
-                        pass
-                return f
+                return self.ImageFont.truetype(path, size)
         return self.ImageFont.truetype(self._serif_path, size)
 
     def get(self, kind, size):
@@ -1327,19 +1386,27 @@ class Fonts:
         return self._cache[(kind, size)]
 
     def text_block(self, d, box, lines, kind, fill, max_size, sp_ratio=0.06):
+        """One or two lines, as large as fits, centred on the letters' own
+        ink (cap height and actual left/right edges), not on the font's
+        line box. The size found for a face is remembered: the deck redraws
+        the same words many times a second."""
         x0, y0, x1, y1 = box
-        size = max_size
-        while size > 8:
-            f = self.get(kind, size)
-            sp = size * sp_ratio
-            cap = f.getbbox("H")
-            cap_h = cap[3] - cap[1]
-            pitch = cap_h * 1.4
-            total_h = cap_h + pitch * (len(lines) - 1)
-            if all(_spaced_width(d, ln, f, sp) <= (x1 - x0) - 2 for ln in lines) \
-                    and total_h <= (y1 - y0) - 4:
-                break
-            size -= 1
+        fit = (kind, tuple(lines), x1 - x0, y1 - y0, max_size, sp_ratio)
+        size = self._fit.get(fit)
+        if size is None:
+            size = max_size
+            while size > 8:
+                f = self.get(kind, size)
+                sp = size * sp_ratio
+                cap = f.getbbox("H")
+                cap_h = cap[3] - cap[1]
+                pitch = cap_h * 1.4
+                total_h = cap_h + pitch * (len(lines) - 1)
+                if all(_spaced_width(d, ln, f, sp) <= (x1 - x0) - 2
+                       for ln in lines) and total_h <= (y1 - y0) - 4:
+                    break
+                size -= 1
+            self._fit[fit] = size
         f = self.get(kind, size)
         sp = size * sp_ratio
         cap = f.getbbox("H")
@@ -1370,52 +1437,140 @@ def key_origin(k):
     return (k % COLS) * K, (k // COLS) * K
 
 
-def face_box(k, margin=8):
+# The face boxes sit inside each key's ring of dots (look A's 12 px margin).
+FACE_MARGIN = 12
+
+
+def face_box(k, margin=FACE_MARGIN):
     ox, oy = key_origin(k)
     return (ox + margin, oy + margin, ox + K - margin, oy + K - margin)
 
 
-LINE_INSET, LINE_W = 4, 3
+# The approved look ("look a" in the demo; Jeff, 2026-09-27: "I prefer A.
+# Give it two opposing marquee snakes", then "Your two marquees should be
+# chasing the same direction, just on opposite ends of each other"): every
+# key has its own ring of marquee dots and no solid outline. Two snakes run
+# the same way round the outside dots of the whole deck, half a lap apart,
+# each RUN_FRACTION of the lap long, a champagne head on a gold body.
+DOT_INSET, DOT_SPACING, DOT_R = 6, 11.0, 2.6
+RUN_FRACTION = 0.16     # share of the outside dots lit by each snake
+# The deck's motion is a liveness indicator (Jeff, 2026-10-05; the demo's
+# "freeze": when the safety program stops, nothing moves). It never runs on
+# the deck's own clock:
+# - the snakes step once per CHASE_STEP_S of flamesafe's OWN ticks, read
+#   off its status frames (`heartbeat` x `tick_ms`, CONTRACT.md: "The
+#   corner flame and the deck marquee step on this"). At the example 40 Hz
+#   (25 ms ticks) that is one step per 2.4 ticks, the demo's one dot per
+#   0.06 s. A re-read of the same frame, or no frame, is no step.
+# - a key flamesafe's status says to flash (CYCLE ARM, ABORTED, the spoof
+#   alarm) changes phase every BLINK_HALF_S of flamesafe's ticks;
+# - a top-row key that flashes (RESUME, RESET, ENGINE FAULT) changes phase
+#   every ENGINE_ANSWERS_PER_BLINK fresh answers from the engine's
+#   /api/conductor (polled at POLL_HZ, 4 Hz: a phase every 0.5 s, the
+#   demo's 2 Hz blink). No conductor wired: flamesafe's ticks instead.
+CHASE_STEP_S = 0.06
+BLINK_HALF_S = 0.5
+ENGINE_ANSWERS_PER_BLINK = 2
+DEFAULT_TICK_MS = 25.0  # CONTRACT.md's example tick_hz 40, if tick_ms is absent
 
 
-def _outer_path(inset):
-    x0, y0, x1, y1 = inset, inset, W - inset, H - inset
-    pts = [(x, y0) for x in range(x0, x1)]
-    pts += [(x1, y) for y in range(y0, y1)]
-    pts += [(x, y1) for x in range(x1, x0, -1)]
-    pts += [(x0, y) for y in range(y1, y0, -1)]
+def key_ring(k):
+    """Key k's dots, clockwise from its top-left corner."""
+    ox, oy = key_origin(k)
+    x0, y0 = ox + DOT_INSET, oy + DOT_INSET
+    x1, y1 = ox + K - DOT_INSET, oy + K - DOT_INSET
+    side = x1 - x0
+    n = max(1, round(side / DOT_SPACING))
+    pts = [(x0 + side * i / n, y0) for i in range(n)]
+    pts += [(x1, y0 + side * i / n) for i in range(n)]
+    pts += [(x1 - side * i / n, y1) for i in range(n)]
+    pts += [(x0, y1 - side * i / n) for i in range(n)]
     return pts
 
 
-def _in_gap(x, y, inset):
-    return ((x % K) < inset or (x % K) > K - inset) and x not in (inset, W - inset) \
-        or ((y % K) < inset or (y % K) > K - inset) and y not in (inset, H - inset)
+def _outer_dots():
+    """The dots on the outside of the whole deck, clockwise from its
+    top-left corner."""
+    dots = set()
+    for k in range(COLS * ROWS):
+        for (x, y) in key_ring(k):
+            if (abs(y - DOT_INSET) < 0.5 or abs(y - (H - DOT_INSET)) < 0.5
+                    or abs(x - DOT_INSET) < 0.5
+                    or abs(x - (W - DOT_INSET)) < 0.5):
+                dots.add((x, y))
+
+    def along(p):
+        x, y = p
+        if abs(y - DOT_INSET) < 0.5 and x < W - DOT_INSET - 0.5:
+            return x
+        if abs(x - (W - DOT_INSET)) < 0.5 and y < H - DOT_INSET - 0.5:
+            return W + y
+        if abs(y - (H - DOT_INSET)) < 0.5 and x > DOT_INSET + 0.5:
+            return W + H + (W - x)
+        return 2 * W + H + (H - y)
+    return sorted(dots, key=along)
 
 
-PATH_B = [p for p in _outer_path(LINE_INSET) if not _in_gap(p[0], p[1], LINE_INSET)]
-RUN_FRACTION = 0.16
+OUTER_DOTS = _outer_dots()
+ALL_DOTS = sorted({p for k in range(COLS * ROWS) for p in key_ring(k)})
 
 
-def draw_outline_chase(d, chase, abort_frac):
-    """The "look b" outline chase from the demo: a solid border round every
-    key, and a bright run travelling round the outside, or a full red fill
-    while Abort is held or latched. Purely decorative; no safety meaning."""
-    for k in range(6):
-        ox, oy = key_origin(k)
-        d.rounded_rectangle((ox + LINE_INSET, oy + LINE_INSET,
-                             ox + K - LINE_INSET, oy + K - LINE_INSET),
-                            radius=7, outline=OUTLINE_DIM, width=LINE_W)
-    n = len(PATH_B)
+def marquee_colours(chase, abort_frac, arm_fills=None):
+    """{dot: colour} for every dot on the deck. Purely decorative; no
+    safety meaning (the holds' own timing, AbortHold.fraction, is what is
+    tested as behaviour).
+
+    Abort held (abort_frac > 0) or latched (1.0): every key's own ring
+    fills red at once, each going round clockwise, and nothing chases
+    (Jeff: "have the marquee fill fully in red, all dots, not the edges").
+    Otherwise the two snakes, and `arm_fills` ({key: fraction}) fills that
+    one key's ring in gold, clockwise, while its arm-hold runs; the snakes
+    do not cross a ring that is filling."""
+    lit = {}
     if abort_frac > 0:
-        seg = PATH_B[:round(abort_frac * n)]
-        colour = RED
+        for k in range(COLS * ROWS):
+            ring = key_ring(k)
+            for p in ring[:round(abort_frac * len(ring))]:
+                lit[p] = RED
     else:
-        run = round(n * RUN_FRACTION)
-        start = (chase * 4) % n
-        seg = [PATH_B[(start - j) % n] for j in range(run)]
-        colour = GOLD
-    for (x, y) in seg:
-        d.rectangle((x - 1, y - 1, x + 1, y + 1), fill=colour)
+        n = len(OUTER_DOTS)
+        run = max(1, round(n * RUN_FRACTION))
+        for head in (chase, chase + n // 2):
+            for j in range(run):
+                lit[OUTER_DOTS[(head - j) % n]] = CHAMPAGNE if j == 0 else GOLD
+        for k, frac in (arm_fills or {}).items():
+            frac = max(0.0, min(1.0, frac))
+            ring = key_ring(k)
+            for p in ring:
+                lit.pop(p, None)
+            for p in ring[:round(frac * len(ring))]:
+                lit[p] = GOLD
+    return {p: lit.get(p, BULB_OFF) for p in ALL_DOTS}
+
+
+def draw_marquee(d, chase, abort_frac, arm_fills=None):
+    for (x, y), c in marquee_colours(chase, abort_frac, arm_fills).items():
+        d.ellipse((x - DOT_R, y - DOT_R, x + DOT_R, y + DOT_R), fill=c)
+
+
+def _off_phase(bg):
+    """(bg, text) for a flashing key's dark half: amber goes to dark amber
+    with amber letters (the demo's CYCLE ARM); anything else to dim grey."""
+    if bg == AMBER:
+        return AMBER_DIM, AMBER
+    return (26, 24, 21), DIM_TEXT
+
+
+def _body_size(lines):
+    """The largest size a bottom-row key's state may use, as the demo
+    sizes them: a countdown digit 36, ARMED 22, two lines 20, else 24."""
+    if len(lines) > 1:
+        return 20
+    if lines[0].isdigit():
+        return 36
+    if lines[0] == "ARMED":
+        return 22
+    return 24
 
 
 def arm_key_image(fonts, d, box, name, look, blink_on):
@@ -1423,22 +1578,24 @@ def arm_key_image(fonts, d, box, name, look, blink_on):
     below it (group_look's output), flashing when told to. `look` is
     group_look's 5-tuple, or its 6-tuple form with a trailing `caveat`
     (item 5: confirmed=False); a caller that builds its own 5-tuple (the
-    ALARM look, for instance) gets caveat=False for free."""
+    ALARM look, for instance) gets caveat=False for free. A look on
+    LATCHED_GREY is a key greyed by the Abort latch: its name greys too."""
     line1, line2, bg, text, flashing = look[:5]
     caveat = look[5] if len(look) > 5 else False
     x0, y0, x1, y1 = box
     bar = y0 + 17
     fonts.text_block(d, (x0, y0 - 1, x1, bar), [_fit_name(name)], "sans",
-                     CHAMPAGNE, 14)
+                     DIM_TEXT if bg == LATCHED_GREY else CHAMPAGNE, 16)
     body = (x0, bar + 1, x1, y1)
+    lines = [line1] + ([line2] if line2 else [])
     if flashing and not blink_on:
-        d.rounded_rectangle(body, radius=4, fill=(26, 24, 21))
-        fonts.text_block(d, body, [line1] + ([line2] if line2 else []),
-                         "sans", DIM_TEXT, 18)
+        bg, text = _off_phase(bg)
+    if bg == BRONZE:
+        d.rounded_rectangle(body, radius=4, fill=bg, outline=BRONZE_EDGE,
+                            width=1)
     else:
         d.rounded_rectangle(body, radius=4, fill=bg)
-        lines = [line1] + ([line2] if line2 else [])
-        fonts.text_block(d, body, lines, "sans", text, 20 if line2 else 24)
+    fonts.text_block(d, body, lines, "sans", text, _body_size(lines))
     if caveat:
         # Item 5 (round 2 of the safety review): a config not yet confirmed
         # by Andy is a standing caveat on every group's numbers, never a
@@ -1453,29 +1610,23 @@ def _fit_name(name):
     just not in full -- the full name is always in the journal and the
     status frame, never only on the key."""
     name = name.upper()
-    return name if len(name) <= 10 else name[:9] + "\u2026"
+    return name if len(name) <= 10 else name[:9] + "…"
 
 
 def draw_group_hold(fonts, d, box, name, frac):
-    """One bottom-row key while its arm-hold is in progress but has not
-    fired yet (item 8, Jeff, 2026-10-01): a GOLD fill climbs the key from
-    the bottom as the hold approaches ARM_HOLD_S, echoing the ABORT key's
-    own hold feedback (draw_outline_chase's red fill) so holding to arm
-    reads the same way holding to Abort already does. Purely decorative,
-    like draw_outline_chase; the hold's own timing (AbortHold.fraction) is
-    what is actually tested."""
-    frac = max(0.0, min(1.0, frac))
+    """One bottom-row key's face while its arm-hold is in progress but has
+    not fired yet (item 8, Jeff, 2026-10-01). The progress itself is the
+    key's own ring of dots filling in gold (marquee_colours' arm_fills),
+    the same shape as Abort's red fill, so holding to arm reads the way
+    holding to Abort does; the face says HOLD. Purely decorative; the
+    hold's own timing (AbortHold.fraction) is what is actually tested."""
     x0, y0, x1, y1 = box
     bar = y0 + 17
     fonts.text_block(d, (x0, y0 - 1, x1, bar), [_fit_name(name)], "sans",
-                     CHAMPAGNE, 14)
+                     CHAMPAGNE, 16)
     body = (x0, bar + 1, x1, y1)
     d.rounded_rectangle(body, radius=4, fill=(26, 24, 21))
-    fill_h = (body[3] - body[1]) * frac
-    if fill_h > 0:
-        d.rectangle((body[0], body[3] - fill_h, body[2], body[3]), fill=GOLD)
-    text = BLACK if frac > 0.5 else CHAMPAGNE
-    fonts.text_block(d, body, ["HOLD"], "sans", text, 16)
+    fonts.text_block(d, body, ["HOLD"], "sans", CHAMPAGNE, 16)
 
 
 def to_native(Image, img):
@@ -1519,10 +1670,13 @@ class Deck:
         self.last = {}
 
     def set_key(self, Image, key, img):
-        data = to_native(Image, img)
-        if self.last.get(key) == data:
+        # The raw pixels are compared first, so an unchanged key costs no
+        # rotate or BMP encode at all.
+        raw = img.tobytes()
+        if self.last.get(key) == raw:
             return
-        self.last[key] = data
+        data = to_native(Image, img)
+        self.last[key] = raw
         step = 1024 - 16
         page = sent = 0
         try:
@@ -2242,7 +2396,7 @@ class Controller:
     def _top_fault_confirmed(self):
         """(fault, confirmed), flamesafe's own TOP-LEVEL status fields
         (item 4), or ("", True) while there is no fresh status at all --
-        status_for already draws "NO LINK" in that case, which takes
+        status_for already draws NO / FLAME / LINK in that case, which takes
         priority over fault/confirmed entirely, so the default here never
         has to mean anything on its own."""
         if self.status.stale(self._clock) or self.status.last is None:
@@ -2250,10 +2404,60 @@ class Controller:
         st = self.status.last
         return str(st.get("fault") or ""), bool(st.get("confirmed", True))
 
-    def draw(self, fonts, blink_on, chase):
+    def _flamesafe_ms(self):
+        """How far flamesafe's own clock has run, in ms: its tick counter
+        times its tick period, off the last status frame. None before the
+        first frame. Unchanged while no new frame arrives, so everything
+        driven by it stops dead when flamesafe does."""
+        st = self.status.last
+        if not isinstance(st, dict):
+            return None
+        hb, tick = st.get("heartbeat"), st.get("tick_ms")
+        if not isinstance(hb, int) or isinstance(hb, bool):
+            return None
+        if not isinstance(tick, (int, float)) or isinstance(tick, bool) \
+                or tick <= 0:
+            tick = DEFAULT_TICK_MS
+        return hb * tick
+
+    def marquee_step(self):
+        """The snakes' position: one step per CHASE_STEP_S of flamesafe's
+        ticks (see CHASE_STEP_S). 0 before any status frame."""
+        ms = self._flamesafe_ms()
+        return 0 if ms is None else int(ms / (CHASE_STEP_S * 1000.0))
+
+    def status_blink(self):
+        """The flash phase of a key flamesafe's status says to flash: it
+        changes every BLINK_HALF_S of flamesafe's ticks, and freezes with
+        them."""
+        ms = self._flamesafe_ms()
+        return ms is None or int(ms / (BLINK_HALF_S * 1000.0)) % 2 == 0
+
+    def engine_blink(self):
+        """The flash phase of the top row: it changes every
+        ENGINE_ANSWERS_PER_BLINK fresh answers from the engine. Called at
+        least once per main-loop pass (20 Hz), several times faster than
+        the engine is polled, so no answer goes uncounted. An engine that
+        stops answering freezes it. No conductor wired: status_blink."""
+        answered = getattr(self.conductor, "answered_at", None)
+        if not callable(answered):
+            return self.status_blink()
+        at = answered()
+        if at is not None and at != getattr(self, "_answer_seen", None):
+            self._answer_seen = at
+            self._answers = getattr(self, "_answers", 0) + 1
+        n = getattr(self, "_answers", 0)
+        return (n // ENGINE_ANSWERS_PER_BLINK) % 2 == 0
+
+    def draw(self, fonts, blink_on, chase, group_blink=None):
         """One frame, as a PIL Image the size of the whole deck. Kept
-        separate from run_once so the loop can draw at its own rate (20 Hz)
-        independently of how often new key presses arrive."""
+        separate from run_once so the loop can draw at its own rate
+        independently of how often new key presses arrive. `blink_on` is
+        the top row's flash phase (engine_blink), `group_blink` the
+        bottom row's (status_blink; None: the same as blink_on), `chase`
+        the snakes' position (marquee_step)."""
+        if group_blink is None:
+            group_blink = blink_on
         Image, ImageDraw, _ImageFont = fonts.Image, fonts.ImageDraw, None
         canvas = Image.new("RGB", (W, H), BLACK)
         d = ImageDraw.Draw(canvas)
@@ -2261,7 +2465,10 @@ class Controller:
         latched = self._latched_now()
         self._track_reset_face(latched, now)
         abort_frac = 1.0 if latched else self._abort_hold.fraction(now)
-        draw_outline_chase(d, chase, abort_frac)
+        arm_fills = {} if latched else {
+            GROUP_KEYS[i]: f for i, f in
+            enumerate(h.fraction(now) for h in self._arm_holds) if f > 0}
+        draw_marquee(d, chase, abort_frac, arm_fills)
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
         b0 = face_box(TOP_START)
@@ -2288,8 +2495,30 @@ class Controller:
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
         else:
+            running = self.show_running_provider() is True
+            held = self._held_hint()
             op = self.operator_provider()
-            if operator_gate(op, "start"):
+            if running and held:
+                # The approved demo's PAUSED: the operator's own Hold.
+                fonts.show_key(d, b0, ["PAUSED"], CHAMPAGNE, bg=PAUSED_BG,
+                               kind="sans")
+            elif running and self._audio_lost():
+                # Only this key says so; Hold and Abort stay as they are.
+                bg, text = AUDIO_LOST_ON if blink_on else AUDIO_LOST_OFF
+                fonts.show_key(d, b0, ["AUDIO", "LOST"], text, bg=bg,
+                               kind="sans")
+            elif running:
+                # Start Now does nothing during a show (_do_start_now
+                # journals and starts nothing), so the key says what the
+                # show is doing: NOW PLAYING, flashing green on the
+                # engine's own answers like every other top-row flash.
+                bg, text = PLAYING_ON if blink_on else PLAYING_OFF
+                fonts.show_key(d, b0, ["NOW", "PLAYING"], text, bg=bg,
+                               kind="sans")
+            elif held:
+                # The demo's idle hold: START NOW dims while held.
+                fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
+            elif operator_gate(op, "start"):
                 fonts.show_key(d, b0, ["PICK", "OPERATOR"], DIM_TEXT, kind="sans",
                               max_size=16)
             else:
@@ -2306,13 +2535,13 @@ class Controller:
         b2 = face_box(TOP_ABORT)
         if latched:
             fonts.show_key(d, b2, ["RESET"], BLACK if blink_on else RED,
-                           bg=RED if blink_on else None, max_size=26)
+                           bg=RED if blink_on else None)
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
         fault, confirmed = self._top_fault_confirmed()
         for i, name in enumerate(self.names):
             box = face_box(GROUP_KEYS[i])
-            if self._spoof_alarm and blink_on:
+            if self._spoof_alarm and group_blink:
                 # Item 1's visible alarm: while it is active, every group
                 # key shows it, flashing -- the deck itself no longer
                 # trusts what flamesafe is reporting, so it must not keep
@@ -2322,7 +2551,7 @@ class Controller:
                 # alarm either.
                 arm_key_image(fonts, d, box, name,
                              ("ALARM", None, RED, CHAMPAGNE, False),
-                             blink_on)
+                             group_blink)
                 continue
             if latched:
                 # Item 1, round 2 of the safety review: a latched screen
@@ -2343,20 +2572,39 @@ class Controller:
                 # link keeps its real look. Only a group that is really off
                 # (disarmed or held) greys out.
                 st = self.status_for(name)
-                look = group_look(st, fault=fault, confirmed=confirmed)
+                look = group_look(st, fault=fault, confirmed=confirmed,
+                                  slot=i)
                 if st is not None and not fault and \
                         st.get("armed") != "armed":
                     look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
-                arm_key_image(fonts, d, box, name, look, blink_on)
+                arm_key_image(fonts, d, box, name, look, group_blink)
                 continue
             hold_frac = self._arm_holds[i].fraction(now)
             if hold_frac > 0:
                 draw_group_hold(fonts, d, box, name, hold_frac)
                 continue
             look = group_look(self.status_for(name), fault=fault,
-                              confirmed=confirmed)
-            arm_key_image(fonts, d, box, name, look, blink_on)
+                              confirmed=confirmed, slot=i)
+            arm_key_image(fonts, d, box, name, look, group_blink)
+        if self.status.stale(self._clock) or self.status.last is None:
+            # Fewer than three groups: the rest of NO / FLAME / LINK still
+            # reads whole, on the keys that have no group.
+            for i in range(len(self.names), len(GROUP_KEYS)):
+                arm_key_image(fonts, d, face_box(GROUP_KEYS[i]), "",
+                              group_look(None, slot=i), group_blink)
         return canvas
+
+    def _audio_lost(self):
+        """Whether the engine says the show audio is lost (an
+        EngineConductor's audio_lost); False with no conductor wired or
+        one that cannot say."""
+        lost = getattr(self.conductor, "audio_lost", None)
+        if not callable(lost):
+            return False
+        try:
+            return bool(lost())
+        except Exception:
+            return False
 
     def _reported_armed(self, i):
         st = self.status_for(self.names[i])
@@ -2429,7 +2677,7 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     Exceptions and pass straight through."""
     journal = journal or (lambda text, **kw: None)
     fonts = Fonts()
-    chase = 0
+    drawn = None
     period = 1.0 / ARM_SEND_HZ
     outage = _DeckOutage(journal)
     last_draw = None
@@ -2472,20 +2720,37 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 controller.status.poll(clock)
                 controller.check_links()
                 controller.arm.send(controller.names)
-                chase += 1
+                # What moves on the keys comes from evidence of life, not
+                # this loop's clock (see CHASE_STEP_S): the snakes and the
+                # bottom row's flashing from flamesafe's status frames,
+                # the top row's flashing from the engine's answers.
+                motion = (controller.marquee_step(), controller.engine_blink(),
+                          controller.status_blink())
                 if moved or controller.animating() or last_draw is None or \
-                        t0 - last_draw >= DRAW_IDLE_S:
-                    last_draw = t0
-                    blink_on = int(t0 * 2) % 2 == 0
-                    img = controller.draw(fonts, blink_on, chase)
-                    for k in range(6):
-                        ox, oy = key_origin(k)
-                        deck.set_key(fonts.Image, k,
-                                     img.crop((ox, oy, ox + K, oy + K)))
-                elapsed = clock() - t0
+                        t0 - last_draw >= DRAW_IDLE_S or motion != drawn:
+                    last_draw, drawn = t0, motion
+                    _draw_deck(controller, deck, fonts, motion)
                 outage.ran_clean(clock() - connected_at)
-                if elapsed < period:
-                    sleep(period - elapsed)
+                # The rest of the pass: flamesafe's frames are read every
+                # FRAME_S (display only), and the keys redrawn each time
+                # something on them changed: a marquee step, a flash, or a
+                # hold filling. A hold's ring follows this deck's own clock,
+                # since it is the operator's own press. Key reads, holds and
+                # the arm link stay once per pass.
+                while True:
+                    left = period - (clock() - t0)
+                    if left <= FRAME_S:
+                        if left > 0:
+                            sleep(left)
+                        break
+                    sleep(FRAME_S)
+                    controller.status.poll(clock=clock)
+                    motion = (controller.marquee_step(),
+                              controller.engine_blink(),
+                              controller.status_blink())
+                    if motion != drawn or controller.animating():
+                        last_draw, drawn = clock(), motion
+                        _draw_deck(controller, deck, fonts, motion)
         except Exception as e:          # round 5, item 2: not only
             outage.failed(e, "Every group is sent OFF on the arm link "
                              "until it reconnects.")
@@ -2497,6 +2762,17 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 pass
             _close_quietly(deck)
             _hold_link_off(controller, sleep, 1.0)
+
+
+def _draw_deck(controller, deck, fonts, motion):
+    """One frame onto the deck; Deck.set_key sends only the keys whose
+    image changed. `motion` is (marquee step, top-row flash phase,
+    bottom-row flash phase)."""
+    chase, blink_on, group_blink = motion
+    img = controller.draw(fonts, blink_on, chase, group_blink)
+    for k in range(6):
+        ox, oy = key_origin(k)
+        deck.set_key(fonts.Image, k, img.crop((ox, oy, ox + K, oy + K)))
 
 
 # A deck that has run this long without a failure ends an outage: the next

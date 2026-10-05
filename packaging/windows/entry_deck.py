@@ -93,9 +93,10 @@ class DeckPacing:
     run slow during MadMapper's cold start): how the deck's main loop is
     keeping pace, one line a minute in deck.log. A pass of the loop is one
     Controller.tick() (the arm link's 20 Hz); a frame is one
-    Controller.draw() and the key images written after it. The border chase
-    moves one step per pass, so passes per second is also how fast the
-    animation moves.
+    Controller.draw() and the key images written after it. Since look A
+    (deck-look-a) the marquee steps on flamesafe's status heartbeat, not on
+    passes: frames per second is how smoothly it moves (about 17 when
+    healthy, one per 0.06 s step), and it stops when flamesafe does.
 
     Per minute: passes and frames per second, the worst pass interval, and
     per frame the drawing time, the key image encoding time, and the USB
@@ -149,7 +150,7 @@ class DeckPacing:
         mean = (lambda v: sum(v) / len(v))
         hid = [f[2] for f in fr]
         text = (f"deck pacing: {self.passes / span_s:.1f} passes/s (the "
-                f"animation's speed; target 20), worst pass "
+                f"arm link's pace; target 20), worst pass "
                 f"{self.worst_pass * 1000:.0f} ms; {n / span_s:.1f} frames "
                 f"drawn/s"
                 + (f"; per frame: drawing {ms([f[0] for f in fr], mean):.1f} "
