@@ -1840,9 +1840,9 @@ MUTATIONS = [
   '        self._writer = None\n        return self.drain(force=True)\n'),
 
  ("the way out stops the scheduler before the rig", "ltcplay/cli.py",
-  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n',
+  '    httpd.control.stop()\n    # Straight after the show',
   '    if httpd.schedule is not None:\n        httpd.schedule.stop()\n'
-  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n'),
+  '    httpd.control.stop()\n    # Straight after the show'),
 
  ("a character UTF-8 cannot carry jams the writer", "ltcplay/journal.py",
   '    return text.encode("utf-8", "backslashreplace")',
