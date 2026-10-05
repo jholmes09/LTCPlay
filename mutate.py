@@ -4748,6 +4748,32 @@ def build():
   '            ending.let_windows_have_its_answer()',
   '            pass'),
 
+ # -- re-review of #47: P2-e and P2-g in the supervisor --
+ ('rereview: the supervisor ends before its shutdown answer reaches Windows',
+  'packaging/windows/supervisor.py',
+  '    ending.done.wait(wait_s)\n    ending.let_windows_have_its_answer()\n',
+  '    ending.done.wait(wait_s)\n'),
+
+ ("rereview: the supervisor's loop skips the shutdown answer wait",
+  'packaging/windows/supervisor.py',
+  '            leave_at_end_of_session(ending)\n',
+  '            pass\n'),
+
+ ("rereview: the engine's refusal is not read",
+  'packaging/windows/supervisor.py',
+  '    return " ".join(l.strip() for l in lines[1:] if l.strip())',
+  '    return ""'),
+
+ ("rereview: the engine's refusal is said at every restart",
+  'packaging/windows/supervisor.py',
+  '    if not text or text == said[0]:',
+  '    if not text:'),
+
+ ("rereview: the supervisor never looks for the engine's refusal",
+  'packaging/windows/supervisor.py',
+  '                    say_engine_refused(engine_refusal(p.started_wall),\n                                       refused_said)\n',
+  '                    pass\n'),
+
 ]
 
 
