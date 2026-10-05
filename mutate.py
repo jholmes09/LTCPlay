@@ -7368,7 +7368,7 @@ def build():
   '            if i:\n                sleep(1.0 / FPS)\n',
   ''),
 
- ("review43: the engine's stop does not blank the lasers first",
+ ("review43: the engine's stop does not blank the lasers",
   'ltcplay/cli.py',
   '    _lasers_dark_first(httpd)\n',
   ''),

@@ -31856,11 +31856,11 @@ def test_beyond_lasers_dark_when_the_engine_stops():
     import io
     with contextlib.redirect_stdout(io.StringIO()):
         _cli._shutdown(httpd)
-    check(order[:BT.CLOSE_BLACK_FRAMES] == ["black"] *
-          BT.CLOSE_BLACK_FRAMES and order.index("stop") ==
-          BT.CLOSE_BLACK_FRAMES and g2.lit is False,
-          f"the engine's stop sends the black frames before it stops the "
-          f"show: {order}")
+    check(order == ["stop"] + ["black"] * BT.CLOSE_BLACK_FRAMES + ["close"]
+          and g2.lit is False,
+          f"the engine's stop sends the black frames straight after the "
+          f"show's own stop (the blackout stays first), before anything "
+          f"else closes: {order}")
     print("  ok")
 
 
