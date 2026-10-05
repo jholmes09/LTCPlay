@@ -44,21 +44,58 @@ FILENAME = "ltcplay_output.lock"
 NAMED = WINDOWS
 
 
+ERROR_ACCESS_DENIED = 5
+ERROR_ALREADY_EXISTS = 183
+
+
+def _warn(text):
+    """Loud, on the console every show program logs: never a quiet
+    fallback (review of PR #38, P2, locked decision 21)."""
+    try:
+        sys.stderr.write(f"WARNING: {text}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _named_mutex(name, create, last_error, warn=_warn):
+    """(handle or None, already_existed) for the named mutex `name`, or None
+    when it cannot be made at all (the file lock still guards). Global\
+    first, so a copy in any Windows session or for any user is seen. A
+    Global\ name another user's process holds answers "access denied":
+    that means it EXISTS, and is never a reason to fall back. Only another
+    failure falls back to Local\ (this sign-in only), and says so."""
+    h = create("Global\\" + name)
+    err = last_error()
+    if h:
+        return h, err == ERROR_ALREADY_EXISTS
+    if err == ERROR_ACCESS_DENIED:
+        return None, True
+    warn(f"the single-copy lock {name} could not be made machine wide "
+         f"(Global\\, Windows error {err}), so it falls back to Local\\: "
+         f"a second copy started in another Windows session or by another "
+         f"user would NOT be seen. Only one copy of LTC Player may run on "
+         f"this machine.")
+    h = create("Local\\" + name)
+    err = last_error()
+    if h:
+        return h, err == ERROR_ALREADY_EXISTS
+    warn(f"the single-copy lock {name} could not be made at all (Windows "
+         f"error {err}); only its lock file guards against a second copy.")
+    return None
+
+
 def _win_create_named(name):
-    """(handle, already_existed) for the named mutex `name`; Global\ first,
-    Local\ (this logon session) if Global\ is refused. None when neither
-    can be made (the file lock still guards)."""
+    """_named_mutex through the real kernel32."""
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateMutexW.restype = wintypes.HANDLE
     k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
                                  wintypes.LPCWSTR)
-    for ns in ("Global\\", "Local\\"):
-        h = k32.CreateMutexW(None, False, ns + name)
-        if h:
-            return h, ctypes.get_last_error() == 183   # ALREADY_EXISTS
-    return None
+    return _named_mutex(name, lambda full: k32.CreateMutexW(None, False,
+                                                            full),
+                        ctypes.get_last_error)
 
 
 def _win_close_named(handle):
@@ -129,7 +166,8 @@ class OutputLock:
         handle, existed = got
         if existed:
             try:
-                _close_named(handle)
+                if handle is not None:
+                    _close_named(handle)
             except Exception:
                 pass
             raise AlreadyRunning(

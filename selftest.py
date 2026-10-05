@@ -33300,6 +33300,67 @@ def test_onlyone_named_lock_sees_a_copy_in_another_folder():
     print("  ok")
 
 
+def test_onlyone_named_lock_is_machine_wide_or_says_so():
+    section("one copy: the named lock is made in Global\\ (every Windows "
+            "session and user); another user's copy holding it reads as "
+            "running; any other failure falls back to Local\\ and says so "
+            "loudly (review of PR #38, P2, locked decision 21)")
+    from ltcplay import onlyone as O
+    made, warned = [], []
+
+    def run(results):
+        it = iter(results)
+        cur = [None]
+
+        def create(full):
+            made.append(full)
+            cur[0] = next(it)
+            return cur[0][0]
+        return O._named_mutex("ltcplay-x.lock", create,
+                              lambda: cur[0][1], warn=warned.append)
+    got = run([(77, 0)])
+    check(got == (77, False) and made == ["Global\\ltcplay-x.lock"] and
+          not warned, f"Global\\ first, and that is all: {got} {made}")
+    del made[:]
+    got = run([(77, O.ERROR_ALREADY_EXISTS)])
+    check(got == (77, True), f"a copy in this session: running: {got}")
+    del made[:]
+    got = run([(0, O.ERROR_ACCESS_DENIED)])
+    check(got == (None, True) and made == ["Global\\ltcplay-x.lock"] and
+          not warned,
+          f"another user's copy (access denied) is running, and never a "
+          f"reason to fall back to Local\\: {got} {made}")
+    del made[:]
+    got = run([(0, 1450), (88, 0)])
+    check(got == (88, False) and made[-1] == "Local\\ltcplay-x.lock" and
+          warned and "falls back to Local" in warned[-1] and
+          "would NOT be seen" in warned[-1] and "\u2014" not in warned[-1],
+          f"any other failure falls back to Local\\, loudly: {got} "
+          f"{warned[-1:]}")
+    del warned[:]
+    got = run([(0, 1450), (0, 1450)])
+    check(got is None and len(warned) == 2,
+          f"neither: the file lock alone, and said: {warned}")
+    # A lock whose mutex another user holds refuses, closing nothing.
+    saved = (O.NAMED, O._create_named, O._close_named)
+    closed = []
+    O.NAMED, O._create_named, O._close_named = (
+        True, lambda name: (None, True), closed.append)
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp()
+    try:
+        try:
+            O.OutputLock(where=os.path.join(d, O.SHOW_LOCK)).acquire()
+            check(False, "a copy another user holds must refuse")
+        except O.AlreadyRunning:
+            check(not closed, "refused, with no handle to close")
+    finally:
+        O.NAMED, O._create_named, O._close_named = saved
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_fire_ice_flame_link_from_flamesafe_config():
     section("fire & ice: the flame link is built from flamesafe's own "
             "config, its cues are the show's flame universe only while the "
@@ -38918,6 +38979,7 @@ if __name__ == "__main__":
     test_fire_ice_runner_reports_the_show()
     test_fire_ice_flame_link_from_flamesafe_config()
     test_onlyone_named_lock_sees_a_copy_in_another_folder()
+    test_onlyone_named_lock_is_machine_wide_or_says_so()
     test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender()
     test_fire_ice_flame_cues_follow_a_changed_layout()
     test_fire_ice_flame_cues_refuse_a_render_older_than_the_layout()

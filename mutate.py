@@ -7405,6 +7405,22 @@ def build():
   '        snap["latched"] = bool(snap.get("latched")) or sched_latched',
   '        snap["latched"] = bool(snap.get("latched"))'),
 
+ # -- review of PR #38: P2, the single-copy lock is machine wide or says so --
+ ("review38: another user's copy makes the lock fall back to Local",
+  'ltcplay/onlyone.py',
+  '    if err == ERROR_ACCESS_DENIED:\n        return None, True\n',
+  ''),
+
+ ('review38: the fall back to Local is quiet',
+  'ltcplay/onlyone.py',
+  '    warn(f"the single-copy lock {name} could not be made machine wide "',
+  '    (lambda *a: None)(f"the single-copy lock {name} could not be made machine wide "'),
+
+ ('review38: the named lock tries Local first',
+  'ltcplay/onlyone.py',
+  '    h = create("Global\\\\" + name)',
+  '    h = create("Local\\\\" + name)'),
+
 ]
 
 
