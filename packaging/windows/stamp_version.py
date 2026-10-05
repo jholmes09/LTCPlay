@@ -29,15 +29,40 @@ def main(argv):
         print(f"{internal} has no ltcplay folder; is this a built app?")
         return 2
     from ltcplay import version as v
+    # The build id is the SOURCE the app was built from: the ltcplay
+    # package and launchers (what a Mac copy hashes), flamesafe, and the
+    # Windows packaging. In the app the code is compiled into the programs,
+    # so the files on disk below cannot tell two builds apart (2026-10-05:
+    # two builds with different code both said 194dbb4c09).
+    import hashlib
+    h = hashlib.sha256(v.build()[0].encode())
+    for sub, exts in (("flamesafe", (".py", ".json")),
+                      (os.path.join("packaging", "windows"),
+                       (".py", ".spec", ".iss", ".txt"))):
+        top = os.path.join(ROOT, sub)
+        for d, dirs, names in os.walk(top):
+            dirs[:] = sorted(x for x in dirs if x not in
+                             ("__pycache__", "build", "dist"))
+            for name in sorted(names):
+                if not name.endswith(exts):
+                    continue
+                p = os.path.join(d, name)
+                h.update(os.path.relpath(p, ROOT).replace(os.sep, "/")
+                         .encode() + b"\0")
+                with open(p, "rb") as fh:
+                    h.update(fh.read())
+    bid = h.hexdigest()[:10]
+    # What the app can check on disk for "MODIFIED SINCE" (version.status).
     v.folder = lambda: internal
     v._package_dir = lambda: os.path.join(internal, "ltcplay")
-    bid = v.build()[0]
-    doc = {"release": release, "build": bid, "show": "",
+    files = v.build()[0]
+    doc = {"release": release, "build": bid, "files": files, "show": "",
            "made": time.strftime("%Y-%m-%dT%H:%M:%S"), "notes": notes}
     with open(os.path.join(internal, v.STAMP), "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
         fh.write("\n")
-    print(f"stamped {internal}: release {release}, build {bid}")
+    print(f"stamped {internal}: release {release}, build {bid} (files on "
+          f"disk {files})")
     return 0
 
 
