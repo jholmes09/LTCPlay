@@ -114,7 +114,7 @@ Type: filesandordirs; Name: "{app}\_internal"
 
 [Code]
 const
-  MutexName = 'LTCPlayerSupervisor';
+  MutexName = 'Global\LTCPlayerSupervisor,Local\LTCPlayerSupervisor';
   StateUrl = 'http://127.0.0.1:7878/api/state';
 
 function ControlDir: String;
