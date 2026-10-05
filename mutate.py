@@ -7450,8 +7450,18 @@ def build():
 
  ("review38: another user's supervisor reads as not running",
   'packaging/windows/supervisor.py',
-  '    return ctypes.get_last_error() == ERROR_ACCESS_DENIED',
+  '    return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND',
   '    return False'),
+
+ ("review38: a refused Global name is a running supervisor even when it is not there",
+  'packaging/windows/supervisor.py',
+  '        if err == ERROR_ACCESS_DENIED and _mutex_there(k, name):',
+  '        if err == ERROR_ACCESS_DENIED:'),
+
+ ("review38: the supervisor's fall back to Local is quiet",
+  'packaging/windows/supervisor.py',
+  '            if name == LOCAL_MUTEX_NAME:\n                log(',
+  '            if False:\n                log('),
 
  # -- review of PR #38: P1-4, one flamesafe config for every show program --
  ("review38: the engine is not told the supervisor's flamesafe config",
