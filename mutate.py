@@ -7148,7 +7148,7 @@ def build():
 
  ("beyond blanking: Resume never brings BEYOND's stream back",
   "ltcplay/beyondtc.py",
-  "            ok = self.gate is not None and self.gate.light()",
+  "            ok = self.gate is not None and self.gate.light(epoch)",
   "            ok = self.gate is not None"),
 
  ("beyond blanking: unblank takes something that only looks true",
@@ -7250,6 +7250,27 @@ def build():
   'ltcplay/fire_ice.py',
   '            _gate.adopt(ip)\n',
   '            pass\n'),
+
+ # -- review of PR #43: P0-3, a restore never outruns an Abort's blank --
+ ("review43: the gate lights whatever blank ran since the restore's check",
+  'ltcplay/beyondtc.py',
+  '            if epoch is not None and epoch != self._blank_epoch:',
+  '            if False:'),
+
+ ("review43: a blank does not move the gate's blank epoch",
+  'ltcplay/beyondtc.py',
+  '            self._blank_epoch += 1\n',
+  '            pass\n'),
+
+ ('review43: the restore reads the blank epoch only as it lights',
+  'ltcplay/beyondtc.py',
+  '            ok = self.gate is not None and self.gate.light(epoch)',
+  '            ok = self.gate is not None and self.gate.light(self.gate.epoch())'),
+
+ ("review43: Abort's executor trusts a laser record that says black",
+  'ltcplay/conductor.py',
+  '        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,\n                   self.devices.lasers_blank, force=True)\n',
+  '        pass\n'),
 
 ]
 

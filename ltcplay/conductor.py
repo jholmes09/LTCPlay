@@ -1333,19 +1333,16 @@ class Conductor:
                             progress, self.show.music_halt, fade)
         # The lasers were blanked on the pressing thread (abort()), at the
         # same time as the fades above began. Once that call has returned
-        # (normally long since), send the blank again here only if it did
-        # not get out.
+        # (normally long since), the blank is sent AGAIN here, every time,
+        # whatever the record says (review of PR #43, P0-3): a laser
+        # restore already past its last check when the Abort landed could
+        # light BEYOND after the press's blank and before the record knew.
+        # A blank only ever makes the rig darker.
         blanked = want.get("blanked")
         if blanked is not None:
             self._await(gen, blanked.is_set, fade)
-        with self._lock:
-            lasers_dark = blanked is not None and blanked.is_set() and \
-                self._applied["lasers"] == BLACK
-        if lasers_dark:
-            progress.append("lasers blanked at the press")
-        else:
-            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
-                       self.devices.lasers_blank)
+        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,
+                   self.devices.lasers_blank, force=True)
         if faded:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video stopped", progress,

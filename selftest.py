@@ -24903,11 +24903,14 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     check(las is not None and las[1] == () and las[2] == 200.0,
           f"Abort blanks the lasers at once at the press, no ramp (Jeff and "
           f"Andy, 2026-10-04): {las}")
-    check(rig.count("lasers_blank") == 1,
-          "the executor does not send the lasers dark again once the "
-          "press's command got out")
-    check(any("lasers blanked at the press" in t for t, _f in lines),
-          "the journal says the lasers were blanked at the press")
+    check(rig.count("lasers_blank") == 2 and
+          rig.names().index("lasers_blank") < rig.names().index(
+              "video_fade_out"),
+          "the executor sends the lasers dark again once the press's "
+          "command got out, every time, whatever the record says (review "
+          "of PR #43, P0-3)")
+    check(any("lasers blanked again" in t for t, _f in lines),
+          "the journal says the lasers were blanked again")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
           f"the video stops once the 1 s fade is done: {stop}")
@@ -25003,10 +25006,10 @@ def test_conductor_double_abort_is_idempotent():
     # Finding B: each press while latched sends the laser blank again (a
     # blank only makes it darker), so a blank that did not get out the
     # first time is not stuck that way until Reset.
-    check(rig.count("lasers_blank") == 3,
-          f"the first Abort press blanks the lasers and each later press "
-          f"sends the blank again "
-          f"({rig.count('lasers_blank')})")
+    check(rig.count("lasers_blank") == 4,
+          f"the first Abort press blanks the lasers, its executor once more "
+          f"(review of PR #43, P0-3), and each later press sends the blank "
+          f"again ({rig.count('lasers_blank')})")
     check(resets and not resets[0].ok and "still fading" in
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
     check(c.latched, "a refused Reset leaves it latched")
@@ -25069,10 +25072,11 @@ def test_conductor_abort_mid_hold_fade_wins():
     # anyway (BEYOND never confirms, so "already dark" is never trusted),
     # on the pressing thread, before the music fade.
     blanks = [i for i, cl in enumerate(rig.calls) if cl[0] == "lasers_blank"]
-    check(len(blanks) == 2, "the Hold blanked the lasers, then the Abort")
-    las = rig.calls[blanks[-1]]
+    check(len(blanks) == 3, "the Hold blanked the lasers, then the Abort at "
+                            "its press, then the Abort's executor again")
+    las = rig.calls[blanks[1]]
     check(abs(las[2] - 400.1) < 1e-9
-          and blanks[-1] < rig.names().index("music_halt"),
+          and blanks[1] < rig.names().index("music_halt"),
           f"Abort sends the lasers dark again at its press, before "
           f"anything else it fades: {las} {rig.names()}")
     # Finding C: Abort fades the video again, from wherever the Hold's fade
@@ -25183,10 +25187,10 @@ def test_conductor_generation_guard_stops_a_stale_effect():
     # The restore returned after the Abort's blank: its "lit" must not
     # overwrite the newer record (finding D), or the Abort's effect would
     # think its blank had not landed and blank again.
-    check(rig.count("lasers_blank") == 2 and
-          any("lasers blanked at the press" in t for t, _f in lines),
-          f"the Hold's blank, then the Abort's own, which stands; nothing "
-          f"had to blank again: "
+    check(rig.count("lasers_blank") == 3 and
+          any("lasers blanked again" in t for t, _f in lines),
+          f"the Hold's blank, then the Abort's own, which stands, and the "
+          f"Abort's executor's once more (review of PR #43, P0-3): "
           f"{rig.names()}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
@@ -25576,8 +25580,9 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
     n0 = rig.count("lasers_blank")
     c.abort("Andy", "rack screen")
     c.run_pending()
-    check(rig.count("lasers_blank") == n0 + 1,
-          "so the Abort sends the lasers to black again")
+    check(rig.count("lasers_blank") == n0 + 2,
+          "so the Abort sends the lasers to black again, at the press and "
+          "once more after it")
     # A raise, and a return that is not a Result.
     for mode in ("raise_on", "bad"):
         c, rig, T, lines = _cond()
@@ -25704,9 +25709,10 @@ def test_conductor_on_real_threads():
                                         f"({rig.count(name)})")
         # The Hold's blank, then one per Abort press (finding B); the
         # Hold's video fade, then Abort's own from where it got to (C).
-        check(rig.count("lasers_blank") == 3,
-              f"lasers blanked by the Hold, by the first Abort press and "
-              f"again by the second ({rig.count('lasers_blank')})")
+        check(rig.count("lasers_blank") == 4,
+              f"lasers blanked by the Hold, by the first Abort press, by "
+              f"its executor (review of PR #43, P0-3) and again by the "
+              f"second ({rig.count('lasers_blank')})")
         vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
         check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
                              f"({len(vfs)})")
@@ -27451,20 +27457,22 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
     b = _cd_idx(ev, "beyond")
     m = _cd_idx(ev, "mm")
     check([ev[i][1] for i in b]
-          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * B.RETRY_COUNT,
+          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * (2 * B.RETRY_COUNT),
           f"Abort sends BEYOND brightness 0 only, never anything between "
-          f"0 and 100: {[ev[i] for i in b]}")
+          f"0 and 100: at the press, and again once the press's blank is "
+          f"out (review of PR #43, P0-3): {[ev[i] for i in b]}")
+    bp = b[:B.RETRY_COUNT]          # the press's own blank
     check(all(ev[i][2] == 400.0 for i in b),
           f"all at the press, not spread over the 1 s fade: "
           f"{[ev[i][2] for i in b]}")
     for later in ("pixels_fade_out", "music_halt"):
-        check(later in names and max(b) < names.index(later),
+        check(later in names and max(bp) < names.index(later),
               f"BEYOND is dark before {later} starts: {names}")
-    check(m and min(m) > max(b),
+    check(m and min(m) > max(bp),
           f"BEYOND is dark before MadMapper is sent anything: {names}")
     mc = _cd_idx(ev, "mm_call")
     check([ev[i][1][0] for i in mc] == ["fade_surfaces", "stop_bank"]
-          and min(mc) > max(b),
+          and min(mc) > max(bp),
           f"the conductor calls MadMapper (fade, then stop) only after "
           f"BEYOND is dark: {names}")
     check(not any("faded" in t and "BEYOND" in t for t, _f in lines),
@@ -27498,14 +27506,16 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
     ev = _cd_sends(rig.calls)
     names = [e[0] for e in ev]
     b = _cd_idx(ev, "beyond")
-    check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
-          f"Abort after a Hold sends BEYOND the blank again: {ev}")
-    check(b and max(b) < names.index("music_halt"),
+    check([ev[i][1][1] for i in b] ==
+          [B.BLANK_VALUE] * (2 * B.RETRY_COUNT),
+          f"Abort after a Hold sends BEYOND the blank again, at the press "
+          f"and once more after it: {ev}")
+    check(b and max(b[:B.RETRY_COUNT]) < names.index("music_halt"),
           f"and still before the music: {names}")
     mm_ev = [e[1] for e in ev if e[0] == "mm"]
     check([e[1][0] for e in ev if e[0] == "mm_call"]
           == ["fade_surfaces", "stop_bank"]
-          and names.index("mm_call") > max(b),
+          and names.index("mm_call") > max(b[:B.RETRY_COUNT]),
           f"after the blank, MadMapper is told black again, then stop: "
           f"{names}")
     stop = (f"/timelines/{link.cfg.show_bank}/conductor/stop", None)
@@ -31704,6 +31714,99 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
     print("  ok")
 
 
+def test_beyond_restore_never_outruns_an_abort_blank():
+    section("fire & ice: an Abort's blank that lands after a laser "
+            "restore's last check, and before the restore lights BEYOND's "
+            "timecode, always wins (review of PR #43, P0-3), reproduced "
+            "step by step")
+    import types
+    from ltcplay import beyondtc as BT
+    C = _cond_mod()
+    # 1. The gate and the blanking alone. The restore reads its guard
+    #    (still wanted), then the Abort's blank runs, then the restore
+    #    goes on to light the gate: exactly that order, every time.
+    sent = []
+    gate = BT.TimecodeGate("127.0.0.2", socket_factory=lambda: _TcSock(sent))
+    bl = BT.Blanking("timecode", gate=gate)
+    check(bl.blank() and gate.lit is False, "setup: dark")
+    wanted = [True]
+    orig = gate.light
+    order = []
+
+    def light_after_abort(*a, **k):
+        order.append("abort blank")
+        wanted[0] = False
+        bl.blank()                    # the Abort lands here
+        order.append("restore lights")
+        return orig(*a, **k)
+    gate.light = light_after_abort
+
+    def guard():
+        order.append("guard read")
+        return wanted[0]
+    r = bl.unblank(in_show=True, still_wanted=guard)
+    check(order == ["guard read", "abort blank", "restore lights"],
+          f"the interleaving happened as written: {order}")
+    check(r is False and gate.lit is False and bl.last_result == "cut",
+          f"the restore is refused under the gate's lock and BEYOND stays "
+          f"in the black zone: {r} lit={gate.lit}")
+    gate.light = orig
+    # 1b. The Abort lands just after the guard said yes, before anything
+    #     else the restore does: the epoch was read before the guard.
+    bl.blank()
+
+    def guard_then_abort():
+        yes = True                     # decided: still wanted
+        bl.blank()                     # the Abort lands now
+        return yes
+    r = bl.unblank(in_show=True, still_wanted=guard_then_abort)
+    check(r is False and gate.lit is False,
+          f"an Abort landing right after the guard said yes wins too: {r} "
+          f"lit={gate.lit}")
+    check(bl.unblank(in_show=True, still_wanted=lambda: True) and gate.lit,
+          "with no blank in between, a restore still lights it")
+
+    # 2. Through the conductor: a Resume's laser restore that the Abort
+    #    overtakes at that same point. Right after the restore returns the
+    #    lasers are dark, and the Abort's executor sends the blank again.
+    sent2 = []
+    gate2 = BT.TimecodeGate("127.0.0.2",
+                            socket_factory=lambda: _TcSock(sent2))
+    bl2 = BT.Blanking("timecode", gate=gate2)
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    dev = C.ConductorDevices(None, bl2, show=1)
+    c = C.Conductor(dev, rig, C.laser_gate_for(lambda: "SHOW"),
+                    clock=T.now, waiter=T.wait, threaded=False)
+    _cd_live(c, rig, None)
+    check(gate2.lit is True, "setup: the show lit BEYOND")
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(gate2.lit is False, "setup: the Hold blanked it")
+    orig2 = gate2.light
+    seen = {}
+
+    def light_after_abort2(*a, **k):
+        seen["abort"] = c.abort("Andy", "rack screen")
+        got = orig2(*a, **k)
+        seen["lit_right_after"] = gate2.lit
+        return got
+    gate2.light = light_after_abort2
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    check(seen.get("abort") is not None and seen["abort"].ok,
+          f"the Abort landed inside the restore: {seen}")
+    check(seen.get("lit_right_after") is False,
+          f"BEYOND's timecode never went back to the show after the "
+          f"Abort's blank: {seen}")
+    gate2.light = orig2
+    check(gate2.lit is False and c.latched and
+          c.snapshot()["applied"]["lasers"] == C.BLACK,
+          f"after the Abort's executor: dark, latched, recorded black: "
+          f"{c.snapshot()['applied']}")
+    print("  ok")
+
+
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
@@ -32191,7 +32294,7 @@ def test_fire_ice_night_end_to_end():
           f"the flame link, first: {ab}")
     check(ab[2:] == [("lasers", "dark"), ("video", "fade 1 to 0"),
                      ("pixels", "blackout"), ("music", "halt 1000 ms"),
-                     ("video", "stop_bank")],
+                     ("lasers", "dark"), ("video", "stop_bank")],
           f"then lasers dark, video, pixels and music fade over 1 s, then "
           f"the video stops: {ab}")
     stop = [t for k, a, t in n.calls if k == "mm_call" and
@@ -38266,6 +38369,7 @@ if __name__ == "__main__":
     test_flame_groups_are_a_settings_change_only()
     test_beyond_timecode_blanking()
     test_beyond_timecode_needs_one_route_through_the_gate()
+    test_beyond_restore_never_outruns_an_abort_blank()
     test_fire_ice_serves_the_rack_screen_not_the_old_page()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()

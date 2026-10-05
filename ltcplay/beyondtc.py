@@ -90,6 +90,9 @@ class TimecodeGate:
         self.last_error = ""
         self.last_sent = None
         self._failing = False
+        # Bumped by every dark(), under the lock: a light() that read an
+        # older value refuses (review of PR #43, P0-3).
+        self._blank_epoch = 0
 
     # -- sending ------------------------------------------------------------
     def _send(self, pkt, dest=None):
@@ -164,13 +167,27 @@ class TimecodeGate:
         """Into the black zone, sending its first frame at once. False when
         that frame could not be sent."""
         with self._lock:
+            self._blank_epoch += 1
             if self.lit:
                 self.lit = False
                 self._zone_start = self._clock()
         return self.send_black()
 
-    def light(self):
+    def epoch(self):
+        """How many times dark() has run: read before a restore decides,
+        and handed to light()."""
         with self._lock:
+            return self._blank_epoch
+
+    def light(self, epoch=None):
+        """Back to the show's timecode, unless dark() has run since `epoch`
+        was read (review of PR #43, P0-3): the check and the change are one
+        step under the gate's lock, so an Abort's blank landing between a
+        restore's last check and this call always wins. False when
+        refused."""
+        with self._lock:
+            if epoch is not None and epoch != self._blank_epoch:
+                return False
             self.lit = True
         return True
 
@@ -276,6 +293,9 @@ class Blanking:
     def unblank(self, show=None, in_show=False, still_wanted=None):
         if in_show is not True:
             return False
+        # Read before anything is decided: any blank from here on refuses
+        # the timecode half below, under the gate's own lock.
+        epoch = self.gate.epoch() if self.gate is not None else None
         ok = True
         parts = []
         if self._uses("osc"):
@@ -292,7 +312,11 @@ class Blanking:
             if still_wanted is not None and not still_wanted():
                 self.last_result = "cut"
                 return False
-            ok = self.gate is not None and self.gate.light()
+            ok = self.gate is not None and self.gate.light(epoch)
+            if self.gate is not None and not ok:
+                # A blank landed after the restore's last check: it wins.
+                self.last_result = "cut"
+                return False
             parts.append("BEYOND's timecode back to the show's")
         self._note(f"Lasers restored ({self.mode}): {', '.join(parts)}.",
                    fault=not ok, outcome="restored" if ok else
