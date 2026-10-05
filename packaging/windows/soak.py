@@ -428,6 +428,8 @@ class Soak:
         self.containment = None     # its record, when this soak ran it
         self.slow_samplers = {}     # name -> [seconds each reading took]
         self.mm_started = {}        # MadMapper pid -> its start time
+        self.prio_now = {}          # (name, pid) -> (priority, CPUs)
+        self.prio_log = []          # (time, name, pid, priority, CPUs)
         self.contain_own = True     # False: the caller runs containment
         self.oversleep = {}         # minute -> worst sender sleep overrun ms
         self._cpu_stop = threading.Event()
@@ -756,7 +758,8 @@ class Soak:
             w = csv.writer(fh)
             w.writerow(["time", "name", "cpu_pct", "user_pct", "kernel_pct",
                         "page_faults", "wset_mb", "interrupt_pct", "dpc_pct",
-                        "dpc_worst_cpu_pct", "avail_mb", "disk_read_mb_s"])
+                        "dpc_worst_cpu_pct", "avail_mb", "disk_read_mb_s",
+                        "priority", "cpus"])
             while not self._cpu_stop.wait(1.0):
                 want = {n: c["p"].pid for n, c in self.procs.items()
                         if c["p"].poll() is None}
@@ -795,9 +798,11 @@ class Soak:
                     except Exception:
                         procs.pop(pid, None)
                         continue
+                    pri, cpus = self.priority_of(ps, name, pid, now)
                     w.writerow([now_text(now), name, f"{v:.0f}", f"{up:.0f}",
                                 f"{kp:.0f}", "" if pf is None else pf,
-                                f"{ws / 1e6:.0f}"])
+                                f"{ws / 1e6:.0f}", "", "", "", "", "", pri,
+                                cpus])
                     row1s[name] = (round(v), round(up), round(kp), pf,
                                    round(ws / 1e6))
                     d = self.cpu_min.setdefault(name, {})
@@ -839,6 +844,48 @@ class Soak:
                 while len(self.sec1s) > 6 * 3600:
                     del self.sec1s[min(self.sec1s)]
                 fh.flush()
+
+    PRIORITY_NAMES = {64: "Idle", 16384: "Below normal", 32: "Normal",
+                      32768: "Above normal", 128: "High", 256: "Realtime"}
+
+    def priority_of(self, ps, name, pid, now):
+        """(priority class name, CPUs it may use) of one program, read each
+        second; each change is a note and kept for the report (show PC,
+        2026-10-05: MadMapper read High in a run without containment, and
+        nothing of LTC Player's sets that). Never raises."""
+        try:
+            n = ps.nice()
+            pri = self.PRIORITY_NAMES.get(n, str(n))
+        except Exception:
+            pri = ""
+        try:
+            aff = ps.cpu_affinity()
+            cpus = (f"all {len(aff)}" if self.ncpu and len(aff) == self.ncpu
+                    else ",".join(map(str, aff)))
+        except Exception:
+            cpus = ""
+        key = (name, pid)
+        if pri and self.prio_now.get(key) != (pri, cpus):
+            was = self.prio_now.get(key)
+            self.prio_now[key] = (pri, cpus)
+            self.prio_log.append((now, name, pid, pri, cpus))
+            if name in ("MadMapper", "BEYOND") or was is not None:
+                note(f"{name} (pid {pid}): priority {pri}, CPUs {cpus}"
+                     + (f" (was {was[0]}, CPUs {was[1]})" if was else ""))
+        return pri, cpus
+
+    def priority_item(self):
+        rows = [f"{now_text(t)} {n} (pid {pid}) {pri}, CPUs {c}"
+                for t, n, pid, pri, c in self.prio_log
+                if n in ("MadMapper", "BEYOND")]
+        ours = sorted({f"{n} {pri}" for (n, _p), (pri, _c) in
+                       self.prio_now.items()
+                       if n not in ("MadMapper", "BEYOND")})
+        return ("INFO", "Priorities (read each second; MadMapper and BEYOND "
+                "listed at every change, in cpu1s.csv every second)",
+                ("; ".join(rows[:16]) or "MadMapper and BEYOND not seen")
+                + ("; LTC Player's programs now: " + ", ".join(ours)
+                   if ours else ""))
 
     def slow_sampler(self):
         """Once a minute: storage events, heat and GPU use. Each reading
@@ -2260,6 +2307,7 @@ class Soak:
         out.append(self.starvation_item())
         out.append(self.engine_timing_item())
         out.append(self.stall_item())
+        out.append(self.priority_item())
         c = self.containment
         if c is not None:
             out.append(("INFO", "Third-party containment (MadMapper and "
