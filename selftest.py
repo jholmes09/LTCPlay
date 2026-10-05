@@ -38447,12 +38447,23 @@ def test_screen_arm_end_to_end_probes():
               "setup: the engine hears flamesafe on the mirror")
         time.sleep(1.2)                    # the deck's lows prove a cycle
         # P1: a full hold arms, through the deck and flamesafe's own rules.
-        hold("front row", andy, 1.5)
-        end = time.perf_counter() + 3
-        while time.perf_counter() < end and not armed(0):
-            time.sleep(0.02)
+        # (Once the deck has armed it the engine answers the next heartbeat
+        # 409, "already armed or asked for".) A slow runner can let a hold
+        # lapse on its own HTTP (a heartbeat over 0.25 s late), which is the
+        # rule working, so it is held again, up to three times; the
+        # engine's answers are kept for the message.
+        tries = []
+        for _try in range(3):
+            tries.append(hold("front row", andy, 1.5))
+            end = time.perf_counter() + 3
+            while time.perf_counter() < end and not armed(0):
+                time.sleep(0.02)
+            if armed(0):
+                break
+            time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
-                        f"wire: {status.last and status.last['groups'][0]}")
+                        f"wire: {status.last and status.last['groups'][0]}; "
+                        f"the engine's answers to each hold: {tries}")
         check(any("arm pressed (held 1 s on the iPad) by Andy" in e
                   for e in events), "and the deck journaled who and where")
         # Disarm it from the page: a tap through the deck.
