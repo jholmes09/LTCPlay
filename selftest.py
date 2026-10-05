@@ -37287,6 +37287,12 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
             seen["lock_free"] = bool(got and got[0])
             return _Result(True, "sent.")
         R.remote._flame_disarm = disarm
+        real_blank = R.c.devices.lasers_blank
+
+        def blank():
+            seen.setdefault("blank", time.monotonic())
+            return real_blank()
+        R.c.devices.lasers_blank = blank
 
         def stalled(path, doc, **kw):
             seen.setdefault("save", time.monotonic())
@@ -37300,6 +37306,12 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
               f"the disarm went before the tonight.json save began: {seen}")
         check(seen.get("lock_free") is True,
               "the scheduler's lock was not held while the disarm went")
+        check("blank" in seen and seen["blank"] < seen["save"],
+              f"the lasers were blanked before the tonight.json save began "
+              f"too (re-review P1-A), not after it: {seen}")
+        check(out.get("lasers_blanked") is True and
+              "Lasers blanked at the press" in out.get("text", ""),
+              f"and the answer says so: {out}")
         check(st == 200 and out.get("disarmed") is True,
               f"a failing save does not undo or hide the disarm: {st} {out}")
     finally:

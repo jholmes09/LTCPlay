@@ -7437,6 +7437,12 @@ def build():
   '    r"""(handle or None, already_existed)',
   '    """(handle or None, already_existed)'),
 
+ # -- re-review of #46: P1-A, the screen Abort's laser blank goes before the scheduler --
+ ("rereview: the screen Abort's laser blank waits for the scheduler",
+  'ltcplay/remote.py',
+  '            lasers = self._lasers_dark_now()\n',
+  '            lasers = (None, "")\n'),
+
 ]
 
 
