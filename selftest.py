@@ -11029,6 +11029,24 @@ def test_windows_shutdown_stops_the_show_programs_cleanly():
         check(h.on_message(W.WM_QUERYENDSESSION, 0) == 1 and
               calls == ["stop"],
               f"WM_QUERYENDSESSION: the clean stop, then TRUE: {calls}")
+        check(h.answered.is_set(),
+              "the answer is marked given, so the program waits for it")
+        t0 = time.monotonic()
+        h.let_windows_have_its_answer(timeout=2.0)
+        check(time.monotonic() - t0 < 1.0,
+              "and a program whose stop Windows asked for ends once it is")
+        idle = W.EndSession(lambda: None, threading.Event())
+        t0 = time.monotonic()
+        idle.let_windows_have_its_answer(timeout=2.0)
+        check(time.monotonic() - t0 < 0.5,
+              "a program stopped any other way never waits for Windows")
+        for f in ("entry_flamesafe.py", "entry_engine.py"):
+            src2 = open(os.path.join(os.path.dirname(os.path.abspath(
+                __file__)), "packaging", "windows", f),
+                encoding="utf-8").read()
+            check("let_windows_have_its_answer()" in src2,
+                  f"{f} waits for the window's TRUE before it ends (a window "
+                  f"whose thread is gone answers 0, windows-latest on #48)")
         check(h.on_message(W.WM_ENDSESSION, 1) == 0 and calls == ["stop"],
               "WM_ENDSESSION after it: never a second stop")
         check(h.on_message(0x0010, 0) is None,

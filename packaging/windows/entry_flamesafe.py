@@ -46,7 +46,7 @@ def main():
     # safe zeros and all, before Windows is told it may go on.
     import threading
     stopped = threading.Event()
-    ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)
+    ending = ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)
     ltcwin.say_keep_time("flamesafe")
     if ltcwin.boosted():
         # flamesafe's tick loop runs on this, its main thread.
@@ -60,6 +60,8 @@ def main():
         return flamesafe_main(argv)
     finally:
         stopped.set()            # the zeros are out: Windows may go on
+        if ending is not None:
+            ending.let_windows_have_its_answer()
 
 
 if __name__ == "__main__":
