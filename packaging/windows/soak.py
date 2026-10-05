@@ -2303,7 +2303,13 @@ class Soak:
                     f"flamesafe reports it armed, and its fire channels only "
                     f"in a show, never in a Hold, never after an Abort until "
                     f"it is armed again."))
-        st = self.engine("/api/conductor")
+        # The engine on PORT is this soak's only while its own engine runs:
+        # an earlier run's report, rewritten by the A/B while the next run
+        # goes, must not read the next run's engine (show PC, 2026-10-05:
+        # the ON half's summary showed the OFF half's 322 ms overrun).
+        mine = self.procs.get("engine")
+        st = (self.engine("/api/conductor") if mine and not self.finished
+              and mine["p"].poll() is None else {})
         fl = (st.get("flame_link") or {}) if isinstance(st, dict) else {}
         for k, v in (fl.get("oversleep_ms_by_minute") or {}).items():
             try:
@@ -2835,6 +2841,8 @@ class ABRun:
                 if cont:
                     contained = start_containment()
                 if resolved == "all programs" and self.COLD_MADMAPPER:
+                    for line in self.before_run(i, label):
+                        note(line)
                     note(f"Run {i} of {len(self.PLAN)} ({label}) needs "
                          f"MadMapper started fresh: quit MadMapper, then "
                          f"start it again and open the show project. "
@@ -2874,6 +2882,10 @@ class ABRun:
         self.finished = True
         self.write()
         return self.passed
+
+    def before_run(self, i, label):
+        """Lines for the operator before run i (a preset's own steps)."""
+        return []
 
     @property
     def passed(self):
@@ -2917,6 +2929,11 @@ class ABRun:
                    if self.WINDOW_SCRIPT else "")
                 + (f"; MadMapper: {s.madmapper_started()}"
                    if self.COLD_MADMAPPER and s.mm_started else "")
+                + ("; MadMapper's priority: " + ", ".join(
+                    f"{pri} at {now_text(t)}" for t, n, _p, pri, _c in
+                    s.prio_log if n == "MadMapper")
+                   if any(x[1] == "MadMapper" for x in
+                          getattr(s, "prio_log", [])) else "")
                 + ("" if s.finished else " (running)"))
         for label, s in self.runs:
             lines += ["", "=" * 20 + f" {label} " + "=" * 20]
@@ -2928,6 +2945,46 @@ class ABRun:
                     fh.write(text)
             except OSError:
                 pass
+
+
+class MMSettingsRuns(ABRun):
+    """Three cold-start runs with containment off (bench, 2026-10-05: the
+    containment A/B fixed the engine's stalls, and MadMapper's preference
+    "Increase MadMapper Process Priority", on by default, ran it at High).
+    Before each run the soak stops, says what to set in MadMapper, and
+    waits for MadMapper started fresh; scheduling protection is on and
+    containment off in all three, so only MadMapper's settings differ.
+    Each run's report lists the priority MadMapper actually ran at."""
+
+    PLAN = (("run 1", True, False), ("run 2", True, False),
+            ("run 3", True, False))
+    TITLE = "three MadMapper settings, cold start each, containment off"
+    WHAT = ("Scheduling protection on, containment off, in all three runs. "
+            "Before each run MadMapper's settings are changed by hand and "
+            "MadMapper is started fresh (its cold start).")
+    WINDOW_SCRIPT = False
+    COLD_MADMAPPER = True
+    STAMP = "MadMapper settings"
+    STEPS = {
+        1: "Run 1 of 3: in MadMapper's Preferences, leave \"Increase "
+           "MadMapper Process Priority\" ON (its default), with the rest "
+           "as the test plan says for run 1.",
+        2: "Run 2 of 3: in MadMapper's Preferences, turn \"Increase "
+           "MadMapper Process Priority\" OFF, with the rest as the test "
+           "plan says for run 2.",
+        3: "Run 3 of 3: set MadMapper as the test plan says for run 3.",
+    }
+
+    def intro(self, why):
+        return (f"MadMapper settings soak: {why}; three runs of "
+                f"{self.seconds / 60:.0f} minutes, scheduling protection on, "
+                f"containment off, MadMapper's settings changed by hand and "
+                f"MadMapper started fresh before each")
+
+    def before_run(self, i, label):
+        return ["=" * 60, "OPERATOR: " + self.STEPS.get(i, ""),
+                "Then quit MadMapper and start it again. The run starts by "
+                "itself once MadMapper answers.", "=" * 60]
 
 
 class ABContain(ABRun):
@@ -3230,6 +3287,11 @@ def main(argv=None):
                 return 2
             contain = argv[i + 1] == "on"
             i += 1
+        elif a == "--mm-settings":
+            ab, ab_kind = 20.0, MMSettingsRuns
+            if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
+                ab = float(argv[i + 1])
+                i += 1
         elif a == "--ab-contain":
             ab, ab_kind = 20.0, ABContain
             if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
@@ -3251,6 +3313,7 @@ def main(argv=None):
                   f"--audio-device NAME, --no-wait, --fake-audio, "
                   f"--mode auto|all|fallback, --priority on|off, "
                   f"--ab [MINUTES], --ab-contain [MINUTES], "
+                  f"--mm-settings [MINUTES], "
                   f"--contain on|off, --show-seconds N (default {SHOW_S}), "
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
