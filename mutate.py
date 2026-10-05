@@ -7565,6 +7565,12 @@ def build():
   '                    say_engine_refused(engine_refusal(p.started_wall),\n                                       refused_said)\n',
   '                    pass\n'),
 
+ # -- the deck's requests share the one no-proxy opener --
+ ('deck: the screen holds are fetched with a fresh urlopen each time',
+  'ltcplay/streamdeck.py',
+  '    def _http_fetch(self, path):\n        try:\n            with _opener().open(self.base_url + path,',
+  '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
+
 ]
 
 
