@@ -386,6 +386,11 @@ def keep_time(above_normal=True):
 
 
 PRIORITY_ENV = "LTCPLAY_PRIORITY"      # "high": set by the supervisor
+# The ONE flamesafe config every show program uses, set by the supervisor
+# from showpc.json (review of PR #38, P1-4). flamesafe and the deck get it on
+# their command line too; the engine refuses to start when its own settings
+# name a different one.
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
 
 
 def boosted():

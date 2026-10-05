@@ -4716,6 +4716,17 @@ def build():
   '    return ctypes.get_last_error() == ERROR_ACCESS_DENIED',
   '    return False'),
 
+ # -- review of PR #38: P1-4, one flamesafe config for every show program --
+ ("review38: the engine is not told the supervisor's flamesafe config",
+  'packaging/windows/supervisor.py',
+  '            env[ltcwin.FLAMESAFE_ENV] = os.path.abspath(',
+  "            env['UNUSED'] = os.path.abspath("),
+
+ ("review38: a flamesafe config left in the supervisor's environment reaches the engine",
+  'packaging/windows/supervisor.py',
+  '        env.pop(ltcwin.FLAMESAFE_ENV, None)\n',
+  ''),
+
 ]
 
 

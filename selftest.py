@@ -10921,6 +10921,71 @@ def test_windows_supervisor_lock_is_machine_wide():
     print("  ok")
 
 
+def test_windows_supervisor_one_flamesafe_config_for_all():
+    section("Windows app: the supervisor hands flamesafe, the Stream Deck "
+            "and the engine the one flamesafe config in showpc.json (review "
+            "of PR #38, P1-4)")
+    import shutil
+    import tempfile
+    W, SUP, gone = _winpkg()
+    work = tempfile.mkdtemp()
+    old_local = os.environ.get("LOCALAPPDATA")
+    real_popen = SUP.subprocess.Popen
+    try:
+        os.environ["LOCALAPPDATA"] = work
+        fs = os.path.join(work, "flamesafe.json")
+        open(fs, "w").write("{}")
+        settings = {"show_folder": os.path.join(work, "shows"),
+                    "flamesafe_config": fs, "port": 7878,
+                    "run_flamesafe": True, "run_deck": True,
+                    "show_mode": "fire_ice",
+                    "schedule": os.path.join(work, "s.json")}
+        want = SUP.wanted_args(settings)
+        check(want["flamesafe"][0] == [fs] and
+              want["deck"][0][want["deck"][0].index("--flamesafe-config")
+                              + 1] == fs,
+              f"flamesafe and the deck get the same path: {want}")
+        seen = []
+
+        class FakeProc:
+            pid = 4242
+
+            def __init__(self, cmd, **kw):
+                seen.append((cmd, kw.get("env") or {}))
+
+            def poll(self):
+                return None
+        SUP.subprocess.Popen = FakeProc
+        os.environ[W.FLAMESAFE_ENV] = "/somewhere/else.json"
+        for name in SUP.PROGRAMS:
+            p = SUP.Program(name)
+            p.start(want[name][0], settings)
+            p.out.close()
+        envs = [env.get(W.FLAMESAFE_ENV) for _cmd, env in seen]
+        check(envs == [fs] * 3,
+              f"every program is started with that path, never one left "
+              f"over in the supervisor's own environment: {envs}")
+        p = SUP.Program("engine")
+        p.start(want["engine"][0], dict(settings, flamesafe_config=""))
+        p.out.close()
+        check(W.FLAMESAFE_ENV not in seen[-1][1],
+              "with none named in showpc.json, none is passed on, not even "
+              "one in the supervisor's own environment")
+    finally:
+        SUP.subprocess.Popen = real_popen
+        os.environ.pop(W.FLAMESAFE_ENV, None)
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        if SUP._LOG is not None:
+            SUP._LOG.close()
+            SUP._LOG = None
+        shutil.rmtree(work, ignore_errors=True)
+        gone()
+    print("  ok")
+
+
 def test_windows_shutdown_stops_the_show_programs_cleanly():
     section("Windows app: a shutdown or sign-out (WM_QUERYENDSESSION, "
             "WM_ENDSESSION) gives flamesafe, the engine and the supervisor "
@@ -26960,6 +27025,7 @@ if __name__ == "__main__":
     test_schedule_routes()
     test_the_gpl_path_never_loads_the_scheduler()
     test_windows_shutdown_stops_the_show_programs_cleanly()
+    test_windows_supervisor_one_flamesafe_config_for_all()
     test_windows_supervisor_lock_is_machine_wide()
     test_the_scheduler_engine_is_pure()
     test_schedule_restart_keeps_tonight()

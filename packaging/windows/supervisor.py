@@ -413,7 +413,7 @@ class Program:
             return self.proc.poll() is None
         return self.pid is not None and pid_alive(self.pid)
 
-    def start(self, args):
+    def start(self, args, settings=None):
         path = os.path.join(log_dir(), f"{self.name}.log")
         rotate(path)
         self.out = open(path, "a", encoding="utf-8")
@@ -428,6 +428,12 @@ class Program:
         env.pop(ltcwin.PRIORITY_ENV, None)
         if priority_boost_on():
             env[ltcwin.PRIORITY_ENV] = "high"
+        env.pop(ltcwin.FLAMESAFE_ENV, None)
+        if settings is not None and settings.get("flamesafe_config"):
+            # One flamesafe config for all three programs (P1-4): the same
+            # path flamesafe and the deck get on their command lines.
+            env[ltcwin.FLAMESAFE_ENV] = os.path.abspath(
+                settings["flamesafe_config"])
         self.proc = subprocess.Popen([self.exe] + args,
                                      stdin=subprocess.DEVNULL,
                                      stdout=self.out,
@@ -490,7 +496,7 @@ def priority_boost_on(settings=None):
 
 def wanted_args(settings):
     port = settings["port"]
-    fs = settings["flamesafe_config"]
+    fs = os.path.abspath(settings["flamesafe_config"])
     fs_ok = bool(settings["run_flamesafe"]) and os.path.isfile(fs)
     out = {}
     out["flamesafe"] = ([fs], "") if fs_ok else (
@@ -691,7 +697,7 @@ def run_loop(open_page=False):
             p.said_why_not = ""
             if now >= p.next_try and not ENDING.is_set():
                 try:
-                    p.start(args)
+                    p.start(args, settings)
                 except OSError as e:
                     log(f"could not start {EXE[n]}: {e}")
                     p.next_try = now + p.backoff
