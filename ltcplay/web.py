@@ -874,7 +874,17 @@ class Handler(BaseHTTPRequestHandler):
         c = getattr(self.server, "conductor", None)
         if c is None:
             return 404, {"error": "no such thing here"}
-        out = {"conductor": c.snapshot()}
+        snap = c.snapshot()
+        # The scheduler's own Abort latch, saved in tonight's file, is the
+        # one that survives an engine restart (the conductor starts
+        # unlatched): latched while either is (review of PR #43, P1-5), so
+        # the Stream Deck's Abort key reads RESET after a restart too. A
+        # plain read, never the scheduler's lock: this route is polled.
+        m = getattr(getattr(self.server, "schedule", None), "machine", None)
+        sched_latched = bool(getattr(m, "abort_latched", False))
+        snap["scheduler_abort_latched"] = sched_latched
+        snap["latched"] = bool(snap.get("latched")) or sched_latched
+        out = {"conductor": snap}
         fi = getattr(self.server, "fire_ice", None)
         fl = getattr(fi, "flame_link", None)
         if fl is not None and hasattr(fl, "snapshot"):
@@ -882,6 +892,12 @@ class Handler(BaseHTTPRequestHandler):
                 out["flame_link"] = fl.snapshot()
             except Exception:
                 pass
+        cues = getattr(fl, "cues", None)
+        if hasattr(cues, "fault"):
+            # Review of PR #43, P1-3: a show whose flame cues are refused
+            # (a render that does not fit the layout, and the like) is a
+            # fault the Stream Deck shows, not a quiet zero.
+            out["flame_cues"] = {"fault": str(cues.fault or "")}
         lasers = getattr(getattr(fi, "devices", None), "beyond", None)
         if lasers is not None and hasattr(lasers, "health"):
             # How the lasers are kept dark, and BEYOND's timecode stream's
@@ -1440,6 +1456,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             journal=_beyond_journal(httpd_schedule))
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
+        # The rack screen shows a flame cue fault too (P1-3).
+        httpd.remote.flame_cues = getattr(wiring.flame_link, "cues", None)
         httpd_schedule.start()
         _close_before_fire_ice = httpd.server_close
 

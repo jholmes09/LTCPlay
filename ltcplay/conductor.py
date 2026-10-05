@@ -903,18 +903,25 @@ class Conductor:
         with self._lock:
             latched = self._latched
             if not latched:
-                if not self._playing():
-                    return self._refused("Abort", "nothing is playing, so "
-                                         "there is nothing to abort.")
-                self._latched = True
-                self._latch_who = who
                 # The flames do not wait for the executor, or even for the
                 # journal line: cut them here, on the pressing thread,
                 # inside the lock, so no stale step can land between the
                 # cut and the new generation that makes every older step
-                # stale. The video fade, if one is running, stops where it
-                # is (finding C). Neither call waits for a device.
+                # stale. And before anything is asked about the show (review
+                # of PR #43, P0-1): a group armed with nothing playing,
+                # before a show or between two, is disarmed by an Abort too.
+                # Neither call waits for a device.
                 self._flames_cut()
+                if not self._playing():
+                    return self._refused(
+                        "Abort", "nothing is playing, so there is no show "
+                        "to stop. Flame cues were zeroed and a disarm was "
+                        "sent to every flame group anyway; nothing else was "
+                        "changed and nothing is latched.")
+                self._latched = True
+                self._latch_who = who
+                # The video fade, if one is running, stops where it is
+                # (finding C).
                 self._video_cancel()
                 blanked = threading.Event()
                 line = self._accept("Abort", ABORTED, who, screen,
@@ -1326,19 +1333,16 @@ class Conductor:
                             progress, self.show.music_halt, fade)
         # The lasers were blanked on the pressing thread (abort()), at the
         # same time as the fades above began. Once that call has returned
-        # (normally long since), send the blank again here only if it did
-        # not get out.
+        # (normally long since), the blank is sent AGAIN here, every time,
+        # whatever the record says (review of PR #43, P0-3): a laser
+        # restore already past its last check when the Abort landed could
+        # light BEYOND after the press's blank and before the record knew.
+        # A blank only ever makes the rig darker.
         blanked = want.get("blanked")
         if blanked is not None:
             self._await(gen, blanked.is_set, fade)
-        with self._lock:
-            lasers_dark = blanked is not None and blanked.is_set() and \
-                self._applied["lasers"] == BLACK
-        if lasers_dark:
-            progress.append("lasers blanked at the press")
-        else:
-            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
-                       self.devices.lasers_blank)
+        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,
+                   self.devices.lasers_blank, force=True)
         if faded:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video stopped", progress,

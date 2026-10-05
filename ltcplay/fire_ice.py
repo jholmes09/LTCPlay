@@ -749,6 +749,94 @@ def check_flame_controllers(folder, cfg):
             raise FireIceConfigError(f"{n}: {e}")
 
 
+def beyond_gate_address(cfg):
+    """The address BEYOND's timecode gate starts with, as build_blanking
+    gives it: beyond_timecode_ip, else the BEYOND block's host, else None
+    (then taken from the show file at session open)."""
+    return (getattr(cfg, "beyond_timecode_ip", None) or
+            getattr(getattr(cfg, "beyond", None), "host", None) or None)
+
+
+def blanks_by_timecode(cfg):
+    return getattr(cfg, "beyond_blank", "timecode") in ("timecode", "both")
+
+
+def beyond_timecode_route(show_file, gate_ip, tl=None):
+    """(name, address) of the ONE Art-Net timecode destination in this show
+    file that BEYOND's timecode gate takes over (review of PR #43, P0-2).
+    The gate keeps the lasers dark only by holding back the show's timecode
+    for BEYOND and sending the black zone instead, and it can only hold
+    back what it is handed: a destination named BEYOND, or at the gate's
+    address. Raises FireIceConfigError, in a sentence, for a show file
+    whose timecode would reach BEYOND around the gate or not at all:
+    broadcast timecode, no Art-Net timecode, no destination the gate takes,
+    or more than one."""
+    from . import beyondtc
+    where = os.path.basename(show_file)
+    if tl is None:
+        from . import timeline as timeline_mod
+        tl = timeline_mod.Timeline.load(show_file)
+    art = getattr(getattr(tl, "clock", None), "artnet", None)
+    if art is None:
+        raise FireIceConfigError(
+            f"{where}: the lasers are kept dark by BEYOND's timecode "
+            f"(beyond_blank), but this show file sends no Art-Net timecode, "
+            f"so there is nothing for the black zone to stand in for and "
+            f"nothing that keeps BEYOND dark. Name BEYOND under "
+            f"'clock.artnet.nodes'.")
+    if art.broadcast:
+        raise FireIceConfigError(
+            f"{where}: the show's timecode is broadcast "
+            f"({art.broadcast}), so it reaches BEYOND directly and the "
+            f"black zone cannot hold it back: the lasers would follow the "
+            f"show while they must be dark. Name each receiver under "
+            f"'clock.artnet.nodes' instead, BEYOND among them.")
+    hits = [(name, ip) for name, ip in art.dests
+            if str(name).strip().lower() == beyondtc.LABEL or
+            (gate_ip and ip == gate_ip)]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise FireIceConfigError(
+            f"{where}: no Art-Net timecode destination is named BEYOND"
+            + (f" or at BEYOND's timecode address {gate_ip}" if gate_ip
+               else "") + f" ({art.summary()}), so the black zone has no "
+            f"stream to replace and BEYOND's lasers would not be kept "
+            f"dark. Name BEYOND under 'clock.artnet.nodes'.")
+    raise FireIceConfigError(
+        f"{where}: {len(hits)} Art-Net timecode destinations would go to "
+        f"BEYOND's timecode gate ({', '.join(f'{n} {i}' for n, i in hits)}),"
+        f" so which one is BEYOND cannot be told. Keep exactly one, named "
+        f"BEYOND.")
+
+
+def check_beyond_timecode_routes(folder, cfg):
+    """At `ltc serve` startup, with beyond_blank "timecode" or "both": every
+    show file in the folder must send BEYOND's timecode through the gate
+    (beyond_timecode_route). Raises FireIceConfigError naming the first
+    that does not."""
+    if not blanks_by_timecode(cfg) or not folder or not os.path.isdir(folder):
+        return
+    gate_ip = beyond_gate_address(cfg)
+    from . import timeline as timeline_mod
+    for n in sorted(os.listdir(folder)):
+        if not n.lower().endswith(".json"):
+            continue
+        p = os.path.join(folder, n)
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "cues" not in doc:
+            continue
+        try:
+            tl = timeline_mod.Timeline.load(p)
+        except Exception:
+            continue      # the session refuses it itself, in its words
+        beyond_timecode_route(p, gate_ip, tl=tl)
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -777,7 +865,14 @@ class FlameCues:
         self._total = None       # the map's channel count, for the render
         self._problem = ""
         self._why = ""
-        self._open = {}     # fseq path -> (FSEQ, [(dst, src, length)])
+        # The refusal now in force that is a FAULT (review of PR #43, P1-3:
+        # a render that does not fit the layout, a timecode past its end, a
+        # render that cannot be read, a render older than the layout or
+        # made for another flame controller start): "" when none. Read by
+        # /api/conductor (the Stream Deck) and the rack screen.
+        self.fault = ""
+        self._layout_mtime = None   # xlights_networks.xml's, at _locate
+        self._open = {}     # fseq path -> (FSEQ, spans, its mtime, start)
         self.link = None    # the FlameLink (closing it closes the files)
         # background (ltc serve): every file is read, and every file's date
         # looked at, on a thread of its own, never on the flame link's
@@ -786,8 +881,8 @@ class FlameCues:
         # into memory. Without it (the selftest), the same work is done in
         # the call, as before.
         self._bg = bool(background)
-        self._layout = None      # (session, span, total), background mode
-        self._by_path = {}       # fseq path -> (FSEQ, spans) or an error
+        self._layout = None      # (session, span, total, layout mtime)
+        self._by_path = {}       # fseq path -> _render's tuple, or an error
         self._stop = threading.Event()
         self._thread = None
 
@@ -798,14 +893,18 @@ class FlameCues:
             except Exception:
                 pass
 
-    def _zero(self, why):
+    def _zero(self, why, fault=False):
         """All zeros, saying why once each time the reason changes (an
-        episode); the cue going out again clears it."""
+        episode); the cue going out again clears it. A `fault` is
+        journaled as one and held in self.fault for the screens until
+        the reason changes."""
+        self.fault = why if fault else ""
         if why != self._why:
             self._why = why
             if why:
                 self._note(f"Flame cues are zero: {why}", action="flames",
-                           outcome="cues_zero")
+                           outcome="cues_refused" if fault else "cues_zero",
+                           **({"fault": True} if fault else {}))
         return None
 
     def _locate(self, session):
@@ -826,6 +925,7 @@ class FlameCues:
                 self._folder[1:] == (path, stamp):
             return self._span
         self._folder = (session, path, stamp)
+        self._layout_mtime = stamp[0] if stamp else None
         self._span, self._total = None, None
         try:
             if not path:
@@ -846,7 +946,9 @@ class FlameCues:
                            action="flames", outcome="cues_refused")
         return self._span
 
-    def _render(self, path):
+    def _render(self, path, start=None):
+        """(FSEQ, spans, the render's mtime, the flame controller's first
+        channel when this render was first read and checked)."""
         try:
             st = os.stat(path)
             key = (path, st.st_mtime_ns, st.st_size)
@@ -869,7 +971,7 @@ class FlameCues:
                                    [(0, f.channel_count)]):
                 spans.append((start0, src, length))
                 src += length
-            got = self._open[key] = (f, spans)
+            got = self._open[key] = (f, spans, key[1], start)
         return got
 
     def _refresh_once(self):
@@ -879,13 +981,14 @@ class FlameCues:
         if s is None or not getattr(s, "running", False):
             return
         span = self._locate(s)
-        self._layout = (s, span, self._total)
+        self._layout = (s, span, self._total, self._layout_mtime)
         by = {}
         for c in (getattr(getattr(s, "tl", None), "cues", None) or ()):
             path = getattr(c, "path", None)
             if path:
                 try:
-                    by[path] = self._render(path)
+                    by[path] = self._render(
+                        path, span[0] if span else None)
                 except Exception as e:
                     by[path] = e
         self._by_path = by
@@ -903,9 +1006,9 @@ class FlameCues:
         t = self._thread
         if t is not None and t is not threading.current_thread():
             t.join(2.0)
-        for f, _spans in self._open.values():
+        for got in self._open.values():
             try:
-                f.close()
+                got[0].close()
             except Exception:
                 pass
         self._open.clear()
@@ -944,11 +1047,12 @@ class FlameCues:
                 return self._zero("the flame controller's channels are "
                                   "still being read (off the flame link's "
                                   "sender)")
-            span, total = lay[1], lay[2]
+            span, total, laid = lay[1], lay[2], lay[3]
         else:
             span = self._locate(s)
-            total = self._total
+            total, laid = self._total, self._layout_mtime
         if span is None:
+            self.fault = ""
             return None
         tl = getattr(s, "tl", None)
         label = cue.get("label") if isinstance(cue, dict) else None
@@ -966,9 +1070,10 @@ class FlameCues:
                                       "link's sender)")
                 if isinstance(got, Exception):
                     raise got
-                f, spans = got
+                f, spans, made, checked_at = got
             else:
-                f, spans = self._render(hits[0].path)
+                f, spans, made, checked_at = self._render(hits[0].path,
+                                                          span[0])
             # A render whose one range starts at channel 1 is a whole
             # render and must match the map exactly; a truly sparse one
             # must at least lie inside it.
@@ -981,16 +1086,32 @@ class FlameCues:
                     f"xlights_networks.xml lays out {total}: they were "
                     f"not made for each other, so which channels are the "
                     f"flames cannot be told. Render the show again for this "
-                    f"layout")
+                    f"layout", fault=True)
+            if made is not None and laid is not None and made < laid:
+                # Review of PR #43, P0-6: a layout changed after the render
+                # was made can keep the same channel total and move the
+                # flames, so the count alone cannot tell.
+                return self._zero(
+                    "the show's render is older than xlights_networks.xml: "
+                    "the layout was changed after the show was rendered, so "
+                    "which channels are the flames cannot be trusted. Render "
+                    "the show again for this layout", fault=True)
+            if checked_at is not None and checked_at != span[0]:
+                return self._zero(
+                    f"the flame controller starts at channel {span[0]} in "
+                    f"xlights_networks.xml now, but at channel {checked_at} "
+                    f"when this render was checked: the layout changed "
+                    f"under it. Render the show again for this layout",
+                    fault=True)
             rel = (last[0] * 3600 + last[1] * 60 + last[2]) + last[3] / 30.0
             idx = int(rel * 1000.0 // f.step_time_ms)
             if not 0 <= idx < f.frame_count:
                 return self._zero("the timecode is past the end of the "
-                                  "show's render")
+                                  "show's render", fault=True)
             data = f.frame(idx)
         except Exception as e:
             return self._zero(f"the show's render could not be read "
-                              f"({type(e).__name__}: {e})")
+                              f"({type(e).__name__}: {e})", fault=True)
         start, count = span
         first, end = start - 1, start - 1 + count
         out = [0] * 512
@@ -1000,6 +1121,7 @@ class FlameCues:
                 out[lo - first:hi - first] = data[src + lo - dst:
                                                   src + hi - dst]
         self._why = ""
+        self.fault = ""
         return out
 
 
@@ -1452,6 +1574,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     defaults = dict(getattr(control, "defaults", None) or {})
     defaults["log_factory"] = BackgroundShowLog
     control.defaults = defaults
+    opens = []        # the checks a show must pass before it opens
     if cfg.flame_controller:
         # The flame controller's channels are never sent by the pixel
         # output in Fire & Ice, whatever xlights_networks.xml says, and a
@@ -1464,7 +1587,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         fs_dest = (flamesafe_destination(cfg.flamesafe_config)
                    if cfg.flamesafe_config else None)
 
-        def before_open(show_file, _name=cfg.flame_controller):
+        def flame_check(show_file, _name=cfg.flame_controller):
             """Refuses a show that cannot run safely with flames, and
             returns what the session must leave out of the pixel output:
             the flame controller by name AND every address and universe
@@ -1476,7 +1599,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
             except FlameControllerError as e:
                 raise SessionError(f"This show will not start: {e}")
             return {"exclude_destinations": tuple(sorted(blocked))}
-        control.before_open = before_open
+        opens.append(flame_check)
     elif cfg.flamesafe_config and journal is not None:
         journal("Flame cues: no 'flame_controller' is named in "
                 "ltcplay_fire_ice.json, so no flame cue is ever sent: every "
@@ -1498,6 +1621,32 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     else:
         show = FireIceShow(control, journal=journal, flame_link=flame_link)
     blanking = build_blanking(cfg, beyond, journal, threaded)
+    gate = getattr(blanking, "gate", None)
+    if gate is not None:
+        def laser_check(show_file, _gate=gate):
+            """A show whose timecode would reach BEYOND around the black
+            zone, or not through it at all, is refused (review of PR #43,
+            P0-2); the one BEYOND destination's address is the gate's when
+            it has none yet."""
+            from .session import SessionError
+            try:
+                _name, ip = beyond_timecode_route(show_file, _gate.ip)
+            except FireIceConfigError as e:
+                raise SessionError(f"This show will not start: {e}")
+            except Exception:
+                return None   # a file that does not load: the session says
+            _gate.adopt(ip)
+            return None
+        opens.append(laser_check)
+    if opens:
+        def before_open(show_file, _checks=tuple(opens)):
+            extra = {}
+            for chk in _checks:
+                got = chk(show_file)
+                if isinstance(got, dict):
+                    extra.update(got)
+            return extra
+        control.before_open = before_open
     devices = C.ConductorDevices(link, blanking, journal=journal)
 
     def state():
