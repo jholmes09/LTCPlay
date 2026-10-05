@@ -647,6 +647,7 @@ class FlameLink:
                     t_sleep = self._clock()
                     self._sleep(want)
                     slept = (want, self._clock() - t_sleep)
+                    self._note_oversleep(slept[1] - slept[0])
         except BaseException as e:
             # Not re-raised: the line below says it, and a daemon thread's
             # traceback on stderr would say nothing more to anyone.
@@ -662,6 +663,20 @@ class FlameLink:
 
     LATE_S = 0.045      # a frame this long after the last one is noted
     LATE_NOTE_EVERY_S = 10.0
+
+    def _note_oversleep(self, over):
+        """Diagnostics only (show PC, 2026-10-04): the worst amount the
+        sender's sleep overran, per wall-clock minute, the last 15 minutes.
+        One dict write; never raises."""
+        try:
+            m = int(time.time() // 60)
+            d = self.__dict__.setdefault("_oversleep", {})
+            if over > d.get(m, 0.0):
+                d[m] = over
+            while len(d) > 15:
+                del d[min(d)]
+        except Exception:
+            pass
 
     def _note_late(self, gap, slept, took):
         """A frame that went out LATE_S or more after the one before (the
@@ -1144,6 +1159,9 @@ class FlameLink:
                 "late_frames": getattr(self, "late_frames", 0),
                 "late_worst_ms": round(getattr(self, "late_worst", 0.0)
                                        * 1000.0, 1),
+                "oversleep_ms_by_minute": {
+                    str(k): round(v * 1000.0, 1) for k, v in
+                    list(getattr(self, "_oversleep", {}).items())},
                 "cue_problem": self._cue_problem,
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
