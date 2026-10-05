@@ -36210,31 +36210,35 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
                  f"frames.age_ms {first_zero[1]['frames']['age_ms']}"
                  if first_zero else f"stop() took {t_stopped:.3f} s; no "
                  f"zeroed status")
-        # By flamesafe's own clock, which this test's threads cannot delay:
-        # every status still saying "passing" is for a frame younger than
-        # fire_hold_ms, and the first "zeroed" one comes within a tick or
-        # two of it (a status is sent every 25 ms tick).
+        # Judged by flamesafe's own clock (the age_ms in every status),
+        # which this test's threads and a loaded runner cannot delay:
+        # "passing" only while the last frame is younger than fire_hold_ms,
+        # the first "zeroed" and the first "stale" within the same slack
+        # the wall-clock checks always allowed. The wall clock, as this
+        # test sees it, stays as a coarse bound.
         fs_after = [x["frames"] for _t, x in statuses[n_before:]]
-        passing = [f.get("age_ms") for f in fs_after if f["fire"] == "passing"]
+        passing = [f.get("age_ms") for f in fs_after
+                   if f["fire"] == "passing"]
         zeroed = [f.get("age_ms") for f in fs_after if f["fire"] == "zeroed"]
+        stale = [(f.get("age_ms"), x) for (_t, x), f in
+                 zip(statuses[n_before:], fs_after) if f["state"] == "stale"]
         check(all(a is not None and a < 100 + 25 for a in passing),
               f"fire passed only while the last frame was younger than "
               f"fire_hold_ms 100, by flamesafe's clock: ages {passing}")
         check(zeroed and zeroed[0] is not None and zeroed[0] <= 100 + 150,
               f"fire zeroed by flamesafe's clock {zeroed[:1]} ms after the "
-              f"last frame (fire_hold_ms 100; the same 150 ms of slack the "
-              f"wall-clock check always allowed, now on flamesafe's own "
-              f"clock)")
-        # And on the wall clock, as seen by this test (its own status
-        # reader and polling add their lateness on a slow runner).
-        check(t_fire < 0.5, f"fire zeroed {t_fire:.3f} s after the sender "
-                            f"stopped (fire_hold_ms 100): {where}; largest "
-                            f"gap between status frames "
-                            f"{max(gaps or [0]):.3f} s")
-        check(s is not None and t_stale < 0.5 + 0.2
+              f"last frame (fire_hold_ms 100): {where}")
+        check(stale and stale[0][0] is not None and
+              stale[0][0] <= 500 + 200 and
+              all(g["sent_safety"] == 0 for g in stale[0][1]["groups"]),
+              f"link stale and every group disarmed by flamesafe's clock "
+              f"{stale[0][0] if stale else None} ms after the last frame "
+              f"(frame_stale_ms 500)")
+        check(t_fire < 0.5 and s is not None and t_stale < 1.2
               and all(g["sent_safety"] == 0 for g in s["groups"]),
-              f"link stale and every group disarmed {t_stale:.3f} s after "
-              f"the sender stopped (frame_stale_ms 500)")
+              f"and on this test's own clock: fire zeroed {t_fire:.3f} s, "
+              f"stale {t_stale:.3f} s after the sender stopped: {where}; "
+              f"largest gap between status frames {max(gaps or [0]):.3f} s")
         check(link.disarm_all("Abort") is False,
               "a disarm_all on a stopped link answers False")
         # The rejection episodes close after 5 s of quiet (the arm link's
