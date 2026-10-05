@@ -541,6 +541,63 @@ def fire_ice_files(settings):
     return out
 
 
+# Set once Windows is shutting down or signing out: nothing is started or
+# restarted after it.
+import threading as _threading
+ENDING = _threading.Event()
+
+
+def end_session_stop(progs, wait_s=ltcwin.END_SESSION_WAIT_S,
+                     breaker=None, clock=time.monotonic):
+    """A Windows shutdown or sign-out (review of PR #38, P1-2): every show
+    program gets its clean stop at once, the deck and the engine first and
+    flamesafe last, so flamesafe's safe zeros go out before Windows ends
+    it. No show-running refusal here: Windows is ending the session either
+    way, and a clean stop is the only kind that sends zeros. Returns the
+    names of the programs still running after `wait_s`."""
+    ENDING.set()
+    breaker = breaker or send_ctrl_break
+    for name in reversed(PROGRAMS):
+        p = progs[name]
+        if p.alive():
+            log(f"Windows is ending the session: stopping {EXE[name]} "
+                f"(pid {p.pid}) with Ctrl-Break")
+            why = breaker(p.pid)
+            if why:
+                log(f"{EXE[name]}: {why}")
+    end = clock() + wait_s
+    while clock() < end:
+        if not any(progs[n].alive() for n in PROGRAMS):
+            log("every show program stopped cleanly for the end of the "
+                "session")
+            return []
+        time.sleep(0.05)
+    left = [EXE[n] for n in PROGRAMS if progs[n].alive()]
+    log(f"still running when Windows ended the session: {', '.join(left)}")
+    return left
+
+
+def _watch_end_session(progs):
+    """The supervisor's own hidden window for WM_QUERYENDSESSION and
+    WM_ENDSESSION. This process has no console, so no console event ever
+    reaches it; without this a shutdown stopped nothing cleanly."""
+    if not ltcwin.WINDOWS:
+        return None
+    done = _threading.Event()
+
+    def stop():
+        _threading.Thread(target=lambda: (end_session_stop(progs),
+                                          done.set()),
+                          daemon=True, name="ltcplay-end-session").start()
+    handler = ltcwin.EndSession(stop, done, log=log)
+    th = ltcwin.end_session_window(handler, "LTC Player end session")
+    if th is None or not th.hwnd:
+        log("could not make the shutdown window: a Windows shutdown or "
+            "sign-out may not stop the show programs cleanly")
+        return None
+    return handler
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -571,7 +628,16 @@ def run_loop(open_page=False):
                 log(f"{name} was already running (pid {pids[0]}); adopted")
     handled_stop = 0.0
     page_opened = not open_page
+    ending = _watch_end_session(progs)
     while True:
+        if ENDING.is_set():
+            # The clean stops go out on the end-session thread; this
+            # process must not end before they have.
+            if ending is not None:
+                ending.done.wait(ltcwin.END_SESSION_WAIT_S + 1.0)
+            log("Windows is ending the session; supervisor exiting")
+            keep_awake(False)
+            return 0
         # A stop request newer than anything handled so far.
         try:
             m = os.path.getmtime(stop_file())
@@ -611,7 +677,7 @@ def run_loop(open_page=False):
                     p.said_why_not = why_not
                 continue
             p.said_why_not = ""
-            if now >= p.next_try:
+            if now >= p.next_try and not ENDING.is_set():
                 try:
                     p.start(args)
                 except OSError as e:

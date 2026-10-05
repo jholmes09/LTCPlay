@@ -4679,6 +4679,32 @@ def build():
   "            if kind in LOW_PRIORITY_KINDS and \\\n",
   "            if True and \\\n"),
 
+ # -- review of PR #38 (2026-10-05): P1-2, a Windows shutdown or sign-out stops the show programs cleanly --
+ ('review38: a shutdown query stops nothing',
+  'packaging/windows/ltcwin.py',
+  '            self._stop_and_wait("Windows is shutting down or signing out")',
+  '            pass'),
+
+ ('review38: the end of the session is answered before the stop is done',
+  'packaging/windows/ltcwin.py',
+  '        if not self.done.wait(self.wait_s):',
+  '        if False:'),
+
+ ('review38: the end of the session stops flamesafe first',
+  'packaging/windows/supervisor.py',
+  '    for name in reversed(PROGRAMS):\n        p = progs[name]\n        if p.alive():\n            log(f"Windows is ending',
+  '    for name in PROGRAMS:\n        p = progs[name]\n        if p.alive():\n            log(f"Windows is ending'),
+
+ ('review38: programs are restarted while the session ends',
+  'packaging/windows/supervisor.py',
+  '    ENDING.set()\n    breaker = breaker or send_ctrl_break',
+  '    breaker = breaker or send_ctrl_break'),
+
+ ('review38: flamesafe.exe makes no shutdown window',
+  'packaging/windows/entry_flamesafe.py',
+  '    ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)\n',
+  '    pass\n'),
+
 ]
 
 
