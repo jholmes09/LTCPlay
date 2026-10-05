@@ -37349,6 +37349,96 @@ def test_deck_abort_with_no_show_reads_what_the_engine_did():
     print("  ok")
 
 
+def test_remote_reset_and_abort_1_ms_apart_under_a_slow_save():
+    section("iPad remote: a Reset and an Abort pressed 1 ms apart, with "
+            "the tonight.json save slow, keep their press order: a Reset "
+            "pressed before the Abort never ends it, whichever reaches the "
+            "scheduler first (review of #48)")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    real_save = SV.write_json_atomic
+
+    def slow_save(path, doc, **kw):
+        time.sleep(0.3)
+        return real_save(path, doc, **kw)
+    for first in ("reset", "abort"):
+        R = _RemoteRig(S)
+        real_reset = R.svc.reset_conductor
+        try:
+            R.sign_in()
+            _live_show(R)
+            SV.write_json_atomic = slow_save
+            if first == "reset":
+                # The Reset arrives first, then is slow on its way in, so
+                # the Abort pressed 1 ms after it reaches the scheduler
+                # first.
+                def late_reset(*a, **k):
+                    # Held up on its way in until the Abort (pressed 1 ms
+                    # after it) is decided and done fading, so the
+                    # conductor would take the Reset if it were sent.
+                    end = time.time() + 3
+                    while time.time() < end and not (
+                            R.c.latched and not R.c.snapshot()["busy"]):
+                        time.sleep(0.01)
+                    return real_reset(*a, **k)
+                R.svc.reset_conductor = late_reset
+            got = {}
+
+            def press(route, body):
+                got[route] = R.ask("POST", f"/api/remote/{route}", body)
+            ts = {"reset": threading.Thread(target=press, args=(
+                      "reset", {"seen": R.seen()})),
+                  "abort": threading.Thread(target=press, args=(
+                      "abort", {"confirmed": True}))}
+            second = "abort" if first == "reset" else "reset"
+            # The conductor's own effects run as they would on its thread,
+            # so the Abort has finished fading by the time the Reset is
+            # answered (otherwise "still fading" refuses it, and the order
+            # is never tested).
+            pumping = threading.Event()
+
+            def pump():
+                while not pumping.is_set():
+                    try:
+                        R.c.run_pending()
+                    except Exception:
+                        pass
+                    time.sleep(0.005)
+            pt = threading.Thread(target=pump, daemon=True)
+            pt.start()
+            ts[first].start()
+            time.sleep(0.001)
+            ts[second].start()
+            for t in ts.values():
+                t.join(10)
+            pumping.set()
+            pt.join(2)
+            SV.write_json_atomic = real_save
+            R.settle()
+            latched = R.svc.machine.abort_latched
+            st, _h, out = got.get("reset", (0, None, {}))
+            if first == "reset":
+                check(latched and R.svc._aborted() and R.c.latched and
+                      not out.get("ok"),
+                      f"a Reset pressed 1 ms before the Abort does not end "
+                      f"it, though it reached the scheduler after it: "
+                      f"latched={latched} conductor={R.c.latched} {out}")
+            else:
+                check(bool(out.get("ok")) == (not latched) and
+                      latched == R.c.latched,
+                      f"a Reset pressed 1 ms after the Abort ends it or "
+                      f"says it did not, and the scheduler and the "
+                      f"conductor agree: latched={latched} "
+                      f"conductor={R.c.latched} {out}")
+        finally:
+            SV.write_json_atomic = real_save
+            R.svc.reset_conductor = real_reset
+            R.close()
+    print("  ok")
+
+
 def test_remote_abort_disarm_never_waits_on_the_tonight_save():
     section("iPad remote: a slow or failing tonight.json save never delays "
             "the screen Abort's disarm (review of PR #43, P0-5)")
@@ -39274,6 +39364,7 @@ if __name__ == "__main__":
     test_remote_abort_and_start_need_the_confirm()
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
+    test_remote_reset_and_abort_1_ms_apart_under_a_slow_save()
     test_deck_abort_with_no_show_reads_what_the_engine_did()
     test_deck_requests_share_one_no_proxy_opener()
     test_deck_reads_reset_after_an_engine_restart()

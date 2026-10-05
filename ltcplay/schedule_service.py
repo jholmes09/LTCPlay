@@ -17,6 +17,7 @@ Everything it decides goes to the night journal and the machine log
 kept in memory for the page.
 """
 import collections
+import itertools
 import json
 import os
 import socket
@@ -728,6 +729,14 @@ class Service:
         # whether an Abort was decided after it was pressed.
         self._call_seq = 0
         self._abort_seq = 0
+        # Press order across every way in (review of #46/#48: the screen
+        # Abort now does work of its own before it reaches this service, so
+        # the order presses reach the lock is not the order they were
+        # pressed in). stamp_press() is taken the moment a press arrives;
+        # a Reset stamped before the latest Abort never ends it.
+        self._press_counter = itertools.count(1)
+        self._press_stamp = None
+        self._abort_pressed = 0
         # A stuck or dead line of conductor requests, once it has been
         # journaled as a fault: {"key", "text"}. See _watch_conductor.
         self._conductor_trouble = None
@@ -1178,7 +1187,15 @@ class Service:
                 call.show = entry[3]
             if method == "abort":
                 self._abort_seq = call.seq
+                self._abort_pressed = (self._press_stamp
+                                       if self._press_stamp is not None
+                                       else self.stamp_press())
             self._calls.put(call)
+
+    def stamp_press(self):
+        """A number for a press, taken the moment it arrives, before any
+        lock or other work: later presses get larger numbers."""
+        return next(self._press_counter)
 
     def _new_call(self, label, method, who, screen):
         self._call_seq += 1
@@ -1298,7 +1315,9 @@ class Service:
             still = True
         if not ok and still:
             return ok, said             # e.g. the Abort is still fading
-        if call.seq < self._abort_seq:
+        pressed = getattr(call, "pressed", None)
+        if call.seq < self._abort_seq or (
+                pressed is not None and pressed < self._abort_pressed):
             return False, ("Reset was pressed before the latest Abort, so "
                            "that Abort is still in force. Press Reset "
                            "again.")
@@ -1360,7 +1379,7 @@ class Service:
         journaled. For tests, and for stop()."""
         return self._calls.flush(timeout)
 
-    def reset_conductor(self, who, screen, wait_s=2.0):
+    def reset_conductor(self, who, screen, wait_s=2.0, pressed=None):
         """The operator's Reset, for the Abort latch: the same
         Conductor.reset() an operator's own Reset press calls, queued
         behind every conductor call already decided, so it can never land
@@ -1374,6 +1393,7 @@ class Service:
         a sentence, written to the journal as a refused press like every
         other press's refusal, when no conductor is attached or the
         operator or screen is blank or not on its list."""
+        stamp = self.stamp_press()
         who = str(who or "").strip()
         screen = str(screen or "").strip()
         if self.conductor is None:
@@ -1389,10 +1409,22 @@ class Service:
                                f"list ({', '.join(self.operators)}). Nothing "
                                f"was reset.")
         screen = self._check_screen(screen, who, "reset", "Reset")
+        when = pressed if pressed is not None else stamp
         with self._locked():
-            call = self._new_call("Reset", "reset", names[who.lower()],
-                                  screen)
-            self._calls.put(call)
+            late = when < self._abort_pressed
+            if not late:
+                call = self._new_call("Reset", "reset", names[who.lower()],
+                                      screen)
+                call.pressed = when
+                self._calls.put(call)
+        if late:
+            # An Abort pressed after this Reset has already been decided
+            # (it reached the scheduler first): the Reset is never sent, so
+            # it can neither end that Abort nor reset the conductor behind
+            # its back.
+            self._refuse_reset(who, screen, "Reset was pressed before the "
+                               "latest Abort, so that Abort is still in "
+                               "force. Press Reset again.")
         if not call.done.wait(wait_s):
             return {"ok": False, "text": "Reset is queued behind the show "
                                          "conductor's earlier work and has "
@@ -2738,7 +2770,8 @@ class Service:
     PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
                "resume": sch.RESUME, "abort": sch.ABORT}
 
-    def operator_press(self, what, who, screen, confirmed=False):
+    def operator_press(self, what, who, screen, confirmed=False,
+                       pressed=None):
         """One operator press from a screen: Start now, Hold, Resume or
         Abort. `who` must be on the operator list and `screen` on the
         screen list; anything else is refused in the journal and raised as
@@ -2779,9 +2812,14 @@ class Service:
                 self.journal_press(who, screen, what, "refused",
                                    f"{who}'s {what} was refused. {sentence}")
                 return {"ok": False, "text": sentence}
-            out = self._apply(sch.Event(kind, "operator", who=who,
-                                        screen=screen,
-                                        confirmed=bool(confirmed)))
+            self._press_stamp = (pressed if pressed is not None
+                                 else self.stamp_press())
+            try:
+                out = self._apply(sch.Event(kind, "operator", who=who,
+                                            screen=screen,
+                                            confirmed=bool(confirmed)))
+            finally:
+                self._press_stamp = None
         if out.refused:
             return {"ok": False, "text": out.refused}
         # The answer the page, the iPad and the deck see says what the

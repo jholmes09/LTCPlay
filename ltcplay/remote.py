@@ -924,6 +924,11 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
+        # The press's place in line, taken before anything else (an Abort's
+        # disarm and laser blank, a lock): the scheduler compares a Reset's
+        # with the latest Abort's, so work done first never reorders them.
+        stamp = getattr(self.schedule, "stamp_press", None)
+        pressed = stamp() if stamp is not None else None
         who, screen = self._actor(ctx, body)
         if name in FRESH_ROUTES:
             why = self._stale(body)
@@ -960,7 +965,7 @@ class Remote:
         if name == "disarm-all":
             return self.disarm_all(who, screen)
         if name == "abort":
-            return self.abort(who, screen, flames, lasers)
+            return self.abort(who, screen, flames, lasers, pressed)
         if name in TRANSPORT_ROUTES:
             return self.transport(name, body, who, screen)
         svc = self.schedule
@@ -983,7 +988,7 @@ class Remote:
                     pick = str(body.get("pick") or "").strip()
                 return 200, svc.set_operator({"who": pick, "screen": screen})
             if name == "reset":
-                r = svc.reset_conductor(who, screen)
+                r = svc.reset_conductor(who, screen, pressed=pressed)
             else:
                 r = svc.operator_press(name, who, screen,
                                        confirmed=body.get("confirmed") is True)
@@ -1377,7 +1382,7 @@ class Remote:
         return ok, ("Lasers blanked at the press." if ok else
                     "The laser blank did NOT go out at the press.")
 
-    def abort(self, who, screen, flames, lasers=(None, "")):
+    def abort(self, who, screen, flames, lasers=(None, ""), pressed=None):
         """The screen's and the deck's Abort. `flames` is what the disarm
         sent before anything else did (_disarm_now). Then the scheduler's
         Abort, which stops a live show through the conductor. The answer
@@ -1396,7 +1401,8 @@ class Remote:
                                    "engine, so no show was stopped.")
         else:
             try:
-                r = svc.operator_press("abort", who, screen, confirmed=True)
+                r = svc.operator_press("abort", who, screen, confirmed=True,
+                                       pressed=pressed)
                 s_ok = bool(r.get("ok"))
                 s_text = str(r.get("text") or "")
             except ValueError as e:

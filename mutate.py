@@ -5650,8 +5650,8 @@ def build():
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
-  "            self._calls.put(call)\n\n    def _new_call",
-  "            self._run_conductor_call(call)\n\n    def _new_call"),
+  "            self._calls.put(call)\n\n    def stamp_press",
+  "            self._run_conductor_call(call)\n\n    def stamp_press"),
 
  ("scheduler fix round: conductor calls lose their order",
   "ltcplay/schedule_service.py",
@@ -5685,11 +5685,9 @@ def build():
 
  ("scheduler fix round: the Service's Reset never reaches the conductor",
   "ltcplay/schedule_service.py",
-  "            self._calls.put(call)\n"
-  "        if not call.done.wait(wait_s):",
-  "            call.ok, call.sentence = False, \"not sent\"\n"
-  "            call.done.set()\n"
-  "        if not call.done.wait(wait_s):"),
+  "                self._calls.put(call)\n        if late:",
+  "                call.ok, call.sentence = False, \"not sent\"\n"
+  "                call.done.set()\n        if late:"),
 
  ('scheduler fix round: the Abort line still says nothing was disarmed',
   'ltcplay/schedule_service.py',
@@ -5892,7 +5890,8 @@ def build():
 
  ("scheduler fix round 2: a Reset pressed before an Abort ends it",
   "ltcplay/schedule_service.py",
-  "        if call.seq < self._abort_seq:",
+  "        if call.seq < self._abort_seq or (\n"
+  "                pressed is not None and pressed < self._abort_pressed):",
   "        if False:"),
 
  ("scheduler fix round 2: an unreset Abort does not make the start dark",
@@ -7475,6 +7474,22 @@ def build():
   'ltcplay/streamdeck.py',
   '    def _http_fetch(self, path):\n        try:\n            with _opener().open(self.base_url + path,',
   '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
+
+ # -- review of #48: a Reset pressed before an Abort never ends it, whatever order they reach the scheduler --
+ ('rereview: a Reset that reached the scheduler after a later-pressed Abort is still sent',
+  'ltcplay/schedule_service.py',
+  '            late = when < self._abort_pressed\n',
+  '            late = False\n'),
+
+ ("rereview: the screen's Abort and Reset carry no press order",
+  'ltcplay/remote.py',
+  '        pressed = stamp() if stamp is not None else None\n',
+  '        pressed = None\n'),
+
+ ("rereview: the Abort's press order is not kept",
+  'ltcplay/schedule_service.py',
+  '                self._abort_pressed = (self._press_stamp\n',
+  '                self._abort_pressed = 0 and (self._press_stamp\n'),
 
 ]
 
