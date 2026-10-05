@@ -38584,11 +38584,18 @@ def test_screen_arm_end_to_end_probes():
         # engine's answers are kept for the message.
         tries = []
         for _try in range(3):
+            k = len(whys.get("front row", []))
             tries.append(hold("front row", andy, 1.5))
             end = time.perf_counter() + 3
             while time.perf_counter() < end and not armed(0):
                 time.sleep(0.02)
             if armed(0):
+                break
+            # Held again only when this try's hold is shown to have lapsed
+            # (the engine's own "hold was interrupted"); any other ending
+            # is the failure it looks like.
+            ended = [w for _t, w in whys.get("front row", [])[k:]]
+            if not any("interrupted" in str(w) for w in ended):
                 break
             time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
