@@ -37001,6 +37001,76 @@ def test_remote_abort_disarms_with_no_show_live():
     print("  ok")
 
 
+def test_deck_reads_reset_after_an_engine_restart():
+    section("Stream Deck: after an Abort and an engine restart the "
+            "scheduler's saved Abort latch is on /api/conductor, so the "
+            "deck's Abort key still reads RESET until Reset (review of PR "
+            "#43, P1-5)")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import streamdeck as sd
+    R = _RemoteRig(S)
+    try:
+        R.httpd.conductor = R.c
+        R.sign_in()
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(R.svc.machine.abort_latched and R.c.latched,
+              "setup: aborted and latched")
+        # The engine restarts: a new conductor (unlatched) and a scheduler
+        # read back from tonight's file.
+        R.svc.stop()
+        c2, rig2, _T2, _l2 = _cond()
+        svc2 = _svc(S, R.work, R.now, conductor=c2)
+        svc2.tick()
+        check(svc2.machine.abort_latched and not c2.latched,
+              "setup: the scheduler kept its latch across the restart, the "
+              "new conductor did not")
+        R.httpd.schedule = svc2
+        R.httpd.conductor = c2
+
+        def fetch(path):
+            st, _h, out = _ask(R.httpd, "GET", path,
+                               client=("127.0.0.1", 5000))
+            return out if st == 200 else None
+        got = fetch("/api/conductor")
+        check(got and got["conductor"]["latched"] is True and
+              got["conductor"]["scheduler_abort_latched"] is True,
+              f"/api/conductor says latched after the restart: "
+              f"{got and got['conductor']}")
+        e = sd.EngineConductor("http://127.0.0.1:1",
+                               poster=lambda p, b: (True, "ok"),
+                               fetcher=fetch, poll_hz=50.0)
+        e.start()
+        try:
+            deadline = time.time() + 2
+            while e._engine is None and time.time() < deadline:
+                time.sleep(0.01)
+            ctl = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                                ["front row", "cat-walk", "wave flamer"],
+                                operator_provider=lambda: "Andy",
+                                show_running_provider=lambda: False,
+                                conductor=e)
+            check(e.snapshot()["latched"] is True and ctl._latched_now(),
+                  f"the deck reads latched, so its Abort key reads RESET: "
+                  f"{e.snapshot()}")
+            r = svc2.reset_conductor("Andy", "Stream Deck")
+            svc2.flush_conductor(5)
+            c2.run_pending()
+            got = fetch("/api/conductor")
+            check(not svc2.machine.abort_latched and
+                  got["conductor"]["latched"] is False,
+                  f"after Reset it is not: {r} {got['conductor']}")
+        finally:
+            e.stop()
+        svc2.stop()
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_deck_abort_with_no_show_reads_what_the_engine_did():
     section("Stream Deck: an Abort the engine answered with every group "
             "disarmed and no show stopped leaves the Abort key reading "
@@ -38886,6 +38956,7 @@ if __name__ == "__main__":
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
     test_deck_abort_with_no_show_reads_what_the_engine_did()
+    test_deck_reads_reset_after_an_engine_restart()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
     test_remote_page_loss_changes_nothing()

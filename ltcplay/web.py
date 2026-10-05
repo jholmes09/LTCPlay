@@ -874,7 +874,17 @@ class Handler(BaseHTTPRequestHandler):
         c = getattr(self.server, "conductor", None)
         if c is None:
             return 404, {"error": "no such thing here"}
-        out = {"conductor": c.snapshot()}
+        snap = c.snapshot()
+        # The scheduler's own Abort latch, saved in tonight's file, is the
+        # one that survives an engine restart (the conductor starts
+        # unlatched): latched while either is (review of PR #43, P1-5), so
+        # the Stream Deck's Abort key reads RESET after a restart too. A
+        # plain read, never the scheduler's lock: this route is polled.
+        m = getattr(getattr(self.server, "schedule", None), "machine", None)
+        sched_latched = bool(getattr(m, "abort_latched", False))
+        snap["scheduler_abort_latched"] = sched_latched
+        snap["latched"] = bool(snap.get("latched")) or sched_latched
+        out = {"conductor": snap}
         fi = getattr(self.server, "fire_ice", None)
         fl = getattr(fi, "flame_link", None)
         if fl is not None and hasattr(fl, "snapshot"):

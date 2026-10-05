@@ -7399,6 +7399,12 @@ def build():
   '        if rs.get("flamesafe_config"):\n            named.append(',
   '        if False:\n            named.append('),
 
+ # -- review of PR #43: P1-5, the deck reads RESET after an engine restart --
+ ("review43: /api/conductor forgets the scheduler's saved Abort latch",
+  'ltcplay/web.py',
+  '        snap["latched"] = bool(snap.get("latched")) or sched_latched',
+  '        snap["latched"] = bool(snap.get("latched"))'),
+
 ]
 
 
