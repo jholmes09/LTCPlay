@@ -67,6 +67,7 @@ def main():
         return rc
     ltcwin.clean_stop_on_logoff()
     _bench_fake_audio()
+    _bench_send_gaps()
     if argv and argv[0] == "serve":
         ltcwin.say_keep_time("ltcplay")
         if ltcwin.boosted():
@@ -77,6 +78,67 @@ def main():
                 log=lambda t: print(f"ltcplay: {t}", flush=True))
     from ltcplay import cli
     return cli.main(argv)
+
+
+def _bench_send_gaps():
+    """BENCH BUILD ONLY: with LTCPLAY_BENCH_SENDGAPS set to a file path (the
+    soak sets it), the engine measures its own output timing where it
+    sends: the worst interval between two pixel frames and between two
+    timecode packets, per minute, written to that file every 5 s. The soak
+    lays it beside its own view, so a starved soak is never mistaken for a
+    starved engine (show PC, 2026-10-04). Unset, it does nothing at all."""
+    import json
+    import os
+    import threading
+    import time
+    path = os.environ.get("LTCPLAY_BENCH_SENDGAPS")
+    if not path:
+        return
+    from ltcplay import clock, output
+    meters = {"pixels": {}, "timecode": {}}
+    last = {}
+
+    def note(kind):
+        now = time.perf_counter()
+        prev, last[kind] = last.get(kind), now
+        if prev is None or now - prev > 5.0:
+            return
+        m = int(time.time() // 60)
+        d = meters[kind]
+        ms = (now - prev) * 1000.0
+        if ms > d.get(m, 0.0):
+            d[m] = ms
+    real_frame = output.Sender.send_frame
+    real_tc = clock.TimecodeOut.send
+
+    def send_frame(self, channels):
+        try:
+            return real_frame(self, channels)
+        finally:
+            note("pixels")
+
+    def send(self, pkt):
+        try:
+            return real_tc(self, pkt)
+        finally:
+            note("timecode")
+    output.Sender.send_frame = send_frame
+    clock.TimecodeOut.send = send
+
+    def writer():
+        while True:
+            time.sleep(5.0)
+            try:
+                doc = {k: {str(m): round(v, 1) for m, v in d.items()}
+                       for k, d in meters.items()}
+                with open(path + ".tmp", "w", encoding="utf-8") as fh:
+                    json.dump(doc, fh)
+                os.replace(path + ".tmp", path)
+            except Exception:
+                pass
+    threading.Thread(target=writer, daemon=True,
+                     name="bench-sendgaps").start()
+    print(f"BENCH: the engine times its own sends into {path}", flush=True)
 
 
 def _bench_fake_audio():

@@ -737,6 +737,50 @@ class Soak:
             self.window_events.append((time.time(), f"restored {n}"))
             note(f"window script: MadMapper restored ({n} window(s))")
 
+    def engine_send_gaps(self):
+        try:
+            with open(os.path.join(self.dir, "engine-send-gaps.json"),
+                      encoding="utf-8") as fh:
+                doc = json.load(fh)
+            return {k: {int(m): float(v) for m, v in d.items()}
+                    for k, d in doc.items()}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def engine_timing_item(self):
+        """The engine's own send intervals (measured where it sends),
+        beside this program's view of the same outputs: a stall only this
+        program saw is this program's, not the show's."""
+        eng = self.engine_send_gaps()
+        if not eng:
+            return ("NOT TESTED", "Engine's own output timing (measured "
+                    "inside the engine)", "the engine wrote no timings")
+        parts = []
+        for kind, label, limit, soak_iv in (
+                ("pixels", "pixel frames", PIXEL_GAP_MS, self.pixels),
+                ("timecode", "timecode packets", TC_GAP_MS, self.tc)):
+            d = eng.get(kind) or {}
+            if not d:
+                parts.append(f"{label}: none sent")
+                continue
+            worst_m = max(d, key=d.get)
+            over = sorted(m for m, v in d.items() if v > limit)
+            parts.append(
+                f"{label}: worst interval {d[worst_m]:.1f} ms at "
+                f"{time.strftime('%H:%M', time.localtime(worst_m * 60))} "
+                f"(this soak's own view: {soak_iv.longest:.1f} ms), "
+                f"{len(over)} minute(s) over {limit:g} ms"
+                + (": " + ", ".join(
+                    f"{time.strftime('%H:%M', time.localtime(m * 60))} "
+                    f"{d[m]:.0f} ms" for m in over[:8]) if over else ""))
+        bad = any(v > lim for kind, lim in (("pixels", PIXEL_GAP_MS),
+                                            ("timecode", TC_GAP_MS))
+                  for v in (eng.get(kind) or {}).values())
+        return ("FAIL" if bad else "PASS",
+                "Engine's own output timing (measured inside the engine, "
+                "where it sends; a soak stall cannot show here)",
+                "; ".join(parts))
+
     def starvation_item(self):
         bad = sorted(m for m, v in self.oversleep.items() if v >= 20.0)
         rows = []
@@ -756,6 +800,18 @@ class Soak:
                  if worst is not None else "not read from the engine")
                 + f"; scheduling protection {'on' if self.priority else 'off'}"
                 + win)
+
+    def flamesafe_overruns(self):
+        out = []
+        try:
+            with open(os.path.join(self.dir, "flamesafe.log"),
+                      encoding="utf-8", errors="replace") as fh:
+                for ln in fh:
+                    if "overran" in ln:
+                        out.append(ln.strip()[:120])
+        except OSError:
+            pass
+        return out
 
     def on_beyond_tc(self, b, t, addr=None):
         """BEYOND's own timecode stream (fallback mode): hour
@@ -1045,6 +1101,9 @@ class Soak:
             env["XDG_STATE_HOME"] = self.engine_env_dir
             if self.fake_audio:
                 env[FAKE_AUDIO_ENV] = self.audio_name or "1"
+        if name == "engine":
+            env["LTCPLAY_BENCH_SENDGAPS"] = os.path.join(
+                self.dir, "engine-send-gaps.json")
         if name == "deck" and self.virtual_deck:
             env["LTCPLAY_BENCH_VIRTUAL_DECK"] = "1"
         env.pop(ltcwin.PRIORITY_ENV, None)
@@ -1306,8 +1365,12 @@ class Soak:
         self.start_show()
         note("scheduling protection " + (
             "ON: engine and flamesafe at High, their show threads at "
-            "Highest, the deck at Above normal" if self.priority else
-            "OFF (--priority off)"))
+            "Highest, the deck at Above normal; this soak program at High, "
+            "its listeners, relay and exerciser at Highest"
+            if self.priority else "OFF (--priority off), this soak program "
+            "too"))
+        self._boost_stop = threading.Event()
+        set_soak_priority(self.priority, self._boost_stop)
         threading.Thread(target=self.cpu_sampler, daemon=True,
                          name="soak-cpu-1s").start()
         if self.window_script:
@@ -1375,6 +1438,8 @@ class Soak:
         finally:
             self.ended = time.time()
             self._cpu_stop.set()
+            if getattr(self, "_boost_stop", None) is not None:
+                self._boost_stop.set()
             if self.ex is not None:
                 self.ex.close()
             self.stopping = True
@@ -1851,9 +1916,10 @@ class Soak:
         sc = self.sacn
         j = self.judge
         viol = j.violations if j else []
-        ok = sc.n > 10 and not viol and sc.over_gap == 0
+        ok = sc.n > 10 and not viol
         out.append(("PASS" if ok else "FAIL", "flamesafe output (sACN, sent "
-                    "to this PC only), judged per armed group",
+                    "to this PC only), judged per armed group (values "
+                    "only; its timing is the next item)",
                     f"{len(viol)} violation(s) (limit 0)"
                     + (": " + "; ".join(f"{now_text(a)} {w}"
                                         for a, w in viol[:6]) if viol else "")
@@ -1867,10 +1933,7 @@ class Soak:
                     + "; fire packets per group: " + ", ".join(
                         f"{n} {c}" for n, c in
                         (j.fire_frames.items() if j else []))
-                    + f"; {sc.events} packets, mean {sc.mean():.1f} ms "
-                    f"(target {1000 / self.tick_hz:.0f}), longest gap "
-                    f"{sc.longest:.1f} ms (limit {SACN_LATE_MS:g}, "
-                    f"flamesafe's overrun_ms), {self.sacn_nonzero} not all "
+                    + f"; {sc.events} packets, {self.sacn_nonzero} not all "
                     f"zero. A group's channels may carry values only while "
                     f"flamesafe reports it armed, and its fire channels only "
                     f"in a show, never in a Hold, never after an Abort until "
@@ -1910,6 +1973,20 @@ class Soak:
                        f"{las.get('blank_mode', '?')}" if tc else
                        "the engine reported no BEYOND timecode counts")))
         out.append(self.starvation_item())
+        out.append(self.engine_timing_item())
+        overruns = self.flamesafe_overruns()
+        out.append(("PASS" if sc.over_gap == 0 and not overruns else "FAIL",
+                    "flamesafe output timing",
+                    f"flamesafe's own overruns (its tick late by more than "
+                    f"{SACN_LATE_MS:g} ms, from its own log): "
+                    f"{len(overruns)}"
+                    + (": " + "; ".join(overruns[:4]) if overruns else "")
+                    + f"; as heard by this soak's listener (a starved soak "
+                    f"hears gaps flamesafe never had): {sc.events} packets, "
+                    f"mean {sc.mean():.1f} ms (target "
+                    f"{1000 / self.tick_hz:.0f}), longest gap "
+                    f"{sc.longest:.1f} ms, {sc.over_gap} over "
+                    f"{SACN_LATE_MS:g} ms"))
         ex = self.ex
         if ex is not None:
             c = ex.counts
@@ -2107,6 +2184,36 @@ class Soak:
 
 class _Done(Exception):
     pass
+
+
+SOAK_THREADS = ("sacn", "status", "flame relay", "artnet", "beyond timecode",
+                "beyond", "madmapper", "soak-exerciser")
+
+
+def set_soak_priority(on, stop):
+    """This soak program's own priority, behind the same switch as the
+    show programs' (show PC, 2026-10-04: a starved soak measured stalls the
+    engine never had, and its relay starved flamesafe's link): High, with
+    its listeners, relay and exerciser at Highest; or back to Normal."""
+    if not ltcwin.WINDOWS:
+        return
+    if on:
+        got = ltcwin.keep_time("high")
+        note("this soak program: " + ", ".join(got))
+        ltcwin.boost_threads(SOAK_THREADS, log=note, stop=stop)
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        ok = k32.SetPriorityClass(wintypes.HANDLE(k32.GetCurrentProcess()),
+                                  0x20)             # NORMAL
+        note("this soak program: priority Normal" if ok else
+             "this soak program: priority could NOT be set to Normal")
+    except Exception as e:
+        note(f"this soak program: priority not changed ({e})")
 
 
 def refuse_held_ports(need):
