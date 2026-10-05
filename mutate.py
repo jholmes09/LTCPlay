@@ -7236,6 +7236,95 @@ def build():
   "        return ms is None or int(ms / (BLINK_HALF_S * 1000.0)) % 2 == 0\n",
   "        return int(self._clock() * 2) % 2 == 0\n"),
 
+ # The approved states the deck never drew before (Jeff, 2026-09-27): NOW
+ # PLAYING, PAUSED, AUDIO LOST on the Start key; NO / FLAME / LINK.
+ ("deck states: NOW PLAYING flashes on the deck's own clock",
+  "ltcplay/streamdeck.py",
+  "                bg, text = PLAYING_ON if blink_on else PLAYING_OFF\n",
+  "                bg, text = PLAYING_ON if int(now * 2) % 2 == 0 "
+  "else PLAYING_OFF\n"),
+
+ ("deck states: START NOW stays on the Start key during a show",
+  "ltcplay/streamdeck.py",
+  "            elif running:\n                # Start Now does nothing",
+  "            elif False:\n                # Start Now does nothing"),
+
+ ("deck states: a held show reads NOW PLAYING, never PAUSED",
+  "ltcplay/streamdeck.py",
+  "            if running and held:\n",
+  "            if False:\n"),
+
+ ("deck states: AUDIO LOST never shows",
+  "ltcplay/streamdeck.py",
+  "            elif running and self._audio_lost():\n",
+  "            elif False:\n"),
+
+ ("deck states: AUDIO LOST is drawn steady",
+  "ltcplay/streamdeck.py",
+  "                bg, text = AUDIO_LOST_ON if blink_on else AUDIO_LOST_OFF\n",
+  "                bg, text = AUDIO_LOST_ON\n"),
+
+ ("deck states: AUDIO LOST covers the Hold key too",
+  "ltcplay/streamdeck.py",
+  "        elif self._held_hint() and blink_on:\n"
+  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n",
+  "        elif self._audio_lost():\n"
+  "            fonts.show_key(d, b1, [\"AUDIO\", \"LOST\"], AMBER, kind=\"sans\")\n"
+  "        elif self._held_hint() and blink_on:\n"
+  "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n"),
+
+ ("deck states: the deck ignores the engine's audio field",
+  "ltcplay/streamdeck.py",
+  "                snap = dict(snap, audio=got.get(\"audio\"))\n",
+  "                snap = dict(snap)\n"),
+
+ ("deck states: a remembered audio loss outlives the engine's answers",
+  "ltcplay/streamdeck.py",
+  "        if engine is None:\n            return False\n"
+  "        audio = engine[0].get(\"audio\")\n",
+  "        if engine is None:\n"
+  "            return getattr(self, \"_audio_was\", False)\n"
+  "        audio = engine[0].get(\"audio\")\n"
+  "        self._audio_was = bool(isinstance(audio, dict) "
+  "and audio.get(\"lost\"))\n"),
+
+ ("deck states: the missing link reads a dim flashing NO LINK again",
+  "ltcplay/streamdeck.py",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False\n",
+  "        return \"NO\", \"LINK\", (26, 24, 21), DIM_TEXT, True\n"),
+
+ ("deck states: the missing link flashes",
+  "ltcplay/streamdeck.py",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, False\n",
+  "        return NO_FLAME_LINK[slot % 3], None, RED, CHAMPAGNE, True\n"),
+
+ ("deck states: the missing link's words stop at the groups that exist",
+  "ltcplay/streamdeck.py",
+  "            for i in range(len(self.names), len(GROUP_KEYS)):\n",
+  "            for i in range(len(self.names), len(self.names)):\n"),
+
+ ("deck states: the latched deck reads NO / NO / NO",
+  "ltcplay/streamdeck.py",
+  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
+  "                                  slot=i)\n",
+  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
+  "                                  slot=0)\n"),
+
+ ("audio field: /api/conductor never says the show audio is lost",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": False,\n"),
+
+ ("audio field: /api/conductor says lost between cues too",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": mode == \"freerun\",\n"),
+
+ ("audio field: /api/conductor says lost while the clock follows the audio",
+  "ltcplay/web.py",
+  "                \"lost\": playing and mode == \"freerun\",\n",
+  "                \"lost\": playing,\n"),
+
 ]
 
 
