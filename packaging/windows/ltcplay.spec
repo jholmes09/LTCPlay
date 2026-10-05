@@ -81,7 +81,8 @@ a_engine = Analysis(
     [os.path.join(HERE, "entry_engine.py")],
     datas=LTCPLAY_DATA,
     hiddenimports=LTCPLAY_MODULES + ["ltcwin", "sounddevice",
-                                                  "_sounddevice", "tzdata"],
+                                                  "_sounddevice", "tzdata",
+                                                  "bench_probe"],
     **common)
 
 a_flame = Analysis(
@@ -102,7 +103,7 @@ a_soak = Analysis(
     datas=LTCPLAY_DATA + [(os.path.join(ROOT, "flamesafe",
                                         "flamesafe.example.json"), ".")],
     hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor", "soak_apps",
-                                     "soak_exercise",
+                                     "soak_exercise", "contain", "bench_probe",
                                      "test_show_fixtures", "psutil", "hid",
                                      "sounddevice", "_sounddevice",
                                      "tzdata"],
@@ -111,7 +112,7 @@ a_soak = Analysis(
 a_sup = Analysis(
     [os.path.join(HERE, "supervisor.py")],
     datas=[],
-    hiddenimports=["ltcwin"],
+    hiddenimports=["ltcwin", "contain"],
     **dict(common, excludes=EXCLUDES + ["ltcplay", "flamesafe", "numpy",
                                         "sounddevice", "PIL", "hid",
                                         "zstandard"]))

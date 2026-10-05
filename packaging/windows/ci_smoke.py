@@ -301,7 +301,10 @@ def soak_check():
     for need in ("[PASS] Engine's own error counters",
                  "flamesafe output (sACN, sent to this PC only)",
                  "Flame link frames", "Scheduled shows", "Art-Net timecode",
-                 "Show audio player", "Lasers (BEYOND", "Video (MadMapper"):
+                 "Show audio player", "Lasers (BEYOND", "Video (MadMapper",
+                 # The installed engine ran its stall probe (bench_probe
+                 # frozen into ltcplay.exe) and wrote its readings.
+                 "[INFO] Engine stalls, inside the engine"):
         check(need in text, f"the soak report has no '{need}' item")
     check(wait(all_running, 90), "LTC Player did not come back after the "
                                  "soak test")
