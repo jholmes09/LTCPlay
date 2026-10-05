@@ -26253,7 +26253,7 @@ def _deck_draw_stubs(sd):
             Image = None
 
         sd.Fonts = _NoPillowFonts
-        sd.Controller.draw = lambda self, fonts, blink_on, chase: _Img()
+        sd.Controller.draw = lambda self, *a, **kw: _Img()
 
     def restore():
         sd.Fonts = real_fonts
@@ -26262,26 +26262,155 @@ def _deck_draw_stubs(sd):
     return restore
 
 
+def test_streamdeck_look_a_marquee():
+    section("Stream Deck: the approved look A (Jeff, 2026-09-27): a ring of "
+            "marquee dots round every key and no solid outline; two snakes "
+            "the same way round the deck's outside dots, half a lap apart; "
+            "Abort fills every key's own ring red, clockwise, all at once, "
+            "and fully while latched; an arm-hold fills that key's ring gold")
+    from ltcplay import streamdeck as sd
+    check((sd.DOT_INSET, sd.DOT_SPACING, sd.DOT_R) == (6, 11.0, 2.6)
+          and sd.RUN_FRACTION == 0.16 and sd.CHASE_STEP_S == 0.06
+          and sd.FACE_MARGIN == 12 and sd.ABORT_HOLD_S == 0.5,
+          "look A's geometry and pace are the demo's own numbers")
+    check(sd.face_box(4) == (92, 92, 148, 148),
+          f"faces sit 12 px inside each key: {sd.face_box(4)}")
+    rings = [sd.key_ring(k) for k in range(6)]
+    check(all(len(r) == 24 for r in rings) and len(sd.ALL_DOTS) == 144,
+          f"24 dots round each key, 144 in all: "
+          f"{[len(r) for r in rings]}, {len(sd.ALL_DOTS)}")
+    check(rings[0][0] == (6, 6) and rings[0][6] == (74, 6)
+          and rings[0][12] == (74, 74) and rings[0][18] == (6, 74),
+          f"each ring runs clockwise from its top-left dot: "
+          f"{rings[0][0]}, {rings[0][6]}, {rings[0][12]}, {rings[0][18]}")
+    outer = sd.OUTER_DOTS
+    n = len(outer)
+    check(n == 66 and outer[0] == (6, 6) and outer[1][1] == 6
+          and outer[1][0] > 6,
+          f"66 outside dots, clockwise along the top first: {n}, "
+          f"{outer[:2]}")
+    run = round(n * sd.RUN_FRACTION)
+    for chase in (0, 7, 59, 123):
+        c = sd.marquee_colours(chase, 0.0)
+        heads = [i for i, p in enumerate(outer) if c[p] == sd.CHAMPAGNE]
+        gold = [p for p in sd.ALL_DOTS if c[p] == sd.GOLD]
+        want = sorted({chase % n, (chase + n // 2) % n})
+        check(heads == want and len(gold) == 2 * (run - 1)
+              and all(p in outer for p in gold)
+              and all(c[outer[(h - j) % n]] == sd.GOLD
+                      for h in heads for j in range(1, run))
+              and all(c[p] == sd.BULB_OFF for p in sd.ALL_DOTS
+                      if p not in outer),
+              f"chase {chase}: two champagne heads half a lap apart at "
+              f"{want}, each trailing {run - 1} gold dots behind it on the "
+              f"outside, every other dot unlit: heads {heads}, "
+              f"{len(gold)} gold")
+    c0, c1 = sd.marquee_colours(10, 0.0), sd.marquee_colours(11, 0.0)
+    h0 = [i for i, p in enumerate(outer) if c0[p] == sd.CHAMPAGNE]
+    h1 = [i for i, p in enumerate(outer) if c1[p] == sd.CHAMPAGNE]
+    check([(b - a) % n for a, b in zip(h0, h1)] == [1, 1],
+          f"both snakes step the same way, one dot per step: {h0} -> {h1}")
+    half = sd.marquee_colours(5, 0.5)
+    check(all([half[p] for p in r] == [sd.RED] * 12 + [sd.BULB_OFF] * 12
+              for r in rings),
+          "Abort held halfway: every key's own ring is red for its first "
+          "half, clockwise, all keys at once, and nothing chases")
+    full = sd.marquee_colours(5, 1.0)
+    check(set(full.values()) == {sd.RED},
+          "Abort complete or latched: every dot on the deck is red")
+    arm = sd.marquee_colours(0, 0.0, {4: 0.5})
+    check([arm[p] for p in rings[4]] == [sd.GOLD] * 12 + [sd.BULB_OFF] * 12,
+          "an arm-hold halfway fills that key's ring gold, clockwise, with "
+          "no snake across it")
+    check(sd.CHAMPAGNE in {arm[p] for p in rings[0]},
+          "the snakes keep running round the other keys meanwhile")
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        print("  note: Pillow is not installed here, so look A's pixels are "
+              "not checked on this machine.")
+        print("  ok")
+        return
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None
+    t = [10.0]
+    ctl = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                        ["front row", "cat-walk", "wave flamer"],
+                        operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: True,
+                        clock=lambda: t[0])
+    img = ctl.draw(fonts, blink_on=True, chase=3)
+    want = sd.marquee_colours(3, 0.0)
+    check(all(img.getpixel((round(x), round(y))) == want[(x, y)]
+              for (x, y) in sd.ALL_DOTS),
+          "the drawn deck carries every dot in its marquee colour")
+    # Between two dots of a ring, on the ring's own line, is the deck's
+    # black: a solid outline (the old look B) would be drawn there.
+    edge = {img.getpixel((ox + x, oy + y)) for k in range(6)
+            for ox, oy in [sd.key_origin(k)]
+            for x, y in ((6, 12), (12, 6), (74, 12), (12, 74))}
+    check(edge == {sd.BLACK},
+          f"no solid outline round any key, only dots: {edge}")
+    ctl._latched = True
+    img = ctl.draw(fonts, blink_on=True, chase=3)
+    check(all(img.getpixel((round(x), round(y))) == sd.RED
+              for (x, y) in sd.ALL_DOTS),
+          "latched: every dot of every ring is drawn red")
+    print("  ok")
+
+
 def test_streamdeck_idle_deck_draws_rarely():
-    section("Stream Deck: with nothing happening the keys are drawn every "
-            "DRAW_IDLE_S, not every pass, while the arm link still goes out "
-            "every pass; a key held is drawn every pass (show PC, "
-            "2026-10-04: an idle deck took 14% of a core)")
+    section("Stream Deck: what moves on the keys is evidence of life, never "
+            "the deck's own clock (Jeff, 2026-10-05; the approved demo's "
+            "freeze). The snakes step on flamesafe's status frames, one step "
+            "per 0.06 s of its ticks; the bottom row flashes on them too; "
+            "the top row flashes on the engine's fresh answers. Frozen "
+            "flamesafe and engine: nothing moves. The keys are redrawn only "
+            "when something on them changed, a held key every FRAME_S, and "
+            "the arm link still goes out every pass")
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer"]
     arm = _FakeArmSocket(3)
     t = [0.0]
-    c = sd.Controller(arm, _FakeStatusSocket(), names,
+    alive = [True]
+
+    class _TickingStatus:
+        """flamesafe at 40 Hz: each poll reads the newest status frame,
+        whose heartbeat counts its ticks, until it freezes."""
+        last = None
+        hb = 0
+
+        def poll(self, clock=None):
+            if alive[0]:
+                self.hb = int(t[0] / 0.025)
+            self.last = {"heartbeat": self.hb, "tick_ms": 25.0,
+                         "fault": "", "confirmed": True, "groups": []}
+
+        def stale(self, clock=None):
+            return False
+
+    class _AnsweringEngine:
+        """The engine answering a 4 Hz poll, until it freezes."""
+        at = None
+
+        def answered_at(self):
+            if alive[0]:
+                self.at = int(t[0] / 0.25) * 0.25
+            return self.at
+
+        def snapshot(self):
+            return {"latched": False, "look": ""}
+
+    c = sd.Controller(arm, _TickingStatus(), names,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True,
-                      clock=lambda: t[0])
+                      conductor=_AnsweringEngine(), clock=lambda: t[0])
 
     class _Stop(BaseException):
         pass
     press = [False] * 6
     press[sd.GROUP_KEYS[0]] = True
     draws = []
-    real_draw = None
 
     class _Deck:
         def __init__(self):
@@ -26290,11 +26419,14 @@ def test_streamdeck_idle_deck_draws_rarely():
         def keys_down(self):
             i, self.i = self.i, self.i + 1
             if i == 200:
-                draws.append(("held", None))
+                draws.append("held")
                 return [press]
             if i == 220:
                 return [[False] * 6]
-            if i >= 240:
+            if i == 300:
+                alive[0] = False
+                draws.append("frozen")
+            if i >= 340:
                 raise _Stop()
             return []
 
@@ -26306,9 +26438,10 @@ def test_streamdeck_idle_deck_draws_rarely():
     restore = _deck_draw_stubs(sd)
     real_draw = sd.Controller.draw
 
-    def counting_draw(self, fonts, blink_on, chase):
-        draws.append((t[0], self._prev_keys[sd.GROUP_KEYS[0]]))
-        return real_draw(self, fonts, blink_on, chase)
+    def counting_draw(self, fonts, blink_on, chase, group_blink=None):
+        draws.append((t[0], self._prev_keys[sd.GROUP_KEYS[0]], chase,
+                      blink_on, group_blink))
+        return real_draw(self, fonts, blink_on, chase, group_blink)
     sd.Controller.draw = counting_draw
     try:
         sd.run_forever(c, deck_factory=_Deck,
@@ -26319,16 +26452,40 @@ def test_streamdeck_idle_deck_draws_rarely():
     finally:
         sd.Controller.draw = real_draw
         restore()
-    i = draws.index(("held", None))
-    idle, held = draws[:i], [d for d in draws[i + 1:] if d[1]]
-    passes_idle = 200
-    check(len(idle) <= passes_idle * (1.0 / sd.ARM_SEND_HZ) /
-          sd.DRAW_IDLE_S + 2,
-          f"idle: {len(idle)} draws in {passes_idle} passes (every "
-          f"{sd.DRAW_IDLE_S:g} s, not every pass)")
-    check(len(held) >= 18, f"a key held is drawn every pass: {len(held)} "
-                           f"draws in 20 passes")
-    check(len(arm.sends) >= 230, f"the arm link went out every pass: "
+    i, j = draws.index("held"), draws.index("frozen")
+    idle = [d for d in draws[1:i]]          # the first draw is the connect
+    held = [d for d in draws[i + 1:j] if d[1]]
+    frozen = [d for d in draws[j + 1:] if d[0] > t[0] - 1.9]
+    span = idle[-1][0] - idle[0][0]
+    rate = (idle[-1][2] - idle[0][2]) / span
+    check(abs(rate - 1.0 / sd.CHASE_STEP_S) < 0.5,
+          f"healthy: the snakes step {rate:.1f} times a second, the "
+          f"demo's one step per {sd.CHASE_STEP_S:g} s")
+    toggles = sum(1 for a, b in zip(idle, idle[1:]) if a[3] != b[3])
+    gtoggles = sum(1 for a, b in zip(idle, idle[1:]) if a[4] != b[4])
+    check(abs(toggles - span / 0.5) <= 2 and abs(gtoggles - span / 0.5) <= 2,
+          f"healthy: the top row changes phase every 2 engine answers and "
+          f"the bottom row every 0.5 s of flamesafe's ticks: {toggles} and "
+          f"{gtoggles} changes in {span:.1f} s")
+    check(all(a[2:] != b[2:] for a, b in zip(idle, idle[1:])),
+          "healthy and idle: the keys are drawn only when the snakes or a "
+          "flash moved, never twice the same")
+    steps = span / sd.CHASE_STEP_S
+    check(steps - 2 <= len(idle) <= steps + toggles + gtoggles + 2,
+          f"idle: {len(idle)} draws in {span:.1f} s, one per change "
+          f"({steps:.0f} steps, {toggles + gtoggles} flashes)")
+    check(len(frozen) >= 3 and len({d[2:] for d in frozen}) == 1,
+          f"frozen flamesafe and engine: the snakes and every flash stop "
+          f"dead: {sorted({d[2:] for d in frozen})}")
+    check(len(frozen) <= 1.9 / sd.DRAW_IDLE_S + 2,
+          f"frozen: drawn only every {sd.DRAW_IDLE_S:g} s, for a state "
+          f"change: {len(frozen)} draws in 1.9 s")
+    frames = 20 * (1.0 / sd.ARM_SEND_HZ) / sd.FRAME_S
+    check(len(held) >= frames - 3,
+          f"a key held is drawn every {sd.FRAME_S:g} s, its ring on the "
+          f"deck's own clock: {len(held)} draws in 20 passes "
+          f"({frames:.0f} frames)")
+    check(len(arm.sends) >= 335, f"the arm link went out every pass: "
                                  f"{len(arm.sends)}")
     print("  ok")
 
@@ -37903,6 +38060,7 @@ if __name__ == "__main__":
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
+    test_streamdeck_look_a_marquee()
     test_streamdeck_idle_deck_draws_rarely()
     test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
