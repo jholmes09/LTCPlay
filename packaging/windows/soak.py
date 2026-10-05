@@ -1130,6 +1130,8 @@ class Soak:
             env["LOCALAPPDATA"] = self.engine_env_dir
             env["XDG_STATE_HOME"] = self.engine_env_dir
             self.screen_arming_on()
+            if self.fake_audio:
+                env[FAKE_AUDIO_ENV] = self.audio_name or "1"
         if name == "deck":
             # The deck reads screen_arming from its own settings folder, so
             # it shares the soak engine's (as the two share one on the show
@@ -1140,8 +1142,6 @@ class Soak:
                 self.screen_arming_on()
             env["LOCALAPPDATA"] = self.engine_env_dir
             env["XDG_STATE_HOME"] = self.engine_env_dir
-            if self.fake_audio:
-                env[FAKE_AUDIO_ENV] = self.audio_name or "1"
         if name == "engine":
             env["LTCPLAY_BENCH_SENDGAPS"] = os.path.join(
                 self.dir, "engine-send-gaps.json")
