@@ -928,10 +928,21 @@ class EngineConductor:
     def _post_one(self, name, body):
         """One press to the engine; its answer journaled, and kept as
         the deck's engine fault when the engine did not take it."""
+        doc = {}
         try:
-            ok, text = self._poster("/api/remote/" + name, body)
+            got = self._poster("/api/remote/" + name, body)
+            ok, text = got[0], got[1]
+            if len(got) > 2 and isinstance(got[2], dict):
+                doc = got[2]
         except Exception as e:
             ok, text = False, f"{type(e).__name__}: {e}"
+        if name == "abort" and doc.get("stopped") is False:
+            # The engine disarmed every flame group but had no show to stop
+            # (review of PR #43, P0-1), so nothing is latched: the Abort key
+            # must not read RESET for a latch the engine does not have.
+            with self._lock:
+                if self._local[0]:
+                    self._local = (False, self._clock())
         self.fault = "" if ok else f"{name.title()}: {text}"
         if ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
@@ -946,7 +957,8 @@ class EngineConductor:
             pass
 
     def _http_post(self, path, body):
-        """(ok, sentence) for one blocking POST, from the press thread."""
+        """(ok, sentence, answer) for one blocking POST, from the press
+        thread; answer is the engine's JSON object, or {}."""
         req = urllib.request.Request(
             self.base_url + path, data=json.dumps(body).encode("utf-8"),
             method="POST", headers={"Content-Type": "application/json"})
@@ -954,14 +966,18 @@ class EngineConductor:
         try:
             with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
                 doc = json.loads(r.read().decode("utf-8") or "{}")
-            return bool(doc.get("ok", True)), str(doc.get("text") or "done")
+            if not isinstance(doc, dict):
+                doc = {}
+            return (bool(doc.get("ok", True)),
+                    str(doc.get("text") or "done"), doc)
         except urllib.error.HTTPError as e:
+            doc = {}
             try:
                 doc = json.loads(e.read().decode("utf-8") or "{}")
                 why = doc.get("text") or doc.get("error") or str(e)
             except Exception:
                 why = str(e)
-            return False, str(why)
+            return False, str(why), (doc if isinstance(doc, dict) else {})
         except (OSError, ValueError, urllib.error.URLError) as e:
             return False, (f"ltc serve could not be reached at "
                            f"{self.base_url} ({e})")

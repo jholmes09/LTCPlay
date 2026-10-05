@@ -7204,6 +7204,12 @@ def build():
   '            flames = self._disarm_now(who, screen, "Abort")',
   '            with self.schedule.lock:\n                self.schedule.machine and self.schedule._save_tonight()\n            flames = self._disarm_now(who, screen, "Abort")'),
 
+ # -- review of PR #43: P0-1, the deck says what the engine's Abort did --
+ ('review43: the deck reads RESET after an Abort that stopped no show',
+  'ltcplay/streamdeck.py',
+  '        if name == "abort" and doc.get("stopped") is False:',
+  '        if False:'),
+
 ]
 
 

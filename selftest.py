@@ -36388,6 +36388,57 @@ def test_remote_abort_disarms_with_no_show_live():
     print("  ok")
 
 
+def test_deck_abort_with_no_show_reads_what_the_engine_did():
+    section("Stream Deck: an Abort the engine answered with every group "
+            "disarmed and no show stopped leaves the Abort key reading "
+            "ABORT, not RESET, and journals what the engine said (review "
+            "of PR #43, P0-1)")
+    from ltcplay import streamdeck as sd
+    lines = []
+    said = ("Every flame group: a disarm was sent. No show was stopped: No "
+            "show is running; the scheduler is in STANDBY.")
+    clock = [10.0]
+    e = sd.EngineConductor(
+        "http://127.0.0.1:1", journal=lambda x, **k: lines.append((x, k)),
+        poster=lambda path, body: (True, said, {"ok": True, "text": said,
+                                                "disarmed": True,
+                                                "stopped": False}),
+        fetcher=lambda path: None, poll_hz=50.0, clock=lambda: clock[0])
+    e.start()
+    try:
+        e.abort("Andy")
+        deadline = time.time() + 2
+        while not lines and time.time() < deadline:
+            time.sleep(0.01)
+        clock[0] += 0.1
+        check(e.snapshot()["latched"] is False,
+              f"once the engine says no show was stopped, the deck is not "
+              f"latched: {e.snapshot()}")
+        check(lines and said in lines[-1][0] and
+              not lines[-1][1].get("fault") and e.fault == "",
+              f"the engine's own words are journaled, not as a fault: "
+              f"{lines[-1:]}")
+    finally:
+        e.stop()
+    # A show the engine did stop: latched, as before.
+    lines2 = []
+    e2 = sd.EngineConductor(
+        "http://127.0.0.1:1", journal=lambda x, **k: lines2.append(x),
+        poster=lambda path, body: (True, "stopped", {"stopped": True}),
+        fetcher=lambda path: None, poll_hz=50.0)
+    e2.start()
+    try:
+        e2.abort("Andy")
+        deadline = time.time() + 2
+        while not lines2 and time.time() < deadline:
+            time.sleep(0.01)
+        check(e2.snapshot()["latched"] is True,
+              "an Abort that stopped a show keeps the deck latched")
+    finally:
+        e2.stop()
+    print("  ok")
+
+
 def test_remote_abort_disarm_never_waits_on_the_tonight_save():
     section("iPad remote: a slow or failing tonight.json save never delays "
             "the screen Abort's disarm (review of PR #43, P0-5)")
@@ -38100,6 +38151,7 @@ if __name__ == "__main__":
     test_remote_abort_and_start_need_the_confirm()
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
+    test_deck_abort_with_no_show_reads_what_the_engine_did()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
     test_remote_page_loss_changes_nothing()
