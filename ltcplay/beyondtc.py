@@ -127,15 +127,23 @@ class TimecodeGate:
 
     def send_black(self):
         with self._lock:
-            if self.ip is None:
-                # No address yet (the show file's BEYOND node gives it on
-                # the first packet): the show's packets for BEYOND are
-                # dropped while dark, so none of its timecode reaches it.
-                return True
-            ok = self._send(self._black_now())
-            if ok:
-                self.black_frames += 1
-            return ok
+            if self.ip is not None:
+                ok = self._send(self._black_now())
+                if ok:
+                    self.black_frames += 1
+                return ok
+            # No address yet: not one black frame can be sent, so the
+            # lasers are NOT known to be dark (review of PR #43, P0-2: this
+            # used to answer True, and the conductor recorded the lasers
+            # black). A fault, every time, never assumed dark.
+            self.send_errors += 1
+            self.last_error = "no address for BEYOND's timecode"
+        self._note("BEYOND's timecode stream has no address yet, so no black "
+                   "frame could be sent: the lasers' state is UNKNOWN, not "
+                   "dark. Name BEYOND under 'clock.artnet.nodes' in the show "
+                   "file, or set 'beyond_timecode_ip' in "
+                   "ltcplay_fire_ice.json.", fault=True, outcome="no_address")
+        return False
 
     def divert(self, pkt, ip, port):
         """clock.DIVERT's hook: the show's packet for BEYOND. Sent on while
@@ -180,6 +188,19 @@ class TimecodeGate:
                 wait = 0
             if wait > 0:
                 time.sleep(wait)
+
+    def adopt(self, ip):
+        """The address the show file names for BEYOND's timecode (the one
+        destination this gate diverts, checked at session open), taken when
+        the gate has none yet, so the black zone reaches BEYOND from the
+        first blank and not only after the show's first packet."""
+        with self._lock:
+            if self.ip is not None or not ip:
+                return self.ip
+            self.ip = ip
+        if self._thread is not None:
+            _clock().DIVERT[ip] = self.divert
+        return ip
 
     def start(self):
         _clock().DIVERT[LABEL] = self.divert

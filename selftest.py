@@ -31553,6 +31553,157 @@ def test_beyond_timecode_blanking():
     print("  ok")
 
 
+def test_beyond_timecode_needs_one_route_through_the_gate():
+    section("fire & ice: the lasers' timecode blank fails closed (review of "
+            "PR #43, P0-2): a black zone with no address is a fault and "
+            "never recorded dark; a show file whose timecode reaches BEYOND "
+            "around the gate (broadcast, none, or not exactly one "
+            "destination the gate takes) is refused at serve start and at "
+            "Run; the one BEYOND address is the gate's")
+    import json as _json
+    import shutil
+    import tempfile
+    import types
+    from ltcplay import beyondtc as BT
+    from ltcplay.session import SessionError
+    from ltcplay import web as web_mod
+    F = _fi_mod()
+    C = _cond_mod()
+    # No address: False, a fault, every time; never "dark".
+    lines = []
+    gate = BT.TimecodeGate(None, socket_factory=lambda: _TcSock([]),
+                           journal=lambda text, **k: lines.append(
+                               (text, k.get("fault", False))))
+    check(gate.send_black() is False and gate.dark() is False,
+          "with no address not one black frame goes, and it says False")
+    check(lines and all(f for _t, f in lines) and
+          "UNKNOWN" in lines[-1][0] and "\u2014" not in lines[-1][0],
+          f"a fault in the journal, the lasers UNKNOWN: {lines[-1:]}")
+    bl = BT.Blanking("timecode", gate=gate)
+    check(bl.blank() is False, "the blank reports it failed")
+    dev = C.ConductorDevices(None, bl, show=1)
+    check(dev.lasers_blank().ok is False,
+          "and the conductor's device layer reports it not done")
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    state = ["SHOW"]
+    c = C.Conductor(dev, rig, C.laser_gate_for(lambda: state[0]),
+                    clock=T.now, waiter=T.wait, threaded=False)
+    _cd_live(c, rig, None)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] != C.BLACK,
+          f"an Abort whose blank could not be sent never records the lasers "
+          f"black: {c.snapshot()['applied']}")
+    check(gate.adopt("127.0.0.2") == "127.0.0.2" and gate.ip == "127.0.0.2"
+          and gate.adopt("10.9.9.9") == "127.0.0.2",
+          "the gate takes the show file's address only when it has none")
+
+    work = tempfile.mkdtemp()
+    try:
+        folder = os.path.join(work, "folder")
+        os.makedirs(folder)
+
+        def show_file(name, clock):
+            doc = {"name": name, "fps": 30, "show_dir": work,
+                   "cues": [{"tc": "01:00:00:00", "fseq": "Show.fseq",
+                             "name": "Show"}]}
+            if clock is not None:
+                doc["clock"] = clock
+            p = os.path.join(folder, name + ".json")
+            with open(p, "w", encoding="utf-8") as fh:
+                _json.dump(doc, fh)
+            return p
+        good = show_file("good", {"source": "artnet_master", "artnet": {
+            "nodes": {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2"}}})
+        check(F.beyond_timecode_route(good, None) == ("BEYOND", "127.0.0.2"),
+              "a show file naming BEYOND: its one destination")
+        check(F.beyond_timecode_route(good, "127.0.0.2") ==
+              ("BEYOND", "127.0.0.2"),
+              "named BEYOND and at the gate's address is still one")
+        bad = {
+            "broadcast": {"source": "artnet_master",
+                          "artnet": {"broadcast": "10.0.0.255"}},
+            "none": None,
+            "no BEYOND": {"source": "artnet_master", "artnet": {
+                "nodes": {"MadMapper": "127.0.0.1", "Lasers": "10.0.0.40"}}},
+            "two": {"source": "artnet_master", "artnet": {
+                "nodes": {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
+                          "Lasers": "127.0.0.3"}}},
+        }
+        words = {"broadcast": "reaches BEYOND directly",
+                 "none": "no Art-Net timecode",
+                 "no BEYOND": "no Art-Net timecode destination is named "
+                              "BEYOND",
+                 "two": "2 Art-Net timecode destinations"}
+        for label, clock in bad.items():
+            p = show_file("bad", clock)
+            try:
+                F.beyond_timecode_route(p, "127.0.0.3")
+                check(False, f"{label}: accepted")
+            except F.FireIceConfigError as e:
+                check(words[label] in str(e) and "\u2014" not in str(e) and
+                      "\u2013" not in str(e),
+                      f"{label}: refused in a sentence: {e}")
+            cfg = F.FireIceConfig(beyond_timecode_ip="127.0.0.3")
+            try:
+                F.check_beyond_timecode_routes(folder, cfg)
+                check(False, f"{label}: ltc serve must refuse it at start")
+            except F.FireIceConfigError as e:
+                check("bad.json" in str(e),
+                      f"{label}: refused at serve start, naming the file: "
+                      f"{e}")
+            F.check_beyond_timecode_routes(
+                folder, F.FireIceConfig(beyond_blank="osc"))
+            check(True, "by OSC alone there is nothing to route")
+        # The real `ltc serve` start refuses it before binding anything.
+        import contextlib
+        import io
+        from ltcplay import cli as _cli
+        show_file("bad", bad["broadcast"])
+        with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
+            _json.dump({}, fh)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(out):
+            rc = _cli._cmd_serve(types.SimpleNamespace(
+                folder=folder, schedule=os.path.join(
+                    work, "ltcplay_schedule.json")))
+        check(rc and "broadcast" in out.getvalue() and
+              "bad.json" in out.getvalue(),
+              f"ltc serve refuses it in a sentence: {rc} {out.getvalue()!r}")
+        os.remove(os.path.join(folder, "bad.json"))
+        F.check_beyond_timecode_routes(folder, F.FireIceConfig())
+        check(True, "every show file routes BEYOND through the gate: serve "
+                    "starts")
+        # At Run: attach() refuses it before anything opens, and gives the
+        # gate the show file's BEYOND address.
+        n = _fi_night(session=False)
+        if n.S is None:
+            return
+        control = web_mod.Control(folder, sd=FakeSD())
+        w = F.attach(n.svc, control, F.FireIceConfig(), threaded=False)
+        try:
+            g = w.devices.beyond.gate
+            check(g.ip is None, "setup: the gate has no address yet")
+            control.before_open(good)
+            check(g.ip == "127.0.0.2",
+                  f"Run gives the gate the show file's BEYOND address: "
+                  f"{g.ip}")
+            p = show_file("bad", bad["broadcast"])
+            try:
+                control.before_open(p)
+                check(False, "Run must refuse broadcast timecode")
+            except SessionError as e:
+                check("will not start" in str(e) and "broadcast" in str(e),
+                      f"Run refuses it: {e}")
+        finally:
+            w.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_flame_groups_are_a_settings_change_only():
     section("fire & ice: the flame groups live in flamesafe's config only; "
             "renaming or regrouping there changes the deck's labels, and an "
@@ -32254,8 +32405,12 @@ def test_fire_ice_active_flame_controller_refused():
         check(why is not None and "exactly that spelling" in why,
               f"a controller that is not there is refused, saying so (fix "
               f"round 2, B): {why}")
-        # ltc serve startup: every show file in the folder.
-        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs)
+        # ltc serve startup: every show file in the folder. (Its show file
+        # sends no timecode, so its lasers are blanked by OSC here: by
+        # timecode it would be refused, test_beyond_timecode_needs_one_
+        # route_through_the_gate.)
+        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs,
+                              beyond_blank="osc")
         F.check_flame_controllers(folder, cfg)
         check(True, "serve starts with the flame controller Inactive")
         with open(net, "w", encoding="utf-8") as fh:
@@ -32327,7 +32482,7 @@ def test_fire_ice_active_flame_controller_refused():
         n2 = _fi_night()
         lines2 = []
         c2 = web_mod.Control(folder, sd=FakeSD())
-        F.attach(n2.svc, c2, F.FireIceConfig(flamesafe_config=fs),
+        F.attach(n2.svc, c2, F.FireIceConfig(flamesafe_config=fs, beyond_blank="osc"),
                  journal=lambda t, **f: lines2.append((t, f.get("fault"))),
                  flame_link=_FiFlames(n2.calls, n2.T), threaded=False,
                  clock=n2.T.now, waiter=n2.T.wait)
@@ -32525,7 +32680,8 @@ def test_fire_ice_flame_node_address_never_in_the_pixel_output():
                                  "E131")),
              "Flames", "the flame node's own address"),
         ]
-        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs)
+        cfg = F.FireIceConfig(flame_controller="Flames", flamesafe_config=fs,
+                              beyond_blank="osc")
         for label, kw, cfg_name, must in cases:
             write(**kw)
             w = why(cfg_name)
@@ -33070,7 +33226,7 @@ def test_fire_ice_show_log_is_written_off_the_logging_threads():
         if n.S is None:
             return
         control = types.SimpleNamespace(session=None)
-        F.attach(n.svc, control, F.FireIceConfig(), threaded=False,
+        F.attach(n.svc, control, F.FireIceConfig(beyond_blank="osc"), threaded=False,
                  clock=n.T.now, waiter=n.T.wait)
         check(control.defaults.get("log_factory") is F.BackgroundShowLog,
               f"Fire & Ice sessions log in the background: "
@@ -38109,6 +38265,7 @@ if __name__ == "__main__":
     test_fire_ice_config_defaults_and_refusals()
     test_flame_groups_are_a_settings_change_only()
     test_beyond_timecode_blanking()
+    test_beyond_timecode_needs_one_route_through_the_gate()
     test_fire_ice_serves_the_rack_screen_not_the_old_page()
     test_fire_ice_show_outputs()
     test_audio_master_per_call_fade()

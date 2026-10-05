@@ -7210,6 +7210,47 @@ def build():
   '        if name == "abort" and doc.get("stopped") is False:',
   '        if False:'),
 
+ # -- review of PR #43: P0-2, the lasers' timecode blank fails closed --
+ ('review43: a black zone with no address answers True again',
+  'ltcplay/beyondtc.py',
+  '            self.send_errors += 1\n            self.last_error = "no address for BEYOND\'s timecode"\n',
+  '            return True\n'),
+
+ ('review43: broadcast timecode passes the BEYOND route check',
+  'ltcplay/fire_ice.py',
+  '    if art.broadcast:\n        raise FireIceConfigError(',
+  '    if False:\n        raise FireIceConfigError('),
+
+ ('review43: a show file with no BEYOND route passes the check',
+  'ltcplay/fire_ice.py',
+  '    if len(hits) == 1:\n        return hits[0]\n    if not hits:\n        raise',
+  '    if len(hits) == 1:\n        return hits[0]\n    if not hits:\n        return (None, None)\n        raise'),
+
+ ('review43: two BEYOND routes pass the check',
+  'ltcplay/fire_ice.py',
+  '    if len(hits) == 1:\n        return hits[0]',
+  '    if len(hits) >= 1:\n        return hits[0]'),
+
+ ('review43: a show file with no Art-Net timecode passes the BEYOND check',
+  'ltcplay/fire_ice.py',
+  '    if art is None:\n        raise FireIceConfigError(',
+  '    if art is None:\n        return (None, None)\n        raise FireIceConfigError('),
+
+ ("review43: ltc serve never checks BEYOND's timecode routes",
+  'ltcplay/cli.py',
+  '            fire_ice_mod.check_beyond_timecode_routes(\n',
+  '            (lambda *a: None)(\n'),
+
+ ("review43: Run never checks BEYOND's timecode route",
+  'ltcplay/fire_ice.py',
+  '        opens.append(laser_check)\n',
+  '        pass\n'),
+
+ ("review43: the gate never takes the show file's BEYOND address",
+  'ltcplay/fire_ice.py',
+  '            _gate.adopt(ip)\n',
+  '            pass\n'),
+
 ]
 
 

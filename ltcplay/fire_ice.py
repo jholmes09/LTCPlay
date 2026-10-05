@@ -749,6 +749,94 @@ def check_flame_controllers(folder, cfg):
             raise FireIceConfigError(f"{n}: {e}")
 
 
+def beyond_gate_address(cfg):
+    """The address BEYOND's timecode gate starts with, as build_blanking
+    gives it: beyond_timecode_ip, else the BEYOND block's host, else None
+    (then taken from the show file at session open)."""
+    return (getattr(cfg, "beyond_timecode_ip", None) or
+            getattr(getattr(cfg, "beyond", None), "host", None) or None)
+
+
+def blanks_by_timecode(cfg):
+    return getattr(cfg, "beyond_blank", "timecode") in ("timecode", "both")
+
+
+def beyond_timecode_route(show_file, gate_ip, tl=None):
+    """(name, address) of the ONE Art-Net timecode destination in this show
+    file that BEYOND's timecode gate takes over (review of PR #43, P0-2).
+    The gate keeps the lasers dark only by holding back the show's timecode
+    for BEYOND and sending the black zone instead, and it can only hold
+    back what it is handed: a destination named BEYOND, or at the gate's
+    address. Raises FireIceConfigError, in a sentence, for a show file
+    whose timecode would reach BEYOND around the gate or not at all:
+    broadcast timecode, no Art-Net timecode, no destination the gate takes,
+    or more than one."""
+    from . import beyondtc
+    where = os.path.basename(show_file)
+    if tl is None:
+        from . import timeline as timeline_mod
+        tl = timeline_mod.Timeline.load(show_file)
+    art = getattr(getattr(tl, "clock", None), "artnet", None)
+    if art is None:
+        raise FireIceConfigError(
+            f"{where}: the lasers are kept dark by BEYOND's timecode "
+            f"(beyond_blank), but this show file sends no Art-Net timecode, "
+            f"so there is nothing for the black zone to stand in for and "
+            f"nothing that keeps BEYOND dark. Name BEYOND under "
+            f"'clock.artnet.nodes'.")
+    if art.broadcast:
+        raise FireIceConfigError(
+            f"{where}: the show's timecode is broadcast "
+            f"({art.broadcast}), so it reaches BEYOND directly and the "
+            f"black zone cannot hold it back: the lasers would follow the "
+            f"show while they must be dark. Name each receiver under "
+            f"'clock.artnet.nodes' instead, BEYOND among them.")
+    hits = [(name, ip) for name, ip in art.dests
+            if str(name).strip().lower() == beyondtc.LABEL or
+            (gate_ip and ip == gate_ip)]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise FireIceConfigError(
+            f"{where}: no Art-Net timecode destination is named BEYOND"
+            + (f" or at BEYOND's timecode address {gate_ip}" if gate_ip
+               else "") + f" ({art.summary()}), so the black zone has no "
+            f"stream to replace and BEYOND's lasers would not be kept "
+            f"dark. Name BEYOND under 'clock.artnet.nodes'.")
+    raise FireIceConfigError(
+        f"{where}: {len(hits)} Art-Net timecode destinations would go to "
+        f"BEYOND's timecode gate ({', '.join(f'{n} {i}' for n, i in hits)}),"
+        f" so which one is BEYOND cannot be told. Keep exactly one, named "
+        f"BEYOND.")
+
+
+def check_beyond_timecode_routes(folder, cfg):
+    """At `ltc serve` startup, with beyond_blank "timecode" or "both": every
+    show file in the folder must send BEYOND's timecode through the gate
+    (beyond_timecode_route). Raises FireIceConfigError naming the first
+    that does not."""
+    if not blanks_by_timecode(cfg) or not folder or not os.path.isdir(folder):
+        return
+    gate_ip = beyond_gate_address(cfg)
+    from . import timeline as timeline_mod
+    for n in sorted(os.listdir(folder)):
+        if not n.lower().endswith(".json"):
+            continue
+        p = os.path.join(folder, n)
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "cues" not in doc:
+            continue
+        try:
+            tl = timeline_mod.Timeline.load(p)
+        except Exception:
+            continue      # the session refuses it itself, in its words
+        beyond_timecode_route(p, gate_ip, tl=tl)
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -1452,6 +1540,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     defaults = dict(getattr(control, "defaults", None) or {})
     defaults["log_factory"] = BackgroundShowLog
     control.defaults = defaults
+    opens = []        # the checks a show must pass before it opens
     if cfg.flame_controller:
         # The flame controller's channels are never sent by the pixel
         # output in Fire & Ice, whatever xlights_networks.xml says, and a
@@ -1464,7 +1553,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         fs_dest = (flamesafe_destination(cfg.flamesafe_config)
                    if cfg.flamesafe_config else None)
 
-        def before_open(show_file, _name=cfg.flame_controller):
+        def flame_check(show_file, _name=cfg.flame_controller):
             """Refuses a show that cannot run safely with flames, and
             returns what the session must leave out of the pixel output:
             the flame controller by name AND every address and universe
@@ -1476,7 +1565,7 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
             except FlameControllerError as e:
                 raise SessionError(f"This show will not start: {e}")
             return {"exclude_destinations": tuple(sorted(blocked))}
-        control.before_open = before_open
+        opens.append(flame_check)
     elif cfg.flamesafe_config and journal is not None:
         journal("Flame cues: no 'flame_controller' is named in "
                 "ltcplay_fire_ice.json, so no flame cue is ever sent: every "
@@ -1498,6 +1587,32 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     else:
         show = FireIceShow(control, journal=journal, flame_link=flame_link)
     blanking = build_blanking(cfg, beyond, journal, threaded)
+    gate = getattr(blanking, "gate", None)
+    if gate is not None:
+        def laser_check(show_file, _gate=gate):
+            """A show whose timecode would reach BEYOND around the black
+            zone, or not through it at all, is refused (review of PR #43,
+            P0-2); the one BEYOND destination's address is the gate's when
+            it has none yet."""
+            from .session import SessionError
+            try:
+                _name, ip = beyond_timecode_route(show_file, _gate.ip)
+            except FireIceConfigError as e:
+                raise SessionError(f"This show will not start: {e}")
+            except Exception:
+                return None   # a file that does not load: the session says
+            _gate.adopt(ip)
+            return None
+        opens.append(laser_check)
+    if opens:
+        def before_open(show_file, _checks=tuple(opens)):
+            extra = {}
+            for chk in _checks:
+                got = chk(show_file)
+                if isinstance(got, dict):
+                    extra.update(got)
+            return extra
+        control.before_open = before_open
     devices = C.ConductorDevices(link, blanking, journal=journal)
 
     def state():
