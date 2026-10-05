@@ -42,6 +42,13 @@ def main():
         return rc
     ltcwin.clean_stop_on_logoff()
     ltcwin.say_keep_time("flamesafe")
+    if ltcwin.boosted():
+        # flamesafe's tick loop runs on this, its main thread.
+        import threading
+        ok = ltcwin.thread_priority(threading.main_thread().native_id, 2)
+        print(f"flamesafe: main thread (the sACN tick): priority "
+              f"{'Highest' if ok else 'NOT raised (Windows refused)'}",
+              flush=True)
     from flamesafe.__main__ import main as flamesafe_main
     return flamesafe_main(argv)
 

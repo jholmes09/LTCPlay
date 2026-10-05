@@ -118,6 +118,10 @@ def load_settings():
         "run_flamesafe": True,
         "run_deck": True,
         "open_page_at_sign_in": True,
+        # The scheduling protection (show PC, 2026-10-04): the engine and
+        # flamesafe at High, their show threads at Highest, the deck at
+        # Above normal. false turns it off (A/B tests).
+        "priority_boost": True,
         # The rack screen page (/remote), full screen on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
@@ -408,12 +412,16 @@ class Program:
         if ltcwin.WINDOWS:
             flags = (subprocess.CREATE_NEW_PROCESS_GROUP
                      | subprocess.CREATE_NO_WINDOW)
+        env = dict(os.environ)
+        env.pop(ltcwin.PRIORITY_ENV, None)
+        if priority_boost_on():
+            env[ltcwin.PRIORITY_ENV] = "high"
         self.proc = subprocess.Popen([self.exe] + args,
                                      stdin=subprocess.DEVNULL,
                                      stdout=self.out,
                                      stderr=subprocess.STDOUT,
                                      cwd=appdata_dir(),
-                                     creationflags=flags)
+                                     creationflags=flags, env=env)
         self.pid = self.proc.pid
         self.started = time.monotonic()
         log(f"started {EXE[self.name]} (pid {self.pid}): {' '.join(args)}")
@@ -458,6 +466,14 @@ class Program:
         return (f"{EXE[self.name]} did not stop within {STOP_WAIT_S:.0f} s "
                 f"and is still running ({why or 'Ctrl-Break was sent'}). It "
                 f"was NOT forced to quit.")
+
+
+def priority_boost_on(settings=None):
+    try:
+        settings = settings or load_settings()
+        return settings.get("priority_boost", True) is not False
+    except Exception:
+        return True
 
 
 def wanted_args(settings):
@@ -538,6 +554,11 @@ def run_loop(open_page=False):
     for why in fire_ice_files(settings):
         log(why)
     log(ltcwin.settings_folder_line())
+    log("scheduling protection " + (
+        "ON: the engine and flamesafe run at High priority, their show "
+        "threads at Highest, the Stream Deck program at Above normal; each "
+        "program's log says what Windows agreed to" if priority_boost_on()
+        else "OFF (showpc.json \"priority_boost\": false)"))
     keep_awake(True)
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
@@ -999,6 +1020,28 @@ def self_check():
     yield f"control folder: {control_dir()}"
     task_xml("EXAMPLE\\user")
     yield "the sign-in task can be written"
+    if not (priority_boost_on({"priority_boost": True}) and
+            priority_boost_on({}) and
+            not priority_boost_on({"priority_boost": False})):
+        raise RuntimeError("the priority_boost setting is read wrongly")
+    got = []
+    import threading
+    stop = threading.Event()
+    th = threading.Thread(target=stop.wait, args=(5,),
+                          name="ltcplay-flame-link")
+    th.start()
+    ltcwin.boost_threads(("ltcplay-flame-link",), log=got.append,
+                         every_s=0.02, setter=lambda n, lv: lv == 2,
+                         stop=stop)
+    deadline = time.monotonic() + 2
+    while not got and time.monotonic() < deadline:
+        time.sleep(0.02)
+    stop.set()
+    th.join(1)
+    if not got or "Highest" not in got[0]:
+        raise RuntimeError(f"the show thread is not raised: {got}")
+    yield ("scheduling protection: on unless showpc.json says "
+           "\"priority_boost\": false; a show thread is raised to Highest")
     cmd = rack_page_command(7878, 2, [(0, 0, 1920, 1080),
                                       (1920, 0, 3840, 1080)],
                             r"C:\Edge\msedge.exe", r"C:\p")
