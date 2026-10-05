@@ -10876,6 +10876,17 @@ def test_windows_supervisor_lock_is_machine_wide():
     try:
         check(SUP.MUTEX_NAME == "Global\\LTCPlayerSupervisor",
               f"the name is in the Global namespace: {SUP.MUTEX_NAME!r}")
+        # Setup finds the supervisor by the same names, or it reads a
+        # running LTC Player as programs "not under LTC Player itself" and
+        # refuses every update (windows-latest CI, #47).
+        iss = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "packaging", "windows", "installer.iss"),
+                   encoding="utf-8").read()
+        m = re.search(r"MutexName = '([^']*)'", iss)
+        names = set(m.group(1).split(",")) if m else set()
+        check(names == {SUP.MUTEX_NAME, SUP.LOCAL_MUTEX_NAME},
+              f"installer.iss looks for the supervisor by exactly its "
+              f"names: {names}")
         made, err = [], [0]
 
         class K:
