@@ -759,7 +759,7 @@ $("signout").addEventListener("click", async () => {
 });
 $("b-abort").addEventListener("click", async () => {
   armStop("Abort");
-  if(await confirmBox("Abort the show?", "Flames zero and every group disarms, everything fades to black, and it stays dark until Reset.", "Yes, ABORT", ""))
+  if(await confirmBox("Abort the show?", "Every flame group disarms at once, show or no show. If a show is live it also stops: flames zero, everything fades to black, and it stays dark until Reset. The answer below says what was done.", "Yes, ABORT", ""))
     press("abort", {confirmed:true});
 });
 $("b-start").addEventListener("click", async () => {

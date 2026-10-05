@@ -903,18 +903,25 @@ class Conductor:
         with self._lock:
             latched = self._latched
             if not latched:
-                if not self._playing():
-                    return self._refused("Abort", "nothing is playing, so "
-                                         "there is nothing to abort.")
-                self._latched = True
-                self._latch_who = who
                 # The flames do not wait for the executor, or even for the
                 # journal line: cut them here, on the pressing thread,
                 # inside the lock, so no stale step can land between the
                 # cut and the new generation that makes every older step
-                # stale. The video fade, if one is running, stops where it
-                # is (finding C). Neither call waits for a device.
+                # stale. And before anything is asked about the show (review
+                # of PR #43, P0-1): a group armed with nothing playing,
+                # before a show or between two, is disarmed by an Abort too.
+                # Neither call waits for a device.
                 self._flames_cut()
+                if not self._playing():
+                    return self._refused(
+                        "Abort", "nothing is playing, so there is no show "
+                        "to stop. Flame cues were zeroed and a disarm was "
+                        "sent to every flame group anyway; nothing else was "
+                        "changed and nothing is latched.")
+                self._latched = True
+                self._latch_who = who
+                # The video fade, if one is running, stops where it is
+                # (finding C).
                 self._video_cancel()
                 blanked = threading.Event()
                 line = self._accept("Abort", ABORTED, who, screen,

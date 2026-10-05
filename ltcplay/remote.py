@@ -934,14 +934,26 @@ class Remote:
                           f"{who or 'Someone'}'s {name} on the {screen} was "
                           f"refused. {why}")
             return 400, {"error": why}
+        flames = None
+        if name == "abort":
+            # The flames first, every time (review of PR #43, P0-1): every
+            # flame group disarmed through the flame link before any
+            # scheduler step, any lock or any journal line, whatever the
+            # scheduler is doing and whether or not a show is live. The
+            # scheduler takes an Abort only in SHOW or PAUSED, and the
+            # conductor only while something plays; a group armed before a
+            # show, between shows or after one must still come off. Nothing
+            # here waits on a disk (P0-5).
+            flames = self._disarm_now(who, screen, "Abort")
         if name in ("abort", "disarm-all"):
-            # Before anything else: no screen hold survives an Abort or a
-            # disarm, whoever pressed it and whether or not it goes on to
-            # be accepted.
+            # No screen hold survives an Abort or a disarm, whoever pressed
+            # it and whether or not it goes on to be accepted.
             self.cancel_holds(f"{who or 'someone'} pressed {name} on the "
                               f"{screen}")
         if name == "disarm-all":
             return self.disarm_all(who, screen)
+        if name == "abort":
+            return self.abort(who, screen, flames)
         if name in TRANSPORT_ROUTES:
             return self.transport(name, body, who, screen)
         svc = self.schedule
@@ -1303,6 +1315,64 @@ class Remote:
         show = getattr(cond, "show", None)
         fn = getattr(show, "flames_disarm_all", None)
         return fn
+
+    def _disarm_now(self, who, screen, what):
+        """(ok, sentence) of the flame link's disarm_all, called at once on
+        this thread: no lock taken, nothing journaled, no disk touched.
+        ok is None when no flame link is connected in this engine."""
+        fn = self._disarm_fn()
+        if fn is None:
+            return None, ("No flame link is connected in this engine, so no "
+                          "disarm could be sent from here. Disarm from the "
+                          "Stream Deck.")
+        label = who or "An unnamed operator"
+        try:
+            r = fn(f"{label} pressed {what} on the {screen}")
+            ok = bool(getattr(r, "ok", False))
+            said = str(getattr(r, "sentence", "") or "").strip()
+        except Exception as e:
+            ok, said = False, f"{type(e).__name__}: {e}"
+        if ok:
+            return True, (f"Every flame group: {said}" if said else
+                          "Every flame group: a disarm was sent.")
+        return False, (f"The disarm of every flame group did NOT go out "
+                       f"({said}). Disarm from the Stream Deck.")
+
+    def abort(self, who, screen, flames):
+        """The screen's and the deck's Abort. `flames` is what the disarm
+        sent before anything else did (_disarm_now). Then the scheduler's
+        Abort, which stops a live show through the conductor. The answer
+        says both, truthfully: a disarm sent with no show to stop is not
+        "aborted", and a stopped show whose disarm failed is a fault."""
+        f_ok, f_text = flames
+        label = who or "An unnamed operator"
+        self._journal(who, screen, "abort disarm",
+                      "fault" if f_ok is False else
+                      ("done" if f_ok else "not connected"),
+                      f"{label} pressed Abort on the {screen}. {f_text}",
+                      fault=f_ok is False)
+        svc = self.schedule
+        if svc is None:
+            s_ok, s_text = False, ("There is no scheduler running in this "
+                                   "engine, so no show was stopped.")
+        else:
+            try:
+                r = svc.operator_press("abort", who, screen, confirmed=True)
+                s_ok = bool(r.get("ok"))
+                s_text = str(r.get("text") or "")
+            except ValueError as e:
+                s_ok, s_text = False, str(e)
+            if not s_ok:
+                s_text = f"No show was stopped: {s_text}"
+        text = f"{f_text} {s_text}".strip()
+        # A disarm that went out is the Abort's safety half done, whatever
+        # the scheduler said; one that failed is a fault even if the show
+        # stopped. With no flame link at all, the scheduler decides.
+        ok = f_ok is True or (f_ok is None and s_ok)
+        out = {"ok": ok, "text": text, "disarmed": f_ok, "stopped": s_ok}
+        if not ok:
+            out["error"] = text
+        return (200 if ok else 409), out
 
     def disarm_all(self, who, screen):
         """Every flame group disarmed by the flame link's disarm_all: the

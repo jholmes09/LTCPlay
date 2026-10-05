@@ -787,8 +787,8 @@ MUTATIONS = [
   "                              \"fresh\": True,"),
 
  ("arm: an Abort leaves screen holds running", "ltcplay/remote.py",
-  "        if name in (\"abort\", \"disarm-all\"):\n            # Before",
-  "        if False:\n            # Before"),
+  "        if name in (\"abort\", \"disarm-all\"):\n            # No screen hold",
+  "        if False:\n            # No screen hold"),
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
@@ -4008,8 +4008,8 @@ def build():
 
  ("conductor: Abort's flame cut waits for the executor",
   "ltcplay/conductor.py",
-  "                self._flames_cut()\n                self._video_cancel()\n",
-  "                self._video_cancel()\n"),
+  "                self._flames_cut()\n                if not self._playing():",
+  "                if not self._playing():"),
 
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
@@ -4025,9 +4025,9 @@ def build():
  ("conductor: a second Abort starts a second fade",
   "ltcplay/conductor.py",
   "            latched = self._latched\n            if not latched:\n"
-  "                if not self._playing():",
+  "                # The flames do not wait",
   "            latched = False\n            if not latched:\n"
-  "                if not self._playing():"),
+  "                # The flames do not wait"),
 
  ("conductor: the Abort latch no longer refuses other presses",
   "ltcplay/conductor.py",
@@ -4042,9 +4042,11 @@ def build():
  ("conductor: Abort is taken with nothing playing",
   "ltcplay/conductor.py",
   "                if not self._playing():\n"
-  "                    return self._refused(\"Abort\",",
+  "                    return self._refused(\n"
+  "                        \"Abort\", \"nothing is playing",
   "                if False:\n"
-  "                    return self._refused(\"Abort\","),
+  "                    return self._refused(\n"
+  "                        \"Abort\", \"nothing is playing"),
 
  ("conductor: Abort sends no laser blank of its own",
   "ltcplay/conductor.py",
@@ -4409,8 +4411,8 @@ def build():
  ("conductor: Abort does not stop a running video fade at the press "
   "(finding C)",
   "ltcplay/conductor.py",
-  "                self._flames_cut()\n                self._video_cancel()\n",
-  "                self._flames_cut()\n"),
+  "                self._video_cancel()\n                blanked = threading.Event()",
+  "                blanked = threading.Event()"),
 
  ("conductor: Abort trusts a video record that says black (finding C)",
   "ltcplay/conductor.py",
@@ -7183,6 +7185,18 @@ def build():
   "ltcplay/streamdeck.py",
   "    if not _OPENER:\n        _OPENER.append(",
   "    if True:\n        _OPENER.append("),
+
+ # -- review of PR #43 (2026-10-05): P0-1, the screen Abort disarms first, every time --
+ ('review43: the screen Abort sends no disarm of its own',
+  'ltcplay/remote.py',
+  '            flames = self._disarm_now(who, screen, "Abort")',
+  '            flames = (None, "")'),
+
+ ('review43: a disarm that did not go out reads as a done Abort',
+  'ltcplay/remote.py',
+  '        ok = f_ok is True or (f_ok is None and s_ok)',
+  '        ok = True'),
+
 
 ]
 

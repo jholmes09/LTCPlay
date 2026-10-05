@@ -25011,14 +25011,23 @@ def test_conductor_double_abort_is_idempotent():
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
     check(c.latched, "a refused Reset leaves it latched")
     check(c.reset().ok, "Reset once the fade is done")
-    # Nothing playing: nothing to abort.
+    # Nothing playing: no show to stop, but the flames are still cut and
+    # every group disarmed (review of PR #43, P0-1: a group armed before a
+    # show or between two must come off at an Abort too).
     c2, rig2, _T2, _l2 = _cond()
     rig2.cue = False
     r = c2.abort("Andy", "rack screen")
-    check(not r.ok and "nothing is playing" in r.sentence,
-          f"Abort with nothing playing is refused: {r}")
-    check(rig2.calls == [] and not c2.latched,
-          "a refused Abort cuts nothing and latches nothing")
+    check(not r.ok and "nothing is playing" in r.sentence and
+          "disarm was sent to every flame group" in r.sentence,
+          f"Abort with nothing playing stops no show, and says the flames "
+          f"were cut anyway: {r}")
+    check(rig2.names() == ["flames_zero", "flames_disarm_all"] and
+          not c2.latched,
+          f"an Abort with nothing playing zeroes the flame cues and "
+          f"disarms every group, and latches nothing: {rig2.names()}")
+    c2.run_pending()
+    check(rig2.names() == ["flames_zero", "flames_disarm_all"],
+          f"and starts nothing else: {rig2.names()}")
     print("  ok")
 
 
@@ -36223,9 +36232,10 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
         before = R.rig.count("flames_disarm_all")
         st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
         R.settle()
+        # Twice: the route's own disarm first (P0-1), then the conductor's.
         check(st == 200 and R.svc.machine.abort_latched and
               R.c.snapshot()["look"] == "ABORTED" and
-              R.rig.count("flames_disarm_all") == before + 1,
+              R.rig.count("flames_disarm_all") == before + 2,
               f"Abort latched the scheduler and the conductor disarmed "
               f"every group: {st} {out} {R.c.snapshot()}")
         check(any(r.get("action") == S.ABORT and r["who"] == "Andy" and
@@ -36308,6 +36318,71 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
                   "and journaled as a fault")
         finally:
             R.svc.conductor = cond
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_remote_abort_disarms_with_no_show_live():
+    section("iPad remote: the screen Abort disarms every flame group first, "
+            "every time, with no scheduled show live too, and says what it "
+            "did (review of PR #43, P0-1)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        sent = []
+        R.remote._flame_disarm = lambda reason: (
+            sent.append(reason) or _Result(True, "a disarm was sent to "
+                                                 "every flame group."))
+        # Before the first show: the scheduler is not in SHOW or PAUSED.
+        check(R.svc.machine.state not in (S.SHOW, S.PAUSED),
+              f"setup: no show live ({R.svc.machine.state})")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(len(sent) == 1 and "Abort" in sent[0],
+              f"the Abort sent the flame link's disarm_all with no show "
+              f"live: {sent} {st} {out}")
+        check(st == 200 and out.get("ok") is True and
+              out.get("disarmed") is True and out.get("stopped") is False,
+              f"answered as done, with the disarm sent and no show stopped: "
+              f"{st} {out}")
+        check("Every flame group" in out.get("text", "") and
+              "No show was stopped" in out.get("text", ""),
+              f"the answer says both halves truthfully: {out}")
+        check(not R.svc.machine.abort_latched and not R.c.latched,
+              "nothing is latched by an Abort with no show live")
+        rows = R.lines_for("abort disarm")
+        check(rows and rows[-1]["who"] == "Andy" and
+              rows[-1].get("outcome") == "done",
+              f"the disarm is journaled with who: {rows[-1:]}")
+        # The disarm fails: a fault, said, never "done".
+        R.remote._flame_disarm = lambda reason: _Result(False, "the socket "
+                                                        "is closed")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        check(st == 409 and out.get("ok") is False and
+              "did NOT go out" in out.get("error", ""),
+              f"a disarm that did not go out is a fault: {st} {out}")
+        # With a show live, the disarm still goes first, before the
+        # scheduler or the conductor is asked anything.
+        order = []
+        R.remote._flame_disarm = lambda reason: (
+            order.append(("route", R.svc.machine.state)) or
+            _Result(True, "sent."))
+        _live_show(R)
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(order and order[0] == ("route", S.SHOW) and st == 200 and
+              out.get("stopped") is True and R.svc.machine.abort_latched,
+              f"with a show live the route's disarm goes first and the show "
+              f"is stopped: {order} {st} {out}")
+        page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        check("Every flame group disarms at once, show or no show" in page,
+              "the page's Abort confirm says what an Abort with no show does")
     finally:
         R.close()
     print("  ok")
@@ -37971,6 +38046,7 @@ if __name__ == "__main__":
     test_deck_presses_reach_the_engine_conductor()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
+    test_remote_abort_disarms_with_no_show_live()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
     test_remote_page_loss_changes_nothing()
