@@ -109,6 +109,7 @@ PIXEL_DEV_RATE = 0.001     # this soak: fewer than 1 in 1000 frames past it
 PIXEL_GAP_MS = 100.0       # this soak: never four frames' worth of nothing
 LINK_GAP_MS = 50.0         # CONTRACT.md: never more than 50 ms between frames
 SACN_LATE_MS = 250.0       # flamesafe overrun_ms: a tick this late is a fault
+SACN_NOTE_MS = 100.0       # each heard sACN gap over this: its time, listed
 MEM_GROWTH_MB_H = 10.0     # this soak: steady growth past this is a leak
 DRIFT_MS = 50.0            # this soak: one and a half frames at 30 fps
 DECK_VID, DECK_PID = 0x0FD9, 0x0063   # the Stream Deck Mini streamdeck.py drives
@@ -122,8 +123,10 @@ def now_text(t=None):
 class Intervals:
     """Streaming statistics of the gaps between events."""
 
-    def __init__(self, period_ms, dev_ms=None, gap_ms=None):
+    def __init__(self, period_ms, dev_ms=None, gap_ms=None, note_ms=None):
         self.period = period_ms
+        self.note_ms = note_ms      # each gap over this: (wall time, ms)
+        self.noted = []
         self.dev_ms = dev_ms
         self.gap_ms = gap_ms
         self.lock = threading.Lock()
@@ -158,6 +161,9 @@ class Intervals:
                     self.over_dev += 1
                 if self.gap_ms is not None and g > self.gap_ms:
                     self.over_gap += 1
+                if self.note_ms is not None and g > self.note_ms and \
+                        len(self.noted) < 200:
+                    self.noted.append((time.time(), g))
             self.last = t
 
     def reset_gap(self):
@@ -371,7 +377,7 @@ class Soak:
         self.journal_real = []
         self.journal_expected = {}
         self.engine_env_dir = None
-        self.sacn = Intervals(25.0, None, SACN_LATE_MS)
+        self.sacn = Intervals(25.0, None, SACN_LATE_MS, SACN_NOTE_MS)
         self.sacn_nonzero = 0
         self.sacn_terminated = 0
         self.fs_state = "never"
@@ -682,7 +688,8 @@ class Soak:
         self.key = cfg["link"]["key"]
         self.status_port = int(cfg["link"]["status_port"])
         self.tick_hz = float(cfg.get("tick_hz", 40))
-        self.sacn = Intervals(1000.0 / self.tick_hz, None, SACN_LATE_MS)
+        self.sacn = Intervals(1000.0 / self.tick_hz, None, SACN_LATE_MS,
+                              SACN_NOTE_MS)
 
     def deck_plugged_in(self):
         try:
@@ -2261,8 +2268,14 @@ class Soak:
                     f"hears gaps flamesafe never had): {sc.events} packets, "
                     f"mean {sc.mean():.1f} ms (target "
                     f"{1000 / self.tick_hz:.0f}), longest gap "
-                    f"{sc.longest:.1f} ms, {sc.over_gap} over "
-                    f"{SACN_LATE_MS:g} ms"))
+                    f"{sc.longest:.1f} ms"
+                    + (f" at {now_text(sc.longest_at)}" if sc.longest_at
+                       else "")
+                    + f", {sc.over_gap} over {SACN_LATE_MS:g} ms; "
+                    f"{len(sc.noted)} over {SACN_NOTE_MS:g} ms"
+                    + (": " + ", ".join(f"{now_text(a)} {g:.0f} ms"
+                                        for a, g in sc.noted[:12])
+                       if sc.noted else "")))
         ex = self.ex
         if ex is not None:
             c = ex.counts
