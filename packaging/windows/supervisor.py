@@ -127,6 +127,10 @@ def load_settings():
         # flamesafe at High, their show threads at Highest, the deck at
         # Above normal. false turns it off (A/B tests).
         "priority_boost": True,
+        # BENCH BUILD, opt in (bench 2026-10-05): MadMapper and BEYOND at
+        # Below normal, and MadMapper kept off two logical CPUs that are
+        # left to LTC Player alone (contain.py). Off unless Jeff says.
+        "contain_third_party": False,
         # The rack screen page (/remote), full screen on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
@@ -511,6 +515,37 @@ def priority_boost_on(settings=None):
         return True
 
 
+def contain_on(settings=None):
+    try:
+        if settings is None:
+            settings = load_settings()
+        return settings.get("contain_third_party", False) is True
+    except Exception:
+        return False
+
+
+CONTAIN_EVERY_S = 3.0
+
+
+def start_containment():
+    """A contain.Containment when showpc.json turns it on, else None.
+    Never raises."""
+    if not contain_on():
+        log("third-party containment OFF (showpc.json "
+            "\"contain_third_party\": false)")
+        return None
+    try:
+        import contain
+        c = contain.Containment(log=log)
+        log("third-party containment ON: MadMapper and BEYOND at Below "
+            "normal as each appears; " + c.describe())
+        return c
+    except Exception as e:
+        log(f"third-party containment could not start "
+            f"({type(e).__name__}: {e}); nothing was changed")
+        return None
+
+
 def wanted_args(settings):
     port = settings["port"]
     fs = os.path.abspath(settings["flamesafe_config"])
@@ -652,6 +687,8 @@ def run_loop(open_page=False):
         "program's log says what Windows agreed to" if priority_boost_on()
         else "OFF (showpc.json \"priority_boost\": false)"))
     keep_awake(True)
+    contained = start_containment()
+    next_contain = 0.0
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
     # Programs left running by an earlier supervisor (one that was ended
@@ -693,9 +730,20 @@ def run_loop(open_page=False):
                 else:
                     log("everything stopped cleanly; supervisor exiting")
                 keep_awake(False)
+                if contained is not None:
+                    try:
+                        contained.release()
+                    except Exception as e:
+                        log(f"containment not ended cleanly: {e}")
                 return 1 if failures else 0
         want = wanted_args(settings)
         now = time.monotonic()
+        if contained is not None and now >= next_contain:
+            next_contain = now + CONTAIN_EVERY_S
+            try:
+                contained.tick()
+            except Exception as e:
+                log(f"containment check failed: {e}")
         for n in PROGRAMS:
             p = progs[n]
             args, why_not = want[n]
@@ -1143,6 +1191,14 @@ def self_check():
         raise RuntimeError(f"the show thread is not raised: {got}")
     yield ("scheduling protection: on unless showpc.json says "
            "\"priority_boost\": false; a show thread is raised to Highest")
+    if contain_on({}) or contain_on({"contain_third_party": "yes"}) or \
+            not contain_on({"contain_third_party": True}):
+        raise RuntimeError("the contain_third_party setting is read wrongly")
+    import contain
+    for line in contain.self_test():
+        yield line
+    yield ("third-party containment: off unless showpc.json says "
+           "\"contain_third_party\": true")
     cmd = rack_page_command(7878, 2, [(0, 0, 1920, 1080),
                                       (1920, 0, 3840, 1080)],
                             r"C:\Edge\msedge.exe", r"C:\p")

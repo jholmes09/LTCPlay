@@ -68,6 +68,7 @@ def main():
     ltcwin.clean_stop_on_logoff()
     _bench_fake_audio()
     _bench_send_gaps()
+    _bench_stall_probe()
     import threading
     stopped = threading.Event()
     if argv and argv[0] == "serve":
@@ -104,6 +105,7 @@ def _bench_send_gaps():
         return
     from ltcplay import clock, output
     meters = {"pixels": {}, "timecode": {}}
+    events = []     # (wall time, kind, ms): each interval of 100 ms or more
     last = {}
 
     def note(kind):
@@ -116,6 +118,8 @@ def _bench_send_gaps():
         ms = (now - prev) * 1000.0
         if ms > d.get(m, 0.0):
             d[m] = ms
+        if ms >= 100.0 and len(events) < 500:
+            events.append((round(time.time(), 3), kind, round(ms, 1)))
     real_frame = output.Sender.send_frame
     real_tc = clock.TimecodeOut.send
 
@@ -139,6 +143,7 @@ def _bench_send_gaps():
             try:
                 doc = {k: {str(m): round(v, 1) for m, v in d.items()}
                        for k, d in meters.items()}
+                doc["events"] = list(events)
                 with open(path + ".tmp", "w", encoding="utf-8") as fh:
                     json.dump(doc, fh)
                 os.replace(path + ".tmp", path)
@@ -147,6 +152,24 @@ def _bench_send_gaps():
     threading.Thread(target=writer, daemon=True,
                      name="bench-sendgaps").start()
     print(f"BENCH: the engine times its own sends into {path}", flush=True)
+
+
+def _bench_stall_probe():
+    """BENCH BUILD ONLY: with LTCPLAY_BENCH_STALLS set to a file path (the
+    soak sets it), bench_probe's stall probe runs in the engine: what held
+    the engine up in each stall (its own thread, paging, or no CPU), and
+    each minute's CPU per engine thread. Unset, it does nothing at all."""
+    import os
+    path = os.environ.get("LTCPLAY_BENCH_STALLS")
+    if not path:
+        return
+    import bench_probe
+    import ltcwin
+    raise_to = ((lambda nid: ltcwin.thread_priority(nid, 2))
+                if ltcwin.boosted() else None)
+    bench_probe.StallProbe(path).start(raise_to)
+    print(f"BENCH: the engine's stall probe writes to {path}"
+          + (" (the probe at Highest)" if raise_to else ""), flush=True)
 
 
 def _bench_fake_audio():

@@ -414,6 +414,15 @@ class Soak:
         self.window_script = False  # maximize/restore MadMapper every 2 min
         self.window_events = []     # (time, what)
         self.cpu_min = {}           # name -> {minute: max CPU % that minute}
+        self.kernel_min = {}        # name -> {minute: max kernel CPU %}
+        self.sys_min = {}           # minute -> [irq+DPC %, worst CPU's, MB free]
+        self.sec1s = {}             # second -> {name: 1 s readings}
+        self.ncpu = 0
+        self.contain = False        # third-party containment (contain.py)
+        self.containment = None     # its record, when this soak ran it
+        self.slow_samplers = {}     # name -> [seconds each reading took]
+        self.mm_started = {}        # MadMapper pid -> its start time
+        self.contain_own = True     # False: the caller runs containment
         self.oversleep = {}         # minute -> worst sender sleep overrun ms
         self._cpu_stop = threading.Event()
         self.bey_black = 0          # BEYOND stream packets in the black zone
@@ -713,21 +722,38 @@ class Soak:
             st.longest_loop_s = t - self.go_wall
 
     def cpu_sampler(self):
-        """Every second: CPU % of the engine, flamesafe, the deck,
-        MadMapper and BEYOND, to cpu1s.csv, and each one's worst per
-        minute, to line up a starvation event."""
+        """Every second, to cpu1s.csv: CPU % of the engine, flamesafe, the
+        deck, this soak, MadMapper and BEYOND, split into user and kernel
+        time, with each one's page faults and working set; and one
+        "system" row: interrupt and DPC time (all CPUs, and the worst
+        single CPU), memory available, disk reads. Each one's worst per
+        minute is kept too, to line up a starvation event (bench,
+        2026-10-05: a stall at High priority needs to be told apart into
+        another program's CPU, the system's own interrupt time, or
+        paging)."""
         try:
             import psutil
         except ImportError:
             return
         path = os.path.join(self.dir, "cpu1s.csv")
         procs = {}
+        last = {}
+        self.ncpu = psutil.cpu_count() or 0
+        try:
+            psutil.cpu_times_percent(None)
+            psutil.cpu_times_percent(None, percpu=True)
+        except Exception:
+            pass
+        disk0 = None
         with open(path, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
-            w.writerow(["time", "name", "cpu_pct"])
+            w.writerow(["time", "name", "cpu_pct", "user_pct", "kernel_pct",
+                        "page_faults", "wset_mb", "interrupt_pct", "dpc_pct",
+                        "dpc_worst_cpu_pct", "avail_mb", "disk_read_mb_s"])
             while not self._cpu_stop.wait(1.0):
                 want = {n: c["p"].pid for n, c in self.procs.items()
                         if c["p"].poll() is None}
+                want["soak"] = os.getpid()
                 try:
                     for p in psutil.process_iter(["name"]):
                         app = soak_apps.which_app(p.info.get("name") or "")
@@ -737,21 +763,114 @@ class Soak:
                     pass
                 now = time.time()
                 m = int(now // 60)
+                sec = int(now)
+                row1s = {}
                 for name, pid in want.items():
                     try:
                         ps = procs.get(pid)
                         if ps is None:
                             ps = procs[pid] = psutil.Process(pid)
                             ps.cpu_percent(None)
+                            last[pid] = (time.perf_counter(), ps.cpu_times())
+                            if name == "MadMapper":
+                                self.mm_started[pid] = ps.create_time()
                             continue
                         v = ps.cpu_percent(None)
+                        t1, ct = time.perf_counter(), ps.cpu_times()
+                        t0, c0 = last.get(pid, (t1, ct))
+                        last[pid] = (t1, ct)
+                        dt = max(t1 - t0, 1e-3)
+                        up = (ct.user - c0.user) / dt * 100
+                        kp = (ct.system - c0.system) / dt * 100
+                        mi = ps.memory_info()
+                        pf = getattr(mi, "num_page_faults", None)
+                        ws = getattr(mi, "wset", None) or mi.rss
                     except Exception:
                         procs.pop(pid, None)
                         continue
-                    w.writerow([now_text(now), name, f"{v:.0f}"])
+                    w.writerow([now_text(now), name, f"{v:.0f}", f"{up:.0f}",
+                                f"{kp:.0f}", "" if pf is None else pf,
+                                f"{ws / 1e6:.0f}"])
+                    row1s[name] = (round(v), round(up), round(kp), pf,
+                                   round(ws / 1e6))
                     d = self.cpu_min.setdefault(name, {})
                     d[m] = max(d.get(m, 0.0), v)
+                    d = self.kernel_min.setdefault(name, {})
+                    d[m] = max(d.get(m, 0.0), kp)
+                try:
+                    tp = psutil.cpu_times_percent(None)
+                    per = psutil.cpu_times_percent(None, percpu=True)
+                    irq = getattr(tp, "interrupt", None)
+                    dpc = getattr(tp, "dpc", None)
+                    dpc_w = max((getattr(c, "dpc", 0.0) or 0.0) +
+                                (getattr(c, "interrupt", 0.0) or 0.0)
+                                for c in per) if per else None
+                    avail = psutil.virtual_memory().available / 1e6
+                    io = psutil.disk_io_counters()
+                    rd = None
+                    if io is not None:
+                        if disk0 is not None:
+                            rd = (io.read_bytes - disk0[1]) / 1e6 / max(
+                                now - disk0[0], 1e-3)
+                        disk0 = (now, io.read_bytes)
+                    w.writerow([now_text(now), "system", f"{tp.user + tp.system:.0f}",
+                                f"{tp.user:.0f}", f"{tp.system:.0f}", "", "",
+                                "" if irq is None else f"{irq:.1f}",
+                                "" if dpc is None else f"{dpc:.1f}",
+                                "" if dpc_w is None else f"{dpc_w:.0f}",
+                                f"{avail:.0f}",
+                                "" if rd is None else f"{rd:.1f}"])
+                    row1s["system"] = (irq, dpc, dpc_w, round(avail),
+                                       None if rd is None else round(rd, 1))
+                    d = self.sys_min.setdefault(m, [0.0, 0.0, 1e12])
+                    d[0] = max(d[0], (irq or 0.0) + (dpc or 0.0))
+                    d[1] = max(d[1], dpc_w or 0.0)
+                    d[2] = min(d[2], avail)
+                except Exception:
+                    pass
+                self.sec1s[sec] = row1s
+                while len(self.sec1s) > 6 * 3600:
+                    del self.sec1s[min(self.sec1s)]
                 fh.flush()
+
+    def slow_sampler(self):
+        """Once a minute: storage events, heat and GPU use. Each reading
+        starts PowerShell or typeperf, which took tens of seconds while
+        MadMapper started cold (show PC, 2026-10-05: the soak's own loop
+        "held up 32 s" was this program waiting on them), so they run here,
+        never in the loop that watches the programs; how long each took is
+        kept for the report."""
+        def timed(name, fn, *a):
+            t = time.perf_counter()
+            try:
+                return fn(*a)
+            finally:
+                self.slow_samplers.setdefault(name, []).append(
+                    time.perf_counter() - t)
+        while not self._cpu_stop.wait(REPORT_EVERY_S):
+            try:
+                if ltcwin.WINDOWS:
+                    import datetime as _dt
+                    since = self._disk_since or _dt.datetime.fromtimestamp(
+                        self.started)
+                    self._disk_since = _dt.datetime.now()
+                    dsk = timed("storage events", soak_apps.disk_sample,
+                                since)
+                    self.disk.add(time.time(), dsk)
+                    for ev in dsk["events"]:
+                        note(f"STORAGE EVENT {ev[2]} {ev[1]} at {ev[0]}: "
+                             f"{ev[3]}")
+                    smp = timed("heat", soak_apps.heat_sample)
+                    self.heat.add(time.time(), smp)
+                    t = smp.get("temp_c")
+                    if t is not None and t > soak_apps.TEMP_LIMIT_C:
+                        note(f"CPU at {t:.0f} C")
+                if self.mode != "fallback":
+                    g = timed("GPU", soak_apps.gpu_percent)
+                    if g is not None:
+                        self.gpu.append(g)
+            except Exception as e:
+                note(f"a slow reading failed: {type(e).__name__}: {e}")
 
     def window_scripter(self, every_s=120.0, hold_s=10.0):
         """A/B trigger (show PC, 2026-10-04): every 2 minutes, maximize
@@ -773,7 +892,7 @@ class Soak:
                       encoding="utf-8") as fh:
                 doc = json.load(fh)
             return {k: {int(m): float(v) for m, v in d.items()}
-                    for k, d in doc.items()}
+                    for k, d in doc.items() if k != "events"}
         except (OSError, ValueError, AttributeError):
             return {}
 
@@ -810,6 +929,118 @@ class Soak:
                 "Engine's own output timing (measured inside the engine, "
                 "where it sends; a soak stall cannot show here)",
                 "; ".join(parts))
+
+    def engine_stalls(self):
+        try:
+            with open(os.path.join(self.dir, "engine-stalls.json"),
+                      encoding="utf-8") as fh:
+                doc = json.load(fh)
+            return doc if isinstance(doc, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def system_at(self, at):
+        """The 1 s readings nearest `at` (this second or the one after),
+        as one short phrase."""
+        for sec in (int(at), int(at) + 1, int(at) - 1):
+            r = self.sec1s.get(sec)
+            if r:
+                break
+        else:
+            return "no 1 s readings then"
+        parts = []
+        sysr = r.get("system")
+        if sysr:
+            irq, dpc, worst, avail, rd = sysr
+            parts.append(f"system interrupt+DPC "
+                         f"{(irq or 0) + (dpc or 0):.0f}% (worst CPU "
+                         f"{worst or 0:.0f}%), {avail} MB free"
+                         + (f", disk reads {rd} MB/s" if rd is not None
+                            else ""))
+        for name in ("MadMapper", "BEYOND", "engine"):
+            v = r.get(name)
+            if v:
+                parts.append(f"{name} {v[0]}% (kernel {v[2]}%"
+                             + (f", working set {v[4]} MB" if name == "engine"
+                                else "") + ")")
+        return "; ".join(parts)
+
+    def send_gap_events(self):
+        """[(time, kind, ms)]: each engine send interval of 100 ms or more,
+        as the engine timed it."""
+        try:
+            with open(os.path.join(self.dir, "engine-send-gaps.json"),
+                      encoding="utf-8") as fh:
+                return [tuple(e) for e in json.load(fh).get("events") or []]
+        except (OSError, ValueError, AttributeError, TypeError):
+            return []
+
+    def stall_item(self):
+        """The engine's stall probe (bench_probe, inside the engine): how
+        many times it was held up 40 ms or more, what held it each time,
+        and the worst ones beside the 1 s system readings. Information for
+        the timing work, never a verdict."""
+        doc = self.engine_stalls()
+        st = doc.get("stalls") or []
+        title = ("Engine stalls, inside the engine (stall probe: what held "
+                 "the engine up each time it woke 40 ms or more late)")
+        if not doc:
+            return ("NOT TESTED", title, "the engine wrote no stall readings")
+        kinds = {}
+        for e in st:
+            k = e.get("kind", "other")
+            kinds[k] = kinds.get(k, 0) + 1
+        worst = sorted(st, key=lambda e: -e.get("late_ms", 0))[:6]
+        rows = [f"{now_text(e['at'])} {e['late_ms']:.0f} ms late: "
+                f"{e.get('why', '?')}; busiest threads "
+                + ", ".join(f"{n} {ms:.0f} ms" for n, ms in
+                            e.get("threads", [])[:3])
+                + f" [{self.system_at(e['at'])}]" for e in worst]
+        # Each long send interval: was the whole engine held at that moment
+        # (the probe stalled too), or that sending thread alone (its own
+        # wait: a disk read, a socket)?
+        gaps = self.send_gap_events()
+        whole = alone = 0
+        for at, _kind, ms in gaps:
+            hit = any(abs((e["at"] - e["late_ms"] / 2000.0) -
+                          (at - ms / 2000.0)) <= (ms + e["late_ms"]) / 2000.0
+                      for e in st)
+            whole += hit
+            alone += not hit
+        gap_line = (f"; engine send intervals of 100 ms or more: {len(gaps)}, "
+                    f"{whole} while the whole engine was held, {alone} with "
+                    f"only the sending thread held (its own wait)"
+                    + (": " + ", ".join(f"{now_text(a)} {k} {ms:.0f} ms"
+                                        for a, k, ms in gaps[:6])
+                       if gaps else "")) if gaps else ""
+        pri = doc.get("priorities") or {}
+        prio = ", ".join(f"{n} {v}" for n, v in sorted(pri.items())
+                         if n in ("ltcplay-output", "ltcplay-timecode",
+                                  "ltcplay-audio-timecode",
+                                  "ltcplay-flame-link", "bench-stall-probe"))
+        return ("INFO", title,
+                f"{len(st)} stall(s)"
+                + (" (" + ", ".join(f"{k}: {n}" for k, n in
+                                    sorted(kinds.items())) + ")" if st else "")
+                + ("; worst: " + " | ".join(rows) if rows else "")
+                + gap_line
+                + (f"; Windows thread priorities (2 is Highest, 0 Normal): "
+                   f"{prio}" if prio else "")
+                + f"; {self.ncpu or '?'} logical CPUs; per-thread CPU per "
+                f"minute in engine-stalls.json, 1 s readings in cpu1s.csv")
+
+    def madmapper_started(self):
+        """When each MadMapper process seen in this run was started,
+        against this run's own start."""
+        out = []
+        for pid, t in sorted(self.mm_started.items(), key=lambda x: x[1]):
+            d = t - self.started
+            out.append(f"pid {pid} started {now_text(t)}, "
+                       + (f"{-d / 60:.1f} min before this run began"
+                          if d < 0 else f"{d / 60:.1f} min into this run")
+                       + (" (a cold start inside the run's first 10 "
+                          "minutes)" if -600 < d < 600 else ""))
+        return "; ".join(out)
 
     def starvation_item(self):
         bad = sorted(m for m, v in self.oversleep.items() if v >= 20.0)
@@ -1145,6 +1376,8 @@ class Soak:
         if name == "engine":
             env["LTCPLAY_BENCH_SENDGAPS"] = os.path.join(
                 self.dir, "engine-send-gaps.json")
+            env["LTCPLAY_BENCH_STALLS"] = os.path.join(
+                self.dir, "engine-stalls.json")
         if name == "deck" and self.virtual_deck:
             env["LTCPLAY_BENCH_VIRTUAL_DECK"] = "1"
         env.pop(ltcwin.PRIORITY_ENV, None)
@@ -1436,6 +1669,10 @@ class Soak:
         set_soak_priority(self.priority, self._boost_stop)
         threading.Thread(target=self.cpu_sampler, daemon=True,
                          name="soak-cpu-1s").start()
+        threading.Thread(target=self.slow_sampler, daemon=True,
+                         name="soak-slow-readings").start()
+        if self.contain and self.containment is None:
+            self.containment = start_containment(self._cpu_stop)
         if self.window_script:
             threading.Thread(target=self.window_scripter, daemon=True,
                              name="soak-windows").start()
@@ -1475,25 +1712,6 @@ class Soak:
                     self.sample(hours)
                     next_sample += SAMPLE_S
                 if time.perf_counter() >= next_report:
-                    if ltcwin.WINDOWS:
-                        import datetime as _dt
-                        since = self._disk_since or _dt.datetime.fromtimestamp(
-                            self.started)
-                        self._disk_since = _dt.datetime.now()
-                        dsk = soak_apps.disk_sample(since)
-                        self.disk.add(time.time(), dsk)
-                        for ev in dsk["events"]:
-                            note(f"STORAGE EVENT {ev[2]} {ev[1]} at {ev[0]}: "
-                                 f"{ev[3]}")
-                        smp = soak_apps.heat_sample()
-                        self.heat.add(time.time(), smp)
-                        t = smp.get("temp_c")
-                        if t is not None and t > soak_apps.TEMP_LIMIT_C:
-                            note(f"CPU at {t:.0f} C")
-                    if self.mode != "fallback":
-                        g = soak_apps.gpu_percent()
-                        if g is not None:
-                            self.gpu.append(g)
                     self.write_report()
                     next_report += REPORT_EVERY_S
         except KeyboardInterrupt:
@@ -1502,6 +1720,8 @@ class Soak:
         finally:
             self.ended = time.time()
             self._cpu_stop.set()
+            if self.contain_own and self.containment is not None:
+                end_containment(self.containment)
             if getattr(self, "_boost_stop", None) is not None:
                 self._boost_stop.set()
             if self.ex is not None:
@@ -2042,6 +2262,27 @@ class Soak:
                        "the engine reported no BEYOND timecode counts")))
         out.append(self.starvation_item())
         out.append(self.engine_timing_item())
+        out.append(self.stall_item())
+        c = self.containment
+        if c is not None:
+            out.append(("INFO", "Third-party containment (MadMapper and "
+                        "BEYOND at Below normal, MadMapper kept off two "
+                        "CPUs)", "ON: " + c.describe() + "; " + (
+                            "; ".join(c.applied[:12]) or "nothing applied")))
+        else:
+            out.append(("INFO", "Third-party containment",
+                        "asked for, but it did not start" if self.contain
+                        else "off"))
+        cold = self.madmapper_started()
+        if cold:
+            out.append(("INFO", "MadMapper started (a cold start sets off its "
+                        "video decoding)", cold))
+        slow = {n: max(v) for n, v in self.slow_samplers.items() if v}
+        if slow:
+            out.append(("INFO", "This soak's slow readings (PowerShell and "
+                        "typeperf, in a thread of their own)",
+                        ", ".join(f"{n}: longest {v:.0f} s" for n, v in
+                                  sorted(slow.items()))))
         overruns = self.flamesafe_overruns()
         out.append(("PASS" if sc.over_gap == 0 and not overruns else "FAIL",
                     "flamesafe output timing",
@@ -2288,6 +2529,45 @@ def set_soak_priority(on, stop):
         note(f"this soak program: priority not changed ({e})")
 
 
+def start_containment(stop=None):
+    """contain.Containment ticking every 3 s in a thread of its own until
+    `stop` is set (or end_containment), every change in the run's notes.
+    None when it cannot start; never raises."""
+    try:
+        import contain
+        c = contain.Containment(log=note)
+    except Exception as e:
+        note(f"third-party containment could not start "
+             f"({type(e).__name__}: {e}); nothing was changed")
+        return None
+    note("third-party containment ON: MadMapper and BEYOND at Below normal "
+         "as each appears; " + c.describe())
+    c.stop = stop or threading.Event()
+
+    def run():
+        while True:
+            try:
+                c.tick()
+            except Exception as e:
+                note(f"containment check failed: {e}")
+            if c.stop.wait(3.0):
+                return
+    c.thread = threading.Thread(target=run, daemon=True,
+                                name="soak-containment")
+    c.thread.start()
+    return c
+
+
+def end_containment(c):
+    """Stop ticking, then set MadMapper and BEYOND back to normal."""
+    try:
+        c.stop.set()
+        c.thread.join(5)
+        c.release()
+    except Exception as e:
+        note(f"containment not ended cleanly: {e}")
+
+
 def refuse_held_ports(need):
     """Raise a plain-sentence RuntimeError, naming the process, when any
     (ip, port, what) this program must listen on is already held."""
@@ -2367,8 +2647,10 @@ def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
     full license). Returns {app: PIDs} for the next block's check."""
     probe = probe or (lambda: (soak_apps.app_pids(), soak_apps.hung_names()))
     i, n = block
+    again = sorted(a for a, v in (before or {}).items() if v)
     note(f"Block {i} of {n}: start BEYOND and MadMapper"
-         + (" again (quit both first)" if before else "")
+         + ((" again (quit both first)" if len(again) > 1 else
+             f" ({again[0]} again: quit it first)") if again else "")
          + ". The block starts by itself once both answer. What to click:")
     for c in soak_apps.CLICKS:
         note("  " + c)
@@ -2421,7 +2703,14 @@ class ABRun:
     maximized and restored every 2 minutes (the show PC's trigger), and one
     report comparing them."""
 
-    PLAN = (("priority on", True), ("priority off", False))
+    # (label, scheduling protection, third-party containment)
+    PLAN = (("priority on", True, False), ("priority off", False, False))
+    TITLE = "scheduling protection on against off"
+    WHAT = ("Each run: the same soak, with MadMapper's windows maximized and "
+            "restored every 2 minutes.")
+    WINDOW_SCRIPT = True
+    COLD_MADMAPPER = False      # each half waits for a fresh MadMapper
+    STAMP = "A-B"
 
     def __init__(self, minutes=20, audio_device=None, fake_audio=False,
                  want_mode="auto"):
@@ -2431,9 +2720,10 @@ class ABRun:
         self.audio_device = audio_device
         self.fake_audio = fake_audio
         self.want_mode = want_mode
-        self.dir = os.path.join(sup.appdata_dir(), "soak", f"{stamp} A-B")
+        self.dir = os.path.join(sup.appdata_dir(), "soak",
+                                f"{stamp} {self.STAMP}")
         os.makedirs(self.dir, exist_ok=True)
-        name = f"LTC Player soak A-B report {stamp}.txt"
+        name = f"LTC Player soak {self.STAMP} report {stamp}.txt"
         self.report_paths = [os.path.join(self.dir, name)]
         desk = desktop_dir()
         if desk:
@@ -2443,15 +2733,31 @@ class ABRun:
         self.stopped = ""
         self.started = time.time()
 
-    def run(self, wait=wait_for_apps):
+    def intro(self, why):
+        return (f"A/B soak: {why}; two runs of {self.seconds / 60:.0f} "
+                f"minutes, scheduling protection on then off, MadMapper's "
+                f"windows maximized and restored every 2 minutes")
+
+    def run(self, wait=wait_for_apps, pids=None):
         resolved, _found, why = resolve_mode(self.want_mode)
-        note(f"A/B soak: {why}; two runs of {self.seconds / 60:.0f} minutes, "
-             f"scheduling protection on then off, MadMapper's windows "
-             f"maximized and restored every 2 minutes")
+        note(self.intro(why))
+        pids = pids or (lambda: soak_apps.pids_of("MadMapper",
+                                                  soak_apps.app_pids()))
+        contained = None
         try:
-            if resolved == "all programs":
+            if resolved == "all programs" and not self.COLD_MADMAPPER:
                 wait(None, (1, 2))
-            for i, (label, prio) in enumerate(self.PLAN, 1):
+            for i, (label, prio, cont) in enumerate(self.PLAN, 1):
+                if cont:
+                    contained = start_containment()
+                if resolved == "all programs" and self.COLD_MADMAPPER:
+                    note(f"Run {i} of {len(self.PLAN)} ({label}) needs "
+                         f"MadMapper started fresh: quit MadMapper, then "
+                         f"start it again and open the show project. "
+                         f"BEYOND can stay open.")
+                    got = wait({"MadMapper": pids()} if pids() else None,
+                               (i, len(self.PLAN)))
+                    got.pop("override", None)
                 s = Soak(self.seconds, self.audio_device,
                          folder=os.path.join(self.dir, f"{i} {label}"),
                          block=(i, len(self.PLAN)))
@@ -2461,15 +2767,26 @@ class ABRun:
                 s.want_mode = "all" if resolved == "all programs" else \
                     "fallback"
                 s.priority = prio
-                s.window_script = True
+                s.contain = cont
+                s.containment = contained
+                s.contain_own = False
+                s.window_script = self.WINDOW_SCRIPT
                 s.on_report = self.write
                 self.runs.append((label, s))
-                s.run()
+                try:
+                    s.run()
+                finally:
+                    if contained is not None:
+                        end_containment(contained)
+                        contained = None
                 if s.interrupted:
                     self.stopped = f"stopped by Ctrl-C in the {label} run"
                     break
         except KeyboardInterrupt:
             self.stopped = "stopped by Ctrl-C"
+        finally:
+            if contained is not None:
+                end_containment(contained)
         self.finished = True
         self.write()
         return self.passed
@@ -2487,10 +2804,8 @@ class ABRun:
             self.runs[-1][1].stop_all()
 
     def write(self):
-        lines = ["LTC Player bench soak, A/B: scheduling protection on "
-                 "against off",
-                 "BENCH ONLY. Each run: the same soak, with MadMapper's "
-                 "windows maximized and restored every 2 minutes.", "",
+        lines = [f"LTC Player bench soak, A/B: {self.TITLE}",
+                 "BENCH ONLY. " + self.WHAT, "",
                  f"Started {now_text(self.started)}. Program: "
                  f"{ltcwin.version_line('LTC Player')}"
                  + (f" ({self.stopped})" if self.stopped else ""), "",
@@ -2498,15 +2813,26 @@ class ABRun:
         for label, s in self.runs:
             worst = max(s.oversleep.values()) if s.oversleep else None
             over20 = sum(1 for v in s.oversleep.values() if v >= 20)
+            st = (s.engine_stalls().get("stalls") or [])
+            eng = s.engine_send_gaps()
+            ew = {k: max(d.values()) for k, d in eng.items() if d}
             lines.append(
                 f"  {label}: flame link longest gap "
                 f"{s.link_gaps.longest:.1f} ms ({s.link_gaps.over_gap} over "
                 f"50 ms); timecode longest gap {s.tc.longest:.1f} ms; pixels "
-                f"longest gap {s.pixels.longest:.1f} ms; sender sleep "
-                f"overrun worst "
+                f"longest gap {s.pixels.longest:.1f} ms; inside the engine: "
+                + (", ".join(f"{k} worst {v:.0f} ms" for k, v in
+                             sorted(ew.items())) or "not read")
+                + f"; engine stalls {len(st)}"
+                + (f" (worst {max(e['late_ms'] for e in st):.0f} ms)"
+                   if st else "")
+                + "; sender sleep overrun worst "
                 + (f"{worst:.0f} ms, {over20} minute(s) over 20 ms"
                    if worst is not None else "not read")
-                + f"; {len(s.window_events)} window action(s)"
+                + (f"; {len(s.window_events)} window action(s)"
+                   if self.WINDOW_SCRIPT else "")
+                + (f"; MadMapper: {s.madmapper_started()}"
+                   if self.COLD_MADMAPPER and s.mm_started else "")
                 + ("" if s.finished else " (running)"))
         for label, s in self.runs:
             lines += ["", "=" * 20 + f" {label} " + "=" * 20]
@@ -2518,6 +2844,29 @@ class ABRun:
                     fh.write(text)
             except OSError:
                 pass
+
+
+class ABContain(ABRun):
+    """The containment A/B preset (bench, 2026-10-05): the same soak twice,
+    scheduling protection on in both, third-party containment ON then OFF,
+    each starting with MadMapper started fresh (its cold start, decoding
+    six 1080p videos, is what held the engine up in block 2 of 184548e)."""
+
+    PLAN = (("containment on", True, True), ("containment off", True, False))
+    TITLE = "third-party containment on against off"
+    WHAT = ("Scheduling protection on in both runs. Each run begins with "
+            "MadMapper started fresh (its cold start); with containment on, "
+            "MadMapper and BEYOND run at Below normal and MadMapper is kept "
+            "off two CPUs.")
+    WINDOW_SCRIPT = False
+    COLD_MADMAPPER = True
+    STAMP = "A-B containment"
+
+    def intro(self, why):
+        return (f"A/B soak: {why}; two runs of {self.seconds / 60:.0f} "
+                f"minutes, scheduling protection on in both, third-party "
+                f"containment on then off, MadMapper started fresh before "
+                f"each")
 
 
 class Blocks:
@@ -2571,6 +2920,7 @@ class Blocks:
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
                 s.priority = getattr(self, "priority", True)
+                s.contain = getattr(self, "contain", False)
                 s.on_report = self.write
                 self.blocks.append(s)
                 s.run()
@@ -2722,6 +3072,12 @@ def _self_check():
         yield line
     for line in soak_exercise.self_test():
         yield line
+    import bench_probe
+    import contain
+    for line in bench_probe.self_test():
+        yield line
+    for line in contain.self_test():
+        yield line
     seq = iter([None, "c"])
     r = wait_for_apps(None, (1, 1), poll_s=0, probe=lambda: ({}, set()),
                       sleep=lambda s: None, typed=lambda: next(seq))
@@ -2747,7 +3103,9 @@ def main(argv=None):
     show_s = SHOW_S
     every_min = SHOW_EVERY_MIN
     priority = True
+    contain = False
     ab = None
+    ab_kind = ABRun
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -2782,6 +3140,17 @@ def main(argv=None):
                 return 2
             priority = argv[i + 1] == "on"
             i += 1
+        elif a == "--contain":
+            if argv[i + 1] not in ("on", "off"):
+                print("--contain is on or off")
+                return 2
+            contain = argv[i + 1] == "on"
+            i += 1
+        elif a == "--ab-contain":
+            ab, ab_kind = 20.0, ABContain
+            if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
+                ab = float(argv[i + 1])
+                i += 1
         elif a == "--ab":
             ab = 20.0
             if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
@@ -2797,7 +3166,8 @@ def main(argv=None):
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
                   f"--mode auto|all|fallback, --priority on|off, "
-                  f"--ab [MINUTES], --show-seconds N (default {SHOW_S}), "
+                  f"--ab [MINUTES], --ab-contain [MINUTES], "
+                  f"--contain on|off, --show-seconds N (default {SHOW_S}), "
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
@@ -2841,7 +3211,7 @@ def main(argv=None):
     failed = ""
     try:
         if ab is not None:
-            soak = ABRun(ab, device, fake, mode)
+            soak = ab_kind(ab, device, fake, mode)
             soak.show_s, soak.every_min = show_s, every_min
             ok = soak.run()
             raise _Done()
@@ -2851,12 +3221,14 @@ def main(argv=None):
             soak = Blocks(seconds, device, fake)
             soak.show_s, soak.every_min = show_s, every_min
             soak.priority = priority
+            soak.contain = contain
         else:
             soak = Soak(seconds, device)
             soak.show_s, soak.every_min = show_s, every_min
             soak.fake_audio = fake
             soak.want_mode = mode
             soak.priority = priority
+            soak.contain = contain
         ok = soak.run()
     except _Done:
         pass
