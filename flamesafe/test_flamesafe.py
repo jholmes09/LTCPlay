@@ -3688,6 +3688,545 @@ def test_review3_link_loss_is_one_line_and_the_return_is_one_line():
           "the first frame ever closes no outage: no link line")
 
 
+# =========================================================================
+# disarm_all: the show program's Abort (CONTRACT.md, 2026-10-02)
+# =========================================================================
+
+def _disarm(r, abort_id=1, reason="Abort from the rack screen", seq=None,
+            mono=None, sender=SENDER):
+    """One disarm_all from the rig's own ltcplay, next in its sequence."""
+    if seq is None:
+        r.seq += 1
+        seq = r.seq
+    m = link.DisarmAll(seq, max(r.t, r.mono_floor) if mono is None else mono,
+                       abort_id, reason)
+    return r.c.disarm_all(m, sender=sender)
+
+
+def _two_armed():
+    r = Rig()
+    r.prove_alive()
+    r.inp.set(0, 1)
+    r.step()
+    assert r.safety(0) == ARM and r.safety(1) == ARM
+    return r
+
+
+def test_disarm_all_link_decoding():
+    section("disarm_all on the wire: strict shape, key first, exact field "
+            "set, routed by decode_from_ltcplay")
+    good = link.encode_disarm_all(7, 12.5, 3, "Abort", KEY)
+    m = link.decode_disarm_all(good, KEY)
+    check(isinstance(m, link.DisarmAll) and m.seq == 7 and m.mono == 12.5
+          and m.abort_id == 3 and m.reason == "Abort",
+          "a well-formed disarm_all decodes")
+    r = link.decode_from_ltcplay(good, 1, KEY)
+    check(isinstance(r, link.DisarmAll),
+          "decode_from_ltcplay routes a disarm_all to the disarm decoder")
+    f = link.decode_from_ltcplay(
+        link.encode_flame(1, None, 1.0, 1, [0] * 512, KEY), 1, KEY)
+    check(isinstance(f, link.FlameFrame),
+          "decode_from_ltcplay still decodes a flame frame exactly as before")
+
+    def obj(**over):
+        d = {"v": 2, "k": KEY, "t": "disarm_all", "seq": 7, "mono": 1.0,
+             "id": 1, "reason": "Abort"}
+        for k, v in over.items():
+            if v is _DROP:
+                d.pop(k, None)
+            else:
+                d[k] = v
+        return json.dumps(d).encode()
+
+    cases = [
+        (obj(v=1), "wrong contract version"),
+        (obj(v=3), "wrong contract version"),
+        (obj(k="x" * 20), "wrong key"),
+        (obj(k=_DROP), "wrong key"),
+        (obj(k="x" * 20, seq="garbage", id=-5), "wrong key"),
+        (obj(t="flame"), "wrong message type"),
+        (obj(arm=True), "field this contract does not describe"),
+        (obj(wanted=[True]), "field this contract does not describe"),
+        (obj(seq=-1), "seq"),
+        (obj(seq=True), "seq"),
+        (obj(seq=1.5), "seq"),
+        (obj(seq=_DROP), "seq"),
+        (obj(mono="1"), "mono"),
+        (obj(mono=True), "mono"),
+        (obj(mono=_DROP), "mono"),
+        (obj(id=0), "id"),
+        (obj(id=True), "id"),
+        (obj(id=_DROP), "id"),
+        (obj(reason=""), "reason"),
+        (obj(reason="   "), "reason"),
+        (obj(reason="x" * 201), "reason"),
+        (obj(reason=5), "reason"),
+        (obj(reason=_DROP), "reason"),
+        (b"[1,2]", "not a JSON object"),
+        (b"\xff\xfe", "not valid JSON"),
+        (b"x" * 20000, "too long"),
+    ]
+    for data, want in cases:
+        try:
+            link.decode_disarm_all(data, KEY)
+            check(False, f"accepted a bad disarm_all: {data[:80]!r}")
+        except link.LinkError as e:
+            check(want in str(e), f"{data[:80]!r} rejected for {want!r}, "
+                                  f"said {e}")
+    nan = (b'{"v":2,"k":"' + KEY.encode() + b'","t":"disarm_all","seq":1,'
+           b'"mono":NaN,"id":1,"reason":"Abort"}')
+    try:
+        link.decode_disarm_all(nan, KEY)
+        check(False, "a NaN mono was accepted")
+    except link.LinkError as e:
+        check("mono" in str(e), f"NaN mono rejected: {e}")
+    try:
+        link.decode_from_ltcplay(obj(k="y" * 20), 1, KEY)
+        check(False, "decode_from_ltcplay accepted a wrong-key disarm_all")
+    except link.LinkError as e:
+        check(str(e) == "wrong key",
+              f"decode_from_ltcplay: a wrong-key disarm_all is 'wrong key': "
+              f"{e}")
+
+
+_DROP = object()
+
+
+def test_disarm_all_disarms_every_group_and_needs_a_fresh_cycle():
+    section("disarm_all: every armed group off the wire on the next tick, "
+            "the abort words on the lamp, and nothing re-arms until a "
+            "fresh genuine cycle from the arm input")
+    r = _two_armed()
+    why = _disarm(r)
+    check(why == "", f"disarm_all from the live, locked sender is accepted: "
+                     f"{why!r}")
+    r.step()
+    check(all(r.safety(i) == 0 for i in range(N_GROUPS)),
+          f"every safety slot is zero on the very next tick: "
+          f"{[r.safety(i) for i in range(N_GROUPS)]}")
+    g = r.group(0)
+    check(g["armed"] == "held" and g["reason"] == composer.ABORT_DISARMED
+          and g["amber"] == "flashing",
+          f"the lamp says the Abort disarmed it and that cycling is the "
+          f"fix: {g}")
+    check(r.group(2)["armed"] == "disarmed",
+          f"a group nobody wanted stays plain disarmed: {r.group(2)}")
+    st = r.out.status["disarm_all"]
+    check(st["accepted"] == 1 and st["last_id"] == 1
+          and st["last_reason"] == "Abort from the rack screen"
+          and isinstance(st["age_ms"], int),
+          f"the status frame says which Abort it took: {st}")
+    check(r.c.stats["disarm_all"] == 1, "counted")
+    lines = [m for k, m in r.log.events if k == "disarm-all"]
+    check(len(lines) == 1 and "front row" in lines[0]
+          and "cat-walk" in lines[0] and "fresh arm cycle" in lines[0],
+          f"one journal line naming what was armed: {lines}")
+    # The deck never stops asking (nobody touched the keys): nothing comes
+    # back, however long, and well past the dwell.
+    r.wait(3.0)
+    check(r.safety(0) == 0 and r.safety(1) == 0,
+          "still asking for arm, 3 s later: still disarmed")
+    check(r.group(0)["reason"] == composer.ABORT_DISARMED,
+          f"and still says why: {r.group(0)}")
+    # A genuine cycle of group 0 only: down, then up.
+    r.inp.set(0, on=False)
+    r.step(n=2)
+    r.inp.set(0)
+    r.wait(1.2)                   # the operator's own disarm starts a dwell
+    check(r.safety(0) == ARM,
+          f"a fresh genuine cycle re-arms that group: {r.group(0)}")
+    check(r.group(0)["reason"] == "" and r.safety(1) == 0
+          and r.group(1)["reason"] == composer.ABORT_DISARMED,
+          f"and only that group: {r.group(0)} {r.group(1)}")
+    # Once re-armed, the Abort is history for that group: a later,
+    # unrelated loss of the latch (the arm input restarting) says what
+    # really happened, not "the show's Abort".
+    r.inp.reboot()
+    r.step()
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "cycle the arm",
+          f"a later latch loss is not blamed on the old Abort: "
+          f"{r.group(0)}")
+
+
+def test_disarm_all_dwell_and_pending_edges():
+    section("disarm_all: a cycle straight after the Abort still waits out "
+            "the re-arm dwell, and a consent edge begun before the Abort "
+            "cannot complete after it")
+    r = _two_armed()
+    _disarm(r)
+    r.step()
+    r.inp.set(0, on=False)
+    r.step()
+    r.inp.set(0)
+    r.step()
+    check(r.safety(0) == 0 and r.group(0)["reason"] == "re-arm dwell",
+          f"a cycle straight after the Abort waits out the dwell: "
+          f"{r.group(0)}")
+    r.wait(1.1)
+    check(r.safety(0) == ARM, "and arms once the dwell has passed")
+
+    # A pending edge: group 2 has been reported down while live (consent
+    # set up), the operator's arm press lands on the same tick as the
+    # Abort, after it. It must not arm.
+    r = Rig()
+    r.prove_alive()
+    r.inp.set(2)                  # the "up" half, polled on the next step
+    _disarm(r)                    # ...but the Abort is drained first
+    r.wait(2.0)
+    check(r.safety(2) == 0 and r.group(2)["reason"] == composer.ABORT_DISARMED,
+          f"a down edge seen before the Abort is forgotten by it: "
+          f"{r.group(2)}")
+    # A forced low after the Abort is not a cycle either (round 3's rule
+    # still holds on top of this one).
+    r.inp.set(2, on=False)
+    r.inp.set_forced(2)
+    r.step(n=2)
+    r.inp.set_forced(2, on=False)
+    r.inp.set(2)
+    r.wait(2.0)
+    check(r.safety(2) == 0,
+          f"a FORCED low after the Abort does not complete a cycle: "
+          f"{r.group(2)}")
+
+    # Fix round 1 of PR #34, item 2 (the review's p2 s2/s3): the same edge
+    # begun up to 1 s BEFORE the Abort.  The Stream Deck reports a group
+    # low all through an arm-HOLD (0.6 s), so the low simply carries on
+    # through the Abort, re-proved by every frame after it, and the high
+    # lands when the hold completes.  It must not arm, whenever inside
+    # min_arm_dwell_ms of the Abort the high lands.
+    bad = []
+    for begun in (0.0, 0.1, 0.3, 0.6, 1.0):
+        for after in (0.025, 0.1, 0.3, 0.6, 0.95):
+            r = Rig()
+            r.prove_alive()
+            r.wait(begun)             # the low, reported every tick
+            check(_disarm(r) == "", "the Abort is taken")
+            r.wait(after)             # still low, frames still arriving
+            r.inp.set(2)              # the hold completes
+            r.wait(2.0)
+            if r.safety(2) != 0 or \
+                    r.group(2)["reason"] != composer.ABORT_DISARMED:
+                bad.append((begun, after, r.group(2)))
+    check(not bad, f"a hold begun up to 1 s before the Abort and completed "
+                   f"inside min_arm_dwell_ms after it never arms: {bad}")
+    # The window ends: a low still going on min_arm_dwell_ms after the
+    # Abort is a fresh one, and a press made after that arms as usual.
+    r = Rig()
+    r.prove_alive()
+    _disarm(r)
+    r.wait(1.1)
+    r.inp.set(2)
+    r.step(n=2)
+    check(r.safety(2) == ARM,
+          f"a press after the window arms as usual: {r.group(2)}")
+    # Fix round 2 of PR #34, item 3: every repeat copy of an Abort restarts
+    # the window (ltcplay repeats one Abort after every frame for
+    # frame_stale_ms + 0.25 s).  A high landing 1.3 s after the FIRST copy
+    # but 0.6 s after a repeat is still inside the window, and refused.
+    r = Rig()
+    r.prove_alive()
+    check(_disarm(r, abort_id=7) == "", "the first copy is taken")
+    r.wait(0.7)
+    check(_disarm(r, abort_id=7) == "", "a repeat copy is taken")
+    r.wait(0.6)
+    r.inp.set(2)
+    r.wait(2.0)
+    check(r.safety(2) == 0 and r.group(2)["reason"] == composer.ABORT_DISARMED,
+          f"a repeat copy restarts the window: a hold completing 0.6 s after "
+          f"it is refused, 1.3 s after the first: {r.group(2)}")
+
+
+def test_disarm_all_sequence_and_liveness():
+    section("disarm_all: shares the flame frames' sequence (a same-seq one "
+            "is refused, and it moves the sequence on) and never keeps the "
+            "flame link alive by itself")
+    r = _two_armed()
+    why = _disarm(r, seq=r.seq)
+    check("out of order" in why and r.safety(0) == ARM,
+          f"a disarm_all with the same seq as the last frame is refused: "
+          f"{why!r}")
+    check(_disarm(r) == "", "the next seq is taken")
+    why = r.frame(seq=r.seq)
+    check("out of order" in why,
+          f"and a flame frame reusing that seq is then refused: {why!r}")
+    # Liveness comes from flame frames only.
+    r = _two_armed()
+    r.link_alive = False          # flame frames stop here
+    r.wait(0.3)
+    check(_disarm(r) == "", "0.3 s after the last frame: still taken")
+    r.wait(0.25)                  # 0.55 s after the frame, 0.25 after it
+    check(r.out.status["frames"]["state"] == "stale",
+          f"the link goes stale frame_stale_ms after the last FLAME frame, "
+          f"however recent the disarm_all: {r.out.status['frames']}")
+
+
+def test_link_text_fields_match_whole():
+    section("link: the timecode and the key are matched whole (fix round 1 "
+            "of PR #34, item 9): no trailing newline, ASCII digits only")
+    check(link.valid_key(KEY) and not link.valid_key(KEY + "\n"),
+          "a key with a trailing newline is not a valid key")
+    for tc in ("00:00:01:00\n", "00:00:01:00:00",
+               "٠٠:٠٠:٠١:٠٠"):
+        try:
+            link.decode_flame(link.encode_flame(1, tc, 1.0, 1, [0] * 512,
+                                                KEY), 1, KEY)
+            check(False, f"a frame with timecode {tc!r} was decoded")
+        except link.LinkError as e:
+            check("tc" in str(e), f"timecode {tc!r} refused: {e}")
+    f = link.decode_flame(link.encode_flame(1, "00:00:01:00", 1.0, 1,
+                                            [0] * 512, KEY), 1, KEY)
+    check(f.timecode == "00:00:01:00", "a plain timecode is still taken")
+
+
+def test_disarm_all_can_never_arm():
+    section("disarm_all can only take arm away: a random mix of Aborts and "
+            "an arm input that never genuinely cycles never arms anything")
+    rnd = random.Random(20261002)
+    for trial in range(30):
+        r = Rig()
+        r.inp.set_all(True)          # asking for everything, from boot
+        for step in range(120):
+            x = rnd.random()
+            if x < 0.15:
+                _disarm(r, abort_id=rnd.randint(1, 4))
+            elif x < 0.2:
+                r.inp.set_all(rnd.random() < 0.5)
+                r.inp.forced = [True] * N_GROUPS
+                r.step()
+                r.inp.forced = [False] * N_GROUPS
+                r.inp.set_all(True)
+            r.step()
+            if any(r.safety(i) for i in range(N_GROUPS)):
+                check(False, f"trial {trial} step {step}: a group armed "
+                             f"without a genuine cycle: "
+                             f"{[r.group(i) for i in range(N_GROUPS)]}")
+                return
+    check(True, "never armed")
+    # And with a group really armed, every disarm_all only ever lowers it.
+    r = _two_armed()
+    for k in range(20):
+        _disarm(r, abort_id=1 + k % 3)
+        r.step()
+        check(r.safety(0) == 0 and r.safety(1) == 0,
+              f"disarm_all number {k + 1} left it disarmed")
+
+
+def test_disarm_all_rejections():
+    section("disarm_all: refused unless from the live, locked flame-link "
+            "sender, in order; a refused one changes nothing and is "
+            "journaled once per episode")
+    r = _two_armed()
+    for label, kw in (("another sender", {"sender": ("127.0.0.1", 40999)}),
+                      ("out of order", {"seq": 1}),
+                      ("clock went backwards", {"mono": -5.0})):
+        before = r.c.stats["disarm_all"]
+        why = _disarm(r, **kw)
+        r.step()
+        check(label in why and r.safety(0) == ARM and r.safety(1) == ARM
+              and r.c.stats["disarm_all"] == before,
+              f"{label}: refused ({why!r}), both groups still armed")
+        check(r.out.status["frames"]["last_reject"] == why,
+              "and the reason is in the status frame")
+    check(r.c.stats["disarm_all_rejected"] == 3, "every refusal is counted")
+    why = r.c.disarm_all("not a message", sender=SENDER)
+    check(why and r.c.stats["disarm_all_rejected"] == 4,
+          f"something that is not a DisarmAll is refused: {why!r}")
+    # A rogue flood: one journal line for the whole episode, then one
+    # closing line with the count once it stops.
+    r.wait(5.2)                   # close the episodes the refusals above began
+    r.log.events.clear()
+    for i in range(50):
+        _disarm(r, sender=("127.0.0.1", 41000 + i), seq=10 ** 6 + i)
+        if i % 5 == 0:
+            r.step()
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 1 and "another sender" in rej[0],
+          f"a 50-datagram foreign flood from 50 ports is one line: {rej}")
+    r.wait(2.0)
+    check(len([k for k, _ in r.log.events if k == "link-reject"]) == 1,
+          "a 2 s pause does not end the episode (5 s does)")
+    r.wait(3.2)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 2 and "stopped after 50" in rej[1]
+          and "50 distinct source addresses" in rej[1],
+          f"and one more when it stops, with the count: {rej}")
+    check(r.safety(0) == ARM, "the flood disarmed nothing")
+    # With the flame link stale, there is no sender to take it from.
+    r.link_alive = False
+    r.wait(0.7)
+    why = _disarm(r)
+    check("no live flame link" in why,
+          f"refused with no live flame link: {why!r}")
+
+
+def test_disarm_all_duplicates_journal_once():
+    section("disarm_all: the sender's repeat copies of one Abort are all "
+            "applied but journaled once; a new Abort is a new line")
+    r = _two_armed()
+    for _ in range(3):
+        check(_disarm(r, abort_id=1) == "", "a copy is accepted")
+    r.step()
+    check(len([k for k, _ in r.log.events if k == "disarm-all"]) == 1,
+          "three copies of abort 1: one line")
+    check(r.out.status["disarm_all"]["accepted"] == 3, "all three counted")
+    _disarm(r, abort_id=2)
+    r.step()
+    check(len([k for k, _ in r.log.events if k == "disarm-all"]) == 2,
+          "abort 2: a second line")
+    # Fix round 1 of PR #34, item 4: a restarted ltcplay is a new sender.
+    # Its Abort is a new one even if its id happens to equal the last.
+    r.link_alive = False
+    r.wait(0.7)
+    other = ("127.0.0.1", 41555)
+    check(r.frame(sender=other) == "", "a new sender takes the stale link")
+    check(_disarm(r, abort_id=2, sender=other) == "", "and its Abort is taken")
+    check(len([k for k, _ in r.log.events if k == "disarm-all"]) == 3,
+          "the same id from a new sender: a new line")
+
+
+def test_flame_link_rejections_journal_once_per_episode():
+    section("flame link: rejected flame frames are journaled once per "
+            "episode per kind of reason, with a closing count")
+    r = Rig()
+    r.prove_alive()
+    r.log.events.clear()
+    for i in range(30):
+        r.frame(sender=("127.0.0.1", 42000 + i), seq=10 ** 6 + i)
+    r.c.reject_frame("wrong key")
+    r.c.reject_frame("wrong key")
+    r.c.reject_frame("wrong contract version 9, this program speaks 2")
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 3 and "another sender" in rej[0]
+          and "wrong key" in rej[1] and "wrong contract version" in rej[2],
+          f"one line per kind: {rej}")
+    r.wait(5.2)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 5 and any("stopped after 30" in m for m in rej)
+          and any("stopped after 2" in m for m in rej),
+          f"after 5 s quiet, closing lines only for reasons that repeated: "
+          f"{rej}")
+    # Text a sender controls never opens a new episode: a `v` nested in
+    # lists to a different depth each time is a different MESSAGE straight
+    # out of the real decoder, but one REASON.
+    r.wait(5.2)
+    r.log.events.clear()
+    msgs = set()
+    for depth in range(1, 61):
+        bad = json.dumps({"v": json.loads("[" * depth + "]" * depth),
+                          "k": KEY, "t": "flame"}).encode()
+        try:
+            link.decode_from_ltcplay(bad, 1, KEY)
+        except link.LinkError as e:
+            msgs.add(str(e))
+            r.c.reject_frame(str(e), sender=("127.0.0.1", 43000 + depth))
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(msgs) == 60 and len(rej) == 1
+          and "wrong contract version" in rej[0],
+          f"60 different messages, one reason, one line: {len(msgs)} "
+          f"messages, {rej}")
+    long = "wrong key" + "x" * 5000
+    r.wait(5.2)
+    r.log.events.clear()
+    r.c.reject_frame(long)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 1 and len(rej[0]) < 600,
+          f"a sender's long text is cut short in the line: {len(rej[0])}")
+    # And the per-minute cap: episodes one after another, each opened and
+    # closed, never write more than 4 lines for one reason in a minute.
+    # (60 s first: since #31's round 5 there is also a cap of 8 lines a
+    # minute across all reasons, and the lines above would use it up.)
+    r.wait(60.5)
+    r.log.events.clear()
+    for _ in range(6):
+        r.c.reject_frame("tc is not HH:MM:SS:FF or null")
+        r.c.reject_frame("tc is not HH:MM:SS:FF or null")
+        r.wait(5.2)
+    rej = [m for k, m in r.log.events if k == "link-reject"]
+    check(len(rej) == 4, f"6 episodes in 31 s: 4 lines, the cap: {rej}")
+
+
+def test_disarm_all_over_loopback():
+    section("disarm_all over real UDP into a real Service: disarmed on the "
+            "tick it arrives, and refused from another socket or a wrong "
+            "key")
+    node = _udp()
+    ltc_status = _udp()
+    lp_sock = _udp()
+    lp = lp_sock.getsockname()[1]
+    lp_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    log = Log()
+    inp = arminput.ScriptedArmInput(cfg.n, names=NAMES)
+    svc = Service(cfg, inp, clock=lambda: t[0], log=log)
+    svc.open()
+    ltc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    seq = [0]
+
+    def nxt():
+        seq[0] += 1
+        return seq[0]
+
+    def frame():
+        ltc.sendto(link.encode_flame(nxt(), "00:00:01:00", t[0], 1,
+                                     [0] * 512, KEY), ("127.0.0.1", lp))
+
+    def tick():
+        t[0] += cfg.tick_period_s
+        frame()
+        time.sleep(0.004)
+        return svc.run_once()
+
+    try:
+        for _ in range(3):
+            tick()
+        inp.set(0, 1)
+        out = tick()
+        check(out.universe[400] == ARM and out.universe[401] == ARM,
+              "setup: two groups armed through a real Service")
+        rogue.sendto(link.encode_disarm_all(10 ** 6, t[0], 1, "Abort", KEY),
+                     ("127.0.0.1", lp))
+        ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort",
+                                          "wrong-key-wrong-key-x"),
+                   ("127.0.0.1", lp))
+        out = tick()
+        check(out.universe[400] == ARM and out.universe[401] == ARM,
+              "a disarm_all from another socket, or with the wrong key from "
+              "the right one, disarms nothing")
+        check(svc.composer.stats["disarm_all_rejected"] == 1
+              and svc.composer.stats["frames_rejected"] >= 1,
+              f"both refused and counted: {svc.composer.stats}")
+        kinds = [m for k, m in log.events if k == "link-reject"]
+        check(any("another sender" in m for m in kinds)
+              and any("wrong key" in m for m in kinds),
+              f"both journaled: {kinds}")
+        ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort", KEY),
+                   ("127.0.0.1", lp))
+        time.sleep(0.01)
+        t[0] += cfg.tick_period_s
+        out = svc.run_once()
+        check(out.universe[400] == 0 and out.universe[401] == 0,
+              "the real ltcplay's disarm_all takes every group off the wire "
+              "on the tick it arrives in")
+        s = link.decode_status(_drain(ltc_status)[-1], KEY)
+        check(s["disarm_all"]["last_id"] == 1
+              and s["groups"][0]["reason"] == composer.ABORT_DISARMED,
+              f"the status frame on the wire says so: {s['disarm_all']} "
+              f"{s['groups'][0]}")
+    finally:
+        svc.close()
+        ltc.close()
+        rogue.close()
+        node.close()
+        ltc_status.close()
+
+
 def test_the_wall_from_this_side():
     section("the wall: nothing in flamesafe imports ltcplay")
     loaded = sorted(m for m in sys.modules if m.split(".")[0] == "ltcplay")
@@ -3773,6 +4312,16 @@ if __name__ == "__main__":
     test_review2_keys()
     test_link_loss_disarms_every_group()
     test_review3_link_loss_is_one_line_and_the_return_is_one_line()
+    test_disarm_all_link_decoding()
+    test_disarm_all_disarms_every_group_and_needs_a_fresh_cycle()
+    test_disarm_all_dwell_and_pending_edges()
+    test_disarm_all_sequence_and_liveness()
+    test_link_text_fields_match_whole()
+    test_disarm_all_can_never_arm()
+    test_disarm_all_rejections()
+    test_disarm_all_duplicates_journal_once()
+    test_flame_link_rejections_journal_once_per_episode()
+    test_disarm_all_over_loopback()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

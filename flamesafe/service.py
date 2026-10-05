@@ -24,7 +24,7 @@ import time
 
 from . import rules
 from .composer import Composer, now
-from .link import LinkError, decode_flame, encode_status
+from .link import DisarmAll, LinkError, decode_from_ltcplay, encode_status
 from .sacn import build_packet
 
 # Datagrams drained per tick.  A flood beyond this waits for the next tick
@@ -165,12 +165,18 @@ class Service:
             except OSError:
                 return
             try:
-                frame = decode_flame(data, self.cfg.universe,
-                                     self.cfg.link_key)
+                msg = decode_from_ltcplay(data, self.cfg.universe,
+                                          self.cfg.link_key)
             except LinkError as e:
-                self.composer.reject_frame(str(e))
+                self.composer.reject_frame(str(e), sender=tuple(addr[:2]))
                 continue
-            self.composer.ingest_frame(frame, sender=tuple(addr[:2]))
+            if isinstance(msg, DisarmAll):
+                # The show program's Abort (CONTRACT.md, disarm_all).
+                # Applied here, before this tick composes, so every group
+                # is off the wire on the tick it arrived in.
+                self.composer.disarm_all(msg, sender=tuple(addr[:2]))
+                continue
+            self.composer.ingest_frame(msg, sender=tuple(addr[:2]))
 
     def _poll_arm(self):
         try:

@@ -6309,6 +6309,11 @@ def test_a_poisoned_portaudio_is_rebuilt():
               "PortAudio was rebuilt before the failures it is meant to follow")
         sd3.poisoned = False
         check(src3._open(), "the input should open once the fault clears")
+        # Closed first, as the supervisor always does before a reopen: the
+        # failing _open below drops its stream reference, and this stream
+        # used to keep decoding on its own thread for the rest of the run,
+        # loading every later timing test (the flame link's on macOS CI).
+        src3._close()
         sd3.unplug()
         was3 = sd3.terminates
         src3._open()
@@ -28260,6 +28265,1371 @@ def test_the_gpl_path_never_loads_the_conductor():
     print("  ok")
 
 
+# ------------------------------------------------ the flame link ----
+# ltcplay/flamelink.py: ltcplay's side of flamesafe/CONTRACT.md's flame
+# link. The unit tests drive it with fakes; the end-to-end test runs the
+# REAL flamesafe as its own process (python -m flamesafe) and talks to it
+# over real loopback UDP, so this process still never imports flamesafe.
+
+# flamesafe's lamp words for a group its Abort disarmed (CONTRACT.md). Not
+# imported (the wall): the test below checks the two files still say it.
+FLAME_ABORT_WORDS = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+
+
+def _fl_key():
+    import secrets
+    # Made up per run: a real key is never written into this repo.
+    return "selftest-" + secrets.token_hex(12)
+
+
+class _FlJournal:
+    def __init__(self):
+        self.lines = []
+
+    def __call__(self, text, **kw):
+        self.lines.append((text, kw))
+
+    def faults(self):
+        return [t for t, kw in self.lines if kw.get("fault")]
+
+    def outcomes(self):
+        return [kw.get("outcome") for _t, kw in self.lines]
+
+
+class _FlSock:
+    """A socket that records what was sent, and fails while `failing`."""
+
+    def __init__(self):
+        self.sent = []
+        self.failing = False
+
+    def sendto(self, data, addr):
+        if self.failing:
+            raise OSError(111, "Connection refused")
+        self.sent.append((data, addr))
+
+    def close(self):
+        pass
+
+
+def test_flame_link_unit():
+    section("flame link: config, what goes in a frame, the wire format, "
+            "zero/release/disarm_all, failing loud, the lock alarm")
+    import json
+    from ltcplay import flamelink as fl
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+
+    # Config. Every refusal is a sentence; the key is read, never built in.
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    c = fl.FlameLinkConfig.parse(good)
+    check((c.ip, c.port, c.universe, c.key, c.send_hz, c.frame_stale_ms)
+          == ("127.0.0.1", 5571, 1, key, 40, 500), "a minimal block parses")
+    for bad in ({**good, "ip": "10.0.0.5"}, {**good, "ip": "localhost"},
+                {k: v for k, v in good.items() if k != "frame_stale_ms"},
+                {**good, "port": 0}, {**good, "port": True},
+                {**good, "universe": 0}, {**good, "key": "short"},
+                {**good, "key": "has a space in it ok"},
+                {**good, "key": key + "\n"},
+                {**good, "frame_stale_ms": 99},
+                {**good, "frame_stale_ms": 2501},
+                {**good, "frame_stale_ms": "500"},
+                {k: v for k, v in good.items() if k != "key"},
+                {**good, "send_hz": 19}, {**good, "send_hz": 101},
+                {**good, "send_hz": 30.0}, {**good, "sendhz": 40}, []):
+        try:
+            fl.FlameLinkConfig.parse(bad)
+            check(False, f"accepted a bad flame link block: {bad!r}")
+        except fl.FlameLinkConfigError as e:
+            check(str(e) and "—" not in str(e) and "–" not in str(e),
+                  f"refused in a sentence with no dashes: {e}")
+    ex = fl.FlameLinkConfig.from_flamesafe_config(
+        os.path.join(here, "flamesafe", "flamesafe.example.json"))
+    check((ex.ip, ex.port, ex.universe) == ("127.0.0.1", 5571, 1)
+          and ex.key == fl.EXAMPLE_KEY,
+          "flamesafe's own example config gives the link's address, "
+          "universe and key, read as plain JSON")
+    # Fix round 2, item 1 (the review's p11): flamesafe's OWN frame_stale_ms
+    # is carried through, so the Abort repeats long enough for the real
+    # flamesafe; and a flame_link block without it is refused above.
+    import json as _json
+    import tempfile as _tf
+    exd = _json.load(open(os.path.join(here, "flamesafe",
+                                       "flamesafe.example.json"),
+                          encoding="utf-8"))
+    exd["frame_stale_ms"] = 2500
+    tmpd = _tf.mkdtemp()
+    try:
+        p = os.path.join(tmpd, "flamesafe.json")
+        _json.dump(exd, open(p, "w", encoding="utf-8"))
+        c25 = fl.FlameLinkConfig.from_flamesafe_config(p)
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmpd, ignore_errors=True)
+    check(c25.frame_stale_ms == 2500 and c25.abort_repeat_s == 2.75,
+          f"flamesafe's frame_stale_ms 2500 is read from its config: the "
+          f"Abort repeats {c25.abort_repeat_s} s")
+    check(ex.frame_stale_ms == 500,
+          f"and the example config's 500: {ex.frame_stale_ms}")
+    check(fl.FlameLinkConfig("127.0.0.1", 5571, 1, key).frame_stale_ms
+          == 2500, "a config built in code without it assumes the largest "
+                   "frame_stale_ms flamesafe accepts, never a short one")
+    src = open(os.path.join(here, "ltcplay", "flamelink.py"),
+               encoding="utf-8").read()
+    check(src.count(fl.EXAMPLE_KEY) == 1 and "EXAMPLE_KEY = " in src,
+          "the only key written in flamelink.py is the example key, kept "
+          "only to warn about it")
+
+    # A link on fakes.
+    t = [100.0]
+    j = _FlJournal()
+    state = {"tc": "00:00:10:00", "live": True}
+    cues = {"v": None}
+
+    def provider(tc):
+        v = cues["v"]
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    link = fl.FlameLink(fl.FlameLinkConfig.parse(good), cues=provider,
+                        show_state=lambda: (state["tc"], state["live"]),
+                        journal=j, clock=lambda: t[0])
+    sock = _FlSock()
+    link._sock = sock
+    fire = [0] * 512
+    fire[410] = 200
+
+    def last():
+        return json.loads(sock.sent[-1][0])
+
+    check(link.zeroed, "a new link starts with its cues zeroed")
+    cues["v"] = fire
+    link.send_frame()
+    f = last()
+    check(set(f) == {"v", "k", "t", "seq", "tc", "mono", "universe",
+                     "values"} and f["v"] == 2 and f["k"] == key
+          and f["t"] == "flame" and f["universe"] == 1
+          and len(f["values"]) == 512 and f["tc"] == "00:00:10:00"
+          and isinstance(f["mono"], float),
+          f"a flame frame is exactly CONTRACT.md's: {sorted(f)}")
+    check(sock.sent[-1][1] == ("127.0.0.1", 5571), "sent to flamesafe")
+    check(not any(f["values"]), "zeroed: all zeros though the cue has fire")
+    check(link.release() is True, "release() answers True with the link open")
+    link.send_frame()
+    check(last()["values"][410] == 200, "released and live: the cue goes out")
+    for what, setup in (
+            ("not live (held, stopped or fading)",
+             lambda: state.update(live=False)),
+            ("no timecode", lambda: state.update(tc=None)),
+            ("a timecode that is not HH:MM:SS:FF",
+             lambda: state.update(tc="10 seconds")),
+            ("a timecode with a trailing newline",
+             lambda: state.update(tc="00:00:10:00\n")),
+            ("a timecode with something after it",
+             lambda: state.update(tc="00:00:10:00:00")),
+            ("a timecode in non-ASCII digits",
+             lambda: state.update(tc="٠٠:٠٠:١"
+                                     "٠:٠٠")),
+            ("live given as something other than True",
+             lambda: state.update(live=1)),
+            ("the provider raised", lambda: cues.update(v=RuntimeError("x"))),
+            ("the provider answered 511 values",
+             lambda: cues.update(v=fire[:511])),
+            ("the provider answered a 256", lambda: cues.update(
+                v=[256] + [0] * 511)),
+            ("the provider answered a bool", lambda: cues.update(
+                v=[True] + [0] * 511)),
+            ("the provider answered None", lambda: cues.update(v=None))):
+        state.update(tc="00:00:10:00", live=True)
+        cues["v"] = fire
+        setup()
+        link.send_frame()
+        check(not any(last()["values"]), f"{what}: all zeros")
+    state.update(tc="00:00:10:00", live=True)
+    cues["v"] = fire
+    link.send_frame()
+    check(last()["values"][410] == 200, "and back once it clears")
+    probs = [t_ for t_, kw in j.lines if kw.get("outcome") == "cues_zero"]
+    check(len(probs) == 2 and "raised" in probs[0] and "512" in probs[1],
+          f"each kind of provider problem is one fault line, not one per "
+          f"frame: {probs}")
+    check("cues_back" in [kw.get("outcome") for _t, kw in j.lines],
+          "and its end is a line")
+    link.send_frame()
+    link.send_frame()
+    check(len([1 for _t, kw in j.lines if kw.get("outcome") == "cues_zero"])
+          == 2, "a healthy frame writes nothing")
+    state["tc"] = None
+
+    def bad_state():
+        raise RuntimeError("clock gone")
+    link.show_state = bad_state
+    link.send_frame()
+    check(not any(last()["values"]) and last()["tc"] is None,
+          "a show state that raises: zeros, no timecode")
+    link.show_state = lambda: (state["tc"], state["live"])
+
+    # seq and mono: up by one per datagram, mono never backwards, even when
+    # the clock steps back.
+    seqs = [json.loads(d)["seq"] for d, _a in sock.sent]
+    check(seqs == list(range(seqs[0], seqs[0] + len(seqs))),
+          "seq goes up by one per datagram")
+    t[0] = 50.0
+    link.send_frame()
+    check(last()["mono"] >= 100.0, "mono never goes backwards")
+    t[0] = 101.0
+
+    # zero(): sends a zero frame at once.
+    n = len(sock.sent)
+    check(link.zero() is True and len(sock.sent) == n + 1
+          and not any(last()["values"]) and link.zeroed,
+          "zero() sends one all-zero frame at once and stays zeroed")
+
+    # disarm_all: a zero frame, then the copies, one abort id, own seqs.
+    link.release()
+    n = len(sock.sent)
+    check(link.disarm_all("Abort from the rack screen") is True,
+          "disarm_all answers True when it went out")
+    sent = [json.loads(d) for d, _a in sock.sent[n:]]
+    check(len(sent) == 1 + fl.DISARM_COPIES and sent[0]["t"] == "flame"
+          and not any(sent[0]["values"]),
+          "first a zero flame frame, then the disarm copies")
+    d = sent[1:]
+    aid1 = link.abort_id
+    check(all(set(x) == {"v", "k", "t", "seq", "mono", "id", "reason"}
+              and x["t"] == "disarm_all" and x["k"] == key and x["v"] == 2
+              and x["id"] == aid1
+              and x["reason"] == "Abort from the rack screen"
+              for x in d), f"each copy is exactly CONTRACT.md's: {d[0]}")
+    check([x["seq"] for x in sent] == list(range(sent[0]["seq"],
+                                                 sent[0]["seq"] + len(sent))),
+          "every datagram, flame or disarm, takes the next seq")
+    check(link.zeroed, "and the cues stay zero until a new release()")
+    check(fl.DISARM_COPIES == 3 and fl.SEND_HZ_DEFAULT == 40
+          and fl.LOCK_ALARM_S == 1.0 and fl.CONFIRM_S == 1.0,
+          "the flame link's constants are pinned: changing one is a "
+          "decision, made here on purpose")
+    link.disarm_all("x" * 500 + "\n")
+    d2 = json.loads(sock.sent[-1][0])
+    check(d2["id"] == aid1 + 1 and len(d2["reason"]) <= 200,
+          "a new Abort is a new id; a long reason is cut to the contract")
+
+    # Sends that fail: one line when it starts, one when it ends. (First
+    # let the Abort's repeat window run out, so each pass is one datagram.)
+    t[0] += 1.0
+    link.send_frame()
+    check(link._abort_repeat is None, "the Abort's repeat window ends")
+    j.lines.clear()
+    sock.failing = True
+    for _ in range(20):
+        check(link.send_frame() is False, "a failed send answers False") \
+            if _ == 0 else link.send_frame()
+    check(link.zero() is False, "zero() answers False when it did not go out")
+    check(link.disarm_all("Abort") is False,
+          "disarm_all answers False when nothing went out")
+    fails = [t_ for t_, kw in j.lines if kw.get("outcome") == "send_failed"]
+    check(len(fails) == 1 and "Connection refused" in fails[0],
+          f"one line for the whole outage: {fails}")
+    check(any(kw.get("outcome") == "disarm_failed" and kw.get("fault")
+              for _t, kw in j.lines),
+          "a disarm that did not go out is its own fault line")
+    t[0] += 3.0
+    sock.failing = False
+    link.send_frame()
+    rec = [t_ for t_, kw in j.lines if kw.get("outcome") == "send_recovered"]
+    check(len(rec) == 1 and "3.0 s" in rec[0] and "25 frame" in rec[0],
+          f"and one when it ends, with how long and how many: {rec}")
+    check(link.send_errors == 25 and link.snapshot()["sending_ok"],
+          "the count stays; the snapshot says sending is fine again")
+
+    # The lock alarm: flamesafe's last accepted seq not ours for > 1 s.
+    j.lines.clear()
+    ok = {"frames": {"seq": link.seq}}
+    check(link.note_status(ok) == "", "our own seq: no alarm")
+    rogue = {"frames": {"seq": link.seq + 10 ** 6}}
+    link.note_status(rogue)
+    t[0] += 0.9
+    check(link.note_status(rogue) == "", "not ours for 0.9 s: no alarm yet")
+    t[0] += 0.2
+    check("not one this program sent" in link.note_status(rogue),
+          "not ours for over 1 s: the alarm")
+    link.note_status(rogue)
+    check(len([1 for _t, kw in j.lines if kw.get("outcome") == "lock_alarm"])
+          == 1, "journaled once")
+    link.note_status({"frames": {"seq": None}})
+    check(link.lock_alarm, "a status with no seq at all is not ours either")
+    link.note_status(ok)
+    check(link.lock_alarm == "" and "lock_back" in j.outcomes(),
+          "clears, with a line, when ours again")
+
+    # The disarm confirmation.
+    j.lines.clear()
+    link.release()
+    link.disarm_all("Abort")
+    aid = link.abort_id
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid - 1}})
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid + 1}})
+    check(link._pending_abort is not None,
+          "another Abort's id, larger or smaller, does not confirm this one")
+    t[0] += 1.5
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid - 1}})
+    check("disarm_unconfirmed" in j.outcomes()
+          and link.snapshot()["disarm_unconfirmed"],
+          "not confirmed by flamesafe after 1 s: a fault")
+    link.note_status({"frames": {"seq": link.seq},
+                      "disarm_all": {"last_id": aid}})
+    check("disarm_confirmed" in j.outcomes()
+          and not link.snapshot()["disarm_unconfirmed"],
+          "confirmed late: said so")
+    check(link.note_status("garbage") == "", "a garbage status never raises")
+
+    # Status frames: only ours.
+    good_st = json.dumps({"v": 2, "t": "status", "k": key}).encode()
+    check(fl.decode_status(good_st, key) is not None, "our status decodes")
+    for bad in (json.dumps({"v": 2, "t": "status", "k": "other"}).encode(),
+                json.dumps({"v": 1, "t": "status", "k": key}).encode(),
+                json.dumps({"v": 2, "t": "flame", "k": key}).encode(),
+                b"\xff", b"[]", None):
+        check(fl.decode_status(bad, key) is None,
+              f"not our status frame: {bad!r}")
+
+    # The example key is a fault line at open.
+    j2 = _FlJournal()
+    l2 = fl.FlameLink(fl.FlameLinkConfig.parse({**good,
+                                                "key": fl.EXAMPLE_KEY}),
+                      journal=j2)
+    l2.open()
+    check("example_key" in j2.outcomes() and j2.faults(),
+          "the repo's example key is a fault line at open")
+    l2.stop()
+    check(l2.zero() is False and l2.release() is False,
+          "a stopped link says its calls did not go out")
+
+    # audio_master_state on a stand-in clock.
+    class Clk:
+        playing, paused, _halting, last_sent = True, False, False, (0, 1, 2, 3)
+    clk = Clk()
+    st = fl.audio_master_state(lambda: clk)
+    check(st() == ("00:01:02:03", True), f"a playing clock is live: {st()}")
+    clk.paused = True
+    check(st() == ("00:01:02:03", False), "paused (or fading into it): not "
+                                          "live")
+    clk.paused, clk._halting = False, True
+    check(st()[1] is False, "fading out on an Abort: not live")
+    clk._halting, clk.playing = False, False
+    check(st() == (None, False), "stopped: no timecode, not live")
+    check(fl.audio_master_state(lambda: None)() == (None, False),
+          "no clock: not live")
+
+    # The lamp words, in flamesafe and on the deck, without importing either
+    # side into the other.
+    comp = open(os.path.join(here, "flamesafe", "composer.py"),
+                encoding="utf-8").read()
+    contract = open(os.path.join(here, "flamesafe", "CONTRACT.md"),
+                    encoding="utf-8").read()
+    check(FLAME_ABORT_WORDS in comp and FLAME_ABORT_WORDS in contract,
+          "the abort lamp words are the same in composer.py and CONTRACT.md")
+    from ltcplay import streamdeck as sd
+    look = sd.group_look({"armed": "held", "reason": FLAME_ABORT_WORDS,
+                          "amber": "flashing", "dwell_s": 0})
+    check(look[0] == "ABORTED" and look[4] is True,
+          f"the deck shows ABORTED, flashing (cycle the arm): {look}")
+    print("  ok")
+
+
+class _FlBadSock(_FlSock):
+    """sendto raises something that is not an OSError while `mode` says
+    so: "raise" an ordinary exception, "die" a BaseException."""
+
+    class Die(BaseException):
+        pass
+
+    def __init__(self):
+        super().__init__()
+        self.mode = None
+
+    def sendto(self, data, addr):
+        if self.mode == "raise":
+            raise RuntimeError("not a socket error")
+        if self.mode == "die":
+            raise self.Die("gone")
+        super().sendto(data, addr)
+
+
+def test_flame_link_fix_round_1():
+    section("flame link, fix round 1 of PR #34: the Abort repeats past "
+            "frame_stale_ms, only its own id confirms it, seq and ids start "
+            "at random, a still timecode is zeros, the sender thread "
+            "survives and says so, zero() and disarm_all() never ask the "
+            "providers")
+    import json
+    import threading
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    fire = [0] * 512
+    fire[410] = 200
+
+    def make(clock, sock=None, cfg=None, **kw):
+        lk = fl.FlameLink(fl.FlameLinkConfig.parse({**good, **(cfg or {})}),
+                          clock=clock, **kw)
+        lk._sock = sock if sock is not None else _FlSock()
+        return lk, lk._sock
+
+    def sent(sock, since=0):
+        return [json.loads(d) for d, _a in sock.sent[since:]]
+
+    # -- item 1: one Abort, repeated once per frame past frame_stale_ms ----
+    check(fl.ABORT_REPEAT_MIN_S == 0.75 and fl.TC_STILL_S == 0.1,
+          "the repeat and still-timecode constants are pinned")
+    check(fl.FlameLinkConfig.parse(good).abort_repeat_s == 0.75
+          and fl.FlameLinkConfig.parse(
+              {**good, "frame_stale_ms": 2000}).abort_repeat_s == 2.25,
+          "an Abort repeats for 0.75 s, or 0.25 s past a longer "
+          "frame_stale_ms")
+    t = [100.0]
+    j = _FlJournal()
+    lk, sock = make(lambda: t[0], journal=j)
+    check(lk.disarm_all("Abort from the rack screen") is True, "sent")
+    aid = lk.abort_id
+    line = [x for x, kw in j.lines if kw.get("outcome") == "disarm_sent"]
+    check(len(line) == 1 and "NOT yet confirmed by flamesafe" in line[0]
+          and "repeating it every frame for 0.75 s" in line[0],
+          f"the journal says sent, not done: {line}")
+    check(lk.snapshot()["abort"] == "sent, not yet confirmed by flamesafe",
+          f"and so does the snapshot: {lk.snapshot()['abort']!r}")
+    copies, flames = [], 0
+    for _ in range(48):                  # 1.2 s at 40 Hz
+        t[0] += 0.025
+        n = len(sock.sent)
+        lk.send_frame()
+        new = sent(sock, n)
+        flames += sum(1 for x in new if x["t"] == "flame")
+        copies += [(t[0] - 100.0, x) for x in new if x["t"] == "disarm_all"]
+    times = [round(tt, 3) for tt, _x in copies]
+    check(flames == 48 and 29 <= len(copies) <= 30
+          and {x["id"] for _tt, x in copies} == {aid}
+          and max(times) <= 0.75 and min(times) == 0.025,
+          f"one copy of the same Abort after every frame for 0.75 s, then "
+          f"none: {len(copies)} copies, {times[:2]}..{times[-2:]}")
+    seqs = [x["seq"] for x in sent(sock)]
+    check(seqs == list(range(seqs[0], seqs[0] + len(seqs))),
+          "every copy takes the next seq")
+    lk.note_status({"frames": {"seq": lk.seq},
+                    "disarm_all": {"last_id": aid}})
+    ok = [x for x, kw in j.lines if kw.get("outcome") == "disarm_confirmed"]
+    check(lk.snapshot()["abort"] == "confirmed by flamesafe" and len(ok) == 1
+          and "late" not in ok[0],
+          f"flamesafe's own status confirms it, and only then is it said: "
+          f"{ok}")
+    # Every immediate copy lost (the review's p6): the repeats carry it.
+    lk2, sock2 = make(lambda: t[0], cfg={"frame_stale_ms": 2000})
+    sock2.failing = True
+    check(lk2.disarm_all("Abort") is False,
+          "nothing went out at once: disarm_all says so")
+    sock2.failing = False
+    got = []
+    for _ in range(100):                 # 2.5 s
+        t[0] += 0.025
+        n = len(sock2.sent)
+        lk2.send_frame()
+        got += [(t[0], x) for x in sent(sock2, n) if x["t"] == "disarm_all"]
+    check(got and {x["id"] for _t, x in got} == {lk2.abort_id}
+          and got[-1][0] - got[0][0] > 2.0,
+          f"...and the same Abort still reaches flamesafe on the next "
+          f"frames, for longer than its frame_stale_ms: {len(got)} copies")
+
+    # -- items 3 and 4: random starts; only this Abort's id confirms it ----
+    a, _sa = make(time.perf_counter)
+    b, _sb = make(time.perf_counter)
+    check(min(a.seq, b.seq, a.abort_id, b.abort_id) >= fl.RANDOM_START_MIN
+          and a.seq != b.seq and a.abort_id != b.abort_id,
+          f"seq and abort ids start at a random large number per link: "
+          f"{a.seq} {b.seq} {a.abort_id} {b.abort_id}")
+    # A rogue holding flamesafe's lock, counting up from 1 like any fresh
+    # sender (the review's p4 a20): its seq is never "ours".
+    t5 = [0.0]
+    j5 = _FlJournal()
+    lk5, _s5 = make(lambda: t5[0], journal=j5)
+    alarm = ""
+    for i in range(30):
+        t5[0] += 0.05
+        lk5.send_frame()
+        alarm = lk5.note_status({"frames": {"seq": 2 + i}}) or alarm
+    check("not one this program sent" in alarm
+          and "lock_alarm" in j5.outcomes(),
+          f"a rogue counting from 1 raises the lock alarm: {alarm!r}")
+    # A restarted ltcplay whose Abort flamesafe refused, with flamesafe
+    # still reporting an earlier run's Abort (the review's p4 b).
+    t6 = [0.0]
+    j6 = _FlJournal()
+    lk6, _s6 = make(lambda: t6[0], journal=j6)
+    lk6.disarm_all("Abort from the rack screen")
+    for _ in range(30):
+        t6[0] += 0.05
+        lk6.note_status({"frames": {"seq": 2},
+                         "disarm_all": {"accepted": 12, "last_id": 4}})
+    check(lk6._pending_abort is not None and "disarm_unconfirmed"
+          in j6.outcomes()
+          and lk6.snapshot()["abort"] == "sent but NOT confirmed by flamesafe",
+          f"an earlier run's Abort never confirms this one: "
+          f"{lk6.snapshot()['abort']!r}")
+
+    # -- item 5: a timecode that is not moving is zeros --------------------
+    t7 = [10.0]
+    j7 = _FlJournal()
+    st7 = {"tc": "00:00:10:00"}
+    lk7, s7 = make(lambda: t7[0], journal=j7, cues=lambda tc: fire,
+                   show_state=lambda: (st7["tc"], True))
+    lk7.release()
+
+    def val7():
+        lk7.send_frame()
+        return json.loads(s7.sent[-1][0])["values"][410]
+
+    check(val7() == 200, "a moving show: the cue goes out")
+    t7[0] += 0.05
+    check(val7() == 200, "the same frame 50 ms later: still moving")
+    t7[0] += 0.06
+    check(val7() == 0, "the same frame 110 ms after it last changed: zeros")
+    for _ in range(10):
+        t7[0] += 0.025
+        val7()
+    still = [x for x, kw in j7.lines if kw.get("outcome") == "cues_zero"]
+    check(len(still) == 1 and "has not moved" in still[0],
+          f"one fault line for the whole stall: {still}")
+    st7["tc"] = "00:00:10:01"
+    check(val7() == 200 and "cues_back" in j7.outcomes(),
+          "it moves again: the cue goes out, and that is a line")
+
+    class Frozen:      # the review's p9: a clock thread that stopped
+        playing, paused, _halting, last_sent = True, False, False, (0, 1, 2, 3)
+    t8 = [0.0]
+    lk8, s8 = make(lambda: t8[0], cues=lambda tc: fire,
+                   show_state=fl.audio_master_state(lambda: Frozen()))
+    lk8.release()
+    nz = 0
+    for _ in range(120):               # 3 s at 40 Hz
+        t8[0] += 0.025
+        lk8.send_frame()
+        nz += any(json.loads(s8.sent[-1][0])["values"])
+    check(nz <= 5, f"a frozen AudioMaster: zeros after 0.1 s (5 frames at "
+                   f"40 Hz), not 3 s of "
+                   f"cue ({nz} of 120 frames carried it)")
+
+    # -- item 6: the sender thread survives, and says when it cannot -------
+    class Weird(Exception):
+        def __str__(self):
+            raise RuntimeError("no words")
+
+    def weird_state():
+        raise Weird()
+    j9 = _FlJournal()
+    lk9, s9 = make(time.perf_counter, journal=j9, show_state=weird_state)
+    check(lk9.send_frame() is True and not any(
+        json.loads(s9.sent[-1][0])["values"]),
+          "a show state raising an exception whose str() raises: zeros")
+    check(any("could not be read" in x for x in j9.faults()),
+          f"and a fault line, not a dead sender: {j9.faults()}")
+    j10 = _FlJournal()
+    bad = _FlBadSock()
+    lk10, _s10 = make(time.perf_counter, sock=bad, journal=j10)
+
+    def settle(cond, secs=1.0):
+        end = time.perf_counter() + secs
+        while time.perf_counter() < end and not cond():
+            time.sleep(0.01)
+        return cond()
+    lk10.start()
+    try:
+        check(settle(lambda: len(bad.sent) > 3)
+              and lk10.snapshot()["sender"] == "running"
+              and lk10.snapshot()["sending_ok"],
+              f"running: {lk10.snapshot()['sender']}")
+        bad.mode = "raise"
+        check(settle(lambda: lk10.run_errors > 3)
+              and lk10.snapshot()["sender"] == "failing"
+              and not lk10.snapshot()["sending_ok"],
+              f"a pass that raises: the snapshot says failing: "
+              f"{lk10.snapshot()['sender']}")
+        check(j10.outcomes().count("sender_failed") == 1,
+              f"one line for the episode: {j10.outcomes()}")
+        n = len(bad.sent)
+        bad.mode = None
+        check(settle(lambda: len(bad.sent) > n + 3)
+              and lk10.snapshot()["sender"] == "running"
+              and "sender_recovered" in j10.outcomes(),
+              "the loop carried on, and its recovery is a line")
+        bad.mode = "die"
+        check(settle(lambda: lk10.snapshot()["sender"] == "dead")
+              and not lk10.snapshot()["sending_ok"]
+              and "sender_dead" in j10.outcomes(),
+              f"a thread that ends without stop(): dead, and journaled: "
+              f"{lk10.snapshot()['sender']} {j10.outcomes()}")
+    finally:
+        bad.mode = None
+        lk10.stop()
+
+    # -- item 7: zero() and disarm_all() never ask the providers -----------
+    t11 = [0.0]
+    calls = [0]
+    st11 = {"n": 0, "zero_inside": False}
+
+    def state11():
+        calls[0] += 1
+        st11["n"] += 1
+        return (f"00:00:{st11['n'] // 25 % 60:02d}:{st11['n'] % 25:02d}",
+                True)
+
+    def cues11(tc):
+        if st11["zero_inside"]:
+            # A zero() and then a release() land while this frame's cues
+            # are being read: the frame was read before the zero, so it
+            # must not go out with those values, released or not.
+            st11["zero_inside"] = False
+            lk11.zero()
+            lk11.release()
+        return fire
+    lk11, s11 = make(lambda: t11[0], show_state=state11, cues=cues11)
+    lk11.release()
+    lk11.send_frame()
+    check(json.loads(s11.sent[-1][0])["values"][410] == 200,
+          "released, live, moving: the cue goes out")
+    c0, n0 = calls[0], len(s11.sent)
+    lk11.zero()
+    f = sent(s11, n0)
+    check(calls[0] == c0 and len(f) == 1 and not any(f[0]["values"]),
+          "zero()'s own frame is zeros and asked no provider")
+    lk11.release()
+    lk11.send_frame()
+    c0, n0 = calls[0], len(s11.sent)
+    lk11.disarm_all("Abort")
+    f = sent(s11, n0)
+    check(calls[0] == c0 and f[0]["t"] == "flame" and not any(f[0]["values"]),
+          "disarm_all's own first frame is zeros and asked no provider")
+    lk11.release()
+    st11["zero_inside"] = True
+    n0 = len(s11.sent)
+    lk11.send_frame()
+    f = [x for x in sent(s11, n0) if x["t"] == "flame"]
+    check(len(f) == 2 and not any(f[0]["values"]) and not any(f[1]["values"]),
+          "a frame whose cues were read before a zero() landed goes out as "
+          "zeros, even if a release() followed it")
+    n0 = len(s11.sent)
+    lk11.send_frame()
+    f = [x for x in sent(s11, n0) if x["t"] == "flame"]
+    check(len(f) == 1 and f[0]["values"][410] == 200,
+          "and the next frame, read after the release, carries the cue")
+    # Zeroed, the cue provider is not even asked (send_frame would zero its
+    # answer anyway; not asking it means a broken provider cannot fill the
+    # journal while no show is released).
+    asked = []
+    t13 = [0.0]
+    lk13, s13 = make(lambda: t13[0], cues=lambda tc: asked.append(tc) or fire,
+                     show_state=lambda: (f"00:00:00:{len(s13.sent) % 25:02d}",
+                                         True))
+    for _ in range(5):
+        lk13.send_frame()
+    check(not asked and not any(json.loads(s13.sent[-1][0])["values"]),
+          f"zeroed: zeros, and the cue provider was never asked: {asked}")
+    lk13.release()
+    lk13.send_frame()
+    check(len(asked) == 1, "released: it is asked")
+
+    # A provider that hangs, on the real thread: the Abort does not wait.
+    gate = threading.Event()
+    hang = {"on": False}
+
+    def state12():
+        if hang["on"]:
+            gate.wait(3.0)
+        return (None, False)
+    lk12, _s12 = make(time.perf_counter, show_state=state12)
+    lk12.start()
+    try:
+        time.sleep(0.05)
+        hang["on"] = True
+        time.sleep(0.1)            # the sender thread is now stuck in it
+        t0 = time.perf_counter()
+        ok1 = lk12.disarm_all("Abort from the rack screen")
+        ok2 = lk12.zero()
+        dt = time.perf_counter() - t0
+        check(ok1 and ok2 and dt < 0.5,
+              f"a show state hung for 3 s does not hold up disarm_all() or "
+              f"zero(): {dt:.3f} s")
+    finally:
+        gate.set()
+        lk12.stop()
+    print("  ok")
+
+
+def test_flame_link_fix_round_2():
+    section("flame link, fix round 2 of PR #34: a sender stuck without "
+            "raising reads as stalled and says so once; an Abort voids a "
+            "frame read before it; a resume is not a stuck timecode")
+    import json
+    import threading
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    good = {"port": 5571, "universe": 1, "key": key, "frame_stale_ms": 500}
+    fire = [0] * 512
+    fire[410] = 200
+
+    def settle(cond, secs=2.0):
+        end = time.perf_counter() + secs
+        while time.perf_counter() < end and not cond():
+            time.sleep(0.01)
+        return cond()
+
+    # -- item 2: a provider that blocks without raising (the review's p13)
+    gate = threading.Event()
+    hang = {"on": False}
+    n = {"i": 0}
+
+    def state():
+        if hang["on"]:
+            gate.wait(5.0)
+        n["i"] += 1
+        return (f"00:00:{n['i'] // 25 % 60:02d}:{n['i'] % 25:02d}", True)
+    j = _FlJournal()
+    lk = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state,
+                      journal=j)
+    lk._sock = _FlSock()
+    check(lk.stall_s() == 0.25, f"stalled after half of frame_stale_ms: "
+                                f"{lk.stall_s()}")
+    lk.start()
+    try:
+        check(settle(lambda: len(lk._sock.sent) > 3)
+              and lk.snapshot()["sender"] == "running", "running at first")
+        hang["on"] = True
+        check(settle(lambda: lk.snapshot()["sender"] == "stalled"),
+              f"a provider blocking without raising: stalled: "
+              f"{lk.snapshot()['sender']}")
+        check(not lk.snapshot()["sending_ok"], "and sending_ok is False")
+        time.sleep(0.6)
+        check(j.outcomes().count("sender_stalled") == 1
+              and any("no flame frame" in t for t in j.faults()),
+              f"journaled once for the episode, as a fault: {j.outcomes()}")
+        hang["on"] = False
+        gate.set()
+        check(settle(lambda: lk.snapshot()["sender"] == "running")
+              and settle(lambda: "sender_unstalled" in j.outcomes()),
+              f"frames again: running, and that is a line: {j.outcomes()}")
+    finally:
+        hang["on"] = False
+        gate.set()
+        lk.stop()
+
+    # The journal itself blocking (a stuck console or file write): the
+    # snapshot still answers at once, and says stalled.
+    block = threading.Event()
+    release = threading.Event()
+
+    def stuck_journal(text, **kw):
+        if block.is_set() and "cues are zero" in text:
+            release.wait(5.0)
+    m = {"i": 0}
+
+    def state2():
+        m["i"] += 1
+        return (f"00:00:01:{m['i'] % 25:02d}", True)
+    lk2 = fl.FlameLink(fl.FlameLinkConfig.parse(good), show_state=state2,
+                       cues=lambda tc: "garbage" if block.is_set() else None,
+                       journal=stuck_journal)
+    lk2._sock = _FlSock()
+    lk2.start()
+    lk2.release()
+    try:
+        time.sleep(0.15)
+        block.set()
+        time.sleep(0.5)
+        t0 = time.perf_counter()
+        snap = lk2.snapshot()
+        dt = time.perf_counter() - t0
+        check(snap["sender"] == "stalled" and not snap["sending_ok"]
+              and dt < 0.1,
+              f"a journal call stuck in the sender: the snapshot answers in "
+              f"{dt * 1000:.0f} ms and says {snap['sender']!r}")
+    finally:
+        release.set()
+        lk2.stop()
+
+    # -- item 3 (R33): a disarm_all landing while a frame's cues are read
+    # voids that frame, even if a release() follows it.
+    t3 = [0.0]
+    st3 = {"n": 0, "abort_inside": False}
+
+    def state3():
+        st3["n"] += 1
+        return (f"00:00:{st3['n'] // 25 % 60:02d}:{st3['n'] % 25:02d}",
+                True)
+
+    def cues3(tc):
+        if st3["abort_inside"]:
+            st3["abort_inside"] = False
+            lk3.disarm_all("Abort")
+            lk3.release()
+        return fire
+    lk3 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t3[0],
+                       show_state=state3, cues=cues3)
+    lk3._sock = _FlSock()
+    lk3.release()
+    lk3.send_frame()
+    st3["abort_inside"] = True
+    n0 = len(lk3._sock.sent)
+    lk3.send_frame()
+    flames = [json.loads(d) for d, _a in lk3._sock.sent[n0:]]
+    flames = [x for x in flames if x["t"] == "flame"]
+    check(len(flames) == 2 and not any(flames[-1]["values"]),
+          "a frame whose cues were read before an Abort landed goes out as "
+          "zeros, even if a release() followed it")
+
+    # A resume is not a stuck timecode: with the timecode moving through
+    # the hold, the first live frame after it carries its cue.
+    t4 = [0.0]
+    st4 = {"n": 0, "live": False}
+
+    def state4():
+        return (f"00:00:{st4['n'] // 25 % 60:02d}:{st4['n'] % 25:02d}",
+                st4["live"])
+    lk4 = fl.FlameLink(fl.FlameLinkConfig.parse(good), clock=lambda: t4[0],
+                       show_state=state4, cues=lambda tc: fire)
+    lk4._sock = _FlSock()
+    lk4.release()
+    for _ in range(40):            # a second of a held show, clock moving
+        t4[0] += 0.025
+        st4["n"] += 1
+        lk4.send_frame()
+    st4["live"] = True             # resume: same moment, timecode moving
+    t4[0] += 0.025
+    st4["n"] += 1
+    lk4.send_frame()
+    check(json.loads(lk4._sock.sent[-1][0])["values"][410] == 200,
+          "the first frame after a resume carries the cue")
+    print("  ok")
+
+
+# How long a Stream Deck may take, beyond its arm-hold, to deliver the
+# hold's "wanted" after a press it began before a screen Abort, and still
+# be refused by flamesafe's post-Abort window (fix round 2, item 4; the
+# review's probe p12 found the edge at a 0.45 s deck stall).
+DECK_LATENCY_SLACK_S = 0.3
+
+
+def test_the_deck_arm_hold_fits_inside_the_post_abort_window():
+    section("the Stream Deck's arm-hold is shorter than flamesafe's "
+            "post-Abort window, with room for the deck to be late")
+    # flamesafe refuses, for min_arm_dwell_ms after the last copy of a
+    # screen Abort, a low that was already going on at it. A hold begun
+    # before the Abort completes at most ARM_HOLD_S after it, so it is
+    # refused only while ARM_HOLD_S (plus the deck's own lateness) is
+    # under the SHORTEST dwell flamesafe allows. Read from both files as
+    # text: this process never imports flamesafe (the wall).
+    import re as _re
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_src = open(os.path.join(here, "flamesafe", "config.py"),
+                   encoding="utf-8").read()
+    mm = _re.search(r"^DWELL_MS_MIN, DWELL_MS_MAX = (\d+), (\d+)", cfg_src,
+                    _re.M)
+    check(mm is not None, "flamesafe/config.py still states DWELL_MS_MIN")
+    dwell_min_s = int(mm.group(1)) / 1000.0 if mm else 0.0
+    check(sd.ARM_HOLD_S + DECK_LATENCY_SLACK_S <= dwell_min_s,
+          f"the deck's arm-hold ({sd.ARM_HOLD_S} s) plus "
+          f"{DECK_LATENCY_SLACK_S} s for the deck to be late must fit in "
+          f"flamesafe's shortest re-arm dwell ({dwell_min_s} s), or a hold "
+          f"begun before a screen Abort can arm after it")
+    print("  ok")
+
+
+def test_flame_link_sends_at_its_rate_on_one_socket():
+    section("flame link: a real socket, at send_hz, all from one source "
+            "port, zeros when idle")
+    import json
+    import socket as _so
+    from ltcplay import flamelink as fl
+    rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    rx.bind(("127.0.0.1", 0))
+    rx.settimeout(0.5)
+    cfg = fl.FlameLinkConfig.parse({"port": rx.getsockname()[1],
+                                    "universe": 1, "key": _fl_key(),
+                                    "send_hz": 40, "frame_stale_ms": 500})
+    link = fl.FlameLink(cfg).start()
+    got, srcs = [], set()
+    end = time.perf_counter() + 1.0
+    try:
+        while time.perf_counter() < end:
+            try:
+                d, a = rx.recvfrom(65535)
+            except _so.timeout:
+                break
+            got.append(json.loads(d))
+            srcs.add(a)
+    finally:
+        link.stop()
+        rx.close()
+    check(len(srcs) == 1, f"every frame from ONE socket: {srcs}")
+    check(all(not any(f["values"]) and f["tc"] is None for f in got),
+          "idle, nothing wired: every frame is all zeros with no timecode")
+    # Fix round 1, item 8: this used to say "never more than 50 ms between
+    # frames" of a real thread on a shared machine, and failed at 0.051 s
+    # when the OS was slow to wake it. What the CODE schedules is proved
+    # exactly below, on a fake clock; here the real thread has to keep its
+    # rate (mean gap near 25 ms), keep 95% of its gaps inside the
+    # contract's 50 ms floor, and never leave a gap anywhere near
+    # flamesafe's smallest frame_stale_ms (100 ms), the gap that matters.
+    # The mean, not the median: on Windows a wait lands on a 15.6 ms timer
+    # tick, so the gaps alternate about 31 and 16 ms around a true 25 ms.
+    gaps = sorted(b["mono"] - a["mono"] for a, b in zip(got, got[1:]))
+    mean = sum(gaps) / len(gaps) if gaps else 0
+    p95 = gaps[int(len(gaps) * 0.95)] if gaps else 0
+    # The same calibration as test_pixel_output_frame_jitter: these bounds
+    # only mean anything on a machine that can keep a 25 ms sleep AT ALL.
+    # macOS CI was seen taking 80 to 170 ms over time.sleep(0.025) at this
+    # point in the run; there the fake-clock proof below carries it.
+    import threading as _th
+    sl = []
+    for _ in range(20):
+        w0 = time.perf_counter()
+        time.sleep(0.025)
+        sl.append(time.perf_counter() - w0)
+    fit = sorted(sl)[len(sl) // 2] < 0.035 and max(sl) <= 0.075
+    print(f"  note: {len(got)} frames in 1 s, mean gap {mean * 1000:.1f}ms, "
+          f"95% under {p95 * 1000:.1f}ms, longest "
+          f"{(gaps[-1] if gaps else 0) * 1000:.1f}ms; time.sleep(0.025) here "
+          f"took {min(sl) * 1000:.0f} to {max(sl) * 1000:.0f}ms; "
+          f"{_th.active_count()} threads alive (fit={fit})")
+    check(len(got) > 0, "the real sender thread sent nothing in 1 s")
+    if fit:
+        check(len(got) >= 30, f"about 40 frames in a second, at least the "
+                              f"contract's 20 Hz floor with room: {len(got)}")
+        check(gaps and 0.02 <= mean <= 0.03 and p95 < 0.05 and gaps[-1] < 0.1,
+              f"at its rate on a real thread: mean gap {mean:.4f} s, 95% "
+              f"under {p95:.3f} s, longest {gaps[-1] if gaps else 0:.3f} s "
+              f"(flamesafe's shortest frame_stale_ms is 0.100 s)")
+    else:
+        print("  note: this machine cannot keep a 25 ms sleep right now, so "
+              "the real-thread rate bounds are not applied here; the "
+              "fake-clock schedule check below proves the pacing regardless "
+              "of the machine")
+
+    # The schedule itself, on a fake clock: exactly one period between
+    # frames, and after a stall (the OS late to wake the thread) the next
+    # frame comes straight away and then one period at a time again, never
+    # a burst to catch up.
+    clk = [0.0]
+    late = {50: 0.2}
+
+    class FakeStop:
+        def __init__(self, n):
+            self.n = n
+            self.waits = 0
+
+        def is_set(self):
+            return self.n <= 0
+
+        def set(self):
+            self.n = 0
+
+        def clear(self):
+            pass
+    stop_after = FakeStop(120)
+
+    def fake_sleep(d):
+        stop_after.waits += 1
+        clk[0] += d + late.get(stop_after.waits, 0.0)
+        stop_after.n -= 1
+    paced = fl.FlameLink(cfg, clock=lambda: clk[0], sleep=fake_sleep)
+    psock = _FlSock()
+    paced._sock = psock
+    paced._stop = stop_after
+    paced._run()
+    monos = [json.loads(d)["mono"] for d, _a in psock.sent]
+    pg = [round(b - a, 6) for a, b in zip(monos, monos[1:])]
+    period = 1.0 / 40
+    stall = [g for g in pg if g > period + 1e-6]
+    check(len(monos) >= 100 and len(stall) == 1
+          and abs(stall[0] - (period + 0.2)) < 1e-6
+          and all(abs(g - period) < 1e-6 for g in pg if g not in stall),
+          f"the schedule: one period between frames, the stall once, no "
+          f"burst after it: {sorted(set(pg))}")
+
+
+def test_flame_link_end_to_end_against_the_real_flamesafe():
+    section("flame link end to end: the real flamesafe in its own process, "
+            "the real FlameLink, a deck sending real arm frames, over "
+            "loopback UDP")
+    import json
+    import socket as _so
+    import subprocess
+    import tempfile
+    import threading
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    here = os.path.dirname(os.path.abspath(__file__))
+    key = _fl_key()
+    names = ["front row", "cat-walk", "wave flamer"]
+
+    def free_port():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    node = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    node.bind(("127.0.0.1", 0))
+    status_rx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    status_rx.bind(("127.0.0.1", 0))
+    status_rx.settimeout(0.2)
+    listen, arm = free_port(), free_port()
+    work = tempfile.mkdtemp()
+    cfg_path = os.path.join(work, "flamesafe.json")
+    json.dump({
+        "flamesafe_config": 1, "confirmed": False, "note": "selftest",
+        "universe": 1,
+        "destination": {"ip": "127.0.0.1", "port": node.getsockname()[1]},
+        "link": {"listen_ip": "127.0.0.1", "listen_port": listen,
+                 "status_ip": "127.0.0.1",
+                 "status_port": status_rx.getsockname()[1],
+                 "arm_port": arm, "key": key},
+        "gflame_range": "30-50%", "arm_value": 78,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
+        "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
+        "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]},
+                   {"name": "cat-walk", "safety": 402, "fire": [421]},
+                   {"name": "wave flamer", "safety": 403, "fire": [431]}]},
+        open(cfg_path, "w"))
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "flamesafe",
+                             cfg_path], cwd=here, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+    out_lines = []
+    stop = threading.Event()
+    statuses = []           # (perf_counter, status dict)
+    j = _FlJournal()
+    state = {"live": True}
+    cue = {"v": None}
+    cfg = fl.FlameLinkConfig.from_flamesafe_config(cfg_path)
+    t_show = time.perf_counter()
+
+    def show_tc():
+        # A moving timecode at 30 fps: a still one is zeros (fix round 1,
+        # item 5).
+        n = int((time.perf_counter() - t_show) * 30)
+        return f"00:{n // 1800 % 60:02d}:{n // 30 % 60:02d}:{n % 30:02d}"
+    link = fl.FlameLink(cfg, cues=lambda tc: cue["v"],
+                        show_state=lambda: (show_tc(), state["live"]),
+                        journal=j)
+    deck = {"wanted": [False, False, False], "on": True}
+
+    def read_out():
+        for line in proc.stdout:
+            out_lines.append(line.rstrip())
+
+    def read_status():
+        while not stop.is_set():
+            try:
+                d, _a = status_rx.recvfrom(65535)
+            except (_so.timeout, OSError):
+                continue
+            obj = fl.decode_status(d, key)
+            if obj is not None:
+                statuses.append((time.perf_counter(), obj))
+                link.note_status(obj)
+
+    def run_deck():
+        s = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        seq = 0
+        while not stop.is_set():
+            if deck["on"]:
+                seq += 1
+                s.sendto(sd.encode_arm_frame(seq, deck["wanted"], names, key),
+                         ("127.0.0.1", arm))
+            time.sleep(0.05)
+        s.close()
+
+    def latest():
+        return statuses[-1][1] if statuses else None
+
+    def wait_for(pred, timeout):
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:
+            s = latest()
+            if s is not None:
+                try:
+                    if pred(s):
+                        return s
+                except (KeyError, IndexError, TypeError):
+                    pass
+            time.sleep(0.01)
+        return None
+
+    def armed(s, i):
+        return s["groups"][i]["armed"] == "armed" and \
+            s["groups"][i]["sent_safety"] == 78
+
+    def journal(fragment):
+        return [l for l in out_lines if fragment in l]
+
+    threads = [threading.Thread(target=f, daemon=True)
+               for f in (read_out, read_status, run_deck)]
+    for th in threads:
+        th.start()
+    try:
+        s = wait_for(lambda s: s["heartbeat"] > 0, 10.0)
+        check(s is not None and s["frames"]["state"] == "never",
+              f"the real flamesafe is up, and has had no flame frame yet: "
+              f"{s and s['frames']}")
+        if s is None:
+            print("\n".join(out_lines[-20:]))
+            return
+        link.start()
+        s = wait_for(lambda s: s["frames"]["state"] == "fresh", 3.0)
+        check(s is not None, "flamesafe accepts the real sender's frames")
+        t0 = time.perf_counter()
+        time.sleep(1.0)
+        window = [x for t_, x in statuses if t_ > t0]
+        check(window and all(x["frames"]["state"] == "fresh"
+                             and x["frames"]["rejected"] == 0
+                             for x in window),
+              "a second of zeros keeps the link fresh, nothing rejected")
+        check(link.lock_alarm == "" and link.first_seq is not None
+              and link.first_seq <= latest()["frames"]["seq"] <= link.seq,
+              "the last accepted seq is ours: no lock alarm")
+
+        # The operator arms two groups with a genuine cycle.
+        time.sleep(0.3)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0) and armed(s, 1), 3.0)
+        check(s is not None, f"a genuine deck cycle arms two groups: "
+                             f"{latest()['groups'][:2]}")
+
+        # Cue values: none while zeroed, through once released.
+        fire = [0] * 512
+        fire[410] = 200
+        cue["v"] = fire
+        time.sleep(0.2)
+        check(latest()["groups"][0]["commanded_fire"][0] == 0,
+              "zeroed (no release yet): flamesafe is commanded nothing")
+        link.release()
+        s = wait_for(lambda s: s["groups"][0]["sent_fire"][0] == 200, 2.0)
+        check(s is not None, "released and live: the cue reaches the wire "
+                             "through flamesafe")
+
+        # The show's Abort.
+        hb = latest()["heartbeat"]
+        check(link.disarm_all("Abort from the rack screen") is True,
+              "disarm_all went out")
+        s = wait_for(lambda s: s["heartbeat"] >= hb + 2, 2.0)
+        firsts = [x for _t, x in statuses if x["heartbeat"] >= hb + 2]
+        s = firsts[0] if firsts else None
+        check(s is not None and all(g["sent_safety"] == 0
+                                    and not any(g["sent_fire"])
+                                    for g in s["groups"]),
+              f"within one tick every group is off the wire: "
+              f"{s and [(g['sent_safety'], g['sent_fire']) for g in s['groups']]}")
+        check(s is not None and s["disarm_all"]["last_id"] == link.abort_id
+              and s["groups"][0]["reason"] == FLAME_ABORT_WORDS
+              and s["groups"][0]["amber"] == "flashing",
+              f"and flamesafe says which Abort, and why, on the lamp: "
+              f"{s and (s['disarm_all'], s['groups'][0]['reason'])}")
+        time.sleep(0.1)
+        check(link._pending_abort is None
+              and "disarm_unconfirmed" not in j.outcomes(),
+              "the sender saw flamesafe confirm it")
+
+        # The deck never stopped asking. Nothing comes back by itself, even
+        # with the cues released again (a new show) and well past the dwell.
+        cue["v"] = None
+        link.release()
+        t0 = time.perf_counter()
+        time.sleep(2.0)
+        window = [x for t_, x in statuses if t_ > t0]
+        check(window and not any(g["sent_safety"] for x in window
+                                 for g in x["groups"]),
+              "2 s of the deck still asking: no group re-arms")
+        check(len(journal("disarm-all: the show program's Abort")) == 1,
+              f"flamesafe journaled the Abort once, though it got "
+              f"{fl.DISARM_COPIES} copies: "
+              f"{journal('disarm-all')}")
+
+        # A fresh genuine cycle re-arms that group only.
+        deck["wanted"] = [False, True, False]
+        time.sleep(0.4)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0), 3.0)
+        check(s is not None and not armed(s, 1)
+              and s["groups"][1]["reason"] == FLAME_ABORT_WORDS,
+              f"a fresh genuine cycle re-arms that group, and only that "
+              f"one: {latest()['groups'][:2]}")
+
+        # Fix round 1, item 1 (the review's p6): every one of an Abort's
+        # immediate copies lost. The repeats on the following frames carry
+        # the same Abort, and flamesafe's status confirms it.
+        class DropFirstCopies:
+            def __init__(self, real, n):
+                self.real, self.n = real, n
+
+            def sendto(self, data, addr):
+                if self.n and b'"t":"disarm_all"' in data:
+                    self.n -= 1
+                    return len(data)
+                return self.real.sendto(data, addr)
+
+            def close(self):
+                self.real.close()
+        real_sock = link._sock
+        link._sock = DropFirstCopies(real_sock, fl.DISARM_COPIES)
+        try:
+            link.disarm_all("Abort, its first copies lost")
+            s = wait_for(lambda s: s["disarm_all"]["last_id"] == link.abort_id
+                         and not armed(s, 0), 1.5)
+        finally:
+            link._sock = real_sock
+        check(s is not None, f"every immediate copy lost: the repeats still "
+                             f"disarm: {latest()['disarm_all']}")
+        end = time.perf_counter() + 1.0
+        while time.perf_counter() < end and \
+                link.snapshot()["abort"] != "confirmed by flamesafe":
+            time.sleep(0.02)
+        check(link.snapshot()["abort"] == "confirmed by flamesafe",
+              f"and only flamesafe's own status says it was taken: "
+              f"{link.snapshot()['abort']!r}")
+
+        # Fix round 1, item 2 (the review's p2 s2): an arm-hold begun before
+        # a screen Abort completes after it. The deck kept reporting group
+        # 2 low all through the hold; that low must not count.
+        time.sleep(2.0)            # past that Abort's repeats and window
+        t_ab = time.perf_counter()
+        link.disarm_all("Abort during an arm-hold")
+        time.sleep(0.3)
+        deck["wanted"] = [True, True, True]     # the hold completes
+        time.sleep(2.0)
+        window = [x for t_, x in statuses if t_ > t_ab]
+        check(window and not any(x["groups"][2]["sent_safety"]
+                                 for x in window)
+              and latest()["groups"][2]["reason"] == FLAME_ABORT_WORDS,
+              f"a hold begun before the Abort and finished after it arms "
+              f"nothing: {latest()['groups'][2]}")
+        # A fresh cycle afterwards still works (group 0, for what follows).
+        deck["wanted"] = [False, True, False]
+        time.sleep(0.4)
+        deck["wanted"] = [True, True, False]
+        s = wait_for(lambda s: armed(s, 0), 3.0)
+        check(s is not None, f"and a fresh cycle afterwards re-arms as "
+                             f"before: {latest()['groups'][0]}")
+
+        # A foreign sender with the right key: refused, journaled once.
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        for i in range(20):
+            rogue.sendto(fl.encode_disarm_all(10 ** 7 + i, 1e9, 99, "rogue",
+                                              key), ("127.0.0.1", listen))
+            time.sleep(0.005)
+        time.sleep(0.2)
+        s = latest()
+        check(armed(s, 0) and "another sender" in s["frames"]["last_reject"],
+              f"a disarm_all from another socket is refused: "
+              f"{s['frames']['last_reject']!r} {s['groups'][0]['armed']}")
+        # The wrong key and the wrong version, from the locked socket itself.
+        for i in range(10):
+            link._sock.sendto(fl.encode_disarm_all(
+                link.seq + 1, 1e9, 98, "x", "wrong-" + key),
+                (cfg.ip, cfg.port))
+            d = json.loads(fl.encode_disarm_all(link.seq + 1, 1e9, 97, "x",
+                                                key))
+            d["v"] = 3
+            link._sock.sendto(json.dumps(d).encode(), (cfg.ip, cfg.port))
+            time.sleep(0.005)
+        time.sleep(0.2)
+        check(armed(latest(), 0), "a wrong-key or wrong-version disarm_all "
+                                  "from the locked sender disarms nothing")
+        time.sleep(0.3)
+        t_last_reject = time.perf_counter()
+        check(len(journal(": disarm_all: another sender.")) == 1,
+              f"the foreign disarm_alls: one journal line: "
+              f"{journal('another sender')}")
+        check(len(journal(": wrong key.")) == 1
+              and len(journal(": wrong contract version")) == 1,
+              f"wrong key, wrong version: one line each: "
+              f"{journal('datagram rejected')}")
+        check(latest()["disarm_all"]["last_id"] == link.abort_id,
+              "no refused disarm_all was counted as an Abort")
+        rogue.close()
+
+        # The sender stops: flamesafe fails safe inside frame_stale_ms.
+        t_stop = time.perf_counter()
+        link.stop()
+        s = wait_for(lambda s: s["frames"]["fire"] == "zeroed", 1.0)
+        t_fire = time.perf_counter() - t_stop
+        s = wait_for(lambda s: s["frames"]["state"] == "stale", 2.0)
+        t_stale = time.perf_counter() - t_stop
+        check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
+                                   f"sender stopped (fire_hold_ms 100)")
+        check(s is not None and t_stale < 0.5 + 0.2
+              and all(g["sent_safety"] == 0 for g in s["groups"]),
+              f"link stale and every group disarmed {t_stale:.3f} s after "
+              f"the sender stopped (frame_stale_ms 500)")
+        check(link.disarm_all("Abort") is False,
+              "a disarm_all on a stopped link answers False")
+        # The rejection episodes close after 5 s of quiet (the arm link's
+        # own throttle), each with one line and its count.
+        time.sleep(max(0.0, 5.6 - (time.perf_counter() - t_last_reject)))
+        check(len(journal("(disarm_all: another sender) stopped after 20 "
+                          "rejected")) == 1
+              and len(journal("(wrong key) stopped after 10 rejected")) == 1
+              and len(journal("(wrong contract version) stopped after 10 "
+                              "rejected")) == 1,
+              f"and one closing line per episode with its count: "
+              f"{journal('stopped after')}")
+    finally:
+        stop.set()
+        try:
+            link.stop()
+        except Exception:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except Exception:
+            proc.kill()
+        for th in threads:
+            th.join(2)
+        node.close()
+        status_rx.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_the_gpl_path_never_loads_the_flame_link():
+    section("GPL: the flame link is never imported by the program")
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    top = []
+    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
+        if not name.endswith(".py") or name == "flamelink.py":
+            continue
+        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
+                                      encoding="utf-8"), 1):
+            if re.search(r"\bflamelink\b", line) and \
+                    re.match(r"\s*(from|import)\s", line):
+                top.append(f"{name}:{i}")
+    check(not top, f"the flame link is imported by the program: {top}")
+    r = _sp.run([sys.executable, "-c",
+                 "import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
+                 "print('ltcplay.flamelink' in sys.modules)", here],
+                capture_output=True, text=True, timeout=60)
+    check(r.stdout.strip() == "False",
+          f"loading the program loads no flame link: {r.stdout!r} "
+          f"{r.stderr[-300:]!r}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _TEMPRUN = _TempRun()
@@ -28617,6 +29987,13 @@ if __name__ == "__main__":
     test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
     test_conductor_announcement_after_abort_and_reset()
     test_the_gpl_path_never_loads_the_conductor()
+    test_flame_link_unit()
+    test_flame_link_fix_round_1()
+    test_flame_link_fix_round_2()
+    test_the_deck_arm_hold_fits_inside_the_post_abort_window()
+    test_flame_link_sends_at_its_rate_on_one_socket()
+    test_flame_link_end_to_end_against_the_real_flamesafe()
+    test_the_gpl_path_never_loads_the_flame_link()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

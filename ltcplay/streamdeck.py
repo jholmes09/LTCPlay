@@ -208,6 +208,12 @@ GROUP_KEY_LIMIT = 3         # the deck's bottom row. See module docstring 5.
 # longer than Abort's own 0.5 s -- arming is the escalation, Abort and
 # disarm are the de-escalations, and those have to stay fast -- but short
 # enough that it still reads as "hold this key", not "this key is broken".
+# A SAFETY CONSTANT since PR #34 (fix round 2, item 4): flamesafe refuses a
+# hold begun before a screen Abort only if it completes inside the
+# post-Abort window (min_arm_dwell_ms, never under 1 s, after the last
+# Abort copy). A 2.0 s hold armed at +1.9 s after an Abort in review.
+# selftest's test_the_deck_arm_hold_fits_inside_the_post_abort_window
+# fails if this plus 0.3 s of deck lateness no longer fits.
 ARM_HOLD_S = 0.6
 # After a group's disarm, its key refuses to even START a new arm-hold for
 # this long: a panicked "press it again to be sure" right after Abort or a
@@ -541,6 +547,9 @@ _SHORT_REASON = {
     # link. Hand-copied: this module never imports flamesafe.
     "Another sender is on the arm link: a cycle cannot arm until it "
     "stops. Cycle the arm again once it has gone.": "OTHER SENDER",
+    # The show's Abort from the rack screen or phone (flamesafe's
+    # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
+    "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
 }
 
 

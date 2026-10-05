@@ -20,7 +20,8 @@ import math
 import time
 
 from . import rules
-from .link import FlameFrame, CONTRACT_VERSION
+from .arminput import _RejectJournal
+from .link import DisarmAll, FlameFrame, CONTRACT_VERSION
 
 DISARM = rules.DISARM_VALUE
 FAULT_CLEAR_S = 5.0
@@ -34,6 +35,29 @@ OTHER_SENDER = ("Another sender is on the arm link: a cycle cannot arm "
                 "until it stops. Cycle the arm again once it has gone.")
 LINK_NEVER = ("Show program has not answered yet: disarmed. Cycle the arm "
               "once it is running.")
+# The words on the ARMED lamp of a group the show program's Abort disarmed
+# (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
+# and the only one.  Shown until that group latches again.
+ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# Rejections on the flame link are journaled exactly as the arm link's are
+# (arminput._RejectJournal, round 4 of #31's safety review, item C): one
+# line per REASON when an episode starts, one closing line with the count
+# once that reason has been quiet for EPISODE_QUIET_S (5 s), and never more
+# than 4 lines per reason in any 60 s.  The reason is one of the fixed
+# strings below, never the raw message: decode and refusal messages carry
+# text and numbers the SENDER chose, and a sender varying them must not get
+# a fresh episode, and a fresh line, every datagram.  A refused disarm_all
+# is throttled under its own "disarm_all: <reason>" keys.
+_FLAME_REASONS = ("not bytes", "datagram too long", "not valid JSON",
+                  "not a JSON object", "wrong contract version",
+                  "wrong key", "wrong message type", "seq is not",
+                  "tc is not", "mono is not", "universe",
+                  "values is not", "a channel value", "id is not",
+                  "reason is not", "disarm_all has a field",
+                  "another sender", "out of order",
+                  "sender clock went backwards",
+                  "no live flame link", "wrong length", "not a FlameFrame",
+                  "not a DisarmAll")
 
 
 def now():
@@ -97,6 +121,27 @@ class Composer:
         self._frame_tc = None
         self._frame_sender = None       # (ip, port) locked while live
         self._last_reject = ""
+        # Rejection journaling, the arm link's own throttle (see
+        # _FLAME_REASONS).  Written as kind "link-reject".
+        self._rejects = _RejectJournal(
+            lambda _kind, msg: self._event("link-reject", msg))
+
+        # disarm_all from the show program (CONTRACT.md, 2026-10-02).
+        # _aborted[i] only changes the WORDS on a held group's lamp; it is
+        # never read by anything that decides a safety value.
+        self._aborted = [False] * self.n
+        self._disarm_count = 0          # accepted disarm_all datagrams
+        self._disarm_last_id = None
+        self._disarm_last_key = None    # (id, sender) of the last journaled
+        self._disarm_last_reason = ""
+        self._disarm_at = None
+        # Fix round 1 of PR #34, item 2: True for a group whose low was
+        # already going on when the last disarm_all arrived.  Such a low
+        # cannot be consent within min_arm_dwell_ms of that disarm_all
+        # (assert_arm), so an arm-hold the operator began before a screen
+        # Abort cannot complete after it.  Cleared by a genuine True-to-False
+        # report after the Abort: that low is a new one.
+        self._low_predates_abort = [False] * self.n
 
         # composing
         self._last_sent = [DISARM] * self.n
@@ -118,7 +163,7 @@ class Composer:
             "arm_assertions", "arm_rejected", "overruns", "compose_faults",
             "edge_blocks", "latch_resets", "dwell_blocks", "chatter_holds",
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
-            "link_lost",
+            "link_lost", "disarm_all", "disarm_all_rejected",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -266,6 +311,19 @@ class Composer:
         disturbed = (self._foreign_arm_senders != 0
                      or self._arm_link_flooded)
         consent_ok = advanced and was_live and not disturbed
+        # Fix round 1 of PR #34, item 2: inside min_arm_dwell_ms of an
+        # accepted disarm_all, a low that was already going on at the Abort
+        # is not consent.  The Stream Deck keeps reporting False all through
+        # an arm-HOLD, so without this a hold begun before a screen Abort
+        # re-proved its low on the next frame after it and armed the group
+        # about 0.35 s later with no further operator action (review probe
+        # p2 s2/s3).  The deck's hold is ARM_HOLD_S (0.6 s) and the dwell is
+        # never under 1 s, so every hold begun before the Abort completes
+        # inside this window and is refused.  A low that begins after the
+        # Abort (a True-to-False report) is a new one and counts as before.
+        in_abort_window = (
+            self._disarm_at is not None
+            and (t - self._disarm_at) * 1000.0 < self.cfg.min_arm_dwell_ms)
         if disturbed:
             # And no down edge seen BEFORE the other sender turned up may be
             # finished while it is here: the operator cycles again once it
@@ -280,6 +338,9 @@ class Composer:
                     # either way: a value that just went to zero must not
                     # bounce straight back up, forced or not.
                     self._disarmed_at[i] = t
+                    if not f[i]:
+                        # a genuine low that began after the last Abort
+                        self._low_predates_abort[i] = False
                 # Round 3 of the safety review (item 1): seen_down is the
                 # "the operator pulled this down for real" flag a future
                 # True consumes as consent (just below).  A FORCED low --
@@ -296,8 +357,12 @@ class Composer:
                 # anything, forced or not.
                 self._seen_down[i] = consent_ok and not f[i]
                 self._latched[i] = False
+                if in_abort_window and self._low_predates_abort[i]:
+                    # a low already going on at the Abort (fix round 1)
+                    self._seen_down[i] = False
             elif self._seen_down[i] and consent_ok:
                 self._latched[i] = True
+                self._aborted[i] = False
             self._wanted[i] = w[i]
         return True
 
@@ -373,12 +438,126 @@ class Composer:
         except Exception as e:                          # noqa: BLE001
             self.stats["frames_rejected"] += 1
             self._last_reject = str(e) or type(e).__name__
+            self._note_reject(self._last_reject, sender)
             return self._last_reject
 
-    def reject_frame(self, why):
+    def reject_frame(self, why, sender=None):
         """The link layer could not even decode a datagram."""
         self.stats["frames_rejected"] += 1
         self._last_reject = str(why)
+        self._note_reject(self._last_reject, sender)
+
+    def disarm_all(self, msg, sender=None):
+        """The show program says: disarm every group, now (its Abort).
+        Returns "" if accepted, otherwise the reason it was refused.  Never
+        raises.
+
+        Accepted only from the live, locked flame-link sender, in order,
+        exactly as a flame frame would be: the right key and shape were
+        already checked by link.decode_disarm_all, and here the sender
+        lock, the sequence and the sender's clock are checked against the
+        same record the flame frames use.  With no live flame link there
+        is nothing to accept it from (and nothing armed: link loss already
+        disarmed every group), so it is refused.
+
+        What it does, and all it does: every latch and every pending
+        consent edge (`_seen_down`) is cleared.  It never sets a latch,
+        never sets `_seen_down`, never touches `_wanted` or the dwell: a
+        group comes back only through a fresh, genuine, un-forced
+        low-to-high cycle from the arm input AFTER this message (assert_arm,
+        rule 6), and the low half of that cycle starts the re-arm dwell
+        itself (an armed group's `wanted` was True, so the operator's low is
+        a True-to-False report), so the safety slot cannot rise again within
+        min_arm_dwell_ms of the Abort.  An earlier draft also set the dwell
+        here; mutation testing proved that unobservable (the operator's own
+        low always restarts it later) and it was removed rather than kept
+        as code nothing can tell is there.  It does not refresh the flame
+        link's liveness or its fire values (it carries none).
+
+        Fix round 1 of PR #34, item 2: it also marks every group's current
+        low as one that began before the Abort, and for min_arm_dwell_ms
+        such a low is not consent (assert_arm).  That is the case the
+        dwell does NOT cover: a group that was not armed, whose low the
+        deck kept re-proving all through an arm-hold the operator began
+        before the Abort.  This, too, can only remove arming."""
+        try:
+            if not isinstance(msg, DisarmAll):
+                raise TypeError("not a DisarmAll")
+            t = self._clock()
+            if not self._frame_is_fresh(t):
+                raise ValueError("no live flame link to accept it from")
+            if sender != self._frame_sender:
+                raise ValueError("another sender")
+            if msg.seq <= self._frame_seq:
+                raise ValueError(f"out of order: seq {msg.seq} after "
+                                 f"{self._frame_seq}")
+            if msg.mono < self._frame_mono:
+                raise ValueError("sender clock went backwards")
+        except Exception as e:                          # noqa: BLE001
+            self.stats["disarm_all_rejected"] += 1
+            why = f"disarm_all: {str(e) or type(e).__name__}"
+            self._last_reject = why
+            self._note_reject(why, sender)
+            return why
+        self._frame_seq = msg.seq
+        self._frame_mono = msg.mono
+        was_up = [self._latched[i] or self._last_sent[i] != DISARM
+                  for i in range(self.n)]
+        for i in range(self.n):
+            self._aborted[i] = True
+        self._latched = [False] * self.n
+        self._seen_down = [False] * self.n
+        self.stats["disarm_all"] += 1
+        self._disarm_count += 1
+        self._low_predates_abort = [True] * self.n
+        # Fix round 1 of PR #34, item 4: a new Abort is a new (id, sender)
+        # pair.  ltcplay's abort ids now start at a random number per run,
+        # and a restarted ltcplay is a new sender too, so a second run's
+        # Abort is never mistaken for a repeat copy of the first run's.
+        key = (msg.abort_id, sender)
+        new_abort = key != self._disarm_last_key
+        self._disarm_last_key = key
+        self._disarm_last_id = msg.abort_id
+        self._disarm_last_reason = msg.reason
+        self._disarm_at = t
+        if new_abort:
+            # The sender repeats one Abort on every frame for a while in
+            # case datagrams are lost; each copy is applied (it can only
+            # clear), but only the first is written.
+            up = [g.name for g, u in zip(self.groups, was_up) if u]
+            armed = ("armed until now: " + ", ".join(up)) if up \
+                else "none was armed"
+            self._event("disarm-all",
+                        f"the show program's Abort disarmed every group "
+                        f"({msg.reason}; abort {msg.abort_id}; {armed}). "
+                        f"Each group needs a fresh arm cycle from the "
+                        f"Stream Deck.")
+        return ""
+
+    def _note_reject(self, why, sender=None):
+        """Journal a rejection: once per reason per episode (the arm link's
+        own throttle, _RejectJournal).  Never raises."""
+        try:
+            why = str(why)
+            reason = _flame_reason(why)
+            where = (f" from {sender[0]}:{sender[1]}"
+                     if isinstance(sender, tuple) and len(sender) == 2
+                     else "")
+            if len(why) > 200:          # sender-chosen text, kept short
+                why = why[:200] + "..."
+            self._rejects.note(reason, self._clock(), sender,
+                               f"flame link datagram rejected{where}: {why}.")
+        except Exception:                               # noqa: BLE001
+            pass
+
+    def _close_reject_episodes(self, t):
+        try:
+            self._rejects.sweep(
+                t, lambda reason, addrs, n:
+                f"flame link rejections ({reason}) stopped after {n} "
+                f"rejected, from {addrs}")
+        except Exception:                               # noqa: BLE001
+            pass
 
     def note_fault(self, sentence):
         """Something outside the composer failed (a send, a status write).
@@ -464,6 +643,8 @@ class Composer:
                                          f"clean: {self._fault}")
             self._fault = ""
             self._fault_at = None
+
+        self._close_reject_episodes(t)
 
         # 3. ltcplay's frame.  A fire value is kept on the wire for at most
         # fire_hold_ms after the last accepted frame; after that we know
@@ -647,6 +828,8 @@ class Composer:
             # being refused.
             return (OTHER_SENDER, "steady")
         if not self._latched[i]:
+            if self._aborted[i]:
+                return (ABORT_DISARMED, "flashing")
             return ("cycle the arm", "flashing")
         return ("not composing", "steady")
 
@@ -759,6 +942,13 @@ class Composer:
                 "rejected": self.stats["frames_rejected"],
                 "last_reject": self._last_reject,
             },
+            "disarm_all": {
+                "accepted": self._disarm_count,
+                "last_id": self._disarm_last_id,
+                "last_reason": self._disarm_last_reason,
+                "age_ms": (None if self._disarm_at is None
+                           else int((t - self._disarm_at) * 1000)),
+            },
             "stats": dict(self.stats,
                           journal_dropped=int(getattr(self._log, "dropped",
                                                       0) or 0)),
@@ -772,3 +962,15 @@ class Composer:
             self._log.event(kind, msg)
         except Exception:                               # noqa: BLE001
             pass
+
+
+def _flame_reason(why):
+    """The fixed reason a flame-link rejection is throttled under (see
+    _FLAME_REASONS); a refused disarm_all keeps its own prefix."""
+    pre = ""
+    if why.startswith("disarm_all: "):
+        pre, why = "disarm_all: ", why[len("disarm_all: "):]
+    for r in _FLAME_REASONS:
+        if why.startswith(r):
+            return pre + r
+    return pre + "other"
