@@ -38811,13 +38811,40 @@ def test_screen_arm_end_to_end_probes():
     def status_now():
         return http("/api/remote/status", cookie=andy)[1]
 
+    whys = {}
+
     def hold(group, cookie, seconds, drop_at=None, seen_lag=0.0,
              during=None):
         """Hold like the page: a heartbeat every 100 ms, each after the
-        last answered, with the latest status's served_at."""
+        last answered, with the latest status's served_at. As on the page,
+        the status is polled on its own, never between two heartbeats (a
+        status round trip in the heartbeat loop let a slow macOS runner's
+        holds lapse: the engine lets go after 0.25 s with no beat)."""
         hid, end = None, time.perf_counter() + seconds
         started = time.perf_counter()
+        why = whys.setdefault(group, [])
         answers = []
+        latest = [http("/api/remote/status", cookie=cookie)[1]["served_at"]]
+        polling = threading.Event()
+
+        def poll():
+            while not polling.wait(0.2):
+                try:
+                    latest[0] = http("/api/remote/status",
+                                     cookie=cookie)[1]["served_at"]
+                except Exception:
+                    pass
+        poller = threading.Thread(target=poll, daemon=True)
+        poller.start()
+        try:
+            return _beats(group, cookie, end, started, why, answers, hid,
+                          latest, drop_at, seen_lag, during)
+        finally:
+            polling.set()
+            poller.join(2)
+
+    def _beats(group, cookie, end, started, why, answers, hid, latest,
+               drop_at, seen_lag, during):
         while time.perf_counter() < end:
             if drop_at is not None and \
                     time.perf_counter() - started >= drop_at:
@@ -38825,14 +38852,15 @@ def test_screen_arm_end_to_end_probes():
             if during and time.perf_counter() - started >= during[0]:
                 during[1]()
                 during = None
-            st = http("/api/remote/status", cookie=cookie)[1]
             body = {"group": group,
-                    "seen": st["served_at"] - int(seen_lag * 1000)}
+                    "seen": latest[0] - int(seen_lag * 1000)}
             if hid is not None:
                 body["hold_id"] = hid
             code, out, _h = http("/api/remote/arm-hold", body, cookie)
             answers.append(code)
             if code != 200:
+                why.append((round(time.perf_counter() - started, 2),
+                            out.get("error")))
                 break
             hid = out["hold_id"]
             time.sleep(0.1)
@@ -38874,7 +38902,9 @@ def test_screen_arm_end_to_end_probes():
             time.sleep(sd.REARM_REFRACTORY_S + 0.2)
         check(armed(0), f"P1: a full screen hold armed front row on the "
                         f"wire: {status.last and status.last['groups'][0]}; "
-                        f"the engine's answers to each hold: {tries}")
+                        f"the engine's answers to each hold: {tries}; "
+                        f"why each ended: {whys.get('front row')}; the "
+                        f"deck's lines: {events[-6:]}")
         check(any("arm pressed (held 1 s on the iPad) by Andy" in e
                   for e in events), "and the deck journaled who and where")
         # Disarm it from the page: a tap through the deck.
