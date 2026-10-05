@@ -7198,6 +7198,12 @@ def build():
   '        ok = True'),
 
 
+ # -- review of PR #43: P0-5, the screen Abort's disarm never waits on the tonight.json save --
+ ("review43: the screen Abort's disarm waits on the scheduler's save",
+  'ltcplay/remote.py',
+  '            flames = self._disarm_now(who, screen, "Abort")',
+  '            with self.schedule.lock:\n                self.schedule.machine and self.schedule._save_tonight()\n            flames = self._disarm_now(who, screen, "Abort")'),
+
 ]
 
 

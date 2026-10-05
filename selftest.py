@@ -36388,6 +36388,58 @@ def test_remote_abort_disarms_with_no_show_live():
     print("  ok")
 
 
+def test_remote_abort_disarm_never_waits_on_the_tonight_save():
+    section("iPad remote: a slow or failing tonight.json save never delays "
+            "the screen Abort's disarm (review of PR #43, P0-5)")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    R = _RemoteRig(S)
+    real = SV.write_json_atomic
+    try:
+        R.sign_in()
+        _live_show(R)
+        seen = {}
+
+        def disarm(reason):
+            seen.setdefault("disarm", time.monotonic())
+            # The scheduler's lock is free while the disarm goes: a thread
+            # of its own can take it at once.
+            got = []
+
+            def probe():
+                ok = R.svc.lock.acquire(timeout=0.05)
+                if ok:
+                    R.svc.lock.release()
+                got.append(ok)
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            seen["lock_free"] = bool(got and got[0])
+            return _Result(True, "sent.")
+        R.remote._flame_disarm = disarm
+
+        def stalled(path, doc, **kw):
+            seen.setdefault("save", time.monotonic())
+            time.sleep(0.4)
+            raise OSError(28, "No space left on device")
+        SV.write_json_atomic = stalled
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check("disarm" in seen and "save" in seen and
+              seen["disarm"] < seen["save"],
+              f"the disarm went before the tonight.json save began: {seen}")
+        check(seen.get("lock_free") is True,
+              "the scheduler's lock was not held while the disarm went")
+        check(st == 200 and out.get("disarmed") is True,
+              f"a failing save does not undo or hide the disarm: {st} {out}")
+    finally:
+        SV.write_json_atomic = real
+        R.close()
+    print("  ok")
+
+
 def test_remote_abort_and_start_need_the_confirm():
     section("iPad remote: Abort and Start now need the on-page confirm")
     S = _sched()
@@ -38047,6 +38099,7 @@ if __name__ == "__main__":
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
     test_remote_abort_disarms_with_no_show_live()
+    test_remote_abort_disarm_never_waits_on_the_tonight_save()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
     test_remote_page_loss_changes_nothing()
