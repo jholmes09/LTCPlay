@@ -175,7 +175,15 @@ jobs:
         os: ${{ fromJSON(needs.changes.outputs.oses != '[]' && needs.changes.outputs.oses || '["ubuntu-latest"]') }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # Sized for 900 mutations in 32 shards: 29 mutations a shard, and each
+    # costs two suite runs (a mutation is caught only if it fails twice) plus
+    # two baseline runs, so 60 runs of 130 to 200 s is 130 to 200 minutes.
+    # 300 leaves 1.5x over the slow end. The shard count stays 32 because the
+    # required checks are named by shard, and the account runs about 20 jobs
+    # at once, so more shards would only add baseline runs, not speed. The
+    # sweep step stops itself 15 minutes before this limit (below), so the
+    # job is never killed from outside with nothing said.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
         if: needs.changes.outputs.oses != '[]'
@@ -188,5 +196,73 @@ jobs:
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
       # SETUP FAIL fails the job.
-      - run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt
+      # The step has its own limit, 15 minutes under the job's, so that when
+      # a shard runs out of time the steps after it still run and can say so.
+      # The log is kept for them. pipefail (bash's default in Actions) keeps
+      # mutate.py's exit code through tee.
+      - id: sweep
+        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        shell: bash
+        timeout-minutes: 285
         if: needs.changes.outputs.oses != '[]'
+      # Tells a shard that ran out of time apart from a missed mutation. A
+      # miss prints NOT CAUGHT or UNEXPECTED MISS and the sweep reaches its
+      # "caught N, missed M" line. A shard that ran out of time never reaches
+      # that line, so this names every mutation of the shard that has no
+      # result in the log. The mutation being run when the clock stopped is
+      # one of them: its result is unknown, not "caught".
+      - name: Report a shard that ran out of time
+        if: always() && needs.changes.outputs.oses != '[]' && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          LOG: ${{ runner.temp }}/mutate.log
+        run: |
+          python - <<'PY'
+          import ast, os
+
+          shard, total = int(os.environ["SHARD"]), 32
+          log = []
+          try:
+              with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
+                  log = [l.rstrip("\r\n") for l in fh]
+          except OSError:
+              pass
+          if any(l.startswith("caught ") and ", missed " in l for l in log):
+              print("the sweep finished; any failure is in its own lines above")
+              raise SystemExit(0)
+          if any("The suite FAILS with nothing mutated" in l for l in log):
+              print("the baseline failed; that is not a timeout")
+              raise SystemExit(0)
+          tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
+          names = None
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign) and any(
+                      isinstance(t, ast.Name) and t.id == "MUTATIONS" for t in node.targets):
+                  names = [e.elts[0].value for e in node.value.elts]
+          mine = [n for i, n in enumerate(names) if i % total == shard]
+          done = set()
+          for l in log:
+              for pre in ("  caught      ", "  NOT CAUGHT  "):
+                  if l.startswith(pre):
+                      done.add(l[len(pre):])
+              if l.startswith("  SETUP FAIL  "):
+                  done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
+          todo = [n for n in mine if n not in done]
+          if not todo:
+              print("no mutation is missing a result; the shard stopped some other way")
+              raise SystemExit(0)
+          head = (f"shard {shard}/{total} TIMED OUT, it did not finish: "
+                  f"{len(todo)} of its {len(mine)} mutations did not run to a result. "
+                  "This is a timeout, not a missed mutation; re-run the shard.")
+          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=mutate shard timed out::" + esc(head + " Not run: " + " | ".join(todo))[:3500])
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("### " + head + "\n\n" + "\n".join("- " + n for n in todo) + "\n")
+          print(head)
+          for n in todo:
+              print("  did not run  " + n)
+          raise SystemExit(1)
+          PY
