@@ -1447,8 +1447,8 @@ def _one_flamesafe_config(args, fire_ice):
 
 def _lasers_dark_first(httpd):
     """Fire & Ice: BEYOND's timecode into the black zone, a few black frames
-    over about 100 ms, before anything else on the way out (review of PR
-    #43, P1-1). Ctrl-C, a closed console window and the Windows app's stop
+    over about 100 ms, right after the show's own stop on the way out
+    (review of PR #43, P1-1). Ctrl-C, a closed console window and the Windows app's stop
     (Ctrl-Break, and a shutdown's WM_QUERYENDSESSION) all come through
     here. The gate sends them again when it closes."""
     gate = getattr(getattr(getattr(getattr(httpd, "fire_ice", None),
@@ -1471,7 +1471,6 @@ def _shutdown(httpd):
     and its journal, which may be waiting on a disk, then the page. Nothing that writes a log may
     stand between Ctrl-C and the blackout. The scheduler's ticking is
     halted before the rig stops, so no tick can start anything after it."""
-    _lasers_dark_first(httpd)
     halt = getattr(httpd.schedule, "halt", None)
     if halt is not None:
         try:
@@ -1479,6 +1478,10 @@ def _shutdown(httpd):
         except Exception as e:
             print(f"The scheduler did not halt cleanly: {e}")
     httpd.control.stop()
+    # Straight after the show's own stop, before anything that may wait on
+    # a disk: a failed black frame is journaled, and the blackout comes
+    # first (above).
+    _lasers_dark_first(httpd)
     announce = getattr(httpd, "announce", None)
     if announce is not None:
         try:
