@@ -11736,6 +11736,8 @@ def _windows_end_session_window_check(W):
     r = u32.SendMessageW(th.hwnd, W.WM_QUERYENDSESSION, 0, 0)
     check(r == 1 and calls == [1],
           f"WM_QUERYENDSESSION to the real window ran the stop: {r} {calls}")
+    u32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT,
+                                 wintypes.WPARAM, wintypes.LPARAM)
     u32.PostMessageW(th.hwnd, 0x0012, 0, 0)          # WM_QUIT
 
 
@@ -11757,6 +11759,7 @@ def _windows_flamesafe_stops_at_query_end_session(W):
     rx.bind(("127.0.0.1", 0))
     rx.settimeout(0.2)
     proc = None
+    out_f = None
     try:
         doc = _json.load(open(os.path.join(root, "flamesafe",
                                            "flamesafe.example.json"),
@@ -11770,15 +11773,21 @@ def _windows_flamesafe_stops_at_query_end_session(W):
         cfg = os.path.join(work, "fs.json")
         _json.dump(doc, open(cfg, "w", encoding="utf-8"))
         env = dict(os.environ, PYTHONPATH=root)
+        out_f = open(os.path.join(work, "flamesafe.out"), "w")
         proc = subprocess.Popen(
             [sys.executable, os.path.join(root, "packaging", "windows",
                                           "entry_flamesafe.py"), cfg],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+            stdout=out_f, stderr=subprocess.STDOUT, env=env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         u32 = ctypes.WinDLL("user32")
+        u32.GetWindowThreadProcessId.argtypes = (
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        u32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR,
+                                       ctypes.c_int)
         found = []
         PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
                                   wintypes.LPARAM)
+        u32.EnumWindows.argtypes = (PROC, wintypes.LPARAM)
 
         def each(hwnd, _l):
             pid = wintypes.DWORD()
@@ -11797,11 +11806,24 @@ def _windows_flamesafe_stops_at_query_end_session(W):
         check(found, "flamesafe made its shutdown window")
         if not found:
             return
-        while True:                    # drain what it sent while running
+        # Its SIGBREAK handler is in place once it is sending: wait for a
+        # first packet before asking it to stop.
+        rx.settimeout(10.0)
+        try:
+            rx.recv(1024)
+        except OSError:
+            check(False, "flamesafe never started sending")
+            return
+        # Drain what it sent while running. Bounded by what is queued NOW:
+        # flamesafe sends 40 packets a second, so "until a recv times out"
+        # never ends (it hung windows-latest for 20 min on #47).
+        rx.setblocking(False)
+        for _ in range(100000):
             try:
                 rx.recv(1024)
             except OSError:
                 break
+        rx.settimeout(0.2)
         u32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT,
                                      wintypes.WPARAM, wintypes.LPARAM)
         u32.SendMessageW.restype = ctypes.c_ssize_t
@@ -11828,8 +11850,10 @@ def _windows_flamesafe_stops_at_query_end_session(W):
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.wait(5)
-        if proc is not None and proc.stdout is not None:
-            proc.stdout.close()
+        try:
+            out_f.close()
+        except Exception:
+            pass
         rx.close()
         shutil.rmtree(work, ignore_errors=True)
 
