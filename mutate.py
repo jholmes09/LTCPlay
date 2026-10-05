@@ -7439,8 +7439,8 @@ def build():
 
  ('review38: flamesafe.exe makes no shutdown window',
   'packaging/windows/entry_flamesafe.py',
-  '    ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)\n',
-  '    pass\n'),
+  '    ending = ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)\n',
+  '    ending = None\n'),
 
  # -- review of PR #38: P2, the supervisor's lock is machine wide --
  ("review38: the supervisor's lock is per Windows session again",
@@ -7494,6 +7494,17 @@ def build():
   'ltcplay/onlyone.py',
   '    r"""(handle or None, already_existed)',
   '    """(handle or None, already_existed)'),
+
+ # -- review of PR #38: P1-2 follow-up, TRUE reaches Windows before the program ends --
+ ('review38: the shutdown answer is never marked given',
+  'packaging/windows/ltcwin.py',
+  '            self._stop_and_wait("Windows is shutting down or signing out")\n            self.answered.set()\n',
+  '            self._stop_and_wait("Windows is shutting down or signing out")\n'),
+
+ ('review38: flamesafe.exe ends before Windows has its answer',
+  'packaging/windows/entry_flamesafe.py',
+  '            ending.let_windows_have_its_answer()',
+  '            pass'),
 
 ]
 

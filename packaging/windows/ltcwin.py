@@ -139,6 +139,10 @@ class EndSession:
         self._lock = threading.Lock()
         self.stopped = False
         self.messages = []
+        # Set as the window procedure hands Windows its answer, so the
+        # program does not end before Windows has it (a window whose thread
+        # is gone answers 0, which reads as a refusal).
+        self.answered = threading.Event()
 
     def on_message(self, msg, wparam):
         """The window procedure's answer for `msg`, or None for a message
@@ -146,13 +150,23 @@ class EndSession:
         if msg == WM_QUERYENDSESSION:
             self.messages.append("query")
             self._stop_and_wait("Windows is shutting down or signing out")
+            self.answered.set()
             return 1                      # TRUE: never block the shutdown
         if msg == WM_ENDSESSION:
             self.messages.append("end" if wparam else "cancelled")
             if wparam:
                 self._stop_and_wait("Windows is ending the session")
+            self.answered.set()
             return 0
         return None
+
+    def let_windows_have_its_answer(self, timeout=1.0):
+        """Called by the program once its stop is done: when the stop came
+        from Windows, wait (briefly) until the window procedure has
+        answered, so TRUE reaches Windows before the process ends."""
+        import time
+        if self.stopped and self.answered.wait(timeout):
+            time.sleep(0.05)
 
     def _stop_and_wait(self, why):
         with self._lock:
