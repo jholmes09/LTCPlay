@@ -1129,6 +1129,21 @@ class Conductor:
         self._set("video", UNKNOWN)
         self._async_seq["video"] = getattr(self.devices, "video_seq", None)
 
+    def lasers_dark_now(self, what="Abort pressed"):
+        """The lasers blanked on the CALLER's thread, at once, before
+        anything else the caller does (review of PR #43, re-review P1-A:
+        the screen Abort's blank waited on the scheduler's tonight.json
+        save). No lock is held during the device call and nothing is
+        journaled unless it fails. A blank only darkens, so it is safe
+        whatever comes next. Returns the device's Result."""
+        with self._lock:
+            ver = self._ver["lasers"]
+        r = self._call(f"lasers blanked ({what})", self.devices.lasers_blank)
+        with self._lock:
+            if self._ver["lasers"] == ver:
+                self._set("lasers", BLACK if r.ok else UNKNOWN)
+        return r
+
     def _reblank(self, what):
         """A laser blank, sent again on the pressing thread, outside the
         lock, and the sentence that says how the lasers stand now (finding

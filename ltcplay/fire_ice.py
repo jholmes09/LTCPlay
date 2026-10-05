@@ -761,9 +761,21 @@ def blanks_by_timecode(cfg):
     return getattr(cfg, "beyond_blank", "timecode") in ("timecode", "both")
 
 
-def beyond_timecode_route(show_file, gate_ip, tl=None):
+def lasers_configured(cfg):
+    """True when this config names a BEYOND at all (its OSC block or its
+    timecode address)."""
+    return bool(getattr(cfg, "beyond", None) is not None or
+                getattr(cfg, "beyond_timecode_ip", None))
+
+
+def beyond_timecode_route(show_file, gate_ip, tl=None, timecode_ip=None,
+                          lasers=True):
     """(name, address) of the ONE Art-Net timecode destination in this show
-    file that BEYOND's timecode gate takes over (review of PR #43, P0-2).
+    file that BEYOND's timecode gate takes over (review of PR #43, P0-2),
+    or None when there is nothing to route (re-review P2-a): a show file
+    that sends no Art-Net timecode at all (a pixel-only or test show: no
+    timecode reaches BEYOND, so none can light it), or, with no BEYOND
+    configured (`lasers` False), one that names no BEYOND destination.
     The gate keeps the lasers dark only by holding back the show's timecode
     for BEYOND and sending the black zone instead, and it can only hold
     back what it is handed: a destination named BEYOND, or at the gate's
@@ -778,12 +790,7 @@ def beyond_timecode_route(show_file, gate_ip, tl=None):
         tl = timeline_mod.Timeline.load(show_file)
     art = getattr(getattr(tl, "clock", None), "artnet", None)
     if art is None:
-        raise FireIceConfigError(
-            f"{where}: the lasers are kept dark by BEYOND's timecode "
-            f"(beyond_blank), but this show file sends no Art-Net timecode, "
-            f"so there is nothing for the black zone to stand in for and "
-            f"nothing that keeps BEYOND dark. Name BEYOND under "
-            f"'clock.artnet.nodes'.")
+        return None
     if art.broadcast:
         raise FireIceConfigError(
             f"{where}: the show's timecode is broadcast "
@@ -795,7 +802,19 @@ def beyond_timecode_route(show_file, gate_ip, tl=None):
             if str(name).strip().lower() == beyondtc.LABEL or
             (gate_ip and ip == gate_ip)]
     if len(hits) == 1:
+        if timecode_ip and hits[0][1] != timecode_ip:
+            # Re-review P2-h: the gate sends the black zone to
+            # beyond_timecode_ip, so a BEYOND the show file puts anywhere
+            # else would get the show's timecode from nobody and the black
+            # zone from an address it does not listen on.
+            raise FireIceConfigError(
+                f"{where}: the show file sends BEYOND's timecode to "
+                f"{hits[0][1]}, but beyond_timecode_ip in "
+                f"ltcplay_fire_ice.json is {timecode_ip}. They must be the "
+                f"same address: change one of them.")
         return hits[0]
+    if not hits and not lasers:
+        return None
     if not hits:
         raise FireIceConfigError(
             f"{where}: no Art-Net timecode destination is named BEYOND"
@@ -814,9 +833,11 @@ def check_beyond_timecode_routes(folder, cfg):
     """At `ltc serve` startup, with beyond_blank "timecode" or "both": every
     show file in the folder must send BEYOND's timecode through the gate
     (beyond_timecode_route). Raises FireIceConfigError naming the first
-    that does not."""
+    that does not. Returns a sentence for each show file passed over
+    because it has nothing to route (re-review P2-a)."""
+    skipped = []
     if not blanks_by_timecode(cfg) or not folder or not os.path.isdir(folder):
-        return
+        return skipped
     gate_ip = beyond_gate_address(cfg)
     from . import timeline as timeline_mod
     for n in sorted(os.listdir(folder)):
@@ -834,7 +855,20 @@ def check_beyond_timecode_routes(folder, cfg):
             tl = timeline_mod.Timeline.load(p)
         except Exception:
             continue      # the session refuses it itself, in its words
-        beyond_timecode_route(p, gate_ip, tl=tl)
+        if beyond_timecode_route(
+                p, gate_ip, tl=tl,
+                timecode_ip=getattr(cfg, "beyond_timecode_ip", None),
+                lasers=lasers_configured(cfg)) is None:
+            skipped.append(no_route_sentence(n, cfg))
+    return skipped
+
+
+def no_route_sentence(name, cfg):
+    return (f"{name}: no BEYOND timecode to keep dark ("
+            + ("it sends no Art-Net timecode"
+               if lasers_configured(cfg) else
+               "no BEYOND is configured and it names none")
+            + "), so the black zone is not used for it.")
 
 
 class FlameCues:
@@ -1630,12 +1664,26 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
             it has none yet."""
             from .session import SessionError
             try:
-                _name, ip = beyond_timecode_route(show_file, _gate.ip)
+                got = beyond_timecode_route(
+                    show_file, _gate.ip,
+                    timecode_ip=getattr(cfg, "beyond_timecode_ip", None),
+                    lasers=lasers_configured(cfg))
             except FireIceConfigError as e:
                 raise SessionError(f"This show will not start: {e}")
-            except Exception:
-                return None   # a file that does not load: the session says
-            _gate.adopt(ip)
+            except Exception as e:
+                # Re-review P1-B: a check that cannot be made is a refusal,
+                # never a pass.
+                raise SessionError(
+                    f"This show will not start: BEYOND's timecode route in "
+                    f"{os.path.basename(show_file)} could not be checked "
+                    f"({type(e).__name__}: {e}).")
+            if got is None:
+                if journal is not None:
+                    journal(no_route_sentence(os.path.basename(show_file),
+                                              cfg),
+                            action="lasers", outcome="no_route")
+                return None
+            _gate.adopt(got[1])
             return None
         opens.append(laser_check)
     if opens:

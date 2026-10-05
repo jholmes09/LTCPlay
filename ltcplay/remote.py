@@ -949,6 +949,9 @@ class Remote:
             # show, between shows or after one must still come off. Nothing
             # here waits on a disk (P0-5).
             flames = self._disarm_now(who, screen, "Abort")
+            # And the lasers, the same way (re-review P1-A): blanked here,
+            # before the scheduler's step and its save, not after them.
+            lasers = self._lasers_dark_now()
         if name in ("abort", "disarm-all"):
             # No screen hold survives an Abort or a disarm, whoever pressed
             # it and whether or not it goes on to be accepted.
@@ -957,7 +960,7 @@ class Remote:
         if name == "disarm-all":
             return self.disarm_all(who, screen)
         if name == "abort":
-            return self.abort(who, screen, flames)
+            return self.abort(who, screen, flames, lasers)
         if name in TRANSPORT_ROUTES:
             return self.transport(name, body, who, screen)
         svc = self.schedule
@@ -1358,7 +1361,23 @@ class Remote:
         return False, (f"The disarm of every flame group did NOT go out "
                        f"({said}). Disarm from the Stream Deck.")
 
-    def abort(self, who, screen, flames):
+    def _lasers_dark_now(self):
+        """(ok or None, sentence): the conductor's laser blank, on this
+        thread, at once. None when no conductor is attached."""
+        cond = getattr(self.schedule, "conductor", None)
+        fn = getattr(cond, "lasers_dark_now", None)
+        if fn is None:
+            return None, ""
+        try:
+            r = fn("Abort pressed on a screen")
+            ok = bool(getattr(r, "ok", False))
+        except Exception as e:
+            return False, (f"The laser blank did NOT go out at the press "
+                           f"({type(e).__name__}: {e}).")
+        return ok, ("Lasers blanked at the press." if ok else
+                    "The laser blank did NOT go out at the press.")
+
+    def abort(self, who, screen, flames, lasers=(None, "")):
         """The screen's and the deck's Abort. `flames` is what the disarm
         sent before anything else did (_disarm_now). Then the scheduler's
         Abort, which stops a live show through the conductor. The answer
@@ -1384,12 +1403,13 @@ class Remote:
                 s_ok, s_text = False, str(e)
             if not s_ok:
                 s_text = f"No show was stopped: {s_text}"
-        text = f"{f_text} {s_text}".strip()
+        text = f"{f_text} {lasers[1]} {s_text}".strip().replace("  ", " ")
         # A disarm that went out is the Abort's safety half done, whatever
         # the scheduler said; one that failed is a fault even if the show
         # stopped. With no flame link at all, the scheduler decides.
         ok = f_ok is True or (f_ok is None and s_ok)
-        out = {"ok": ok, "text": text, "disarmed": f_ok, "stopped": s_ok}
+        out = {"ok": ok, "text": text, "disarmed": f_ok, "stopped": s_ok,
+               "lasers_blanked": lasers[0]}
         if not ok:
             out["error"] = text
         return (200 if ok else 409), out
