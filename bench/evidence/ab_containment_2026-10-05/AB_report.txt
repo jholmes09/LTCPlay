@@ -1,0 +1,320 @@
+LTC Player bench soak, A/B: third-party containment on against off
+BENCH ONLY. Scheduling protection on in both runs. Each run begins with MadMapper started fresh (its cold start); with containment on, MadMapper and BEYOND run at Below normal and MadMapper is kept off two CPUs.
+
+Started 2026-10-05 11:37:19. Program: LTC Player BENCH-ONLY-not-for-shows-2026.10.05-c57556d (build 17ec9fb94c)
+
+Side by side:
+  containment on: flame link longest gap 66.0 ms (3 over 50 ms); timecode longest gap 85.5 ms; pixels longest gap 59.7 ms; inside the engine: pixels worst 60 ms, timecode worst 86 ms; engine stalls 1 (worst 52 ms); sender sleep overrun worst 322 ms, 14 minute(s) over 20 ms; MadMapper: pid 14208 started 2026-10-05 11:37:49, 1.1 min before this run began (a cold start inside the run's first 10 minutes)
+  containment off: flame link longest gap 441.7 ms (311 over 50 ms); timecode longest gap 505.7 ms; pixels longest gap 443.0 ms; inside the engine: pixels worst 446 ms, timecode worst 368 ms; engine stalls 55 (worst 322 ms); sender sleep overrun worst 322 ms, 10 minute(s) over 20 ms; MadMapper: pid 9836 started 2026-10-05 11:59:13, 1.1 min before this run began (a cold start inside the run's first 10 minutes)
+
+==================== containment on ====================
+Block 1 of 2
+BENCH ONLY: this PC is isolated; flamesafe's output goes to this PC only.
+
+Result: FAILED
+Run: finished. Started 2026-10-05 11:38:53, 0.33 of 0.333333 hour(s).
+Program: LTC Player BENCH-ONLY-not-for-shows-2026.10.05-c57556d (build 17ec9fb94c)
+Stream Deck: Mini plugged in, deck program running
+Show audio: Focusrite USB ASIO
+Bench schedule: a 444 s show (7 min 24 s) every 15 minutes, the first at 02:41 (Etc/GMT-11, the zone in which this run starts just after the 2 AM nightly reset; shows until midnight there), started by the scheduler itself
+Container: none (started as itself)
+Soak mode: all programs (MadMapper and BEYOND running on this PC, getting LTC Player's real commands: MadMapper's OSC on 127.0.0.1:8000, BEYOND's on 127.0.0.2:8100, the Art-Net timecode to both; BEYOND's laser output may be enabled, this PC is isolated)
+How measured: pixels and timecode: timed here from the copy the engine sends 127.0.0.9:6454; MadMapper and BEYOND: process, window and OSC port held (their commands are not overheard: they hold those ports)
+Show mode: fire_ice, the engine and the deck started exactly as the installed LTC Player starts them in that mode
+flamesafe config: copied from C:\Program Files\LTC Player\flamesafe.example.json, sACN forced to 127.0.0.1
+
+About this PC:
+  - Windows Update is disabled on this PC (wuauserv, UsoSvc, WaaSMedicSvc disabled, and DisableWindowsUpdateAccess=1). OK.
+  - Sleep (plugged in): Never. OK.
+  - Hibernate (plugged in): Never. OK.
+
+[PASS] Pixel frames (Art-Net, timed from outside the engine)
+    42725 frames, mean interval 25.00 ms (target 25 +/- 3); 15 frames (0.035%) off by 15 ms or more (limit 0.1%); worst 34.7 ms off at 2026-10-05 11:54:00; longest gap 59.7 ms at 2026-10-05 11:54:00, 780.0 s into the show loop (0 over 100 ms, limit 0). The first 5 s of each show are not timed.
+[PASS] Engine's own error counters
+    send_errors +0, loop_errors +0, restarts +0, socket_reopens +0; 1 loops of the show
+[PASS] Scheduled shows (the scheduler starting each show)
+    0 show(s) played to the end, 1 stopped by the exerciser's Abort near the end, 0 failed to start (limit 0); 2 timecode run(s) seen (a silence over 1 s starts a new one)
+[PASS] Art-Net timecode (from the show audio, to MadMapper's address)
+    17500 packets in 2 show(s), mean 33.35 ms (target 33.33 +/- 3), worst 52.1 ms off, longest gap inside a show 85.5 ms (0 over 100 ms, limit 0)
+[PASS] Show audio player
+    Focusrite USB ASIO, ASIO, mixer-free, 2 outputs at 48000 Hz: underflows 0, losses 0, render_errors 0, respawns 0 (limit 0 each); clipped 0
+[PASS] MadMapper answering (running, holding its OSC port 127.0.0.1:8000, heartbeat fresh)
+    answered all block (241 checks)
+[INFO] MadMapper: CPU and memory
+    CPU mean 146.0% of one core, peak 509.5%; memory 591 MB at start, 610 MB at the end
+[PASS] BEYOND answering (running, window responding, holding its OSC port 127.0.0.2:8100)
+    answered all block (241 checks). BEYOND's response to commands is checked only as far as possible: it sends nothing back, so running, its window responding and holding its OSC port is all that can be known
+[INFO] BEYOND: CPU and memory
+    CPU mean 25.4% of one core, peak 96.0%; memory 1546 MB at start, 1377 MB at the end
+[INFO] GPU (3D engine, all programs)
+    mean 15.5%, peak 56.7% over 17 readings
+[PASS] CPU temperature and throttling (sampled every minute)
+    CPU temperature 28 to 28 C (first third mean 28, last third 28); limit 90 C; Windows' performance limit 87 to 87% (100 = nothing holding the CPU back); processor performance 134 to 308% of base; clock 100 to 100% of max; GPU temperature: not readable without installing anything (Intel graphics expose none to Windows)
+[PASS] Drive (SSD): temperature, transfer time, storage events (sampled every minute)
+    drive temperature 57 to 63 C (limit 70); the drive's own lifetime maximum 83 C; average transfer up to 0.4 ms (limit 1 s); the drive's worst read 119 ms at the start, 119 ms at the end; the drive's worst write 729 ms at the start, 729 ms at the end; flame link worst gap 66.0 ms at 2026-10-05 11:54:00: no drive stall within a minute; pixels worst gap 59.7 ms at 2026-10-05 11:54:00: no drive stall within a minute; timecode worst gap 85.5 ms at 2026-10-05 11:56:40: no drive stall within a minute
+[PASS] Lasers (BEYOND commands, to this PC only)
+    0 unblank and 0 blank command packets; 0 unblank(s) with no show running (limit 0)
+[INFO] Video (MadMapper commands, to this PC only)
+    0 OSC packets: 
+[FAIL] Flame link frames (the engine's flame link to flamesafe, timed through a relay)
+    longest gap 66.0 ms at 2026-10-05 11:54:00, 3 over 50 ms (limit 0); timecode longest gap 85.5 ms at 2026-10-05 11:56:40; pixels longest gap 59.7 ms at 2026-10-05 11:54:00; 48075 frames (21565 carrying flame cues), mean 25.0 ms
+[PASS] flamesafe never saw the link go stale
+    48253 status frames; link went stale 0 time(s) after it was first fresh; lock alarms 0
+[PASS] flamesafe output (sACN, sent to this PC only), judged per armed group (values only; its timing is the next item)
+    0 violation(s) (limit 0); sACN senders seen: 127.0.0.1:54288 universe 1 CID 8c9f564c (48259 packets); fire packets per group: front row 20961, cat-walk 20541, wave flamer 20113; 48259 packets, 22203 not all zero. A group's channels may carry values only while flamesafe reports it armed, and its fire channels only in a show, never in a Hold, never after an Abort until it is armed again.
+[INFO] BEYOND's timecode blanking (black zone hour 23 while the lasers must be dark)
+    BEYOND holds port 6454, so its stream is not heard here; the engine sent 677 s of black zone and 495 s of show timecode to 127.0.0.2, 0 send error(s); mode timecode
+[INFO] Flame link sender: sleep overrun per minute, beside each program's CPU (1 s samples, cpu1s.csv)
+    worst 322 ms; minutes over 20 ms: 11:45 sleep overran 24 ms (CPU worst that minute: BEYOND 46%, MadMapper 537%, deck 20%, engine 25%, flamesafe 9%, soak 14%); 11:49 sleep overran 26 ms (CPU worst that minute: BEYOND 29%, MadMapper 17%, deck 12%, engine 9%, flamesafe 6%, soak 8%); 11:54 sleep overran 41 ms (CPU worst that minute: BEYOND 23%, MadMapper 19%, deck 14%, engine 11%, flamesafe 6%, soak 6%); 11:58 sleep overran 41 ms (CPU worst that minute: BEYOND 58%, MadMapper 20%, deck 12%, engine 14%, flamesafe 6%, soak 8%); 12:03 sleep overran 200 ms (CPU worst that minute: not read); 12:04 sleep overran 322 ms (CPU worst that minute: not read); 12:05 sleep overran 54 ms (CPU worst that minute: not read); 12:06 sleep overran 83 ms (CPU worst that minute: not read); 12:07 sleep overran 127 ms (CPU worst that minute: not read); 12:08 sleep overran 45 ms (CPU worst that minute: not read); 12:09 sleep overran 39 ms (CPU worst that minute: not read); 12:11 sleep overran 41 ms (CPU worst that minute: not read); scheduling protection on
+[PASS] Engine's own output timing (measured inside the engine, where it sends; a soak stall cannot show here)
+    pixel frames: worst interval 60.4 ms at 11:54 (this soak's own view: 59.7 ms), 0 minute(s) over 100 ms; timecode packets: worst interval 85.5 ms at 11:56 (this soak's own view: 85.5 ms), 0 minute(s) over 100 ms
+[INFO] Engine stalls, inside the engine (stall probe: what held the engine up each time it woke 40 ms or more late)
+    1 stall(s) (engine busy: 1); worst: 2026-10-05 11:58:16 52 ms late: the engine busy across several threads (62 ms of CPU in 62 ms); busiest threads MainThread 0 ms, bench-sendgaps 0 ms, bench-stall-probe 0 ms [system interrupt+DPC 1% (worst CPU 3%), 8727 MB free, disk reads 0.0 MB/s; MadMapper 5% (kernel 3%); BEYOND 17% (kernel 8%); engine 8% (kernel 0%, working set 126 MB)]; Windows thread priorities (2 is Highest, 0 Normal): bench-stall-probe 2, ltcplay-audio-timecode 0, ltcplay-flame-link 2, ltcplay-output 0; 8 logical CPUs; per-thread CPU per minute in engine-stalls.json, 1 s readings in cpu1s.csv
+[INFO] Third-party containment (MadMapper and BEYOND at Below normal, MadMapper kept off two CPUs)
+    ON: MadMapper may use CPUs 0,1,4,5,6,7; CPUs 2, 3 are kept for LTC Player alone (8 logical CPUs); containment: MadMapper (MadMapperDemo.exe, pid 5736): priority Below normal (was Normal), CPUs 0,1,4,5,6,7; containment: BEYOND (BEYOND.exe, pid 6028): priority Below normal (was High); containment: MadMapper (MadMapperDemo.exe, pid 5736) has closed; containment: MadMapper (MadMapperDemo.exe, pid 14208): priority Below normal (was High), CPUs 0,1,4,5,6,7; containment ended: BEYOND (pid 6028): priority Normal; containment ended: MadMapper (pid 14208): priority Normal, every CPU
+[INFO] MadMapper started (a cold start sets off its video decoding)
+    pid 14208 started 2026-10-05 11:37:49, 1.1 min before this run began (a cold start inside the run's first 10 minutes)
+[INFO] This soak's slow readings (PowerShell and typeperf, in a thread of their own)
+    GPU: longest 2 s, heat: longest 4 s, storage events: longest 7 s
+[PASS] flamesafe output timing
+    flamesafe's own overruns (its tick late by more than 250 ms, from its own log): 0; as heard by this soak's listener (a starved soak hears gaps flamesafe never had): 48259 packets, mean 25.0 ms (target 25), longest gap 39.2 ms, 0 over 250 ms
+[PASS] Flame arming exerciser (signed in on the rack screen, arming through the Stream Deck program, Hold, Resume, Abort and Reset)
+    0 failure(s) (limit 0); 6 of 6 arms took (front row 2, cat-walk 2, wave flamer 2); 3 arm cycle(s) after an Abort (Disarm, then hold again); 5 Holds, 5 Resumes (5 Hold(s); fire went on at most 67 ms after a press was sent (66 ms of that waiting for the engine to answer the press, at 11:43:30); the judge allows 300 ms after the answer), 1 Aborts, 1 Resets; 0 Hold silence(s) in the timecode read as the same show
+[FAIL] Real faults in the engine's night journal
+    4 (limit 0): 2026-10-06T02:41:35 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:30:12) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:45:35 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:04:20:24) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:56:39 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:35:03) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:58:35 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:02:25:29) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears.
+[INFO] Nothing attached, expected (not faults)
+    none
+[PASS] Windows timekeeping (no power throttling, 1 ms timer, engine and flamesafe Above normal)
+    engine: power throttling off, timer 1 ms, priority High; flamesafe: power throttling off, timer 1 ms, priority High; deck: power throttling off, timer 1 ms, priority Above normal
+[INFO] Late flame frames, as the flame link saw them
+    4 line(s); 02:45:26 a frame went out 48.7 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.2 ms took 48.2 ms, and sending the frame took 1.2 ms.; 02:49:42 a frame went out 50.2 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.5 ms took 50.1 ms, and sending the frame took 0.4 ms.; 02:54:00 a frame went out 66.0 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.8 ms took 65.9 ms, and sending the frame took 0.8 ms.; 02:58:16 a frame went out 65.8 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.7 ms took 65.6 ms, and sending the frame took 0.5 ms.
+[INFO] Before Run was pressed (not faults)
+    1 fault line(s) written while nothing had pressed Run yet (a show that comes due then does not start, as designed)
+[PASS] Crashes and restarts
+    flamesafe: 0 crash(es); engine: 0 crash(es); deck: 0 crash(es)
+[PASS] Memory: deck
+    36 MB to 36 MB, trend -1.4 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 35, 5 min 36, 10 min 36, 15 min 36, 20 min 36
+[FAIL] Memory: engine
+    62 MB to 129 MB, trend +267.6 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 36, 5 min 61, 10 min 84, 15 min 105, 20 min 129
+[PASS] Memory: flamesafe
+    21 MB to 21 MB, trend -1.0 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 21, 5 min 21, 10 min 21, 15 min 21, 20 min 21
+[INFO] CPU: deck
+    average 7%, peak 29% of one core
+[INFO] CPU: engine
+    average 8%, peak 37% of one core
+[INFO] CPU: flamesafe
+    average 2%, peak 6% of one core
+[PASS] Disk used by logs
+    128.0 MB to 128.6 MB (1.8 MB per hour; limit 50)
+[PASS] PC paused or slept
+    never
+[INFO] Processor speed (throttling)
+    lowest reading 1200 MHz of 1200 (100%) at 2026-10-05 11:38:58
+
+What happened, in order:
+  2026-10-05 11:38:53  block 1 of 2 starting for 0.333333 hour(s); folder C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\1 containment on
+  2026-10-05 11:38:53  PC check: Windows Update is disabled on this PC (wuauserv, UsoSvc, WaaSMedicSvc disabled, and DisableWindowsUpdateAccess=1). OK.
+  2026-10-05 11:38:53  PC check: Sleep (plugged in): Never. OK.
+  2026-10-05 11:38:53  PC check: Hibernate (plugged in): Never. OK.
+  2026-10-05 11:38:53  all programs mode: MadMapper and BEYOND run on this PC and get LTC Player's real commands
+  2026-10-05 11:38:53  settings and journals: C:\Users\<user>\AppData\Local\ltcplay
+  2026-10-05 11:38:54  Stream Deck Mini found: the deck program runs too
+  2026-10-05 11:38:54  show audio interface: Focusrite USB ASIO
+  2026-10-05 11:38:54  started flamesafe (pid 14112)
+  2026-10-05 11:38:56  started engine (pid 13516)
+  2026-10-05 11:38:56  started deck (pid 1056)
+  2026-10-05 11:38:57  Run pressed on the bench show; the scheduler starts each show from here on
+  2026-10-05 11:38:57  scheduling protection ON: engine and flamesafe at High, their show threads at Highest, the deck at Above normal; this soak program at High, its listeners, relay and exerciser at Highest
+  2026-10-05 11:38:57  this soak program: power throttling off, timer 1 ms, priority High
+  2026-10-05 11:38:57  thread sacn (id 8464): priority Highest
+  2026-10-05 11:38:57  thread status (id 7184): priority Highest
+  2026-10-05 11:38:57  thread flame relay (id 12420): priority Highest
+  2026-10-05 11:38:57  thread artnet (id 14152): priority Highest
+  2026-10-05 11:38:58  exerciser: signed in on the rack screen as Andy and picked Andy as the operator
+  2026-10-05 11:38:58  thread soak-exerciser (id 6644): priority Highest
+  2026-10-05 11:58:58  deck stopped cleanly
+  2026-10-05 11:58:59  engine stopped cleanly
+  2026-10-05 11:59:00  flamesafe stopped cleanly
+  2026-10-05 11:59:07  containment ended: BEYOND (pid 6028): priority Normal
+  2026-10-05 11:59:07  containment ended: MadMapper (pid 14208): priority Normal, every CPU
+  2026-10-05 11:59:07  Run 2 of 2 (containment off) needs MadMapper started fresh: quit MadMapper, then start it again and open the show project. BEYOND can stay open.
+  2026-10-05 11:59:08  Block 2 of 2: start BEYOND and MadMapper (MadMapper again: quit it first). The block starts by itself once both answer. What to click:
+  2026-10-05 11:59:08    BEYOND (Demo, Advanced): start BEYOND.exe (C:\BEYOND55_Demo). On the startup settings window click Go BEYOND. In the version picker choose Advanced (OSC and Art-Net need it). Close the VLC window that opens. If it offers to recover after a crash, decline it. Settings, OSC: incoming OSC on, port 8100; OUTGOING OSC OFF (it defaults to broadcast 255.255.255.255:8000, which hits MadMapper). Show Properties: Enable incoming timecode ON (it can reset each launch). Laser output is not available in the demo, so the lasers stay off.
+  2026-10-05 11:59:08    MadMapper (Demo): start MadMapperDemo 6.1.5 from the Start menu. Application, Audio Output: None, AND Audio Input: None (both reset to Default; the input otherwise grabs the Scarlett). Project, OSC: input port 8000 (the default is 8010); OSC Output-1 to 127.0.0.1 port 9001. Project, DMX input: ArtNet In on Loopback Pseudo-Interface 1 - 127.0.0.1 (the default is the Wi-Fi). Its DMX blacking out every 30 s is the demo, not a fault.
+  2026-10-05 11:59:08    What the soak waits for: MadMapper running and holding OSC port 8000; BEYOND running, its window responding, and holding OSC port 8100. No six-track timeline is needed (the demo cannot load one). If MadMapper sends OSC /float-1 to 127.0.0.1:9001 the engine's heartbeat watchdog checks that too; if it sends nothing there, that check is simply not made and the report says so.
+  2026-10-05 11:59:08    (With full licenses there is nothing to restart: press Enter to go on with the copies already running.)
+  2026-10-05 11:59:08    OPERATOR OVERRIDE: if both programs are running and set up but this keeps waiting, type C and press Enter. The block then starts with them treated as present, and the report says the check was overridden.
+  2026-10-05 11:59:08  BEYOND answers
+  2026-10-05 11:59:08  waiting for MadMapper: still the copy from the block before: quit it and start it again
+  2026-10-05 11:59:12  waiting for MadMapper: not running yet
+  2026-10-05 11:59:15  waiting for MadMapper: not holding its OSC port 127.0.0.1:8000 yet
+  2026-10-05 12:00:17  MadMapper answers
+  2026-10-05 12:00:17  both answer after 1.2 min of waiting; block 2 of 2 starts
+  2026-10-05 12:00:17  block 2 of 2 starting for 0.333333 hour(s); folder C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\2 containment off
+  2026-10-05 12:00:17  PC check: Windows Update is disabled on this PC (wuauserv, UsoSvc, WaaSMedicSvc disabled, and DisableWindowsUpdateAccess=1). OK.
+  2026-10-05 12:00:17  PC check: Sleep (plugged in): Never. OK.
+  2026-10-05 12:00:17  PC check: Hibernate (plugged in): Never. OK.
+  2026-10-05 12:00:17  all programs mode: MadMapper and BEYOND run on this PC and get LTC Player's real commands
+  2026-10-05 12:00:17  settings and journals: C:\Users\<user>\AppData\Local\ltcplay
+  2026-10-05 12:00:17  Stream Deck Mini found: the deck program runs too
+  2026-10-05 12:00:17  show audio interface: Focusrite USB ASIO
+  2026-10-05 12:00:17  started flamesafe (pid 9628)
+  2026-10-05 12:00:19  started engine (pid 8708)
+  2026-10-05 12:00:19  started deck (pid 14108)
+  2026-10-05 12:00:20  Run pressed on the bench show; the scheduler starts each show from here on
+  2026-10-05 12:00:20  scheduling protection ON: engine and flamesafe at High, their show threads at Highest, the deck at Above normal; this soak program at High, its listeners, relay and exerciser at Highest
+  2026-10-05 12:00:20  this soak program: power throttling off, timer 1 ms, priority High
+  2026-10-05 12:00:20  thread sacn (id 9324): priority Highest
+  2026-10-05 12:00:20  thread status (id 6736): priority Highest
+  2026-10-05 12:00:20  thread flame relay (id 10444): priority Highest
+  2026-10-05 12:00:20  thread artnet (id 7264): priority Highest
+  2026-10-05 12:00:21  exerciser: signed in on the rack screen as Andy and picked Andy as the operator
+  2026-10-05 12:00:21  thread soak-exerciser (id 13792): priority Highest
+  2026-10-05 12:03:09  exerciser: holding front row's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:03:10  exerciser: holding cat-walk's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:03:10  exerciser: holding wave flamer's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:20:21  deck stopped cleanly
+  2026-10-05 12:20:22  engine stopped cleanly
+  2026-10-05 12:20:23  flamesafe stopped cleanly
+
+Not exercised by this test: announcements, real LTC input, seeks, and anything actually lighting up (every output goes to this PC only).
+
+Every 5 s sample: C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\1 containment on\samples.csv
+Program logs: C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\1 containment on
+
+==================== containment off ====================
+Block 2 of 2
+BENCH ONLY: this PC is isolated; flamesafe's output goes to this PC only.
+
+Result: FAILED
+Run: finished. Started 2026-10-05 12:00:17, 0.33 of 0.333333 hour(s).
+Program: LTC Player BENCH-ONLY-not-for-shows-2026.10.05-c57556d (build 17ec9fb94c)
+Stream Deck: Mini plugged in, deck program running
+Show audio: Focusrite USB ASIO
+Bench schedule: a 444 s show (7 min 24 s) every 15 minutes, the first at 02:03 (Etc/GMT-10, the zone in which this run starts just after the 2 AM nightly reset; shows until midnight there), started by the scheduler itself
+Container: none (started as itself)
+Soak mode: all programs (MadMapper and BEYOND running on this PC, getting LTC Player's real commands: MadMapper's OSC on 127.0.0.1:8000, BEYOND's on 127.0.0.2:8100, the Art-Net timecode to both; BEYOND's laser output may be enabled, this PC is isolated)
+How measured: pixels and timecode: timed here from the copy the engine sends 127.0.0.9:6454; MadMapper and BEYOND: process, window and OSC port held (their commands are not overheard: they hold those ports)
+Show mode: fire_ice, the engine and the deck started exactly as the installed LTC Player starts them in that mode
+flamesafe config: copied from C:\Program Files\LTC Player\flamesafe.example.json, sACN forced to 127.0.0.1
+
+About this PC:
+  - Windows Update is disabled on this PC (wuauserv, UsoSvc, WaaSMedicSvc disabled, and DisableWindowsUpdateAccess=1). OK.
+  - Sleep (plugged in): Never. OK.
+  - Hibernate (plugged in): Never. OK.
+
+[FAIL] Pixel frames (Art-Net, timed from outside the engine)
+    39394 frames, mean interval 26.18 ms (target 25 +/- 3); 3723 frames (9.451%) off by 15 ms or more (limit 0.1%); worst 418.0 ms off at 2026-10-05 12:06:28; longest gap 443.0 ms at 2026-10-05 12:06:28, 208.6 s into the show loop (125 over 100 ms, limit 0). The first 5 s of each show are not timed.
+[PASS] Engine's own error counters
+    send_errors +0, loop_errors +0, restarts +0, socket_reopens +0; 1 loops of the show
+[PASS] Scheduled shows (the scheduler starting each show)
+    0 show(s) played to the end, 1 stopped by the exerciser's Abort near the end, 0 failed to start (limit 0); 2 timecode run(s) seen (a silence over 1 s starts a new one)
+[FAIL] Art-Net timecode (from the show audio, to MadMapper's address)
+    15496 packets in 2 show(s), mean 35.26 ms (target 33.33 +/- 3), worst 472.3 ms off, longest gap inside a show 505.7 ms (148 over 100 ms, limit 0)
+[PASS] Show audio player
+    Focusrite USB ASIO, ASIO, mixer-free, 2 outputs at 48000 Hz: underflows 0, losses 0, render_errors 0, respawns 0 (limit 0 each); clipped 0
+[PASS] MadMapper answering (running, holding its OSC port 127.0.0.1:8000, heartbeat fresh)
+    answered all block (241 checks)
+[INFO] MadMapper: CPU and memory
+    CPU mean 168.3% of one core, peak 616.7%; memory 592 MB at start, 622 MB at the end
+[PASS] BEYOND answering (running, window responding, holding its OSC port 127.0.0.2:8100)
+    answered all block (241 checks). BEYOND's response to commands is checked only as far as possible: it sends nothing back, so running, its window responding and holding its OSC port is all that can be known
+[INFO] BEYOND: CPU and memory
+    CPU mean 22.6% of one core, peak 103.7%; memory 1377 MB at start, 1389 MB at the end
+[INFO] GPU (3D engine, all programs)
+    mean 16.9%, peak 63.7% over 16 readings
+[PASS] CPU temperature and throttling (sampled every minute)
+    CPU temperature 28 to 28 C (first third mean 28, last third 28); limit 90 C; Windows' performance limit 87 to 87% (100 = nothing holding the CPU back); processor performance 136 to 318% of base; clock 100 to 100% of max; GPU temperature: not readable without installing anything (Intel graphics expose none to Windows)
+[PASS] Drive (SSD): temperature, transfer time, storage events (sampled every minute)
+    drive temperature 61 to 65 C (limit 70); the drive's own lifetime maximum 83 C; average transfer up to 0.4 ms (limit 1 s); the drive's worst read 119 ms at the start, 240 ms at the end; the drive's worst write 729 ms at the start, 729 ms at the end; flame link worst gap 441.7 ms at 2026-10-05 12:06:28: no drive stall within a minute; pixels worst gap 443.0 ms at 2026-10-05 12:06:28: no drive stall within a minute; timecode worst gap 505.7 ms at 2026-10-05 12:06:28: no drive stall within a minute
+[PASS] Lasers (BEYOND commands, to this PC only)
+    0 unblank and 0 blank command packets; 0 unblank(s) with no show running (limit 0)
+[INFO] Video (MadMapper commands, to this PC only)
+    0 OSC packets: 
+[FAIL] Flame link frames (the engine's flame link to flamesafe, timed through a relay)
+    longest gap 441.7 ms at 2026-10-05 12:06:28, 311 over 50 ms (limit 0); timecode longest gap 505.7 ms at 2026-10-05 12:06:28; pixels longest gap 443.0 ms at 2026-10-05 12:06:28; 47957 frames (16516 carrying flame cues), mean 25.0 ms
+[PASS] flamesafe never saw the link go stale
+    48231 status frames; link went stale 0 time(s) after it was first fresh; lock alarms 0
+[PASS] flamesafe output (sACN, sent to this PC only), judged per armed group (values only; its timing is the next item)
+    0 violation(s) (limit 0); sACN senders seen: 127.0.0.1:53882 universe 1 CID 8c9f564c (48237 packets); fire packets per group: front row 4964, cat-walk 4881, wave flamer 4795; 48237 packets, 5237 not all zero. A group's channels may carry values only while flamesafe reports it armed, and its fire channels only in a show, never in a Hold, never after an Abort until it is armed again.
+[INFO] BEYOND's timecode blanking (black zone hour 23 while the lasers must be dark)
+    BEYOND holds port 6454, so its stream is not heard here; the engine sent 677 s of black zone and 495 s of show timecode to 127.0.0.2, 0 send error(s); mode timecode
+[INFO] Flame link sender: sleep overrun per minute, beside each program's CPU (1 s samples, cpu1s.csv)
+    worst 322 ms; minutes over 20 ms: 12:03 sleep overran 200 ms (CPU worst that minute: BEYOND 52%, MadMapper 684%, deck 28%, engine 51%, flamesafe 9%, soak 13%); 12:04 sleep overran 322 ms (CPU worst that minute: BEYOND 140%, MadMapper 645%, deck 19%, engine 28%, flamesafe 10%, soak 15%); 12:05 sleep overran 54 ms (CPU worst that minute: BEYOND 120%, MadMapper 660%, deck 26%, engine 23%, flamesafe 12%, soak 20%); 12:06 sleep overran 83 ms (CPU worst that minute: BEYOND 71%, MadMapper 659%, deck 22%, engine 23%, flamesafe 11%, soak 17%); 12:07 sleep overran 127 ms (CPU worst that minute: BEYOND 40%, MadMapper 614%, deck 18%, engine 23%, flamesafe 9%, soak 17%); 12:08 sleep overran 45 ms (CPU worst that minute: BEYOND 40%, MadMapper 643%, deck 23%, engine 28%, flamesafe 12%, soak 15%); 12:09 sleep overran 39 ms (CPU worst that minute: BEYOND 43%, MadMapper 515%, deck 18%, engine 26%, flamesafe 8%, soak 18%); 12:11 sleep overran 41 ms (CPU worst that minute: BEYOND 29%, MadMapper 28%, deck 12%, engine 17%, flamesafe 5%, soak 11%); 12:15 sleep overran 29 ms (CPU worst that minute: BEYOND 25%, MadMapper 14%, deck 8%, engine 11%, flamesafe 5%, soak 8%); 12:19 sleep overran 38 ms (CPU worst that minute: BEYOND 47%, MadMapper 15%, deck 9%, engine 12%, flamesafe 6%, soak 8%); scheduling protection on
+[FAIL] Engine's own output timing (measured inside the engine, where it sends; a soak stall cannot show here)
+    pixel frames: worst interval 446.0 ms at 12:06 (this soak's own view: 443.0 ms), 7 minute(s) over 100 ms: 12:03 310 ms, 12:04 341 ms, 12:05 230 ms, 12:06 446 ms, 12:07 205 ms, 12:08 232 ms, 12:09 128 ms; timecode packets: worst interval 367.5 ms at 12:06 (this soak's own view: 505.7 ms), 7 minute(s) over 100 ms: 12:03 312 ms, 12:04 362 ms, 12:05 271 ms, 12:06 368 ms, 12:07 216 ms, 12:08 243 ms, 12:09 141 ms
+[INFO] Engine stalls, inside the engine (stall probe: what held the engine up each time it woke 40 ms or more late)
+    55 stall(s) (engine busy: 2, not given the CPU: 50, own thread: 1, paged: 2); worst: 2026-10-05 12:04:12 322 ms late: the engine not given the CPU (31 ms of CPU in 332 ms, 32 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads MainThread 16 ms, bench-stall-probe 16 ms, bench-sendgaps 0 ms [system interrupt+DPC 2% (worst CPU 6%), 5818 MB free, disk reads 1.6 MB/s; MadMapper 538% (kernel 21%); BEYOND 29% (kernel 22%); engine 19% (kernel 4%, working set 55 MB)] | 2026-10-05 12:04:31 242 ms late: the engine not given the CPU (31 ms of CPU in 252 ms, 23 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads MainThread 16 ms, bench-sendgaps 0 ms, bench-stall-probe 0 ms [system interrupt+DPC 1% (worst CPU 8%), 5801 MB free, disk reads 11.6 MB/s; MadMapper 626% (kernel 14%); BEYOND 35% (kernel 12%); engine 13% (kernel 3%, working set 57 MB)] | 2026-10-05 12:04:01 231 ms late: the engine not given the CPU (16 ms of CPU in 241 ms, 2 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads ltcplay-flame-link 16 ms, MainThread 0 ms, bench-sendgaps 0 ms [system interrupt+DPC 2% (worst CPU 12%), 5914 MB free, disk reads 6.3 MB/s; MadMapper 396% (kernel 15%); BEYOND 35% (kernel 23%); engine 11% (kernel 6%, working set 54 MB)] | 2026-10-05 12:03:59 212 ms late: the engine not given the CPU (0 ms of CPU in 222 ms, 0 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads MainThread 0 ms, bench-sendgaps 0 ms, bench-stall-probe 0 ms [system interrupt+DPC 1% (worst CPU 7%), 5837 MB free, disk reads 7.3 MB/s; MadMapper 396% (kernel 17%); BEYOND 37% (kernel 23%); engine 6% (kernel 6%, working set 54 MB)] | 2026-10-05 12:03:46 175 ms late: the engine not given the CPU (0 ms of CPU in 185 ms, 0 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads MainThread 0 ms, bench-sendgaps 0 ms, bench-stall-probe 0 ms [system interrupt+DPC 3% (worst CPU 11%), 5718 MB free, disk reads 11.7 MB/s; MadMapper 457% (kernel 18%); BEYOND 33% (kernel 22%); engine 15% (kernel 3%, working set 54 MB)] | 2026-10-05 12:03:53 166 ms late: the engine not given the CPU (0 ms of CPU in 176 ms, 3 page faults): another program or the system's interrupt and DPC time; see the soak's system line; busiest threads MainThread 0 ms, bench-sendgaps 0 ms, bench-stall-probe 0 ms [system interrupt+DPC 2% (worst CPU 6%), 5795 MB free, disk reads 5.7 MB/s; MadMapper 435% (kernel 19%); BEYOND 31% (kernel 22%); engine 14% (kernel 3%, working set 54 MB)]; engine send intervals of 100 ms or more: 278, 57 while the whole engine was held, 221 with only the sending thread held (its own wait): 2026-10-05 12:03:04 pixels 310 ms, 2026-10-05 12:03:04 timecode 312 ms, 2026-10-05 12:03:04 pixels 216 ms, 2026-10-05 12:03:04 timecode 236 ms, 2026-10-05 12:03:04 pixels 101 ms, 2026-10-05 12:03:05 pixels 138 ms; Windows thread priorities (2 is Highest, 0 Normal): bench-stall-probe 2, ltcplay-audio-timecode 0, ltcplay-flame-link 2, ltcplay-output 0; 8 logical CPUs; per-thread CPU per minute in engine-stalls.json, 1 s readings in cpu1s.csv
+[INFO] Third-party containment
+    off
+[INFO] MadMapper started (a cold start sets off its video decoding)
+    pid 9836 started 2026-10-05 11:59:13, 1.1 min before this run began (a cold start inside the run's first 10 minutes)
+[INFO] This soak's slow readings (PowerShell and typeperf, in a thread of their own)
+    GPU: longest 4 s, heat: longest 10 s, storage events: longest 23 s
+[FAIL] flamesafe output timing
+    flamesafe's own overruns (its tick late by more than 250 ms, from its own log): 0; as heard by this soak's listener (a starved soak hears gaps flamesafe never had): 48237 packets, mean 25.0 ms (target 25), longest gap 443.4 ms, 2 over 250 ms
+[FAIL] Flame arming exerciser (signed in on the rack screen, arming through the Stream Deck program, Hold, Resume, Abort and Reset)
+    3 failure(s) (limit 0): 2026-10-05 12:03:09 holding front row's Arm button: The hold was interrupted. Lift your finger and hold again.; 2026-10-05 12:03:10 holding cat-walk's Arm button: The hold was interrupted. Lift your finger and hold again.; 2026-10-05 12:03:10 holding wave flamer's Arm button: The hold was interrupted. Lift your finger and hold again.; 3 of 6 arms took (front row 1, cat-walk 1, wave flamer 1); 0 arm cycle(s) after an Abort (Disarm, then hold again); 4 Holds, 4 Resumes (4 Hold(s); no fire after any press (no group was firing)), 1 Aborts, 1 Resets; 0 Hold silence(s) in the timecode read as the same show
+[FAIL] Real faults in the engine's night journal
+    97 (limit 0): 2026-10-06T02:03:04 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:04:05) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:04 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:04:14) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:10 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:09:22) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:13 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:12:24) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:23 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:23:08) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:26 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:25:21) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:26 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:26:20) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears. | 2026-10-06T02:03:35 Flame link: the show timecode has not moved for more than 0.1 s (stuck at 00:00:30:13) though the show reads as playing, so flame cues are zero. This line will not repeat until it clears.
+[INFO] Nothing attached, expected (not faults)
+    none
+[PASS] Windows timekeeping (no power throttling, 1 ms timer, engine and flamesafe Above normal)
+    engine: power throttling off, timer 1 ms, priority High; flamesafe: power throttling off, timer 1 ms, priority High; deck: power throttling off, timer 1 ms, priority Above normal
+[INFO] Late flame frames, as the flame link saw them
+    34 line(s); 02:03:00 a frame went out 47.6 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.1 ms took 47.0 ms, and sending the frame took 0.5 ms.; 02:03:13 a frame went out 52.0 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 24.0 ms took 51.3 ms, and sending the frame took 0.6 ms. 10 more late frame(s) since th; 02:03:23 a frame went out 50.9 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 23.8 ms took 50.1 ms, and sending the frame took 0.7 ms. 9 more late frame(s) since the; 02:03:40 a frame went out 61.0 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 23.7 ms took 60.2 ms, and sending the frame took 0.7 ms. 13 more late frame(s) since th; 02:03:52 a frame went out 71.3 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 23.7 ms took 70.5 ms, and sending the frame took 0.8 ms. 6 more late frame(s) since the; 02:04:08 a frame went out 47.5 ms after the one before (the contract's floor is 50 ms): the sender's sleep of 23.9 ms took 46.7 ms, and sending the frame took 1.0 ms. 6 more late frame(s) since the
+[INFO] Before Run was pressed (not faults)
+    1 fault line(s) written while nothing had pressed Run yet (a show that comes due then does not start, as designed)
+[PASS] Crashes and restarts
+    flamesafe: 0 crash(es); engine: 0 crash(es); deck: 0 crash(es)
+[PASS] Memory: deck
+    37 MB to 36 MB, trend -1.4 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 36, 5 min 37, 10 min 36, 15 min 36, 20 min 36
+[FAIL] Memory: engine
+    62 MB to 129 MB, trend +266.5 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 36, 5 min 61, 10 min 83, 15 min 105, 20 min 129
+[PASS] Memory: flamesafe
+    21 MB to 21 MB, trend -1.4 MB per hour (limit 10 MB per hour after the first 6 minutes; a run with under 20 minutes of samples may instead grow under 20 MB in all); along the way (MB): 0 min 21, 5 min 21, 10 min 21, 15 min 21, 20 min 21
+[INFO] CPU: deck
+    average 7%, peak 20% of one core
+[INFO] CPU: engine
+    average 8%, peak 26% of one core
+[INFO] CPU: flamesafe
+    average 2%, peak 6% of one core
+[PASS] Disk used by logs
+    128.0 MB to 128.9 MB (2.8 MB per hour; limit 50)
+[PASS] PC paused or slept
+    never
+[INFO] Processor speed (throttling)
+    lowest reading 1200 MHz of 1200 (100%) at 2026-10-05 12:00:21
+
+What happened, in order:
+  2026-10-05 12:00:17  block 2 of 2 starting for 0.333333 hour(s); folder C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\2 containment off
+  2026-10-05 12:00:17  PC check: Windows Update is disabled on this PC (wuauserv, UsoSvc, WaaSMedicSvc disabled, and DisableWindowsUpdateAccess=1). OK.
+  2026-10-05 12:00:17  PC check: Sleep (plugged in): Never. OK.
+  2026-10-05 12:00:17  PC check: Hibernate (plugged in): Never. OK.
+  2026-10-05 12:00:17  all programs mode: MadMapper and BEYOND run on this PC and get LTC Player's real commands
+  2026-10-05 12:00:17  settings and journals: C:\Users\<user>\AppData\Local\ltcplay
+  2026-10-05 12:00:17  Stream Deck Mini found: the deck program runs too
+  2026-10-05 12:00:17  show audio interface: Focusrite USB ASIO
+  2026-10-05 12:00:17  started flamesafe (pid 9628)
+  2026-10-05 12:00:19  started engine (pid 8708)
+  2026-10-05 12:00:19  started deck (pid 14108)
+  2026-10-05 12:00:20  Run pressed on the bench show; the scheduler starts each show from here on
+  2026-10-05 12:00:20  scheduling protection ON: engine and flamesafe at High, their show threads at Highest, the deck at Above normal; this soak program at High, its listeners, relay and exerciser at Highest
+  2026-10-05 12:00:20  this soak program: power throttling off, timer 1 ms, priority High
+  2026-10-05 12:00:20  thread sacn (id 9324): priority Highest
+  2026-10-05 12:00:20  thread status (id 6736): priority Highest
+  2026-10-05 12:00:20  thread flame relay (id 10444): priority Highest
+  2026-10-05 12:00:20  thread artnet (id 7264): priority Highest
+  2026-10-05 12:00:21  exerciser: signed in on the rack screen as Andy and picked Andy as the operator
+  2026-10-05 12:00:21  thread soak-exerciser (id 13792): priority Highest
+  2026-10-05 12:03:09  exerciser: holding front row's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:03:10  exerciser: holding cat-walk's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:03:10  exerciser: holding wave flamer's Arm button failed: The hold was interrupted. Lift your finger and hold again.
+  2026-10-05 12:20:21  deck stopped cleanly
+  2026-10-05 12:20:22  engine stopped cleanly
+  2026-10-05 12:20:23  flamesafe stopped cleanly
+
+Not exercised by this test: announcements, real LTC input, seeks, and anything actually lighting up (every output goes to this PC only).
+
+Every 5 s sample: C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\2 containment off\samples.csv
+Program logs: C:\Users\<user>\AppData\Local\ltcplay\soak\2026-10-05_1137 A-B containment\2 containment off
