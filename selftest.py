@@ -26976,6 +26976,17 @@ def test_schedule_conductor_wiring_details():
     _confirm(S, svc)
     _settle(svc)
     rec.sleep_on = {"hold": 0.1}
+    # This is the IN-ORDER path: the line reaches the Abort behind the
+    # 0.1 s Hold, so the Reset is sent and refused for being pressed
+    # before the latest Abort. An Abort waits at most URGENT_WAIT_S
+    # (0.25 s) for the line before going ahead on its own and dropping
+    # the Reset unsent ("an Abort was pressed after it"), which is the
+    # other safe outcome and has its own test (stuck_or_dead). On the
+    # Windows runner the 0.1 s Hold plus the handoffs took longer than
+    # 0.25 s and the Abort went ahead, so this check read the other path
+    # as a failure. The wait is made long here so the path is the line's,
+    # whatever the machine; the invariant checked is unchanged.
+    svc._calls.URGENT_WAIT_S = 10.0
     svc._apply(_op(S, S.HOLD_ON))
     svc.reset_conductor("Andy", "Rack screen", wait_s=0.0)
     svc._apply(_op(S, S.ABORT, confirmed=True))
