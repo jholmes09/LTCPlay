@@ -30241,12 +30241,14 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
             "announcement is doing (review of PR #29, finding D)")
     C = _cond_mod()
     # Every stall below is 300 ms or longer (a BEYOND packet, the laser
-    # gate, an announcement's file read), so a flame cut or a blank that
-    # waited behind one lands 300 ms or more after the press, and one that
-    # did not lands in a few ms. FEW sits between: a third of the shortest
-    # stall. It was 20 ms, which measured the runner's thread handoffs,
-    # not the conductor.
-    FEW = 0.1
+    # gate, an announcement's file read). The Abort lands 150 ms into the
+    # stuck packet in case 1, so a flame cut or a blank that waited behind
+    # it lands about 150 ms after the press (measured 172 ms under the
+    # mutation that makes it wait), and one that did not lands in a few
+    # ms. FEW is half of that 150 ms: the same margin either way. It was
+    # 20 ms, which measured the runner's thread handoffs, not the
+    # conductor.
+    FEW = 0.075
     # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
     #    show start's unblank is part way out.
     c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
