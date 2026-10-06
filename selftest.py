@@ -32071,6 +32071,17 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
               and all(g["sent_safety"] == 0 for g in s["groups"]),
               f"link stale and every group disarmed {t_stale:.3f} s after "
               f"the sender stopped (frame_stale_ms 500)")
+        # And the order, with no clock at all: fire_hold_ms is shorter than
+        # frame_stale_ms, so flamesafe's own status frames must show the
+        # fire slots zeroed WHILE the link still reads fresh. A fire value
+        # held until the link went stale (a real mutation) never shows
+        # that frame, however fast or slow the runner.
+        after = [x for t_, x in statuses if t_ > t_stop]
+        check(any(x["frames"]["fire"] == "zeroed"
+                  and x["frames"]["state"] == "fresh" for x in after),
+              f"flamesafe reported the fire zeroed while the link was still "
+              f"fresh, before it went stale: "
+              f"{[(x['frames']['fire'], x['frames']['state']) for x in after][:12]}")
         check(link.disarm_all("Abort") is False,
               "a disarm_all on a stopped link answers False")
         # The rejection episodes close after 5 s of quiet (the arm link's
