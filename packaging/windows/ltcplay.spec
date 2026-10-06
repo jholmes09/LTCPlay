@@ -104,6 +104,7 @@ a_soak = Analysis(
                                         "flamesafe.example.json"), ".")],
     hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor", "soak_apps",
                                      "soak_exercise", "contain", "bench_probe",
+                                     "soak_unattended",
                                      "test_show_fixtures", "psutil", "hid",
                                      "sounddevice", "_sounddevice",
                                      "tzdata"],

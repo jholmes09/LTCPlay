@@ -429,6 +429,10 @@ class Soak:
         self.slow_samplers = {}     # name -> [seconds each reading took]
         self.mm_started = {}        # MadMapper pid -> its start time
         self.prio_now = {}          # (name, pid) -> (priority, CPUs)
+        self.recover = {}           # app -> command that brings it back
+        self.recover_after_s = 30.0
+        self.recoveries = {}        # app -> [(time text, result)]
+        self._recover_at = {}
         self.prio_log = []          # (time, name, pid, priority, CPUs)
         self.contain_own = True     # False: the caller runs containment
         self.oversleep = {}         # minute -> worst sender sleep overrun ms
@@ -1895,6 +1899,35 @@ class Soak:
         return ("all programs mode: MadMapper and BEYOND run on this PC and "
                 "get LTC Player's real commands")
 
+    RECOVER_EVERY_S = 600.0
+
+    def maybe_recover(self, app, watch, alive, now):
+        """Unattended (soak_unattended): a program not running for
+        recover_after_s gets its recovery command, at most every 10
+        minutes, in a thread of its own; written down, not a failure once
+        it answers again."""
+        cmd = self.recover.get(app)
+        since = watch.down_since or watch.demo_stopped_at
+        if not cmd or alive or since is None or \
+                now - since < self.recover_after_s or \
+                now - self._recover_at.get(app, 0.0) < self.RECOVER_EVERY_S:
+            return
+        self._recover_at[app] = now
+        if watch.demo_stopped_at is not None:
+            # Watched again from its new start.
+            watch.demo_stopped_at = None
+            watch.first_seen = None
+        note(f"{app} is not running: its recovery command runs: {cmd}")
+
+        def go():
+            import soak_unattended
+            ok, why = soak_unattended.run_command(cmd, 600)
+            self.recoveries.setdefault(app, []).append(
+                (now_text(now), ("OK, " if ok else "FAILED, ") + why))
+            note(f"{app} recovery command {'OK' if ok else 'FAILED'} ({why})")
+        threading.Thread(target=go, daemon=True,
+                         name=f"soak-recover-{app}").start()
+
     def sample_apps(self, hours):
         """Is each program running and answering; its CPU and memory."""
         if self.mode == "fallback":
@@ -1920,6 +1953,7 @@ class Soak:
                 note(f"{app} stopped after "
                      f"{(now - watch.first_seen) / 3600:.1f} h: the demo's "
                      f"limit, not a fault")
+            self.maybe_recover(app, watch, soak_apps.running(app, names), now)
         try:
             import psutil
         except ImportError:
@@ -2067,7 +2101,15 @@ class Soak:
                    "as possible: it sends nothing back, so running, its "
                    "window responding and holding its OSC port is all that "
                    "can be known")
-            out.append(("FAIL" if eps else "PASS",
+            rec = self.recoveries.get(app) or []
+            healed = bool(eps) and bool(rec) and all(b for _a, b, _w in eps)
+            if rec:
+                extra += ("; brought back by its recovery command: "
+                          + "; ".join(f"{t} {r}" for t, r in rec[:4])
+                          + (" (crashed and recovered: not a block failure)"
+                             if healed else ""))
+            out.append(("FAIL" if eps and not healed else
+                        "INFO" if healed else "PASS",
                         f"{app} answering (running, "
                         + ("" if app == "MadMapper" else "window responding, ")
                         + f"holding its OSC port {a['ip']}:{a['port']}"
@@ -2729,7 +2771,8 @@ def _typed_line():
 
 
 def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
-                  sleep=time.sleep, clock=time.time, typed=None):
+                  sleep=time.sleep, clock=time.time, typed=None,
+                  give_up_s=None):
     """Wait, however long it takes, until MadMapper and BEYOND both answer
     (soak_apps.readiness), saying what to click once and each change in
     what is still awaited. `before`: {app: PIDs} from the block before,
@@ -2737,6 +2780,10 @@ def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
     full license). Returns {app: PIDs} for the next block's check."""
     probe = probe or (lambda: (soak_apps.app_pids(), soak_apps.hung_names()))
     i, n = block
+    if give_up_s is not None:
+        # Unattended (soak_unattended): nobody to click anything, nothing
+        # read from the keyboard, and a limit on the wait.
+        return _wait_unattended(probe, i, give_up_s, poll_s, sleep, clock)
     again = sorted(a for a, v in (before or {}).items() if v)
     note(f"Block {i} of {n}: start BEYOND and MadMapper"
          + ((" again (quit both first)" if len(again) > 1 else
@@ -2784,6 +2831,35 @@ def wait_for_apps(before=None, block=(1, 1), poll_s=2.0, probe=None,
                  f"waiting; block {i} of {n} starts")
             return {app: soak_apps.pids_of(app, pids)
                     for app in ("BEYOND", "MadMapper")}
+        sleep(poll_s)
+
+
+def _wait_unattended(probe, i, give_up_s, poll_s, sleep, clock):
+    note(f"block {i}: waiting up to {give_up_s / 60:.0f} min for BEYOND and "
+         f"MadMapper to answer")
+    t0 = clock()
+    said = {}
+    while True:
+        pids, hung = probe()
+        waiting = {}
+        for app in ("BEYOND", "MadMapper"):
+            why = soak_apps.readiness(app, pids, hung,
+                                      soak_apps.app_holds(app), None)
+            if why:
+                waiting[app] = why
+            if said.get(app) != why:
+                note(f"waiting for {app}: {why}" if why else
+                     f"{app} answers")
+                said[app] = why
+        out = {app: soak_apps.pids_of(app, pids)
+               for app in ("BEYOND", "MadMapper")}
+        if not waiting:
+            return out
+        if clock() - t0 >= give_up_s:
+            note(f"block {i}: gave up waiting after {give_up_s / 60:.0f} "
+                 f"min: " + "; ".join(f"{a} {w}" for a, w in waiting.items()))
+            out["timeout"] = True
+            return out
         sleep(poll_s)
 
 
@@ -3219,6 +3295,9 @@ def _self_check():
         yield line
     for line in contain.self_test():
         yield line
+    import soak_unattended
+    for line in soak_unattended.self_test():
+        yield line
     seq = iter([None, "c"])
     r = wait_for_apps(None, (1, 1), poll_s=0, probe=lambda: ({}, set()),
                       sleep=lambda s: None, typed=lambda: next(seq))
@@ -3247,6 +3326,7 @@ def main(argv=None):
     contain = False
     ab = None
     ab_kind = ABRun
+    days = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3287,6 +3367,25 @@ def main(argv=None):
                 return 2
             contain = argv[i + 1] == "on"
             i += 1
+        elif a in ("--forever", "--days"):
+            days = 0.0
+            if a == "--days":
+                try:
+                    days = float(argv[i + 1])
+                    i += 1
+                except (IndexError, ValueError):
+                    print("--days takes a number")
+                    return 2
+        elif a == "--unattended-off":
+            import supervisor as sup
+            import soak_unattended
+            folder = os.path.join(sup.appdata_dir(), "soak")
+            os.makedirs(folder, exist_ok=True)
+            with open(soak_unattended.stop_file_path(folder), "w") as fh:
+                fh.write("stop\n")
+            print("The unattended soak stops after the block now running, "
+                  "and does not start again at sign-in.")
+            return 0
         elif a == "--mm-settings":
             ab, ab_kind = 20.0, MMSettingsRuns
             if i + 1 < len(argv) and argv[i + 1].replace(".", "").isdigit():
@@ -3313,11 +3412,15 @@ def main(argv=None):
                   f"--audio-device NAME, --no-wait, --fake-audio, "
                   f"--mode auto|all|fallback, --priority on|off, "
                   f"--ab [MINUTES], --ab-contain [MINUTES], "
-                  f"--mm-settings [MINUTES], "
+                  f"--mm-settings [MINUTES], --forever, --days N, "
+                  f"--unattended-off, "
                   f"--contain on|off, --show-seconds N (default {SHOW_S}), "
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
+    if days is not None:
+        wait = False
+        seconds = 0.0
     if seconds is None and ab is None:
         seconds = ask_hours() * 3600
     # The show audio's way of loading sounddevice (ASIO on Windows), before
@@ -3357,6 +3460,13 @@ def main(argv=None):
     soak = None
     failed = ""
     try:
+        if days is not None:
+            import soak_unattended
+            soak = soak_unattended.Unattended(sys.modules[__name__],
+                                              days=days or None,
+                                              desktop=desktop_dir())
+            ok = soak.run()
+            raise _Done()
         if ab is not None:
             soak = ab_kind(ab, device, fake, mode)
             soak.show_s, soak.every_min = show_s, every_min
