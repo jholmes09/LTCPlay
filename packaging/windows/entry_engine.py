@@ -69,7 +69,13 @@ def main():
     _bench_fake_audio()
     _bench_send_gaps()
     _bench_stall_probe()
+    import threading
+    stopped = threading.Event()
+    ending = [None]
     if argv and argv[0] == "serve":
+        # As flamesafe (review of PR #38, P1-2): a shutdown or sign-out
+        # gets the engine's own clean stop, the rig's blackout included.
+        ending[0] = ltcwin.stop_cleanly_at_shutdown("ltcplay", stopped)
         ltcwin.say_keep_time("ltcplay")
         if ltcwin.boosted():
             # The flame link's sender at Highest. The show audio's own
@@ -78,7 +84,12 @@ def main():
                 ("ltcplay-flame-link",),
                 log=lambda t: print(f"ltcplay: {t}", flush=True))
     from ltcplay import cli
-    return cli.main(argv)
+    try:
+        return cli.main(argv)
+    finally:
+        stopped.set()
+        if ending[0] is not None:
+            ending[0].let_windows_have_its_answer()
 
 
 def _bench_send_gaps():

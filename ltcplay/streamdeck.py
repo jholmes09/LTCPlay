@@ -797,8 +797,8 @@ class LocalSchedule:
         """One blocking GET. Only ever called from the background thread
         (_loop); never from current_operator() or show_running()."""
         try:
-            with urllib.request.urlopen(self.base_url + path,
-                                        timeout=FETCH_TIMEOUT_S) as r:
+            with _opener().open(self.base_url + path,
+                                timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (OSError, ValueError, urllib.error.URLError):
             return None
@@ -880,6 +880,9 @@ class EngineConductor:
         # for), for the deck's own keys to show, not only its console; ""
         # once a press is taken again (fix round 2, E).
         self.fault = ""
+        # The engine's flame cue fault from /api/conductor (review of PR
+        # #43, P1-3), "" when none: shown on the deck's own keys.
+        self.cues_fault = ""
         self._last_ok = None      # when the engine last answered a poll
 
     def start(self):
@@ -955,10 +958,21 @@ class EngineConductor:
     def _post_one(self, name, body):
         """One press to the engine; its answer journaled, and kept as
         the deck's engine fault when the engine did not take it."""
+        doc = {}
         try:
-            ok, text = self._poster("/api/remote/" + name, body)
+            got = self._poster("/api/remote/" + name, body)
+            ok, text = got[0], got[1]
+            if len(got) > 2 and isinstance(got[2], dict):
+                doc = got[2]
         except Exception as e:
             ok, text = False, f"{type(e).__name__}: {e}"
+        if name == "abort" and doc.get("stopped") is False:
+            # The engine disarmed every flame group but had no show to stop
+            # (review of PR #43, P0-1), so nothing is latched: the Abort key
+            # must not read RESET for a latch the engine does not have.
+            with self._lock:
+                if self._local[0]:
+                    self._local = (False, self._clock())
         self.fault = "" if ok else f"{name.title()}: {text}"
         if ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
@@ -973,7 +987,8 @@ class EngineConductor:
             pass
 
     def _http_post(self, path, body):
-        """(ok, sentence) for one blocking POST, from the press thread."""
+        """(ok, sentence, answer) for one blocking POST, from the press
+        thread; answer is the engine's JSON object, or {}."""
         req = urllib.request.Request(
             self.base_url + path, data=json.dumps(body).encode("utf-8"),
             method="POST", headers={"Content-Type": "application/json"})
@@ -981,14 +996,18 @@ class EngineConductor:
         try:
             with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
                 doc = json.loads(r.read().decode("utf-8") or "{}")
-            return bool(doc.get("ok", True)), str(doc.get("text") or "done")
+            if not isinstance(doc, dict):
+                doc = {}
+            return (bool(doc.get("ok", True)),
+                    str(doc.get("text") or "done"), doc)
         except urllib.error.HTTPError as e:
+            doc = {}
             try:
                 doc = json.loads(e.read().decode("utf-8") or "{}")
                 why = doc.get("text") or doc.get("error") or str(e)
             except Exception:
                 why = str(e)
-            return False, str(why)
+            return False, str(why), (doc if isinstance(doc, dict) else {})
         except (OSError, ValueError, urllib.error.URLError) as e:
             return False, (f"ltc serve could not be reached at "
                            f"{self.base_url} ({e})")
@@ -998,6 +1017,9 @@ class EngineConductor:
         while not self._stop.is_set():
             got = self._fetch("/api/conductor")
             snap = got.get("conductor") if isinstance(got, dict) else None
+            cues = got.get("flame_cues") if isinstance(got, dict) else None
+            self.cues_fault = str((cues or {}).get("fault") or "") \
+                if isinstance(cues, dict) else ""
             if isinstance(snap, dict):
                 # The answer's own read-only audio field rides along with
                 # the conductor's state (audio_lost reads it).
@@ -1086,6 +1108,17 @@ SCREEN_STALE_S = 0.3
 SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
 
 
+def screen_arming_switched_on(load=None):
+    """True only when ltcplay_remote.json says "screen_arming": true. A
+    missing or broken file, or any error reading it, is off."""
+    try:
+        if load is None:
+            from .remote import load_settings as load
+        return load()["screen_arming"] is True
+    except Exception:
+        return False
+
+
 class ScreenKeys:
     """The remote page's arm holds and per-group disarms, read from the
     engine's /api/remote/deck-input on a BACKGROUND thread, like
@@ -1144,8 +1177,8 @@ class ScreenKeys:
 
     def _http_fetch(self, path):
         try:
-            with urllib.request.urlopen(self.base_url + path,
-                                        timeout=FETCH_TIMEOUT_S) as r:
+            with _opener().open(self.base_url + path,
+                                timeout=FETCH_TIMEOUT_S) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (OSError, ValueError, urllib.error.URLError):
             return None
@@ -1275,7 +1308,7 @@ class DeckJournal:
             self.base_url + "/api/schedule/deck-event", data=body,
             method="POST", headers={"Content-Type": "application/json"})
         try:
-            urllib.request.urlopen(req, timeout=JOURNAL_POST_TIMEOUT_S).read()
+            _opener().open(req, timeout=JOURNAL_POST_TIMEOUT_S).read()
             return True
         except (OSError, urllib.error.URLError):
             # Not running --schedule, not reachable, timed out, or a
@@ -2443,10 +2476,19 @@ class Controller:
                         (self.conductor is not None and
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
+        cues_fault = getattr(self.conductor, "cues_fault", "") or ""
         if engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
             # reached): said on the deck itself, not only its console.
             fonts.show_key(d, b0, ["ENGINE", "FAULT"],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=16)
+        elif cues_fault:
+            # Review of PR #43, P1-3: the show's flame cues are refused (a
+            # render that does not fit the layout, and the like): every
+            # flame cue is zero, and that is a fault, not a quiet zero.
+            fonts.show_key(d, b0, ["CUES", "FAULT"],
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
                            max_size=16)
@@ -2927,8 +2969,12 @@ def _main(args):
     engine = EngineConductor(args.ltcplay_url, journal=journal)
     engine.start()
     # Screen and browser arming: the remote page's holds, read on their own
-    # background thread (ScreenKeys), never on the main loop.
-    screen = ScreenKeys(args.ltcplay_url).start()
+    # background thread (ScreenKeys), never on the main loop. Only when
+    # ltcplay_remote.json switches it on (review of PR #43, P0-4: off by
+    # default); otherwise no ScreenKeys is made and no screen hold can
+    # reach a group key, whatever the engine answers.
+    screen = ScreenKeys(args.ltcplay_url).start() \
+        if screen_arming_switched_on() else None
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
@@ -2937,7 +2983,9 @@ def _main(args):
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
          f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
          f"Hold, Resume and Reset go to the show conductor in ltc serve at "
-         f"{args.ltcplay_url}; Start Now journals a refusal. Ctrl-C to stop.")
+         f"{args.ltcplay_url}; Start Now journals a refusal. "
+         f"{'Screen arming is ON (ltcplay_remote.json).' if screen else 'Screen arming is off.'}"
+         f" Ctrl-C to stop.")
     try:
         run_forever(controller, journal=journal)
     except KeyboardInterrupt:
@@ -2947,7 +2995,8 @@ def _main(args):
         status.close()
         sched.stop()
         engine.stop()
-        screen.stop()
+        if screen is not None:
+            screen.stop()
     return 0
 
 
