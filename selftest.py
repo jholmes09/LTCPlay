@@ -37520,6 +37520,79 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
     print("  ok")
 
 
+def test_remote_abort_never_waits_on_the_conductors_lock():
+    section("iPad remote: the screen Abort's laser blank never waits on the "
+            "conductor's lock held through a slow device call (narrow "
+            "review of #46, P2)")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import schedule_service as SV
+    R = _RemoteRig(S)
+    real = SV.write_json_atomic
+    held = threading.Event()
+    let_go = threading.Event()
+    holder = None
+    try:
+        R.sign_in()
+        _live_show(R)
+        seen = {}
+
+        def slow_device_call():
+            # What the conductor does in a locked output call: the lock
+            # is held for as long as the device takes.
+            with R.c._lock:
+                held.set()
+                let_go.wait(3.0)
+        holder = threading.Thread(target=slow_device_call, daemon=True)
+        holder.start()
+        held.wait(2.0)
+        real_blank = R.c.devices.lasers_blank
+
+        def blank():
+            seen.setdefault("blank", time.monotonic())
+            return real_blank()
+        R.c.devices.lasers_blank = blank
+
+        def saving(path, doc, **kw):
+            seen.setdefault("save", time.monotonic())
+            return real(path, doc, **kw)
+        SV.write_json_atomic = saving
+        BUDGET = 0.5
+        t0 = time.monotonic()
+        box = {}
+
+        def press():
+            box["r"] = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        p = threading.Thread(target=press, daemon=True)
+        p.start()
+        deadline = t0 + BUDGET
+        while "save" not in seen and time.monotonic() < deadline:
+            time.sleep(0.005)
+        reached = seen.get("save")
+        let_go.set()
+        p.join(10)
+        R.settle()
+        check(held.is_set(), "the conductor's lock was held for the test")
+        check("blank" in seen and seen["blank"] - t0 < BUDGET,
+              f"the laser blank went at the press while the conductor's "
+              f"lock was held: {seen} t0={t0}")
+        check(reached is not None and reached - t0 < BUDGET,
+              f"the Abort reached the scheduler (its save began) within "
+              f"{BUDGET} s while the conductor's lock was held through a "
+              f"slow device call, not after it: {seen} t0={t0}")
+        st, _h, out = box.get("r", (None, None, {}))
+        check(st == 200 and out.get("lasers_blanked") is True,
+              f"and the answer says the lasers were blanked: {st} {out}")
+    finally:
+        let_go.set()
+        if holder is not None:
+            holder.join(5)
+        SV.write_json_atomic = real
+        R.close()
+    print("  ok")
+
+
 def test_remote_abort_and_start_need_the_confirm():
     section("iPad remote: Abort and Start now need the on-page confirm")
     S = _sched()
@@ -39381,6 +39454,7 @@ if __name__ == "__main__":
     test_remote_abort_and_start_need_the_confirm()
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
+    test_remote_abort_never_waits_on_the_conductors_lock()
     test_remote_reset_and_abort_1_ms_apart_under_a_slow_save()
     test_deck_abort_with_no_show_reads_what_the_engine_did()
     test_deck_requests_share_one_no_proxy_opener()

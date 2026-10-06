@@ -7417,6 +7417,17 @@ def build():
   '            lasers = self._lasers_dark_now()\n',
   '            lasers = (None, "")\n'),
 
+ # -- narrow review of #46, P2: the Abort's laser blank never waits on the conductor's lock --
+ ("abortlock: the Abort's laser blank reads its version under the conductor's lock",
+  'ltcplay/conductor.py',
+  '        ver = self._ver["lasers"]\n        r, took = self._device_call(',
+  '        with self._lock:\n            ver = self._ver["lasers"]\n        r, took = self._device_call('),
+
+ ("abortlock: the Abort's laser blank waits for the conductor's lock to record",
+  'ltcplay/conductor.py',
+  '        if not self._lock.acquire(blocking=False):\n            return r\n',
+  '        if not self._lock.acquire():\n            return r\n'),
+
  # -- review of PR #43 P0-2 re-anchored, and re-review P1-B, P2-a, P2-h: the BEYOND route check --
  ('review43: a show file with no BEYOND route passes the check',
   'ltcplay/fire_ice.py',

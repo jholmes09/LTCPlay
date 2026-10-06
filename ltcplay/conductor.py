@@ -1133,15 +1133,27 @@ class Conductor:
         """The lasers blanked on the CALLER's thread, at once, before
         anything else the caller does (review of PR #43, re-review P1-A:
         the screen Abort's blank waited on the scheduler's tonight.json
-        save). No lock is held during the device call and nothing is
-        journaled unless it fails. A blank only darkens, so it is safe
-        whatever comes next. Returns the device's Result."""
-        with self._lock:
-            ver = self._ver["lasers"]
-        r = self._call(f"lasers blanked ({what})", self.devices.lasers_blank)
-        with self._lock:
+        save). A blank only darkens, so it is safe whatever comes next.
+        Returns the device's Result.
+
+        It never waits on this conductor's lock (narrow review of #46,
+        P2): the lock may be held through a slow device call, and the
+        Abort's latch, save and stop must not queue behind it. The laser
+        record's version is read without the lock (one int out of a dict),
+        the blank goes out, and the outcome is written down only if the
+        lock is free at that moment. If it is not, nothing is lost: the
+        Abort's own step blanks again, forced, and records that."""
+        label = f"lasers blanked ({what})"
+        ver = self._ver["lasers"]
+        r, took = self._device_call(label, self.devices.lasers_blank)
+        if not self._lock.acquire(blocking=False):
+            return r
+        try:
             if self._ver["lasers"] == ver:
                 self._set("lasers", BLACK if r.ok else UNKNOWN)
+            self._said_of_call(label, r, took)
+        finally:
+            self._lock.release()
         return r
 
     def _reblank(self, what):
@@ -1545,6 +1557,13 @@ class Conductor:
         failure, written down as a fault with its sentence, unless `gen`
         is given and a newer request has come in since (a laser restore
         cut short by an Abort is what the Abort wanted, not a fault)."""
+        r, took = self._device_call(label, fn, *args)
+        self._said_of_call(label, r, took, gen)
+        return r
+
+    def _device_call(self, label, fn, *args):
+        """(Result, seconds): one output call, nothing written down and no
+        lock taken. Never raises; anything but a Result counts as failed."""
         t0 = self._clock()
         try:
             r = fn(*args)
@@ -1553,7 +1572,10 @@ class Conductor:
         if not isinstance(r, Result):
             r = failed(f"{label}: the output returned {r!r}, not a Result, "
                        f"so it counts as not done.")
-        took = self._clock() - t0
+        return r, self._clock() - t0
+
+    def _said_of_call(self, label, r, took, gen=None):
+        """Write down a slow or failed output call (takes the lock)."""
         if took > SLOW_CALL_S:
             self._note(f"{label} took {took * 1000:.0f} ms. Output calls "
                        f"must return at once; a slow one delays Abort.",
@@ -1565,7 +1587,6 @@ class Conductor:
             else:
                 self._note(f"Not done: {r.sentence}", fault=True,
                            action="output", outcome="failed")
-        return r
 
     def _ask(self, label, fn):
         try:
