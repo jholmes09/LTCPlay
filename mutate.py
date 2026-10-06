@@ -18,6 +18,18 @@ For CI, two options that change nothing about a plain run:
                        each with its reason; see mutate_expected_misses.txt.
                        In this mode a mutation counts as caught only when
                        the suite fails under it twice running.
+
+And three that narrow the sweep to what a change can have broken (the
+per-PR gate; the nightly sweep and a release tag still run everything):
+
+    --changed BASE     run only the mutations a diff against git revision
+                       BASE can have changed the result of: see
+                       select_affected() for the rules
+    --files a,b,c      the same, with the changed files named by hand
+                       (no git needed, e.g. on the show PC)
+    --list             print what would run and why, then stop
+    --catchers FILE    {mutation name: test that caught it} from an earlier
+                       sweep, so a changed test re-runs only what it guards
 """
 import subprocess
 import sys
@@ -6055,10 +6067,14 @@ def main():
         os.remove(LOCK)
 
 
+OPTS = {"changed": None, "files": None, "list": False, "catchers": None}
+
+
 def _args(argv):
-    """Name filters, plus the two CI options. Anything else is a filter, as
-    it always was."""
+    """Name filters, plus the CI options. Anything else is a filter, as it
+    always was."""
     wants, shard, expected = [], None, None
+    OPTS.update(changed=None, files=None, list=False, catchers=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -6066,6 +6082,14 @@ def _args(argv):
             shard = (int(i), int(n))
         elif a == "--expected":
             expected = next(it)
+        elif a == "--changed":
+            OPTS["changed"] = next(it)
+        elif a == "--files":
+            OPTS["files"] = next(it)
+        elif a == "--catchers":
+            OPTS["catchers"] = next(it)
+        elif a == "--list":
+            OPTS["list"] = True
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -6092,11 +6116,265 @@ def _load_expected(path):
     return out, unknown
 
 
+# ---------------------------------------------------------- affected mode --
+# The per-PR gate runs only the mutations whose result the diff can have
+# changed. A mutation's result depends on two things: the file it breaks and
+# the tests that notice. So a mutation runs when its target file changed, or
+# the mutation itself is new or edited, or its expected-miss line changed, or
+# the test that caught it last time changed (when a catchers file says
+# which; without one, a deleted test means the whole list). Any change to a
+# file the flame, laser, Abort or arming paths run through also re-runs the
+# whole of flamesafe, the conductor and the flame link, whatever else
+# changed: those are the guarantees that must never go quiet. Everything
+# else (a doc, a launcher, the brand, an installer script) selects nothing,
+# and a shard with nothing to run returns at once. The nightly sweep and
+# every release tag run the whole list, so a loss this misses (a test
+# weakened without being renamed, a change in one file that silences a test
+# of another) shows within a day, and never reaches a tag unseen.
+
+# A change to any of these re-runs every SAFETY_CORE mutation.
+SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
+                   "ltcplay/streamdeck.py", "ltcplay/schedule_service.py",
+                   "ltcplay/schedule.py", "ltcplay/beyond.py",
+                   "ltcplay/madmapper.py", "ltcplay/devices.py",
+                   "ltcplay/trigger.py", "ltcplay/output.py",
+                   "ltcplay/player.py", "ltcplay/session.py",
+                   "ltcplay/clock.py", "ltcplay/announce.py",
+                   "ltcplay/showaudio.py", "ltcplay/onlyone.py")
+# The mutations that then always run: the safety program, the conductor
+# (Hold, Resume, Abort, the gates) and the link between them.
+SAFETY_CORE = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py")
+# A change here changes what the whole suite means: run everything.
+HARNESS = ("test_show_fixtures.py",)
+
+
+def _git(*args, base=None):
+    r = subprocess.run(["git"] + list(args), cwd=HERE, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def _git_changed(base):
+    """Files that differ between the work tree and the merge base of BASE
+    and HEAD (so a PR is judged on its own commits, not on what main did
+    since it branched). Uncommitted edits count too."""
+    try:
+        point = _git("merge-base", base, "HEAD").strip() or base
+    except RuntimeError:
+        point = base
+    names = _git("diff", "--name-only", "-z", point).split("\0")
+    return point, sorted({n for n in names if n})
+
+
+def _base_text(base, path):
+    """The file at BASE, or None when it did not exist there."""
+    try:
+        return _git("show", f"{base}:{path}")
+    except RuntimeError:
+        return None
+
+
+def _mutations_in(text):
+    """The MUTATIONS list of a mutate.py source text, parsed and never run,
+    as {name: (file, old, new)}. Raises if it is not a plain list of
+    constant 4-tuples (the CI workflow checks the same shape)."""
+    import ast
+    tree = ast.parse(text)
+    lists = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "MUTATIONS"
+                     for t in n.targets)]
+    if len(lists) != 1 or not isinstance(lists[0].value, ast.List):
+        raise ValueError("expected exactly one plain `MUTATIONS = [...]`")
+    out = {}
+    for e in lists[0].value.elts:
+        if not (isinstance(e, ast.Tuple) and len(e.elts) == 4
+                and all(isinstance(x, ast.Constant) for x in e.elts)):
+            raise ValueError(f"the entry at line {e.lineno} is not a "
+                             f"constant (name, file, old, new)")
+        name, rel, old, new = (x.value for x in e.elts)
+        out[name] = (rel, old, new)
+    return out
+
+
+def _tests_in(text):
+    """{test function name: its source} for a selftest.py text."""
+    import ast
+    tree = ast.parse(text)
+    lines = text.splitlines()
+    return {n.name: "\n".join(lines[n.lineno - 1:n.end_lineno])
+            for n in tree.body if isinstance(n, ast.FunctionDef)
+            and n.name.startswith("test_")}
+
+
+def _expected_names(text):
+    names = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line.count("|") >= 2:
+            names.add(line.split("|", 2)[1].strip())
+    return names
+
+
+def _load_catchers(path):
+    """{mutation name: test that caught it}, or {} when the file is missing
+    or unreadable (then a changed test is judged without it)."""
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return {str(k): str(v) for k, v in d.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def select_affected(changed, base=None, catchers=None):
+    """(names to run or None for everything, reasons).
+
+    `changed` is the list of changed paths (repo relative, forward
+    slashes). `base` is the git revision to read the old mutate.py,
+    selftest.py and expected-miss list from; without it (--files) those
+    three count as changed in full when they are in the list."""
+    reasons = []
+    chosen = set()
+    by_file = {}
+    for name, rel, _old, _new in MUTATIONS:
+        by_file.setdefault(rel, set()).add(name)
+
+    def every(why):
+        reasons.append(f"EVERYTHING: {why}")
+        return None, reasons
+
+    for p in changed:
+        if p in by_file:
+            chosen |= by_file[p]
+            reasons.append(f"{p}: its {len(by_file[p])} mutations")
+    def safety(p):
+        # Code only: CONTRACT.md and the example config prove nothing by
+        # changing, and the config's own tests run with flamesafe's suite.
+        return p.startswith(SAFETY_TRIGGERS) and p.endswith(".py")
+
+    if any(safety(p) for p in changed):
+        core = {n for n, rel, _o, _n in MUTATIONS if rel.startswith(SAFETY_CORE)}
+        hit = sorted(p for p in changed if safety(p))
+        new = core - chosen
+        chosen |= core
+        reasons.append(f"a safety file changed ({', '.join(hit)}): every "
+                       f"flamesafe, conductor and flame link mutation "
+                       f"({len(new)} more)")
+    if any(p in HARNESS for p in changed):
+        return every("the shared test fixtures changed")
+
+    if "mutate.py" in changed:
+        if base is None:
+            return every("mutate.py changed and there is no base to compare")
+        old_text = _base_text(base, "mutate.py")
+        try:
+            old = _mutations_in(old_text) if old_text else {}
+        except (ValueError, SyntaxError) as e:
+            return every(f"the old mutate.py could not be read ({e})")
+        edited = {n for n, rel, o, nw in MUTATIONS if old.get(n) != (rel, o, nw)}
+        chosen |= edited
+        reasons.append(f"mutate.py: {len(edited)} new or edited mutations")
+
+    if "mutate_expected_misses.txt" in changed:
+        here = _expected_names(_read(os.path.join(HERE, "mutate_expected_misses.txt")))
+        there = _expected_names(_base_text(base, "mutate_expected_misses.txt")) \
+            if base else set()
+        listed = (here | there) & {n for n, *_ in MUTATIONS}
+        chosen |= listed
+        reasons.append(f"the expected-miss list: its {len(listed)} mutations")
+
+    if "selftest.py" in changed or "flamesafe/test_flamesafe.py" in changed:
+        if base is None:
+            return every("the suite changed and there is no base to compare")
+        old_text = _base_text(base, "selftest.py")
+        try:
+            old_tests = _tests_in(old_text) if old_text else {}
+            new_tests = _tests_in(_read(os.path.join(HERE, "selftest.py")))
+        except SyntaxError as e:
+            return every(f"selftest.py could not be parsed ({e})")
+        gone = sorted(set(old_tests) - set(new_tests))
+        altered = sorted(n for n in old_tests if n in new_tests
+                         and old_tests[n] != new_tests[n])
+        if "flamesafe/test_flamesafe.py" in changed:
+            # Run by test_flamesafe_in_its_own_process: that is the test
+            # that changed, as far as this sweep can tell.
+            altered.append("test_flamesafe_in_its_own_process")
+        if gone and not catchers:
+            return every(f"{len(gone)} test(s) deleted or renamed "
+                         f"({', '.join(gone[:3])}{'...' if len(gone) > 3 else ''}) "
+                         f"and no catchers file says what they guarded")
+        if catchers:
+            touched = set(gone) | set(altered)
+            # A mutation whose last catcher changed, or that no catcher is
+            # recorded for (never swept with the file, or a new entry).
+            dep = {n for n, *_ in MUTATIONS
+                   if catchers.get(n) in touched or n not in catchers}
+            chosen |= dep
+            reasons.append(f"selftest.py: {len(gone)} test(s) gone, "
+                           f"{len(altered)} changed; {len(dep)} mutations "
+                           f"they caught last time, or that no sweep has "
+                           f"recorded a catcher for")
+        else:
+            reasons.append(f"selftest.py: {len(altered)} test(s) changed, "
+                           f"none deleted; the nightly sweep re-proves what "
+                           f"they catch in files this change did not touch")
+    return chosen, reasons
+
+
 def _run():
     wants, shard, expected_file = _args(sys.argv[1:])
     expected, unknown = ({}, [])
     if expected_file:
         expected, unknown = _load_expected(expected_file)
+    only = None
+    if OPTS["changed"] or OPTS["files"] is not None:
+        base = None
+        if OPTS["changed"]:
+            try:
+                base, changed = _git_changed(OPTS["changed"])
+            except RuntimeError as e:
+                print(f"cannot read the diff: {e}")
+                return 2
+        else:
+            changed = sorted({p.strip().replace("\\", "/")
+                              for p in OPTS["files"].split(",") if p.strip()})
+        print(f"changed ({len(changed)} files"
+              f"{', against ' + base[:10] if base else ''}):")
+        for p in changed:
+            print(f"  {p}")
+        catchers = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
+        only, reasons = select_affected(changed, base, catchers)
+        for r in reasons:
+            print(f"  -> {r}")
+        if only is None:
+            print(f"running every mutation ({len(MUTATIONS)})")
+        else:
+            print(f"running {len(only)} of {len(MUTATIONS)} mutations")
+            if not only:
+                print("nothing this change can have broken is mutated "
+                      "here: nothing to run")
+                return 0
+    if OPTS["list"]:
+        for index, (name, rel, _o, _n) in enumerate(MUTATIONS):
+            if only is not None and name not in only:
+                continue
+            if wants and not any(w in name.lower() for w in wants):
+                continue
+            if shard and index % shard[1] != shard[0]:
+                continue
+            print(f"  would run  {rel}: {name}")
+        return 0
+    if only is not None and shard:
+        mine = [n for i, (n, *_r) in enumerate(MUTATIONS)
+                if n in only and i % shard[1] == shard[0]]
+        if not mine:
+            print(f"shard {shard[0]}/{shard[1]}: none of the selected "
+                  f"mutations fall in this shard: nothing to run")
+            return 0
+        print(f"shard {shard[0]}/{shard[1]}: {len(mine)} mutations to run")
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
@@ -6115,12 +6393,19 @@ def _run():
         return 2
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    # The bytes of every file this run breaks, before it does: the restore
+    # is proved against them at the end, byte for byte.
+    originals = {}
     for index, (name, rel, old, new) in enumerate(MUTATIONS):
+        if only is not None and name not in only:
+            continue
         if wants and not any(w in name.lower() for w in wants):
             continue
         if shard and index % shard[1] != shard[0]:
             continue
         path = os.path.join(HERE, rel)
+        if rel not in originals:
+            originals[rel] = _read(path)
         # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
         # no newline translation, so a restore on Windows cannot turn an LF
         # file into a CRLF one and a pattern cannot miss on a line ending.
@@ -6167,15 +6452,22 @@ def _run():
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
-    # Prove the tree is back the way it started before reporting anything.
-    if not run_suite():
-        print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
-              "so a restore did not land. Fix that before trusting any line "
-              "above.")
-        for w in _LAST_FAILS:
-            print(f"      {w}")
+    # Prove the tree is back the way it started before reporting anything:
+    # every file this run broke is compared with the bytes it had before,
+    # which is a stronger proof than a green suite (a restore that landed the
+    # wrong text could still pass) and costs nothing. The suite runs once
+    # more only when that comparison fails, to say how bad it is.
+    dirty = [rel for rel, text in originals.items()
+             if _read(os.path.join(HERE, rel)) != text]
+    if dirty:
+        print(f"\nTHE TREE IS NOT CLEAN: a restore did not land in "
+              f"{', '.join(dirty)}. Fix that before trusting any line above.")
+        if not run_suite():
+            print("  and the suite fails with nothing mutated:")
+            for w in _LAST_FAILS:
+                print(f"      {w}")
         return 2
-    print("tree restored and green")
+    print(f"tree restored byte for byte ({len(originals)} files)")
     if not expected_file:
         return 1 if missed else 0
     return _against_expected(expected, unknown, missed_names, caught_names,
