@@ -598,8 +598,8 @@ MUTATIONS = [
 
  ("remote: a name in the page's body skips the operator list",
   "ltcplay/remote.py",
-  "                return who, screen, False",
-  "                return who, screen, True"),
+  "                return who, screen or \"Rack screen\", False",
+  "                return who, screen or \"Rack screen\", True"),
 
  ("scheduler: the operator list is asked of the page and not of others",
   "ltcplay/schedule.py",
