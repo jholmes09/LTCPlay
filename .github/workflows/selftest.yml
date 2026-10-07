@@ -1,10 +1,24 @@
 name: selftest
 
+# The per-PR gate. What runs when, how long it takes and what a failure means
+# is written up in TESTING.md; the short version:
+#
+#   selftest   every PR, every push to main, every tag: the whole suite on
+#              ubuntu and windows, about 5 minutes each
+#   mutate     32 shards, the required checks. On a PR and on a push to main
+#              each shard runs only the mutations the diff can have changed
+#              the result of (mutate.py --changed: the mutations of the files
+#              the diff touches, every flamesafe, conductor and flame link
+#              mutation when a safety file is touched, new or edited
+#              mutations, and whatever a deleted test guarded). A shard with
+#              nothing to run returns in seconds. A release tag runs the
+#              whole list on ubuntu and windows. The whole list also runs
+#              every night on main (nightly-mutate.yml), and on demand.
+#
 # A PR runs once, as a pull_request. Pushes run only for main and for release
-# tags, so a PR branch is no longer tested twice. ready_for_review is listed
-# alongside the three GitHub gives by default (opened, synchronize, reopened)
-# because that is the moment a draft's mutate job -- skipped below while it
-# stays a draft -- is first allowed to run.
+# tags, so a PR branch is not tested twice. ready_for_review is listed with
+# the three GitHub gives by default because that is the moment a draft's
+# mutate job, skipped while it stays a draft, is first allowed to run.
 on:
   push:
     branches: [main]
@@ -23,13 +37,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The Mac build and the GPL show keep working, and Windows has to as well.
-  # Every PR and every push proves all three.
+  # The Windows show PC is the version that must work; ubuntu is the cheap
+  # second opinion. macOS is no longer tested here: the Dollywood Mac is
+  # frozen at gpl-2026.09.15.10 and main no longer keeps GPL behavior.
   selftest:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -42,32 +57,23 @@ jobs:
       - run: python -m pip install numpy zstandard tzdata pillow
       - run: python -u selftest.py
 
-  # mutate.py is about 10 hours of runner time per OS since the synthetic show
-  # fixtures (PR #9) switched the show-folder tests on, so it runs where it
-  # pays for itself:
-  #   ubuntu   on a release tag, and on any PR or push to main that changes
-  #            a file mutate.py breaks on purpose (every file named in its
-  #            MUTATIONS list, read from mutate.py itself on each run so the
-  #            list can never drift), anything under flamesafe/, or
-  #            mutate.py, selftest.py, the expected-miss list or this file
-  #   windows  on a release tag only
-  #   macOS    never here (billed at 10x); it is run on the show Mac, with
-  #            the real renders, where every mutation has to be caught
-  # A mutation counts as caught in CI only if the suite fails under it twice,
-  # so each run is split thirty-two ways to keep each shard well inside its
-  # job limit (eight shards took 75 to 90+ minutes after PR #9; sixteen shards
-  # all hit the 90 minute limit once flamesafe, logging, the BOM fix and the
-  # web cache brought the list to 463 mutations).
-  #
-  # Thirty-two shards of that on every push to a draft PR is real money for a
-  # private repo, spent on a diff that is still being written. The mutate
-  # jobs below are skipped while the PR is a draft and run for the first time
-  # when it is marked ready for review (see the ready_for_review trigger
-  # above); selftest itself still runs on every push, drafts included, since
-  # that is the fast, cheap check a draft is for.
+  # Decides what the mutate shards do:
+  #   mode=full      a release tag: every mutation, ubuntu and windows
+  #   mode=affected  a PR or a push to main with a base to diff against:
+  #                  each shard runs `mutate.py --changed BASE`, which picks
+  #                  the mutations the diff can have changed the result of
+  #                  (the rules are in mutate.py, select_affected(), and
+  #                  TESTING.md), so the list of files to watch can never
+  #                  drift from the list of files mutate.py breaks
+  #   mode=none      that selection is empty (a doc, a launcher, the brand,
+  #                  this workflow): the shards report success at once
+  # A push with no usable base (a first push, a rewritten one) runs
+  # everything rather than guess.
   changes:
     runs-on: ubuntu-latest
     outputs:
+      mode: ${{ steps.decide.outputs.mode }}
+      base: ${{ steps.decide.outputs.base }}
       oses: ${{ steps.decide.outputs.oses }}
     steps:
       - uses: actions/checkout@v5
@@ -82,111 +88,154 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           set -u
-          say() { echo "$1"; echo "oses=$2" >> "$GITHUB_OUTPUT"; exit 0; }
+          say() {
+            echo "$1"
+            { echo "mode=$2"; echo "base=$3"; echo "oses=$4"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
           if [[ "$REF" == refs/tags/* ]]; then
-            say "release tag: ubuntu and windows" '["ubuntu-latest","windows-latest"]'
+            say "release tag: every mutation, ubuntu and windows" full "" '["ubuntu-latest","windows-latest"]'
           fi
           if [[ "$EVENT" == pull_request ]]; then base="$PR_BASE"; else base="$BEFORE"; fi
-          # No usable base (a first push, a rewritten one): run it rather
-          # than guess.
-          changed="$RUNNER_TEMP/changed"
-          if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
-             ! git diff --name-only -z "$base" "$GITHUB_SHA" > "$changed"; then
-            say "no base to compare against: ubuntu" '["ubuntu-latest"]'
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            say "no base to compare against: every mutation, ubuntu" full "" '["ubuntu-latest"]'
           fi
-          # The watched files are not a hand-kept list (one drifted: clock.py
-          # and web.py had mutations but did not trigger them). They are read
-          # out of this commit's mutate.py: every file its MUTATIONS list
-          # breaks, plus flamesafe/*.py, mutate.py, selftest.py, the
-          # expected-miss list and this workflow. The list is parsed, never
-          # imported or run, and anything in it that is not a plain
-          # (name, "path", old, new) entry fails this job rather than letting
-          # a file slip out of the set. Exit 0: a watched file changed.
-          # Exit 1: none did. Anything else: stop, loudly.
-          set +e
-          python3 - "$changed" <<'PY'
-          import ast, sys
+          # mutate.py --list needs no numpy: it stops before the baseline.
+          # Exit 0 with "nothing to run" means the selection is empty.
+          out="$RUNNER_TEMP/selection.txt"
+          if ! python3 mutate.py --changed "$base" --list > "$out"; then
+            cat "$out"
+            echo "::error::mutate.py could not work out what this change affects"
+            exit 1
+          fi
+          grep -v '^  would run' "$out" || true
+          echo "$(grep -c '^  would run' "$out" || true) mutations would run"
+          if grep -q 'nothing to run' "$out"; then
+            say "nothing this change can have broken is mutated: the shards return at once" none "$base" '["ubuntu-latest"]'
+          fi
+          say "the affected mutations, ubuntu" affected "$base" '["ubuntu-latest"]'
 
-          ALWAYS = {"mutate.py", "selftest.py", "mutate_expected_misses.txt",
-                    ".github/workflows/selftest.yml"}
-
-          def die(why):
-              print(f"::error::cannot work out what mutate.py covers: {why}")
-              sys.exit(3)
-
-          try:
-              tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
-          except (OSError, SyntaxError) as e:
-              die(f"mutate.py could not be read ({e})")
-          lists = []
-          for node in ast.walk(tree):
-              names = []
-              if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                  targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                  names = [t for t in targets if isinstance(t, ast.Name)]
-                  if any(t.id == "MUTATIONS" for t in names):
-                      lists.append(node)
-              elif (isinstance(node, ast.Attribute) and node.attr in ("append", "extend", "insert")
-                    and isinstance(node.value, ast.Name) and node.value.id == "MUTATIONS"):
-                  die(f"line {node.lineno} changes MUTATIONS after it is built")
-          if len(lists) != 1 or not isinstance(lists[0], ast.Assign) \
-                  or not isinstance(lists[0].value, ast.List):
-              die("expected exactly one plain `MUTATIONS = [...]`")
-          targets = set()
-          for entry in lists[0].value.elts:
-              if not (isinstance(entry, ast.Tuple) and len(entry.elts) == 4
-                      and isinstance(entry.elts[1], ast.Constant)
-                      and isinstance(entry.elts[1].value, str)):
-                  die(f"the entry at line {entry.lineno} is not (name, \"path\", old, new)")
-              targets.add(entry.elts[1].value)
-          if not targets:
-              die("MUTATIONS is empty")
-          watched = targets | ALWAYS
-          print(f"watched: {len(watched)} files, {len(targets)} of them named in MUTATIONS,"
-                " plus flamesafe/*.py")
-          with open(sys.argv[1], "rb") as fh:
-              changed = [p for p in fh.read().decode("utf-8").split("\0") if p]
-          print("changed:")
-          for p in changed:
-              print(f"  {p}")
-          hits = [p for p in changed if p in watched
-                  or (p.startswith("flamesafe/") and p.endswith(".py"))]
-          for p in hits:
-              print(f"watched: {p}")
-          sys.exit(0 if hits else 1)
-          PY
-          rc=$?
-          set -e
-          case $rc in
-            0) say "a watched file changed: ubuntu" '["ubuntu-latest"]' ;;
-            1) say "nothing mutate.py proves has changed" '[]' ;;
-            *) exit 1 ;;
-          esac
-
+  # The 32 shard names are the required checks on main, so there are always
+  # 32 of them, whatever there is to do. Thirty-two shards of a full sweep on
+  # every push to a draft PR is real money spent on a diff that is still
+  # being written: the mutate jobs are skipped while the PR is a draft and
+  # run for the first time when it is marked ready for review; selftest
+  # itself still runs on every push, drafts included.
   mutate:
     needs: changes
-    # A change that touches no file mutate.py breaks still runs the ubuntu shards,
-    # each finishing at once, so the 32 required shard checks report success and
-    # doc-only PRs can merge.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.oses != '[]' && needs.changes.outputs.oses || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.changes.outputs.oses) }}
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # Sized for a full sweep of 1000 mutations in 32 shards: 32 mutations a
+    # shard, each two suite runs (a mutation is caught only if it fails
+    # twice) plus the baseline, so 65 runs of 130 to 200 s is 140 to 220
+    # minutes; 300 leaves room over the slow end. An affected run is a
+    # fraction of that. The sweep step stops itself 15 minutes before this
+    # limit so the job is never killed from outside with nothing said.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
-        if: needs.changes.outputs.oses != '[]'
+        if: needs.changes.outputs.mode != 'none'
+        with:
+          # --changed reads the base revision's mutate.py, selftest.py and
+          # expected-miss list out of git.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
-        if: needs.changes.outputs.oses != '[]'
+        if: needs.changes.outputs.mode != 'none'
         with:
           python-version: "3.12"
       - run: python -m pip install numpy zstandard tzdata
-        if: needs.changes.outputs.oses != '[]'
+        if: needs.changes.outputs.mode != 'none'
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
-      # SETUP FAIL fails the job.
-      - run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt
-        if: needs.changes.outputs.oses != '[]'
+      # SETUP FAIL fails the job. The step has its own limit, 15 minutes
+      # under the job's, so that when a shard runs out of time the step
+      # after it still runs and can say so. pipefail (bash's default in
+      # Actions) keeps mutate.py's exit code through tee.
+      - id: sweep
+        if: needs.changes.outputs.mode != 'none'
+        shell: bash
+        timeout-minutes: 285
+        env:
+          MODE: ${{ needs.changes.outputs.mode }}
+          BASE: ${{ needs.changes.outputs.base }}
+        run: |
+          narrow=()
+          if [[ "$MODE" == affected ]]; then narrow=(--changed "$BASE"); fi
+          python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt "${narrow[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+      - run: echo "nothing this change can have broken is mutated; nothing to run in this shard"
+        if: needs.changes.outputs.mode == 'none'
+      # Tells a shard that ran out of time apart from a missed mutation. A
+      # miss prints NOT CAUGHT or UNEXPECTED MISS and the sweep reaches its
+      # "caught N, missed M" line. A shard that ran out of time never reaches
+      # that line, so this names every mutation of the shard that has no
+      # result in the log. The mutation being run when the clock stopped is
+      # one of them: its result is unknown, not "caught".
+      - name: Report a shard that ran out of time
+        if: always() && needs.changes.outputs.mode != 'none' && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          LOG: ${{ runner.temp }}/mutate.log
+        run: |
+          python - <<'PY'
+          import ast, os
+
+          shard, total = int(os.environ["SHARD"]), 32
+          log = []
+          try:
+              with open(os.environ["LOG"], encoding="utf-8", errors="replace") as fh:
+                  log = [l.rstrip("\r\n") for l in fh]
+          except OSError:
+              pass
+          if any(l.startswith("caught ") and ", missed " in l for l in log):
+              print("the sweep finished; any failure is in its own lines above")
+              raise SystemExit(0)
+          if any("The suite FAILS with nothing mutated" in l for l in log):
+              print("the baseline failed; that is not a timeout")
+              raise SystemExit(0)
+          if any("nothing to run" in l or "cannot read the diff" in l for l in log):
+              print("the shard stopped before any mutation ran; see its own lines above")
+              raise SystemExit(0)
+          tree = ast.parse(open("mutate.py", encoding="utf-8").read(), "mutate.py")
+          names = None
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign) and any(
+                      isinstance(t, ast.Name) and t.id == "MUTATIONS" for t in node.targets):
+                  names = [e.elts[0].value for e in node.value.elts]
+          mine = [n for i, n in enumerate(names) if i % total == shard]
+          # In an affected run only part of the shard was due; the sweep
+          # says which ("would run" is --list's word, "to run" the sweep's).
+          due = None
+          for l in log:
+              if l.startswith("shard ") and " mutations to run" in l:
+                  due = int(l.split(":")[1].split()[0])
+          done = set()
+          for l in log:
+              for pre in ("  caught      ", "  NOT CAUGHT  "):
+                  if l.startswith(pre):
+                      done.add(l[len(pre):])
+              if l.startswith("  SETUP FAIL  "):
+                  done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
+          todo = [n for n in mine if n not in done]
+          if not todo or (due is not None and len(done) >= due):
+              print("no mutation is missing a result; the shard stopped some other way")
+              raise SystemExit(0)
+          head = (f"shard {shard}/{total} TIMED OUT, it did not finish: "
+                  f"{len(done)} of its {due if due is not None else len(mine)} mutations ran to a result. "
+                  "This is a timeout, not a missed mutation; re-run the shard.")
+          esc = lambda s: s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=mutate shard timed out::" + esc(head + " Not run: " + " | ".join(todo))[:3500])
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("### " + head + "\n\n" + "\n".join("- " + n for n in todo) + "\n")
+          print(head)
+          for n in todo:
+              print("  did not run  " + n)
+          raise SystemExit(1)
+          PY
