@@ -18,10 +18,24 @@ For CI, two options that change nothing about a plain run:
                        each with its reason; see mutate_expected_misses.txt.
                        In this mode a mutation counts as caught only when
                        the suite fails under it twice running.
+
+Speed, none of it changing what a mutation has to survive:
+
+    (default)          each mutated run stops at its first failing check
+                       (LTC_SELFTEST_FAILFAST in selftest.py). The baseline
+                       and the final check always run the whole suite.
+                       --no-failfast turns this off.
+    --catchers FILE    mutate_catchers.json: the test that caught each
+                       mutation last time, run first. An ordering hint only.
+    --write-catchers F add what this sweep learned to F
+    --jobs N           N mutations at once, each in its own copy of the tree
+                       with its own home, temp and app-data folders
 """
+import json
 import subprocess
 import sys
 import os
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -5997,13 +6011,56 @@ def build():
 
 
 # What the last suite run failed on, so a surprising result can be read.
-_LAST_FAILS = []
+class _PerThread:
+    """A list that each thread sees its own copy of, so side-by-side workers
+    (--jobs) do not read each other's last result."""
+
+    def __init__(self, start):
+        self._start = start
+        self._tl = threading.local()
+
+    def _v(self):
+        if not hasattr(self._tl, "v"):
+            self._tl.v = list(self._start)
+        return self._tl.v
+
+    def __getitem__(self, i):
+        return self._v()[i]
+
+    def __setitem__(self, i, x):
+        self._v()[i] = x
+
+    def __iter__(self):
+        return iter(self._v())
+
+    def __len__(self):
+        return len(self._v())
 
 
-def run_suite():
+_LAST_FAILS = _PerThread([])
+# The test the last fail-fast run stopped in (selftest.py prints it).
+_LAST_TEST = _PerThread([""])
+
+
+def run_suite(failfast=False, first=None, root=None, extra_env=None):
+    """Run selftest.py. failfast=True stops it at the first failing check
+    (only for mutated runs: all that matters there is whether it fails).
+    first is a test name to run before the others. Neither changes which
+    checks a green run has to pass: a suite is green only if every check in
+    every test passed."""
+    env = dict(os.environ)
+    env.update(extra_env or {})
+    env.pop("LTC_SELFTEST_FAILFAST", None)
+    env.pop("LTC_SELFTEST_FIRST", None)
+    if failfast:
+        env["LTC_SELFTEST_FAILFAST"] = "1"
+    if failfast and first:
+        env["LTC_SELFTEST_FIRST"] = first
+    _LAST_TEST[0] = ""
     try:
-        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
-                           capture_output=True, text=True, timeout=300)
+        r = subprocess.run([sys.executable, "selftest.py"], cwd=root or HERE,
+                           capture_output=True, text=True, timeout=300,
+                           env=env)
     except subprocess.TimeoutExpired as e:
         # A suite that does not finish is not a green suite. Under a
         # mutation that counts as caught (the mutation broke a test so
@@ -6022,7 +6079,22 @@ def run_suite():
     out = (r.stdout or "") + (r.stderr or "")
     _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
                       if l.startswith("  FAIL") or "Error" in l][:6]
+    for l in out.splitlines():
+        if l.startswith("  FAILFAST  stopped in "):
+            _LAST_TEST[0] = l.split()[3]
     return r.returncode == 0
+
+
+def _load_catchers(path):
+    """{mutation name: test that caught it last time}. Only an ordering hint:
+    a missing, stale or damaged file changes how soon a mutation is caught,
+    never whether it is."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return {str(k): str(v) for k, v in d.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 LOCK = os.path.join(HERE, ".mutating")
@@ -6055,10 +6127,15 @@ def main():
         os.remove(LOCK)
 
 
+OPTS = {"failfast": True, "catchers": None, "write_catchers": None,
+        "jobs": 1}
+
+
 def _args(argv):
     """Name filters, plus the two CI options. Anything else is a filter, as
     it always was."""
     wants, shard, expected = [], None, None
+    OPTS.update(failfast=True, catchers=None, write_catchers=None, jobs=1)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -6066,6 +6143,14 @@ def _args(argv):
             shard = (int(i), int(n))
         elif a == "--expected":
             expected = next(it)
+        elif a == "--jobs":
+            OPTS["jobs"] = max(1, int(next(it)))
+        elif a == "--no-failfast":
+            OPTS["failfast"] = False
+        elif a == "--catchers":
+            OPTS["catchers"] = next(it)
+        elif a == "--write-catchers":
+            OPTS["write_catchers"] = next(it)
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -6092,6 +6177,61 @@ def _load_expected(path):
     return out, unknown
 
 
+def _worker_tree(base, n):
+    """A private copy of the tree for worker n, with its own home, temp and
+    app-data folders. A mutation edits files in place, and the suite takes a
+    machine-wide output lock (found through the home folder, or LOCALAPPDATA
+    on Windows) and a few fixed things, so two workers cannot share a tree
+    or a home. Each gets its own, which is all the isolation the suite
+    needs: three full suites side by side on one machine all passed."""
+    import shutil
+    root = os.path.join(base, f"w{n}", "tree")
+    home = os.path.join(base, f"w{n}", "home")
+    os.makedirs(home)
+    shutil.copytree(HERE, root, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", ".mutating", ".claude", "*.fseq"))
+    env = {"HOME": home, "USERPROFILE": home, "TMPDIR": home, "TEMP": home,
+           "TMP": home, "LOCALAPPDATA": os.path.join(home, "Local")}
+    return root, env
+
+
+def _parallel(todo, jobs, one, tally):
+    import queue
+    import shutil
+    import tempfile
+    import threading
+    base = tempfile.mkdtemp(prefix="ltcplay_mutate_")
+    q = queue.Queue()
+    for item in todo:
+        q.put(item)
+    lock = threading.Lock()
+    errors = []
+
+    def work(n):
+        try:
+            root, env = _worker_tree(base, n)
+            while True:
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    return
+                res = one(item, root, env)
+                with lock:
+                    tally(item, res)
+        except BaseException as e:      # a dead worker must not look like
+            errors.append(repr(e))      # a clean sweep
+    try:
+        ts = [threading.Thread(target=work, args=(n,)) for n in range(jobs)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    if errors:
+        raise RuntimeError("a mutation worker died: " + "; ".join(errors))
+
+
 def _run():
     wants, shard, expected_file = _args(sys.argv[1:])
     expected, unknown = ({}, [])
@@ -6115,26 +6255,42 @@ def _run():
         return 2
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    ff = OPTS["failfast"]
+    known = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
+    learned = {}
+    todo = []
     for index, (name, rel, old, new) in enumerate(MUTATIONS):
         if wants and not any(w in name.lower() for w in wants):
             continue
         if shard and index % shard[1] != shard[0]:
             continue
-        path = os.path.join(HERE, rel)
+        todo.append((name, rel, old, new))
+    jobs = max(1, min(OPTS["jobs"], len(todo)))
+    snapshot = {rel: _read(os.path.join(HERE, rel))
+                for rel in {m[1] for m in todo}}
+
+    def one(item, root, extra_env):
+        """Apply one mutation in `root`, run the suite, put the file back.
+        Returns (kind, lines, learned_test); nothing here touches shared
+        state, so workers can run it side by side."""
+        name, rel, old, new = item
+        path = os.path.join(root, rel)
         # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
         # no newline translation, so a restore on Windows cannot turn an LF
         # file into a CRLF one and a pattern cannot miss on a line ending.
         src = _read(path)
         if src.count(old) != 1:
-            print(f"  SETUP FAIL  {name} "
-                  f"(pattern appears {src.count(old)} times in {rel})")
-            missed += 1
-            setup_fails.append(name)
-            continue
+            return ("setup", [f"  SETUP FAIL  {name} "
+                    f"(pattern appears {src.count(old)} times in {rel})"], None)
         backup = src
+        lines, test = [], None
         _write(path, src.replace(old, new, 1))
         try:
-            green = run_suite()
+            first = known.get(name)
+            green = run_suite(ff, first, root, extra_env)
+            fails = list(_LAST_FAILS)
+            if not green and ff and _LAST_TEST[0]:
+                test = _LAST_TEST[0]
             # In CI a mutation counts as caught only if the suite fails under
             # it twice running. A test that fails for the runner's reasons
             # would otherwise pass itself off as coverage: an unlisted
@@ -6142,40 +6298,69 @@ def _run():
             # listed one would read "now caught". Caught once and then not is
             # NOT CAUGHT, with what failed the first time printed.
             if not green and expected_file:
-                why = list(_LAST_FAILS)
-                if run_suite():
+                if run_suite(ff, first, root, extra_env):
                     green = True
-                    print(f"  caught once, then not: counted as NOT CAUGHT, "
-                          f"and the first failure was a flaky test: {name}")
-                    for w in why:
-                        print(f"      {w}")
+                    lines.append(f"  caught once, then not: counted as NOT "
+                                 f"CAUGHT, and the first failure was a flaky "
+                                 f"test: {name}")
+                    lines += [f"      {w}" for w in fails]
         finally:
             _write(path, backup)
         if green:
-            print(f"  NOT CAUGHT  {name}")
+            return ("missed", lines + [f"  NOT CAUGHT  {name}"], None)
+        # What caught it. A check that has nothing to do with this mutation
+        # is a flaky test passing itself off as coverage, and this is where
+        # that shows.
+        return ("caught", lines + [f"  caught      {name}"]
+                + [f"      {w}" for w in fails[:3]], test)
+
+    def tally(item, res):
+        nonlocal caught, missed
+        kind, lines, test = res
+        print("\n".join(lines), flush=True)
+        if kind == "setup":
             missed += 1
-            missed_names.append(name)
+            setup_fails.append(item[0])
+        elif kind == "missed":
+            missed += 1
+            missed_names.append(item[0])
         else:
-            print(f"  caught      {name}")
             caught += 1
-            caught_names.append(name)
-            # What caught it. A check that has nothing to do with this
-            # mutation is a flaky test passing itself off as coverage, and
-            # this is where that shows.
-            for w in _LAST_FAILS[:3]:
-                print(f"      {w}")
+            caught_names.append(item[0])
+            if test:
+                learned[item[0]] = test
+
+    if jobs == 1:
+        for item in todo:
+            tally(item, one(item, HERE, None))
+    else:
+        _parallel(todo, jobs, one, tally)
+        # HERE was never touched, but prove it, byte for byte.
+        for rel, text in snapshot.items():
+            if _read(os.path.join(HERE, rel)) != text:
+                print(f"THE TREE IS NOT CLEAN: {rel} changed during the "
+                      f"sweep.")
+                return 2
     print(f"\ncaught {caught}, missed {missed}")
+    if OPTS["write_catchers"] and learned:
+        merged = dict(_load_catchers(OPTS["write_catchers"]))
+        merged.update(learned)
+        with open(OPTS["write_catchers"], "w", encoding="utf-8",
+                  newline="\n") as fh:
+            json.dump(merged, fh, indent=0, sort_keys=True)
+            fh.write("\n")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
     # Prove the tree is back the way it started before reporting anything.
-    if not run_suite():
+    if jobs == 1 and not run_suite():
         print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
               "so a restore did not land. Fix that before trusting any line "
               "above.")
         for w in _LAST_FAILS:
             print(f"      {w}")
         return 2
-    print("tree restored and green")
+    print("tree restored and green" if jobs == 1 else
+          "tree untouched (every mutation ran in its own copy)")
     if not expected_file:
         return 1 if missed else 0
     return _against_expected(expected, unknown, missed_names, caught_names,
