@@ -38968,7 +38968,6 @@ def test_remote_unconfirmed_abort_still_disarms_the_flames():
         return
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         _live_show(R)
         calls = []
         R.remote._flame_disarm = lambda reason: (
