@@ -158,6 +158,8 @@ def _bench_send_gaps():
             d = meters[k]
             if ms > d.get(m, 0.0):
                 d[m] = ms
+            while len(d) > 1440:        # a day of minutes, never more
+                del d[min(d)]
         floor = 50.0 if kind == "timecode" else 100.0
         if ms >= floor and len(events) < 1000:
             events.append((round(time.time(), 3), kind, round(ms, 1), what))

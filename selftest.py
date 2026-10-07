@@ -39623,6 +39623,116 @@ def test_screen_arm_deck_rules():
     print("  ok")
 
 
+def test_engine_stall_probe_memory_is_bounded():
+    section("bench stall probe: reading the engine's memory 3000 times "
+            "allocates nothing that stays (show PC soak of c8179eb: +271 "
+            "MB/h)")
+    # The show PC's bench soak of c8179eb: the engine grew 67 to 536 MB in
+    # 1.8 h, linear, while the deck and flamesafe stayed flat. The stall
+    # probe read the working set every 100 ms through a ctypes Structure
+    # class (and its POINTER type) DEFINED INSIDE the call, and ctypes keeps
+    # every POINTER type it ever made: about 7.5 KB a call, 10 calls a
+    # second, for ever. The Windows branch runs here against a stand-in
+    # kernel32, so the same lines are measured on every runner.
+    import ctypes as _ct
+    import gc as _gc
+    import tracemalloc as _tm
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    if sp not in sys.path:
+        sys.path.insert(0, sp)
+    import bench_probe as bp
+
+    class _Fn:
+        argtypes = None
+
+        def __call__(self, h, ref, cb):
+            return 1
+
+    class _K32:
+        def __init__(self):
+            self.K32GetProcessMemoryInfo = _Fn()
+
+        def GetCurrentProcess(self):
+            return 0
+    saved = (bp.WINDOWS, list(bp._K32), list(getattr(bp, "_PMC", [])))
+    try:
+        bp.WINDOWS = True
+        bp._K32[:] = [_K32()]
+        if hasattr(bp, "_PMC"):
+            bp._PMC[:] = []
+        got = bp.process_mem()
+        check(got[0] is not None,
+              f"the probe's Windows memory reader read nothing from the "
+              f"stand-in kernel32: {got}")
+        cache = getattr(_ct, "_pointer_type_cache", {})
+        n0 = len(cache)
+        _gc.collect()
+        _tm.start()
+        try:
+            for _ in range(3000):
+                bp.process_mem()
+            _gc.collect()
+            grown = sum(s.size for s in _tm.take_snapshot().statistics(
+                "filename"))
+        finally:
+            _tm.stop()
+        check(grown < 256 * 1024,
+              f"3000 reads of the engine's memory (5 minutes of the stall "
+              f"probe) left {grown / 1e6:.1f} MB allocated: the probe leaks, "
+              f"as on the show PC (c8179eb, +271 MB/h)")
+        check(len(cache) - n0 <= 1,
+              f"3000 reads made {len(cache) - n0} new ctypes pointer types, "
+              f"which ctypes keeps for ever")
+    finally:
+        bp.WINDOWS = saved[0]
+        bp._K32[:] = saved[1]
+        if hasattr(bp, "_PMC"):
+            bp._PMC[:] = saved[2]
+
+
+def test_tracemalloc_diagnostic_is_opt_in():
+    section("engine: LTC_TRACEMALLOC=1 writes the top allocation sites to "
+            "the data folder; unset, nothing at all")
+    import tempfile as _tf
+    import tracemalloc as _tm
+    from ltcplay import memtrace
+    was = _tm.is_tracing()
+    with _tf.TemporaryDirectory() as d:
+        check(memtrace.start(d, env={}) is None,
+              "the tracemalloc diagnostic started with LTC_TRACEMALLOC unset")
+        check(_tm.is_tracing() == was and not os.listdir(d),
+              "with LTC_TRACEMALLOC unset the engine traced or wrote "
+              "something")
+        check(memtrace.start(d, env={"LTC_TRACEMALLOC": "0"}) is None,
+              "LTC_TRACEMALLOC=0 started the diagnostic")
+        keep = []
+        t = memtrace.start(d, env={"LTC_TRACEMALLOC": "1"}, every_s=0.05)
+        try:
+            check(t is not None and _tm.is_tracing(),
+                  "LTC_TRACEMALLOC=1 did not start tracemalloc")
+            path = os.path.join(d, memtrace.FILENAME)
+            deadline = time.time() + 5
+            keep.extend(bytearray(4096) for _ in range(2000))   # 8 MB
+            while time.time() < deadline:
+                if os.path.exists(path) and \
+                        open(path, encoding="utf-8").read().count(
+                            "growth") >= 3:
+                    break
+                time.sleep(0.02)
+            text = open(path, encoding="utf-8").read() \
+                if os.path.exists(path) else ""
+            check(text.count("top 20") >= 2,
+                  f"LTC_TRACEMALLOC=1 wrote no repeated report to {path}")
+            check("selftest.py" in text,
+                  "the tracemalloc report does not name the allocating line")
+        finally:
+            if t is not None:
+                t.stop()
+            if not was:
+                _tm.stop()
+
+
 def test_screen_arm_end_to_end_probes():
     section("screen arming end to end: the real flamesafe, the real deck "
             "controller and arm socket, the real engine over HTTP; a full "
@@ -40519,6 +40629,8 @@ if __name__ == "__main__":
     test_screen_arm_engine_rules()
     test_screen_arm_deck_rules()
     test_screen_arm_end_to_end_probes()
+    test_engine_stall_probe_memory_is_bounded()
+    test_tracemalloc_diagnostic_is_opt_in()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

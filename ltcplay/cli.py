@@ -1263,6 +1263,10 @@ def _cmd_serve(args):
     import webbrowser
     from . import web as web_mod
     _hold_the_mac_awake()
+    if os.environ.get("LTC_TRACEMALLOC") == "1":
+        # Opt-in memory diagnostic; unset, not even imported.
+        from . import memtrace, remote as _remote_mod
+        memtrace.start(_remote_mod.settings_folder())
     folder = os.path.abspath(args.folder or settings_mod.folder())
     schedule = None
     if getattr(args, "schedule", None) is not None:

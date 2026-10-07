@@ -111,32 +111,47 @@ def thread_cpu(native_id):
         return None
 
 
+_PMC = []
+
+
+def _pmc():
+    """(the PROCESS_MEMORY_COUNTERS type, K32GetProcessMemoryInfo with its
+    argtypes set, this process's handle), made ONCE. Show PC soak of
+    c8179eb (2026-10-06): this Structure was defined inside process_mem(),
+    10 times a second, and ctypes keeps every POINTER type it ever makes,
+    so each call left about 7.5 KB behind for good: the engine grew
+    +271 MB an hour, and its pixel and timecode gaps grew with it."""
+    if not _PMC:
+        import ctypes
+        from ctypes import wintypes
+
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD),
+                        ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+        k = _k32()
+        f = k.K32GetProcessMemoryInfo
+        f.argtypes = (wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD)
+        _PMC.append((PMC, f, wintypes.HANDLE(k.GetCurrentProcess())))
+    return _PMC[0]
+
+
 def process_mem():
     """(page faults so far, working set bytes), or (None, None)."""
     if WINDOWS:
         try:
             import ctypes
-            from ctypes import wintypes
-
-            class PMC(ctypes.Structure):
-                _fields_ = [("cb", wintypes.DWORD),
-                            ("PageFaultCount", wintypes.DWORD),
-                            ("PeakWorkingSetSize", ctypes.c_size_t),
-                            ("WorkingSetSize", ctypes.c_size_t),
-                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                            ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                            ("PagefileUsage", ctypes.c_size_t),
-                            ("PeakPagefileUsage", ctypes.c_size_t)]
-            k = _k32()
+            PMC, f, proc = _pmc()
             m = PMC()
             m.cb = ctypes.sizeof(m)
-            f = k.K32GetProcessMemoryInfo
-            f.argtypes = (wintypes.HANDLE, ctypes.POINTER(PMC),
-                          wintypes.DWORD)
-            if f(wintypes.HANDLE(k.GetCurrentProcess()), ctypes.byref(m),
-                 m.cb):
+            if f(proc, ctypes.byref(m), m.cb):
                 return m.PageFaultCount, m.WorkingSetSize
         except Exception:
             pass
@@ -377,3 +392,13 @@ def self_test():
     assert st and st["kind"] == "own thread" and "hog" in st["why"], st
     assert p.worst[100] >= 280, p.worst
     yield "a 290 ms stall with one busy engine thread is pinned on that thread"
+    # Show PC soak of c8179eb: process_mem() left a ctypes type behind on
+    # every call (+271 MB/h in the engine). Read 2000 times, it makes none.
+    import ctypes
+    cache = getattr(ctypes, "_pointer_type_cache", {})
+    process_mem()
+    n0 = len(cache)
+    for _ in range(2000):
+        process_mem()
+    assert len(cache) == n0, (n0, len(cache))
+    yield "reading the engine's memory 2000 times makes no new ctypes types"
