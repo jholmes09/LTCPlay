@@ -37,6 +37,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
       # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
       # its pixel test runs here too. The suite also passes without it.
       - run: python -m pip install numpy zstandard tzdata pillow
@@ -191,6 +193,8 @@ jobs:
         if: needs.changes.outputs.oses != '[]'
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/selftest.yml
       - run: python -m pip install numpy zstandard tzdata
         if: needs.changes.outputs.oses != '[]'
       # The expected-miss list is the mutations only the real show folder
@@ -201,7 +205,7 @@ jobs:
       # The log is kept for them. pipefail (bash's default in Actions) keeps
       # mutate.py's exit code through tee.
       - id: sweep
-        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+        run: python -u mutate.py --shard ${{ matrix.shard }}/32 --expected mutate_expected_misses.txt --catchers mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} 2>&1 | tee "$RUNNER_TEMP/mutate.log"
         shell: bash
         timeout-minutes: 285
         if: needs.changes.outputs.oses != '[]'
