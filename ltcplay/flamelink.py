@@ -146,6 +146,13 @@ STALE_MS_MIN, STALE_MS_MAX = 100, 2500   # flamesafe's own bounds
 # so a missing copy can only make the Abort repeat longer, never too short.
 FRAME_STALE_MS_DEFAULT = STALE_MS_MAX
 TC_STILL_S = 0.1            # a timecode unchanged this long is not moving
+# After an operator Hold the show reads as playing again before its timecode
+# moves: the audio fades back in and the clock holds the frozen frame until
+# the sound reaches the next one (by design: the timecode never runs
+# backwards). A stop on that same frame within this long of the Resume is
+# journaled as a note, not a fault (Jeff, 2026-10-07). The cues are zeros
+# exactly as for any other stop; only the journal line's class differs.
+RESUME_SETTLE_S = 1.0
 # The seek guard (2026-10-03, Jeff: programming sessions scrub and loop).
 # A timecode that moves by more than SEEK_JUMP_S more or less than the
 # time that passed is a seek (a GO, a skip, a loop wrap, a locate on the
@@ -466,6 +473,10 @@ class FlameLink:
         self._cue_kind = ""         # ...and its kind, which is what repeats
         self._tc_last = None        # the last valid timecode seen...
         self._tc_moved_at = None    # ...and when it last changed
+        self._was_live = False      # live on the frame before
+        self._held_tc = None        # the frame a Hold froze on (not live,
+                                    # timecode still there)
+        self._resumed_at = None     # when the show read as playing again
         # the sender thread's own health (fix round 1, item 6)
         self.run_errors = 0
         self._run_fail_since = None
@@ -756,14 +767,33 @@ class FlameLink:
         if tc is not None and tc != self._tc_last:
             self._tc_last, self._tc_moved_at = tc, now
         settled = self._seek_guard(tc, now) if self.seek_guard else True
+        # A Hold: not live with the show's timecode still there. Its Resume
+        # is the first live frame after it.
+        if live is True:
+            if not self._was_live:
+                self._resumed_at = now if self._held_tc is not None else None
+            self._was_live = True
+        else:
+            self._was_live = False
+            self._held_tc = tc
+            self._resumed_at = None
         if self.zeroed or live is not True or tc is None:
             self._cue_episode("", "")
             return tc, zeros
         if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:
-            self._cue_episode("still", f"the show timecode has not moved for "
-                                       f"more than {TC_STILL_S:g} s (stuck at "
-                                       f"{tc}) though the show reads as "
-                                       f"playing")
+            settling = (self._resumed_at is not None
+                        and tc == self._held_tc
+                        and now - self._resumed_at <= RESUME_SETTLE_S)
+            if settling:
+                self._cue_episode(
+                    "settling", f"the show timecode is still on the frame the "
+                                f"Hold froze ({tc}) while the Resume settles",
+                    fault=False)
+            else:
+                self._cue_episode(
+                    "still", f"the show timecode has not moved for more than "
+                             f"{TC_STILL_S:g} s (stuck at {tc}) though the "
+                             f"show reads as playing")
             return tc, zeros
         try:
             v = self.cues(tc)
@@ -853,16 +883,18 @@ class FlameLink:
                        f"point stays zero until it ends.",
                        action="flame_link", outcome="seek")
 
-    def _cue_episode(self, kind, problem):
+    def _cue_episode(self, kind, problem, fault=True):
         """One line when a KIND of problem starts and one when it clears:
         keyed by the kind, never the text, so a provider whose message
-        changes every frame is still one line."""
+        changes every frame is still one line. `fault` False (a Resume
+        settling) journals it as a note; the cues are zeros either way."""
         if kind == self._cue_kind:
             return
         if kind:
             self._note(f"Flame link: {problem}, so flame cues are zero. "
                        f"This line will not repeat until it clears.",
-                       fault=True, action="flame_link", outcome="cues_zero")
+                       fault=fault, action="flame_link",
+                       outcome="cues_zero" if fault else "cues_zero_note")
         else:
             self._note("Flame link: the flame cue values are readable "
                        "again.", action="flame_link", outcome="cues_back")

@@ -35998,6 +35998,63 @@ def test_flame_link_fix_round_1():
     check(val7() == 200 and "cues_back" in j7.outcomes(),
           "it moves again: the cue goes out, and that is a line")
 
+    # Jeff, 2026-10-07: the stop while a Resume settles (the clock holds
+    # the frame the Hold froze until the audio reaches the next one) is a
+    # NOTE; the cues are zeros all the same. A freeze with no Hold behind
+    # it, or one that outlasts the settle, stays a fault.
+    t9 = [10.0]
+    j9 = _FlJournal()
+    st9 = {"tc": "00:00:30:13", "live": True}
+    lk9, s9 = make(lambda: t9[0], journal=j9, cues=lambda tc: fire,
+                   show_state=lambda: (st9["tc"], st9["live"]))
+    lk9.release()
+
+    def val9():
+        lk9.send_frame()
+        return json.loads(s9.sent[-1][0])["values"][410]
+
+    def kinds9():
+        return [(kw.get("outcome"), bool(kw.get("fault")))
+                for _x, kw in j9.lines if kw.get("action") == "flame_link"
+                and str(kw.get("outcome", "")).startswith("cues_zero")]
+    check(val9() == 200, "Hold test: the show runs, the cue goes out")
+    t9[0] += 0.03
+    st9["tc"] = "00:00:30:14"
+    val9()
+    st9["live"] = False                     # Hold: frozen on 30:14
+    for _ in range(40):
+        t9[0] += 0.025
+        check(val9() == 0, "Hold test: held, zeros")
+    st9["live"] = True                      # Resume: same frame a while
+    t9[0] += 0.025
+    check(val9() == 0, "a Resume still on the held frame: zeros all the same")
+    for _ in range(3):
+        t9[0] += 0.025
+        val9()
+    check(kinds9() == [("cues_zero_note", False)],
+          f"a stop while the Resume settles is one note, not a fault: "
+          f"{kinds9()}")
+    st9["tc"] = "00:00:30:15"
+    t9[0] += 0.025
+    check(val9() == 200, "the Resume settles: the cue goes out again")
+    t9[0] += 0.2                            # a freeze with no Hold
+    check(val9() == 0 and kinds9()[-1] == ("cues_zero", True),
+          f"a freeze with no Hold behind it stays a fault: {kinds9()}")
+    st9["tc"] = "00:00:30:16"
+    t9[0] += 0.025
+    val9()
+    st9["live"] = False                     # another Hold...
+    t9[0] += 0.025
+    val9()
+    st9["live"] = True                      # ...whose Resume never moves
+    n9 = len(kinds9())
+    for _ in range(60):
+        t9[0] += 0.025
+        val9()
+    check(kinds9()[n9:] == [("cues_zero_note", False), ("cues_zero", True)],
+          f"a Resume that never moves turns into a fault after "
+          f"{fl.RESUME_SETTLE_S:g} s: {kinds9()[n9:]}")
+
     class Frozen:      # the review's p9: a clock thread that stopped
         playing, paused, _halting, last_sent = True, False, False, (0, 1, 2, 3)
     t8 = [0.0]
