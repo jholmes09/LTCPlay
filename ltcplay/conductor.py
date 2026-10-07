@@ -903,18 +903,25 @@ class Conductor:
         with self._lock:
             latched = self._latched
             if not latched:
-                if not self._playing():
-                    return self._refused("Abort", "nothing is playing, so "
-                                         "there is nothing to abort.")
-                self._latched = True
-                self._latch_who = who
                 # The flames do not wait for the executor, or even for the
                 # journal line: cut them here, on the pressing thread,
                 # inside the lock, so no stale step can land between the
                 # cut and the new generation that makes every older step
-                # stale. The video fade, if one is running, stops where it
-                # is (finding C). Neither call waits for a device.
+                # stale. And before anything is asked about the show (review
+                # of PR #43, P0-1): a group armed with nothing playing,
+                # before a show or between two, is disarmed by an Abort too.
+                # Neither call waits for a device.
                 self._flames_cut()
+                if not self._playing():
+                    return self._refused(
+                        "Abort", "nothing is playing, so there is no show "
+                        "to stop. Flame cues were zeroed and a disarm was "
+                        "sent to every flame group anyway; nothing else was "
+                        "changed and nothing is latched.")
+                self._latched = True
+                self._latch_who = who
+                # The video fade, if one is running, stops where it is
+                # (finding C).
                 self._video_cancel()
                 blanked = threading.Event()
                 line = self._accept("Abort", ABORTED, who, screen,
@@ -1122,6 +1129,33 @@ class Conductor:
         self._set("video", UNKNOWN)
         self._async_seq["video"] = getattr(self.devices, "video_seq", None)
 
+    def lasers_dark_now(self, what="Abort pressed"):
+        """The lasers blanked on the CALLER's thread, at once, before
+        anything else the caller does (review of PR #43, re-review P1-A:
+        the screen Abort's blank waited on the scheduler's tonight.json
+        save). A blank only darkens, so it is safe whatever comes next.
+        Returns the device's Result.
+
+        It never waits on this conductor's lock (narrow review of #46,
+        P2): the lock may be held through a slow device call, and the
+        Abort's latch, save and stop must not queue behind it. The laser
+        record's version is read without the lock (one int out of a dict),
+        the blank goes out, and the outcome is written down only if the
+        lock is free at that moment. If it is not, nothing is lost: the
+        Abort's own step blanks again, forced, and records that."""
+        label = f"lasers blanked ({what})"
+        ver = self._ver["lasers"]
+        r, took = self._device_call(label, self.devices.lasers_blank)
+        if not self._lock.acquire(blocking=False):
+            return r
+        try:
+            if self._ver["lasers"] == ver:
+                self._set("lasers", BLACK if r.ok else UNKNOWN)
+            self._said_of_call(label, r, took)
+        finally:
+            self._lock.release()
+        return r
+
     def _reblank(self, what):
         """A laser blank, sent again on the pressing thread, outside the
         lock, and the sentence that says how the lasers stand now (finding
@@ -1326,19 +1360,16 @@ class Conductor:
                             progress, self.show.music_halt, fade)
         # The lasers were blanked on the pressing thread (abort()), at the
         # same time as the fades above began. Once that call has returned
-        # (normally long since), send the blank again here only if it did
-        # not get out.
+        # (normally long since), the blank is sent AGAIN here, every time,
+        # whatever the record says (review of PR #43, P0-3): a laser
+        # restore already past its last check when the Abort landed could
+        # light BEYOND after the press's blank and before the record knew.
+        # A blank only ever makes the rig darker.
         blanked = want.get("blanked")
         if blanked is not None:
             self._await(gen, blanked.is_set, fade)
-        with self._lock:
-            lasers_dark = blanked is not None and blanked.is_set() and \
-                self._applied["lasers"] == BLACK
-        if lasers_dark:
-            progress.append("lasers blanked at the press")
-        else:
-            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
-                       self.devices.lasers_blank)
+        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,
+                   self.devices.lasers_blank, force=True)
         if faded:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video stopped", progress,
@@ -1526,6 +1557,13 @@ class Conductor:
         failure, written down as a fault with its sentence, unless `gen`
         is given and a newer request has come in since (a laser restore
         cut short by an Abort is what the Abort wanted, not a fault)."""
+        r, took = self._device_call(label, fn, *args)
+        self._said_of_call(label, r, took, gen)
+        return r
+
+    def _device_call(self, label, fn, *args):
+        """(Result, seconds): one output call, nothing written down and no
+        lock taken. Never raises; anything but a Result counts as failed."""
         t0 = self._clock()
         try:
             r = fn(*args)
@@ -1534,7 +1572,10 @@ class Conductor:
         if not isinstance(r, Result):
             r = failed(f"{label}: the output returned {r!r}, not a Result, "
                        f"so it counts as not done.")
-        took = self._clock() - t0
+        return r, self._clock() - t0
+
+    def _said_of_call(self, label, r, took, gen=None):
+        """Write down a slow or failed output call (takes the lock)."""
         if took > SLOW_CALL_S:
             self._note(f"{label} took {took * 1000:.0f} ms. Output calls "
                        f"must return at once; a slow one delays Abort.",
@@ -1546,7 +1587,6 @@ class Conductor:
             else:
                 self._note(f"Not done: {r.sentence}", fault=True,
                            action="output", outcome="failed")
-        return r
 
     def _ask(self, label, fn):
         try:

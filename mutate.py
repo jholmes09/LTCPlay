@@ -767,11 +767,8 @@ MUTATIONS = [
   "{\"error\": \"Arming needs your own PIN sign in, even \""),
 
  ("arm: the screen_arming switch is ignored", "ltcplay/remote.py",
-  "        if not self.arming_enabled():", "        if False:"),
-
- ("arm: screen arming defaults off", "ltcplay/remote.py",
-  "           \"screen_arming\": True, \"path\": path}",
-  "           \"screen_arming\": False, \"path\": path}"),
+  "            return load_settings(self.folder)[\"screen_arming\"] is True",
+  "            return True"),
 
  ("arm: a stale page can hold to arm", "ltcplay/remote.py",
   "        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:",
@@ -799,8 +796,8 @@ MUTATIONS = [
   "                              \"fresh\": True,"),
 
  ("arm: an Abort leaves screen holds running", "ltcplay/remote.py",
-  "        if name in (\"abort\", \"disarm-all\"):\n            # Before",
-  "        if False:\n            # Before"),
+  "        if name in (\"abort\", \"disarm-all\"):\n            # No screen hold",
+  "        if False:\n            # No screen hold"),
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
@@ -1855,9 +1852,9 @@ MUTATIONS = [
   '        self._writer = None\n        return self.drain(force=True)\n'),
 
  ("the way out stops the scheduler before the rig", "ltcplay/cli.py",
-  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n',
+  '    httpd.control.stop()\n    # Straight after the show',
   '    if httpd.schedule is not None:\n        httpd.schedule.stop()\n'
-  '    httpd.control.stop()\n    announce = getattr(httpd, "announce", None)\n'),
+  '    httpd.control.stop()\n    # Straight after the show'),
 
  ("a character UTF-8 cannot carry jams the writer", "ltcplay/journal.py",
   '    return text.encode("utf-8", "backslashreplace")',
@@ -4020,8 +4017,8 @@ def build():
 
  ("conductor: Abort's flame cut waits for the executor",
   "ltcplay/conductor.py",
-  "                self._flames_cut()\n                self._video_cancel()\n",
-  "                self._video_cancel()\n"),
+  "                self._flames_cut()\n                if not self._playing():",
+  "                if not self._playing():"),
 
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
@@ -4037,9 +4034,9 @@ def build():
  ("conductor: a second Abort starts a second fade",
   "ltcplay/conductor.py",
   "            latched = self._latched\n            if not latched:\n"
-  "                if not self._playing():",
+  "                # The flames do not wait",
   "            latched = False\n            if not latched:\n"
-  "                if not self._playing():"),
+  "                # The flames do not wait"),
 
  ("conductor: the Abort latch no longer refuses other presses",
   "ltcplay/conductor.py",
@@ -4054,9 +4051,11 @@ def build():
  ("conductor: Abort is taken with nothing playing",
   "ltcplay/conductor.py",
   "                if not self._playing():\n"
-  "                    return self._refused(\"Abort\",",
+  "                    return self._refused(\n"
+  "                        \"Abort\", \"nothing is playing",
   "                if False:\n"
-  "                    return self._refused(\"Abort\","),
+  "                    return self._refused(\n"
+  "                        \"Abort\", \"nothing is playing"),
 
  ("conductor: Abort sends no laser blank of its own",
   "ltcplay/conductor.py",
@@ -4421,8 +4420,8 @@ def build():
  ("conductor: Abort does not stop a running video fade at the press "
   "(finding C)",
   "ltcplay/conductor.py",
-  "                self._flames_cut()\n                self._video_cancel()\n",
-  "                self._flames_cut()\n"),
+  "                self._video_cancel()\n                blanked = threading.Event()",
+  "                blanked = threading.Event()"),
 
  ("conductor: Abort trusts a video record that says black (finding C)",
   "ltcplay/conductor.py",
@@ -5663,8 +5662,8 @@ def build():
 
  ("scheduler fix round: conductor calls are made inside the scheduler's lock",
   "ltcplay/schedule_service.py",
-  "            self._calls.put(call)\n\n    def _new_call",
-  "            self._run_conductor_call(call)\n\n    def _new_call"),
+  "            self._calls.put(call)\n\n    def stamp_press",
+  "            self._run_conductor_call(call)\n\n    def stamp_press"),
 
  ("scheduler fix round: conductor calls lose their order",
   "ltcplay/schedule_service.py",
@@ -5698,11 +5697,9 @@ def build():
 
  ("scheduler fix round: the Service's Reset never reaches the conductor",
   "ltcplay/schedule_service.py",
-  "            self._calls.put(call)\n"
-  "        if not call.done.wait(wait_s):",
-  "            call.ok, call.sentence = False, \"not sent\"\n"
-  "            call.done.set()\n"
-  "        if not call.done.wait(wait_s):"),
+  "                self._calls.put(call)\n        if late:",
+  "                call.ok, call.sentence = False, \"not sent\"\n"
+  "                call.done.set()\n        if late:"),
 
  ('scheduler fix round: the Abort line still says nothing was disarmed',
   'ltcplay/schedule_service.py',
@@ -5905,7 +5902,8 @@ def build():
 
  ("scheduler fix round 2: a Reset pressed before an Abort ends it",
   "ltcplay/schedule_service.py",
-  "        if call.seq < self._abort_seq:",
+  "        if call.seq < self._abort_seq or (\n"
+  "                pressed is not None and pressed < self._abort_pressed):",
   "        if False:"),
 
  ("scheduler fix round 2: an unreset Abort does not make the start dark",
@@ -7158,7 +7156,7 @@ def build():
 
  ("beyond blanking: Resume never brings BEYOND's stream back",
   "ltcplay/beyondtc.py",
-  "            ok = self.gate is not None and self.gate.light()",
+  "            ok = self.gate is not None and self.gate.light(epoch)",
   "            ok = self.gate is not None"),
 
  ("beyond blanking: unblank takes something that only looks true",
@@ -7195,6 +7193,326 @@ def build():
   "ltcplay/streamdeck.py",
   "    if not _OPENER:\n        _OPENER.append(",
   "    if True:\n        _OPENER.append("),
+
+ # -- review of PR #43 (2026-10-05): P0-1, the screen Abort disarms first, every time --
+ ('review43: the screen Abort sends no disarm of its own',
+  'ltcplay/remote.py',
+  '            flames = self._disarm_now(who, screen, "Abort")',
+  '            flames = (None, "")'),
+
+ ('review43: a disarm that did not go out reads as a done Abort',
+  'ltcplay/remote.py',
+  '        ok = f_ok is True or (f_ok is None and s_ok)',
+  '        ok = True'),
+
+
+ # -- review of PR #43: P0-5, the screen Abort's disarm never waits on the tonight.json save --
+ ("review43: the screen Abort's disarm waits on the scheduler's save",
+  'ltcplay/remote.py',
+  '            flames = self._disarm_now(who, screen, "Abort")',
+  '            with self.schedule.lock:\n                self.schedule.machine and self.schedule._save_tonight()\n            flames = self._disarm_now(who, screen, "Abort")'),
+
+ # -- review of PR #43: P0-1, the deck says what the engine's Abort did --
+ ('review43: the deck reads RESET after an Abort that stopped no show',
+  'ltcplay/streamdeck.py',
+  '        if name == "abort" and doc.get("stopped") is False:',
+  '        if False:'),
+
+ # -- review of PR #43: P0-2, the lasers' timecode blank fails closed --
+ ('review43: a black zone with no address answers True again',
+  'ltcplay/beyondtc.py',
+  '            self.send_errors += 1\n            self.last_error = "no address for BEYOND\'s timecode"\n',
+  '            return True\n'),
+
+ ('review43: broadcast timecode passes the BEYOND route check',
+  'ltcplay/fire_ice.py',
+  '    if art.broadcast:\n        raise FireIceConfigError(',
+  '    if False:\n        raise FireIceConfigError('),
+
+ ("review43: Run never checks BEYOND's timecode route",
+  'ltcplay/fire_ice.py',
+  '        opens.append(laser_check)\n',
+  '        pass\n'),
+
+ # -- review of PR #43: P0-3, a restore never outruns an Abort's blank --
+ ("review43: the gate lights whatever blank ran since the restore's check",
+  'ltcplay/beyondtc.py',
+  '            if epoch is not None and epoch != self._blank_epoch:',
+  '            if False:'),
+
+ ("review43: a blank does not move the gate's blank epoch",
+  'ltcplay/beyondtc.py',
+  '            self._blank_epoch += 1\n            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        return self.send_black()',
+  '            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        return self.send_black()'),
+
+ ('review43: the restore reads the blank epoch only as it lights',
+  'ltcplay/beyondtc.py',
+  '            ok = self.gate is not None and self.gate.light(epoch)',
+  '            ok = self.gate is not None and self.gate.light(self.gate.epoch())'),
+
+ ("review43: Abort's executor trusts a laser record that says black",
+  'ltcplay/conductor.py',
+  '        self._step(gen, "lasers", BLACK, "lasers blanked again", progress,\n                   self.devices.lasers_blank, force=True)\n',
+  '        pass\n'),
+
+ # -- review of PR #43: P0-4, screen arming is off unless switched on --
+ ('review43: screen arming is on with no settings file again',
+  'ltcplay/remote.py',
+  '           "screen_arming": False, "path": path}',
+  '           "screen_arming": True, "path": path}'),
+
+ ('review43: arm-hold looks at the session before the switch',
+  'ltcplay/remote.py',
+  '        if not self.arming_enabled():\n            # First, before anything else',
+  '        if False:\n            # First, before anything else'),
+
+ ("review43: a screen's per-group Disarm is 'sent' with arming off",
+  'ltcplay/remote.py',
+  '        if not self.arming_enabled():\n            # The Stream Deck reads',
+  '        if False:\n            # The Stream Deck reads'),
+
+ ('review43: ltc deck makes ScreenKeys with screen arming off',
+  'ltcplay/streamdeck.py',
+  '        if screen_arming_switched_on() else None',
+  '        if True else None'),
+
+ ('review43: the deck reads any truthy screen_arming as on',
+  'ltcplay/streamdeck.py',
+  '        return load()["screen_arming"] is True',
+  '        return bool(load()["screen_arming"])'),
+
+ # -- review of PR #43: P0-6, a render older than the layout, or checked at another flame start, is refused --
+ ('review43: a render older than xlights_networks.xml is read as flames',
+  'ltcplay/fire_ice.py',
+  '            if made is not None and laid is not None and made < laid:',
+  '            if False:'),
+
+ ('review43: the flame start a render was checked at is never compared',
+  'ltcplay/fire_ice.py',
+  '            if checked_at is not None and checked_at != span[0]:',
+  '            if False:'),
+
+ ("review43: a render's flame start is recorded at every read, not at its check",
+  'ltcplay/fire_ice.py',
+  '                f, spans, made, checked_at = got\n',
+  '                f, spans, made, checked_at = got\n                checked_at = span[0]\n'),
+
+ ("review43: the layout's date is never kept",
+  'ltcplay/fire_ice.py',
+  '        self._layout_mtime = stamp[0] if stamp else None\n',
+  '        self._layout_mtime = None\n'),
+
+ ('review43: a flame cue refusal that is a fault is not journaled as one',
+  'ltcplay/fire_ice.py',
+  '                           **({"fault": True} if fault else {}))',
+  '                           **{})'),
+
+ # -- review of PR #43: P1-3, flame cue refusals are faults on the screens --
+ ('review43: a render that does not fit the layout is a quiet zero',
+  'ltcplay/fire_ice.py',
+  '                    f"flames cannot be told. Render the show again for this "\n                    f"layout", fault=True)',
+  '                    f"flames cannot be told. Render the show again for this "\n                    f"layout")'),
+
+ ("review43: a timecode past the render's end is a quiet zero",
+  'ltcplay/fire_ice.py',
+  '                                  "show\'s render", fault=True)',
+  '                                  "show\'s render")'),
+
+ ('review43: a render that cannot be read is a quiet zero',
+  'ltcplay/fire_ice.py',
+  '                              f"({type(e).__name__}: {e})", fault=True)',
+  '                              f"({type(e).__name__}: {e})")'),
+
+ ('review43: /api/conductor leaves out the flame cue fault',
+  'ltcplay/web.py',
+  '            out["flame_cues"] = {"fault": str(cues.fault or "")}',
+  '            pass'),
+
+ ('review43: the rack screen is never told the flame cue fault',
+  'ltcplay/remote.py',
+  '        out["flames"]["cues_fault"] = str(\n            getattr(self.flame_cues, "fault", "") or "")',
+  '        out["flames"]["cues_fault"] = ""'),
+
+ ('review43: the deck never reads the flame cue fault',
+  'ltcplay/streamdeck.py',
+  '            self.cues_fault = str((cues or {}).get("fault") or "") \\\n                if isinstance(cues, dict) else ""',
+  '            self.cues_fault = ""'),
+
+ ('review43: the deck never draws the flame cue fault',
+  'ltcplay/streamdeck.py',
+  '        elif cues_fault:\n            # Review of PR #43, P1-3',
+  '        elif False:\n            # Review of PR #43, P1-3'),
+
+ # -- review of PR #43: P1-1, the lasers dark when the engine stops --
+ ('review43: closing the BEYOND timecode gate sends no black frames',
+  'ltcplay/beyondtc.py',
+  '        sent = self.black_burst()\n',
+  '        sent = 0\n'),
+
+ ('review43: the closing black frames go out in one burst',
+  'ltcplay/beyondtc.py',
+  '            if i:\n                sleep(1.0 / FPS)\n',
+  ''),
+
+ ("review43: the engine's stop does not blank the lasers",
+  'ltcplay/cli.py',
+  '    _lasers_dark_first(httpd)\n',
+  ''),
+
+ ('review43: the closing black frames leave the gate lit',
+  'ltcplay/beyondtc.py',
+  '        with self._lock:\n            self._blank_epoch += 1\n            if self.lit:\n                self.lit = False\n                self._zone_start = self._clock()\n        sent = 0\n',
+  '        sent = 0\n'),
+
+ # -- review of PR #43: P1-4, one flamesafe config or ltc serve does not start --
+ ('review43: differing flamesafe configs are accepted',
+  'ltcplay/cli.py',
+  '    if len({same(p) for _w, p in named}) > 1:',
+  '    if False:'),
+
+ ('review43: ltc serve starts on differing flamesafe configs',
+  'ltcplay/cli.py',
+  '    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)\n    if why:\n',
+  '    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)\n    if False:\n'),
+
+ ("review43: the Windows app's flamesafe config is ignored",
+  'ltcplay/cli.py',
+  '    env = os.environ.get(FLAMESAFE_ENV)\n',
+  '    env = None\n'),
+
+ ("review43: ltcplay_remote.json's flamesafe config is ignored",
+  'ltcplay/cli.py',
+  '        if rs.get("flamesafe_config"):\n            named.append(',
+  '        if False:\n            named.append('),
+
+ # -- review of PR #43: P1-5, the deck reads RESET after an engine restart --
+ ("review43: /api/conductor forgets the scheduler's saved Abort latch",
+  'ltcplay/web.py',
+  '        snap["latched"] = bool(snap.get("latched")) or sched_latched',
+  '        snap["latched"] = bool(snap.get("latched"))'),
+
+ # -- review of PR #38: P2, the single-copy lock is machine wide or says so --
+ ('review38: the fall back to Local is quiet',
+  'ltcplay/onlyone.py',
+  '    warn(f"the single-copy lock {name} could not be made machine wide "',
+  '    (lambda *a: None)(f"the single-copy lock {name} could not be made machine wide "'),
+
+ ('review38: the named lock tries Local first',
+  'ltcplay/onlyone.py',
+  '    h = create("Global\\\\" + name)',
+  '    h = create("Local\\\\" + name)'),
+
+ # -- review of PR #38: P2, CI fix: a refused Global name is a running copy only if it is there; the file's note wins --
+ ("review38: another user's copy makes the lock fall back to Local",
+  'ltcplay/onlyone.py',
+  '    if err == ERROR_ACCESS_DENIED and exists is not None and \\\n            exists("Global\\\\" + name):\n        return None, True\n',
+  ''),
+
+ ('review38: a refused Global name is a running copy even when it is not there',
+  'ltcplay/onlyone.py',
+  '    if err == ERROR_ACCESS_DENIED and exists is not None and \\\n            exists("Global\\\\" + name):',
+  '    if err == ERROR_ACCESS_DENIED:'),
+
+ ("review38: the named mutex's sentence hides the running copy's note",
+  'ltcplay/onlyone.py',
+  '            busy = None\n            try:\n                self._take_named()\n            except AlreadyRunning as e:\n                busy = e\n',
+  '            busy = None\n            self._take_named()\n'),
+
+ ('review38: onlyone.py has an invalid escape in a docstring again',
+  'ltcplay/onlyone.py',
+  '    r"""(handle or None, already_existed)',
+  '    """(handle or None, already_existed)'),
+
+ # -- re-review of #46: P1-A, the screen Abort's laser blank goes before the scheduler --
+ ("rereview: the screen Abort's laser blank waits for the scheduler",
+  'ltcplay/remote.py',
+  '            lasers = self._lasers_dark_now()\n',
+  '            lasers = (None, "")\n'),
+
+ # -- narrow review of #46, P2: the Abort's laser blank never waits on the conductor's lock --
+ ("abortlock: the Abort's laser blank reads its version under the conductor's lock",
+  'ltcplay/conductor.py',
+  '        ver = self._ver["lasers"]\n        r, took = self._device_call(',
+  '        with self._lock:\n            ver = self._ver["lasers"]\n        r, took = self._device_call('),
+
+ ("abortlock: the Abort's laser blank waits for the conductor's lock to record",
+  'ltcplay/conductor.py',
+  '        if not self._lock.acquire(blocking=False):\n            return r\n',
+  '        if not self._lock.acquire():\n            return r\n'),
+
+ # -- review of PR #43 P0-2 re-anchored, and re-review P1-B, P2-a, P2-h: the BEYOND route check --
+ ('review43: a show file with no BEYOND route passes the check',
+  'ltcplay/fire_ice.py',
+  '    if not hits and not lasers:\n        return None\n    if not hits:\n        raise',
+  '    if not hits and not lasers:\n        return None\n    if not hits:\n        return None\n        raise'),
+
+ ('review43: two BEYOND routes pass the check',
+  'ltcplay/fire_ice.py',
+  '    if len(hits) == 1:\n        if timecode_ip',
+  '    if len(hits) >= 1:\n        if timecode_ip'),
+
+ ("review43: ltc serve never checks BEYOND's timecode routes",
+  'ltcplay/cli.py',
+  '            for _line in fire_ice_mod.check_beyond_timecode_routes(\n',
+  '            for _line in (lambda *a: [])(\n'),
+
+ ("review43: the gate never takes the show file's BEYOND address",
+  'ltcplay/fire_ice.py',
+  '            _gate.adopt(got[1])\n',
+  '            pass\n'),
+
+ ('rereview: a BEYOND route check that cannot be made passes the show',
+  'ltcplay/fire_ice.py',
+  '            except Exception as e:\n                # Re-review P1-B',
+  '            except Exception as e:\n                return None\n                # Re-review P1-B'),
+
+ ('rereview: a show with no Art-Net timecode stops serve again',
+  'ltcplay/fire_ice.py',
+  '    if art is None:\n        return None\n    if art.broadcast:',
+  '    if art is None:\n        raise FireIceConfigError("no timecode")\n    if art.broadcast:'),
+
+ ('rereview: a bench with no lasers stops serve again',
+  'ltcplay/fire_ice.py',
+  '    if not hits and not lasers:\n        return None\n',
+  ''),
+
+ ("rereview: beyond_timecode_ip and the show file's BEYOND may differ",
+  'ltcplay/fire_ice.py',
+  '        if timecode_ip and hits[0][1] != timecode_ip:',
+  '        if False:'),
+
+ ('rereview: a show passed over for its laser route is not journaled',
+  'ltcplay/fire_ice.py',
+  '                if journal is not None:\n                    journal(no_route_sentence(',
+  '                if False:\n                    journal(no_route_sentence('),
+
+ # -- re-review of #46: P2-g, the engine's refusal reaches the supervisor --
+ ("rereview: the flamesafe config refusal is only in the engine's log",
+  'ltcplay/cli.py',
+  '    if why:\n        _say_refused(why)\n',
+  '    if why:\n'),
+
+ # -- the deck's requests share the one no-proxy opener --
+ ('deck: the screen holds are fetched with a fresh urlopen each time',
+  'ltcplay/streamdeck.py',
+  '    def _http_fetch(self, path):\n        try:\n            with _opener().open(self.base_url + path,',
+  '    def _http_fetch(self, path):\n        try:\n            with urllib.request.urlopen(self.base_url + path,'),
+
+ # -- review of #48: a Reset pressed before an Abort never ends it, whatever order they reach the scheduler --
+ ('rereview: a Reset that reached the scheduler after a later-pressed Abort is still sent',
+  'ltcplay/schedule_service.py',
+  '            late = when < self._abort_pressed\n',
+  '            late = False\n'),
+
+ ("rereview: the screen's Abort and Reset carry no press order",
+  'ltcplay/remote.py',
+  '        pressed = stamp() if stamp is not None else None\n',
+  '        pressed = None\n'),
+
+ ("rereview: the Abort's press order is not kept",
+  'ltcplay/schedule_service.py',
+  '                self._abort_pressed = (self._press_stamp\n',
+  '                self._abort_pressed = 0 and (self._press_stamp\n'),
 
 ]
 

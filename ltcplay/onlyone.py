@@ -44,21 +44,76 @@ FILENAME = "ltcplay_output.lock"
 NAMED = WINDOWS
 
 
+ERROR_ACCESS_DENIED = 5
+ERROR_ALREADY_EXISTS = 183
+
+
+def _warn(text):
+    """Loud, on the console every show program logs: never a quiet
+    fallback (review of PR #38, P2, locked decision 21)."""
+    try:
+        sys.stderr.write(f"WARNING: {text}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+ERROR_FILE_NOT_FOUND = 2
+
+
+def _named_mutex(name, create, last_error, warn=_warn, exists=None):
+    r"""(handle or None, already_existed) for the named mutex `name`, or None
+    when it cannot be made at all (the file lock still guards). Global\
+    first, so a copy in any Windows session or for any user is seen. When
+    Global\ is refused, `exists(full_name)` asks whether it is there at all
+    (OpenMutexW): one another user's process holds is refused to us too,
+    and that means another copy is RUNNING, never a reason to fall back.
+    Only a Global\ name that is not there and cannot be made falls back to
+    Local\ (this sign-in only), and says so."""
+    h = create("Global\\" + name)
+    err = last_error()
+    if h:
+        return h, err == ERROR_ALREADY_EXISTS
+    if err == ERROR_ACCESS_DENIED and exists is not None and \
+            exists("Global\\" + name):
+        return None, True
+    warn(f"the single-copy lock {name} could not be made machine wide "
+         f"(Global\\, Windows error {err}), so it falls back to Local\\: "
+         f"a second copy started in another Windows session or by another "
+         f"user would NOT be seen. Only one copy of LTC Player may run on "
+         f"this machine.")
+    h = create("Local\\" + name)
+    err = last_error()
+    if h:
+        return h, err == ERROR_ALREADY_EXISTS
+    warn(f"the single-copy lock {name} could not be made at all (Windows "
+         f"error {err}); only its lock file guards against a second copy.")
+    return None
+
+
 def _win_create_named(name):
-    """(handle, already_existed) for the named mutex `name`; Global\ first,
-    Local\ (this logon session) if Global\ is refused. None when neither
-    can be made (the file lock still guards)."""
+    """_named_mutex through the real kernel32."""
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateMutexW.restype = wintypes.HANDLE
     k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
                                  wintypes.LPCWSTR)
-    for ns in ("Global\\", "Local\\"):
-        h = k32.CreateMutexW(None, False, ns + name)
+    k32.OpenMutexW.restype = wintypes.HANDLE
+    k32.OpenMutexW.argtypes = (wintypes.DWORD, wintypes.BOOL,
+                               wintypes.LPCWSTR)
+
+    def exists(full):
+        """True when `full` names a mutex that is there, even one we may
+        not open (another user's): only "not found" means it is not."""
+        h = k32.OpenMutexW(0x00100000, False, full)       # SYNCHRONIZE
         if h:
-            return h, ctypes.get_last_error() == 183   # ALREADY_EXISTS
-    return None
+            k32.CloseHandle(h)
+            return True
+        return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
+    return _named_mutex(name, lambda full: k32.CreateMutexW(None, False,
+                                                            full),
+                        ctypes.get_last_error, exists=exists)
 
 
 def _win_close_named(handle):
@@ -129,7 +184,8 @@ class OutputLock:
         handle, existed = got
         if existed:
             try:
-                _close_named(handle)
+                if handle is not None:
+                    _close_named(handle)
             except Exception:
                 pass
             raise AlreadyRunning(
@@ -139,14 +195,26 @@ class OutputLock:
 
     def acquire(self):
         if NAMED:
-            self._take_named()
+            # The named mutex is taken first, but a copy it finds is named
+            # by the lock FILE when that file is the same one: its holder
+            # note says who is running (the show, the port, the command).
+            # Only a copy whose files went elsewhere (another app's
+            # container) gets the named mutex's own sentence.
+            busy = None
             try:
-                if WINDOWS:
-                    return self._acquire_windows()
-                return self._acquire_posix()
+                self._take_named()
+            except AlreadyRunning as e:
+                busy = e
+            try:
+                got = (self._acquire_windows() if WINDOWS
+                       else self._acquire_posix())
             except BaseException:
                 self._drop_named()
                 raise
+            if busy is not None:
+                self.release()
+                raise busy
+            return got
         if WINDOWS:
             return self._acquire_windows()
         return self._acquire_posix()

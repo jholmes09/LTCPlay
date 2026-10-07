@@ -594,6 +594,7 @@ function render(){
   else if(fl.stale) fmsg = "flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms/1000).toFixed(1) + " s") + ". These lamps are not live.";
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
+  if(fl.cues_fault) fmsg += (fmsg ? " " : "") + "Flame cues are zero, a fault: " + fl.cues_fault + ".";
   fw.hidden = !fmsg; fw.textContent = fmsg;
   renderLamps(fl);
 
@@ -681,6 +682,11 @@ function renderLamps(fl){
     const ab = el.querySelector("[data-arm]");
     if(!(HOLD && HOLD.group === i)) ab.disabled = !as.ok;
     ab.title = as.why;
+    // Screen arming switched off (the default): no hold and no per-group
+    // Disarm here; Disarm every flame group and the Stream Deck still work.
+    const on = !!(ST && ST.arming && ST.arming.enabled);
+    ab.hidden = !on;
+    el.querySelector("[data-gdis]").hidden = !on;
   });
 }
 
@@ -759,7 +765,7 @@ $("signout").addEventListener("click", async () => {
 });
 $("b-abort").addEventListener("click", async () => {
   armStop("Abort");
-  if(await confirmBox("Abort the show?", "Flames zero and every group disarms, everything fades to black, and it stays dark until Reset.", "Yes, ABORT", ""))
+  if(await confirmBox("Abort the show?", "Every flame group disarms at once, show or no show. If a show is live it also stops: flames zero, everything fades to black, and it stays dark until Reset. The answer below says what was done.", "Yes, ABORT", ""))
     press("abort", {confirmed:true});
 });
 $("b-start").addEventListener("click", async () => {
