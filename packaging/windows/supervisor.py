@@ -131,6 +131,12 @@ def load_settings():
         # Below normal, and MadMapper kept off two logical CPUs that are
         # left to LTC Player alone (contain.py). Off unless Jeff says.
         "contain_third_party": False,
+        # MadMapper's own "Increase MadMapper Process Priority" preference
+        # turns itself back on at every MadMapper restart and starts it at
+        # High, which stalled the engine in the soak (2026-10-07). "normal"
+        # puts it back to Normal whenever it is found at High or above;
+        # "leave" leaves MadMapper's priority alone.
+        "madmapper_priority": "normal",
         # The rack screen page (/remote), full screen on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
@@ -552,6 +558,75 @@ def start_containment():
         return None
 
 
+MADMAPPER_EVERY_S = 5.0
+HIGH_OR_ABOVE = (0x80, 0x100)           # HIGH, REALTIME priority classes
+
+
+class MadMapperPriority:
+    """Every MADMAPPER_EVERY_S: each MadMapper process found at High or
+    above is set to Normal through SetPriorityClass, with one log line each
+    time. A new MadMapper process (a restart) is found and set the same
+    way. Only processes contain.which() names MadMapper are ever touched:
+    never the engine, the deck or flamesafe. A refusal (access denied) is
+    said once per process and never raised."""
+
+    def __init__(self, log=None, procs=None, win=None):
+        import contain
+        self.contain = contain
+        self.log = log or (lambda t: None)
+        self.procs = procs or contain.list_processes
+        self.win = win or contain.WinProc()
+        self.refused = set()
+
+    def tick(self):
+        c = self.contain
+        seen = set()
+        for pid, exe in sorted(self.procs().items()):
+            if c.which(exe)[0] != "MadMapper":
+                continue
+            seen.add(pid)
+            cls = self.win.priority(pid)
+            if cls not in HIGH_OR_ABOVE:
+                continue
+            was = c.PRIORITY_NAMES.get(cls, hex(cls))
+            why = self.win.set_priority(pid, c.NORMAL)
+            if not why:
+                self.refused.discard(pid)
+                self.log(f"note: MadMapper ({exe}, pid {pid}) was running "
+                         f"at {was} priority; set to Normal so it cannot "
+                         f"hold up the show engine (showpc.json "
+                         f"\"madmapper_priority\": \"normal\")")
+            elif pid not in self.refused:
+                self.refused.add(pid)
+                self.log(f"note: MadMapper ({exe}, pid {pid}) is running at "
+                         f"{was} priority and could not be set to Normal: "
+                         f"{why}. Left as it is; untick Increase MadMapper "
+                         f"Process Priority in MadMapper's preferences")
+        self.refused &= seen
+
+
+def start_madmapper_priority(settings):
+    """A MadMapperPriority unless showpc.json says "leave". Never raises."""
+    want = str(settings.get("madmapper_priority", "normal")).strip().lower()
+    if want == "leave":
+        log("MadMapper priority: left alone (showpc.json "
+            "\"madmapper_priority\": \"leave\")")
+        return None
+    if want != "normal":
+        log(f"MadMapper priority: showpc.json \"madmapper_priority\" is "
+            f"{want!r}, which is not \"normal\" or \"leave\"; using "
+            f"\"normal\"")
+    try:
+        m = MadMapperPriority(log=log)
+    except Exception as e:
+        log(f"MadMapper priority could not be watched ({type(e).__name__}: "
+            f"{e}); nothing was changed")
+        return None
+    log("MadMapper priority: set back to Normal whenever MadMapper is found "
+        "at High or above (checked every 5 s)")
+    return m
+
+
 def wanted_args(settings):
     port = settings["port"]
     fs = os.path.abspath(settings["flamesafe_config"])
@@ -772,6 +847,9 @@ def run_loop(open_page=False):
     keep_awake(True)
     contained = start_containment()
     next_contain = 0.0
+    mm_priority = start_madmapper_priority(settings)
+    next_mm = 0.0
+    mm_failed = ""
     me_started = time.time()
     progs = {n: Program(n) for n in PROGRAMS}
     # Programs left running by an earlier supervisor (one that was ended
@@ -827,6 +905,16 @@ def run_loop(open_page=False):
                 contained.tick()
             except Exception as e:
                 log(f"containment check failed: {e}")
+        if mm_priority is not None and now >= next_mm:
+            next_mm = now + MADMAPPER_EVERY_S
+            try:
+                mm_priority.tick()
+            except Exception as e:
+                why = f"{type(e).__name__}: {e}"
+                if why != mm_failed:
+                    mm_failed = why
+                    log(f"note: MadMapper priority check failed ({why}); "
+                        f"carrying on")
         for n in PROGRAMS:
             p = progs[n]
             args, why_not = want[n]

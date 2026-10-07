@@ -38701,6 +38701,86 @@ def test_remote_abort_and_start_need_the_confirm():
     print("  ok")
 
 
+def test_windows_supervisor_sets_madmapper_back_to_normal():
+    section("Windows app: the supervisor sets MadMapper back to Normal "
+            "priority whenever it is found at High or above, after every "
+            "MadMapper restart too; never the engine, deck or flamesafe; a "
+            "refusal is said once and never raised; \"leave\" turns it off")
+    W, SUP, gone = _winpkg()
+    HIGH, REALTIME, NORMAL, BELOW = 0x80, 0x100, 0x20, 0x4000
+    try:
+        table = {10: "MadMapper.exe", 20: "ltcplay.exe",
+                 21: "ltcplay-deck.exe", 22: "flamesafe.exe",
+                 30: "BEYOND.exe"}
+        pri = {10: HIGH, 20: HIGH, 21: 0x8000, 22: HIGH, 30: HIGH}
+        sets, lines, deny = [], [], set()
+
+        class Win:
+            def priority(self, pid):
+                return pri.get(pid)
+
+            def set_priority(self, pid, cls):
+                sets.append((pid, cls))
+                if pid in deny:
+                    return "Windows refused (error 5)"
+                pri[pid] = cls
+                return ""
+        m = SUP.MadMapperPriority(log=lines.append, procs=lambda: table,
+                                  win=Win())
+        m.tick()
+        check(sets == [(10, NORMAL)] and pri[10] == NORMAL,
+              f"MadMapper at High is set to Normal, nothing else is "
+              f"touched: {sets}")
+        check(len(lines) == 1 and "pid 10" in lines[0]
+              and "High" in lines[0] and "Normal" in lines[0],
+              f"one note line says so: {lines}")
+        m.tick()
+        check(len(sets) == 1 and len(lines) == 1,
+              "at Normal it is left alone, with no more lines")
+        pri[10] = BELOW
+        m.tick()
+        check(len(sets) == 1, "Below normal (containment) is left alone")
+        # MadMapper restarted: a new process, back at High by its own
+        # preference.
+        del table[10]
+        table[11] = "MadMapper.exe"
+        pri[11] = REALTIME
+        m.tick()
+        check(sets[-1] == (11, NORMAL) and len(lines) == 2
+              and "Realtime" in lines[-1],
+              f"the restarted MadMapper is set to Normal again: {sets} "
+              f"{lines}")
+        # Access denied: said once, never raised, tried again quietly.
+        table[12] = "MadMapperDemo.exe"
+        pri[12] = HIGH
+        deny.add(12)
+        m.tick()
+        m.tick()
+        refused = [x for x in lines if "could not be set" in x]
+        check(len(refused) == 1 and "error 5" in refused[0],
+              f"a refusal is one note: {lines}")
+        check(all("—" not in x and "–" not in x for x in lines),
+              "no dashes in the notes")
+        check(all(p not in (20, 21, 22, 30) for p, _c in sets),
+              f"the engine, the deck, flamesafe and BEYOND are never "
+              f"touched: {sets}")
+        deny.clear()
+        m.tick()
+        check(pri[12] == NORMAL, "once Windows allows it, it is set")
+        # The showpc.json key.
+        check(SUP.start_madmapper_priority(
+            {"madmapper_priority": "leave"}) is None,
+            "\"leave\" turns it off")
+        check(isinstance(SUP.start_madmapper_priority({}),
+                         SUP.MadMapperPriority),
+              "it is on by default")
+    finally:
+        if SUP._LOG is not None:
+            SUP._LOG.close()
+            SUP._LOG = None
+        gone()
+    print("  ok")
+
 def test_windows_supervisor_never_passes_bench_hooks():
     section("Windows app: the supervisor passes no bench test hook "
             "(LTCPLAY_BENCH_*, LTC_TRACEMALLOC) to the engine, the deck or "
@@ -40852,6 +40932,7 @@ if __name__ == "__main__":
     test_remote_abort_and_start_need_the_confirm()
     test_remote_unconfirmed_abort_still_disarms_the_flames()
     test_windows_supervisor_never_passes_bench_hooks()
+    test_windows_supervisor_sets_madmapper_back_to_normal()
     test_engine_refuses_run_with_a_bench_hook_outside_the_soak()
     test_fire_ice_no_mirror_no_fault_on_every_abort()
     test_remote_abort_disarms_with_no_show_live()

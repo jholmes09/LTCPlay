@@ -7801,6 +7801,24 @@ def build():
   "            flames = self._disarm_now(who, screen, \"Abort\")\n"
   "        if name in CONFIRM_ROUTES",
   "            flames = None\n        if name in CONFIRM_ROUTES"),
+
+ ("MadMapper at High is left at High", "packaging/windows/supervisor.py",
+  "HIGH_OR_ABOVE = (0x80, 0x100)", "HIGH_OR_ABOVE = ()"),
+
+ ("the MadMapper priority watcher lowers every program it sees",
+  "packaging/windows/supervisor.py",
+  '            if c.which(exe)[0] != "MadMapper":\n                continue\n',
+  ""),
+
+ ("a refused MadMapper priority change is logged every 5 s",
+  "packaging/windows/supervisor.py",
+  "            elif pid not in self.refused:",
+  "            else:"),
+
+ ("showpc.json \"leave\" still lowers MadMapper",
+  "packaging/windows/supervisor.py",
+  '    if want == "leave":',
+  '    if want == "never":'),
 ]
 
 
