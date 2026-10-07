@@ -597,12 +597,6 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
-        if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
-            why = "Confirm it on the page first. Nothing was changed."
-            self._journal(who, screen, name, "refused",
-                          f"{who or 'Someone'}'s {name} on the {screen} was "
-                          f"refused. {why}")
-            return 400, {"error": why}
         flames = None
         if name == "abort":
             # The flames first, every time (review of PR #43, P0-1): every
@@ -612,8 +606,22 @@ class Remote:
             # scheduler takes an Abort only in SHOW or PAUSED, and the
             # conductor only while something plays; a group armed before a
             # show, between shows or after one must still come off. Nothing
-            # here waits on a disk (P0-5).
+            # here waits on a disk (P0-5). Before the confirm check too
+            # (safety audit of bench-build, P2 b): a disarm only removes
+            # risk, so an unconfirmed Abort still takes the flames off; the
+            # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
+        if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
+            if flames is not None and flames[0] is not None:
+                why = ("Confirm it on the page first. Every flame group was "
+                       "sent a disarm; nothing else was changed.")
+            else:
+                why = "Confirm it on the page first. Nothing was changed."
+            self._journal(who, screen, name, "refused",
+                          f"{who or 'Someone'}'s {name} on the {screen} was "
+                          f"refused. {why}")
+            return 400, {"error": why}
+        if name == "abort":
             # And the lasers, the same way (re-review P1-A): blanked here,
             # before the scheduler's step and its save, not after them.
             lasers = self._lasers_dark_now()

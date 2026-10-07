@@ -1324,12 +1324,15 @@ def build_flame_link(cfg, control, show, journal=None):
         show_state=flamelink.audio_master_state(show.clock_nolock),
         journal=journal)
     link.journal_line = journal
-    if journal is not None and not _has_status_mirror(cfg.flamesafe_config):
+    link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)
+    if journal is not None and not link.status_mirrored:
         journal("Flame link: flamesafe's status frames go to the Stream Deck "
                 "program and flamesafe's config has no link.status_mirror_port"
                 ", so this program cannot see flamesafe confirm a disarm, or "
-                "raise the lock alarm itself; the Stream Deck shows both. Set "
-                "status_mirror_port to give this program its own copy.",
+                "raise the lock alarm itself; the Stream Deck shows both. "
+                "No disarm fault is raised here after an Abort for that "
+                "reason. Set status_mirror_port to give this program its "
+                "own copy.",
                 action="flame_link", outcome="no_status")
     # The seek guard (PR #39) counts the show audio's own timecode frames,
     # which are always 30 a second (clock.MASTER_FPS), whatever the show

@@ -34757,6 +34757,9 @@ def test_fire_ice_status_mirror_reaches_the_flame_link():
         check(getattr(link.cues, "_bg", False) is True,
               "ltc serve's flame cues read files on their own thread, never "
               "the sender's")
+        check(getattr(link, "status_mirrored", None) is True,
+              "with a status mirror the link expects flamesafe to confirm "
+              "a disarm, so an unconfirmed one is a fault")
         rows = [r for r in svc.journal if r.get("outcome") == "no_status"]
         check(not rows, f"with a status mirror it does not say it cannot "
                         f"see flamesafe: {rows}")
@@ -38698,6 +38701,219 @@ def test_remote_abort_and_start_need_the_confirm():
     print("  ok")
 
 
+def test_windows_supervisor_never_passes_bench_hooks():
+    section("Windows app: the supervisor passes no bench test hook "
+            "(LTCPLAY_BENCH_*, LTC_TRACEMALLOC) to the engine, the deck or "
+            "flamesafe, whatever is left in its own environment (safety "
+            "audit of bench-build, P1)")
+    import tempfile
+    W, SUP, gone = _winpkg()
+    work = tempfile.mkdtemp()
+    old_local = os.environ.get("LOCALAPPDATA")
+    real_popen = SUP.subprocess.Popen
+    hooks = {"LTCPLAY_BENCH_FAKE_AUDIO": "Focusrite USB ASIO",
+             "LTCPLAY_BENCH_VIRTUAL_DECK": "1",
+             "LTCPLAY_BENCH_STALLS": os.path.join(work, "s.json"),
+             "LTCPLAY_BENCH_SENDGAPS": os.path.join(work, "g.json"),
+             "LTCPLAY_BENCH_SOAK": str(os.getpid()),
+             "LTC_TRACEMALLOC": "1"}
+    try:
+        os.environ["LOCALAPPDATA"] = work
+        os.environ.update(hooks)
+        settings = {"show_folder": os.path.join(work, "shows"),
+                    "flamesafe_config": "", "port": 7878,
+                    "run_flamesafe": True, "run_deck": True,
+                    "show_mode": "fire_ice",
+                    "schedule": os.path.join(work, "s.json")}
+        want = SUP.wanted_args(settings)
+        seen = []
+
+        class FakeProc:
+            pid = 4243
+
+            def __init__(self, cmd, **kw):
+                seen.append(kw.get("env") or {})
+
+            def poll(self):
+                return None
+        SUP.subprocess.Popen = FakeProc
+        for name in SUP.PROGRAMS:
+            p = SUP.Program(name)
+            p.start(want[name][0] or [], settings)
+            p.out.close()
+        check(len(seen) == len(SUP.PROGRAMS), f"every program started: "
+                                              f"{len(seen)}")
+        for env in seen:
+            left = sorted(k for k in env if k.upper() in hooks)
+            check(not left, f"no bench hook reaches a show program: {left}")
+            check(env.get("LOCALAPPDATA") == work,
+                  "the rest of the environment is still passed on")
+        check(W.without_bench_hooks({"ltcplay_bench_x": "1", "PATH": "p"})
+              == {"PATH": "p"}, "names are matched in any case, as on "
+                                "Windows")
+        soak = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "packaging", "windows", "soak.py"),
+                    encoding="utf-8").read()
+        check('env["LTCPLAY_BENCH_SOAK"] = str(os.getpid())' in soak,
+              "the soak still marks the programs it starts as its own")
+    finally:
+        SUP.subprocess.Popen = real_popen
+        for k in hooks:
+            os.environ.pop(k, None)
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        if SUP._LOG is not None:
+            SUP._LOG.close()
+            SUP._LOG = None
+        gone()
+    print("  ok")
+
+
+def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
+    section("engine: Run is refused, naming the hook, while a bench test "
+            "hook is set and the soak did not start this engine (safety "
+            "audit of bench-build, P1)")
+    import tempfile
+    from ltcplay import benchhooks as B
+    from ltcplay import web as web_mod
+    from ltcplay.session import SessionError
+    me = os.getppid()
+    check(B.run_refusal({}, me) is None, "no hook: Run goes ahead")
+    check(B.run_refusal({"LTC_TRACEMALLOC": "0", "PATH": "x"}, me) is None,
+          "a hook set to 0 is off")
+    for name in ("LTCPLAY_BENCH_FAKE_AUDIO", "LTCPLAY_BENCH_VIRTUAL_DECK",
+                 "LTCPLAY_BENCH_STALLS", "LTCPLAY_BENCH_SENDGAPS",
+                 "LTC_TRACEMALLOC", "LTCPLAY_BENCH_SOMETHING_NEW"):
+        why = B.run_refusal({name: "1"}, me)
+        check(why and name in why and "Run refused" in why
+              and "—" not in why and "–" not in why,
+              f"{name} refuses Run in a sentence naming it, no dashes: "
+              f"{why}")
+        check(B.run_refusal({name: "1", B.SOAK_ENV: str(me + 1)}, me),
+              f"{name} with a soak mark naming another process (one left "
+              f"in the environment) still refuses Run")
+        check(B.run_refusal({name: "1", B.SOAK_ENV: str(me)}, me) is None,
+              f"{name} set by the soak that started this engine: Run goes "
+              f"ahead")
+    check(B.run_refusal({B.SOAK_ENV: "123"}, me) is None,
+          "the soak's mark alone is not a hook")
+    c = web_mod.Control(tempfile.mkdtemp(), sd=FakeSD())
+    saved = {k: os.environ.pop(k) for k in list(os.environ)
+             if B.is_hook(k)}
+    try:
+        os.environ["LTCPLAY_BENCH_FAKE_AUDIO"] = "Focusrite USB ASIO"
+        try:
+            c.start("show.json")
+            check(False, "Run went ahead with a fake audio device set")
+        except SessionError as e:
+            check("LTCPLAY_BENCH_FAKE_AUDIO" in str(e)
+                  and "silent" in str(e),
+                  f"the rack screen's Run is refused, saying why: {e}")
+        os.environ.pop("LTCPLAY_BENCH_FAKE_AUDIO")
+        try:
+            c.start("show.json")
+        except SessionError as e:
+            check("Run refused" not in str(e),
+                  f"with no hook set, Run is not refused for one: {e}")
+    finally:
+        os.environ.pop("LTCPLAY_BENCH_FAKE_AUDIO", None)
+        os.environ.update(saved)
+    print("  ok")
+
+
+def test_fire_ice_no_mirror_no_fault_on_every_abort():
+    section("flame link: with no status mirror in flamesafe's config an "
+            "Abort raises no disarm fault (it cannot be confirmed here), "
+            "one note says so when the link starts; with a mirror an "
+            "unconfirmed disarm is still a fault (safety audit of "
+            "bench-build, P2 a)")
+    import tempfile
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    fs, show, doc = _fi_flame_files(work)
+    rule = os.path.join(work, SV.RULE_FILE)
+    SV.save_rule(rule, _sched_doc())
+    svc = SV.Service(rule, state_dir=work, ntp_query=lambda: 0.0)
+    cfg = F.FireIceConfig(flamesafe_config=fs, flame_controller="Flames")
+    httpd = web_mod.serve(work, port=_free_port(), schedule=svc,
+                          fire_ice=cfg, flamesafe_config=fs)
+    try:
+        link = httpd.fire_ice.flame_link
+        check(link is not None
+              and getattr(link, "status_mirrored", None) is False,
+              "no status_mirror_port: the link knows it")
+
+        def outcomes(o):
+            return [r for r in svc.journal if r.get("outcome") == o]
+        for _ in range(3):
+            httpd.remote.disarm_all("Andy", "rack screen")
+            time.sleep(fl_confirm_s() + 0.4)
+        time.sleep(0.3)
+        check(not outcomes("disarm_unconfirmed"),
+              f"three Aborts with no mirror: no disarm fault: "
+              f"{outcomes('disarm_unconfirmed')}")
+        check(len(outcomes("no_status")) == 1,
+              f"one note when the link started: {outcomes('no_status')}")
+        link.status_mirrored = True
+        httpd.remote.disarm_all("Andy", "rack screen")
+        deadline = time.time() + fl_confirm_s() + 3
+        while time.time() < deadline and not outcomes("disarm_unconfirmed"):
+            time.sleep(0.05)
+        check(outcomes("disarm_unconfirmed"),
+              "with a mirror, a disarm flamesafe never confirms is still a "
+              "fault")
+        httpd.control.session = None
+    finally:
+        svc.halt()
+        svc.stop()
+        httpd.server_close()
+    print("  ok")
+
+
+def fl_confirm_s():
+    from ltcplay import flamelink as fl
+    return fl.CONFIRM_S
+
+
+def test_remote_unconfirmed_abort_still_disarms_the_flames():
+    section("iPad remote: an Abort without the on-page confirm still "
+            "disarms every flame group first, then refuses the rest "
+            "(safety audit of bench-build, P2 b)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        R.sign_in()
+        _live_show(R)
+        calls = []
+        R.remote._flame_disarm = lambda reason: (
+            calls.append(reason) or _Result(True, "sent."))
+        for body in ({}, {"confirmed": False}, {"confirmed": "yes"}):
+            n = len(calls)
+            st, _h, out = R.ask("POST", "/api/remote/abort", body)
+            R.settle()
+            check(len(calls) == n + 1,
+                  f"Abort {body} without the confirm sent the disarm: "
+                  f"{calls}")
+            check(st == 400 and "Confirm" in out["error"]
+                  and "disarm" in out["error"]
+                  and not R.svc.machine.abort_latched
+                  and R.c.snapshot()["look"] == "PLAYING",
+                  f"and the rest of the Abort is still refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        R.settle()
+        check(st == 200 and out.get("disarmed") is True
+              and R.c.snapshot()["look"] == "ABORTED",
+              f"a confirmed Abort is unchanged: {st} {out}")
+    finally:
+        R.close()
+    print("  ok")
+
 def test_remote_stale_state_refused_and_banner():
     section("iPad remote: presses that act on what the page shows are refused "
             "on a status older than 2 s; the page shows a banner and turns "
@@ -40634,6 +40850,10 @@ if __name__ == "__main__":
     test_api_conductor_reports_audio_loss()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
+    test_remote_unconfirmed_abort_still_disarms_the_flames()
+    test_windows_supervisor_never_passes_bench_hooks()
+    test_engine_refuses_run_with_a_bench_hook_outside_the_soak()
+    test_fire_ice_no_mirror_no_fault_on_every_abort()
     test_remote_abort_disarms_with_no_show_live()
     test_remote_abort_disarm_never_waits_on_the_tonight_save()
     test_remote_reset_and_abort_1_ms_apart_under_a_slow_save()

@@ -405,6 +405,19 @@ PRIORITY_ENV = "LTCPLAY_PRIORITY"      # "high": set by the supervisor
 # their command line too; the engine refuses to start when its own settings
 # name a different one.
 FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
+# The bench build's test hooks (safety audit of bench-build, P1): every
+# LTCPLAY_BENCH_* variable and LTC_TRACEMALLOC. The supervisor passes none of
+# them on; only the soak sets them, in the programs it starts itself. The
+# same list as ltcplay/benchhooks.py (the supervisor carries no ltcplay code).
+BENCH_PREFIX = "LTCPLAY_BENCH_"
+BENCH_EXTRA = ("LTC_TRACEMALLOC",)
+
+
+def without_bench_hooks(env):
+    """A copy of `env` with every bench test hook removed."""
+    return {k: v for k, v in env.items()
+            if not (str(k).upper().startswith(BENCH_PREFIX)
+                    or str(k).upper() in BENCH_EXTRA)}
 
 
 def boosted():

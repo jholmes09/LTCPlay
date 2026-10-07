@@ -24,6 +24,7 @@ from . import brand as brand_mod
 from . import settings as settings_mod
 from . import timeline as timeline_mod
 from .ltc import LTCDecoder
+from . import benchhooks
 from .session import Session, SessionError
 
 # A device that is not attached, a channel that does not exist, a show file
@@ -560,6 +561,12 @@ class Control:
                     self._starting = False
 
     def _start(self, timeline, no_output, on_lost, allow_missing, auto_reload):
+        # Bench test hooks set outside the soak (safety audit of
+        # bench-build, P1): refused before anything is opened.
+        why = benchhooks.run_refusal()
+        if why:
+            print(f"ltcplay: {why}", flush=True)
+            raise SessionError(why)
         path = os.path.join(self.folder, os.path.basename(timeline))
         if not os.path.exists(path):
             raise SessionError(f"No such show file: {timeline}")

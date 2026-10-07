@@ -1462,6 +1462,9 @@ class Soak:
                 self.dir, "engine-stalls.json")
         if name == "deck" and self.virtual_deck:
             env["LTCPLAY_BENCH_VIRTUAL_DECK"] = "1"
+        # The soak's own mark (ltcplay/benchhooks.py): its process id, so the
+        # engine knows the bench hooks above were set by the soak itself.
+        env["LTCPLAY_BENCH_SOAK"] = str(os.getpid())
         env.pop(ltcwin.PRIORITY_ENV, None)
         if self.priority:
             env[ltcwin.PRIORITY_ENV] = "high"

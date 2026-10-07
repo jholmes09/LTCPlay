@@ -497,6 +497,12 @@ class FlameLink:
         self._pending_abort = None  # (abort_id, sent at)
         self._abort_unconfirmed = False
         self._abort_confirmed_id = None
+        # False when flamesafe's config names no link.status_mirror_port
+        # (fire_ice.build_flame_link sets it, and says so once when the link
+        # starts): no status frame can ever reach this program, so an
+        # unconfirmed disarm is expected, not a fault on every Abort (safety
+        # audit of bench-build, P2 a). The Stream Deck still confirms it.
+        self.status_mirrored = True
 
     # -- the journal -----------------------------------------------------------
     def _note(self, text, **fields):
@@ -985,6 +991,8 @@ class FlameLink:
         comes, and the fault must still be raised."""
         pend = self._pending_abort
         if pend is None or self._abort_unconfirmed:
+            return None
+        if not self.status_mirrored:
             return None
         if self._clock() - pend[1] > CONFIRM_S:
             self._abort_unconfirmed = True

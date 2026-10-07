@@ -446,7 +446,11 @@ class Program:
         if ltcwin.WINDOWS:
             flags = (subprocess.CREATE_NEW_PROCESS_GROUP
                      | subprocess.CREATE_NO_WINDOW)
-        env = dict(os.environ)
+        # No bench test hook ever reaches a show program (safety audit of
+        # bench-build, P1): the soak starts its own programs and sets them
+        # there; the supervisor never passes one on, whatever is left in
+        # this account's environment.
+        env = ltcwin.without_bench_hooks(os.environ)
         env.pop(ltcwin.PRIORITY_ENV, None)
         if priority_boost_on():
             env[ltcwin.PRIORITY_ENV] = "high"

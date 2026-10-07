@@ -7759,6 +7759,48 @@ def build():
   "            return str(getattr(b, \"fault\", \"\") or \"\")",
   "            return \"\""),
 
+
+ # Safety audit of bench-build (2026-10-07): bench hooks never reach a show;
+ # no disarm fault on every Abort with no status mirror; an unconfirmed
+ # screen Abort still disarms first.
+ ("the supervisor passes bench test hooks on to the show programs",
+  "packaging/windows/supervisor.py",
+  "        env = ltcwin.without_bench_hooks(os.environ)",
+  "        env = dict(os.environ)"),
+
+ ("LTC_TRACEMALLOC is no longer stripped by the supervisor",
+  "packaging/windows/ltcwin.py",
+  'BENCH_EXTRA = ("LTC_TRACEMALLOC",)',
+  "BENCH_EXTRA = ()"),
+
+ ("Run is never refused for a bench hook", "ltcplay/web.py",
+  "        why = benchhooks.run_refusal()\n        if why:",
+  "        why = benchhooks.run_refusal()\n        if False:"),
+
+ ("any soak mark lets the bench hooks through", "ltcplay/benchhooks.py",
+  "    return bool(mark) and mark == str(ppid)",
+  "    return bool(mark)"),
+
+ ("a bench hook set to anything is ignored unless it is FAKE_AUDIO",
+  "ltcplay/benchhooks.py",
+  "        if not is_hook(k) or k.upper() == SOAK_ENV:",
+  "        if k.upper() != \"LTCPLAY_BENCH_FAKE_AUDIO\":"),
+
+ ("with no status mirror every Abort raises the disarm fault again",
+  "ltcplay/flamelink.py",
+  "        if not self.status_mirrored:\n            return None\n",
+  ""),
+
+ ("with a status mirror an unconfirmed disarm is no longer a fault",
+  "ltcplay/fire_ice.py",
+  "    link.status_mirrored = _has_status_mirror(cfg.flamesafe_config)",
+  "    link.status_mirrored = False"),
+
+ ("an unconfirmed screen Abort no longer disarms the flames",
+  "ltcplay/remote.py",
+  "            flames = self._disarm_now(who, screen, \"Abort\")\n"
+  "        if name in CONFIRM_ROUTES",
+  "            flames = None\n        if name in CONFIRM_ROUTES"),
 ]
 
 
