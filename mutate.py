@@ -6243,6 +6243,14 @@ def _run():
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
     if not run_suite():
+        # One wall-clock check can miss its bound on a busy runner with
+        # nothing mutated (CI shard 12 on PR #55; a pixel pacing check
+        # locally). A leftover mutation or a real break fails again, so the
+        # baseline gets one more run, with the first failure printed.
+        print("  baseline failed once, running it again:")
+        for _l in _LAST_FAILS:
+            print("    " + _l)
+    if not run_suite():
         for _l in _LAST_FAILS:
             print("  " + _l)
         if os.environ.get("GITHUB_ACTIONS"):
