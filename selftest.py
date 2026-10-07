@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import struct
 import tempfile
 import threading
 import sys
@@ -53,6 +54,216 @@ SOURCE_TREE = os.path.exists(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutate.py"))
 
 RAN = set()
+
+
+def _close_logs_under(path):
+    """Close the program's log files that live under `path`."""
+    import logging
+    try:
+        base = os.path.abspath(path)
+        loggers = [logging.getLogger(), logging.getLogger("ltcplay")]
+        for lg in loggers:
+            for h in list(lg.handlers):
+                f = getattr(h, "baseFilename", None)
+                if f and os.path.abspath(f).startswith(base):
+                    lg.removeHandler(h)
+                    h.close()
+    except Exception:
+        pass
+
+
+def _close_all_logs():
+    """Close every log file this process has open (the logging module does it
+    at exit, but that is after the run's own clean-up)."""
+    import logging
+    import gc
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    gc.collect()
+
+
+class _TempRun:
+    """Keeps one run of this file from littering the machine's temp folder.
+
+    Nearly every test makes itself a folder with tempfile.mkdtemp() and none
+    of them used to remove it; a run left hundreds behind (about 110MB), and a
+    loop of runs filled the disk. So the run makes ONE private folder inside
+    the temp folder, points everything at it (this process through
+    tempfile.tempdir, child processes through TMPDIR), remembers every
+    mkdtemp() made in this process, removes those when the next test starts
+    (and when a test fails, because it also runs at exit), and removes the
+    private folder when the run ends.
+
+    It never looks at the rest of the temp folder, so other runs going on at
+    the same time cannot be mistaken for this one's leftovers: whatever sits
+    in the private folder was made by this run and nobody else.
+
+    What it does NOT sweep up is what a test makes by some other route
+    (a file, or a folder a child process made). Those are still there when
+    the run ends and finish() fails the run, naming them."""
+
+    KEEP_PREFIX = "ltcplay_fixture_show_"   # the shared synthetic show
+
+    def __init__(self):
+        self.outer = tempfile.gettempdir()
+        self._real_mkdtemp = tempfile.mkdtemp
+        self.root = self._real_mkdtemp(prefix="ltcplay_selftest_",
+                                       dir=self.outer)
+        self.tracked = []
+        self.seen = set()         # every folder this process made
+        self.leftovers = None
+        self._test = None
+        self._saved_env = {k: os.environ.get(k)
+                           for k in ("TMPDIR", "TEMP", "TMP")}
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = self.root
+        for k in self._saved_env:
+            os.environ[k] = self.root
+        tempfile.mkdtemp = self._mkdtemp
+        import atexit
+        atexit.register(self.close)
+
+    def _mkdtemp(self, suffix=None, prefix=None, dir=None):
+        path = self._real_mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+        if not (prefix or "").startswith(self.KEEP_PREFIX):
+            self.tracked.append(path)
+        return path
+
+    @staticmethod
+    def _remove(path, tries=5):
+        """Remove a folder or file. A file another process still has open
+        cannot be deleted on Windows, and a read-only one needs its bit
+        cleared first, so this retries rather than giving up at once."""
+        import shutil
+        import stat
+
+        def _fix(func, p, _exc):
+            # A test may leave a folder or file without permissions. Give
+            # them back to the owner and let the next try remove it. Only
+            # retry the call here when it takes just a path: rmtree can hand
+            # this os.open or os.scandir, which need more.
+            for q in (os.path.dirname(p), p):
+                try:
+                    os.chmod(q, stat.S_IRWXU)
+                except OSError:
+                    pass
+            if func in (os.rmdir, os.unlink, os.remove):
+                try:
+                    func(p)
+                except OSError:
+                    pass
+
+        for i in range(tries):
+            # Windows will not delete a log file that is still open. The
+            # program's own logger keeps its file open until it is replaced,
+            # so let go of any that sit under the folder being removed.
+            _close_logs_under(path)
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path, onerror=_fix)
+                elif os.path.lexists(path):
+                    os.unlink(path)
+            except OSError:
+                pass
+            if not os.path.lexists(path):
+                return True
+            if i + 1 < tries:
+                time.sleep(0.2 * (i + 1))
+        return False
+
+    def describe(self, names):
+        """What the leftovers are, for the failure message: kind and size."""
+        out = []
+        for n in names[:20]:
+            p = os.path.join(self.root, n)
+            try:
+                if os.path.isdir(p):
+                    kids = os.listdir(p)
+                    out.append(f"{n}/ ({len(kids)} inside: "
+                               f"{', '.join(kids[:4])})")
+                else:
+                    out.append(f"{n} ({os.path.getsize(p)} bytes)")
+            except OSError as e:
+                out.append(f"{n} ({e})")
+        return out
+
+    def sweep(self, tries=1):
+        """Remove every folder made so far. One that cannot go yet (an open
+        file on Windows) is kept for the next sweep, not forgotten."""
+        keep = []
+        while self.tracked:
+            path = self.tracked.pop()
+            self.seen.add(path)
+            if not self._remove(path, tries):
+                keep.append(path)
+        self.tracked.extend(keep)
+
+    def next_test(self, name):
+        if name != self._test:
+            self.sweep()
+            self._test = name
+
+    def finish(self):
+        """Run at the end: nothing may be left in this run's own folder.
+        Returns the names that were."""
+        try:
+            import test_show_fixtures
+            test_show_fixtures.cleanup()
+        except ImportError:
+            pass
+        _close_all_logs()
+        self.sweep(tries=5)
+        # multiprocessing keeps its own scratch folder (pymp-*) in the temp
+        # folder and removes it when the process exits, which is after this
+        # check. Run its clean-up now; a child process still shutting down
+        # gets a few seconds to finish removing what it made.
+        try:
+            import multiprocessing.util as _mpu
+            _mpu._run_finalizers()
+        except Exception:
+            pass
+        deadline = time.time() + 5.0
+        while True:
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            # A thread a finished test never stopped can write into its
+            # folder after the folder was removed, and that puts the folder
+            # (just its path, with a log in it) back. It is one this process
+            # made, so it is this sweeper's to remove, not a new leak.
+            for n in names:
+                path = os.path.join(self.root, n)
+                if path in self.seen:
+                    self._remove(path, 3)
+            try:
+                names = sorted(os.listdir(self.root))
+            except OSError:
+                names = []
+            self.leftovers = names
+            if not names or time.time() > deadline:
+                break
+            time.sleep(0.25)
+        return self.leftovers
+
+    def close(self):
+        _close_all_logs()
+        self.sweep(tries=3)
+        self._remove(self.root, 5)
+        tempfile.mkdtemp = self._real_mkdtemp
+        tempfile.tempdir = self._saved_tempdir
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+# Set by the __main__ block below; None when this file is imported (mutate.py
+# imports it for its helpers) so that importing it changes nothing.
+_TEMPRUN = None
 
 
 # The real renders, for the tests that need a whole show. They are never in
@@ -202,7 +413,10 @@ def section(name):
     # tests, because a string replace into the call list below silently matched
     # nothing.
     import sys as _sys
-    RAN.add(_sys._getframe(1).f_code.co_name)
+    _who = _sys._getframe(1).f_code.co_name
+    if _TEMPRUN is not None and _who.startswith("test_"):
+        _TEMPRUN.next_test(_who)
+    RAN.add(_who)
     print(f"\n== {name}")
 
 
@@ -3501,7 +3715,7 @@ def test_web_ui():
     # once a show folder was configured, which never happened until
     # synthetic fixtures landed, so a Unix-only path here was never
     # exercised on Windows. It is now, and Windows has no /tmp.
-    wav = os.path.join(tempfile.gettempdir(), "ltcplay_selftest_pause.wav")
+    wav = os.path.join(folder, "ltcplay_selftest_pause.wav")
     if not os.path.exists(wav):
         from ltcplay.ltc import synthesize
         import wave as wavemod
@@ -9281,7 +9495,8 @@ def _entry_effects_hold(S, before, o, label):
               f"{label}: a resumed show carries on, music back up, lasers "
               f"back last; got {kinds}")
         return
-    if st in ("STANDBY", "HOLD") and "STOP_CONDUCTOR" in kinds \
+    if st in ("STANDBY", "HOLD") and (
+            "STOP_CONDUCTOR" in kinds or getattr(o.machine, "dark", False)) \
             and not S.INTERMISSION_AFTER_A_STOPPED_SHOW:
         check("INTERMISSION" not in kinds,
               f"{label}: the rig stays dark after a stopped show")
@@ -9437,19 +9652,30 @@ def test_schedule_expands_the_season():
           f"the day before the season has no shows, got {off}")
 
     # Both Denver offset changes, in 2026 and 2027, tested directly even
-    # though the season falls between them. An overnight window across 2 AM
-    # shows the arithmetic is in real time: the spring night is an hour
-    # shorter and the autumn night an hour longer.
-    spring = ["00:30", "00:50", "01:10", "01:30", "01:50", "03:10", "03:30",
-              "03:50"]
-    autumn = ["00:30", "00:50", "01:10", "01:30", "01:50", "01:10", "01:30",
-              "01:50", "02:10", "02:30", "02:50", "03:10", "03:30", "03:50"]
-    changes = {"2026-03-08": (spring, [-7] * 5 + [-6] * 3),
-               "2026-11-01": (autumn, [-6] * 5 + [-7] * 9),
-               "2027-03-14": (spring, [-7] * 5 + [-6] * 3),
-               "2027-11-07": (autumn, [-6] * 5 + [-7] * 9)}
-    overnight = {"first_start": "00:30", "interval_min": 20,
-                 "last_end": "04:00"}
+    # though the season falls between them. A night may not start before
+    # the 2 AM nightly reset (Jeff, 2026-10-03), so the earliest night,
+    # 02:00 to 06:00, is the one that meets the change: on the spring night
+    # 02:00 does not exist and the first show is at 03:00 MDT, an hour
+    # shorter in real time; on the autumn night the repeated hour (01:00 to
+    # 02:00) is before it, so it is a plain four hours on MST.
+    early = {"first_start": "01:59", "interval_min": 20, "last_end": "04:00"}
+    try:
+        S.parse_rule(_sched_doc(exceptions={"2026-12-05": early}))
+        check(False, "a night starting at 01:59, before the 2 AM nightly "
+                     "reset, must be refused")
+    except S.RuleError as e:
+        check("2 AM nightly reset" in str(e),
+              f"the refusal names the 2 AM nightly reset: {e}")
+    spring = ["03:00", "03:20", "03:40", "04:00", "04:20", "04:40", "05:00",
+              "05:20", "05:40"]
+    autumn = ["02:00", "02:20", "02:40", "03:00", "03:20", "03:40", "04:00",
+              "04:20", "04:40", "05:00", "05:20", "05:40"]
+    changes = {"2026-03-08": (spring, [-6] * 9),
+               "2026-11-01": (autumn, [-7] * 12),
+               "2027-03-14": (spring, [-6] * 9),
+               "2027-11-07": (autumn, [-7] * 12)}
+    overnight = {"first_start": "02:00", "interval_min": 20,
+                 "last_end": "06:00"}
     year = S.parse_rule(_sched_doc(
         season={"first_date": "2026-01-01", "last_date": "2027-12-31"},
         weekly={w: {"first_start": "17:30", "interval_min": 20,
@@ -9457,8 +9683,8 @@ def test_schedule_expands_the_season():
         exceptions=dict({k: overnight for k in changes},
                         **{"2026-06-01": overnight})))
     plain = S.expand(year, date(2026, 6, 1))
-    check(len(plain.starts) == 11, f"an ordinary 00:30 to 04:00 night holds "
-                                   f"11 shows, got {len(plain.starts)}")
+    check(len(plain.starts) == 12, f"an ordinary 02:00 to 06:00 night holds "
+                                   f"12 shows, got {len(plain.starts)}")
     for ds, (walls, offs) in changes.items():
         p = S.expand(year, date.fromisoformat(ds))
         got = [S.clock(s) for s in p.starts]
@@ -9547,8 +9773,10 @@ def test_schedule_late_rule():
         start = _den(S, 18, 0)
         waiting = _Night(S, rule)
         waiting.boot(start - timedelta(seconds=120))
-        check(waiting.m.state == S.IDLE, "two minutes before the first show "
-                                         "the scheduler waits in IDLE")
+        check(waiting.m.state == S.STANDBY, "two minutes before the first "
+                                            "show the intermission loop is "
+                                            "already running (within the "
+                                            "30 minute preshow lead)")
         idle = waiting.m
         fired, fired_boot = [], []
         for off in range(-60, 601):
@@ -10065,7 +10293,9 @@ def test_schedule_hold_between_shows_delays():
           f"MISSED: {n.m.slot(4).reason!r}")
     n.audit("two delayed")
 
-    # A delayed show keeps the night open, until midnight.
+    # A delayed show keeps the night open past midnight: it is never
+    # auto-missed or auto-closed, only Start now or Close for the night
+    # ends it (Jeff, 2026-10-01).
     n = _Night(S, rule)
     n.boot(_den(S, 21, 30))
     n.op(S.HOLD_ON, _den(S, 21, 35))
@@ -10075,10 +10305,16 @@ def test_schedule_hold_between_shows_delays():
     check(n.m.state == S.STANDBY and n.m.slot(12).status == S.DELAYED,
           "the last show delayed keeps the night open for Start now")
     n.tick(_den(S, 0, 0, 0, d=(2026, 11, 15)))
-    check(n.m.slot(12).status == S.MISSED
-          and "midnight" in n.m.slot(12).reason and n.m.state == S.CLOSING,
-          f"at midnight it is MISSED and the night closes: "
-          f"{n.m.slot(12).reason!r} {n.m.state}")
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          f"midnight does not miss it or close the night: "
+          f"{n.m.slot(12).status} {n.m.state}")
+    n.tick(_den(S, 9, 0, 0, d=(2026, 11, 15)))
+    check(n.m.slot(12).status == S.DELAYED and n.m.state == S.STANDBY,
+          "it stays open however long it takes, not just past midnight")
+    o = n.op(S.START_NOW, _den(S, 9, 5, 0, d=(2026, 11, 15)))
+    check(_fired(o, S) == [12] and
+          n.m.slot(12).reason == "DELAYED START (operator hold)",
+          f"Start now still starts it, long after midnight: {o.refused}")
     # End night skips a delayed show too; Skip next skips it first.
     n = _Night(S, rule)
     n.boot(_den(S, 18, 5))
@@ -10096,32 +10332,40 @@ def test_schedule_hold_between_shows_delays():
 
 
 def test_schedule_start_now_in_every_state():
-    section("scheduler: Start now anywhere but a running or paused show")
+    section("scheduler: Start now anywhere but a running or paused show, "
+            "and it always runs an EXTRA show unless a delayed one waits "
+            "(Jeff, 2026-10-02)")
     S = _sched()
     if S is None:
         return
     fx = _matrix_fixtures(S)
-    want = {S.IDLE: ("STARTED EARLY (operator)", 1),
-            S.STANDBY: ("STARTED EARLY (operator)", 2),
-            S.HOLD: ("STARTED EARLY (operator)", 1),
-            S.CLOSING: ("EXTRA SHOW (operator)", 16),
-            S.OFF: ("EXTRA SHOW (operator)", 16),
-            "HOLD+DELAYED": ("DELAYED START (operator hold)", 1),
-            "STANDBY+DELAYED": ("DELAYED START (operator hold)", 1)}
+    extra = "EXTRA SHOW (operator)"
+    want = {S.IDLE: extra, S.STANDBY: extra, S.HOLD: extra,
+            S.CLOSING: extra, S.OFF: extra,
+            "HOLD+DELAYED": "DELAYED START (operator hold)",
+            "STANDBY+DELAYED": "DELAYED START (operator hold)"}
+    check(not hasattr(S, "STARTED_EARLY"),
+          "the 2026-09-23 STARTED_EARLY reason is gone")
     for label, (m, now) in fx.items():
         o = S.step(m, S.Event(S.START_NOW, "operator", who="Jeff",
                               screen="rack screen"), now)
         if label in want:
-            reason, show = want[label]
+            reason = want[label]
+            show = (max(s.n for s in m.slots) + 1 if reason == extra
+                    else m.delayed().n)
             check(o.accepted and _fired(o, S) == [show]
                   and o.machine.slot(show).reason == reason
                   and o.machine.slot(show).fired_at == now,
                   f"Start now in {label} starts show {show} now as "
                   f"{reason}: {o.refused or o.machine.slot(show).reason}")
-            if reason == "STARTED EARLY (operator)":
-                check(o.machine.next_slot() is None or
-                      o.machine.next_slot().n != show,
-                      "starting early uses up that slot")
+            if reason == extra:
+                check(o.machine.slot(show).origin == "operator" and
+                      [s.n for s in o.machine.pending()] ==
+                      [s.n for s in m.pending()] and
+                      all(o.machine.slot(s.n).start == s.start
+                          for s in m.pending()),
+                      f"Start now in {label} leaves every scheduled show "
+                      f"where it was")
             check(not o.machine.held_from and o.machine.state == S.SHOW,
                   "Start now ends a Hold")
         else:
@@ -10133,22 +10377,86 @@ def test_schedule_start_now_in_every_state():
     n.tick(_den(S, 18, 0))
     n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
     o = n.op(S.START_NOW, _den(S, 18, 2))
-    check(o.accepted and _fired(o, S) == [2]
-          and n.m.slot(2).reason == "STARTED EARLY (operator)",
-          f"Start now works the moment after an Abort: {o.refused}")
+    check(o.accepted and _fired(o, S) == [13]
+          and n.m.slot(13).reason == extra
+          and n.m.slot(2).status == S.PENDING,
+          f"Start now works the moment after an Abort, as an extra show, "
+          f"and show 2 stays: {o.refused}")
     n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 9, 20))
     o = n.op(S.START_NOW, _den(S, 18, 9, 21))
-    check(o.accepted and _fired(o, S) == [3],
+    check(o.accepted and _fired(o, S) == [14],
           f"Start now works 1 s after a show ended, inside the guard: "
           f"{o.refused}")
-    # Every show used up: the next Start now is an extra show.
-    n = _Night(S, rule)
-    n.boot(_den(S, 21, 50))
-    o = n.op(S.START_NOW, _den(S, 21, 55))
-    check(n.m.slot(13) is not None and n.m.slot(13).origin == "operator"
-          and n.m.slot(13).reason == "EXTRA SHOW (operator)",
-          "with no show left, Start now runs an extra one")
     n.audit("start now")
+    # Latched after an Abort (the service sets this from the show
+    # conductor): Start now is refused until Reset.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    o = S.step(n.m, S.Event(S.START_NOW, "operator", who="Jeff",
+                            screen="rack screen", latched=True),
+               _den(S, 17, 51))
+    check(not o.accepted and "Reset" in o.refused,
+          f"Start now while aborted and not Reset is refused: {o.refused}")
+    print("  ok")
+
+
+def test_schedule_extra_show_and_the_next_slot():
+    section("scheduler: an extra show (Start now) and the next scheduled "
+            "show: it fires normally if it can, and if the extra show is "
+            "still running or in its guard when its time passes, it is "
+            "DELAYED and waits for Start now, the same as after a Hold")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S, grace=5)
+    # Room before the next slot: it fires on time.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 10))
+    x = n.m.running
+    check(n.m.slot(x).origin == "operator", "setup: an extra show runs")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 17, 20))
+    n.tick(_den(S, 18, 20))
+    check(n.m.state == S.SHOW and n.m.running == 2 and
+          n.m.slot(2).reason == "FIRED",
+          f"the 18:20 show still fires on schedule: {n.m.state} "
+          f"{n.m.running}")
+    # The extra show still running when 18:20 comes due.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 15))
+    x = n.m.running
+    n.tick(_den(S, 18, 20))
+    check(n.m.slot(2).status == S.PENDING and n.m.running == x,
+          "inside the grace the 18:20 show neither starts mid-show nor is "
+          "given up")
+    n.tick(_den(S, 18, 20, 6))
+    s2 = n.m.slot(2)
+    check(s2.status == S.DELAYED and "extra show" in s2.reason,
+          f"past the grace it is DELAYED, not MISSED: {s2.status} "
+          f"{s2.reason}")
+    check(n.m.state == S.SHOW and n.m.running == x,
+          "and the extra show carries on")
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 22, 20))
+    n.tick(_den(S, 18, 30))
+    check(n.m.state == S.STANDBY and n.m.slot(2).status == S.DELAYED,
+          "after the extra show the delayed show waits; it does not start "
+          "by itself")
+    o = n.op(S.START_NOW, _den(S, 18, 31))
+    check(o.accepted and n.m.running == 2 and
+          n.m.slot(2).reason == "DELAYED START (operator hold)",
+          f"Start now then starts the delayed show, not another extra: "
+          f"{o.refused}")
+    # The extra show ended, but its guard still counts at 18:20.
+    n = _Night(S, rule)
+    n.boot(_den(S, 18, 10))
+    n.op(S.START_NOW, _den(S, 18, 11))
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 19, 0))
+    n.tick(_den(S, 18, 20, 6))
+    check(n.m.slot(2).status == S.DELAYED,
+          f"inside the extra show's guard the 18:20 show is DELAYED too: "
+          f"{n.m.slot(2).status} {n.m.slot(2).reason}")
+    n.audit("extra show")
     print("  ok")
 
 
@@ -10168,9 +10476,10 @@ def test_schedule_abort_end_night_and_operator_actions():
     check(n.m.state == S.SHOW and n.m.running == 3, "18:40 is show 3")
     panel = {a["id"]: a for a in S.actions_for(n.m)}
     check(panel["abort"]["allowed"] and "show 3" in panel["abort"]["confirm"]
-          and "does not disarm" in panel["abort"]["confirm"],
-          f"the Abort confirm names the show and says it does not disarm: "
-          f"{panel['abort']}")
+          and "every flame group is disarmed" in panel["abort"]["confirm"]
+          and "not disarm" not in panel["abort"]["confirm"],
+          f"the Abort confirm names the show and says every flame group is "
+          f"disarmed (Jeff, 2026-09-27): {panel['abort']}")
     check(panel["end_night"]["confirm"] and not panel["end_night"]["allowed"],
           "End night confirms, and is not offered during a show")
     check(all(panel[k]["confirm"] is None for k in panel
@@ -10740,7 +11049,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -10756,7 +11066,8 @@ def test_the_gpl_path_never_loads_the_scheduler():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.schedule is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n")
+        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json
@@ -11596,14 +11907,14 @@ def test_schedule_restart_keeps_tonight():
     c = _svc(S, work, now)
     c.state_dir = blocker
     c.start(thread=False)
-    check(c.machine.state == S.IDLE and "could not be saved" in
+    check(c.machine.state == S.STANDBY and "could not be saved" in
           (c.persist_error or ""),
           f"a failed save is a sentence and the night goes on: "
           f"{c.persist_error!r}")
     check(c.state_view()["save_error"], "the state says the save failed")
 
-    # A running night is never replaced at midnight; the new day starts
-    # once it has finished.
+    # A running night is never replaced at midnight; the new night starts
+    # at the 2 AM nightly reset (Jeff, 2026-10-03), once the show is over.
     work = tempfile.mkdtemp()
     now = [_den(S, 23, 58)]
     a = _svc(S, work, now).start(thread=False)
@@ -11617,8 +11928,13 @@ def test_schedule_restart_keeps_tonight():
     now[0] = _den(S, 0, 5, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over, and Saturday's night runs on until the 2 AM "
+          f"reset, got {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"once the show is over the new day starts, got {a.machine.date}")
+          f"at the 2 AM reset the new night starts, got {a.machine.date}")
     old = json.load(open(SV.tonight_path(_den(S, 0, 0).date(), work),
                          encoding="utf-8"))
     check([x["status"] for x in old["slots"]][-1] == S.DONE,
@@ -11689,8 +12005,9 @@ def test_schedule_clock_check_never_delays_a_show():
     svc.TICK_S = 0.02
     try:
         svc.start()
-        check(svc.machine is not None and svc.machine.state == S.IDLE,
-              "the first tick happens at start, before the clock check")
+        check(svc.machine is not None and svc.machine.state == S.STANDBY,
+              "the first tick happens at start, before the clock check "
+              "(within the preshow lead, so the intermission is running)")
         check(wait_for(lambda: svc.machine.state == S.SHOW, timeout=2.5),
               f"18:00 must start at 18:00 while the clock check is still "
               f"waiting, got {svc.machine.state} {svc.machine.slot(1).reason!r}")
@@ -12484,8 +12801,13 @@ def test_schedule_a_paused_show_is_never_overlapped():
     now[0] = _den(S, 0, 30, d=(2026, 11, 15))
     a.tick()
     a.tick()
+    check(str(a.machine.date) == "2026-11-14" and a.machine.running == 0,
+          f"the show is over at 00:30, and Saturday's night runs on until "
+          f"the 2 AM reset: {a.machine.date} {a.machine.state}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    a.tick()
     check(str(a.machine.date) == "2026-11-15",
-          f"the new day starts once the show is over: {a.machine.date}")
+          f"the new night starts at the 2 AM reset: {a.machine.date}")
     print("  ok")
 
 
@@ -14564,7 +14886,8 @@ def test_the_gpl_path_never_loads_announcements():
         "    except Exception as e:\n"
         "        failed.append(m)\n"
         "from ltcplay import web, cli\n"
-        f"h = web.serve(tempfile.mkdtemp(), port={port})\n"
+        "d = tempfile.mkdtemp()\n"
+        f"h = web.serve(d, port={port})\n"
         "t = threading.Thread(target=h.serve_forever, "
         "kwargs={'poll_interval': 0.05}, daemon=True)\n"
         "t.start()\n"
@@ -14580,7 +14903,8 @@ def test_the_gpl_path_never_loads_announcements():
         "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
         "    'none': h.announce is None,\n"
         "    'loaded': sorted(m for m in sys.modules if 'announce' in "
-        "m)}))\n")
+        "m)}))\n"
+        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     import json as _json
@@ -15367,7 +15691,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     _write_show(work1)
     spath1 = _write_rule(work1, 40)
     try:
-        web_mod.serve(work1, port=_free_port(), schedule=spath1)
+        web_mod.serve(work1, port=_free_port(), schedule=SV.Service(spath1, state_dir=work1))
         check(False, "40s configured against 50s of media must refuse to "
                      "serve, not silently start")
     except ValueError as e:
@@ -15381,7 +15705,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     work2 = tempfile.mkdtemp()
     _write_show(work2)
     spath2 = _write_rule(work2, 60)
-    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=spath2)
+    httpd2 = web_mod.serve(work2, port=_free_port(), schedule=SV.Service(spath2, state_dir=work2))
     try:
         check(httpd2.schedule is not None and httpd2.schedule.rule is not
               None, "a long-enough show_len_s must serve normally")
@@ -15395,7 +15719,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
     # in the journal, saying the check could not be done and why.
     work3 = tempfile.mkdtemp()
     spath3 = _write_rule(work3, 1)
-    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=spath3)
+    httpd3 = web_mod.serve(work3, port=_free_port(), schedule=SV.Service(spath3, state_dir=work3))
     try:
         check(httpd3.schedule is not None,
               "no show media in the folder must not block serving")
@@ -15421,7 +15745,7 @@ def test_scheduler_show_len_s_checked_against_the_show_media():
           and "show_a.json" in w5 and "show_b.json" in w5,
           f"two candidates must refuse to pick one, naming both: "
           f"{(p5, l5, w5)}")
-    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=spath5)
+    httpd5 = web_mod.serve(work5, port=_free_port(), schedule=SV.Service(spath5, state_dir=work5))
     try:
         check(httpd5.schedule is not None,
               "an ambiguous folder must still serve (this warns, it does "
@@ -15626,6 +15950,7 @@ print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
                   "snap": "clock" in snap,
                   "ltc": s.player.last_ltc_at is not None,
                   "opened": len(s._sd.opened)}))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -18228,6 +18553,7 @@ print(json.dumps({
     "clock": "ltcplay.clock" in sys.modules,
     "output": "ltcplay.output" in sys.modules,
 }))
+import shutil; shutil.rmtree(os.path.dirname(lockpath), ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                text=True, timeout=30)
@@ -18243,6 +18569,1753 @@ print(json.dumps({
     # whole job is to drive them. What must never be true is session/player.
     check(res["clock"], "tctest ran but never loaded the clock it sends "
                         "timecode through")
+    print("  ok")
+
+
+# ============================================================ madmapper ====
+# Step 3 of the Fire & Ice handoff: the MadMapper OSC transport link and the
+# heartbeat watchdog -- DEVICE LAYER ONLY. Anchored to
+# bench_report_2026-09-25.md (branch bench/2026-09-25), B1-B4 and B9.
+#
+# An earlier version of this PR also wired Hold/Resume/Abort/Closing
+# sequencing straight into a Link.on_transition hook, driven by the
+# scheduler's own state transitions. An opus review (round 2) found two
+# real races in that design -- deriving an action from a PAIR of scheduler
+# states, on the scheduler's own unordered per-transition hook threads,
+# means a Hold immediately followed by a quick Resume can interleave or
+# run out of order (audit17_repros.py, R1/R2) -- so that whole mechanism
+# was removed. This module is now pure primitives; a future "conductor"
+# module will run the scheduler's own ORDERED effects list through one
+# serialized executor and call these.
+
+class _FakeMMSock:
+    """Stands in for a real UDP socket: records every (packet, addr) sent,
+    never touches the network. Also inert for the INBOUND side (bind/
+    settimeout/recvfrom): a couple of tests hand this to a real Watchdog
+    through web.serve()'s own construction path, which starts a real
+    listener thread against whatever socket_factory it was given -- these
+    stubs let that thread idle harmlessly (a timeout loop, exactly like a
+    real socket with nothing arriving) instead of crashing with an
+    AttributeError on a background thread."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, pkt, addr):
+        self.sent.append((pkt, addr))
+
+    def bind(self, addr):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def recvfrom(self, n):
+        import socket as _socket
+        raise _socket.timeout()
+
+    def close(self):
+        pass
+
+
+class _Steps:
+    """A perf_counter stand-in a test moves by hand: sleep() advances it
+    rather than actually waiting, so a 1 s ramp runs in no real time at all
+    and its pacing is still exactly provable."""
+
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def clock(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _mm_cfg(**over):
+    from ltcplay import madmapper as MM
+    doc = {"surfaces": ["Quad-1", "Quad-2"],
+          "intermission_bank": "Bank-2",
+          "heartbeat": {"show_len_s": 10.0}}
+    doc.update(over)
+    return MM.MadMapperConfig.parse(doc)
+
+
+def _mm_link(cfg=None, journal=None):
+    from ltcplay import madmapper as MM
+    cfg = cfg or _mm_cfg()
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory, clock=steps.clock,
+                  sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def _mm_journal(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def _mm_addrs(sock):
+    """The OSC address of every packet one fake socket saw, in order."""
+    from ltcplay import madmapper as MM
+    out = []
+    for pkt, _addr in sock.sent:
+        addr, at = MM._read_osc_string(pkt, 0)
+        out.append(addr)
+    return out
+
+
+def test_madmapper_osc_bytes_match_the_bench_capture():
+    section("madmapper: OSC bytes match the bench's captured bytes exactly")
+    from ltcplay import madmapper as MM
+    pkt = MM.encode("/timelines/Bank-2/select", (True,))
+    expected = bytes.fromhex(
+        "2f74696d656c696e65732f42616e6b2d322f73656c656374"
+        "000000002c540000")
+    check(pkt == expected,
+         f"select bytes do not match the bench capture: {pkt.hex()} != "
+         f"{expected.hex()}")
+
+    # A False bool, and an address whose length is not already a multiple
+    # of 4, to prove the padding rule generally, not only on this one
+    # bench-sized string.
+    pkt2 = MM.encode("/timelines/Bank-1/conductor/play", (False,))
+    check(pkt2.endswith(b",F\x00\x00"), f"a bool False must be the bare "
+                                       f"tag F, no data bytes: {pkt2!r}")
+    check(len(pkt2) % 4 == 0, "every OSC message is a multiple of 4 bytes")
+
+    pkt3 = MM.encode("/timelines/Bank-1/conductor/stop")
+    check(pkt3 == MM._pad(b"/timelines/Bank-1/conductor/stop")
+          + MM._pad(b","), f"an argument-less message still needs a bare "
+                          f"comma type tag: {pkt3!r}")
+
+    # The heartbeat's own captured bytes (bench B3.2): /float-1 ,f 1.0
+    hb = bytes.fromhex("2f666c6f61742d3100000000" "2c660000" "3f800000")
+    got = MM.decode_float(hb)
+    check(got == ("/float-1", 1.0),
+         f"the heartbeat's captured bytes did not decode to ('/float-1', "
+         f"1.0): {got}")
+    check(MM.decode_float(b"not an osc packet at all") is None,
+         "decode_float must return None, not raise, for garbage")
+    check(MM.decode_float(MM.encode("/float-1", (1,))) is None,
+         "decode_float must refuse a message that is not exactly one "
+         "float (an int, here) rather than mis-read it")
+
+    try:
+        MM.encode("not-a-slash-address")
+        check(False, "encode() must refuse an address with no leading /")
+    except ValueError:
+        pass
+    print("  ok")
+
+
+def test_madmapper_primitives_send_the_right_addresses():
+    section("madmapper: each primitive sends exactly the address it "
+            "should, and nothing else")
+    link, socks, steps = _mm_link()
+    link.select_bank("Bank-1")
+    link.stop_bank("Bank-1")
+    link.play("Bank-1")
+    link.play_from_beginning("Bank-2")
+    link.close()
+    addrs = _mm_addrs(socks[0])
+    check(addrs == ["/timelines/Bank-1/select",
+                   "/timelines/Bank-1/conductor/stop",
+                   "/timelines/Bank-1/conductor/play",
+                   "/timelines/Bank-2/conductor/play_from_beginning"],
+         f"primitives sent the wrong sequence: {addrs}")
+    print("  ok")
+
+
+def test_madmapper_ramp_step_count_and_values():
+    section("madmapper: the ramp's step count and its endpoints")
+    from ltcplay import madmapper as MM
+    vals = MM.ramp_values(1.0, 0.0, 31)
+    check(len(vals) == 31, f"31 steps over 1 s (bench B2/B4): got "
+                          f"{len(vals)}")
+    check(vals[0] == 1.0 and vals[-1] == 0.0,
+         f"a ramp's first and last values must be exact: {vals[0]} .. "
+         f"{vals[-1]}")
+    check(all(vals[i] > vals[i + 1] for i in range(len(vals) - 1)),
+         "a 1 -> 0 ramp must fall monotonically")
+    up = MM.ramp_values(0.0, 1.0, 31)
+    check(up[0] == 0.0 and up[-1] == 1.0, "a fade-up ramp's endpoints")
+    check(MM.ramp_values(0.0, 1.0, 1) == [1.0],
+         "fewer than 2 steps just sends the end value once")
+    # From ANY start, not just 1.0 (PR #29 review round 3, seen on macOS
+    # CI: a fade down from a level a stopped fade-up had reached ended on
+    # 1e-32, not 0.0). About 1 start in 30 missed before the fix.
+    rnd = random.Random(29)
+    missed = []
+    for _ in range(2000):
+        a, b = rnd.random(), rnd.choice((0.0, 1.0))
+        for curve in MM.VIDEO_CURVES:
+            v = MM.shape_values(MM.ramp_values(a, b, 31), a, b, curve)
+            if v[0] != a or v[-1] != b:
+                missed.append((a, b, curve, v[0], v[-1]))
+    check(not missed, f"a ramp from any level starts and ends exactly: "
+                      f"{len(missed)} missed, e.g. {missed[:2]}")
+
+    # The ramp as Link actually sends it: right address(es), right step
+    # count, right pacing (31 steps over 1 s = 30 gaps of 1/30 s each).
+    link, socks, steps = _mm_link()
+    link.fade_audio(1.0, 0.0, seconds=1.0, steps=31)
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 31, f"fade_audio must send exactly 31 packets: "
+                          f"{len(sent)}")
+    check(all(MM._read_osc_string(p, 0)[0] == MM.AUDIO_ADDR
+              for p, _a in sent),
+         "every packet in an audio fade goes to master_audio_level only")
+    check(abs(steps.t - 1.0) < 1e-9,
+         f"31 steps over 1 s must take exactly 1 s of paced time: "
+         f"{steps.t}")
+
+    link2, socks2, steps2 = _mm_link()
+    link2.fade_surfaces(0.0, 1.0, seconds=0.5, steps=5)
+    link2.close()
+    addrs2 = _mm_addrs(socks2[0])
+    check(addrs2 == (["/surfaces/Quad-1/opacity",
+                     "/surfaces/Quad-2/opacity"] * 5),
+         f"fade_surfaces must send both surfaces together, every step: "
+         f"{addrs2}")
+    print("  ok")
+
+
+def test_madmapper_fade_surfaces_perceptual_curve_step_values():
+    section("madmapper: fade_surfaces defaults to a perceptual curve "
+            "(bench B14: a plain linear opacity fade looks like it "
+            "holds, then drops in the last 0.5 s); fade_audio always "
+            "stays linear")
+    from ltcplay import madmapper as MM
+
+    # The pure math, exactly, with no socket at all.
+    lin = MM.ramp_values(1.0, 0.0, 5)
+    down = MM.shape_values(lin, 1.0, 0.0, MM.CURVE_PERCEPTUAL)
+    check(down == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fading down must be an ease-in-quad (steep first, lingers "
+         f"near black): {down}")
+    lin_up = MM.ramp_values(0.0, 1.0, 5)
+    up = MM.shape_values(lin_up, 0.0, 1.0, MM.CURVE_PERCEPTUAL)
+    check(up == [0.0, 0.4375, 0.75, 0.9375, 1.0],
+         f"fading up must be the mirrored ease-out: {up}")
+    check(MM.shape_values(lin, 1.0, 0.0, MM.CURVE_LINEAR) == lin,
+         "CURVE_LINEAR must be a no-op")
+    try:
+        MM.shape_values(lin, 1.0, 0.0, "bogus")
+        check(False, "an unknown curve name must be refused")
+    except ValueError:
+        pass
+
+    # As Link actually sends it: fade_surfaces defaults to perceptual,
+    # fade_audio never does, regardless of config.
+    cfg = _mm_cfg()
+    check(cfg.video_curve == MM.CURVE_PERCEPTUAL,
+         f"perceptual is the default: {cfg.video_curve}")
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link.fade_audio(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    surface_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    audio_vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"fade_surfaces must actually apply the curve: {surface_vals}")
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"fade_audio must stay plain linear regardless of "
+         f"video_curve: {audio_vals}")
+
+    # A show file can still ask for plain linear video explicitly.
+    cfg2 = _mm_cfg(video_curve="linear")
+    link2, socks2, _s = _mm_link(cfg=cfg2)
+    link2.fade_surfaces(1.0, 0.0, seconds=0.4, steps=5)
+    link2.close()
+    vals2 = [MM.decode_float(p)[1] for p, _a in socks2[0].sent
+            if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(vals2 == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"video_curve: linear must actually turn the shaping off: "
+         f"{vals2}")
+    print("  ok")
+
+
+def test_madmapper_ramp_is_cancellable():
+    section("madmapper: a new ramp, or an explicit cancel(), stops an "
+            "in-flight ramp at once (S3)")
+    import threading as _threading
+    import time as _time
+    from ltcplay import madmapper as MM
+
+    # A real thread and a real (short) clock this time: cancellation is a
+    # genuine race against a ramp actually running on the worker thread,
+    # which a purely virtual clock (as in the tests above) can never
+    # exercise, since sleep() there never really yields control.
+    cfg = _mm_cfg(fade_s=0.3, ramp_steps=30)      # 10 ms/step, real time
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = MM.Link(cfg, socket_factory=factory)
+    link.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)                              # a handful of steps in
+    link.cancel()
+    _time.sleep(0.05)                              # let it actually stop
+    stopped_at = len(socks[0].sent)
+    _time.sleep(0.3)                                # long past the full ramp
+    check(0 < stopped_at < 30,
+         f"cancel() must stop the ramp partway through, not let it "
+         f"finish: {stopped_at} of 30 packets went out")
+    check(len(socks[0].sent) == stopped_at,
+         f"nothing more may be sent after cancel(): sent "
+         f"{len(socks[0].sent)} total, {stopped_at} at cancel time")
+    link.close()
+
+    # Starting a NEW ramp must cancel an old one still in flight, with no
+    # explicit cancel() call at all.
+    socks.clear()
+    link2 = MM.Link(cfg, socket_factory=factory)
+    link2.fade_audio(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    partial = len(socks[0].sent)
+    link2.fade_audio(0.0, 1.0, seconds=0.05, steps=5)   # supersedes it
+    link2.close()
+    from_first_ramp = [v for p, _a in socks[0].sent
+                       for _addr, v in [MM.decode_float(p)]]
+    check(0 < partial < 30, f"setup: the first ramp must be interrupted "
+                           f"partway: {partial}")
+    # The interrupting ramp's own 5 values (0 -> 1) must all be present at
+    # the end, and the very last value sent must be its end value (1.0),
+    # not something left over from the cancelled ramp being resumed.
+    check(from_first_ramp[-1] == 1.0,
+         f"the new ramp must finish normally after superseding the old "
+         f"one: last value sent was {from_first_ramp[-1]}")
+    print("  ok")
+
+
+def test_madmapper_restore_levels():
+    section("madmapper: restore_levels() sets audio and every surface "
+            "back to 1.0, instantly, no ramp (B3 -- MadMapper keeps "
+            "whatever level a fade last left it at)")
+    from ltcplay import madmapper as MM
+    link, socks, steps = _mm_link()
+    link.restore_levels()
+    link.close()
+    sent = socks[0].sent
+    check(len(sent) == 3, f"audio (1) + 2 surfaces (2) = 3 packets, no "
+                         f"ramp: {len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(value == 1.0, f"every level must be set to exactly 1.0: "
+                            f"{addr} = {value}")
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"],
+         f"restore_levels must touch audio then every surface: {addrs}")
+    check(steps.t == 0.0, "restore_levels must not pace or sleep at all")
+
+    # set_audio/set_surfaces on their own, the same way: instant, no ramp.
+    link2, socks2, steps2 = _mm_link()
+    link2.set_audio(0.5)
+    link2.set_surfaces(0.25)
+    link2.close()
+    vals = [MM.decode_float(p)[1] for p, _a in socks2[0].sent]
+    check(vals == [0.5, 0.25, 0.25], f"set_audio/set_surfaces: {vals}")
+    print("  ok")
+
+
+def test_madmapper_fade_all_sends_audio_and_surfaces_together():
+    section("madmapper: fade_all() ramps audio (linear) and every "
+            "surface (the configured curve) in ONE worker job, so they "
+            "land in the same real time instead of audio finishing "
+            "before video starts (used by devices.on_abort)")
+    from ltcplay import madmapper as MM
+    cfg = _mm_cfg()
+    link, socks, steps = _mm_link(cfg=cfg)
+    link.fade_all(1.0, 0.0, seconds=0.4, steps=5)
+    link.close()
+    sent = socks[0].sent
+    # Every step must send audio THEN both surfaces before the next step's
+    # sleep, proving they are interleaved within one job rather than
+    # audio's whole ramp completing first.
+    addrs = _mm_addrs(socks[0])
+    check(addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                   "/surfaces/Quad-2/opacity"] * 5,
+         f"each step must send audio then every surface, all 5 steps "
+         f"interleaved, not audio's ramp finishing before surfaces "
+         f"start: {addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    surface_vals = [MM.decode_float(p)[1] for p, _a in sent
+                    if MM.decode_float(p)[0] == "/surfaces/Quad-1/opacity"]
+    check(audio_vals == [1.0, 0.75, 0.5, 0.25, 0.0],
+         f"audio must stay plain linear inside fade_all(), same as "
+         f"fade_audio() on its own: {audio_vals}")
+    check(surface_vals == [1.0, 0.5625, 0.25, 0.0625, 0.0],
+         f"surfaces must still get the configured (perceptual) curve "
+         f"inside fade_all(): {surface_vals}")
+    check(steps.t >= 0.4 - 1e-9,
+         f"fade_all must actually pace over the requested duration: "
+         f"{steps.t}")
+
+    # Cancellable exactly like fade_audio()/fade_surfaces(): a newer ramp
+    # supersedes an in-flight fade_all().
+    import time as _time
+    cfg2 = _mm_cfg(fade_s=0.3, ramp_steps=30)
+    socks2 = []
+
+    def factory2():
+        s = _FakeMMSock()
+        socks2.append(s)
+        return s
+    link2 = MM.Link(cfg2, socket_factory=factory2)
+    link2.fade_all(1.0, 0.0, wait=False)
+    _time.sleep(0.09)
+    link2.cancel()
+    _time.sleep(0.05)
+    stopped_at = len(socks2[0].sent)
+    _time.sleep(0.3)
+    check(stopped_at < len(socks2[0].sent) + 1
+          and len(socks2[0].sent) == stopped_at,
+         f"cancel() must stop fade_all() mid-ramp, same as the other "
+         f"ramps: {stopped_at} then {len(socks2[0].sent)}")
+    check(0 < stopped_at < 30 * 3,
+         f"must have been interrupted partway, not run to completion: "
+         f"{stopped_at}")
+    link2.close()
+    print("  ok")
+
+
+def test_madmapper_config_refusals():
+    section("madmapper: config refusals are clear sentences, not stack "
+            "traces")
+    from ltcplay import madmapper as MM
+
+    def refused(doc, contains):
+        try:
+            MM.MadMapperConfig.parse(doc)
+        except MM.MadMapperConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"host": "", "surfaces": ["Quad-1"]}, "host")
+    refused({"surfaces": []}, "surfaces")
+    refused({"surfaces": ["Quad-1", "Quad-1"]}, "twice")
+    refused({"surfaces": ["Quad-1"], "show_bank": "Bank-1",
+            "intermission_bank": "Bank-1"}, "cannot share one name")
+    refused({"surfaces": ["Quad-1"], "port": 70000}, "port")
+    refused({"surfaces": ["Quad-1"], "port": True}, "port")
+    refused({"surfaces": ["Quad-1"], "ramp_steps": 1}, "ramp_steps")
+    refused({"surfaces": ["Quad-1"], "fade_s": 0}, "fade_s")
+    refused({"surfaces": ["Quad-1"], "typo_field": 1}, "typo_field")
+    refused({"surfaces": ["Quad-1"], "heartbeat": {}}, "show_len_s")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "address": "float-1"}},
+           "start with /")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "port": 0}}, "port")
+    refused({"surfaces": ["Quad-1"],
+            "heartbeat": {"show_len_s": 10, "bind": "0.0.0.0"}},
+           "not loopback")
+
+    # A valid, minimal config must not raise, and must round-trip through
+    # summary() (used by the health route) without error.
+    cfg = MM.MadMapperConfig.parse({"surfaces": ["Quad-1"],
+                                    "heartbeat": {"show_len_s": 444.42}})
+    check("Bank-1" in cfg.summary(), f"summary(): {cfg.summary()}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_bind_must_be_loopback():
+    section("madmapper: the heartbeat listener refuses to bind off "
+            "loopback unless explicitly told to (handoff section 4)")
+    from ltcplay import madmapper as MM
+    for good in ("127.0.0.1", "127.5.5.5", "::1", "localhost"):
+        hb = MM.HeartbeatConfig.parse({"bind": good, "show_len_s": 10.0},
+                                      "timeline")
+        check(hb.bind == good, f"{good!r} is loopback and must be "
+                              f"accepted: {hb.bind}")
+    try:
+        MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0},
+                                 "timeline")
+        check(False, "a non-loopback bind must be refused by default")
+    except MM.MadMapperConfigError as e:
+        check("not loopback" in str(e) and "allow_non_loopback_bind" in
+              str(e), f"the refusal must name the escape hatch: {e}")
+    hb2 = MM.HeartbeatConfig.parse({"bind": "0.0.0.0", "show_len_s": 10.0,
+                                   "allow_non_loopback_bind": True},
+                                  "timeline")
+    check(hb2.bind == "0.0.0.0" and hb2.allow_non_loopback_bind,
+         "the escape hatch must actually work when set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_start_bind_failure_has_its_own_sentence():
+    section("madmapper: a heartbeat bind failure names the heartbeat "
+            "port, never the web server's own port message")
+    from ltcplay import madmapper as MM
+    j = []
+
+    def bad_factory():
+        raise OSError(48, "Address already in use")
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0),
+                     socket_factory=bad_factory, journal=_mm_journal(j))
+    ok = wd.start()
+    check(ok is False, "start() must report failure, not raise or hang")
+    check(wd.bind_error is not None and "9001" in wd.bind_error and
+          "heartbeat" in wd.bind_error.lower(),
+         f"the bind error must name the heartbeat port specifically: "
+         f"{wd.bind_error}")
+    check(any("9001" in t and "heartbeat" in t.lower() for t, _e in j),
+         f"the journal must carry the same specific sentence: {j}")
+    wd.stop()
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed():
+    section("madmapper: a lone heartbeat packet while disarmed is fully "
+            "ignored (bench B9, the 4 hour soak) -- MadMapper re-sends "
+            "its Float track's last value, one packet, the instant the "
+            "show bank is selected, about 2 s before the show actually "
+            "starts, while ltcplay's own clock is not running yet")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)                # ltcplay: not running, at zero
+
+    # The exact bench shape: value 1.0 (the track's last, end-of-show
+    # value), arriving while disarmed.
+    wd.on_packet(1.0)
+    check(wd.packets_in == 0, f"a packet while disarmed must not even be "
+                             f"counted: {wd.packets_in}")
+    check(wd._last_packet_at is None, "a packet while disarmed must never "
+                                     "set the last-packet time -- it must "
+                                     "not be read as a position later")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"a packet while disarmed must never be compared for drift, "
+         f"even though 1.0 x show_len_s (10.0) against ltcplay's own 0.0 "
+         f"would be a huge, false drift if it were: "
+         f"{wd.last_drift_ms}")
+    check(j == [], f"a packet while disarmed must never journal anything "
+                  f"at all: {j}")
+
+    health = wd.health()
+    check(health["state"] == "quiet" and health["age_ms"] is None,
+         f"health() must not show this packet as any kind of liveness: "
+         f"{health}")
+
+    # Then the real show starts (arm()) and packets flow normally --
+    # proving the ignore above is a gate on being disarmed, not a
+    # permanent latch.
+    wd.arm(show=7)
+    wd.on_packet(0.1)
+    check(wd.packets_in == 1 and wd._last_packet_at is not None,
+         "once armed, and near the start, a real packet must count "
+         "normally")
+    print("  ok")
+
+
+def test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start():
+    section("madmapper: the SAME B9 lone packet, but armed BEFORE it "
+            "arrives (S1) -- any real wiring arms before or at bank "
+            "select, so disarmed alone is not enough; the packet must "
+            "still be ignored until one reads near the show's own start")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=444.42, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)                        # armed first, as any real wiring
+                                          # would (the bank must be
+                                          # selected before a show starts)
+    wd.on_packet(1.0)                     # MadMapper's re-sent stale value
+    check(wd.packets_in == 0, f"the lone stale packet must not be counted "
+                             f"even while armed: {wd.packets_in}")
+    check(wd.last_drift_ms is None and not wd.drift_flagged,
+         f"and must never be read as a position or compared for drift: "
+         f"{wd.last_drift_ms}, flagged={wd.drift_flagged}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no drift alarm may ever come from it: {j}")
+
+    # The real show then actually starts: a packet near 0 clears the gate.
+    steps.t += 2.0
+    wd.on_packet(0.002)                   # 0.002 * 444.42 = 0.89 s: near 0
+    check(wd.packets_in == 1, f"the first real, near-start packet must be "
+                             f"counted: {wd.packets_in}")
+
+    # And a genuine drift once tracking has begun still works normally.
+    wd.note_position(50.0, at=steps.t)
+    wd.on_packet(50.3 / 444.42, at=steps.t)   # 300 ms of real drift
+    check(wd.drift_flagged, f"drift must still be caught once real "
+                           f"tracking has begun: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_nan_is_a_drift_fault():
+    section("madmapper: a NaN heartbeat value counts as bad -- a drift "
+            "fault, never silently read as zero drift")
+    import math as _math
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0), clock=steps.clock,
+                     journal=_mm_journal(j))
+    wd.note_position(0.0)
+    wd.arm(show=1)
+    wd.on_packet(0.0)                     # clears the awaiting-start gate
+    check(wd.packets_in == 1, "setup: the clean packet must count")
+
+    wd.note_position(1.0, at=steps.t)
+    wd.on_packet(float("nan"), at=steps.t)
+    check(wd.drift_flagged, f"a NaN value must flag a drift fault: "
+                           f"{wd.last_drift_ms}")
+    check(wd.last_drift_ms is None,
+         f"a NaN value has no meaningful drift number to report: "
+         f"{wd.last_drift_ms}")
+    check(any("NaN" in t or "nan" in t for t, _e in j),
+         f"the journal sentence must say the value was not usable: {j}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_alarms_only_while_armed():
+    section("madmapper: the watchdog alarms on silence only while "
+            "armed -- quiet on Hold, between shows, and on a bank with no "
+            "heartbeat track of its own (bench B3.3)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+
+    # Disarmed: an hour of silence is not news.
+    steps.t += 3600.0
+    wd._check()
+    check(not wd._alarmed, "disarmed silence must never alarm")
+    check(j == [], f"disarmed silence must never journal anything: {j}")
+
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 2.9
+    wd._check()
+    check(not wd._alarmed, "under the 3 s timeout must stay quiet")
+    steps.t += 0.2                       # 3.1 s since the last packet
+    wd._check()
+    check(wd._alarmed, "past the 3 s timeout while armed must alarm")
+    check(any("stopped answering" in t and "show 4" in t for t, _e in j),
+         f"the fault must be a plain sentence naming the show: {j}")
+
+    # Disarming an active alarm (Hold arriving mid-fault) must not leave a
+    # stale alarm armed the moment it is re-armed later.
+    wd.disarm()
+    wd.arm(show=5)
+    check(not wd._alarmed, "arm() must always start with a clean slate")
+
+    # Defense in depth, on top of on_packet()'s own refusal to touch
+    # anything while disarmed: _check() must independently refuse to
+    # alarm while disarmed even if _last_packet_at were somehow left set
+    # -- poked directly here, bypassing the public API, because
+    # on_packet()'s own guard already makes this unreachable through it
+    # alone; a future change to on_packet() must not silently remove the
+    # only thing standing between a stray packet and a false alarm.
+    wd.disarm()
+    with wd._lock:
+        wd._last_packet_at = steps.t - 3600.0
+    wd._check()
+    check(not wd._alarmed, "_check() must never alarm while disarmed, "
+                          "even if the last-packet time were somehow set")
+    print("  ok")
+
+
+def test_madmapper_watchdog_recovery():
+    section("madmapper: the watchdog logs recovery the moment a packet "
+            "returns, exactly once")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.on_packet(0.0)
+    steps.t += 3.5
+    wd._check()
+    check(wd._alarmed, "setup: must be alarmed first")
+    wd.on_packet(0.4)
+    check(not wd._alarmed, "one packet clears the alarm")
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must be logged exactly once: "
+                              f"{recovered}")
+    # A second packet must not log recovery again.
+    wd.on_packet(0.41)
+    recovered = [t for t, e in j if e.get("outcome") == "recovered"]
+    check(len(recovered) == 1, f"recovery must not repeat: {recovered}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_drift_flag():
+    section("madmapper: the drift flag compares MadMapper's reported "
+            "position against ltcplay's own, independent of the silence "
+            "alarm (handoff section 4, default 100 ms)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    wd.note_position(0.0)
+    wd.on_packet(0.0)                    # a clean start: clears the
+                                         # awaiting-start gate (S1)
+    j.clear()
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # MadMapper says 5.0 s too: 0 drift
+    check(wd.last_drift_ms == 0.0 and not wd.drift_flagged,
+         f"no drift, nothing flagged: {wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         "a clean position must never be journaled")
+
+    wd.note_position(4.7)                # ltcplay says 4.7 s
+    wd.on_packet(0.5)                    # MadMapper still says 5.0 s: 300ms
+    check(wd.drift_flagged and abs(wd.last_drift_ms - 300.0) < 1e-6,
+         f"300 ms of drift must be flagged past the 100 ms default: "
+         f"{wd.last_drift_ms}")
+    flagged = [t for t, e in j if e.get("outcome") == "drift"]
+    check(len(flagged) == 1, f"the flag must be logged once, not every "
+                            f"packet: {flagged}")
+
+    wd.note_position(5.0)
+    wd.on_packet(0.5)                    # back in step
+    check(not wd.drift_flagged, "back within 100 ms clears the flag")
+    cleared = [t for t, e in j if e.get("outcome") == "drift clear"]
+    check(len(cleared) == 1, f"clearing must be logged once: {cleared}")
+
+    health = wd.health()
+    check(health["drift_ms"] is not None and health["state"] == "ok",
+         f"health() must expose the drift and a state: {health}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_suspend_and_resume():
+    section("madmapper: MadMapper's process suspended mid-show (bench "
+            "B3.4) -- heartbeats stop at once, resume already at the "
+            "live position, and the watchdog treats it as one clean "
+            "alarm-then-recovery, never a crash")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=4)
+    # 60/s for a second, then nothing for 10 s (suspended), matching the
+    # bench's own numbers (mean 16.7 ms between packets, silent at once on
+    # suspend). Starts at value 0.2 (2.0/10.0), inside the START_WINDOW_S
+    # gate, so tracking begins on the very first packet.
+    for i in range(60):
+        wd.note_position(2.0 + i / 60.0, at=steps.t)
+        wd.on_packet((2.0 + i / 60.0) / 10.0)
+        steps.t += 1.0 / 60.0
+    check(not wd._alarmed, "must be quiet while packets are still arriving")
+    steps.t += 10.0
+    wd._check()
+    check(wd._alarmed, "10 s of silence while armed must alarm")
+    # Resume: the bench found the first packet already at the LIVE
+    # position (20.10 s in its own run), not the one it stopped at.
+    steps.t += 0.051
+    wd.note_position(13.0, at=steps.t)   # ltcplay kept its own clock moving
+    wd.on_packet(1.3)                    # MadMapper: 1.3 * 10 = 13.0 s
+    check(not wd._alarmed, "the first packet back must clear the alarm")
+    # The recovery packet itself is settle-gated (bench B14, see
+    # test_madmapper_watchdog_skips_drift_right_after_recovery): drift is
+    # simply not computed on it, so last_drift_ms here is whatever it was
+    # from the clean tracking just before the suspend -- still near 0,
+    # but the real proof that this is not a stale carry-over is that the
+    # VERY NEXT packet resumes fresh, correct tracking.
+    steps.t += 1.0 / 60.0
+    wd.note_position(13.0 + 1.0 / 60.0, at=steps.t)
+    wd.on_packet((13.0 + 1.0 / 60.0) / 10.0)
+    check(wd.last_drift_ms is not None and abs(wd.last_drift_ms) < 1.0,
+         f"a suspend-and-resume with both sides caught up must show ~0 "
+         f"drift once tracking has resumed, not a stale comparison: "
+         f"{wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_watchdog_skips_drift_right_after_recovery():
+    section("madmapper: the first heartbeat right after a recovery is "
+            "never judged for drift either (bench B14, on the Pico "
+            "against the real MadMapper: the first packet back from a "
+            "Hold carried a stale position -- '5016 ms behind', then "
+            "'back in step' 9 ms later)")
+    from ltcplay import madmapper as MM
+    j = []
+    steps = _Steps()
+    wd = MM.Watchdog(MM.HeartbeatConfig(show_len_s=10.0, timeout_s=3.0,
+                                        drift_ms=100.0),
+                     clock=steps.clock, journal=_mm_journal(j))
+    wd.arm(show=1)
+    wd.note_position(0.0, at=0.0)
+    wd.on_packet(0.0, at=0.0)             # clears awaiting-start
+    check(not wd.drift_flagged, "setup: clean tracking begins")
+
+    steps.t = 5.0
+    wd._check()
+    check(wd._alarmed, "setup: silence past the timeout must alarm")
+
+    # The bench's own shape: ltcplay's own clock kept moving (now at
+    # 5.0 s), but MadMapper's first packet back still reports something
+    # stale (here, still 0 -- a full 5 s "behind", the same order of
+    # magnitude the bench saw).
+    j.clear()
+    wd.note_position(5.0, at=5.0)
+    wd.on_packet(0.0, at=5.0)
+    check(not wd._alarmed, "the recovery packet must still clear the "
+                          "alarm -- the video really is back")
+    check(not wd.drift_flagged, f"but it must NOT be judged for drift: "
+                               f"{wd.last_drift_ms}")
+    check(not any(e.get("outcome") == "drift" for _t, e in j),
+         f"no false drift alarm may be journaled from it: {j}")
+
+    # The very next packet, back in step, resumes normal tracking.
+    wd.note_position(5.01, at=5.01)
+    wd.on_packet(0.501, at=5.01)
+    check(not wd.drift_flagged, f"normal tracking must resume "
+                               f"immediately after: {wd.last_drift_ms}")
+    print("  ok")
+
+
+def test_madmapper_submit_has_a_timeout():
+    section("madmapper: a wedged worker cannot make _submit() wait "
+            "forever (item 9)")
+    import time as _time
+    from ltcplay import madmapper as MM
+    j = []
+    link = MM.Link(_mm_cfg(), socket_factory=lambda: _FakeMMSock(),
+                  journal=_mm_journal(j))
+    link._submit_timeout_s = 0.05
+    t0 = _time.monotonic()
+    link._submit(lambda: _time.sleep(0.3), wait=True)
+    elapsed = _time.monotonic() - t0
+    check(elapsed < 0.2, f"_submit() must give up after its own timeout, "
+                        f"not the job's: waited {elapsed:.2f}s")
+    check(any("did not finish" in t and "timeout" == e.get("outcome")
+              for t, e in j), f"a timeout must be journaled as a fault: "
+                             f"{j}")
+    link.close()
+    print("  ok")
+
+
+def test_madmapper_no_clock_is_ever_mixed_with_another():
+    section("madmapper: perf_counter only, never time.monotonic")
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "madmapper.py"),
+              encoding="utf-8").read()
+    check("time.monotonic" not in src,
+         "madmapper.py must read time.perf_counter only, never "
+         "time.monotonic (test_no_clock_is_ever_mixed_with_another's own "
+         "rule, applied here too): a UI age computed from one against a "
+         "timestamp taken from the other is simply wrong, not merely "
+         "imprecise")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_madmapper():
+    section("madmapper: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('madmapper')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/madmapper', '/api/madmapper/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.madmapper is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if 'madmapper' in "
+        "m)}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded madmapper.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no madmapper configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_madmapper_web_route_reports_health():
+    section("madmapper: web.py's /api/madmapper/state answers the health "
+            "panel's dot with no scheduler required")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    steps = _Steps()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock(),
+                  clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(cfg.heartbeat, clock=steps.clock)
+    wd.arm(show=1)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(link, wd))
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/madmapper/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        link.close()
+        wd.stop()
+    check(body["watchdog"]["armed"] is True,
+         f"the route must expose the watchdog's own health dict: {body}")
+    check("Bank-1" in body["config"], f"and the link's config summary: "
+                                     f"{body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_madmapper_link():
+    section("madmapper: web.py only closes a link IT built from a "
+            "config -- a ready-made pair passed in is the caller's own")
+    from ltcplay import web, madmapper as MM
+    cfg = _mm_cfg()
+    link = MM.Link(cfg, socket_factory=lambda: _FakeMMSock())
+    wd = MM.Watchdog(cfg.heartbeat)
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), madmapper=(link, wd))
+    h.server_close()
+    check(not link._closed, "a ready-made link must not be closed by "
+                           "serve()'s own server_close()")
+    link.close()
+    wd.stop()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_madmapper_link():
+    section("madmapper: web.py DOES close a link it built itself from a "
+            "config, on server_close()")
+    from ltcplay import web, madmapper as MM
+    real_build = MM.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, link_socket_factory=lambda: _FakeMMSock(),
+                          watchdog_socket_factory=lambda: _FakeMMSock(),
+                          **kw)
+    MM.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), madmapper=_mm_cfg())
+        link, wd = h.madmapper
+        # Independent review of PR #29, finding A: a failed MadMapper send
+        # from a link web.py built must land in a journal, not nowhere.
+        check(callable(link.journal) and callable(wd.journal),
+              "web.serve() gives the MadMapper link and watchdog a journal")
+        h.server_close()
+        check(link._closed, "a config-built link must be closed by "
+                           "server_close()")
+    finally:
+        MM.build = real_build
+    print("  ok")
+
+
+# ============================================================== beyond ====
+# The laser blank/unblank device layer, unblocked by the Pico's B8 bench
+# result. Device layer only, like madmapper.py -- see its module docstring.
+
+def _beyond_link(cfg=None, journal=None):
+    from ltcplay import beyond as B
+    cfg = cfg or B.BeyondConfig.parse({})
+    steps = _Steps()
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+
+    link = B.Beyond(cfg, socket_factory=factory, clock=steps.clock,
+                    sleep=steps.sleep, journal=journal)
+    return link, socks, steps
+
+
+def test_beyond_osc_bytes_and_config_refusals():
+    section("beyond: the brightness message's bytes, and clear config "
+            "refusals")
+    from ltcplay import beyond as B, madmapper as MM
+    pkt0 = MM.encode(B.BRIGHTNESS_ADDR, (0.0,))
+    got = MM.decode_float(pkt0)
+    check(got == (B.BRIGHTNESS_ADDR, 0.0), f"blank must encode brightness "
+                                          f"0.0 exactly: {got}")
+    pkt100 = MM.encode(B.BRIGHTNESS_ADDR, (100.0,))
+    check(MM.decode_float(pkt100) == (B.BRIGHTNESS_ADDR, 100.0),
+         f"unblank must encode brightness 100.0 exactly: "
+         f"{MM.decode_float(pkt100)}")
+
+    cfg = B.BeyondConfig.parse({})
+    check(cfg.host == B.DEFAULT_HOST and cfg.port == B.DEFAULT_PORT,
+         f"defaults: 127.0.0.1:8100, got {cfg.host}:{cfg.port}")
+
+    def refused(doc, contains):
+        try:
+            B.BeyondConfig.parse(doc)
+        except B.BeyondConfigError as e:
+            check(contains in str(e), f"refusal did not mention "
+                                     f"{contains!r}: {e}")
+            return
+        check(False, f"{doc} should have been refused")
+
+    refused({"port": 8000}, "MadMapper's own OSC input port")
+    refused({"port": 70000}, "port")
+    refused({"host": ""}, "host")
+    refused({"typo": 1}, "typo")
+    refused({"address": "/beyond/general/BlackOut"}, "no setting")
+    # Independent review of PR #29, finding D: a name would be looked up on
+    # every one of a blank's 3 packets; with no working name server that
+    # can take seconds. Only an IP address is taken, refused at load.
+    for name in ("beyond-pc", "localhost", "beyond-pc.invalid",
+                 "127.0.0.1.nip.io", "192.168.1"):
+        refused({"host": name}, "has to be an IPv4 address")
+    for ip in ("127.0.0.2", "192.168.1.20"):
+        check(B.BeyondConfig.parse({"host": ip}).host == ip,
+              f"an IP address is taken: {ip}")
+    # Review round 3: the socket is IPv4 (AF_INET), so an IPv6 address was
+    # accepted here and then every blank failed with "address family not
+    # supported". Refused at load instead, saying why.
+    for ip in ("::1", "fe80::1", "::ffff:127.0.0.2"):
+        refused({"host": ip}, "IPv6 address cannot be reached")
+    print("  ok")
+
+
+def test_beyond_allow_list_rejects_everything_but_brightness():
+    section("beyond: the allow-list refuses everything but the exact "
+            "brightness address with 0.0 or 100.0 (S5, R6's own variants)")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+
+    def refused(address, value=0.0):
+        try:
+            link._send(address, value)
+        except B.BeyondConfigError:
+            return True
+        return False
+
+    variants = ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
+               "/beyond/general/blackout", "/BEYOND/general/BlackOut",
+               "/beyond/general/BlackOut/", "/beyond/general/BlackOut ",
+               "/beyond//general/BlackOut", "/beyond/general/Black*",
+               "/beyond/general/{BlackOut,Nothing}",
+               "/beyond/*/MasterPause", "/beyond/general/Master?ause",
+               "#bundle", "/beyond/master/livecontrol/brightness ")
+    for v in variants:
+        check(refused(v), f"{v!r} must be refused, not sent")
+    # The right address, but a wrong value.
+    for bad_value in (50.0, 1.0, -0.0 - 1, float("nan"), "0.0", True):
+        check(refused(B.BRIGHTNESS_ADDR, bad_value),
+             f"{B.BRIGHTNESS_ADDR!r} with value {bad_value!r} must be "
+             f"refused: only exactly 0.0 or 100.0 is allowed")
+    # The right address, right values: must NOT be refused.
+    check(not refused(B.BRIGHTNESS_ADDR, 0.0), "0.0 must be allowed")
+    check(not refused(B.BRIGHTNESS_ADDR, 100.0), "100.0 must be allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_lowest_level_socket_also_enforces_allow_list():
+    section("beyond: the guard holds even below _send() -- an audit "
+            "(R6) found a direct call to the socket's own send() went "
+            "straight through with no guard at all")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    try:
+        link._osc.send("/beyond/general/BlackOut", 0.0)
+        check(False, "the socket's own send() must refuse this too")
+    except B.BeyondConfigError:
+        pass
+    try:
+        link._osc.send(B.BRIGHTNESS_ADDR, 42.0)
+        check(False, "the socket's own send() must refuse a bad value "
+                    "even for the right address")
+    except B.BeyondConfigError:
+        pass
+    check(socks == [], "nothing refused at the socket layer may open a "
+                      "socket at all")
+    ok = link._osc.send(B.BRIGHTNESS_ADDR, 0.0)
+    check(ok, "the socket's own send() must still work for what IS "
+             "allowed")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_and_unblank_succeed_and_report_ok():
+    section("beyond: blank()/unblank() each send the brightness packet "
+            "3 times, about 20 ms apart, and report success")
+    from ltcplay import beyond as B, madmapper as MM
+    link, socks, steps = _beyond_link()
+    ok = link.blank(4)
+    check(ok is True, "blank() must return True when at least one packet "
+                     "got out")
+    sent = socks[0].sent
+    check(len(sent) == B.RETRY_COUNT, f"blank() must send exactly "
+                                     f"{B.RETRY_COUNT} packets: "
+                                     f"{len(sent)}")
+    for pkt, _addr in sent:
+        addr, value = MM.decode_float(pkt)
+        check(addr == B.BRIGHTNESS_ADDR and value == 0.0,
+             f"every retry must send the same brightness 0.0: "
+             f"{addr} {value}")
+    check(abs(steps.t - (B.RETRY_COUNT - 1) * B.RETRY_INTERVAL_S) < 1e-9,
+         f"the retries must be paced about {B.RETRY_INTERVAL_S * 1000:g} "
+         f"ms apart: took {steps.t}s")
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"health fields: {link.last_command} {link.last_result}")
+
+    ok2 = link.unblank(4, in_show=True)
+    check(ok2 is True, "unblank() must return True too")
+    vals = [MM.decode_float(p)[1] for p, _a in socks[0].sent[B.RETRY_COUNT:]]
+    check(all(v == 100.0 for v in vals),
+         f"unblank must send exactly 100.0 every time: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_blank_retries_and_reports_failure():
+    section("beyond: a blank that never gets a packet out is reported "
+            "as a failure, never silently journaled as 'blanked' (S4, "
+            "the audit's R5)")
+    from ltcplay import beyond as B
+    journal = []
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   journal=_mm_journal_beyond(journal),
+                   socket_factory=lambda: Dead())
+    ok = link.blank(3)
+    check(ok is False, "blank() must return False when nothing got out")
+    check(link.last_result == "failed", f"health must show failed: "
+                                       f"{link.health()}")
+    texts = [t for t, _e in journal]
+    check(not any("BEYOND blanked" in t for t in texts),
+         f"a failed blank must NEVER be journaled as a plain success: "
+         f"{texts}")
+    fault_lines = [(t, e) for t, e in journal if e.get("fault")]
+    check(any("failed to blank" in t for t, _e in fault_lines),
+         f"a failure must be journaled as its own, flagged sentence: "
+         f"{journal}")
+
+    # A failed socket OPEN, retried within the same call rather than
+    # silently dropped by the normal 1 s reopen backoff (which exists for
+    # ordinary traffic, not a deliberate ~40 ms retry burst).
+    journal.clear()
+    calls = [0]
+
+    def bad_factory():
+        calls[0] += 1
+        raise OSError(24, "Too many open files")
+    link2 = B.Beyond(B.BeyondConfig.parse({}),
+                     journal=_mm_journal_beyond(journal),
+                     socket_factory=bad_factory)
+    link2.blank(3)
+    check(calls[0] == B.RETRY_COUNT,
+         f"every one of the {B.RETRY_COUNT} retries must attempt to "
+         f"reopen the socket, not be swallowed by the reopen backoff: "
+         f"{calls[0]} attempts")
+    check(link2.last_result == "failed", "still reported as failed")
+    print("  ok")
+
+
+def _mm_journal_beyond(store):
+    def j(text, **extra):
+        store.append((text, extra))
+    return j
+
+
+def test_beyond_health_reports_last_result_and_packets_sent():
+    section("beyond: health() reports the last result and the packets "
+            "actually sent, never a liveness claim")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    h0 = link.health()
+    check(h0["last_command"] is None and h0["last_result"] is None,
+         f"before any command: {h0}")
+    check("armed" not in h0 and "state" not in h0,
+         f"beyond's health dict must never claim 'armed' or 'state' the "
+         f"way the watchdog's does -- there is no heartbeat to base "
+         f"either on: {h0}")
+    link.blank(4)
+    h1 = link.health()
+    check(h1["last_command"] == "blank" and h1["last_result"] == "ok"
+          and h1["packets_sent"] == B.RETRY_COUNT, f"after blank(): {h1}")
+    link.close()
+    print("  ok")
+
+
+def test_beyond_builds_blank_at_construction_and_close_blanks_again():
+    section("beyond: build() blanks once immediately; close() blanks "
+            "again before closing the socket (S6, safe defaults)")
+    from ltcplay import beyond as B
+    socks = []
+
+    def factory():
+        s = _FakeMMSock()
+        socks.append(s)
+        return s
+    steps = _Steps()
+    link = B.build(B.BeyondConfig.parse({}), clock=steps.clock,
+                   sleep=steps.sleep, socket_factory=factory)
+    check(link.last_command == "blank" and link.last_result == "ok",
+         f"build() must blank once before returning: {link.health()}")
+    check(len(socks[0].sent) == B.RETRY_COUNT,
+         f"that first blank must go through the same 3x retry: "
+         f"{len(socks[0].sent)}")
+    link.close()
+    check(len(socks[0].sent) == B.RETRY_COUNT * 2,
+         f"close() must blank again, its own full 3x retry, before "
+         f"closing the socket: {len(socks[0].sent)}")
+    print("  ok")
+
+
+def test_beyond_never_sends_blackout_or_masterpause():
+    section("beyond: BlackOut and MasterPause are never sent, under any "
+            "path -- the exact-name deny list, kept as a second, "
+            "explicit layer on top of the allow-list")
+    from ltcplay import beyond as B
+    link, socks, steps = _beyond_link()
+    for addr in B.FORBIDDEN_ADDRESSES:
+        try:
+            link._send(addr)
+            check(False, f"_send() must refuse {addr!r}")
+        except B.BeyondConfigError:
+            pass
+    for i in range(20):
+        link.blank(i)
+        link.unblank(i, in_show=True)
+    link.close()
+    seen = set()
+    for pkt, _addr in socks[0].sent:
+        from ltcplay import madmapper as MM
+        addr, _at = MM._read_osc_string(pkt, 0)
+        seen.add(addr)
+    check(seen == {B.BRIGHTNESS_ADDR},
+         f"only the brightness address may ever be sent: {seen}")
+    check(not (seen & B.FORBIDDEN_ADDRESSES),
+         f"a forbidden address was sent: {seen & B.FORBIDDEN_ADDRESSES}")
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_beyond():
+    section("beyond: the GPL path does not import it")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    port = _free_port()
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, json, threading, tempfile, urllib.request, "
+        "urllib.error\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "import importlib, pkgutil, ltcplay\n"
+        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
+        "        if not m.name.startswith('beyond')]\n"
+        "for m in mods:\n"
+        "    importlib.import_module('ltcplay.' + m)\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port={port})\n"
+        "t = threading.Thread(target=h.serve_forever, "
+        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
+        "t.start()\n"
+        "codes = []\n"
+        "for r in ('/api/beyond', '/api/beyond/state'):\n"
+        "    try:\n"
+        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
+        "timeout=5)\n"
+        "        codes.append(200)\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        codes.append(e.code)\n"
+        "h.shutdown(); h.server_close()\n"
+        "print(json.dumps({'codes': codes, 'none': h.beyond is None,\n"
+        "    'loaded': sorted(m for m in sys.modules if '.beyond' in m or "
+        "m == 'beyond')}))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    import json as _json
+    try:
+        out = _json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check(out["loaded"] == [], f"the GPL path loaded beyond.py: "
+                               f"{out['loaded']}")
+    check(out["codes"] == [404, 404] and out["none"],
+         f"with no beyond configured every route is 404, got "
+         f"{out['codes']}")
+    print("  ok")
+
+
+def test_beyond_web_route_reports_health():
+    section("beyond: web.py's /api/beyond/state answers 'command sent' "
+            "only, with no scheduler wiring at all")
+    from ltcplay import web, madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_cfg = _mm_cfg()
+    mm_link = MM.Link(mm_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    b_cfg = B.BeyondConfig.parse({})
+    b_link = B.Beyond(b_cfg, socket_factory=lambda: _FakeMMSock(),
+                      clock=steps.clock, sleep=steps.sleep)
+    wd = MM.Watchdog(mm_cfg.heartbeat, clock=steps.clock)
+    work = tempfile.mkdtemp()
+    port = _free_port()
+    h = web.serve(work, port=port, madmapper=(mm_link, wd), beyond=b_link)
+    t = threading.Thread(target=h.serve_forever,
+                        kwargs={"poll_interval": 0.05}, daemon=True)
+    t.start()
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/beyond/state",
+                timeout=5) as r:
+            body = json.loads(r.read())
+    finally:
+        h.shutdown()
+        h.server_close()
+        mm_link.close()
+        wd.stop()
+    check(body["beyond"]["last_command"] is None,
+         f"nothing sent yet: {body}")
+    check("armed" not in body["beyond"], f"no liveness claim: {body}")
+    print("  ok")
+
+
+def test_web_does_not_close_a_ready_made_beyond_link():
+    section("beyond: web.py only closes a link IT built from a config "
+            "-- a ready-made Beyond passed in is the caller's own")
+    from ltcplay import web, beyond as B
+    link = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _FakeMMSock())
+    work = tempfile.mkdtemp()
+    h = web.serve(work, port=_free_port(), beyond=link)
+    before = link.health()["packets_sent"]
+    h.server_close()
+    check(link.health()["packets_sent"] == before,
+         "a ready-made beyond link must not be blanked by serve()'s own "
+         "server_close()")
+    link.close()
+    print("  ok")
+
+
+def test_web_closes_a_config_built_beyond_link():
+    section("beyond: web.py DOES close (and so blank) a beyond link it "
+            "built itself from a config, on server_close()")
+    from ltcplay import web, beyond as B
+    real_build = B.build
+
+    def fake_build(cfg, **kw):
+        return real_build(cfg, socket_factory=lambda: _FakeMMSock(), **kw)
+    B.build = fake_build
+    try:
+        work = tempfile.mkdtemp()
+        h = web.serve(work, port=_free_port(), beyond=B.BeyondConfig.parse({}))
+        link = h.beyond
+        before = link.health()["packets_sent"]
+        h.server_close()
+        check(link.health()["packets_sent"] > before,
+             "closing a config-built beyond link must blank it again")
+    finally:
+        B.build = real_build
+    print("  ok")
+
+
+# ============================================================= devices ====
+# on_hold()/on_resume()/on_abort(): plain synchronous functions composing
+# madmapper.py's and beyond.py's own primitives with the handoff's ordering
+# already built in, for a future conductor to call. See devices.py's own
+# module docstring for why these are not scheduler hooks.
+
+def _devices_pair(mm_cfg=None, b_cfg=None):
+    from ltcplay import madmapper as MM, beyond as B
+    steps = _Steps()
+    mm_socks = []
+    b_socks = []
+
+    def mm_factory():
+        s = _FakeMMSock()
+        mm_socks.append(s)
+        return s
+
+    def b_factory():
+        s = _FakeMMSock()
+        b_socks.append(s)
+        return s
+    mm_link = MM.Link(mm_cfg or _mm_cfg(), socket_factory=mm_factory,
+                      clock=steps.clock, sleep=steps.sleep)
+    b_link = B.Beyond(b_cfg or B.BeyondConfig.parse({}),
+                      socket_factory=b_factory, clock=steps.clock,
+                      sleep=steps.sleep)
+    return mm_link, mm_socks, b_link, b_socks, steps
+
+
+def test_devices_on_hold_blanks_beyond_then_fades_music_down():
+    section("devices: on_hold() blanks BEYOND first (a real command), "
+            "then fades MadMapper's music down over 0.25 s -- never "
+            "touches the surfaces (video freezes via timecode, not an "
+            "OSC fade)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(mm_link, b_link, show=3, fade_seconds=0.25, wait=True)
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_hold() never blanking
+    # BEYOND itself (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must actually get the blank packets, before close() "
+         f"ever runs: {[s.sent for s in b_socks]}")
+    b_addrs = _mm_addrs(b_socks[0])
+    check(all(a == B.BRIGHTNESS_ADDR for a in b_addrs),
+         f"only the brightness address: {b_addrs}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_hold must blank (0.0), not unblank: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(all(a == MM.AUDIO_ADDR for a in mm_addrs),
+         f"on_hold must never touch the surfaces, only the master audio "
+         f"level: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"music must fade from 1.0 to 0.0: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_in_show_fades_up_then_unblanks():
+    section("devices: on_resume(in_show=True) fades the music back up "
+            "then unblanks BEYOND")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    D.on_resume(mm_link, b_link, in_show=True, show=3, fade_seconds=0.25)
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"music must fade from 0.0 back up to 1.0: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default (never leave the lasers live by omission), which would
+    # otherwise add 3 more (0.0) packets after the unblank this test is
+    # actually checking for.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+         f"on_resume(in_show=True) must unblank (100.0): {b_vals}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_refuses_to_unblank():
+    section("devices: on_resume(in_show=False) fades the music up, never "
+            "sends an unblank, but DOES re-send a defensive blank -- "
+            "never assume the earlier blank (Hold, or whenever it was "
+            "last sent) actually got out -- and the refusal is "
+            "journalled, not silent")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    notes = []
+    result = D.on_resume(mm_link, b_link, in_show=False, show=None,
+                         fade_seconds=0.25, journal=_mm_journal(notes))
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent]
+    check(audio_vals[0] == 0.0 and audio_vals[-1] == 1.0,
+         f"the music still fades up between shows: {audio_vals}")
+    # Snapshot BEFORE close(): Beyond.close() blanks again as its own S6
+    # safe default, which would otherwise mask on_resume() sending its own
+    # defensive blank (the very thing this test exists to prove).
+    check(b_socks != [] and b_socks[0].sent != [],
+         f"BEYOND must get a defensive re-blank, not silence, when not "
+         f"in a show: {[s.sent for s in b_socks]}")
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"the defensive re-send must be a blank (0.0), never an "
+         f"unblank: {b_vals}")
+    check(result is True, "the defensive re-blank got out, so on_resume "
+                          "must report True, not None")
+    # A successful defensive re-blank must be journalled as the calm
+    # "stays blanked" refusal, NOT the fault-flagged "FAILED" wording --
+    # both sentences happen to mention "intermission", so this checks the
+    # non-fault note specifically (an audit found the loose check missed
+    # a mutation that always took the FAILED branch, fault or not).
+    non_fault = [(t, e) for t, e in notes if not e.get("fault")]
+    check(any("intermission" in t for t, _e in non_fault),
+         f"the refusal must be journalled in plain words, not silent: "
+         f"{notes}")
+    check(not any(e.get("fault") for _t, e in notes),
+         f"a defensive re-blank that DID get out must never be "
+         f"journalled as a fault: {notes}")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_on_resume_not_in_show_reports_a_failed_reblank():
+    section("devices: on_resume(in_show=False) reports it, fault-flagged, "
+            "when even the defensive re-blank fails -- the lasers may "
+            "still be live through intermission, and that must never be "
+            "folded into the calm 'stays blanked' wording")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    notes = []
+    result = D.on_resume(mm_link, dead, in_show=False, show=None,
+                         fade_seconds=0.1, journal=_mm_journal(notes))
+    check(result is False, "a failed defensive re-blank must report "
+                           "False, never None or True")
+    fault_notes = [(t, e) for t, e in notes if e.get("fault")]
+    check(any("FAILED" in t for t, _e in fault_notes),
+         f"a failed defensive re-blank must be journalled as its own, "
+         f"flagged fault, not silently folded into the refusal note: "
+         f"{notes}")
+    mm_link.close()
+    print("  ok")
+
+
+def test_beyond_unblank_itself_refuses_in_show_false():
+    section("beyond: unblank() enforces its own in_show guard, "
+            "independently of devices.py's on_resume() -- a caller that "
+            "reaches unblank() directly, bypassing on_resume() entirely, "
+            "still cannot bring the lasers back during intermission")
+    from ltcplay import beyond as B
+    notes = []
+    link, socks, steps = _beyond_link(journal=_mm_journal_beyond(notes))
+    ok = link.unblank(5, in_show=False)
+    check(ok is False, "unblank(in_show=False) must return False, never "
+                       "True or None")
+    check(socks == [], "unblank(in_show=False) must send NO packet, and "
+                       "not even open a socket")
+    check(link.last_command == "unblank" and link.last_result == "refused",
+         f"health fields must reflect the refusal: {link.health()}")
+    check(any("intermission" in t for t, _e in notes),
+         f"a direct unblank(in_show=False) must still leave a trace in "
+         f"this Beyond's own journal: {notes}")
+
+    # The two real values still work, exactly like on_resume()'s own rule.
+    ok_true = link.unblank(5, in_show=True)
+    check(ok_true is True, "unblank(in_show=True) must still send and "
+                           "succeed")
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        try:
+            link.unblank(5, in_show=bad)
+            check(False, f"unblank(in_show={bad!r}) must raise TypeError, "
+                        f"not be read as truthy/falsy")
+        except TypeError:
+            pass
+    link.close()
+    print("  ok")
+
+
+def test_devices_on_abort_blanks_beyond_then_fades_everything_together():
+    section("devices: on_abort() blanks BEYOND at once, then fades "
+            "MadMapper's music AND every surface to black TOGETHER over "
+            "the show's fade_s (fade_all(), not fade_audio()+"
+            "fade_surfaces() back to back)")
+    from ltcplay import devices as D, madmapper as MM, beyond as B
+    mm_cfg = _mm_cfg(fade_s=0.4, ramp_steps=5)
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair(mm_cfg=mm_cfg)
+    D.on_abort(mm_link, b_link, show=7)
+    # Snapshot BEFORE close(): see the note in the on_resume tests above --
+    # close() blanks BEYOND again as its own safe default.
+    b_vals = [MM.decode_float(p)[1] for p, _a in b_socks[0].sent]
+    check(b_vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+         f"on_abort must blank BEYOND: {b_vals}")
+    mm_addrs = _mm_addrs(mm_socks[0])
+    check(mm_addrs == [MM.AUDIO_ADDR, "/surfaces/Quad-1/opacity",
+                       "/surfaces/Quad-2/opacity"] * 5,
+         f"audio and both surfaces must be interleaved step by step, "
+         f"proving they ran together (fade_all), not one after the "
+         f"other: {mm_addrs}")
+    audio_vals = [MM.decode_float(p)[1] for p, _a in mm_socks[0].sent
+                 if MM.decode_float(p)[0] == MM.AUDIO_ADDR]
+    check(audio_vals[0] == 1.0 and audio_vals[-1] == 0.0,
+         f"must fade to black: {audio_vals}")
+    mm_link.close()
+    b_link.close()
+
+    # An explicit fade_seconds must actually override the show's own
+    # fade_s (0.4 s above) rather than being silently ignored.
+    mm_link2, mm_socks2, b_link2, b_socks2, steps2 = _devices_pair(
+        mm_cfg=mm_cfg)
+    D.on_abort(mm_link2, b_link2, show=7, fade_seconds=0.1)
+    mm_link2.close()
+    b_link2.close()
+    check(steps2.t < 0.4 - 1e-9,
+         f"an explicit fade_seconds=0.1 must actually pace faster than "
+         f"the show's own fade_s=0.4, not be ignored: took {steps2.t:g} s")
+    print("  ok")
+
+
+def test_devices_skip_gracefully_with_no_madmapper_or_no_beyond():
+    section("devices: on_hold/on_resume/on_abort skip cleanly when a "
+            "show has no madmapper block, no beyond block, or neither -- "
+            "the same optional-link rule web.py already follows")
+    from ltcplay import devices as D
+    # Neither configured: nothing to call, nothing raises.
+    D.on_hold(None, None)
+    D.on_resume(None, None, in_show=True)
+    D.on_resume(None, None, in_show=False)
+    D.on_abort(None, None)
+
+    # Only BEYOND configured (a show with lasers but no MadMapper link).
+    _mm, _s1, b_link, b_socks, steps = _devices_pair()
+    D.on_hold(None, b_link, show=1)
+    D.on_abort(None, b_link, show=1)
+    b_link.close()
+    check(len(b_socks[0].sent) > 0, "BEYOND must still get its commands "
+                                    "with no MadMapper link at all")
+
+    # Only MadMapper configured (a show with video but no lasers).
+    mm_link, mm_socks, _b, _s2, steps2 = _devices_pair()
+    D.on_hold(mm_link, None, fade_seconds=0.1)
+    mm_link.close()
+    check(len(mm_socks[0].sent) > 0, "MadMapper must still get its fade "
+                                     "with no BEYOND link at all")
+    print("  ok")
+
+
+def test_devices_in_show_must_be_a_real_bool():
+    section("devices: on_resume() refuses anything but in_show=True or "
+            "in_show=False -- a truthy state name or number must never "
+            "unblank the lasers during intermission")
+    from ltcplay import devices as D, beyond as B, madmapper as MM
+    for bad in ("STANDBY", "false", 1, 0, None, [True]):
+        mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+        try:
+            D.on_resume(mm_link, b_link, in_show=bad, fade_seconds=0.1)
+            raised = False
+        except TypeError:
+            raised = True
+        sent_b = [MM.decode_float(p)[1] for s in b_socks for p, _a in s.sent]
+        sent_mm = [p for s in mm_socks for p, _a in s.sent]
+        mm_link.close()
+        b_link.close()
+        check(raised, f"in_show={bad!r} must raise TypeError, not be "
+                      f"read as truthy/falsy")
+        check(B.UNBLANK_VALUE not in sent_b and sent_mm == [],
+              f"in_show={bad!r}: nothing may be sent before refusing: "
+              f"BEYOND {sent_b}, MadMapper {len(sent_mm)} packet(s)")
+    # The two real values still work.
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_resume(mm_link, b_link, in_show=True, fade_seconds=0.1)
+          is True, "in_show=True unblanks and reports True")
+    check(D.on_resume(mm_link, b_link, in_show=False, fade_seconds=0.1)
+          is True, "in_show=False refuses the unblank but still sends "
+                   "its own defensive re-blank, which gets out here")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_devices_report_a_failed_blank_to_the_caller():
+    section("devices: on_hold()/on_abort() hand BEYOND's own blank() "
+            "result back -- a blank that never got out returns False, "
+            "never a silent 'done'")
+    from ltcplay import devices as D, beyond as B
+
+    class Dead:
+        def sendto(self, *a):
+            raise OSError(65, "No route to host")
+
+        def close(self):
+            pass
+    mm_link, mm_socks, _b, _s, steps = _devices_pair()
+    dead = B.Beyond(B.BeyondConfig.parse({}), socket_factory=lambda: Dead(),
+                    clock=steps.clock, sleep=steps.sleep)
+    check(D.on_hold(mm_link, dead, fade_seconds=0.1) is False,
+          "on_hold must return False when the blank never got out")
+    check(D.on_abort(mm_link, dead, fade_seconds=0.1) is False,
+          "on_abort must return False when the blank never got out")
+    mm_link.close()
+    mm_link, mm_socks, b_link, b_socks, steps = _devices_pair()
+    check(D.on_hold(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_hold returns True when the blank got out")
+    check(D.on_abort(mm_link, b_link, fade_seconds=0.1) is True,
+          "on_abort returns True when the blank got out")
+    check(D.on_hold(mm_link, None, fade_seconds=0.1) is None,
+          "no BEYOND configured: None")
+    mm_link.close()
+    b_link.close()
+    print("  ok")
+
+
+def test_the_gpl_path_never_loads_devices():
+    section("devices: the real GPL path (web.serve() with nothing "
+            "configured) never imports it -- nothing in this codebase "
+            "wires it in yet; it exists only for a future conductor to "
+            "call")
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    # Made here, not in the child, so this run's temp sweep removes it.
+    work = tempfile.mkdtemp()
+    code = (
+        "import sys, tempfile\n"
+        f"sys.path.insert(0, {root!r})\n"
+        "from ltcplay import web\n"
+        f"h = web.serve({work!r}, port=0)\n"
+        "h.server_close()\n"
+        "print(sorted(m for m in sys.modules if m.endswith('.devices') "
+        "or m == 'devices'))\n")
+    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=60)
+    loaded = (rc.stdout or "").strip().splitlines()[-1:] or ["<no output>"]
+    check(loaded == ["[]"], f"the GPL path loaded devices.py: {loaded}; "
+                            f"stderr: {rc.stderr[-800:]}")
     print("  ok")
 
 
@@ -18946,10 +21019,38 @@ def test_journal_rotation_and_pruning_across_dst():
           "a night on hold has not closed")
     now[0] = _den(S, 0, 0, 5, d=(2026, 11, 15))
     svc.tick()
+    # By now the night's last show, 21:40, has gone by during the Hold and
+    # is DELAYED. A delayed show keeps last night open across midnight
+    # (Jeff, 2026-10-01): it is not swept away just because the date
+    # changed, so neither pruning nor the new night's file happen yet.
+    check(svc.machine.delayed() is not None and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.state == S.HOLD,
+          f"a delayed show keeps last night open past midnight, got "
+          f"{svc.machine.date} {svc.machine.state} "
+          f"{svc.machine.delayed()}")
+    check(there("2026-07-17") and not there("2026-11-15"),
+          "so pruning's floor does not move another day and the new "
+          "night's file does not appear while a delayed show still waits")
+    # Once the operator actually closes the delayed night, the new night
+    # begins at the 2 AM nightly reset (Jeff, 2026-10-03), and pruning and
+    # the rollover happen then.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF, "Close for the night finally closes "
+                                      "the delayed night")
+    now[0] = _den(S, 0, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-14" and
+          not there("2026-11-15"),
+          "a closed night still runs until the 2 AM reset")
+    now[0] = _den(S, 2, 0, 6, d=(2026, 11, 15))
+    svc.tick()
+    check(str(svc.machine.date) == "2026-11-15",
+          "and now the new night starts")
     check(not there("2026-07-17") and there("2026-07-18"),
-          "and prunes again when the next night begins")
+          "and prunes again once the delayed night actually closes")
     check(there("2026-11-15"),
-          "after midnight the lines go to the new night's file")
+          "and the lines go to the new night's file")
     # A clock the time server disagrees with: nothing is pruned until it
     # has run for 10 minutes, and then with the floor.
     work2 = tempfile.mkdtemp()
@@ -18971,9 +21072,10 @@ def test_journal_rotation_and_pruning_across_dst():
           "and after 10 minutes prunes, keeping the newest 120 nights even "
           "where the age rule would remove them")
     sp14 = os.path.join(nights, J.summary_name("2026-11-14"))
-    check(os.path.exists(sp14) and "written at midnight" in
+    check(os.path.exists(sp14) and "Close for the night" in
           open(sp14, encoding="utf-8").read(),
-          "and the night that never closed gets its summary at midnight")
+          "and the delayed night's summary, once it is actually closed, "
+          "says who closed it")
     print("  ok")
 
 
@@ -19925,7 +22027,8 @@ def test_the_gpl_path_never_loads_the_journal():
         "h.shutdown(); h.server_close()\n"
         "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
         "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
-        "                     or 'schedule' in m)}))\n")
+        "                     or 'schedule' in m)}))\n"
+        "import logging, shutil; logging.shutdown(); shutil.rmtree(d, ignore_errors=True)\n")
     rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
                         text=True, timeout=60)
     try:
@@ -20387,21 +22490,28 @@ def test_journal_a_show_past_midnight_keeps_its_night():
           "nothing went to the calendar day's file while the show ran")
     now[0] = _den(S, 0, 4, 30, d=(2026, 11, 15))
     svc.tick()                                  # the show ends
-    now[0] = _den(S, 0, 4, 31, d=(2026, 11, 15))
+    now[0] = _den(S, 2, 0, 1, d=(2026, 11, 15))
     svc.tick()
     check(os.path.exists(os.path.join(nights, J.machine_name("2026-11-15"))),
-          "once the show is over, the new night gets its own file")
+          "once the show is over, the new night (from the 2 AM reset) gets "
+          "its own file")
     print("  ok")
 
 
-def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
-    section("scheduler: the hold epoch bumps when midnight sweeps away a "
-            "night left on Hold, not only when an operator's own Hold or "
-            "Resume crosses that line during the night (merge with #14, "
-            "2026-09-26: _ensure_night's own end-of-night write_summary "
-            "touches the same crossing hold_for_announcement's epoch "
-            "depends on, and that crossing happens by direct assignment, "
-            "not through _apply's own before/after check)")
+def test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight():
+    section("scheduler: a delayed show keeps a held night open across "
+            "midnight instead of letting it be swept away (Jeff, "
+            "2026-10-01), and the hold epoch does not move just because "
+            "the calendar date did (this test used to be named for the "
+            "opposite: midnight sweeping a held night away. Before this "
+            "decision a Hold spanning a show's time, carried past "
+            "midnight, was always swept; now a delayed show always "
+            "keeps it from being swept, so that case can no longer "
+            "happen -- the epoch must still only move on a real "
+            "Hold/Resume crossing, never on the date alone. merge with "
+            "#14, 2026-09-26: _ensure_night's own end-of-night "
+            "write_summary touches the same crossing "
+            "hold_for_announcement's epoch depends on)")
     S = _sched()
     if S is None:
         return
@@ -20417,14 +22527,25 @@ def test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night():
           f"setup: the night is on Hold: {svc.machine.state} {out.refused}")
     epoch_before = svc.hold_epoch
     check(epoch_before > 0, "setup: Hold already bumped the epoch once")
-    now[0] = _den(S, 3, 0, d=(2026, 11, 15))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
     svc.tick()
-    check(svc.machine.state != S.HOLD,
-          f"setup: midnight replaced the held night: {svc.machine.state}")
-    check(svc.hold_epoch != epoch_before,
-          f"the epoch must bump on this crossing too: an announcement's "
-          f"Hold claim from last night must never still look current after "
-          f"midnight swept the night it was claimed on. Stayed at "
+    check(svc.machine.state == S.HOLD and
+          str(svc.machine.date) == "2026-11-14" and
+          svc.machine.delayed() is not None,
+          f"a delayed show keeps the held night open, on its own date, "
+          f"past midnight (until the 2 AM reset): {svc.machine.date} "
+          f"{svc.machine.state} {svc.machine.delayed()}")
+    check(svc.hold_epoch == epoch_before,
+          f"nothing crossed a Hold/Resume boundary, so an announcement's "
+          f"earlier Hold claim is still current: the epoch must not move "
+          f"just because the calendar date did. Was {epoch_before}, now "
+          f"{svc.hold_epoch}")
+    # Actually closing the delayed night IS a Hold/Resume crossing (HOLD to
+    # CLOSING), so that still bumps the epoch, through _apply's ordinary
+    # before/after check -- no special case needed for it.
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    check(svc.machine.state == S.OFF and svc.hold_epoch != epoch_before,
+          f"closing the delayed night for real does bump the epoch: "
           f"{svc.hold_epoch}")
     print("  ok")
 
@@ -22014,6 +24135,7 @@ for label, clock_doc in (("gpl", None),
                         if m == "ltcplay.showaudio"
                         or m.startswith("multiprocessing"))
 print(json.dumps(res))
+import shutil; shutil.rmtree(work, ignore_errors=True)
 '''
     r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
                 text=True, timeout=120)
@@ -23019,12 +25141,15 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     T.t = 200.0
     r = c.abort("Andy", "rack screen")
     check(r.ok, f"Abort accepted: {r}")
-    # Before the executor has run at all: the flames are already cut.
-    check(rig.names() == ["flames_zero", "flames_disarm_all"],
-          f"Abort cuts and disarms the flames before it returns, and "
-          f"nothing else yet: {rig.names()}")
+    # Before the executor has run at all: the flames are already cut, and
+    # the lasers blanked on the pressing thread (independent review of PR
+    # #29, finding D: never queued behind the executor).
+    check(rig.names() == ["flames_zero", "flames_disarm_all",
+                          "lasers_fade_out"],
+          f"Abort cuts and disarms the flames, then sends the lasers dark, "
+          f"before it returns, and nothing else yet: {rig.names()}")
     check(all(t == 200.0 for _n, _a, t in rig.calls),
-          "the flame cut has zero delay")
+          "the flame cut and the lasers' dark command have zero delay")
     check(c.latched, "Abort latches at once")
     c.run_pending()
     for name in ("lasers_fade_out", "video_fade_out", "pixels_fade_out",
@@ -23034,6 +25159,11 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
               f"{name} starts at the press, over 1 s: {got}")
     check(rig.count("lasers_blank") == 0,
           "Abort ramps the lasers (BEYOND brightness), not an instant blank")
+    check(rig.count("lasers_fade_out") == 1,
+          "the executor does not send the lasers dark again once the "
+          "press's command got out")
+    check(any("lasers blanked at the press" in t for t, _f in lines),
+          "the journal says the lasers were blanked at the press")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 201.0) < 1e-9,
           f"the video stops once the 1 s fade is done: {stop}")
@@ -23060,6 +25190,49 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     print("  ok")
 
 
+def test_conductor_failed_start_disarms_without_latch():
+    section("conductor: a failed start goes dark and disarms every flame "
+            "group at once, like an Abort, but does not latch; nothing "
+            "needs to be playing (Jeff, 2026-10-03)")
+    C = _cond_mod()
+    c, rig, T, lines = _cond()
+    rig.cue = False
+    r = c.failed_start("the scheduler", "")
+    calls = [x for x in rig.calls if x[0] == "flames_disarm_all"]
+    check(r.ok and rig.names()[:2] == ["flames_zero", "flames_disarm_all"]
+          and calls and calls[0][1] == (C.Conductor.FAILED_START,),
+          f"the flame cues are zeroed and every group disarmed before the "
+          f"call returns, because the show failed to start: {r} "
+          f"{rig.names()} {calls}")
+    check("armed again by hand" in r.sentence and "failed to start" in
+          r.sentence, f"and its answer says why and what to do: {r.sentence}")
+    c.run_pending()
+    a = c.snapshot()["applied"]
+    check(not c.latched and c.snapshot()["look"] == C.STOPPED_DARK and
+          a["lasers"] == "black" and a["pixels"] == "black" and
+          a["music"] == "stopped" and rig.count("flames_disarm_all") == 1,
+          f"the rig is dark, the disarm sent once, nothing latched: "
+          f"latched={c.latched} {a}")
+    check(any("failed start" in t and "disarm" in t and "failed to start"
+              in t for t, f in lines),
+          f"its own line says the flames were disarmed because the show "
+          f"failed to start: {lines[-2:]}")
+    rig.cue = True
+    check(c.show_starting("Andy", "rack screen").ok,
+          "no Reset is needed: the next show start is accepted")
+    # While aborted it changes nothing (the Abort already disarmed).
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    k = len(rig.calls)
+    r = c.failed_start("the scheduler", "")
+    check(r.ok and rig.names(k) == [] and c.latched,
+          f"a failed start while aborted sends nothing and keeps the latch: "
+          f"{rig.names(k)}")
+    print("  ok")
+
+
 def test_conductor_double_abort_is_idempotent():
     section("conductor: a second Abort does nothing, Reset waits for the "
             "fade, and Abort needs something playing")
@@ -23069,8 +25242,9 @@ def test_conductor_double_abort_is_idempotent():
     c.abort("Andy", "rack screen")
     gen = c._gen
     r2 = c.abort("Jeff", "Stream Deck")
-    check(r2.ok and "Already aborted" in r2.sentence,
-          f"a second Abort is a calm no-op: {r2}")
+    check(r2.ok and "Already aborted" in r2.sentence
+          and "blank was sent again" in r2.sentence,
+          f"a second Abort starts nothing new but blanks again: {r2}")
     check(c._gen == gen, "a second Abort starts no new effect")
     resets = []
     T.at(300.5, lambda: resets.append(c.reset("Andy", "rack screen")))
@@ -23082,6 +25256,12 @@ def test_conductor_double_abort_is_idempotent():
                  "video_stop"):
         check(rig.count(name) == 1, f"{name} sent exactly once for three "
                                     f"Abort presses ({rig.count(name)})")
+    # Finding B: each press while latched sends the laser blank again (a
+    # blank only makes it darker), so a blank that did not get out the
+    # first time is not stuck that way until Reset.
+    check(rig.count("lasers_blank") == 2,
+          f"each later Abort press sends the laser blank again "
+          f"({rig.count('lasers_blank')})")
     check(resets and not resets[0].ok and "still fading" in
           resets[0].sentence, f"Reset during the fade is refused: {resets}")
     check(c.latched, "a refused Reset leaves it latched")
@@ -23107,13 +25287,15 @@ def test_conductor_abort_mid_hold_fade_wins():
 
     def press():
         seen["r"] = c.abort("Andy", "rack screen")
-        seen["cut"] = rig.names()[-2:]
+        seen["cut"] = rig.names()[-3:]
     T.at(400.1, press)
     check(c.hold("Andy", "rack screen").ok, "Hold accepted")
     c.run_pending()
     check(seen.get("r") is not None and seen["r"].ok, "Abort accepted")
-    check(seen.get("cut") == ["flames_zero", "flames_disarm_all"],
-          f"the flames were cut inside the press itself: {seen.get('cut')}")
+    check(seen.get("cut") == ["flames_zero", "flames_disarm_all",
+                              "lasers_fade_out"],
+          f"the flames were cut and the lasers sent dark inside the press "
+          f"itself: {seen.get('cut')}")
     hold = rig.first("music_hold")
     check(hold is not None and hold[1] == (0.25,) and hold[2] == 400.0,
           f"the Hold had started its 0.25 s fade: {hold}")
@@ -23129,11 +25311,25 @@ def test_conductor_abort_mid_hold_fade_wins():
           and halt[1] == (1.0,),
           f"music_halt starts the moment Abort lands, not after the Hold's "
           f"fade: {halt}")
-    check(rig.count("lasers_fade_out") == 0 and rig.count("lasers_blank")
-          == 1, "the lasers the Hold already blanked are not sent again")
-    check(rig.count("video_fade_out") == 1 and rig.count("pixels_fade_out")
-          == 1, "Abort does not re-send video or pixels: the Hold's fade "
-          "already left them black")
+    # The Hold blanked the lasers; Abort sends their dark command again
+    # anyway (BEYOND never confirms, so "already dark" is never trusted),
+    # on the pressing thread, before the music fade.
+    check(rig.count("lasers_blank") == 1, "the Hold blanked the lasers once")
+    las = rig.first("lasers_fade_out")
+    check(las is not None and abs(las[2] - 400.1) < 1e-9
+          and rig.names().index("lasers_fade_out")
+          < rig.names().index("music_halt"),
+          f"Abort sends the lasers dark again at its press, before "
+          f"anything else it fades: {las} {rig.names()}")
+    # Finding C: Abort fades the video again, from wherever the Hold's fade
+    # had got to, never trusting a record that says black. Pixels are
+    # ltcplay's own and their record is the truth.
+    vf = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+    check(len(vf) == 2 and vf[1][1] == (1.0,)
+          and abs(vf[1][2] - 400.1) < 1e-9,
+          f"Abort fades the video again at its press, over 1 s: {vf}")
+    check(rig.count("pixels_fade_out") == 1,
+          "Abort does not re-send pixels: the Hold's fade left them black")
     stop = rig.first("video_stop")
     check(stop is not None and abs(stop[2] - 401.1) < 1e-9,
           f"Abort's own 1 s runs from its press: {stop}")
@@ -23181,9 +25377,11 @@ def test_conductor_resume_before_the_hold_fade_finishes():
     n, gen = len(rig.calls), c._gen
     r = c.hold("Jeff", "Stream Deck")
     check(r.ok and "Already on hold" in r.sentence and c._gen == gen,
-          f"a double Hold is a no-op: {r}")
+          f"a double Hold starts nothing new: {r}")
     c.run_pending()
-    check(len(rig.calls) == n, "a double Hold sends nothing")
+    check(rig.names(n) == ["lasers_blank"],
+          f"a double Hold sends only the laser blank again (finding B): "
+          f"{rig.names(n)}")
     print("  ok")
 
 
@@ -23222,10 +25420,20 @@ def test_conductor_generation_guard_stops_a_stale_effect():
           rig.count("flames_release") == 0,
           f"no step of a superseded effect runs after the press: "
           f"{rig.names()}")
-    las = rig.first("lasers_fade_out")
-    check(las is not None and rig.calls.index(las) >
-          rig.calls.index(rig.first("lasers_restore")),
+    ri = rig.calls.index(rig.first("lasers_restore"))
+    check(any(cl[0] in ("lasers_blank", "lasers_fade_out")
+              for cl in rig.calls[ri + 1:]),
           "and Abort takes the lasers that did come up back down")
+    check(c.snapshot()["applied"]["lasers"] == "black",
+          f"and the record says dark, not the restore's lit: "
+          f"{c.snapshot()['applied']}")
+    # The restore returned after the Abort's blank: its "lit" must not
+    # overwrite the newer record (finding D), or the Abort's effect would
+    # think its blank had not landed and blank again.
+    check(rig.count("lasers_blank") == 1 and
+          any("lasers blanked at the press" in t for t, _f in lines),
+          f"the Abort's own blank stands; nothing had to blank again: "
+          f"{rig.names()}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
     C = _cond_mod()
@@ -23324,12 +25532,15 @@ def test_conductor_announcements_hold_go_dark_then_play():
     check(len(plays) == 1 and _in_the_dark(plays[0][3], 800.25),
           f"played 0.5 s after the 0.25 s fade ended: {plays}")
     # Another announcement once that one has started: already dark, so it
-    # plays at once with nothing sent.
+    # plays at once with nothing sent but the lasers' blank, which is always
+    # re-sent (conductor.ALWAYS_RESENT), and is not a change worth 0.5 s.
     n = len(rig.calls)
     T.t = 810.0
     c.announce("cancellation", "Andy", "rack screen")
     c.run_pending()
-    check(len(rig.calls) == n, "already dark: nothing more is sent")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"already dark: only the lasers' blank is sent again: "
+          f"{rig.names(n)}")
     check(plays[-1][3] == 810.0, "and it plays at once")
     # Resume from the dark: everything comes back.
     T.t = 820.0
@@ -23355,9 +25566,9 @@ def test_conductor_announcements_hold_go_dark_then_play():
     T.t = 900.0
     c.announce("delayed", "Andy", "rack screen")
     c.run_pending()
-    check(rig.names(n) == [],
-          f"an announcement during a Hold sends nothing: already dark: "
-          f"{rig.names(n)}")
+    check(rig.names(n) == ["lasers_fade_out"],
+          f"an announcement during a Hold sends nothing but the lasers' "
+          f"blank again (always re-sent): already dark: {rig.names(n)}")
     check(plays[-1][3] == 900.0,
           f"and it plays at once, with nothing left to fade: {plays[-1]}")
     # A Hold pressed during the wait in the dark changes nothing.
@@ -23631,6 +25842,14 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
         c.run_pending()
         check(rig.count("flames_zero") == 2,
               f"{mode}: Abort cuts the flames again")
+    # A failed start's inline disarm fails: the executor sends it again.
+    c, rig, T, lines = _cond()
+    rig.fail = {"flames_disarm_all"}
+    c.failed_start("the scheduler", "")
+    rig.fail = set()
+    c.run_pending()
+    check(rig.count("flames_disarm_all") == 2,
+          "a failed start's failed disarm is sent again by its own effect")
     # Abort's inline disarm fails: the executor sends it again.
     c, rig, T, lines = _cond()
     _cond_live(c, rig)
@@ -23724,11 +25943,22 @@ def test_conductor_on_real_threads():
         check(all(v[2] is not None for v in cut.values()),
               "the flames were disarmed before either press returned")
         check(c.wait_idle(5), "the Abort finished")
-        for name in ("lasers_blank", "video_fade_out", "pixels_fade_out",
+        for name in ("pixels_fade_out",
                      "music_halt", "video_stop", "flames_disarm_all"):
             check(rig.count(name) == 1, f"{name} once for two presses "
                                         f"({rig.count(name)})")
-        vf = rig.first("video_fade_out")
+        # The Hold's blank, then one per Abort press (finding B); the
+        # Hold's video fade, then Abort's own from where it got to (C).
+        check(rig.count("lasers_fade_out") == 1 and
+              rig.count("lasers_blank") == 2,
+              f"lasers blanked by the Hold, sent dark by the first Abort "
+              f"press and blanked again by the second "
+              f"({rig.count('lasers_fade_out')}, "
+              f"{rig.count('lasers_blank')})")
+        vfs = [cl for cl in rig.calls if cl[0] == "video_fade_out"]
+        check(len(vfs) == 2, f"the Hold's video fade, then the Abort's "
+                             f"({len(vfs)})")
+        vf = vfs[-1] if vfs else None
         check(vf is not None and vf[2] - pressed < 0.15,
               f"Abort's fade started at once, not after the Hold's "
               f"({(vf[2] - pressed) if vf else None})")
@@ -23739,6 +25969,2219 @@ def test_conductor_on_real_threads():
               rig.count("lasers_restore") == 0, "and nothing came back")
     finally:
         c.close()
+    print("  ok")
+
+
+def _settle(svc, c=None):
+    """The Service's conductor calls all made (they run on their own
+    thread, off the scheduler's lock), then the conductor's own effects."""
+    check(svc.flush_conductor(5), "the show conductor's calls all ran")
+    if c is not None:
+        c.run_pending()
+
+
+def _confirm(S, svc):
+    return svc._apply(S.Event(S.SHOW_CONFIRMED, "madmapper"))
+
+
+def _two_nights(**over):
+    doc = _sched_doc(weekly={
+        "sat": {"first_start": "18:00", "interval_min": 20,
+                "last_end": "22:00"},
+        "sun": {"first_start": "18:00", "interval_min": 20,
+                "last_end": "22:00"}}, exceptions={})
+    doc.update(over)
+    return doc
+
+
+class _RecCond:
+    """A conductor that records every request, what tonight's file said at
+    that instant, and can raise, fail, return junk or be slow."""
+
+    def __init__(self, S, work=None):
+        self.S = S
+        self.work = work
+        self.calls = []
+        self.raise_on, self.fail_on, self.junk_on = set(), set(), set()
+        self.sleep_on = {}
+        self.block_on = {}
+        self.exit_on = set()
+        self.latched = False
+
+    def _do(self, name, who, screen):
+        from datetime import date
+        from ltcplay import schedule_service as SV
+        disk = None
+        if self.work:
+            p = SV.tonight_path(date(2026, 11, 14), self.work)
+            if os.path.exists(p):
+                with open(p) as fh:
+                    d = json.load(fh)
+                disk = (d["state"], d["running"])
+        self.calls.append((name, who, screen, disk))
+        if name in self.block_on:
+            self.block_on[name].wait(10)
+        if name in self.sleep_on:
+            time.sleep(self.sleep_on[name])
+        if name in self.raise_on:
+            raise RuntimeError(f"{name} blew up")
+        if name in self.exit_on:
+            raise SystemExit(f"{name} asked to exit")
+        if name in self.junk_on:
+            return "fine"
+        C = _cond_mod()
+        if name in self.fail_on:
+            return C.failed(f"{name} could not be done")
+        return C.done(f"{name} done")
+
+    def names(self, since=0):
+        return [c[0] for c in self.calls[since:]]
+
+    def hold(self, who="", screen=""):
+        return self._do("hold", who, screen)
+
+    def resume(self, who="", screen=""):
+        return self._do("resume", who, screen)
+
+    def abort(self, who="", screen=""):
+        return self._do("abort", who, screen)
+
+    def show_starting(self, who="", screen=""):
+        return self._do("show_starting", who, screen)
+
+    def show_stopped(self, who="", screen=""):
+        return self._do("show_stopped", who, screen)
+
+    def failed_start(self, who="", screen=""):
+        return self._do("failed_start", who, screen)
+
+    def intermission(self, who="", screen=""):
+        return self._do("intermission", who, screen)
+
+    def reset(self, who="", screen=""):
+        return self._do("reset", who, screen)
+
+
+def test_schedule_drives_the_show_conductor():
+    section("scheduler: Hold, Resume, Abort, a confirmed show and every way "
+            "out of a show reach the show conductor; what it does not "
+            "perform is still journaled as not performed")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.STANDBY,
+          f"setup: within the preshow lead, the intermission is already "
+          f"running: {svc.machine.state}")
+    check(c.snapshot()["look"] == "BETWEEN",
+          f"leaving the show (the INTERMISSION bundle) reached the conductor "
+          f"as its BETWEEN look: {c.snapshot()}")
+    sent = [r for r in svc.journal if r.get("action") == "conductor"
+            and r.get("outcome") == "sent"]
+    rows = [r for r in svc.journal if r.get("action") == "INTERMISSION"]
+    check(sent and rows and "Not performed, dry run" in rows[0]["text"],
+          f"the journal says the conductor was told the show was left, AND "
+          f"that the intermission timeline itself was not performed (the "
+          f"conductor has no such thing): {sent[:1]} {rows[:1]}")
+
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW, "show 1 starts on schedule")
+    check(c.snapshot()["look"] == "BETWEEN",
+          f"START_SHOW alone does not bring the rig up: the conductor only "
+          f"does that for a show cue that is playing: {c.snapshot()['look']}")
+    rows = [r for r in svc.journal if r.get("action") == "START_SHOW"]
+    check(rows and "Not performed, dry run" in rows[-1]["text"],
+          f"START_SHOW is journaled as not performed, because it was not: "
+          f"{rows[-1:]}")
+    now[0] = _den(S, 18, 0, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING" and not svc.machine.fault,
+          f"once the show is confirmed running (SHOW_CONFIRMED) the "
+          f"conductor brings the rig up: {c.snapshot()} {svc.machine.faults}")
+
+    now[0] = _den(S, 18, 1)
+    out = svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.PAUSED and
+          c.snapshot()["look"] == "HELD",
+          f"Hold reached the conductor as a Hold: {c.snapshot()}")
+    now[0] = _den(S, 18, 2)
+    out = svc._apply(_op(S, S.RESUME))
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.SHOW and
+          c.snapshot()["look"] == "PLAYING",
+          f"Resume reached the conductor as a Resume: {c.snapshot()}")
+
+    now[0] = _den(S, 18, 3)
+    out = svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(out.accepted and c.latched and c.snapshot()["look"] == "ABORTED"
+          and rig.count("flames_disarm_all") == 1,
+          f"Abort reached the conductor as an Abort, disarm included: "
+          f"{c.snapshot()}")
+    said = [r["text"] for r in svc.journal if r.get("action") == S.ABORT]
+    check(said and "nothing was disarmed" not in said[-1].lower() and
+          "disarm to every flame group" in said[-1],
+          f"the Abort line says the conductor disarms, not that nothing was "
+          f"disarmed (Jeff, 2026-09-27): {said[-1:]}")
+    done_rows = [r for r in svc.journal if r.get("action") == "conductor"
+                 and r.get("outcome") == "done" and "Abort" in r["text"]]
+    check(done_rows and "disarm sent" in done_rows[-1]["text"],
+          f"and the conductor's own line says what it sent: {done_rows[-1:]}")
+
+    # Close for the night tells the conductor the show is over; closing's
+    # pixel fade and blackout have no conductor method and stay "not
+    # performed".
+    svc.reset_conductor("Andy", "Rack screen")
+    _settle(svc, c)
+    now[0] = _den(S, 18, 5)
+    k = len(rig.calls)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    _settle(svc, c)
+    snap = c.snapshot()
+    check(svc.machine.state == S.OFF and snap["look"] == "BETWEEN"
+          and snap["applied"]["lasers"] == "black"
+          and snap["applied"]["flames"] == "zero",
+          f"Close for the night takes the conductor out of the show: "
+          f"{snap} {rig.names(k)}")
+    rows = [r for r in svc.journal if r.get("action") == "BLACKOUT"]
+    check(rows and "Not performed, dry run" in rows[-1]["text"],
+          f"closing's own blackout is still only journaled: {rows[-1:]}")
+
+    # The LAST show of the night ending tells it too (it used to stay
+    # PLAYING, lasers lit and flame cues live, after the night closed).
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING", "setup: the last show plays")
+    now[0] = _den(S, 21, 47, 21)
+    svc.tick()
+    _settle(svc, c)
+    snap = c.snapshot()
+    check(svc.machine.state == S.OFF and snap["look"] == "BETWEEN" and
+          snap["applied"]["lasers"] == "black" and
+          snap["applied"]["flames"] == "zero",
+          f"after the last show ends the conductor is out of the show, "
+          f"lasers dark and flame cues zero: {svc.machine.state} {snap}")
+
+    # Without a conductor attached nothing changes from before: every
+    # effect is only journaled as a dry run, and nothing is sent.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 17, 55)]
+    plain = _svc(S, work2, now2)
+    plain.tick()
+    rows = [r for r in plain.journal if r.get("action") == "INTERMISSION"]
+    check(rows and "Not performed, dry run" in rows[0]["text"] and
+          not [r for r in plain.journal if r.get("action") == "conductor"],
+          f"with no conductor attached, effects are only journaled, "
+          f"exactly as before: {rows}")
+    try:
+        plain.reset_conductor("Andy", "Rack screen")
+        check(False, "Reset with no conductor attached is refused")
+    except ValueError as e:
+        check("no show conductor" in str(e), f"Reset with no conductor is "
+                                             f"refused with a sentence: {e}")
+    print("  ok")
+
+
+def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
+    section("scheduler: the show conductor is asked only after tonight is "
+            "saved and journaled, in order, on its own thread, and anything "
+            "it raises or refuses is a fault")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    grace = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                       "interval_min": 20,
+                                       "last_end": "22:00"}},
+                       exceptions={}, late_grace_s=15)
+    # The save comes first (schedule.py's effects contract, rule 1).
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S, work)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 1)
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 1)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc)
+    got = {c[0]: c[3] for c in rec.calls}
+    check(got.get("show_starting") == (S.SHOW, 1) and
+          got.get("hold") == (S.PAUSED, 1),
+          f"each request ran with tonight already saved: {got}")
+
+    # A conductor that raises, fails or returns junk: the start is saved
+    # and journaled anyway, the failure is a fault, and a restart inside
+    # the grace never starts the same show twice.
+    for how in ("raise_on", "fail_on", "junk_on"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        rec = _RecCond(S, work)
+        getattr(rec, how).add("show_starting")
+        svc = _svc(S, work, now, rule=grace, conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        svc._safe_tick()
+        now[0] = _den(S, 18, 0, 1)
+        _confirm(S, svc)
+        _settle(svc)
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            disk = json.load(fh)
+        check(disk["state"] == S.SHOW and
+              any(r.get("action") == "fire" for r in svc.journal),
+              f"[{how}] the start was saved and journaled: {disk['state']}")
+        bad = [r for r in svc.journal if r.get("fault") and
+               "did not carry out Show start" in r["text"]]
+        check(svc.machine.fault and bad,
+              f"[{how}] the conductor's failure is a fault, on the page and "
+              f"in the journal: {svc.machine.faults}")
+        svc.stop()
+        now[0] = _den(S, 18, 0, 5)
+        again = _svc(S, work, now, rule=grace, conductor=_RecCond(S, work))
+        again.start(thread=False)
+        check(again.machine.slot(1).status == S.FAULT and
+              again.machine.shows_started == 1,
+              f"[{how}] restarted inside the grace, show 1 is not started "
+              f"twice: {again.machine.slot(1)}")
+        again.stop()
+
+    # A slow conductor no longer holds the scheduler: the press, a status
+    # poll and the next press all return at once, and the requests still
+    # reach it in the order they were made.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    rec.sleep_on = {"show_starting": 0.6, "hold": 0.6}
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0, 1)
+    t0 = time.perf_counter()
+    _confirm(S, svc)
+    a = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    svc.state_view()
+    b = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    svc._apply(_op(S, S.HOLD_ON))
+    svc._apply(_op(S, S.RESUME))
+    c_ = time.perf_counter() - t0
+    check(a < 0.2 and b < 0.2 and c_ < 0.2,
+          f"nothing waits for a 0.6 s conductor: confirm {a:.2f} s, a "
+          f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
+    _settle(svc)
+    check(rec.names() == ["intermission", "show_starting", "hold", "resume"],
+          f"and the conductor got them in order: {rec.names()}")
+    t0 = time.perf_counter()
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(time.perf_counter() - t0 < 0.2, "nor does an Abort")
+    _settle(svc)
+    check(rec.names()[-1:] == ["abort"], f"which follows them: {rec.names()}")
+    # An Abort still waiting in the queue already counts: nothing can
+    # start in the moment before the conductor has latched.
+    now[0] = _den(S, 18, 2)
+    svc.reset_conductor("Andy", "Rack screen")
+    svc._apply(_op(S, S.START_NOW))
+    rec.sleep_on = {"abort": 0.5}
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now straight after Abort, before the conductor has run "
+          f"it, is refused: {out.refused}")
+    _settle(svc)
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused and
+          _tonight_doc(work).get("abort_latched") is True,
+          f"and still once it has run, though this conductor never latched: "
+          f"the Abort latch is the scheduler's own, saved in tonight's file, "
+          f"and only Reset ends it: {out.refused}")
+    r = svc.reset_conductor("Andy", "Rack screen")
+    out = svc._apply(_op(S, S.START_NOW))
+    check(r["ok"] and out.accepted,
+          f"after Reset, Start now works: {r} {out.refused}")
+    print("  ok")
+
+
+def test_schedule_failed_start_disarms_without_latch():
+    section("scheduler: a failed start (no timecode) goes dark, journals "
+            "loudly, and disarms every flame group like an Abort, but does "
+            "not latch: Start now works at once, and each group has to be "
+            "armed again by hand (Jeff, 2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    k = len(rig.calls)
+    now[0] = _den(S, 18, 0, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    _settle(svc)
+    check(rig.names(k)[:2] == ["flames_zero", "flames_disarm_all"],
+          f"the flame cut and the disarm go out at once, as the conductor is "
+          f"asked, before its fade has even begun: {rig.names(k)}")
+    c.run_pending()
+    a = c.snapshot()["applied"]
+    disarms = [x for x in rig.calls[k:] if x[0] == "flames_disarm_all"]
+    check(len(disarms) == 1 and "failed to start" in str(disarms[0]) and
+          not c.latched and not svc._aborted() and
+          not svc.machine.abort_latched,
+          f"every flame group is disarmed once, because the show failed to "
+          f"start, and nothing latches: {disarms} latched={c.latched} "
+          f"{svc._aborted()} {svc.machine.abort_latched}")
+    check(rig.names(k).index("flames_disarm_all") <
+          rig.names(k).index("music_halt"),
+          f"the disarm goes out with the flame cut, before the fade: "
+          f"{rig.names(k)}")
+    check(a["flames"] == "zero" and a["lasers"] == "black" and
+          a["video"] in ("black", "stopped") and a["pixels"] == "black" and
+          a["music"] == "stopped" and "music_halt" in rig.names(k),
+          f"the rig is dark: lasers blanked, video and pixels down, music "
+          f"stopped, flame cues zero: {a}")
+    rows = [r for r in svc.journal if r.get("action") == S.SHOW_FAILED]
+    sent = [r for r in svc.journal if r.get("action") == "conductor" and
+            "Failed start" in r["text"]]
+    check(rows and rows[-1].get("fault") and
+          "disarmed because the show failed to start" in rows[-1]["text"] and
+          S.FAILED_START_NOT_DISARMED not in rows[-1]["text"] and
+          "armed again by hand" in rows[-1]["text"] and sent and
+          "every flame group is disarmed" in sent[0]["text"],
+          f"the journal says it loudly, and says the flames were disarmed "
+          f"because the show failed to start: {rows[-1:]} {sent[:1]}")
+    rig_before = len(rig.calls)
+    check(svc.machine.state == S.STANDBY and svc.machine.dark,
+          "the scheduler waits dark, no intermission")
+    now[0] = _den(S, 18, 1)
+    out = svc._apply(_op(S, S.START_NOW))
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(out.accepted and c.snapshot()["look"] == "PLAYING",
+          f"Start now works straight away, with no Reset, and the rig comes "
+          f"up: {out.refused} {c.snapshot()['look']}")
+    check(not [x for x in rig.names(rig_before) if "arm" in x],
+          f"and nothing ltcplay sends arms a flame group again: that is a "
+          f"hand on the deck, off then on: {rig.names(rig_before)}")
+    # Without a show conductor nothing is disarmed, and the line says so.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    bare = _svc(S, work, now)
+    bare.tick()
+    now[0] = _den(S, 18, 0)
+    bare.tick()
+    now[0] = _den(S, 18, 0, 5)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    rows = [r for r in bare.journal if r.get("action") == S.SHOW_FAILED]
+    check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"],
+          f"with no conductor the line says nothing was disarmed: "
+          f"{rows[-1:]}")
+    # The LAST show fails to start: the night closes at once, and closing
+    # must not cut the stop's fade short (video and pixels still go down).
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 21, 40)
+    svc.tick()
+    _settle(svc, c)
+    now[0] = _den(S, 21, 40, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    now[0] = _den(S, 21, 40, 6)
+    svc.tick()
+    _settle(svc, c)
+    a = c.snapshot()["applied"]
+    check(svc.machine.state == S.OFF and a["video"] in ("black", "stopped")
+          and a["pixels"] == "black" and a["lasers"] == "black",
+          f"a failed last show still takes video and pixels down, though "
+          f"the night closes straight after: {svc.machine.state} {a}")
+    print("  ok")
+
+
+def test_schedule_abort_latch_misses_the_next_show_until_reset():
+    section("scheduler: after an Abort the rig stays dark until the operator "
+            "presses Reset; a show that comes due meanwhile is MISSED, Start "
+            "now is refused, and Reset is journaled with who and where")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.tick()
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(c.latched, "setup: the conductor latched")
+    out = svc._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now is refused until Reset: {out.refused}")
+    now[0] = _den(S, 18, 20)
+    svc.tick()
+    _settle(svc, c)
+    s2 = svc.machine.slot(2)
+    said = [r["text"] for r in svc.journal if r.get("show") == 2]
+    check(svc.machine.state == S.STANDBY and s2.status == S.MISSED and
+          s2.reason == S.LATCHED_MISSED and
+          "aborted and has not been Reset" in said[-1],
+          f"the 18:20 show does not start: MISSED, saying why: "
+          f"{s2.status} {s2.reason} {said[-1:]}")
+    check(not [r for r in svc.journal if r.get("action") == "SHOW_FAILED"],
+          "and it is not a failed start")
+    try:
+        svc.reset_conductor("Nobody", "Rack screen")
+        check(False, "a Reset from someone not on the list is refused")
+    except ValueError as e:
+        check("operator list" in str(e), f"refused with a sentence: {e}")
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] and not c.latched, f"Reset clears the latch: {r}")
+    row = [x for x in svc.journal if x.get("action") == "reset"]
+    check(row and row[-1]["who"] == "Jeff" and
+          row[-1]["screen"] == "Rack screen" and row[-1]["outcome"] == "done",
+          f"Reset is journaled with who and which screen: {row[-1:]}")
+    r = svc.reset_conductor("Andy", "Rack screen")
+    _settle(svc, c)
+    row = [x for x in svc.journal if x.get("action") == "reset"]
+    check(not r["ok"] and row[-1]["outcome"] == "refused" and
+          not row[-1].get("fault"),
+          f"a second Reset says nothing is aborted, refused but not a "
+          f"fault: {r} {row[-1:]}")
+    now[0] = _den(S, 18, 40)
+    svc.tick()
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.running == 3 and c.snapshot()["look"] == "PLAYING",
+          f"after Reset the next show starts on schedule and the rig comes "
+          f"up: {svc.machine.state} {svc.machine.running} "
+          f"{c.snapshot()['look']}")
+    print("  ok")
+
+
+def test_schedule_restart_after_a_stopped_show_stays_dark():
+    section("scheduler: a restart after an Abort, a failed start or a cut "
+            "show stays dark until the operator acts or the next show "
+            "starts; it no longer brings the intermission loop back")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
+    I = S.INTERMISSION
+
+    def restart(m, at, latched=False):
+        doc = json.loads(json.dumps(S.machine_to_doc(m)))
+        back = S.machine_from_doc(doc, rule, m.date, at)
+        return doc, S.step(back, S.Event(S.BOOT_DONE, "system",
+                                         latched=latched), at)
+
+    cases = {}
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.op(S.ABORT, _den(S, 18, 2), confirmed=True)
+    cases["after an Abort"] = n.m
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_FAILED, "madmapper", _den(S, 18, 0, 5), detail="no timecode")
+    cases["after a failed start"] = n.m
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    n.tick(_den(S, 18, 0))
+    _, o = restart(n.m, _den(S, 18, 3))
+    cases["after a show cut by a restart"] = o.machine
+    for name, m in cases.items():
+        # After an Abort the service (with a conductor attached) tells the
+        # engine it is latched until Reset: restart, tick and Hold all carry
+        # it, and the next show must NOT start (Jeff's rule). A failed start
+        # and a cut show latch nothing (DEFAULT pending Jeff).
+        latched = name == "after an Abort"
+        check(m.dark and m.state == S.STANDBY, f"{name}: dark, in STANDBY")
+        doc, o = restart(m, _den(S, 18, 5), latched)
+        kinds = [e.kind for e in o.effects]
+        check(doc.get("dark") is True, f"{name}: tonight's file says dark")
+        check(o.machine.state == S.STANDBY and I not in kinds and
+              o.machine.dark,
+              f"{name}: a second restart stays dark: {o.machine.state} "
+              f"{kinds}")
+        check("stays dark" in o.log[-1].text,
+              f"{name}: and says so: {o.log[-1].text}")
+        o2 = S.step(o.machine, S.Event(S.TICK, "scheduler", latched=latched),
+                    _den(S, 18, 20))
+        o3 = S.step(o.machine, S.Event(S.HOLD_ON, "operator", who="Andy",
+                                       screen="rack screen", latched=latched),
+                    _den(S, 18, 6))
+        if latched:
+            check(o2.machine.running == 0 and
+                  o2.machine.slot(2).reason == S.LATCHED_MISSED and
+                  o2.machine.dark,
+                  f"{name}: the next show does not start until Reset: "
+                  f"{o2.machine.slot(2)}")
+            check(I not in [e.kind for e in o3.effects] and o3.machine.dark,
+                  f"{name}: a Hold does not bring the look back either")
+        else:
+            check(o2.machine.running == 2 and not o2.machine.dark,
+                  f"{name}: the next show still starts on schedule")
+            check(I in [e.kind for e in o3.effects] and not o3.machine.dark,
+                  f"{name}: an operator's press brings the look back")
+    # A night that never went dark saves exactly as before.
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    check("dark" not in S.machine_to_doc(n.m),
+          "a night that was never dark has no `dark` in its file")
+    print("  ok")
+
+
+def test_schedule_preshow_lead_on_tick_and_resume():
+    section("scheduler: the intermission loop takes over from the preshow "
+            "look 30 minutes before the first show, on the tick and on a "
+            "Resume (Jeff, 2026-10-01)")
+    S = _sched()
+    if S is None:
+        return
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 0))
+    check(n.m.state == S.IDLE, "setup: the preshow look at 17:00")
+    o = n.tick(_den(S, 17, 29, 59))
+    check(n.m.state == S.IDLE and not o.effects,
+          "17:29:59 is still the preshow look")
+    o = n.tick(_den(S, 17, 30))
+    check(n.m.state == S.STANDBY and
+          [e.kind for e in o.effects] == [S.INTERMISSION],
+          f"17:30 starts the intermission loop: {n.m.state} {o.effects}")
+    for at, want in (((17, 10), S.IDLE), ((17, 45), S.STANDBY)):
+        n = _Night(S, rule)
+        n.boot(_den(S, 17, 0))
+        n.op(S.HOLD_ON, _den(S, 17, 5))
+        o = n.op(S.RESUME, _den(S, *at))
+        check(n.m.state == want,
+              f"Resume at {at[0]}:{at[1]:02d} after a Hold from the preshow "
+              f"look lands in {want}: {n.m.state}")
+    n.audit("preshow lead")
+    print("  ok")
+
+
+def test_schedule_night_reset_boundary():
+    section("scheduler: a show night runs until the 2 AM nightly reset, "
+            "local, on the next calendar day: just before it, at it and "
+            "just after it, and on the nights the clocks change (Jeff, "
+            "2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    from datetime import date, datetime, time, timedelta, timezone
+    check(S.NIGHT_RESET == time(2, 0) and S.reset_words() == "2 AM",
+          f"the nightly reset is one constant, 2 AM: {S.NIGHT_RESET} "
+          f"{S.reset_words()}")
+    den = S.zone("America/Denver")
+    sat, sun = date(2026, 11, 14), date(2026, 11, 15)
+    for at, want, what in (
+            (_den(S, 23, 59, 59, d=(2026, 11, 14)), sat, "Saturday 23:59:59"),
+            (_den(S, 0, 0, 0, d=(2026, 11, 15)), sat, "Sunday 00:00"),
+            (_den(S, 1, 59, 59, 999999, d=(2026, 11, 15)), sat,
+             "Sunday 01:59:59.999999, just before the reset"),
+            (_den(S, 2, 0, 0, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:00, at the reset"),
+            (_den(S, 2, 0, 1, d=(2026, 11, 15)), sun,
+             "Sunday 02:00:01, just after it"),
+            (_den(S, 4, 30, d=(2026, 11, 15)), sun,
+             "Sunday 04:30, a media shoot"),
+            (_den(S, 18, 0, d=(2026, 11, 15)), sun, "Sunday 18:00")):
+        check(S.night_of(at, den) == want,
+              f"{what} belongs to the night of {want}: "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(sat, den) == _den(S, 2, 0, d=(2026, 11, 15)),
+          f"Saturday's night ends at 02:00 Sunday: "
+          f"{S.night_reset(sat, den)}")
+
+    def utc(*a):
+        return datetime(*a, tzinfo=timezone.utc)
+
+    # Denver, autumn 2026-11-01: 01:00 to 02:00 happens twice (MDT, then
+    # MST); the reset is 02:00 MST, after both. Spring 2027-03-14: 02:00
+    # does not exist; the reset is the first instant after the gap, 03:00
+    # MDT, the same real instant 02:00 MST would have been.
+    for at, want, what in (
+            (utc(2026, 11, 1, 7, 30), date(2026, 10, 31), "01:30 MDT"),
+            (utc(2026, 11, 1, 8, 30), date(2026, 10, 31),
+             "01:30 MST, the repeated hour"),
+            (utc(2026, 11, 1, 8, 59, 59), date(2026, 10, 31),
+             "01:59:59 MST"),
+            (utc(2026, 11, 1, 9, 0), date(2026, 11, 1), "02:00 MST"),
+            (utc(2027, 3, 14, 8, 59, 59), date(2027, 3, 13), "01:59:59 MST"),
+            (utc(2027, 3, 14, 9, 0), date(2027, 3, 14),
+             "03:00 MDT, straight after the spring gap")):
+        check(S.night_of(at, den) == want,
+              f"Denver, {what}: the night of {want}, got "
+              f"{S.night_of(at, den)}")
+    check(S.night_reset(date(2026, 10, 31), den) == utc(2026, 11, 1, 9, 0)
+          and S.night_reset(date(2027, 3, 13), den) == utc(2027, 3, 14, 9, 0),
+          "night_reset agrees with night_of on both Denver change nights")
+    # A zone whose autumn change repeats 02:00 to 03:00 (Berlin): the reset
+    # is the first 02:00 (CEST), and the repeated hour stays on the new
+    # night; the spring gap is 02:00 to 03:00 there too.
+    ber = S.zone("Europe/Berlin")
+    for at, want, what in (
+            (utc(2026, 10, 24, 23, 59, 59), date(2026, 10, 24),
+             "01:59:59 CEST"),
+            (utc(2026, 10, 25, 0, 0), date(2026, 10, 25), "02:00 CEST"),
+            (utc(2026, 10, 25, 1, 30), date(2026, 10, 25),
+             "02:30 CET, the repeated hour"),
+            (utc(2027, 3, 28, 0, 59, 59), date(2027, 3, 27), "01:59:59 CET"),
+            (utc(2027, 3, 28, 1, 0), date(2027, 3, 28), "03:00 CEST")):
+        check(S.night_of(at, ber) == want,
+              f"Berlin, {what}: the night of {want}, got "
+              f"{S.night_of(at, ber)}")
+    check(S.night_reset(date(2026, 10, 24), ber) == utc(2026, 10, 25, 0, 0)
+          and S.night_reset(date(2027, 3, 27), ber) == utc(2027, 3, 28, 1, 0),
+          "night_reset agrees with night_of on both Berlin change nights")
+    # A night's first show may be at the reset, never before it.
+    ok = S.parse_rule(_sched_doc(exceptions={"2026-12-05": {
+        "first_start": "02:00", "interval_min": 20, "last_end": "06:00"}}))
+    check(S.clock(S.expand(ok, date(2026, 12, 5)).starts[0]) == "02:00",
+          "a night may start at 02:00, the reset itself")
+
+    # The service on both Denver change nights: a delayed show keeps the
+    # night open through the repeated hour, or up to the spring gap, and
+    # the night closes at the reset's real instant, not an hour off.
+    import tempfile
+    from ltcplay import schedule_service as SV
+    doc = _sched_doc(season={"first_date": "2026-10-01",
+                             "last_date": "2027-03-31"},
+                     weekly={"sat": {"first_start": "18:00",
+                                     "interval_min": 20,
+                                     "last_end": "22:00"}}, exceptions={})
+    for night, ticks in (
+            (date(2026, 10, 31), (utc(2026, 11, 1, 7, 30),
+                                  utc(2026, 11, 1, 8, 30),
+                                  utc(2026, 11, 1, 8, 59, 59))),
+            (date(2027, 3, 13), (utc(2027, 3, 14, 8, 59, 59),))):
+        work = tempfile.mkdtemp()
+        d3 = (night.year, night.month, night.day)
+        now = [_den(S, 21, 30, d=d3)]
+        svc = _svc(S, work, now, rule=doc)
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41, d=d3)
+        svc.tick()
+        n = svc.machine.delayed().n if svc.machine.delayed() else None
+        check(n is not None, f"{night}: setup, a delayed show")
+        for t in ticks:
+            now[0] = t
+            svc.tick()
+            check(svc.machine.date == night and
+                  svc.machine.delayed() is not None,
+                  f"{night}: at {t.astimezone(den):%H:%M:%S %Z} the night is "
+                  f"still open: {svc.machine.date}")
+        reset = S.night_reset(night, den)
+        now[0] = reset
+        svc.tick()
+        with open(SV.tonight_path(night, work)) as fh:
+            old = json.load(fh)
+        st = [x for x in old["slots"] if x["n"] == n][0]
+        check(svc.machine.date == night + timedelta(days=1) and
+              st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+              f"{night}: at {reset.astimezone(den):%H:%M %Z} the night "
+              f"closes and show {n} is MISSED: {svc.machine.date} {st}")
+        svc.stop()
+    print("  ok")
+
+
+def test_schedule_delayed_night_closes_at_the_2am_reset():
+    section("scheduler: a night kept open past midnight by a delayed show "
+            "closes at the 2 AM nightly reset; the delayed show is MISSED, "
+            "out loud, and the next night runs. Start now after the reset "
+            "never starts last night's show (Jeff, 2026-10-03)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
+    for resumed in (True, False):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 21, 30)]
+        svc = _svc(S, work, now, rule=_two_nights())
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41)
+        svc.tick()
+        if resumed:
+            svc._apply(_op(S, S.RESUME))
+        epoch = svc.hold_epoch
+        for at in ((23, 59, 59, 0, (2026, 11, 14)),
+                   (0, 0, 1, 0, (2026, 11, 15)),
+                   (1, 59, 59, 999999, (2026, 11, 15))):
+            now[0] = _den(S, *at[:4], d=at[4])
+            svc.tick()
+            check(str(svc.machine.date) == "2026-11-14" and
+                  svc.machine.delayed() is not None,
+                  f"[resumed={resumed}] at {now[0]:%a %H:%M:%S.%f} Saturday "
+                  f"is still open, show 12 still waits")
+        check(svc.hold_epoch == epoch,
+              "the hold epoch does not move with the date alone")
+        now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+        svc.tick()
+        check(str(svc.machine.date) == "2026-11-15" and
+              svc.machine.state == S.IDLE,
+              f"[resumed={resumed}] at Sunday 02:00 Saturday closes and "
+              f"Sunday's night begins with its preshow look: "
+              f"{svc.machine.date} {svc.machine.state}")
+        line = [r for r in svc.journal if r.get("show") == 12 and
+                r.get("action") == "miss"]
+        check(line and line[-1].get("fault") and
+              "Show 12" in line[-1]["text"] and
+              "still waiting at the 2 AM nightly reset" in line[-1]["text"],
+              f"[resumed={resumed}] a fault line names show 12 and says "
+              f"why: {line[-1:]}")
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            sat = json.load(fh)
+        check(sat["slots"][11]["status"] == S.MISSED and
+              sat["slots"][11]["reason"] == S.RESET_MISSED and
+              "still waiting at the 2 AM nightly reset" in S.RESET_MISSED,
+              f"Saturday's saved list says show 12 was MISSED at the reset: "
+              f"{sat['slots'][11]}")
+        check(any("Show 12" in f and "never started" in f
+                  for f in sat["faults"]),
+              f"[resumed={resumed}] and it is on Saturday's fault list, the "
+              f"one the page shows: {sat['faults']}")
+        summary = os.path.join(work, "nights",
+                               J.summary_name(date(2026, 11, 14)))
+        check(os.path.exists(summary), "Saturday's summary is written")
+        if not resumed:
+            check(svc.hold_epoch == epoch + 1,
+                  f"setting aside a night still on Hold bumps the hold "
+                  f"epoch, so an announcement's claim on it is no longer "
+                  f"current: {epoch} -> {svc.hold_epoch}")
+        if resumed:
+            # Start now after the reset is Sunday's extra show, never
+            # Saturday's delayed one.
+            now[0] = _den(S, 2, 0, 5, d=(2026, 11, 15))
+            out = svc._apply(_op(S, S.START_NOW))
+            run = svc.machine.slot(svc.machine.running)
+            check(out.accepted and str(svc.machine.date) == "2026-11-15" and
+                  run is not None and run.origin == "operator",
+                  f"Start now at 02:00:05 runs an extra show on Sunday, not "
+                  f"Saturday's show 12: {svc.machine.date} {run}")
+            svc.stop()
+            continue
+        now[0] = _den(S, 17, 30, d=(2026, 11, 15))
+        svc.tick()
+        now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+        svc.tick()
+        check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+              f"[resumed={resumed}] Sunday's 18:00 show starts")
+        svc.stop()
+
+    # Start now just before the reset still starts the delayed show, and a
+    # show running at the reset is not cut: its night closes once it ends.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now, rule=_two_nights())
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    svc._apply(_op(S, S.RESUME))
+    now[0] = _den(S, 1, 59, 59, d=(2026, 11, 15))
+    svc.tick()
+    out = svc._apply(_op(S, S.START_NOW))
+    check(out.accepted and svc.machine.running == 12,
+          f"Start now at 01:59:59 starts the delayed show 12: {out.refused}")
+    for t in ((2, 0, 0), (2, 5, 0)):
+        now[0] = _den(S, *t, d=(2026, 11, 15))
+        svc.tick()
+        check(str(svc.machine.date) == "2026-11-14" and
+              svc.machine.running == 12,
+              f"at {t} show 12 is still running on Saturday's night: "
+              f"{svc.machine.date} {svc.machine.state}")
+    now[0] = _den(S, 2, 8, d=(2026, 11, 15))
+    svc.tick()
+    svc.tick()
+    with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+        sat = json.load(fh)
+    check(str(svc.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.DONE,
+          f"once it has ended, Saturday closes with show 12 DONE and Sunday "
+          f"begins: {svc.machine.date} {sat['slots'][11]['status']}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_restart_across_the_2am_reset():
+    section("scheduler: ltcplay restarted before the 2 AM reset carries on "
+            "with last night (a delayed show still waits; a show cut by the "
+            "restart is FAULT and the rig dark); restarted after it, last "
+            "night is closed out loud: a delayed show MISSED, a cut show "
+            "FAULT with the rig dark, and nothing from it runs, days later "
+            "included")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import journal as J
+    from ltcplay import schedule_service as SV
+
+    def held_night():
+        work = tempfile.mkdtemp()
+        now = [_den(S, 21, 30)]
+        svc = _svc(S, work, now, rule=_two_nights())
+        svc.start(thread=False)
+        svc._apply(_op(S, S.HOLD_ON))
+        now[0] = _den(S, 21, 41)
+        svc.tick()
+        svc._apply(_op(S, S.RESUME))
+        return work, now, svc
+
+    def saturday(work):
+        with open(SV.tonight_path(date(2026, 11, 14), work)) as fh:
+            return json.load(fh)
+
+    # Restarted at 00:30: still Saturday's night, show 12 still waits.
+    work, now, svc = held_night()
+    now[0] = _den(S, 0, 20, d=(2026, 11, 15))
+    svc.tick()
+    svc.stop()
+    now[0] = _den(S, 0, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights())
+    again.start(thread=False)
+    check(str(again.machine.date) == "2026-11-14" and
+          again.machine.delayed() is not None and
+          again.machine.delayed().n == 12,
+          f"restarted at 00:30, Saturday is still the night with show 12 "
+          f"waiting: {again.machine.date} {again.machine.state}")
+    out = again._apply(_op(S, S.START_NOW))
+    check(out.accepted and again.machine.running == 12,
+          f"Start now still starts it: {out.refused}")
+    again.stop()
+
+    # The delayed show was running after midnight when ltcplay stopped, and
+    # it restarted before the reset: the show is cut, the rig goes dark,
+    # and it stays dark through the reset (the next night's preshow look
+    # does not bring it back; only a show or an operator does).
+    work, now, svc = held_night()
+    now[0] = _den(S, 0, 10, d=(2026, 11, 15))
+    svc.tick()
+    svc._apply(_op(S, S.START_NOW))
+    check(svc.machine.running == 12, "setup: show 12 runs at 00:10")
+    now[0] = _den(S, 0, 12, d=(2026, 11, 15))
+    svc.tick()
+    svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 0, 15, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(saturday(work)["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-14",
+          f"show 12 is a cut show: FAULT with a fault line, Saturday still "
+          f"the night: {saturday(work)['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched and
+          "flames_disarm_all" not in rig.names(),
+          f"the conductor took the rig dark, no latch, no disarm: "
+          f"{c.snapshot()['look']} {rig.names()}")
+    now[0] = _den(S, 2, 0, d=(2026, 11, 15))
+    again.tick()
+    _settle(again, c)
+    check(str(again.machine.date) == "2026-11-15" and
+          c.snapshot()["look"] == "STOPPED_DARK",
+          f"at the 2 AM reset Sunday begins, and the rig stays dark: "
+          f"{again.machine.date} {c.snapshot()['look']}")
+    again.stop()
+
+    # Restarted at 02:30, after the reset, with show 12 still delayed.
+    work, now, svc = held_night()
+    svc.stop()
+    rec = _RecCond(S)
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=rec)
+    again.start(thread=False)
+    _settle(again)
+    sat = saturday(work)
+    line = [r for r in again.journal if r.get("show") == 12 and
+            r.get("action") == "miss"]
+    said = [r for r in again.journal
+            if r.get("outcome") == "closing open night"]
+    check(str(again.machine.date) == "2026-11-15" and
+          sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"restarted at 02:30, Saturday is closed with show 12 MISSED and "
+          f"Sunday is the night: {again.machine.date} {sat['slots'][11]}")
+    check(line and line[-1].get("fault") and
+          "still waiting at the 2 AM nightly reset" in line[-1]["text"] and
+          said and "show 12 is delayed" in said[0]["text"],
+          f"a fault line names show 12 and why, and the journal says the "
+          f"open night was closed: {line[-1:]} {said[:1]}")
+    check(os.path.exists(os.path.join(
+              work, "nights", J.summary_name(date(2026, 11, 14)))),
+          "Saturday's summary is written")
+    check("show_starting" not in rec.names(),
+          f"nothing from Saturday runs: {rec.names()}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and run.origin == "operator" and
+          str(again.machine.date) == "2026-11-15",
+          f"Start now runs Sunday's extra show, not show 12: {run}")
+    again.stop()
+
+    # Show 12 was running at 02:10 (started at 01:55) when ltcplay
+    # stopped; restarted at 02:30: cut, FAULT, the rig dark, Saturday
+    # closed, Sunday the night, and the rig still dark.
+    work, now, svc = held_night()
+    now[0] = _den(S, 1, 55, d=(2026, 11, 15))
+    svc.tick()
+    svc._apply(_op(S, S.START_NOW))
+    now[0] = _den(S, 2, 0, 30, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.running == 12 and str(svc.machine.date) == "2026-11-14",
+          "setup: show 12 started at 01:55 is still running after 02:00")
+    svc.stop()
+    c, rig, T, lines = _cond()
+    now[0] = _den(S, 2, 30, d=(2026, 11, 15))
+    again = _svc(S, work, now, rule=_two_nights(), conductor=c)
+    again.start(thread=False)
+    _settle(again, c)
+    sat = saturday(work)
+    cut = [r for r in again.journal if r.get("fault") and
+           "restarted during show 12" in r["text"]]
+    check(sat["slots"][11]["status"] == S.FAULT and cut and
+          str(again.machine.date) == "2026-11-15",
+          f"show 12 is a cut show (FAULT, a fault line), Saturday is closed "
+          f"and Sunday is the night: {sat['slots'][11]['status']} "
+          f"{again.machine.date}")
+    check(c.snapshot()["look"] == "STOPPED_DARK" and not c.latched,
+          f"the rig is dark, no latch: {c.snapshot()['look']}")
+    again.stop()
+
+    # Days later: Saturday's delayed show, ltcplay off until Wednesday.
+    # Start now on Wednesday never starts last Saturday's show.
+    work, now, svc = held_night()
+    svc.stop()
+    now[0] = _den(S, 19, 0, d=(2026, 11, 18))
+    again = _svc(S, work, now, rule=_two_nights())
+    again.start(thread=False)
+    sat = saturday(work)
+    check(sat["slots"][11]["status"] == S.MISSED and
+          sat["slots"][11]["reason"] == S.RESET_MISSED,
+          f"on Wednesday, Saturday's show 12 is closed as MISSED: "
+          f"{sat['slots'][11]}")
+    out = again._apply(_op(S, S.START_NOW))
+    run = again.machine.slot(again.machine.running)
+    check(out.accepted and str(again.machine.date) == "2026-11-18" and
+          run.origin == "operator",
+          f"Start now four days later runs an extra show on Wednesday, not "
+          f"Saturday's show 12: {again.machine.date} {run}")
+    again.stop()
+    print("  ok")
+
+
+def _tonight_doc(work, d=(2026, 11, 14)):
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    with open(SV.tonight_path(date(*d), work)) as fh:
+        return json.load(fh)
+
+
+def test_schedule_restart_after_an_abort_stays_latched_until_reset():
+    section("scheduler: after an Abort, a restart keeps the Abort latch and "
+            "sends the dark sequence again, even when ltcplay died before "
+            "the conductor was told; only Reset ends it (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    from ltcplay import schedule_service as SV
+
+    # Killed after the Abort was saved, before the conductor call ran.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    svc._calls.put = lambda call: None          # the process dies here
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    doc = _tonight_doc(work)
+    check(doc.get("abort_latched") is True and doc.get("dark") is True and
+          doc["format"] == S.TONIGHT_FORMAT,
+          f"the Abort latch is saved with the Abort, before the conductor is "
+          f"asked: {doc.get('abort_latched')} {doc.get('dark')} "
+          f"format {doc['format']}")
+    check("abort" not in rec.names(), "setup: the conductor never heard")
+    now[0] = _den(S, 18, 3)
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    check(rec2.names() == ["show_stopped"],
+          f"the restart sends the dark sequence again (show_stopped), and "
+          f"nothing that lights anything: {rec2.names()}")
+    sent = [r for r in again.journal if r.get("action") == "conductor" and
+            r.get("outcome") == "sent"]
+    check(sent and "sent again" in sent[-1]["text"],
+          f"and the journal says why it was sent: {sent[-1:]}")
+    check(again._aborted() and again.machine.abort_latched,
+          "after the restart the scheduler still counts itself aborted")
+    out = again._apply(_op(S, S.START_NOW))
+    check(not out.accepted and "Reset" in out.refused,
+          f"Start now is refused until Reset: {out.refused}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    s2 = again.machine.slot(2)
+    check(s2.status == S.MISSED and s2.reason == S.LATCHED_MISSED,
+          f"the 18:20 show does not start after Abort + restart without a "
+          f"Reset: {s2.status} {s2.reason}")
+    r = again.reset_conductor("Jeff", "Rack screen")
+    check(r["ok"] and not again.machine.abort_latched and
+          "abort_latched" not in _tonight_doc(work),
+          f"Reset ends it, in memory and in tonight's file: {r}")
+    now[0] = _den(S, 18, 40)
+    again.tick()
+    check(again.machine.running == 3, "after Reset the next show starts")
+    again.stop()
+
+    # A failed start saved, killed before show_stopped ran: the restart
+    # sends it, and nothing is latched.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc)
+    svc._calls.put = lambda call: None
+    now[0] = _den(S, 18, 0, 5)
+    svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    now[0] = _den(S, 18, 1)
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    check(rec2.names() == ["show_stopped"] and not again._aborted(),
+          f"after a failed start the restart sends show_stopped and latches "
+          f"nothing: {rec2.names()} {again._aborted()}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.running == 2,
+          "and the next show still starts on its own time")
+    again.stop()
+
+    # The real conductor: the Abort ran and latched, then a restart brings
+    # up a fresh conductor that remembers nothing.
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    check(c.latched, "setup: the first conductor latched")
+    svc.stop()
+    c2, rig2, T2, lines2 = _cond()
+    now[0] = _den(S, 18, 5)
+    again = _svc(S, work, now, conductor=c2)
+    again.start(thread=False)
+    _settle(again, c2)
+    a = c2.snapshot()["applied"]
+    check(c2.snapshot()["look"] == "STOPPED_DARK" and a["flames"] == "zero"
+          and a["lasers"] == "black" and a["pixels"] == "black" and
+          a["music"] == "stopped" and a["video"] == "stopped",
+          f"the fresh conductor is told to go dark at once: {c2.snapshot()}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    _settle(again, c2)
+    check(again.machine.slot(2).reason == S.LATCHED_MISSED and
+          c2.snapshot()["look"] == "STOPPED_DARK",
+          f"18:20 after Abort + restart without Reset does not start and the "
+          f"rig stays dark: {again.machine.slot(2)} {c2.snapshot()['look']}")
+    r = again.reset_conductor("Jeff", "Rack screen")
+    row = [x for x in again.journal if x.get("action") == "reset"]
+    check(r["ok"] and "nothing latched" in r["text"] and
+          row[-1]["outcome"] == "done" and row[-1]["who"] == "Jeff",
+          f"Reset works though this conductor never saw the Abort, and is "
+          f"journaled: {r} {row[-1:]}")
+    now[0] = _den(S, 18, 40)
+    again.tick()
+    _confirm(S, again)
+    _settle(again, c2)
+    check(again.machine.running == 3 and c2.snapshot()["look"] == "PLAYING",
+          f"after Reset the next show starts and the rig comes up: "
+          f"{again.machine.state} {c2.snapshot()['look']}")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_abort_latch_outlives_the_night():
+    section("scheduler: an Abort nobody Reset outlives its night: the next "
+            "night starts dark and misses its shows until Reset, in one run "
+            "and after a restart (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+
+    def aborted_last_show(work, now):
+        rec = _RecCond(S)
+        svc = _svc(S, work, now, rule=_two_nights(), conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 21, 40)
+        svc.tick()
+        _confirm(S, svc)
+        now[0] = _den(S, 21, 41)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        now[0] = _den(S, 21, 42)
+        svc.tick()
+        _settle(svc)
+        return svc, rec
+
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc, rec = aborted_last_show(work, now)
+    check(svc.machine.state == S.OFF and svc.machine.abort_latched,
+          f"setup: Saturday closed with the Abort not Reset: "
+          f"{svc.machine.state} {svc.machine.abort_latched}")
+    # Fix round 3: as if the latch file could not be written (a full
+    # disk), so only the run's own memory carries the latch past midnight.
+    from ltcplay import schedule_service as SV
+    os.remove(SV.latch_path(work))
+    now[0] = _den(S, 10, 0, d=(2026, 11, 15))
+    svc.tick()
+    _settle(svc)
+    m = svc.machine
+    check(str(m.date) == "2026-11-15" and m.abort_latched and m.dark and
+          m.state == S.STANDBY,
+          f"in the same run, Sunday starts latched and dark (no preshow "
+          f"look): {m.date} {m.state} dark={m.dark}")
+    looks = [r for r in svc.journal if r.get("action") in
+             (S.PRESHOW_LOOK, S.INTERMISSION) and str(r.get("night")) ==
+             "2026-11-15"]
+    check(not looks, f"no look is asked for on Sunday: {looks[:1]}")
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    svc.tick()
+    check(svc.machine.slot(1).reason == S.LATCHED_MISSED,
+          f"Sunday's 18:00 show is missed until Reset: "
+          f"{svc.machine.slot(1)}")
+    svc.stop()
+
+    # A fresh start on Sunday, with only Saturday's file to go on.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 39)]
+    svc, rec = aborted_last_show(work, now)
+    svc.stop()
+    now[0] = _den(S, 10, 0, d=(2026, 11, 15))
+    rec2 = _RecCond(S)
+    again = _svc(S, work, now, rule=_two_nights(), conductor=rec2)
+    again.start(thread=False)
+    _settle(again)
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          rec2.names() == ["show_stopped"] and said and
+          "2026-11-14" in said[0],
+          f"restarted on Sunday, the latch comes from Saturday's file, the "
+          f"rig is sent dark, and the journal says why: "
+          f"{again.machine.abort_latched} {rec2.names()} {said[:1]}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    check(r["ok"] and not again.machine.abort_latched,
+          f"Reset ends it: {r}")
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    again.tick()
+    check(again.machine.running == 1, "then Sunday's 18:00 show starts")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_hold_while_aborted_stays_dark():
+    section("scheduler: while an Abort is not Reset, Hold, Resume and an "
+            "announcement's Hold keep the rig dark; only Reset ends the "
+            "Abort (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _confirm(S, svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc, c)
+    k = len(svc.journal)
+    now[0] = _den(S, 18, 3)
+    out = svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    looks = [r for r in list(svc.journal)[k:] if r.get("action") in
+             (S.INTERMISSION, S.PRESHOW_LOOK) or (
+                 r.get("action") == "conductor" and
+                 r.get("outcome") == "sent")]
+    check(out.accepted and svc.machine.state == S.HOLD and
+          svc.machine.dark and not looks and
+          c.snapshot()["look"] == "ABORTED",
+          f"Hold while aborted keeps the rig dark and asks for no look: "
+          f"{svc.machine.state} dark={svc.machine.dark} {looks[:1]} "
+          f"{c.snapshot()['look']}")
+    check(_tonight_doc(work).get("dark") is True,
+          "tonight's file still says dark")
+    out = svc._apply(_op(S, S.RESUME))
+    check(out.accepted and svc.machine.state == S.STANDBY and
+          svc.machine.dark,
+          f"Resume while aborted goes back to waiting, still dark: "
+          f"{svc.machine.state} dark={svc.machine.dark}")
+    refusal, _epoch = svc.hold_for_announcement(
+        "Andy", "Rack screen", "played the test announcement")
+    _settle(svc, c)
+    looks = [r for r in list(svc.journal)[k:] if r.get("action") in
+             (S.INTERMISSION, S.PRESHOW_LOOK)]
+    check(refusal is None and svc.machine.state == S.HOLD and
+          svc.machine.dark and not looks,
+          f"an announcement's Hold while aborted keeps it dark too: "
+          f"{refusal} {svc.machine.state} {looks[:1]}")
+    now[0] = _den(S, 18, 20)
+    svc.tick()
+    check(svc.machine.slot(2).status != S.RUNNING and svc.machine.dark,
+          f"and nothing starts: {svc.machine.slot(2)}")
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    _settle(svc, c)
+    out = svc._apply(_op(S, S.RESUME))
+    check(r["ok"] and out.accepted and
+          S.INTERMISSION in [e.kind for e in out.effects],
+          f"after Reset, the operator's Resume brings the look back: {r} "
+          f"{[e.kind for e in out.effects]}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_conductor_line_stuck_or_dead_is_loud():
+    section("scheduler: a show conductor request that hangs, or a line of "
+            "requests whose thread died, is a fault on the page and in the "
+            "journal, with a line when it is over; an Abort never waits "
+            "behind a hung request (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    gate = _th.Event()
+    svc = _svc(S, work, now, conductor=rec)
+    svc.CONDUCTOR_STUCK_S = 0.3
+    svc.start(thread=False)
+    _settle(svc)
+    rec.block_on["show_starting"] = gate
+    try:
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        time.sleep(0.05)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.HOLD_ON))
+        early = svc.reset_conductor("Andy", "Rack screen", wait_s=0.01)
+        now[0] = _den(S, 18, 2)
+        t0 = time.perf_counter()
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        late = svc.reset_conductor("Jeff", "Rack screen", wait_s=0.01)
+        while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+            time.sleep(0.01)
+        took = time.perf_counter() - t0
+        check("abort" in rec.names() and took < 0.6,
+              f"Abort reaches the conductor while show_starting hangs, "
+              f"within 0.6 s: {rec.names()} {took:.2f} s")
+        check("hold" not in rec.names() and "reset" not in rec.names(),
+              f"the Hold and the Reset pressed before the Abort are not sent "
+              f"after it: {rec.names()}")
+        ahead = [r for r in svc.journal if r.get("outcome") == "sent ahead"]
+        check(ahead and "Show start" in ahead[-1]["text"],
+              f"the journal says the Abort went ahead of what: {ahead[-1:]}")
+        gone = [r for r in svc.journal if r.get("action") == "reset" and
+                "not sent" in r.get("text", "")]
+        check(not early["ok"] and gone and gone[-1]["who"] == "Andy",
+              f"the early Reset is journaled as not sent: {gone[-1:]}")
+        time.sleep(0.35)
+        n0 = len([r for r in svc.journal if r.get("fault")])
+        svc.tick()
+        faults = [r for r in svc.journal if r.get("fault") and
+                  "has not answered Show start" in r.get("text", "")]
+        page = svc.state_view()
+        check(faults and svc.machine.fault and page["conductor"]["trouble"]
+              and "Show start" in page["conductor"]["trouble"],
+              f"a request with no answer for the limit is a fault, on the "
+              f"page and in the journal: {faults[-1:]} "
+              f"{page['conductor']}")
+        svc.tick()
+        svc.tick()
+        n1 = len([r for r in svc.journal if r.get("fault")])
+        check(n1 - n0 == 1, f"written once, not every tick: {n1 - n0}")
+    finally:
+        gate.set()
+    _settle(svc)
+    check(not late["ok"] and rec.names()[-1:] == ["reset"],
+          f"a Reset pressed after the Abort stays in the line and goes out "
+          f"once the hung request answers: {rec.names()}")
+    svc.tick()
+    back = [r for r in svc.journal if r.get("outcome") == "recovered" and
+            r.get("action") == "conductor"]
+    check(back and svc.state_view()["conductor"]["trouble"] is None,
+          f"and a line says when it is over: {back[-1:]}")
+    svc.stop()
+
+    # The line's thread has died: a Reset waits, the tick says so once,
+    # starts the line again, and the Reset goes through.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    svc._calls._thread = dead
+    r = svc.reset_conductor("Andy", "Rack screen", wait_s=0.05)
+    check(not r["ok"] and "reset" not in rec.names(),
+          f"setup: with the line dead, Reset is not answered: {r}")
+    svc.start(thread=False)
+    _settle(svc)
+    faults = [r for r in svc.journal if r.get("fault") and
+              "line of requests to the show conductor stopped" in
+              r.get("text", "")]
+    check(faults and "reset" in rec.names(),
+          f"the dead line is a fault, written once, and started again so "
+          f"the Reset goes out: {faults[-1:]} {rec.names()}")
+    svc.tick()
+    back = [r for r in svc.journal if r.get("outcome") == "recovered"]
+    check(len(faults) == 1 and back, f"then a line says it is running "
+                                     f"again: {back[-1:]}")
+    svc.stop()
+    print("  ok")
+
+
+def test_schedule_reset_refusals_are_journaled():
+    section("scheduler: a Reset with no name, no screen, a name or screen "
+            "not on the list, or no conductor is refused with a sentence "
+            "and written to the journal like every other press (fix round "
+            "2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    svc = _svc(S, work, now, conductor=_RecCond(S))
+    svc.start(thread=False)
+    for who, screen, word in (("", "Rack screen", "who pressed it"),
+                              ("Andy", "", "who pressed it"),
+                              ("Bob", "Rack screen", "operator list"),
+                              ("Andy", "Toaster", "screen list")):
+        k = len(svc.journal)
+        try:
+            svc.reset_conductor(who, screen)
+            check(False, f"Reset({who!r}, {screen!r}) is refused")
+            continue
+        except ValueError as e:
+            said = str(e)
+        rows = [r for r in list(svc.journal)[k:]
+                if r.get("action") == "reset" and
+                r.get("outcome") == "refused"]
+        check(word in said and rows and word in rows[-1]["text"] and
+              rows[-1]["who"] == (who or "unnamed operator"),
+              f"Reset({who!r}, {screen!r}) is refused and journaled: "
+              f"{said} {rows[-1:]}")
+    plain = _svc(S, tempfile.mkdtemp(), now)
+    plain.start(thread=False)
+    try:
+        plain.reset_conductor("Andy", "Rack screen")
+        check(False, "Reset with no conductor attached is refused")
+    except ValueError:
+        pass
+    rows = [r for r in plain.journal if r.get("action") == "reset"]
+    check(rows and rows[-1]["outcome"] == "refused" and
+          "no show conductor" in rows[-1]["text"],
+          f"with no conductor, the refusal is journaled too: {rows[-1:]}")
+    svc.stop()
+    plain.stop()
+    print("  ok")
+
+
+def test_schedule_conductor_wiring_details():
+    section("scheduler: no show start reaches the conductor while the "
+            "confirmed show is paused; the operator's name and screen reach "
+            "it; stop() waits for its last lines; an open night is looked "
+            "for more than a day back (fix round 2)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    from datetime import date
+    # A show held before it was confirmed: the confirmation that follows
+    # must not light lasers or release flame cues during the Hold.
+    c, rig, T, lines = _cond()
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, conductor=c)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    _settle(svc, c)
+    now[0] = _den(S, 18, 0, 1)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc, c)
+    k = len(rig.calls)
+    now[0] = _den(S, 18, 0, 2)
+    out = _confirm(S, svc)
+    _settle(svc, c)
+    check(out.accepted and svc.machine.state == S.PAUSED and
+          c.snapshot()["look"] == "HELD" and
+          "lasers_restore" not in rig.names(k) and
+          "flames_release" not in rig.names(k),
+          f"a show confirmed while on Hold stays held: no show start, no "
+          f"lasers, no flame cues: {svc.machine.state} "
+          f"{c.snapshot()['look']} {rig.names(k)}")
+    svc._apply(_op(S, S.RESUME))
+    _settle(svc, c)
+    check(c.snapshot()["look"] == "PLAYING", "Resume then brings it up")
+    svc.stop()
+
+    # Who asked: the operator's name and screen, or the scheduler.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    svc._apply(_op(S, S.HOLD_ON, who="Jeff", screen="Stream Deck"))
+    _settle(svc)
+    who = {c_[0]: (c_[1], c_[2]) for c_ in rec.calls}
+    check(who.get("hold") == ("Jeff", "Stream Deck") and
+          who.get("show_starting") == ("the scheduler", ""),
+          f"the conductor is told who pressed what, and from where: {who}")
+    svc.stop()
+
+    # stop() waits for the conductor's last request and its journal line.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 55)]
+    rec = _RecCond(S)
+    rec.sleep_on = {"intermission": 0.3}
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    svc.stop()
+    done = [r for r in svc.journal if r.get("action") == "conductor" and
+            r.get("outcome") == "done"]
+    check(done, f"stop() waits for the conductor's last request to be made "
+                f"and journaled: {done[-1:]}")
+
+    # A Reset pressed before an Abort, both waiting their turn in order
+    # behind a slow request: the Reset must not end that Abort.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    _settle(svc)
+    rec.sleep_on = {"hold": 0.1}
+    svc._apply(_op(S, S.HOLD_ON))
+    svc.reset_conductor("Andy", "Rack screen", wait_s=0.0)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc)
+    rows = [r for r in svc.journal if r.get("action") == "reset"]
+    check(rec.names()[-3:] == ["hold", "reset", "abort"] and
+          svc.machine.abort_latched and svc._aborted() and
+          "before the latest Abort" in rows[-1]["text"],
+          f"a Reset pressed before the Abort does not end it: "
+          f"{rec.names()} latched={svc.machine.abort_latched} {rows[-1:]}")
+    svc.stop()
+
+    # A conductor request that raises SystemExit is a fault; the line of
+    # requests carries on.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 0)]
+    rec = _RecCond(S)
+    rec.exit_on.add("show_starting")
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    _confirm(S, svc)
+    _settle(svc)
+    svc._apply(_op(S, S.HOLD_ON))
+    _settle(svc)
+    bad = [r for r in svc.journal if r.get("fault") and
+           "SystemExit" in r.get("text", "")]
+    check(bad and svc.machine.fault and rec.names()[-1:] == ["hold"],
+          f"a request that raises SystemExit is a fault and the next one "
+          f"still goes out: {bad[-1:]} {rec.names()}")
+    svc.stop()
+
+    # A night left open is looked for more than one day back: Saturday's
+    # delayed show, found on a Monday 01:00 start (Sunday's night, which
+    # has no shows and no file) and closed: MISSED at the 2 AM reset.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 21, 30)]
+    svc = _svc(S, work, now)
+    svc.start(thread=False)
+    svc._apply(_op(S, S.HOLD_ON))
+    now[0] = _den(S, 21, 41)
+    svc.tick()
+    n = svc.machine.delayed().n
+    svc.stop()
+    now[0] = _den(S, 1, 0, d=(2026, 11, 16))
+    again = _svc(S, work, now)
+    again.start(thread=False)
+    sat = _tonight_doc(work)
+    st = [x for x in sat["slots"] if x["n"] == n][0]
+    check(again.machine.date == date(2026, 11, 15) and
+          st["status"] == S.MISSED and st["reason"] == S.RESET_MISSED,
+          f"Saturday, two days back, is found and closed: "
+          f"{again.machine.date} {st}")
+    again.stop()
+    print("  ok")
+
+
+def test_schedule_tonight_file_format():
+    section("scheduler: tonight's file is format 3 as before unless it is "
+            "dark or latched, then format 4, which an older ltcplay refuses "
+            "rather than misreads; a newer format is refused in words (fix "
+            "round 2)")
+    S = _sched()
+    if S is None:
+        return
+    from dataclasses import replace
+    rule = _one_night_rule(S)
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 50))
+    plain = S.machine_to_doc(n.m)
+    check(plain["format"] == 3 and "dark" not in plain and
+          "abort_latched" not in plain,
+          f"a night that is neither dark nor latched is format 3, as before: "
+          f"{plain['format']}")
+    at = _den(S, 17, 51)
+    for what, m in (("dark", replace(n.m, dark=True)),
+                    ("latched", replace(n.m, abort_latched=True))):
+        doc = json.loads(json.dumps(S.machine_to_doc(m)))
+        back = S.machine_from_doc(doc, rule, m.date, at)
+        check(doc["format"] == 4 and back.dark == m.dark and
+              back.abort_latched == m.abort_latched,
+              f"a {what} night is format 4 and reads back the same")
+    bad = dict(plain, dark=True)
+    try:
+        S.machine_from_doc(bad, rule, n.m.date, at)
+        check(False, "a format 3 file carrying dark is refused")
+    except ValueError as e:
+        check("dark" in str(e), f"format 3 carrying dark is refused: {e}")
+    newer = dict(plain, format=5)
+    try:
+        S.machine_from_doc(newer, rule, n.m.date, at)
+        check(False, "a newer format is refused")
+    except ValueError as e:
+        check("newer ltcplay" in str(e) and "3 and 4" in str(e),
+              f"a newer format is refused saying so: {e}")
+    # Fix round 3: a latch that is not plainly true or false is refused.
+    for k in ("dark", "abort_latched"):
+        odd = dict(plain, format=4, **{k: "yes"})
+        try:
+            S.machine_from_doc(odd, rule, n.m.date, at)
+            check(False, f"{k}: \"yes\" is refused")
+        except ValueError as e:
+            check(k in str(e) and "true or false" in str(e),
+                  f"{k} that is not true or false is refused: {e}")
+    # A schedule change rebuilds tonight and keeps the Abort latch and dark.
+    other = _one_night_rule(S, first="18:10")
+    back, _notes = S.rebuild_night(other, replace(n.m, abort_latched=True,
+                                                  dark=True))
+    check(back.abort_latched and back.dark,
+          f"a rebuild for a changed schedule keeps the latch and dark: "
+          f"{back.abort_latched} {back.dark}")
+    print("  ok")
+
+
+def _aborted_at_1802(S, work, now, rule=None, conductor=None):
+    """A service on `work` whose 18:00 show was Aborted at 18:02 and settled.
+    Returns (svc, conductor)."""
+    rec = conductor or _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    now[0] = _den(S, 18, 2)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    _settle(svc)
+    return svc, rec
+
+
+def _restarted(S, work, now, at, rule=None):
+    """A fresh run on `work` at `at`, with a fresh recording conductor."""
+    now[0] = at
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, rule=rule, conductor=rec)
+    svc.start(thread=False)
+    _settle(svc)
+    return svc, rec
+
+
+def test_schedule_abort_latch_survives_a_damaged_disk():
+    section("scheduler: the Abort latch survives an unreadable or set aside "
+            "list, a failed save, a list for the wrong date and an older "
+            "ltcplay; it lives in a latch file of its own, written first; "
+            "only Reset ends it (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import shutil
+    from datetime import date
+    from ltcplay import schedule_service as SV
+    D = date(2026, 11, 14)
+
+    # Tonight's list emptied by a power cut after the Abort: the latch file
+    # still says aborted.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now)
+    marker = SV.latch_path(work)
+    check(os.path.exists(marker) and svc.machine.abort_latched,
+          f"the Abort writes the latch file: {sorted(os.listdir(work))}")
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          rec2.names() == ["show_stopped"] and
+          any("latch file" in t for t in said),
+          f"an Abort, then tonight's list emptied, then a restart: latched, "
+          f"dark, sent dark, and the journal says why: "
+          f"{again.machine.abort_latched} {rec2.names()} {said[:2]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).reason == S.LATCHED_MISSED,
+          f"and the 18:20 show does not start: {again.machine.slot(2)}")
+    again.stop()
+
+    # No Abort at all, but tonight's list cannot be read and there is no
+    # latch file: with a conductor attached it starts latched and dark,
+    # and says plainly why. Reset ends it, for this run and the next.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    first = _svc(S, work, now, conductor=_RecCond(S))
+    first.start(thread=False)
+    _settle(first)
+    first.stop()
+    with open(SV.tonight_path(D, work), "wb") as fh:
+        fh.write(b"\0" * 64)
+    check(not os.path.exists(SV.latch_path(work)), "setup: no latch file")
+    again, rec2 = _restarted(S, work, now, _den(S, 18, 10))
+    said = [r for r in again.journal if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and again.machine.dark and
+          said and said[-1].get("fault") and
+          "could not be read" in said[-1]["text"] and
+          "Reset" in said[-1]["text"],
+          f"an unreadable list starts latched and dark, and the journal says "
+          f"why as a fault: {again.machine.abort_latched} {said[-1:]}")
+    now[0] = _den(S, 18, 20)
+    again.tick()
+    check(again.machine.slot(2).status != S.RUNNING,
+          f"no show starts: {again.machine.slot(2)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    aside = SV.set_aside_path(SV.tonight_path(D, work))
+    kept = [n for n in os.listdir(work) if ".unreadable.reset-" in n]
+    check(r["ok"] and not again.machine.abort_latched and
+          not os.path.exists(aside) and kept and
+          not os.path.exists(SV.latch_path(work)),
+          f"Reset ends it; the set aside list is renamed, kept for the "
+          f"morning read, and the latch file is gone: {r} "
+          f"{sorted(os.listdir(work))}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 30))
+    check(not later.machine.abort_latched,
+          "a restart after that Reset is not latched again")
+    now[0] = _den(S, 18, 40)
+    later.tick()
+    check(later.machine.running == 3, "and the 18:40 show starts")
+    later.stop()
+
+    # An older ltcplay set tonight's latched list aside (it cannot read
+    # format 4) and wrote its own plain one. Back on this build: latched,
+    # by the set aside list alone and by the latch file alone.
+    for keep in ("set aside list", "latch file"):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        svc, rec = _aborted_at_1802(S, work, now)
+        svc.stop()
+        path = SV.tonight_path(D, work)
+        os.replace(path, SV.set_aside_path(path))
+        old = _svc(S, work, now)                 # no conductor: as before
+        old.start(thread=False)
+        old.stop()
+        check(_tonight_doc(work)["format"] == 3,
+              "setup: a plain format 3 list is back in place")
+        if keep == "set aside list":
+            os.remove(SV.latch_path(work))
+        else:
+            os.remove(SV.set_aside_path(path))
+        again, rec2 = _restarted(S, work, now, _den(S, 18, 30))
+        now[0] = _den(S, 18, 40)
+        again.tick()
+        check(again.machine.abort_latched and
+              again.machine.slot(3).status != S.RUNNING,
+              f"after an older ltcplay ran, the {keep} alone keeps it "
+              f"latched: {again.machine.slot(3)}")
+        again.stop()
+
+    # The save of the Abort fails, the latch file too: the Abort still
+    # goes to the conductor, a loud line says what a restart would do, and
+    # every tick after tries again until it is saved.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.LATCH_RETRY_S = 0.0
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    real_write, real_marker = SV.write_json_atomic, SV.create_latch_marker
+
+    def full(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    SV.write_json_atomic = SV.create_latch_marker = full
+    try:
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        svc.tick()
+        loud = [r for r in svc.journal if r.get("action") ==
+                "save abort latch" and r.get("outcome") == "failed"]
+        check("abort" in rec.names() and len(loud) == 1 and
+              loud[0].get("fault") and
+              "if ltcplay restarts tonight the next show would start: press "
+              "nothing, fix the disk" in loud[0]["text"] and
+              "No space left" in loud[0]["text"],
+              f"a failed save of the Abort: the Abort still reaches the "
+              f"conductor, and one loud line says a restart would start the "
+              f"next show: {rec.names()} {loud}")
+        check(not os.path.exists(SV.latch_path(work)),
+              "setup: nothing reached the disk")
+    finally:
+        SV.write_json_atomic, SV.create_latch_marker = real_write, real_marker
+    now[0] = _den(S, 18, 3)
+    svc.tick()
+    back = [r for r in svc.journal if r.get("action") == "save abort latch"
+            and r.get("outcome") == "saved"]
+    check(os.path.exists(SV.latch_path(work)) and
+          _tonight_doc(work).get("abort_latched") is True and back,
+          f"once the disk takes it, the next tick saves the latch and says "
+          f"so: {back[-1:]}")
+    svc.stop()
+    again, _r = _restarted(S, work, now, _den(S, 18, 10))
+    check(again.machine.abort_latched, "and a restart is latched")
+    again.stop()
+
+    # Only the latch file fails: a softer line, the list holds the latch.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    SV.create_latch_marker = full
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.create_latch_marker = real_marker
+    half = [r for r in svc.journal if r.get("action") == "save abort latch"]
+    check(half and "Tonight's list holds the latch" in half[-1]["text"] and
+          _tonight_doc(work).get("abort_latched") is True,
+          f"when only the latch file fails, the line says the list holds it: "
+          f"{half[-1:]}")
+    svc.stop()
+
+    # The latch file is written before tonight's list, every time.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    order = []
+
+    def spy(path, doc, **kw):
+        if doc.get("abort_latched"):
+            order.append(os.path.exists(SV.latch_path(work)))
+        return real_write(path, doc, **kw)
+
+    SV.write_json_atomic = spy
+    try:
+        svc, rec = _aborted_at_1802(S, work, now)
+    finally:
+        SV.write_json_atomic = real_write
+    check(order and all(order),
+          f"the latch file is there before tonight's list says latched: "
+          f"{order}")
+    svc.stop()
+
+    # A list for tomorrow left by a clock that ran ahead: the latch file
+    # still carries Saturday's Abort into Sunday. Reset removes the file.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc, rec = _aborted_at_1802(S, work, now, rule=_two_nights())
+    svc.stop()
+    other = tempfile.mkdtemp()
+    stray = [_den(S, 16, 0, d=(2026, 11, 15))]
+    so = _svc(S, other, stray, rule=_two_nights(), conductor=_RecCond(S))
+    so.start(thread=False)
+    so.stop()
+    sunday = date(2026, 11, 15)
+    shutil.copy(SV.tonight_path(sunday, other), SV.tonight_path(sunday, work))
+    again, rec2 = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    now[0] = _den(S, 18, 0, d=(2026, 11, 15))
+    again.tick()
+    check(again.machine.abort_latched and
+          again.machine.slot(1).reason == S.LATCHED_MISSED,
+          f"a stray list for Sunday does not hide Saturday's Abort: "
+          f"{again.machine.slot(1)}")
+    r = again.reset_conductor("Andy", "Rack screen")
+    check(r["ok"] and not os.path.exists(SV.latch_path(work)),
+          f"Reset removes the latch file: {r}")
+    again.stop()
+    later, _r = _restarted(S, work, now, _den(S, 18, 10, d=(2026, 11, 15)))
+    check(not later.machine.abort_latched,
+          "and a restart after it is not latched")
+    later.stop()
+    shutil.rmtree(other, ignore_errors=True)
+
+    # Yesterday's list unreadable and no latch file: a fresh start today
+    # cannot tell, so it starts latched and says why.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    svc = _svc(S, work, now, rule=_two_nights(), conductor=_RecCond(S))
+    svc.start(thread=False)
+    svc.stop()
+    open(SV.tonight_path(D, work), "w").close()
+    again, _r = _restarted(S, work, now, _den(S, 17, 0, d=(2026, 11, 15)))
+    said = [r["text"] for r in again.journal
+            if r.get("outcome") == "still aborted"]
+    check(again.machine.abort_latched and
+          any("2026-11-14" in t and "could not be read" in t for t in said),
+          f"an unreadable last night latches a fresh start, said: {said[:1]}")
+    again.stop()
+
+    # Several earlier lists, no latch file: only the most recent one counts.
+    from dataclasses import replace as _rep
+
+    def earlier(work, d, latched):
+        n = _Night(S, S.parse_rule(_two_nights()), d=d)
+        n.boot(_den(S, 17, 0, d=(d.year, d.month, d.day)))
+        with open(SV.tonight_path(d, work), "w") as fh:
+            json.dump(S.machine_to_doc(_rep(n.m, abort_latched=latched)), fh)
+
+    for older, newer in ((True, False), (False, True)):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 0, d=(2026, 11, 15))]
+        SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+        earlier(work, date(2026, 11, 7), older)
+        earlier(work, date(2026, 11, 14), newer)
+        again, _r = _restarted(S, work, now, now[0])
+        check(again.machine.abort_latched == newer,
+              f"a fresh start takes the latch from the most recent earlier "
+              f"night only (older {older}, newer {newer}): "
+              f"{again.machine.abort_latched}")
+        again.stop()
+
+    # With no conductor attached nothing of this applies.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 18, 10)]
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _two_nights())
+    SV.create_latch_marker(SV.latch_path(work), {})
+    plain = _svc(S, work, now)
+    plain.start(thread=False)
+    check(not plain.machine.abort_latched and
+          os.path.exists(SV.latch_path(work)),
+          "with no conductor the latch file latches nothing and is left alone")
+    plain.stop()
+    print("  ok")
+
+
+def test_schedule_reset_never_overtakes_an_abort():
+    section("scheduler: a Reset pressed after an Abort that is still on its "
+            "way to a stuck conductor is refused and journaled, and the "
+            "latch stays (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 59)]
+    rec = _RecCond(S)
+    svc = _svc(S, work, now, conductor=rec)
+    svc.start(thread=False)
+    now[0] = _den(S, 18, 0)
+    svc.tick()
+    now[0] = _den(S, 18, 0, 2)
+    _confirm(S, svc)
+    _settle(svc)
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["intermission"] = line
+    rec.block_on["abort"] = gate
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        t0 = time.perf_counter()
+        while "intermission" not in rec.names(1) and \
+                time.perf_counter() - t0 < 2:
+            time.sleep(0.01)
+        now[0] = _den(S, 18, 2)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+            time.sleep(0.01)
+        res = {}
+        th = _th.Thread(target=lambda: res.update(
+            r=svc.reset_conductor("Jeff", "Rack screen", wait_s=3)))
+        th.start()
+        time.sleep(0.05)
+        line.set()                      # the line moves: Reset goes first
+        th.join(4)
+        r = res.get("r") or {}
+        rows = [x for x in svc.journal if x.get("action") == "reset"]
+        check(not r.get("ok") and "has not reached" in r.get("text", "") and
+              svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              rows and rows[-1]["outcome"] == "refused" and
+              rows[-1]["who"] == "Jeff",
+              f"the Reset that got there first is refused, the latch stays, "
+              f"and it is journaled: {r} {rows[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    _settle(svc)
+    rec.latched = True
+    r = svc.reset_conductor("Jeff", "Rack screen")
+    check(r["ok"] and not svc.machine.abort_latched,
+          f"once the Abort has landed, Reset works: {r}")
+    svc.stop()
+    print("  ok")
+
+
+class _NoLatchAnswer(_RecCond):
+    """A conductor whose `latched` cannot be read."""
+
+    @property
+    def latched(self):
+        raise RuntimeError("latched blew up")
+
+    @latched.setter
+    def latched(self, v):
+        pass
+
+
+def test_schedule_conductor_line_round3_details():
+    section("scheduler: an Abort that goes ahead drops a queued show start; "
+            "it goes ahead of a dead line too; a hang is a fault after 3 s, "
+            "an Abort sent beside the line included; flush waits for it; a "
+            "revived line is idle; Reset keeps the latch while the conductor "
+            "is still fading or cannot say (fix round 3)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    from ltcplay import schedule_service as SV
+
+    def showing(rec=None):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 17, 59)]
+        rec = rec or _RecCond(S)
+        svc = _svc(S, work, now, conductor=rec)
+        svc.start(thread=False)
+        now[0] = _den(S, 18, 0)
+        svc.tick()
+        _settle(svc)
+        return svc, rec, now, work
+
+    def wait_for(pred, s=2.0):
+        t0 = time.perf_counter()
+        while not pred() and time.perf_counter() - t0 < s:
+            time.sleep(0.01)
+        return pred()
+
+    # A show start queued behind a stuck request is dropped by the Abort.
+    svc, rec, now, work = showing()
+    line = _th.Event()
+    rec.block_on["intermission"] = line
+    try:
+        with svc._locked():
+            svc._calls.put(svc._new_call("Out of the show", "intermission",
+                                         "the scheduler", ""))
+        wait_for(lambda: "intermission" in rec.names(1))
+        now[0] = _den(S, 18, 0, 2)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+    finally:
+        line.set()
+    _settle(svc)
+    k = rec.names().index("abort")
+    check("show_starting" not in rec.names(k),
+          f"a show start queued before the Abort is never sent after it: "
+          f"{rec.names()}")
+    svc.stop()
+
+    # The line's thread is dead: the Abort goes on its own at once. (A
+    # fresh line whose thread has ended: the old line's thread would still
+    # be serving its own queue.)
+    svc, rec, now, work = showing()
+    _confirm(S, svc)
+    _settle(svc)
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    svc._calls = SV._ConductorCalls(svc._run_conductor_call,
+                                    overtaken=svc._abort_overtook)
+    svc._calls._thread = dead
+    now[0] = _den(S, 18, 1)
+    svc._apply(_op(S, S.ABORT, confirmed=True))
+    check(wait_for(lambda: "abort" in rec.names(), 1.0),
+          f"with the line's thread dead, the Abort still reaches the "
+          f"conductor, without waiting for a tick: {rec.names()}")
+    svc.tick()
+    svc.stop()
+
+    # The stuck limit, on a clock the test moves: 3 s, not more.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    line, gate = _th.Event(), _th.Event()
+    rec.block_on["show_starting"] = line
+    rec.block_on["abort"] = gate
+    try:
+        _confirm(S, svc)
+        wait_for(lambda: "show_starting" in rec.names())
+
+        def stuck(word):
+            return [r for r in svc.journal if r.get("fault") and
+                    f"has not answered {word}" in r.get("text", "")]
+
+        fake[0] += 2.9
+        svc.tick()
+        check(not stuck("Show start"), "2.9 s without an answer is no fault")
+        fake[0] += 0.2
+        svc.tick()
+        check(stuck("Show start"),
+              "3.1 s without an answer is a fault (CONDUCTOR_STUCK_S is 3 s)")
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        wait_for(lambda: "abort" in rec.names())
+        line.set()
+        wait_for(lambda: svc._calls.health()["waiting"] == 0 and
+                 not svc._calls._busy)
+        svc.tick()
+        fake[0] += 3.1
+        svc.tick()
+        check(stuck("Abort"),
+              f"an Abort sent beside the line and hanging is a fault too: "
+              f"{[r['text'][:80] for r in svc.journal if r.get('fault')][-2:]}")
+        _th.Timer(0.3, gate.set).start()
+        flushed = svc.flush_conductor(3)
+        done = [r for r in svc.journal if r.get("action") == "conductor" and
+                r.get("outcome") == "done" and "Abort" in r.get("text", "")]
+        check(flushed and done,
+              f"flush waits for an Abort sent beside the line: {done[-1:]}")
+    finally:
+        line.set()
+        gate.set()
+    svc.stop()
+
+    # A line revived after its thread died is idle, not still busy with
+    # whatever it was making when it died.
+    svc, rec, now, work = showing()
+    fake = [100.0]
+    svc._calls._clock = lambda: fake[0]
+    dead = _th.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    lost = svc._new_call("Lost request", "hold", "the scheduler", "")
+    with svc._calls._cv:
+        svc._calls._thread = dead
+        svc._calls._busy = True
+        svc._calls._current, svc._calls._since = lost, fake[0]
+    svc.tick()
+    fake[0] += 5
+    svc.tick()
+    bad = [r for r in svc.journal if r.get("fault") and
+           "Lost request" in r.get("text", "")]
+    check(not bad and not svc._calls._busy,
+          f"a revived line does not count the dead thread's request as "
+          f"stuck: {bad[-1:]}")
+    svc.stop()
+
+    # Reset while the conductor is still fading the Abort (it refuses and
+    # is still latched), or cannot say whether it is latched: the
+    # scheduler keeps its latch, in memory and on disk.
+    for label, rec in (("still fading", _RecCond(S)),
+                       ("cannot say", _NoLatchAnswer(S))):
+        svc, rec, now, work = showing(rec)
+        _confirm(S, svc)
+        now[0] = _den(S, 18, 1)
+        svc._apply(_op(S, S.ABORT, confirmed=True))
+        _settle(svc)
+        rec.latched = True
+        rec.fail_on.add("reset")
+        r = svc.reset_conductor("Andy", "Rack screen")
+        check(not r["ok"] and svc.machine.abort_latched and
+              _tonight_doc(work).get("abort_latched") is True and
+              os.path.exists(SV.latch_path(work)),
+              f"a Reset the conductor refuses ({label}) keeps the "
+              f"scheduler's latch: {r}")
+        svc.stop()
     print("  ok")
 
 
@@ -25678,6 +30121,1133 @@ def test_streamdeck_never_imports_flamesafe():
           f"them): rc={r.returncode} {r.stdout!r} {r.stderr[-300:]!r}")
 
 
+# ---------------------------------------------------------------------------
+# The conductor wired to the real device layer: a real Conductor, driven
+# through conductor.ConductorDevices into a real beyond.Beyond and a real
+# madmapper.Link, whose sockets are fakes that stamp every packet into the
+# same call log as the show side (_CondRig). So one ordered list holds the
+# flame cut, every BEYOND packet, the music, the pixels and every MadMapper
+# packet, and the ordering guarantees devices.py's on_hold()/on_resume()/
+# on_abort() were written to give can be checked against what the
+# conductor actually sends.
+# ---------------------------------------------------------------------------
+
+class _StampSock(_FakeMMSock):
+    """A fake socket that also writes (kind, (address, value), now) into a
+    shared log as each packet goes out. value is None for an OSC message
+    with no float (MadMapper's conductor/stop)."""
+
+    def __init__(self, kind, log, now):
+        super().__init__()
+        self.kind, self.log, self.now = kind, log, now
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        super().sendto(pkt, addr)
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        self.log.append((self.kind, (address, None if f is None else f[1]),
+                         self.now()))
+
+
+def _cond_devices(gate=None, mm=True, beyond=True, beyond_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    T = _CondTime()
+    rig = _CondRig(T.now)
+    rig.slow_by = lambda s: setattr(T, "t", T.t + s)
+    lines = []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    steps = _Steps()
+    link = bey = None
+    if mm:
+        link = MM.Link(_mm_cfg(ramp_steps=5),
+                       socket_factory=lambda: _StampSock("mm", rig.calls,
+                                                         T.now),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+        # Packets leave from the Link's own worker thread, so their place
+        # in the log depends on thread timing. The CALL into the Link is
+        # made on the conductor's thread: log that too ("mm_call"), so an
+        # order check never passes by luck of scheduling.
+        for name in ("fade_surfaces", "set_surfaces", "cancel", "stop_bank",
+                     "fade_audio", "set_audio", "fade_all",
+                     "restore_levels", "select_bank", "play",
+                     "play_from_beginning"):
+            def rec(*a, _name=name, _fn=getattr(link, name), **k):
+                rig.calls.append(("mm_call", (_name,) + a, T.now()))
+                return _fn(*a, **k)
+            setattr(link, name, rec)
+    if beyond:
+        bey = B.Beyond(B.BeyondConfig.parse({}),
+                       socket_factory=beyond_factory or (
+                           lambda: _StampSock("beyond", rig.calls, T.now)),
+                       clock=steps.clock, sleep=steps.sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate if gate is not None else (lambda: None),
+                    journal=journal, clock=T.now, waiter=T.wait,
+                    threaded=False)
+    return c, rig, T, lines, link, bey
+
+
+def _mm_flush(link):
+    """Wait for the Link's worker to finish every job already queued (the
+    conductor starts video fades with wait=False)."""
+    if link is not None:
+        link._submit(lambda: None, wait=True)
+
+
+def _cd_live(c, rig, link):
+    check(c.show_starting("Andy", "rack screen").ok, "show start accepted")
+    c.run_pending()
+    _mm_flush(link)
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+
+
+def _cd_idx(calls, kind):
+    return [i for i, e in enumerate(calls) if e[0] == kind]
+
+
+def _cd_sends(calls):
+    """The log without the Link's cancel() calls. A cancel sends nothing:
+    it only stops a fade still running where it is, at a Hold's or an
+    Abort's press (independent review of PR #29, finding C)."""
+    return [e for e in calls if e[:2] != ("mm_call", ("cancel",))]
+
+
+def test_conductor_devices_hold_blanks_beyond_before_anything_fades():
+    section("conductor + devices: a Hold sends BEYOND a real blank, and it "
+            "is out before the music or the video starts to fade; "
+            "MadMapper's audio is never touched")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.wired and c.snapshot()["devices_wired"],
+          "with BEYOND and MadMapper both given, the conductor is wired")
+    check(not any("not connected" in t for t, _f in lines),
+          f"no 'not connected' fault line when wired: {lines}")
+    _cd_live(c, rig, link)
+    T.t = 300.0
+    check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+    check(rig.calls and rig.calls[0][:2] == ("mm_call", ("cancel",)),
+          f"the press stops any video fade where it is, sending nothing: "
+          f"{rig.calls[:1]}")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check(names[0] == "flames_zero", f"the flame cues go first: {names}")
+    check(len(b) == B.RETRY_COUNT and
+          all(ev[i][1] == (B.BRIGHTNESS_ADDR, B.BLANK_VALUE) for i in b),
+          f"BEYOND gets a real blank, brightness 0, {B.RETRY_COUNT} "
+          f"packets: {[ev[i] for i in b]}")
+    check(b and max(b) < names.index("music_hold"),
+          f"the blank is out before the music starts to fade: {names}")
+    check(m and b and min(m) > max(b),
+          f"every MadMapper packet comes after the blank: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check(mc and b and min(mc) > max(b),
+          f"the conductor calls MadMapper only after the blank is out: "
+          f"{names}")
+    check([ev[i][1][:3] for i in mc] == [("fade_surfaces", 1.0, 0.0)],
+          f"one call: the surfaces fade from 1 to 0, nothing else: "
+          f"{[ev[i][1] for i in mc]}")
+    check(all(ev[i][2] == 300.0 for i in b),
+          "the blank goes at the press, with no fade of its own")
+    hold = rig.first("music_hold")
+    check(hold is not None and hold[1] == (C.HOLD_FADE_S,),
+          f"the music fades over 0.25 s, then the clock freezes: {hold}")
+    check(all(ev[i][1][0] != MM.AUDIO_ADDR for i in m),
+          "MadMapper's audio level is never sent: ltcplay plays the music "
+          "(clock source audio_master), MadMapper only the video")
+    surf = [ev[i][1] for i in m]
+    check(all(a.startswith("/surfaces/") for a, _v in surf),
+          f"a production Hold fades the video surfaces (Jeff 2026-09-30): "
+          f"{surf}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in surf if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades from 1 to black: {vals}")
+    check(not any(f for t, f in lines),
+          f"no fault, and no slow call: {[t for t, f in lines if f]}")
+    check(c.snapshot()["applied"]["lasers"] == "black", "lasers black")
+    # Finding A: the video is recorded black only once the Link says the
+    # packets went out (it has: flushed above).
+    check(c.snapshot()["applied"]["video"] == "black",
+          f"video black, as reported by the Link: {c.snapshot()['applied']}")
+    link.close()
+
+    # Rehearsal: still a real blank first, but the video freezes in place.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.set_mode(C.REHEARSAL)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    check([e[1][1] for e in ev if e[0] == "beyond"]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"a rehearsal Hold blanks BEYOND too: {ev}")
+    check(_cd_idx(ev, "mm") == [] and _cd_idx(ev, "mm_call") == [],
+          f"a rehearsal Hold sends MadMapper nothing: the video freezes "
+          f"with the timecode: {ev}")
+    check(rig.first("music_hold")[1] == (0.0,), "and the music stops at once")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_abort_blanks_at_once_never_ramps():
+    section("conductor + devices: Abort blanks BEYOND at once (never a "
+            "brightness ramp; beyond.py's 0/100 allow-list is unchanged), "
+            "before the video and music fade, then stops the video bank")
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    check(B.ALLOWED_VALUES == (0.0, 100.0),
+          f"beyond.py's allow-list is still exactly 0.0 and 100.0: "
+          f"{B.ALLOWED_VALUES}")
+    c, rig, T, lines, link, bey = _cond_devices()
+    check(c.show_starting("Andy", "rack screen").ok, "show start")
+    c.run_pending()
+    _mm_flush(link)
+    check([e[1][1] for e in rig.calls if e[0] == "beyond"]
+          == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"the show starts with the lasers up: {rig.calls}")
+    rig.frozen_at = rig.moving_at = None
+    del rig.calls[:]
+    T.t = 400.0
+    check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+    pressed = _cd_sends(rig.calls)
+    check([e[0] for e in pressed][:2] == ["flames_zero", "flames_disarm_all"]
+          and [e[1][1] for e in pressed[2:]]
+          == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the flames are cut on the press, before anything else, and "
+          f"BEYOND is blanked before the press returns (finding D): "
+          f"{rig.calls}")
+    check(("mm_call", ("cancel",), 400.0) in rig.calls,
+          "and any video fade is stopped where it is, at the press")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    m = _cd_idx(ev, "mm")
+    check([ev[i][1] for i in b]
+          == [(B.BRIGHTNESS_ADDR, B.BLANK_VALUE)] * B.RETRY_COUNT,
+          f"Abort sends BEYOND brightness 0 only, never anything between "
+          f"0 and 100: {[ev[i] for i in b]}")
+    check(all(ev[i][2] == 400.0 for i in b),
+          f"all at the press, not spread over the 1 s fade: "
+          f"{[ev[i][2] for i in b]}")
+    for later in ("pixels_fade_out", "music_halt"):
+        check(later in names and max(b) < names.index(later),
+              f"BEYOND is dark before {later} starts: {names}")
+    check(m and min(m) > max(b),
+          f"BEYOND is dark before MadMapper is sent anything: {names}")
+    mc = _cd_idx(ev, "mm_call")
+    check([ev[i][1][0] for i in mc] == ["fade_surfaces", "stop_bank"]
+          and min(mc) > max(b),
+          f"the conductor calls MadMapper (fade, then stop) only after "
+          f"BEYOND is dark: {names}")
+    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
+          f"the journal says the lasers were blanked, not faded: {lines}")
+    mm_ev = [ev[i][1] for i in m]
+    check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
+          f"MadMapper's audio level is not sent: {mm_ev}")
+    stop = f"/timelines/{link.cfg.show_bank}/conductor/stop"
+    check(mm_ev and mm_ev[-1] == (stop, None),
+          f"the show bank is stopped last, after the fade: {mm_ev[-3:]}")
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in mm_ev if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 1.0 and vals[-1] == 0.0,
+              f"{s} fades to black before the stop: {vals}")
+    check(rig.first("music_halt")[1] == (C.ABORT_FADE_S,),
+          "the music fades over 1 s")
+    link.close()
+
+    # Abort after a Hold: the lasers are already dark, and the blank is
+    # sent again anyway (never trusted to have landed), still first.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    T.t = 450.0
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    ev = _cd_sends(rig.calls)
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"Abort after a Hold sends BEYOND the blank again: {ev}")
+    check(b and max(b) < names.index("music_halt"),
+          f"and still before the music: {names}")
+    mm_ev = [e[1] for e in ev if e[0] == "mm"]
+    check([e[1][0] for e in ev if e[0] == "mm_call"]
+          == ["fade_surfaces", "stop_bank"]
+          and names.index("mm_call") > max(b),
+          f"after the blank, MadMapper is told black again, then stop: "
+          f"{names}")
+    stop = (f"/timelines/{link.cfg.show_bank}/conductor/stop", None)
+    check(mm_ev == [("/surfaces/Quad-1/opacity", 0.0),
+                    ("/surfaces/Quad-2/opacity", 0.0), stop],
+          f"the video the Hold already faded is not faded up and down "
+          f"again (finding C: it starts where it is, black, so one 0 per "
+          f"surface), then stopped: {mm_ev}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_resume_unblanks_only_after_timecode_and_gate():
+    section("conductor + devices: Resume unblanks BEYOND only once the "
+            "timecode moves and the laser gate says yes; in intermission it "
+            "re-sends the blank instead, every time")
+    from ltcplay import beyond as B
+    C = _cond_mod()
+    state = ["SHOW"]
+    gate = C.laser_gate_for(lambda: state[0])
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    del rig.calls[:]
+    rig.move_s = 0.3
+    T.t = 500.0
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    _mm_flush(link)
+    ev = rig.calls
+    names = [e[0] for e in ev]
+    b = _cd_idx(ev, "beyond")
+    check([ev[i][1][1] for i in b] == [B.UNBLANK_VALUE] * B.RETRY_COUNT,
+          f"BEYOND comes back up (100): {[ev[i] for i in b]}")
+    check(b and min(b) > names.index("music_resume"),
+          f"after the music starts back: {names}")
+    check(min(b) > names.index("mm_call"),
+          f"and after the video has been asked back up: {names}")
+    check(all(ev[i][2] >= 500.3 - 1e-9 for i in b),
+          f"and not before the timecode moves (0.3 s): "
+          f"{[ev[i][2] for i in b]}")
+    check(names.index("flames_release") > max(b),
+          f"the flame cues are released last, after the lasers: {names}")
+    up = [e[1] for e in ev if e[0] == "mm"]
+    for s in ("Quad-1", "Quad-2"):
+        vals = [v for a, v in up if a == f"/surfaces/{s}/opacity"]
+        check(vals and vals[0] == 0.0 and vals[-1] == 1.0,
+              f"{s} fades back up: {vals}")
+    link.close()
+
+    # A Resume in intermission: no unblank, ever, and a real blank re-sent
+    # even though the record already says black (devices.py's defensive
+    # re-blank, kept).
+    state[0] = "SHOW"
+    c, rig, T, lines, link, bey = _cond_devices(gate=gate)
+    _cd_live(c, rig, link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["lasers"] == "black", "held: black")
+    del rig.calls[:]
+    state[0] = "STANDBY"
+    c.resume("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(B.UNBLANK_VALUE not in vals,
+          f"no unblank during intermission: {vals}")
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"the blank is re-sent, not assumed: {vals}")
+    check(any("no lasers during intermission" in t for t, _f in lines),
+          "the journal says why")
+    check(bey.last_command == "blank" and bey.last_result == "ok",
+          f"BEYOND's own record agrees: {bey.health()}")
+    # Leaving the show blanks them again too.
+    del rig.calls[:]
+    c.intermission("scheduler")
+    c.run_pending()
+    vals = [e[1][1] for e in rig.calls if e[0] == "beyond"]
+    check(vals == [B.BLANK_VALUE] * B.RETRY_COUNT,
+          f"intermission() sends BEYOND the blank: {vals}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_devices_failures_missing_links_and_speed():
+    section("conductor + devices: a failed or broken device is a failed "
+            "Result, never a raise; a show without BEYOND or MadMapper says "
+            "it is not wired; every call returns at once")
+    import time as _time
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+
+    def no_socket():
+        raise OSError("no network")
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=no_socket)
+    c.show_starting("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          f"a blank that never got out leaves the lasers UNKNOWN, never "
+          f"black: {c.snapshot()['applied']}")
+    check(any(f and "may still be showing" in t for t, f in lines),
+          f"and says so as a fault: {[t for t, f in lines if f]}")
+    link.close()
+
+    # Missing links: nothing sent, every call still a Result, and a
+    # Conductor built with it says it is not wired.
+    for mm_ok, b_ok in ((False, True), (True, False), (False, False)):
+        c, rig, T, lines, link, bey = _cond_devices(mm=mm_ok, beyond=b_ok)
+        check(not c.wired and any("not connected" in t and f
+                                  for t, f in lines),
+              f"MadMapper {mm_ok}, BEYOND {b_ok}: the conductor says the "
+              f"rig is not wired: {lines}")
+        if link is not None:
+            link.close()
+    dev = C.ConductorDevices(None, None)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (0.0,)), ("video_stop", ())):
+        r = getattr(dev, name)(*args)
+        check(isinstance(r, C.Result) and r.ok and "no " in r.sentence,
+              f"{name} with nothing configured: {r}")
+        r = getattr(C.ConductorDevices(object(), object()), name)(*args)
+        check(isinstance(r, C.Result) and not r.ok,
+              f"{name} on a broken device is a failed Result, not a "
+              f"raise: {r}")
+    link, socks, _steps = _mm_link()
+    link.close()
+    r = C.ConductorDevices(link, None).video_fade_out(1.0)
+    check(not r.ok and "closed" in r.sentence,
+          f"a closed MadMapper link is not reported as sent: {r}")
+
+    # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
+    # fade included (it runs on the Link's own worker).
+    link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
+    bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
+                   sleep=_on_time_sleep)
+    dev = C.ConductorDevices(link, bey)
+    for name, args in (("lasers_blank", ()), ("lasers_fade_out", (1.0,)),
+                       ("lasers_restore", ()), ("video_fade_out", (1.0,)),
+                       ("video_restore", (1.0,)), ("video_fade_out", (0.0,)),
+                       ("video_stop", ())):
+        t0 = _time.perf_counter()
+        r = getattr(dev, name)(*args)
+        took = _time.perf_counter() - t0
+        check(r.ok and took < C.SLOW_CALL_S,
+              f"{name}{args} returns at once: {took * 1000:.0f} ms, {r}")
+    link.close()
+    bey.close()
+    print("  ok")
+
+
+def test_conductor_devices_instant_video_lands_after_a_running_fade():
+    section("conductor + devices: an instant video level (rehearsal) "
+            "cancels a fade still running and lands after its last step")
+    C = _cond_mod()
+    link, socks, steps = _mm_link(_mm_cfg(ramp_steps=31))
+    dev = C.ConductorDevices(link, None)
+    gate = threading.Event()
+    link._submit(gate.wait, wait=False)       # hold the worker
+    dev.video_restore(1.0)                    # a fade up, queued
+    dev.video_fade_out(0.0)                   # then black at once
+    gate.set()
+    _mm_flush(link)
+    sent = [MM_v for _a, MM_v in _mm_values(socks)]
+    check(sent and sent[-2:] == [0.0, 0.0],
+          f"black is the last thing each surface is told: {sent[-4:]}")
+    check(len(sent) < 31 * 2,
+          f"the fade up was cancelled, not run to the end first: "
+          f"{len(sent)} packets")
+    link.close()
+    print("  ok")
+
+
+# ---------------------------------------------------------------------------
+# The independent review of PR #29 (real UDP, real time probes), findings A
+# to E. These run on real threads and real time, through a real
+# beyond.Beyond and a real madmapper.Link whose sockets stamp every packet
+# with perf_counter: when sendto() was entered and when it returned.
+# ---------------------------------------------------------------------------
+
+class _RTSock:
+    """A real-time fake socket: logs (kind, address, value, entered,
+    returned) for every packet. `delay(value)` makes sendto() take that
+    long first, the way a stalled send buffer or an ARP wait would."""
+
+    def __init__(self, kind, log, delay=None):
+        self.kind, self.log, self.delay = kind, log, delay
+
+    def sendto(self, pkt, addr):
+        from ltcplay import madmapper as MM
+        address, _at = MM._read_osc_string(pkt, 0)
+        f = MM.decode_float(pkt)
+        v = None if f is None else f[1]
+        t_in = time.perf_counter()
+        d = self.delay(v) if self.delay else 0
+        if d:
+            time.sleep(d)
+        self.log.append((self.kind, address, v, t_in, time.perf_counter()))
+
+    def close(self):
+        pass
+
+
+def _on_time_sleep(seconds):
+    """time.sleep that ends on time. BEYOND spaces its 3 packets 20 ms
+    apart, and the conductor calls anything slower than SLOW_CALL_S a
+    fault. macOS CI runners overshoot a 20 ms time.sleep() by up to
+    ~130 ms (seen in PR #29 round 3: a blank took 298 ms), which is the
+    runner, not the code under test. Any single sleep can overshoot like
+    that, so this only ever yields (time.sleep(0) lets other threads run)
+    until the deadline. It is only used for those 20 ms gaps."""
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        time.sleep(0)
+
+
+def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    log, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    rig = _CondRig(time.perf_counter)
+    link = MM.Link(_mm_cfg(ramp_steps=31),
+                   socket_factory=mm_factory or (lambda: _RTSock("mm", log)),
+                   journal=journal)
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _RTSock("beyond", log,
+                                                  beyond_delay),
+                   sleep=_on_time_sleep, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
+    c = C.Conductor(dev, rig, gate or (lambda: None),
+                    hold_gate=lambda *a: (None, 1), announcer=announcer,
+                    journal=journal)
+    return c, rig, log, lines, link, bey
+
+
+def _rt_vals(log, kind, since=None, value=None):
+    return [e for e in log if e[0] == kind
+            and (since is None or e[3] >= since)
+            and (value is None or e[2] == value)]
+
+
+def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
+    section("beyond: a blank on another thread stops an unblank before its "
+            "next packet, never waits for it, and 0 is BEYOND's last word")
+    from ltcplay import beyond as B
+    log = []
+    release = threading.Event()
+
+    class Stall(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if MM.decode_float(pkt)[1] == 100.0:
+                release.wait(2.0)        # the 100 is stuck on its way out
+            _RTSock.sendto(self, pkt, addr)
+
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: Stall("beyond", log),
+                   sleep=_on_time_sleep)      # see _on_time_sleep: macOS CI
+    got = {}
+    t = threading.Thread(target=lambda: got.setdefault(
+        "r", bey.unblank(in_show=True)))
+    t.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    t0 = time.perf_counter()
+    ok = bey.blank()
+    took = time.perf_counter() - t0
+    check(ok and took < 0.2,
+          f"the blank went out without waiting for the stuck unblank "
+          f"({took * 1000:.0f} ms)")
+    release.set()
+    t.join(2)
+    vals = [e[2] for e in sorted(log, key=lambda e: e[4])]
+    check(vals.count(100.0) == 1,
+          f"no 100 was started after the blank began: {vals}")
+    check(vals and vals[-1] == 0.0,
+          f"the 100 already on its way out is followed by a 0: {vals}")
+    check(got.get("r") is False and bey.last_result in ("cut", "ok"),
+          f"the cut unblank does not report success: {got} "
+          f"{bey.last_result}")
+    # still_wanted: a newer request stops an unblank before any blank.
+    log2 = []
+    bey2 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: _RTSock("beyond", log2))
+    asked = []
+
+    def wanted():
+        asked.append(1)
+        return len(asked) < 2
+    r = bey2.unblank(in_show=True, still_wanted=wanted)
+    check(r is False and [e[2] for e in log2] == [100.0]
+          and bey2.last_result == "cut",
+          f"still_wanted turning false stops the unblank: {log2}")
+
+    # Review round 3: a blank that lands in the 20 ms gap between two
+    # unblank packets, with NO still_wanted, means no further 100 is sent.
+    # Both ways round: the unblank wakes while the blank is still sending
+    # its 0s (catches a blank that counts itself only after its packets),
+    # and after the blank has finished (catches an unblank that takes a
+    # fresh count before every packet, so never sees a blank at all).
+    for mid in (True, False):
+        log3 = []
+        in_gap, go = threading.Event(), threading.Event()
+
+        def sleeper(s, mid=mid, in_gap=in_gap, go=go):
+            who = threading.current_thread().name
+            if who == "unblanker" and not in_gap.is_set():
+                in_gap.set()             # after the first 100: the gap
+                go.wait(2.0)
+                return
+            if who == "blanker" and mid and not go.is_set():
+                go.set()                 # wake the unblank mid blank
+                time.sleep(0.15)
+                return
+            time.sleep(s)
+        bey3 = B.Beyond(B.BeyondConfig.parse({}),
+                        socket_factory=lambda log3=log3: _RTSock("beyond",
+                                                                 log3),
+                        sleep=sleeper)
+        got3 = {}
+        u = threading.Thread(target=lambda: got3.setdefault(
+            "r", bey3.unblank(in_show=True)), name="unblanker")
+        u.start()
+        check(in_gap.wait(2.0), "the unblank reached its first gap")
+        bt = threading.Thread(target=bey3.blank, name="blanker")
+        bt.start()
+        bt.join(2)
+        go.set()
+        u.join(2)
+        when = "while the blank was sending" if mid else \
+            "after the blank had finished"
+        seq = sorted(log3, key=lambda e: e[3])
+        first0 = next((e[3] for e in seq if e[2] == 0.0), None)
+        late100 = [e for e in seq if e[2] == 100.0 and first0 is not None
+                   and e[3] >= first0]
+        check(first0 is not None and not late100,
+              f"an unblank woken {when} sends no further 100: "
+              f"{[e[2] for e in seq]}")
+        out = [e[2] for e in sorted(log3, key=lambda e: e[4])]
+        check(out.count(100.0) == 1 and out[-1] == 0.0,
+              f"one 100 before the blank, and 0 last ({when}): {out}")
+        check(got3.get("r") is False and bey3.last_result in ("cut", "ok"),
+              f"the cut unblank does not report success ({when}): {got3}")
+
+    # Review round 3: the 0 that follows a 100 caught on its way out is
+    # retried like any blank. The blank has already returned True by then,
+    # so a single lost 0 left BEYOND lit with everything above it sure the
+    # lasers were dark.
+    log4 = []
+    release4 = threading.Event()
+    lost = []
+
+    class StallThenLose(_RTSock):
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            v = MM.decode_float(pkt)[1]
+            if threading.current_thread().name == "unblanker4":
+                if v == 100.0:
+                    release4.wait(2.0)
+                elif v == 0.0 and not lost:
+                    lost.append(1)
+                    raise OSError("the first 0 after the 100 is lost")
+            _RTSock.sendto(self, pkt, addr)
+
+    bey4 = B.Beyond(B.BeyondConfig.parse({}),
+                    socket_factory=lambda: StallThenLose("beyond", log4))
+    u4 = threading.Thread(target=lambda: bey4.unblank(in_show=True),
+                          name="unblanker4")
+    u4.start()
+    time.sleep(0.05)                     # inside the first 100's sendto
+    check(bey4.blank(), "the blank itself got out")
+    release4.set()
+    u4.join(2)
+    out4 = [e[2] for e in sorted(log4, key=lambda e: e[4])]
+    check(lost and out4 and out4[-1] == 0.0,
+          f"one lost 0 after the late 100 does not leave BEYOND lit: "
+          f"{out4}")
+    print("  ok")
+
+
+def test_conductor_abort_is_never_held_up_by_a_slow_device():
+    section("conductor: Abort's flame cut and laser blank go out within a "
+            "few ms of the press, whatever BEYOND, the laser gate or an "
+            "announcement is doing (review of PR #29, finding D)")
+    C = _cond_mod()
+    FEW = 0.02
+    # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
+    #    show start's unblank is part way out.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.abort("Andy", "rack screen").ok, "Abort accepted")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW,
+              f"the flame cut went out within {FEW * 1000:.0f} ms "
+              f"({(fz[0][2] - t0) * 1000 if fz else None} ms)")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.8)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        check(zeros and zeros[0][3] - t0 < FEW,
+              f"the first blank packet was handed to the socket within "
+              f"{FEW * 1000:.0f} ms of the press "
+              f"({(zeros[0][3] - t0) * 1000 if zeros else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "no unblank packet was started after the press")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"recorded dark: {c.snapshot()['applied']}")
+    finally:
+        c.close()
+        link.close()
+
+    # 1b) The same, with a Hold: its blank waits its turn on the executor,
+    #     but the restore stops before its next packet all the same (the
+    #     conductor's restore guard), so no 100 starts after the press.
+    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    try:
+        c.show_starting("Andy", "rack screen")
+        time.sleep(0.15)
+        t0 = time.perf_counter()
+        check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+        check(c.wait_idle(5), "the Hold finished")
+        time.sleep(0.5)
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"no unblank packet was started after the Hold press: "
+              f"{[(e[2], round(e[3] - t0, 3)) for e in log if e[0] == 'beyond']}")
+        b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
+        check(b and b[-1][2] == 0.0,
+              f"BEYOND's last word is 0: {[e[2] for e in b]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 2) A laser gate that takes 500 ms: the Abort's fade does not wait.
+    def slow_gate():
+        time.sleep(0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=slow_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        c.resume("Andy", "rack screen")
+        time.sleep(0.2)                  # the executor is in the gate
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        px = [cl for cl in rig.calls if cl[0] == "pixels_fade_out"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during a "
+              f"slow gate")
+        check(px and px[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the gate "
+              f"({(px[0][2] - t0) * 1000 if px else None} ms)")
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              "the gate's late yes lit nothing")
+    finally:
+        c.close()
+        link.close()
+
+    # 2b) Review round 3: a laser gate that hangs past GATE_TIMEOUT_S and
+    #     only then says yes. No Abort this time: the timeout itself has to
+    #     be a no, and the late yes must light nothing.
+    def hung_gate():
+        time.sleep(C.GATE_TIMEOUT_S + 0.5)
+        return None
+    c, rig, log, lines, link, bey = _rt_rig(gate=hung_gate)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        t0 = time.perf_counter()
+        c.resume("Andy", "rack screen")
+        check(c.wait_idle(C.GATE_TIMEOUT_S + 3), "the Resume finished")
+        time.sleep(0.8)                  # past the gate's late yes
+        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
+              f"{[e[2] for e in _rt_vals(log, 'beyond', since=t0)]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"and the lasers are recorded dark: "
+              f"{c.snapshot()['applied']['lasers']}")
+        check(any("did not answer within" in t for t, _f in lines),
+              f"the journal says the gate did not answer: "
+              f"{[t for t, _f in lines if 'gate' in t]}")
+    finally:
+        c.close()
+        link.close()
+
+    # 3) An announcement still reading its file (400 ms).
+    c, rig, log, lines, link, bey = _rt_rig(
+        announcer=lambda *a: time.sleep(0.4))
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.announce("welcome", "Andy", "rack screen")
+        time.sleep(C.ANNOUNCE_FADE_S + C.ANNOUNCE_DARK_S + 0.2)
+        t0 = time.perf_counter()
+        c.abort("Andy", "rack screen")
+        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
+              and cl[2] >= t0]
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.2)
+        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
+        mh = [cl for cl in rig.calls if cl[0] == "music_halt"
+              and cl[2] >= t0]
+        check(fz and fz[0][2] - t0 < FEW and zeros
+              and zeros[0][3] - t0 < FEW,
+              f"flame cut and blank within {FEW * 1000:.0f} ms during an "
+              f"announcement's file read")
+        check(mh and mh[0][2] - t0 < 0.1,
+              f"and the Abort's fades did not wait for the file "
+              f"({(mh[0][2] - t0) * 1000 if mh else None} ms)")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_hears_about_madmapper_failures_and_stalls():
+    section("conductor: a MadMapper send that fails, or a MadMapper sender "
+            "that stalls, is a fault and leaves the video UNKNOWN, and a "
+            "later Abort fades it anyway (review of PR #29, finding A)")
+    C = _cond_mod()
+
+    def no_net():
+        raise OSError("network is down")
+    c, rig, log, lines, link, bey = _rt_rig(mm_factory=no_net)
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.4)                  # the Link's worker has run it
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN,
+              f"a video fade that never got out is UNKNOWN, never black: "
+              f"{snap['applied']}")
+        check(snap["faults"] >= 1 and any(
+            f and "not sent to MadMapper" in t for t, f in lines),
+              f"and a fault line says so: {[t for t, f in lines if f]}")
+        check(not any(len(t) > 600 for t, _f in lines),
+              "the fault line names each reason once, not once a packet")
+        n = sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                in t)
+        c.abort("Andy", "rack screen")
+        check(c.wait_idle(5), "the Abort finished")
+        time.sleep(0.3)
+        check(sum(1 for t, f in lines if f and "Video fade to black over 1 s"
+                  in t) > n,
+              "a later Abort sends the video fade again (and says it "
+              "failed again)")
+    finally:
+        c.close()
+        link.close()
+
+    # A stalled sender: the Link's worker is stuck behind another job.
+    saved = C.VIDEO_STALL_S
+    C.VIDEO_STALL_S = 0.4
+    c, rig, log, lines, link, bey = _rt_rig()
+    stuck = threading.Event()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        time.sleep(0.1)
+        link._submit(lambda: stuck.wait(3.0), wait=False)
+        t0 = time.perf_counter()
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        early = c.snapshot()["applied"]["video"]
+        check(time.perf_counter() - t0 > C.HOLD_FADE_S + 0.4 or
+              early == C.UNKNOWN,
+              f"a fade MadMapper has not sent yet is not recorded black: "
+              f"{early}")
+        time.sleep(max(0.0, t0 + C.HOLD_FADE_S + 0.4 + 0.3
+                       - time.perf_counter()))
+        snap = c.snapshot()
+        check(snap["applied"]["video"] == C.UNKNOWN and any(
+            f and "has not sent it yet" in t for t, f in lines),
+              f"a stalled MadMapper sender is a fault and the video is "
+              f"UNKNOWN: {snap['applied']} {[t for t, f in lines if f]}")
+    finally:
+        stuck.set()
+        C.VIDEO_STALL_S = saved
+        c.close()
+        link.close()
+
+    # Only the latest video command's success counts: a Hold's fade that
+    # goes out after a Resume asked for the video back up does not make
+    # the record say black.
+    c, rig, T, lines, link, bey = _cond_devices()
+    _cd_live(c, rig, link)
+    g1, g2 = threading.Event(), threading.Event()
+    link._submit(lambda: g1.wait(3.0), wait=False)
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    hold_ran = threading.Event()          # queued right after the Hold's
+    link._submit(hold_ran.set, wait=False)
+    link._submit(lambda: g2.wait(3.0), wait=False)
+    check(c.resume("Andy", "rack screen").ok, "Resume accepted")
+    c.run_pending()
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          "neither command has gone out yet: UNKNOWN")
+    g1.set()
+    check(hold_ran.wait(2.0), "the Hold's video command has run")
+    time.sleep(0.05)
+    check(c.snapshot()["applied"]["video"] == C.UNKNOWN,
+          f"the Hold's fade went out, but the Resume's is the latest: not "
+          f"black: {c.snapshot()['applied']}")
+    g2.set()
+    _mm_flush(link)
+    check(c.snapshot()["applied"]["video"] == C.LIT,
+          f"and once the Resume's goes out, lit: {c.snapshot()['applied']}")
+    link.close()
+
+    # And when it all goes out, the record says so (and only then).
+    c, rig, log, lines, link, bey = _rt_rig()
+    try:
+        c.show_starting("Andy", "rack screen")
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        check(c.wait_idle(5), "hold done")
+        time.sleep(0.2)
+        check(c.snapshot()["applied"]["video"] == C.BLACK,
+              f"a fade the Link sent is recorded black: "
+              f"{c.snapshot()['applied']}")
+        check(not any(f for _t, f in lines),
+              f"and nothing is a fault: {[t for t, f in lines if f]}")
+    finally:
+        c.close()
+        link.close()
+    print("  ok")
+
+
+def test_conductor_a_failed_abort_blank_can_be_sent_again():
+    section("conductor: BEYOND unreachable at Abort; a second Abort, a "
+            "second Hold and intermission() all send the blank again and "
+            "say how the lasers really stand (review of PR #29, finding B)")
+    C = _cond_mod()
+    down = [False]
+    vals = []                            # every brightness that got out
+
+    class Flaky(_FakeMMSock):
+        def __init__(self):
+            if down[0]:
+                raise OSError("no route to host")
+            super().__init__()
+
+        def sendto(self, pkt, addr):
+            from ltcplay import madmapper as MM
+            if down[0]:
+                raise OSError("no route to host")
+            super().sendto(pkt, addr)
+            vals.append(MM.decode_float(pkt)[1])
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    r = c.abort("Andy", "rack screen")
+    c.run_pending()
+    _mm_flush(link)
+    check("did NOT get out" in r.sentence,
+          f"the Abort says its blank did not get out: {r.sentence}")
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN,
+          "the lasers are UNKNOWN after a blank that did not get out")
+    r = c.abort("Jeff", "Stream Deck")
+    check(r.ok and "may still be lit" in r.sentence,
+          f"a second Abort while BEYOND is still down says so: {r}")
+    down[0] = False
+    del vals[:]
+    r = c.abort("Jeff", "Stream Deck")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence,
+          f"once BEYOND is back, a second Abort blanks it: {b} {r}")
+    check(c.snapshot()["applied"]["lasers"] == C.BLACK, "recorded dark")
+    # intermission() while latched: blank again, and the real state.
+    del vals[:]
+    r = c.intermission("scheduler")
+    b = list(vals)
+    check(b == [0.0] * 3 and "the lasers are dark" in r.sentence
+          and "already dark" not in r.sentence,
+          f"intermission() while aborted blanks again and reports the real "
+          f"state: {b} {r}")
+    check(c.latched, "and the Abort stays latched")
+    link.close()
+    # A second Hold while held, with the first blank lost.
+    c, rig, T, lines, link, bey = _cond_devices(beyond_factory=Flaky)
+    _cd_live(c, rig, link)
+    down[0] = True
+    c.hold("Andy", "rack screen")
+    c.run_pending()
+    check(c.snapshot()["applied"]["lasers"] == C.UNKNOWN, "hold blank lost")
+    down[0] = False
+    del vals[:]
+    r = c.hold("Andy", "rack screen")
+    b = list(vals)
+    check(b == [0.0] * 3 and "Already on hold" in r.sentence
+          and c.snapshot()["applied"]["lasers"] == C.BLACK,
+          f"a second Hold blanks again: {b} {r}")
+    link.close()
+    print("  ok")
+
+
+def test_conductor_video_never_rises_after_abort_or_hold():
+    section("conductor: Abort or Hold during a Resume's video fade-up stops "
+            "it where it is and fades down from there, never up to full "
+            "first (review of PR #29, finding C)")
+    C = _cond_mod()
+    for press in ("abort", "hold"):
+        for delay in (0.03, 0.12, 0.2):
+            c, rig, log, lines, link, bey = _rt_rig()
+            rig.move_s = 0.3
+            try:
+                c.show_starting("Andy", "rack screen")
+                check(c.wait_idle(5), "show start done")
+                c.hold("Andy", "rack screen")
+                check(c.wait_idle(5), "hold done")
+                time.sleep(0.4)
+                c.resume("Andy", "rack screen")
+                time.sleep(delay)
+                t0 = time.perf_counter()
+                getattr(c, press)("Andy", "rack screen")
+                check(c.wait_idle(5), f"{press} done")
+                time.sleep(1.3)
+                q1 = [e for e in log if e[0] == "mm"
+                      and e[1] == "/surfaces/Quad-1/opacity"]
+                before = [e[2] for e in q1 if e[3] < t0]
+                after = [e[2] for e in q1 if e[3] >= t0]
+                at = before[-1] if before else None
+                # One ramp step may already have been on its way out at
+                # the press (the perceptual fade-up's biggest is 2/30).
+                step = 2.0 / 30
+                ok = (at is not None and after and after[-1] == 0.0
+                      and after[0] <= at + step + 1e-6
+                      and all(b <= a + 1e-6 for a, b in
+                              zip(after, after[1:])))
+                check(ok, f"{press} {delay * 1000:.0f} ms into a Resume: "
+                          f"level at the press {at}, then never up: "
+                          f"{[round(v, 3) for v in after[:6]]} ... "
+                          f"{after[-1:] if after else None}")
+            finally:
+                c.close()
+                link.close()
+    print("  ok")
+
+
+def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
+    section("conductor: a rehearsal Hold that stops a Resume's video fade-up "
+            "part way leaves the video recorded unknown, not lit, and the "
+            "next Resume brings it back up (review round 3)")
+    C = _cond_mod()
+    # The Hold has to land inside a 0.25 s fade-up. On a loaded machine it
+    # may land after the fade has finished; that run proves nothing, so the
+    # setup is tried again (up to 3 times) rather than passed or failed.
+    for attempt in range(3):
+        c, rig, log, lines, link, bey = _rt_rig()
+        rig.move_s = 0.3
+        try:
+            c.show_starting("Andy", "rack screen")
+            check(c.wait_idle(5), "show start done")
+            c.hold("Andy", "rack screen")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(0.5)
+            c.resume("Andy", "rack screen")        # a production fade-up
+            time.sleep(0.06)
+            c.set_mode(C.REHEARSAL)
+            check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
+            check(c.wait_idle(5), "hold done")
+            time.sleep(1.5)   # the stopped fade's own report has arrived
+            q1 = [e for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity"]
+            last = q1[-1][2] if q1 else None
+            if last is not None and not 0.0 < last < 1.0 and attempt < 2:
+                continue                 # the Hold missed the fade
+            rec = c.snapshot()["applied"]["video"]
+            # video_cancel() has to make the stopped fade's success stale:
+            # if it does not, that report lands after the Hold and records
+            # the video lit at whatever level the fade had reached.
+            check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
+                  f"the fade stopped part way ({last}) and the video is "
+                  f"not recorded lit: {rec}")
+            t1 = time.perf_counter()
+            c.resume("Andy", "rack screen")
+            check(c.wait_idle(5), "rehearsal Resume done")
+            time.sleep(1.0)
+            up = [e[2] for e in log if e[0] == "mm"
+                  and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= t1]
+            check(up and up[-1] == 1.0,
+                  f"the next Resume brings the video back to full: {up}")
+            break
+        finally:
+            c.close()
+            link.close()
+    print("  ok")
+
+
+def test_conductor_announcement_after_abort_and_reset():
+    section("conductor: an announcement between shows after Abort and Reset "
+            "does not run the Abort again (review of PR #29, finding E)")
+    C = _cond_mod()
+    played = []
+    c, rig, T, lines = _cond(hold_gate=lambda *a: (None, 1),
+                             announcer=lambda *a: played.append(a))
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    c.run_pending()
+    check(c.reset("Andy", "rack screen").ok, "Reset")
+    rig.cue = False
+    del rig.calls[:]
+    n = len(lines)
+    r = c.announce("welcome", "Andy", "rack screen")
+    c.run_pending()
+    later = [t for t, _f in lines[n:]]
+    check(r.ok and played, f"the announcement plays: {r}")
+    check(not any("Abort finished" in t or "Latched until Reset" in t
+                  for t in later),
+          f"and nothing says the Abort ran again or is latched: {later}")
+    check(not any(n_ in ("video_fade_out", "music_halt", "video_stop",
+                         "flames_disarm_all") for n_ in rig.names()),
+          f"none of the Abort's steps are sent again: {rig.names()}")
+    check(any("lasers blanked" in t for t, _f in lines),
+          "journal lines say the lasers were blanked")
+    check(not any("lasers faded" in t for t, _f in lines),
+          f"and never that they were faded: {lines}")
+    print("  ok")
+
+
+def _mm_values(socks):
+    from ltcplay import madmapper as MM
+    out = []
+    for s in socks:
+        for pkt, _addr in s.sent:
+            f = MM.decode_float(pkt)
+            if f is not None:
+                out.append(f)
+    return out
+
+
 def test_the_gpl_path_never_loads_the_conductor():
     section("GPL: the conductor is never imported by the program")
     import subprocess as _sp
@@ -27088,6 +32658,7 @@ def test_the_gpl_path_never_loads_the_flame_link():
 
 if __name__ == "__main__":
     t0 = time.time()
+    _TEMPRUN = _TempRun()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -27216,6 +32787,7 @@ if __name__ == "__main__":
     test_schedule_hold_pauses_a_show()
     test_schedule_hold_between_shows_delays()
     test_schedule_start_now_in_every_state()
+    test_schedule_extra_show_and_the_next_slot()
     test_schedule_abort_end_night_and_operator_actions()
     test_schedule_file_is_versioned_and_atomic()
     test_schedule_clock_check()
@@ -27263,7 +32835,7 @@ if __name__ == "__main__":
     test_journal_a_torn_last_line_after_a_power_cut()
     test_journal_a_repeating_fault_does_not_flood()
     test_journal_a_show_past_midnight_keeps_its_night()
-    test_schedule_hold_epoch_bumps_when_midnight_sweeps_a_held_night()
+    test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight()
     test_journal_waiting_lines_are_capped_and_counted()
     test_journal_a_clean_stop_reads_as_one()
     test_journal_screens_come_from_a_list()
@@ -27350,9 +32922,56 @@ if __name__ == "__main__":
     test_tctest_beyond_warning()
     test_tctest_releases_lock_on_exception()
     test_tctest_never_touches_session_or_sacn()
+    test_madmapper_osc_bytes_match_the_bench_capture()
+    test_madmapper_primitives_send_the_right_addresses()
+    test_madmapper_ramp_step_count_and_values()
+    test_madmapper_fade_surfaces_perceptual_curve_step_values()
+    test_madmapper_ramp_is_cancellable()
+    test_madmapper_restore_levels()
+    test_madmapper_fade_all_sends_audio_and_surfaces_together()
+    test_madmapper_config_refusals()
+    test_madmapper_watchdog_bind_must_be_loopback()
+    test_madmapper_watchdog_start_bind_failure_has_its_own_sentence()
+    test_madmapper_watchdog_ignores_a_lone_packet_while_disarmed()
+    test_madmapper_watchdog_ignores_lone_packet_even_when_armed_before_start()
+    test_madmapper_watchdog_nan_is_a_drift_fault()
+    test_madmapper_watchdog_alarms_only_while_armed()
+    test_madmapper_watchdog_recovery()
+    test_madmapper_watchdog_drift_flag()
+    test_madmapper_watchdog_suspend_and_resume()
+    test_madmapper_watchdog_skips_drift_right_after_recovery()
+    test_madmapper_submit_has_a_timeout()
+    test_madmapper_no_clock_is_ever_mixed_with_another()
+    test_the_gpl_path_never_loads_madmapper()
+    test_madmapper_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_madmapper_link()
+    test_web_closes_a_config_built_madmapper_link()
+    test_beyond_osc_bytes_and_config_refusals()
+    test_beyond_allow_list_rejects_everything_but_brightness()
+    test_beyond_lowest_level_socket_also_enforces_allow_list()
+    test_beyond_blank_and_unblank_succeed_and_report_ok()
+    test_beyond_blank_retries_and_reports_failure()
+    test_beyond_health_reports_last_result_and_packets_sent()
+    test_beyond_builds_blank_at_construction_and_close_blanks_again()
+    test_beyond_never_sends_blackout_or_masterpause()
+    test_the_gpl_path_never_loads_beyond()
+    test_beyond_web_route_reports_health()
+    test_web_does_not_close_a_ready_made_beyond_link()
+    test_web_closes_a_config_built_beyond_link()
+    test_devices_on_hold_blanks_beyond_then_fades_music_down()
+    test_devices_on_resume_in_show_fades_up_then_unblanks()
+    test_devices_on_resume_not_in_show_refuses_to_unblank()
+    test_devices_on_resume_not_in_show_reports_a_failed_reblank()
+    test_beyond_unblank_itself_refuses_in_show_false()
+    test_devices_on_abort_blanks_beyond_then_fades_everything_together()
+    test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
+    test_devices_in_show_must_be_a_real_bool()
+    test_devices_report_a_failed_blank_to_the_caller()
+    test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
+    test_conductor_failed_start_disarms_without_latch()
     test_conductor_double_abort_is_idempotent()
     test_conductor_abort_mid_hold_fade_wins()
     test_conductor_resume_before_the_hold_fade_finishes()
@@ -27363,6 +32982,25 @@ if __name__ == "__main__":
     test_conductor_hold_video_pixels_freeze_or_fade()
     test_conductor_output_failures_are_loud_and_never_crash_it()
     test_conductor_on_real_threads()
+    test_schedule_drives_the_show_conductor()
+    test_schedule_conductor_calls_after_the_save_and_off_the_lock()
+    test_schedule_failed_start_disarms_without_latch()
+    test_schedule_abort_latch_misses_the_next_show_until_reset()
+    test_schedule_restart_after_a_stopped_show_stays_dark()
+    test_schedule_preshow_lead_on_tick_and_resume()
+    test_schedule_night_reset_boundary()
+    test_schedule_delayed_night_closes_at_the_2am_reset()
+    test_schedule_restart_across_the_2am_reset()
+    test_schedule_restart_after_an_abort_stays_latched_until_reset()
+    test_schedule_abort_latch_outlives_the_night()
+    test_schedule_hold_while_aborted_stays_dark()
+    test_schedule_conductor_line_stuck_or_dead_is_loud()
+    test_schedule_reset_refusals_are_journaled()
+    test_schedule_conductor_wiring_details()
+    test_schedule_tonight_file_format()
+    test_schedule_abort_latch_survives_a_damaged_disk()
+    test_schedule_reset_never_overtakes_an_abort()
+    test_schedule_conductor_line_round3_details()
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
@@ -27388,6 +33026,18 @@ if __name__ == "__main__":
     test_streamdeck_deck_journal_prints_and_posts()
     test_streamdeck_reconnect_never_remembers_old_state()
     test_streamdeck_never_imports_flamesafe()
+    test_conductor_devices_hold_blanks_beyond_before_anything_fades()
+    test_conductor_devices_abort_blanks_at_once_never_ramps()
+    test_conductor_devices_resume_unblanks_only_after_timecode_and_gate()
+    test_conductor_devices_failures_missing_links_and_speed()
+    test_conductor_devices_instant_video_lands_after_a_running_fade()
+    test_beyond_a_blank_cuts_an_unblank_short_from_any_thread()
+    test_conductor_abort_is_never_held_up_by_a_slow_device()
+    test_conductor_hears_about_madmapper_failures_and_stalls()
+    test_conductor_a_failed_abort_blank_can_be_sent_again()
+    test_conductor_video_never_rises_after_abort_or_hold()
+    test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
+    test_conductor_announcement_after_abort_and_reset()
     test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
     test_flame_link_fix_round_1()
@@ -27419,6 +33069,17 @@ if __name__ == "__main__":
             for t in touched:
                 print(f"    {t}")
 
+    # Last check: this run's own temp folder must be empty once the tests'
+    # folders are gone. A test that leaves a file or a child process's folder
+    # behind is caught here, not discovered later as a full disk.
+    _left = _TEMPRUN.finish()
+    if _left:
+        _what = "; ".join(_TEMPRUN.describe(_left))
+        FAILS.append(f"this run left {len(_left)} temp entries behind: "
+                     + _what)
+        print(f"\n  FAIL  this run left {len(_left)} temp entries behind in "
+              f"its own temp folder: {_what}")
+
     print(f"\n{'-'*50}")
     if SHOW_PROBLEMS:
         print(f"{len(SHOW_PROBLEMS)} thing(s) to fix in the SHOW FILE. The "
@@ -27428,15 +33089,21 @@ if __name__ == "__main__":
         print("  Open Tools and run 'Set the Advatek triggers.command'.")
         print()
     if FAILS:
+        if os.environ.get("GITHUB_ACTIONS"):
+            for _f in FAILS[:10]:
+                print("::error title=selftest::"
+                      + _f.replace("%", "%25").replace("\r", "%0D")
+                      .replace("\n", "%0A")[:900])
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
         if os.environ.get("GITHUB_ACTIONS") == "true":
-            # Each failure as a GitHub annotation too: the job log cannot
-            # always be fetched, the annotations can (check-runs API).
-            for f in FAILS[:10]:
-                text = str(f)[:900].replace("%", "%25").replace(
-                    "\r", "%0D").replace("\n", "%0A")
-                print(f"::error title=selftest ({sys.platform})::{text}")
+            # Job logs cannot always be fetched (a cloud session's proxy
+            # blocks the log store); annotations can, so each failure is
+            # also written as one.
+            for f in FAILS[:20]:
+                msg = (str(f)[:1500].replace("%", "%25")
+                       .replace("\r", "%0D").replace("\n", "%0A"))
+                print(f"::error title=selftest failure::{msg}")
         sys.exit(1)
     print(f"all checks passed in {time.time()-t0:.1f}s")
