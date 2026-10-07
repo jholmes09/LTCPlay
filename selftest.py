@@ -32467,9 +32467,9 @@ def test_beyond_timecode_blanking():
             w = F.attach(n.svc, types.SimpleNamespace(session=None),
                          F.FireIceConfig(beyond_blank=m), threaded=False)
             b = w.devices.beyond
-            check((b is None) if m == "osc" else (
-                isinstance(b, BT.Blanking) and b.mode == m and
-                b.gate is not None),
+            check(isinstance(b, BT.Blanking) and b.mode == m and
+                  (b.gate is None) == (m == "osc") and
+                  (b.fault is None) == (m == "timecode"),
                 f"attach() with beyond_blank {m!r} and no OSC BEYOND: {b}")
             w.close()
 
@@ -33276,6 +33276,116 @@ def test_audio_master_per_call_fade():
     print("  ok")
 
 
+
+def test_lasers_blanking_not_set_up_is_loud():
+    section("lasers: OSC blanking with no BEYOND OSC address is a standing "
+            "fault (journal at startup and each show start, Lasers lamp "
+            "bad, blank says False); a configured one is as before; a send "
+            "that raises is a fault note, never an exception")
+    import types
+    import tempfile
+    from ltcplay import beyondtc as BT, conductor as C, remote as RM
+    F = _fi_mod()
+
+    def chip(cond):
+        sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+        r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                      folder=tempfile.gettempdir())
+        got = [x for x in r.subsystems({}) if x["name"] == "Lasers"]
+        return got[0] if got else None, r.laser_fault()
+
+    for configured in (False, True):
+        for mode in ("osc", "both"):
+            lines = []
+
+            def journal(text, **f):
+                lines.append((text, bool(f.get("fault")), f.get("outcome")))
+            osc = None
+            if configured:
+                osc = types.SimpleNamespace(
+                    cfg=types.SimpleNamespace(host="10.0.0.9", port=8100),
+                    last_result="ok")
+                osc.blank = lambda show=None: True
+                osc.unblank = lambda show=None, **k: True
+            cfg = F.FireIceConfig(beyond_blank=mode,
+                                  beyond_timecode_ip="10.0.0.9")
+            b = F.build_blanking(cfg, osc, journal, threaded=False)
+            tag = f"{mode}, {'configured' if configured else 'no beyond'}"
+            nsu = [x for x in lines if x[2] == "not_set_up"]
+            if configured:
+                check(b.fault is None and not nsu,
+                      f"{tag}: no standing fault: {b.fault} {nsu}")
+            else:
+                check(b.fault == BT.NOT_SET_UP == "Lasers: blanking not "
+                      "set up" and len(nsu) == 1 and nsu[0][1],
+                      f"{tag}: one startup fault journaled: {lines}")
+                check(b.note_not_set_up("show start") and
+                      sum(1 for x in lines if x[2] == "not_set_up") == 2,
+                      f"{tag}: journaled again at a show start")
+            if not configured:
+                half = BT.Blanking(mode, osc=types.SimpleNamespace(
+                    cfg=types.SimpleNamespace(host="", port=8100)))
+                check(half.fault == BT.NOT_SET_UP,
+                      f"{tag}: a beyond block with no host is not set up")
+            check(b.blank() is configured,
+                  f"{tag}: blank() says {configured}")
+            dev = C.ConductorDevices(None, b, show=1)
+            check(dev.lasers_blank().ok is configured,
+                  f"{tag}: the conductor's laser blank ok={configured}")
+            cond = types.SimpleNamespace(
+                devices=dev, snapshot=lambda: {"applied": {"lasers": "BLACK"}})
+            c, fault = chip(cond)
+            if configured:
+                check(c["state"] == "ok" and fault == "",
+                      f"{tag}: the Lasers lamp as today: {c}")
+            else:
+                check(c["state"] == "bad" and c["word"] == "blanking not "
+                      "set up" and fault == BT.NOT_SET_UP,
+                      f"{tag}: the Lasers lamp is not ok: {c} {fault!r}")
+            if b.gate is not None:
+                b.gate.close()
+
+    # attach(): the show-start check journals it and never refuses.
+    n = _fi_night(session=False)
+    if n.S is not None:
+        lines = []
+        ctl = types.SimpleNamespace(session=None)
+        w = F.attach(n.svc, ctl, F.FireIceConfig(beyond_blank="osc"),
+                     threaded=False,
+                     journal=lambda t, **f: lines.append(f.get("outcome")))
+        check(lines.count("not_set_up") == 1, f"attach: once at startup")
+        got = ctl.before_open("/x/show1.json")
+        check(got == {} and lines.count("not_set_up") == 2,
+              f"attach: a show start journals it again and still opens: "
+              f"{got} {lines.count('not_set_up')}")
+        w.close()
+
+    # A send that raises: a fault note and False, never an exception.
+    for mode in ("osc", "both"):
+        lines = []
+        osc = types.SimpleNamespace(
+            cfg=types.SimpleNamespace(host="10.0.0.9", port=8100),
+            last_result=None)
+
+        def boom(show=None, **k):
+            raise OSError(65, "No route to host")
+        osc.blank = osc.unblank = boom
+        b = BT.Blanking(mode, osc=osc,
+                        journal=lambda t, **f: lines.append(
+                            (t, f.get("fault"), f.get("outcome"))))
+        try:
+            r1, r2 = b.blank(), b.unblank(in_show=True)
+            raised = None
+        except Exception as e:
+            r1 = r2 = None
+            raised = e
+        check(raised is None and r1 is False and r2 is False,
+              f"{mode}: a raising send is False, not {raised!r}")
+        check(sum(1 for x in lines if x[2] == "send_failed" and x[1]) == 2,
+              f"{mode}: each raising send is a fault note: {lines}")
+    print("  ok")
+
+
 def _fi_night(performs=True, session=True, flames=True):
     """A Fire & Ice night: the real scheduler service on a fake wall clock,
     the real conductor built by fire_ice.attach() on fake time, the real
@@ -33760,7 +33870,10 @@ def test_fire_ice_active_flame_controller_refused():
         check(any(f and "no flame cue is ever sent" in t for t, f in lines2),
               f"no flame_controller named: a startup fault says no flame "
               f"cue is ever sent: {lines2}")
-        check(getattr(c2, "before_open", None) is None and
+        # Its only open check is the lasers' "blanking not set up" note
+        # (beyond_blank "osc" with no BEYOND), which excludes nothing.
+        check((getattr(c2, "before_open", None) is None or
+               c2.before_open("show1.json") == {}) and
               "exclude_controllers" not in c2.defaults,
               "and nothing else changes")
 
@@ -40539,6 +40652,7 @@ if __name__ == "__main__":
     test_screen_arm_end_to_end_probes()
     test_engine_stall_probe_memory_is_bounded()
     test_tracemalloc_diagnostic_is_opt_in()
+    test_lasers_blanking_not_set_up_is_loud()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

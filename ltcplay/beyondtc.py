@@ -284,10 +284,19 @@ class TimecodeGate:
                 pass
 
 
+NOT_SET_UP = "Lasers: blanking not set up"
+
+
 class Blanking:
     """What conductor.ConductorDevices calls as its BEYOND: blank() and
     unblank(), by timecode, by OSC, or both (`mode`). `osc` is beyond.py's
-    Beyond or None; `gate` a TimecodeGate or None."""
+    Beyond or None; `gate` a TimecodeGate or None.
+
+    A mode that uses OSC with no OSC target (no "beyond" block, or one with
+    no host or port) blanks nothing, and BEYOND never answers, so that is a
+    standing fault (`fault`), never a quiet pass: blank() says False, the
+    conductor records the lasers as UNKNOWN, and the screens show it. The
+    show may still run; that is the operator's call."""
 
     def __init__(self, mode, gate=None, osc=None, journal=None):
         self.mode = mode
@@ -296,6 +305,46 @@ class Blanking:
         self._journal = journal
         self.last_result = None
         self.cfg = getattr(osc, "cfg", None)
+
+    @property
+    def fault(self):
+        """NOT_SET_UP while this mode uses OSC and has no OSC target, else
+        None."""
+        if not self._uses("osc"):
+            return None
+        if self.osc is None:
+            return NOT_SET_UP
+        cfg = getattr(self.osc, "cfg", None)
+        if cfg is not None and (not getattr(cfg, "host", None) or
+                                not getattr(cfg, "port", None)):
+            return NOT_SET_UP
+        return None
+
+    def note_not_set_up(self, when):
+        """Journal the standing fault once (at startup, at a show start).
+        True when there was one."""
+        if self.fault is None:
+            return False
+        self._note(f"{NOT_SET_UP} ({when}): beyond_blank is \"{self.mode}\" "
+                   f"but no BEYOND OSC address is set (the \"beyond\" block "
+                   f"with its host and port), so Hold and Abort send the "
+                   f"lasers nothing and BEYOND sends nothing back. The show "
+                   f"can still run; blank the lasers at BEYOND yourself.",
+                   fault=True, outcome="not_set_up")
+        return True
+
+    def _osc_call(self, method, show, **kw):
+        """beyond.py's blank or unblank: True only for a real True. A send
+        that raises is a fault note and False, never an exception."""
+        if self.fault is not None:
+            return False
+        try:
+            return getattr(self.osc, method)(show=show, **kw) is True
+        except Exception as e:
+            self._note(f"The OSC {method} to BEYOND failed "
+                       f"({type(e).__name__}: {e}).", fault=True,
+                       outcome="send_failed")
+            return False
 
     def _uses(self, kind):
         return self.mode in (kind, "both")
@@ -310,10 +359,11 @@ class Blanking:
                          f"{self.gate.hour if self.gate else '?'})"
                          if sent else "the black zone could NOT be sent")
         if self._uses("osc"):
-            sent = self.osc is not None and self.osc.blank(show=show) is True
+            sent = self._osc_call("blank", show)
             ok = ok and sent
             parts.append("OSC brightness 0" if sent else
-                         "the OSC blank could NOT be sent")
+                         "the OSC blank could NOT be sent" +
+                         (" (blanking not set up)" if self.fault else ""))
         self._note(f"Lasers blanked ({self.mode}): {', '.join(parts)}.",
                    fault=not ok, outcome="blanked" if ok else "blank_failed")
         return ok
@@ -330,8 +380,7 @@ class Blanking:
             kw = {"in_show": True}
             if still_wanted is not None:
                 kw["still_wanted"] = still_wanted
-            sent = self.osc is not None and \
-                self.osc.unblank(show=show, **kw) is True
+            sent = self._osc_call("unblank", show, **kw)
             self.last_result = getattr(self.osc, "last_result", None)
             ok = ok and sent
             parts.append("OSC brightness 100" if sent else
@@ -352,7 +401,7 @@ class Blanking:
         return ok
 
     def health(self):
-        out = {"blank_mode": self.mode}
+        out = {"blank_mode": self.mode, "fault": self.fault}
         if self.gate is not None:
             out["timecode"] = self.gate.stats()
         if self.osc is not None:

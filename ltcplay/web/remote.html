@@ -603,7 +603,7 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "";
-  setWarn("st-trouble", [sch.trouble, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
+  setWarn("st-trouble", [s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
   if(!fl.connected) fmsg = fl.why || "flamesafe is not connected.";

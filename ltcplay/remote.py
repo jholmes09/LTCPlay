@@ -1095,6 +1095,16 @@ class Remote:
     # -- status ------------------------------------------------------------
     DECK_QUIET_S = 2.0
 
+    def laser_fault(self):
+        """beyondtc.NOT_SET_UP while the conductor's laser blanking has no
+        OSC target, else "". Display only; never raises."""
+        try:
+            cond = getattr(self.schedule, "conductor", None)
+            b = getattr(getattr(cond, "devices", None), "beyond", None)
+            return str(getattr(b, "fault", "") or "")
+        except Exception:
+            return ""
+
     def subsystems(self, cs):
         """The rack screen's compact strip: one word per subsystem, and
         "ok", "warn", "bad" or "off". Display only, read from what the
@@ -1135,9 +1145,13 @@ class Remote:
             applied = (cond.snapshot() or {}).get("applied") or {}
         except Exception:
             applied = {}
+        laser_fault = self.laser_fault()
         for name, key in (("Video", "video"), ("Lasers", "lasers")):
             v = applied.get(key)
-            if cond is None or v is None:
+            if key == "lasers" and laser_fault:
+                # Never "ok" or "lit" while nothing can blank them.
+                add(name, "bad", "blanking not set up")
+            elif cond is None or v is None:
                 add(name, "off", "none")
             elif str(v) == "unknown":
                 add(name, "warn", "not known")
@@ -1211,6 +1225,7 @@ class Remote:
         # is a fault (the render and the layout do not fit, and the like).
         out["flames"]["cues_fault"] = str(
             getattr(self.flame_cues, "fault", "") or "")
+        out["laser_fault"] = self.laser_fault()
         out["disarm_connected"] = self._disarm_fn() is not None
         now = self.clock()
         tok = ctx.device

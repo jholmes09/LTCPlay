@@ -1663,6 +1663,13 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     else:
         show = FireIceShow(control, journal=journal, flame_link=flame_link)
     blanking = build_blanking(cfg, beyond, journal, threaded)
+    if blanking.fault is not None:
+        def laser_fault_check(show_file, _b=blanking):
+            # Loud, never a refusal: running is the operator's call.
+            _b.note_not_set_up(f"show start, "
+                               f"{os.path.basename(str(show_file))}")
+            return None
+        opens.append(laser_fault_check)
     gate = getattr(blanking, "gate", None)
     if gate is not None:
         def laser_check(show_file, _gate=gate):
@@ -1731,12 +1738,12 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
 def build_blanking(cfg, beyond, journal=None, threaded=True):
     """BEYOND as the conductor sees it: beyondtc.Blanking, keeping the
     lasers dark by timecode, OSC or both (cfg.beyond_blank). Journals the
-    mode. None only when there is no BEYOND at all (OSC mode, no BEYOND
-    configured)."""
+    mode. A mode that uses OSC with no BEYOND OSC target still gets a
+    Blanking, whose standing fault (beyondtc.NOT_SET_UP) is journaled here
+    and at every show start, and whose blank() says False: never a quiet
+    pass."""
     from . import beyondtc
     mode = getattr(cfg, "beyond_blank", BEYOND_BLANK_DEFAULT)
-    if mode == "osc" and beyond is None:
-        return None
     gate = None
     if mode in ("timecode", "both"):
         ip = getattr(cfg, "beyond_timecode_ip", None) or (
@@ -1761,7 +1768,9 @@ def build_blanking(cfg, beyond, journal=None, threaded=True):
                         f"{cfg.beyond_black_hour}) AND by OSC brightness"}[mode]
         journal(f"Lasers are blanked {what} (beyond_blank \"{mode}\").",
                 action="lasers", outcome="blank_mode")
-    return beyondtc.Blanking(mode, gate=gate, osc=beyond, journal=journal)
+    blanking = beyondtc.Blanking(mode, gate=gate, osc=beyond, journal=journal)
+    blanking.note_not_set_up("at startup")
+    return blanking
 
 
 class _LinkSlot:

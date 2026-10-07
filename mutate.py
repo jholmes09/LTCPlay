@@ -7131,8 +7131,8 @@ def build():
 
  ("beyond blanking: both mode skips the OSC blank",
   "ltcplay/beyondtc.py",
-  "        if self._uses(\"osc\"):\n            sent = self.osc is not None and self.osc.blank(show=show) is True",
-  "        if self.mode == \"osc\":\n            sent = self.osc is not None and self.osc.blank(show=show) is True"),
+  "        if self._uses(\"osc\"):\n            sent = self._osc_call(\"blank\", show)",
+  "        if self.mode == \"osc\":\n            sent = self._osc_call(\"blank\", show)"),
 
  ("beyond blanking: an unknown beyond_blank is taken",
   "ltcplay/fire_ice.py",
@@ -7703,6 +7703,61 @@ def build():
   "ltcplay/web.py",
   "                \"lost\": playing and mode == \"freerun\",\n",
   "                \"lost\": playing,\n"),
+
+ # -- lasers: OSC blanking with no OSC target is loud, never a quiet pass --
+ ("lasers not set up: no BEYOND block reads as set up",
+  "ltcplay/beyondtc.py",
+  "        if self.osc is None:\n            return NOT_SET_UP",
+  "        if False:\n            return NOT_SET_UP"),
+
+ ("lasers not set up: a beyond block with no host reads as set up",
+  "ltcplay/beyondtc.py",
+  "        if cfg is not None and (not getattr(cfg, \"host\", None) or",
+  "        if False and (not getattr(cfg, \"host\", None) or"),
+
+ ("lasers not set up: the unconfigured OSC blank says done",
+  "ltcplay/beyondtc.py",
+  "        if self.fault is not None:\n            return False",
+  "        if self.fault is not None:\n            return True"),
+
+ ("lasers not set up: the standing fault is journaled as calm",
+  "ltcplay/beyondtc.py",
+  "                   fault=True, outcome=\"not_set_up\")",
+  "                   fault=False, outcome=\"not_set_up\")"),
+
+ ("lasers not set up: a raising OSC send escapes the blanking",
+  "ltcplay/beyondtc.py",
+  "            return getattr(self.osc, method)(show=show, **kw) is True\n"
+  "        except Exception as e:",
+  "            return getattr(self.osc, method)(show=show, **kw) is True\n"
+  "        except ZeroDivisionError as e:"),
+
+ ("lasers not set up: a raising OSC send is not a fault",
+  "ltcplay/beyondtc.py",
+  "                       f\"({type(e).__name__}: {e}).\", fault=True,\n"
+  "                       outcome=\"send_failed\")",
+  "                       f\"({type(e).__name__}: {e}).\", fault=False,\n"
+  "                       outcome=\"send_failed\")"),
+
+ ("lasers not set up: nothing journaled at startup",
+  "ltcplay/fire_ice.py",
+  "    blanking.note_not_set_up(\"at startup\")\n",
+  ""),
+
+ ("lasers not set up: nothing journaled at a show start",
+  "ltcplay/fire_ice.py",
+  "            _b.note_not_set_up(f\"show start, \"",
+  "            (lambda *a: None)(f\"show start, \""),
+
+ ("lasers not set up: the Lasers lamp reads ok anyway",
+  "ltcplay/remote.py",
+  "            if key == \"lasers\" and laser_fault:",
+  "            if False:"),
+
+ ("lasers not set up: the screen is never told",
+  "ltcplay/remote.py",
+  "            return str(getattr(b, \"fault\", \"\") or \"\")",
+  "            return \"\""),
 
 ]
 

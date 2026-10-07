@@ -604,13 +604,13 @@ matching what the lamp already says ("cycle the arm").
 
 ## Arming from a screen (added 2026-10-03)
 
-Jeff approved arming from the rack touch screen and from an iPad, by any
-operator signed in with their own PIN, on the same consent rules as the
-Stream Deck. **Nothing in flamesafe changed for it, and no rule was
+Jeff approved arming from the rack touch screen and from an iPad on the
+same consent rules as the Stream Deck. Since 2026-10-07 there are no PINs or
+sign-ins: screen arming needs only a listed address plus the hold. **Nothing in flamesafe changed for it, and no rule was
 loosened.** This section says why, and how.
 
 **The design: a screen hold is a remote press of the deck's own key.** The
-page never sends anything to flamesafe. A signed-in operator's "hold to
+page never sends anything to flamesafe. A screen's "hold to
 arm" goes to ltcplay's engine (`ltcplay/remote.py`, `arm-hold`, repeated
 every 100 ms while the finger is down). The Stream Deck process
 (`ltcplay/streamdeck.py`, `ScreenKeys`, read 20 times a second from the
@@ -651,8 +651,9 @@ its own:
 **What the screen hold must prove, at the engine** (all re-checked on
 every heartbeat; any failure lets the hold go and is journaled):
 
-- a PIN session, on the network AND on the show machine itself (the one
-  route that needs a session even on loopback);
+- a listed address: the engine listens only on the one listed
+  show-network address and on 127.0.0.1, and refuses anything proxied,
+  cross-site or misaddressed (no PIN or sign-in since 2026-10-07);
 - `screen_arming` on in `ltcplay_remote.json`: **off by default** since the
   review of PR #43 (2026-10-05, P0-4), until PR #41's own safety review
   decides; only the JSON word `true` turns it on, and a broken file reads as
