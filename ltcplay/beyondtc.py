@@ -34,7 +34,7 @@ import threading
 import time
 
 MODES = ("timecode", "osc", "both")
-DEFAULT_MODE = "timecode"
+DEFAULT_MODE = "osc"            # fire_ice.BEYOND_BLANK_DEFAULT (Jeff, 2026-10-07)
 DEFAULT_BLACK_HOUR = 23
 FPS = 30                         # clock.MASTER_FPS
 # Black frames sent when the gate closes (the engine stopping, Ctrl-C, a

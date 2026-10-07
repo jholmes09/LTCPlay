@@ -4,8 +4,9 @@ everything).
 
 The exerciser presses only the real paths, with the real consent rules:
 
-  - it signs in on the rack screen's own routes with an operator's PIN and
-    picks that operator, exactly as a person on the show machine would;
+  - it chooses the Stream Deck's operator on the rack screen (the deck's
+    operator gate), exactly as a person on the show machine would; the
+    page itself has no sign-in (Jeff, 2026-10-07);
   - it arms each flame group by HOLDING its Arm button on the screen
     (/api/remote/arm-hold, a heartbeat every 100 ms, then arm-release):
     a remote press of the group's key on the real Stream Deck program,
@@ -36,7 +37,6 @@ import urllib.error
 import urllib.request
 
 OPERATOR = "Andy"
-PIN = "2468"
 ARM_AT_S = 8.0
 HOLD_AT_S = 30.0         # the first Hold; then one every HOLD_EVERY_S
 HOLD_EVERY_S = 120.0
@@ -63,26 +63,19 @@ STALE_TC_S = 1.0         # timecode silent this long: not in a show
 
 
 class Http:
-    """JSON over HTTP to the engine on this machine, with the session
-    cookie once signed in."""
+    """JSON over HTTP to the engine on this machine."""
 
     def __init__(self, base, timeout=5.0):
         self.base = base
         self.timeout = timeout
-        self.cookie = None
 
     def __call__(self, method, path, body=None):
         data = None if method == "GET" else json.dumps(body or {}).encode()
         h = {"Content-Type": "application/json"}
-        if self.cookie:
-            h["Cookie"] = self.cookie
         req = urllib.request.Request(self.base + path, data=data, headers=h,
                                      method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                sc = r.headers.get("Set-Cookie")
-                if sc:
-                    self.cookie = sc.split(";")[0]
                 return r.status, json.loads(r.read() or b"null")
         except urllib.error.HTTPError as e:
             try:
@@ -134,24 +127,16 @@ class Exerciser:
         self.note(f"exerciser: {what} failed: {why}")
 
     def sign_in(self):
-        st, doc = self.http("POST", "/api/remote/pin",
-                            {"who": OPERATOR, "pin": PIN})
+        """Ready the rack screen: no sign-in any more (Jeff, 2026-10-07),
+        only the Stream Deck's operator, which its own gate needs before
+        it arms anything, chosen on this machine as a person would."""
+        st, doc = self.http("POST", "/api/schedule/operator",
+                            {"who": OPERATOR, "screen": "Rack screen"})
         if st != 200:
-            self._fail("setting the operator's PIN", doc)
+            self._fail("choosing the Stream Deck's operator", doc)
             return False
-        st, doc = self.http("POST", "/api/remote/login",
-                            {"who": OPERATOR, "pin": PIN,
-                             "device": "Rack screen"})
-        if st != 200:
-            self._fail("signing in on the rack screen", doc)
-            return False
-        st, doc = self.http("POST", "/api/remote/operator",
-                            {"pick": OPERATOR, "seen": self._seen()})
-        if st != 200:
-            self._fail("picking the operator", doc)
-            return False
-        self.note(f"exerciser: signed in on the rack screen as {OPERATOR} "
-                  f"and picked {OPERATOR} as the operator")
+        self.note(f"exerciser: chose {OPERATOR} as the Stream Deck's "
+                  f"operator on the rack screen")
         self.ready = True
         return True
 
@@ -575,8 +560,9 @@ def self_test():
                    clock=lambda: clock[0], sleep=sleep)
     assert ex.sign_in()
     paths = [p for _m, p, _b in state["calls"]]
-    assert paths.index("/api/remote/pin") < paths.index("/api/remote/login") \
-        < paths.index("/api/remote/operator")
+    assert "/api/schedule/operator" in paths and not any(
+        p in paths for p in ("/api/remote/pin", "/api/remote/login",
+                             "/api/remote/operator"))
     show["t"] = 9.0
     ex.step()
     assert all(state["armed"].values()) and ex.counts["arms"] == 2
@@ -619,7 +605,8 @@ def self_test():
     ex.windows.append([time.time(), None, "abort"])
     assert "after the Abort" in ex.fire_quiet("front row", time.time() + 1)
     assert not ex.failures, ex.failures
-    yield ("the exerciser signs in with a PIN, picks the operator, holds "
+    yield ("the exerciser chooses the Stream Deck's operator (no "
+           "sign-in), holds "
            "each Arm button with heartbeats until flamesafe reports it "
            "armed, Holds and Resumes, Aborts (confirmed), Resets once it "
            "is taken, and re-arms on the next show")

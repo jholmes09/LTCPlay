@@ -370,22 +370,31 @@ requiring silence.
 **The iPad remote.** `--network` serves on ONE address, this machine's address
 on the show Wi-Fi, saved on the page under "Show network" (it lands in
 `ltcplay_remote.json` in the settings folder), on port 7878, plus this machine
-itself on 127.0.0.1. Never every interface: `0.0.0.0` is refused. Over the
-network every operator signs in with their own PIN (set on the show machine,
-on the remote page at `/remote`; stored hashed in `ltcplay_remote_pins.json`).
-Three wrong PINs lock that device and that name out, 5 s, then 10, 20, up to
-5 minutes. A session is a cookie on that one device and ends with Sign out,
-after 12 hours idle, or after 18 hours. The Stream Deck needs no PIN (Jeff,
-2026-10-01). Requests from the machine itself need no sign-in, as before.
+itself on 127.0.0.1. Never every interface: `0.0.0.0` is refused. There is no
+sign-in, no PIN and no operator name on the page (Jeff, 2026-10-07): any
+device that can reach that address can use the remote page, so the show Wi-Fi
+itself is the lock. The network reaches only the remote page and its own
+routes, and anything that looks proxied, cross-site or addressed to another
+host name is refused. The journal names the surface a press came from: "Rack
+screen" for the machine itself, "iPad at <its address>" for a device on the
+show Wi-Fi. An old `ltcplay_remote_pins.json` in the settings folder is no
+longer read.
 
-The remote page has Start now and Abort (each asks first), Hold, Resume, Reset,
-Disarm every flame group and the operator picker, all through the same
-scheduler and conductor paths, journaled with the operator and the device. It
-shows tonight's list, the show, the timecode, Hold and Abort, and each flame
-group as flamesafe last reported it (flamesafe sends the engine a copy of its
-status on `link.status_mirror_port`). If the page has not heard from the engine
-for 2 s a red banner says so and the controls that act on what it shows go
-off; Hold, Abort and Disarm stay on.
+The remote page is one screen with no scrolling, at 1920x1080 on the rack PC
+and 1024x768 on an iPad: the show state, the timecode, the current show with
+"Left in this show" (its length minus where the engine's show clock is; it
+stands still while held, and is not shown when the length is not known),
+the next show with its countdown, Start now and Abort (each asks first),
+Hold, Resume, Reset, each flame group as flamesafe last reported it with its
+Hold to arm and Disarm, Disarm every flame group, the big Abort bar, and a
+status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
+same scheduler and conductor paths. Tonight's list is its own compact screen
+(Tonight), and everything else is on the Programming screen: the transport
+below, Run and Stop, the Stream Deck operator and the show network, the last
+three on the machine itself only. Each has a Back to the show button, and the
+Abort bar is on every screen. If the page has not heard from the engine for 2
+s a red banner says so and the controls that act on what it shows go off;
+Hold, Abort and Disarm stay on.
 
 **The Stream Deck after an Abort** (Jeff's approved design, 2026-09-26):
 hold Abort for half a second while the red ring fills. Once it fires, the
@@ -401,15 +410,18 @@ turns it off. Abort, Hold, Resume and Reset from the deck go to the engine's sho
 conductor; if the engine does not take one, or cannot be reached, the Start
 key reads ENGINE FAULT.
 
-**Arming from the page** (Jeff, 2026-10-03): a signed-in operator (a PIN
-session even on the show machine) holds a group's "Hold to arm" button.
+**Arming from the page** (Jeff, 2026-10-03; no sign-in since 2026-10-07):
+anyone at the rack screen, or on a device that reaches the listed show
+network address, holds a group's "Hold to arm" button.
 The page never arms anything itself: the Stream Deck process reads the hold
 from the engine as a press of that group's key and arms it under every
 deck and flamesafe rule (flamesafe/CONTRACT.md, "Arming from a screen").
 It needs a page status and a flamesafe status no older than 1 s, 1 s of
 heartbeats the engine actually received, and `"screen_arming": true` in
-`ltcplay_remote.json` (the default; `false` turns it off). A dropped
-connection, a closed page, an Abort or a disarm lets the hold go.
+`ltcplay_remote.json` (off unless it says true). One hold per group at a
+time: another device, or another tab on the same one, cannot take over or
+restart a live hold. A dropped connection, a closed page, an Abort or a
+disarm lets the hold go.
 
 In a programming session (a show started with Rehearse, or in Rehearsal mode)
 the page can also play from a timecode, jump 5 or 10 s, pause and continue,

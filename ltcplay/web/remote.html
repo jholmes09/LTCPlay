@@ -12,7 +12,9 @@
    antique gold on near black, a heavy serif for the big words, letterspaced
    capitals for labels, gold hairlines. Green, amber and red only ever mean
    armed, held back and Abort or a fault. The fonts are in the repo
-   (ltcplay/web/brand, SIL OFL): the show machine may have no internet. */
+   (ltcplay/web/brand, SIL OFL): the show machine may have no internet.
+   ONE SCREEN, NO SCROLLING (Jeff, 2026-10-07): the show screen and Tonight
+   fit 1920x1080 and 1024x768 whole. Programming is its own screen. */
 @font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;
   font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
 @font-face{font-family:"Cinzel";font-weight:700;font-style:normal;
@@ -37,255 +39,245 @@
   --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{background:var(--bg)}
-body{margin:0;color:var(--cream);font:17px/1.45 var(--sans);
-  -webkit-font-smoothing:antialiased;padding-bottom:150px;
+html,body{background:var(--bg);height:100%;margin:0;overflow:hidden}
+body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antialiased;
   -webkit-user-select:none;user-select:none;
-  /* the only ornament: a faint gold pixel-dot grid */
   background-image:radial-gradient(rgba(212,168,74,.11) 1px,transparent 1.3px);
-  background-size:22px 22px;background-attachment:fixed}
-.wrap{max-width:1880px;margin:0 auto;padding:12px clamp(16px,1.6vw,32px)}
-header{display:flex;align-items:center;gap:clamp(12px,1.4vw,28px);flex-wrap:wrap;
-  padding:2px 0 10px;border-bottom:1px solid var(--hair);margin-bottom:14px}
-header img{height:clamp(56px,4vw,80px);width:auto;flex:0 0 auto}
-.titles{display:flex;flex-direction:column;gap:2px;min-width:0}
-.kicker{font:700 13px/1.2 var(--caps);letter-spacing:.28em;text-transform:uppercase;
-  color:var(--muted);margin:0}
-h1{font:900 clamp(30px,2.9vw,56px)/1.02 var(--serif);margin:0;color:var(--champ);
-  letter-spacing:.005em;text-shadow:0 0 22px rgba(246,227,174,.22)}
-.spacer{flex:1}
-.who{font-weight:700;color:var(--champ)}
-#whobox{font-size:16px}
-.dim{color:var(--muted)} .err{color:#FF8A80;min-height:1.4em;font-weight:700}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
-.grid > .wide{grid-column:1 / -1}
-@media(max-width:900px){.grid{grid-template-columns:1fr}}
-.card{background:var(--wash);border:1px solid var(--hair);border-radius:6px;
-  padding:14px 18px;position:relative}
-.card h2{font:700 13px/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;
-  color:var(--champ);margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--hair-soft)}
-button{font:700 18px/1.15 var(--sans);color:var(--btn-ink);
+  background-size:22px 22px}
+#app{height:100vh;height:100dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;
+  gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) 0}
+header{display:flex;align-items:center;gap:clamp(8px,1vw,20px);min-width:0;
+  padding-bottom:clamp(4px,.8vh,10px);border-bottom:1px solid var(--hair)}
+header img{height:clamp(34px,5vh,64px);width:auto;flex:0 0 auto}
+.titles{display:flex;flex-direction:column;min-width:0;flex:0 1 auto}
+.kicker{font:700 clamp(10px,1.2vh,13px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--muted);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1{font:900 clamp(20px,3.6vh,44px)/1.02 var(--serif);margin:0;color:var(--champ);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#subs{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 auto;justify-content:center;min-width:0}
+.chip{display:flex;align-items:center;gap:6px;border:1px solid var(--hair);border-radius:999px;
+  padding:3px 10px;font:700 clamp(11px,1.4vh,15px)/1.2 var(--sans);color:var(--cream);white-space:nowrap}
+.chip i{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.chip.ok i{background:var(--green)} .chip.warn i{background:var(--amber)}
+.chip.bad i{background:var(--red)} .chip.bad{border-color:var(--red)}
+.chip span{color:var(--muted);font-weight:400}
+nav{display:flex;gap:8px;flex:0 0 auto;align-items:center}
+nav button{min-height:clamp(40px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:6px 14px}
+#where{font:700 clamp(11px,1.4vh,14px)/1.2 var(--sans);color:var(--muted);white-space:nowrap}
+.dim{color:var(--muted)}
+button{font:700 clamp(15px,2.2vh,20px)/1.15 var(--sans);color:var(--btn-ink);
   background:linear-gradient(180deg,var(--btn-top),var(--btn-bot));
-  border:1px solid var(--gold-hi);border-radius:6px;min-height:60px;padding:10px 14px;
+  border:1px solid var(--gold-hi);border-radius:6px;min-height:clamp(44px,6.5vh,72px);padding:6px 12px;
   touch-action:manipulation;cursor:pointer;letter-spacing:.01em}
 button:disabled{opacity:.38;cursor:not-allowed;filter:saturate(.4)}
 button.go{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
 button.hold{background:var(--amber);border-color:#FFC266;color:var(--amber-ink)}
-button.disarm,button.gdis{background:var(--bronze);border:1px solid var(--gold);
-  color:var(--champ)}
-button.disarm{width:100%;font-size:20px;min-height:58px;letter-spacing:.04em}
+button.disarm,button.gdis{background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 button.ghost{background:transparent;border:1px solid var(--hair);color:var(--champ)}
 .row{display:flex;gap:10px;flex-wrap:wrap}
-.row > button{flex:1 1 0;min-width:120px}
+.row > button{flex:1 1 0;min-width:110px}
 select,input{font:inherit;color:var(--cream);background:rgba(7,6,5,.85);
-  border:1px solid var(--hair);border-radius:6px;min-height:56px;padding:8px 12px;
+  border:1px solid var(--hair);border-radius:6px;min-height:48px;padding:6px 12px;
   width:100%;-webkit-user-select:text;user-select:text}
 select:focus,input:focus,button:focus-visible{outline:2px solid var(--champ);outline-offset:2px}
 label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;
-  color:var(--muted);margin:14px 0 7px}
-.big{font:800 clamp(40px,3.6vw,64px)/1.05 var(--sans);letter-spacing:.01em;
-  font-variant-numeric:tabular-nums;color:var(--champ)}
-table{width:100%;border-collapse:collapse;font-size:16px}
-td{padding:8px 6px;border-bottom:1px solid var(--hair-soft);color:var(--cream)}
-td:first-child{font-weight:700;color:var(--champ)}
+  color:var(--muted);margin:10px 0 6px}
+.card{background:var(--wash);border:1px solid var(--hair);border-radius:6px;padding:10px 14px;min-width:0}
+.card h2{font:700 clamp(11px,1.4vh,13px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--champ);margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--hair-soft)}
+.toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#alerts{display:flex;flex-direction:column;gap:4px;min-width:0}
+#alerts:empty{display:none}
+.warnbox{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
+  border-radius:6px;padding:4px 10px;font-size:clamp(13px,1.6vh,16px);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+.warnbox.open{-webkit-line-clamp:unset}
+#stale{position:fixed;left:clamp(10px,1.2vw,24px);right:clamp(10px,1.2vw,24px);top:8px;z-index:20;
+  background:var(--red-deep);color:var(--champ);border:3px solid var(--red);border-radius:8px;
+  padding:10px 14px;font:800 clamp(17px,2.4vh,26px)/1.25 var(--sans);text-align:center}
+#main{min-height:0;position:relative}
+.view{height:100%;min-height:0}
+[hidden]{display:none !important}
 
-/* ---- the rack monitor: read from across the room ---- */
-.now{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);
-  gap:clamp(14px,1.6vw,32px) clamp(18px,2.4vw,48px);align-items:center}
-@media(max-width:1000px){.now{grid-template-columns:1fr}}
-.stateword{font:800 clamp(44px,4.6vw,96px)/1 var(--sans);letter-spacing:.03em;
-  text-transform:uppercase;text-align:center;border-radius:8px;padding:.14em .2em .16em;
+/* ---- the show screen ---- */
+#v-show{display:flex;flex-direction:column;gap:clamp(6px,1vh,12px)}
+.now{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.45fr) minmax(0,1.1fr) minmax(0,.9fr);
+  gap:clamp(8px,1vw,20px);align-items:stretch}
+.now > div{min-width:0;display:flex;flex-direction:column;justify-content:center}
+.stateword{font:800 clamp(24px,min(6vh,3.6vw),76px)/1 var(--sans);letter-spacing:.03em;
+  text-transform:uppercase;text-align:center;border-radius:8px;padding:.12em .2em .14em;
   background:var(--bronze);color:var(--champ);border:2px solid var(--gold);
-  overflow-wrap:anywhere}
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stateword.ok{background:var(--green);color:var(--green-ink);border-color:#5FE08A}
 .stateword.warn{background:var(--amber);color:var(--amber-ink);border-color:#FFC266}
 .stateword.bad{background:var(--red-deep);color:var(--champ);border-color:var(--red)}
-.state{font:700 clamp(18px,1.3vw,24px)/1.3 var(--sans);color:var(--cream);margin-top:8px;
-  text-align:center}
-.tcbox{min-width:0}
-.tcbox .kicker,.nextbox .kicker,.showbox .kicker{color:var(--muted)}
-#st-tc{font:800 clamp(56px,6.2vw,128px)/1 var(--sans);letter-spacing:.005em;
-  font-variant-numeric:tabular-nums;color:var(--champ);white-space:nowrap;
-  text-shadow:0 0 28px rgba(246,227,174,.18)}
-.showname{font:900 clamp(32px,2.8vw,58px)/1.05 var(--serif);font-variant-numeric:lining-nums;color:var(--champ);
-  text-shadow:0 0 22px rgba(246,227,174,.2);margin:4px 0 2px;overflow-wrap:anywhere}
-#st-show{font-size:clamp(16px,1.15vw,22px);color:var(--cream)}
-.nextline{font:700 clamp(20px,1.6vw,30px)/1.25 var(--sans);color:var(--cream);margin-top:4px}
-#st-count{font:800 clamp(44px,3.6vw,76px)/1 var(--sans);font-variant-numeric:tabular-nums;
-  color:var(--champ);margin-top:4px}
-#st-count:empty{display:none}
-.nowbar{border-top:1px solid var(--hair-soft);margin-top:0;padding-top:10px;
-  grid-column:1 / -1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);
-  gap:inherit;align-items:end}
-@media(max-width:1000px){.nowbar{grid-template-columns:1fr}}
-
-/* ---- flame lamps: the Stream Deck's keys, larger ---- */
-.lamps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:12px}
-.lamp{border-radius:8px;padding:10px 12px;border:1px solid var(--hair);background:rgba(7,6,5,.7);
-  display:flex;flex-direction:column;gap:8px;min-width:0}
-.lamp b{display:block;font:700 clamp(14px,1vw,19px)/1.2 var(--caps);letter-spacing:.2em;
-  text-transform:uppercase;color:var(--champ);text-align:center;overflow-wrap:anywhere}
-.lamp .word{display:flex;align-items:center;justify-content:center;text-align:center;
-  min-height:clamp(70px,4.8vw,96px);border-radius:6px;padding:6px 8px;
-  font:800 clamp(24px,2vw,42px)/1.02 var(--sans);letter-spacing:.02em;text-transform:uppercase;
-  background:var(--bronze);color:var(--champ);border:2px solid #7A6032}
-.lamp .why{font:400 13px/1.3 var(--sans);color:var(--cream);font-style:normal;
-  text-align:center;min-height:1.35em}
+.state{font:700 clamp(13px,1.8vh,20px)/1.25 var(--sans);color:var(--cream);margin-top:4px;
+  text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#st-tc{font:800 clamp(26px,min(7.2vh,3.5vw),96px)/1 var(--sans);font-variant-numeric:tabular-nums;
+  color:var(--champ);white-space:nowrap;text-shadow:0 0 28px rgba(246,227,174,.18)}
+.showname{font:900 clamp(18px,min(3.6vh,2.4vw),46px)/1.1 var(--serif);font-variant-numeric:lining-nums;color:var(--champ);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.big2{font:800 clamp(24px,min(6vh,3.6vw),72px)/1.05 var(--sans);font-variant-numeric:tabular-nums;color:var(--champ);white-space:nowrap}
+.nextline{font:700 clamp(14px,2.2vh,26px)/1.2 var(--sans);color:var(--cream);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.big2:empty,.cdlabel:empty{display:none}
+.ctl{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.ctl button{min-height:clamp(52px,8vh,96px);font-size:clamp(18px,3vh,30px)}
+#ctl-msg{margin-top:-2px}
+.flames{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:6px}
+.lamps{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-auto-rows:minmax(0,1fr);gap:8px}
+.lamp{border-radius:8px;padding:6px 8px;border:1px solid var(--hair);background:rgba(7,6,5,.7);
+  display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0;overflow:hidden}
+.lamp b{display:block;font:700 clamp(11px,1.6vh,17px)/1.2 var(--caps);letter-spacing:.16em;
+  text-transform:uppercase;color:var(--champ);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lamp .word{flex:1 1 auto;min-height:clamp(30px,5vh,96px);display:flex;align-items:center;justify-content:center;text-align:center;
+  border-radius:6px;padding:4px 6px;font:800 clamp(18px,3.4vh,42px)/1.02 var(--sans);letter-spacing:.02em;
+  text-transform:uppercase;background:var(--bronze);color:var(--champ);border:2px solid #7A6032;overflow:hidden}
+.lamp .why{font:400 clamp(11px,1.4vh,13px)/1.25 var(--sans);color:var(--cream);font-style:normal;
+  text-align:center;min-height:1.25em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lamp.armed .word{background:var(--green);color:var(--green-ink);border-color:#5FE08A}
 .lamp.held .word{background:var(--amber);color:var(--amber-ink);border-color:#FFC266}
 .lamp.held[data-held="cycle"] .word{animation:cyclearm 1s steps(1,end) infinite}
 .lamp.held[data-held="lost"] .word{background:var(--bronze);color:var(--champ);border-color:#7A6032}
 @keyframes cyclearm{50%{background:#3A2606;color:var(--amber);border-color:var(--amber)}}
-.lamp.unknown .word{border-style:dashed;font-size:clamp(20px,1.5vw,30px);color:var(--muted);
+.lamp.unknown .word{border-style:dashed;font-size:clamp(15px,2.4vh,30px);color:var(--muted);
   background:transparent;border-color:var(--hair)}
-.lamp .lb{display:grid;grid-template-columns:1.6fr 1fr;gap:8px;margin-top:2px}
-.lamp .lb button{min-height:56px;font-size:17px;padding:6px}
+.lamp .lb{display:grid;grid-template-columns:1.6fr 1fr;gap:6px}
+.lamp .lb button{min-height:clamp(40px,6vh,64px);font-size:clamp(14px,2vh,18px);padding:4px}
 .lamp button.armb{background:transparent;border:2px solid var(--green);color:var(--champ);
   position:relative;overflow:hidden;touch-action:none;-webkit-touch-callout:none}
 .lamp button.armb .fill{position:absolute;left:0;bottom:0;height:100%;width:0;background:rgba(40,190,90,.45)}
 .lamp button.armb span{position:relative;font:inherit;color:var(--champ)}
 @media (prefers-reduced-motion:reduce){.lamp.held[data-held="cycle"] .word{animation-duration:2s}}
+.flamefoot{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center}
+button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);letter-spacing:.04em}
 
-#stale{position:sticky;top:0;z-index:20;background:var(--red-deep);color:var(--champ);
-  border:3px solid var(--red);border-radius:8px;padding:14px 16px;
-  font:800 clamp(20px,1.5vw,28px)/1.25 var(--sans);margin-bottom:14px;text-align:center}
-.warnbox{border:1px solid var(--amber);background:rgba(245,160,30,.10);color:var(--champ);
-  border-radius:6px;padding:10px 12px;margin:12px 0 10px;font-size:16px}
-#abortbar{position:fixed;left:0;right:0;bottom:0;z-index:30;
-  padding:10px clamp(16px,1.6vw,32px) calc(10px + env(safe-area-inset-bottom));
-  background:var(--bg);border-top:1px solid var(--hair)}
-#abortbar button{width:100%;min-height:clamp(84px,8.4vh,112px);display:flex;align-items:center;
+/* ---- Tonight: one screen, two columns, detail behind a tap ---- */
+#v-tonight{display:flex;flex-direction:column;gap:8px}
+#tonight{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-auto-rows:min-content;gap:6px 14px;align-content:start;overflow:auto}
+.slot{display:grid;grid-template-columns:auto auto 1fr;gap:4px 12px;align-items:baseline;
+  border-bottom:1px solid var(--hair-soft);padding:6px 4px;cursor:pointer;min-width:0}
+.slot b{font:700 clamp(15px,2.2vh,22px)/1.2 var(--sans);color:var(--champ);white-space:nowrap}
+.slot .t{font:700 clamp(15px,2.2vh,22px)/1.2 var(--sans);font-variant-numeric:tabular-nums}
+.slot .s{text-align:right;white-space:nowrap;font-weight:700}
+.slot .r{grid-column:1 / -1;color:var(--muted);font-size:clamp(12px,1.6vh,15px);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .r:empty{display:none}
+.slot.open .r{white-space:normal}
+.tsum{display:flex;gap:16px;flex-wrap:wrap;font:700 clamp(14px,2vh,20px)/1.3 var(--sans)}
+
+/* ---- Programming: its own screen, may scroll inside itself ---- */
+#v-prog{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
+.big{font:800 clamp(30px,5vh,56px)/1.05 var(--sans);font-variant-numeric:tabular-nums;color:var(--champ)}
+
+#abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--hair)}
+#abortbar button{width:100%;min-height:clamp(60px,9vh,108px);display:flex;align-items:center;
   justify-content:center;gap:.6em;flex-wrap:wrap;
-  font:800 clamp(34px,3vw,58px)/1 var(--sans);letter-spacing:.22em;
+  font:800 clamp(28px,5vh,58px)/1 var(--sans);letter-spacing:.22em;
   background:var(--red-deep);border:3px solid var(--red);color:var(--champ);
   box-shadow:0 0 0 1px rgba(7,6,5,.9) inset,0 0 26px rgba(230,30,24,.35)}
-#abortbar button small{font:700 clamp(14px,1vw,18px)/1.2 var(--sans);letter-spacing:.04em}
+#abortbar button small{font:700 clamp(12px,1.6vh,18px)/1.2 var(--sans);letter-spacing:.04em}
 #abortbar small:empty{display:none}
 /* Nothing to abort (Jeff's decision 19): dimmed, still pressable. */
 #abortbar.idle button{background:#4A0F12;border-color:#7A1A16;box-shadow:none}
 #modal{position:fixed;inset:0;z-index:40;background:rgba(7,6,5,.82);display:flex;
   align-items:center;justify-content:center;padding:16px}
 #modal .box{background:var(--bg);border:1px solid var(--gold);border-radius:8px;
-  max-width:600px;width:100%;padding:24px;box-shadow:0 0 40px rgba(212,168,74,.18)}
-#modal .q{font:900 clamp(28px,2.4vw,40px)/1.1 var(--serif);color:var(--champ);margin-bottom:10px}
+  max-width:600px;width:100%;padding:20px;box-shadow:0 0 40px rgba(212,168,74,.18)}
+#modal .q{font:900 clamp(24px,3.4vh,40px)/1.1 var(--serif);color:var(--champ);margin-bottom:10px}
 #modal .dim{color:var(--cream)}
-#modal .row{margin-top:20px}
-#modal button.yes{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);
-  min-height:76px;font-size:22px}
+#modal .row{margin-top:18px}
+#modal button.yes{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);font-size:22px}
 #modal button.yes.start{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
-.toast{margin-top:10px;font-size:16px;color:var(--cream)}
-.foot{margin:22px 0 4px;text-align:center;font:700 12px/1.4 var(--caps);letter-spacing:.3em;
-  text-transform:uppercase;color:var(--muted)}
-#login{max-width:620px;margin:6vh auto 0}
-#login h2{font:900 clamp(28px,2.2vw,40px)/1.1 var(--serif);letter-spacing:0;text-transform:none;
-  border:0;padding:0;margin-bottom:6px}
-#login .kicker{margin-bottom:8px}
-#login #li-go{min-height:66px;font-size:20px}
-[hidden]{display:none !important}
+
+/* iPad portrait and narrower: two by two on top, controls two by two */
+@media (max-aspect-ratio: 4/5){
+  .now{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ctl{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ctl button{min-height:clamp(44px,5vh,80px)}
+  .lamp .word{min-height:32px;font-size:clamp(15px,2.4vh,30px)}
+  .lamp .lb button{min-height:44px}
+  #arm-note{white-space:normal;font-size:13px}
+  #subs{order:5;flex-basis:100%;justify-content:flex-start}
+  header{flex-wrap:wrap}
+  #tonight{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
-<div class="wrap">
+<div id="app">
 <header>
   <img src="/brand/logo_small.png" alt="Jeff Holmes Presents" onerror="this.hidden=true">
   <div class="titles">
     <p class="kicker" id="brandkicker">Jeff Holmes Presents</p>
     <h1 id="brandshow">Show remote</h1>
   </div>
-  <div class="spacer"></div>
-  <div id="whobox" hidden><span class="who" id="whoname"></span> <span class="dim" id="whodev"></span></div>
-  <button id="signout" class="ghost" hidden>Sign out</button>
+  <div id="subs" aria-label="Subsystems"></div>
+  <nav>
+    <span id="where"></span>
+    <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
+    <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
+    <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
+  </nav>
 </header>
 
-<div id="stale" hidden role="alert"></div>
+<div id="alerts"><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
 
-<!-- Sign in: the only thing a device on the show network sees until then. -->
-<section id="login" class="card" hidden>
-  <p class="kicker">Operators only</p>
-  <h2>Sign in</h2>
-  <label for="li-who">Who are you</label>
-  <select id="li-who"></select>
-  <label for="li-dev">This device</label>
-  <select id="li-dev"></select>
-  <label for="li-pin">Your PIN</label>
-  <input id="li-pin" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8">
-  <div class="row" style="margin-top:16px"><button id="li-go" class="go">Sign in</button></div>
-  <div class="err" id="li-err"></div>
-</section>
-
-<main id="main" hidden>
-  <div class="grid">
-    <section class="card wide">
-      <h2>Now</h2>
-      <div class="now">
-        <div>
-          <div class="stateword" id="st-word">...</div>
-          <div class="state" id="st-state"></div>
-        </div>
-        <div class="tcbox">
-          <p class="kicker">Timecode</p>
-          <div class="big" id="st-tc">--:--:--:--</div>
-        </div>
-        <div class="nowbar">
-          <div class="showbox">
-            <p class="kicker">Current show</p>
-            <div class="showname" id="st-name">Nothing playing</div>
-            <div id="st-show"></div>
-          </div>
-          <div class="nextbox">
-            <p class="kicker">Next show</p>
-            <div class="nextline" id="st-next"></div>
-            <div id="st-count"></div>
-          </div>
-        </div>
+<div id="main">
+  <!-- The show screen: only what the operator needs during a show. -->
+  <section id="v-show" class="view">
+    <div class="now">
+      <div class="card">
+        <div class="stateword" id="st-word">...</div>
+        <div class="state" id="st-state"></div>
       </div>
-      <div class="warnbox" id="st-trouble" hidden></div>
-    </section>
-
-    <section class="card wide">
-      <h2>Flame groups, as flamesafe reports them</h2>
-      <div class="warnbox" id="fl-warn" hidden></div>
+      <div class="card">
+        <p class="kicker">Timecode</p>
+        <div id="st-tc">--:--:--:--</div>
+      </div>
+      <div class="card">
+        <p class="kicker">Current show</p>
+        <div class="showname" id="st-name">Nothing playing</div>
+        <p class="kicker cdlabel" id="st-leftlabel"></p>
+        <div class="big2" id="st-left"></div>
+      </div>
+      <div class="card">
+        <p class="kicker">Next show</p>
+        <div class="nextline" id="st-next"></div>
+        <div class="big2" id="st-count"></div>
+      </div>
+    </div>
+    <div class="ctl">
+      <button id="b-start" class="go">Start now</button>
+      <button id="b-hold" class="hold">Hold</button>
+      <button id="b-resume" class="go">Resume</button>
+      <button id="b-reset">Reset</button>
+    </div>
+    <div class="toast" id="ctl-msg"></div>
+    <div class="flames">
       <div class="lamps" id="fl-lamps"></div>
-      <button id="b-disarm" class="disarm">Disarm every flame group</button>
-      <div class="toast" id="arm-note">Hold a group's Arm button to arm it. Lift your finger to stop.</div>
-    </section>
+      <div class="flamefoot">
+        <button id="b-disarm" class="disarm">Disarm every flame group</button>
+        <div class="toast" id="arm-note">Hold a group's Arm button to arm it. Lift your finger to stop.</div>
+      </div>
+    </div>
+  </section>
 
-    <section class="card">
-      <h2>Show controls</h2>
-      <div class="row">
-        <button id="b-start" class="go">Start now</button>
-        <button id="b-hold" class="hold">Hold</button>
-        <button id="b-resume" class="go">Resume</button>
-        <button id="b-reset">Reset</button>
-      </div>
-      <label for="op-pick">Operator</label>
-      <div class="row">
-        <select id="op-pick" style="flex:2 1 0"></select>
-        <button id="b-op" style="flex:1 1 0">Set operator</button>
-      </div>
-      <div id="local-screen" hidden>
-        <label for="loc-screen">Pressing from</label>
-        <select id="loc-screen"></select>
-      </div>
-      <div id="local-run" hidden>
-        <label for="run-file">Show file (nothing reaches the rig until Run)</label>
-        <div class="row">
-          <select id="run-file" style="flex:2 1 0"></select>
-          <button id="b-run" class="go" style="flex:1 1 0">Run</button>
-          <button id="b-stoprun" style="flex:1 1 0">Stop</button>
-        </div>
-      </div>
-      <div class="toast" id="ctl-msg"></div>
-    </section>
+  <!-- Tonight: the night's shows, compact. -->
+  <section id="v-tonight" class="view" hidden>
+    <div class="tsum"><span id="tn-state"></span><span id="tn-next" class="dim"></span></div>
+    <div id="tonight"></div>
+    <div class="dim" style="font-size:13px">Tap a show to see all of its note.</div>
+  </section>
 
-    <section class="card">
-      <h2>Tonight</h2>
-      <table id="tonight"></table>
-    </section>
-
+  <!-- Programming: everything not needed during a show. -->
+  <section id="v-prog" class="view" hidden>
     <section class="card">
       <h2>Programming session</h2>
-      <div class="warnbox" id="tr-why" hidden></div>
+      <div class="warnbox open" id="tr-why" hidden></div>
       <div class="big" id="tr-tc">--:--:--:--</div>
       <div class="dim" id="tr-state"></div>
       <label for="tr-at">Play from timecode or cue name</label>
@@ -293,50 +285,63 @@ td:first-child{font-weight:700;color:var(--champ)}
         <input id="tr-at" placeholder="00:01:30:00" style="flex:2 1 0" inputmode="text">
         <button id="tr-play" class="go" style="flex:1 1 0" data-tr>Play from</button>
       </div>
-      <div class="row" style="margin-top:10px">
-        <button class="ghost" data-tr data-jump="-10">-10 s</button>
-        <button class="ghost" data-tr data-jump="-5">-5 s</button>
-        <button class="ghost" data-tr data-jump="5">+5 s</button>
-        <button class="ghost" data-tr data-jump="10">+10 s</button>
+      <div class="row" style="margin-top:8px">
+        <button class="ghost" data-tr data-jump="-10">Back 10 s</button>
+        <button class="ghost" data-tr data-jump="-5">Back 5 s</button>
+        <button class="ghost" data-tr data-jump="5">Ahead 5 s</button>
+        <button class="ghost" data-tr data-jump="10">Ahead 10 s</button>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:8px">
         <button id="tr-pause" class="hold" data-tr>Pause</button>
         <button id="tr-cont" class="go" data-tr>Continue</button>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:8px">
         <button id="tr-a" data-tr>Set A</button>
         <button id="tr-b" data-tr>Set B</button>
         <button id="tr-loop" data-tr>Loop on</button>
       </div>
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:8px">
         <button id="tr-follow" class="ghost" data-tr>Follow timecode again</button>
       </div>
       <div class="toast" id="tr-msg"></div>
     </section>
-
+    <section class="card" id="local-run" hidden>
+      <h2>Show file, on this machine</h2>
+      <label for="run-file">Show file (nothing reaches the rig until Run)</label>
+      <div class="row">
+        <select id="run-file" style="flex:2 1 0"></select>
+        <button id="b-run" class="go" style="flex:1 1 0">Run</button>
+        <button id="b-stoprun" style="flex:1 1 0">Stop</button>
+      </div>
+      <div class="toast" id="run-msg"></div>
+    </section>
+    <section class="card" id="deck-op" hidden>
+      <h2>Stream Deck operator, on this machine</h2>
+      <div class="dim" style="font-size:14px">The Stream Deck's own Arm, Start, Hold and Resume keys work once someone is chosen here. This page needs no name.</div>
+      <div class="row" style="margin-top:8px">
+        <select id="deck-op-pick" style="flex:2 1 0"></select>
+        <button id="b-deck-op" style="flex:1 1 0">Choose</button>
+      </div>
+      <div class="toast" id="deck-op-msg"></div>
+    </section>
     <section class="card" id="admin" hidden>
-      <h2>On this machine only: PINs and the show network</h2>
-      <label for="pin-who">Operator</label>
-      <select id="pin-who"></select>
-      <label for="pin-new">New PIN (4 to 8 digits; leave empty to remove)</label>
-      <input id="pin-new" type="password" inputmode="numeric" autocomplete="off" maxlength="8">
-      <div class="row" style="margin-top:10px"><button id="pin-save">Save PIN</button></div>
-      <div class="toast" id="pin-msg"></div>
+      <h2>Show network, on this machine</h2>
       <label for="net-addr">Show Wi-Fi address of this machine (port 7878)</label>
       <div class="row">
         <select id="net-pick" style="flex:1 1 0"></select>
         <input id="net-addr" placeholder="10.20.0.5" style="flex:1 1 0">
       </div>
-      <div class="row" style="margin-top:10px"><button id="net-save">Save address</button></div>
+      <div class="row" style="margin-top:8px"><button id="net-save">Save address</button></div>
       <div class="toast" id="net-msg"></div>
-      <div class="toast">Never put remote access software, a tunnel or a port forward on this machine.</div>
+      <div class="dim" style="font-size:14px;margin-top:6px">Any device on that network can use this page. Never put remote access software, a tunnel or a port forward on this machine.</div>
     </section>
-  </div>
-</main>
-<p class="foot" id="brandfoot">Jeff Holmes Presents</p>
+  </section>
 </div>
 
-<div id="abortbar" hidden><button id="b-abort">ABORT<small id="abort-sub"></small></button></div>
+<div id="abortbar"><button id="b-abort">ABORT<small id="abort-sub"></small></button></div>
+</div>
+
+<div id="stale" hidden role="alert"></div>
 
 <div id="modal" hidden>
   <div class="box">
@@ -368,7 +373,6 @@ function controlStates(st, stale){
     startNow: fresh && !!sch.attached,
     resume: fresh && !!sch.attached,
     reset: fresh && !!sch.attached,
-    operator: fresh && !!sch.attached,
     transport: fresh && !!tr.programming
   };
 }
@@ -379,8 +383,8 @@ function lampClass(g, flames){
   if(g.armed === "disarmed") return "disarmed";
   return "unknown";
 }
-// May this page start or carry on a hold to arm group i? Only with a
-// signed-in session, arming switched on, a status heard within the arming
+// May this page start or carry on a hold to arm group i? Only with
+// arming switched on, a status heard within the arming
 // freshness (1 s), flamesafe's real state reported within 1 s, and the
 // group not already armed or asked for.
 function armState(st, nowMs, lastOkMs, i){
@@ -388,7 +392,6 @@ function armState(st, nowMs, lastOkMs, i){
   const fl = (st && st.flames) || {};
   const g = (fl.groups || [])[i];
   if(!a.enabled) return {ok:false, why:"Arming from a screen is switched off."};
-  if(!a.signed_in) return {ok:false, why:"Sign in with your PIN to arm."};
   if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
   if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
     return {ok:false, why:"flamesafe's real state is not known."};
@@ -401,8 +404,23 @@ function staleText(nowMs, lastOkMs){
     return "NOT CONNECTED to the show engine yet.";
   const s = Math.max(0, (nowMs - lastOkMs) / 1000);
   return "CONNECTION LOST: last heard from the engine " + s.toFixed(1) +
-    " s ago. The show carries on by itself. Start now, Resume, Reset, " +
-    "operator and programming controls are off until it is back.";
+    " s ago. The show carries on by itself. Start now, Resume, Reset " +
+    "and the programming controls are off until it is back.";
+}
+// What the countdown reads now: the engine's own figure (ST.countdown),
+// aged by how long ago it was heard while it is running, and not at all
+// while a show is held (its clock is frozen, so is the time left). null
+// shows nothing: a show of unknown length is never guessed.
+function countdownNow(c, nowMs, lastOkMs){
+  if(!c || typeof c.s !== "number") return null;
+  const aged = c.running && lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;
+  return {kind:c.kind, label:c.label, s:Math.max(0, c.s - aged)};
+}
+function clockText(sec){
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
+  const two = (n) => String(n).padStart(2, "0");
+  return (h ? h + ":" + two(m) : String(m)) + ":" + two(x);
 }
 // LOGIC END
 </script>
@@ -430,13 +448,11 @@ async function post(p, body){
   if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
   return j;
 }
+// No sign-in (Jeff, 2026-10-07): the engine names the surface a press
+// came from by its own address. The page only says which status it saw.
 function actor(extra){
   const b = Object.assign({}, extra || {});
   b.seen = ST ? ST.served_at : null;
-  if(ME && ME.local){
-    b.who = $("op-pick").value || "";
-    b.screen = $("loc-screen").value || "Rack screen";
-  }
   return b;
 }
 function fill(sel, names, keep){
@@ -445,45 +461,36 @@ function fill(sel, names, keep){
   if(cur && names.includes(cur)) sel.value = cur;
 }
 
+// Three screens, one page: the show (the default), Tonight and
+// Programming. The Abort bar is on every one of them.
+const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog"};
+function showView(){
+  let v = (location.hash || "").replace("#", "");
+  if(!VIEWS[v]) v = "show";
+  for(const k in VIEWS) $(VIEWS[k]).hidden = (k !== v);
+  $("nav-tonight").hidden = v === "tonight";
+  $("nav-prog").hidden = v === "programming";
+  $("nav-back").hidden = v === "show";
+  if(v === "show") lampColumns();
+  if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
+}
+document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
+  const v = b.dataset.go;
+  if(v === "show") history.replaceState(null, "", location.pathname);
+  else location.hash = v;
+  showView();
+}));
+window.addEventListener("hashchange", showView);
+
 async function whoami(){
   ME = await getJSON("/api/remote/whoami", 3000);
   FRESH_S = ME.fresh_s || 2.0;
-  const signedIn = ME.local || ME.signed_in;
-  // On the show machine everything but arming works without signing in;
-  // arming needs your own PIN there too, so the sign in stays offered.
-  $("login").hidden = !!ME.signed_in;
-  $("login").querySelector("h2").textContent = ME.local ? "Sign in to arm (needed on this machine too)" : "Sign in";
-  if(ME.local && !ME.signed_in){
-    fill($("li-who"), ME.operators || [], true);
-    fill($("li-dev"), ME.screens || [], true);
-  }
-  $("main").hidden = !signedIn;
-  $("abortbar").hidden = !signedIn;
-  $("signout").hidden = !ME.signed_in;
-  $("whobox").hidden = !signedIn;
-  $("whoname").textContent = ME.local ? "On the show machine" : (ME.who || "");
-  $("whodev").textContent = ME.local ? "" : ("on the " + (ME.device || ""));
+  $("where").textContent = ME.device || "";
   $("admin").hidden = !ME.local;
-  $("local-screen").hidden = !ME.local;
   $("local-run").hidden = !ME.local;
-  if(ME.local) loadShowFiles();
-  if(!signedIn){
-    fill($("li-who"), ME.operators || [], true);
-    fill($("li-dev"), ME.screens || [], true);
-    if(!$("li-dev").dataset.set && (ME.screens || []).includes("iPad")){
-      $("li-dev").value = "iPad"; $("li-dev").dataset.set = "1";
-    }
-  } else {
-    fill($("op-pick"), ME.operators || [], true);
-    if(ME.local){
-      fill($("loc-screen"), ME.screens || [], true);
-      fill($("pin-who"), ME.operators || [], true);
-      loadNetwork();
-    } else if(ME.who){
-      $("op-pick").value = ME.who;
-    }
-    startPolling();
-  }
+  $("deck-op").hidden = !ME.local;
+  showView();
+  startPolling();
 }
 
 function startPolling(){
@@ -494,12 +501,18 @@ function startPolling(){
       ST = await getJSON("/api/remote/status", 1500);
       LAST_OK = Date.now();
       render();
-    }catch(e){
-      if(e.status === 401){ POLLING = false; whoami().catch(()=>{}); return; }
-    }
+    }catch(e){}
     if(POLLING) setTimeout(loop, 250);
   };
   loop();
+}
+
+function renderCountdown(){
+  const c = countdownNow(ST && ST.countdown, Date.now(), LAST_OK);
+  const left = c && c.kind === "left";
+  $("st-leftlabel").textContent = left ? c.label : "";
+  $("st-left").textContent = left ? clockText(c.s) : "";
+  $("st-count").textContent = (c && c.kind === "next") ? ("in " + clockText(c.s)) : "";
 }
 
 function renderStale(){
@@ -511,7 +524,6 @@ function renderStale(){
   $("b-start").disabled = !cs.startNow;
   $("b-resume").disabled = !cs.resume;
   $("b-reset").disabled = !cs.reset;
-  $("b-op").disabled = !cs.operator;
   $("b-hold").disabled = !cs.hold;
   $("b-abort").disabled = !cs.abort;
   $("b-disarm").disabled = !cs.disarm;
@@ -525,14 +537,16 @@ function renderStale(){
       const why = el.querySelector(".why");
       if(why) why.textContent = "";
     });
+    document.querySelectorAll(".chip").forEach(el => { el.className = "chip"; });
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "0.3";
-    $("st-count").style.opacity = $("st-word").style.opacity = "0.3";
+    $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "0.3";
     // Not known is never shown as nothing to abort.
     $("abortbar").classList.remove("idle");
     $("abort-sub").textContent = "";
   } else {
     $("st-tc").style.opacity = $("tr-tc").style.opacity = "1";
-    $("st-count").style.opacity = $("st-word").style.opacity = "1";
+    $("st-count").style.opacity = $("st-left").style.opacity = $("st-word").style.opacity = "1";
+    renderCountdown();
   }
   // Arming needs live state (1 s): a hold under way stops the moment it
   // is not, and no Arm button can be pressed until it is again.
@@ -545,6 +559,12 @@ function renderStale(){
   return stale;
 }
 setInterval(renderStale, 250);
+
+function setWarn(id, msg){
+  const el = $(id);
+  el.hidden = !msg; el.textContent = msg || ""; el.title = msg || "";
+}
+document.querySelectorAll(".warnbox").forEach(el => el.addEventListener("click", () => el.classList.toggle("open")));
 
 function render(){
   const s = ST || {};
@@ -562,20 +582,19 @@ function render(){
   }
   $("st-word").textContent = word;
   $("st-word").className = "stateword " + cls;
-  $("st-state").textContent = label;
-  $("st-state").className = "state";
+  $("st-state").textContent = label; $("st-state").title = label;
   $("st-name").textContent = (sch.running && (sch.state === "SHOW" || sch.state === "PAUSED"))
     ? ("Show " + sch.running) : (show.running ? (show.show || "Playing") : "Nothing playing");
-  $("st-show").textContent = show.running ? ((show.show || "") + "  " + (show.state || "")) : "";
   $("st-tc").textContent = show.timecode || "--:--:--:--";
   $("tr-tc").textContent = show.timecode || "--:--:--:--";
   const nx = sch.next;
-  $("st-next").textContent = nx ? ("Show " + nx.show + " at " + nx.start) :
+  const nextText = nx ? ("Show " + nx.show + " at " + nx.start) :
     (sch.delayed ? ("Show " + sch.delayed.show + " is delayed, waiting for Start now") : "None tonight");
-  // The countdown is the scheduler's own in_s, aged by how long ago it was
-  // heard. Display only: nothing here starts anything.
-  $("st-count").textContent = (nx && typeof nx.in_s === "number")
-    ? countdown(nx.in_s - (Date.now() - (LAST_OK || Date.now())) / 1000) : "";
+  $("st-next").textContent = nextText; $("st-next").title = nextText;
+  // During a show, running or held: the time left in THIS show (the
+  // engine's own show clock). Between shows: the countdown to the next.
+  // Display only: nothing here starts anything.
+  renderCountdown();
   // Abort is dimmed when there is nothing to abort (Jeff's decision 19),
   // and only when that is known for sure. It always stays pressable.
   const anyLive = (fl.groups || []).some(g => g.armed === "armed" || g.wanted);
@@ -584,39 +603,43 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "";
-  const tb = $("st-trouble");
-  const tmsg = [sch.trouble, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" ");
-  tb.hidden = !tmsg; tb.textContent = tmsg;
+  setWarn("st-trouble", [sch.trouble, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
-  const fw = $("fl-warn");
   let fmsg = "";
   if(!fl.connected) fmsg = fl.why || "flamesafe is not connected.";
   else if(fl.stale) fmsg = "flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms/1000).toFixed(1) + " s") + ". These lamps are not live.";
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
   if(fl.cues_fault) fmsg += (fmsg ? " " : "") + "Flame cues are zero, a fault: " + fl.cues_fault + ".";
-  fw.hidden = !fmsg; fw.textContent = fmsg;
+  setWarn("fl-warn", fmsg);
   renderLamps(fl);
+  $("subs").innerHTML = (s.subsystems || []).map(x =>
+    `<span class="chip ${esc(x.state)}"><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 
-  const tw = $("tr-why");
-  tw.hidden = !!tr.programming; tw.textContent = tr.why || "";
+  setWarn("tr-why", tr.programming ? "" : (tr.why || ""));
   const bits = [];
   if(tr.freerun) bits.push(tr.paused ? "Paused" : "Playing on this machine's clock");
   else if(show.running) bits.push("Following timecode");
-  if(tr.marks && (tr.marks.a || tr.marks.b)) bits.push("A " + (tr.marks.a || "-") + "  B " + (tr.marks.b || "-"));
+  if(tr.marks && (tr.marks.a || tr.marks.b)) bits.push("A " + (tr.marks.a || "none") + ", B " + (tr.marks.b || "none"));
   if(tr.loop) bits.push("Looping " + tr.loop[0] + " to " + tr.loop[1]);
   $("tr-state").textContent = bits.join(". ");
   $("tr-loop").textContent = tr.loop ? "Loop off" : "Loop on";
   $("tr-loop").dataset.on = tr.loop ? "1" : "";
 
+  $("tn-state").textContent = word + (label ? ": " + label : "");
+  $("tn-next").textContent = "Next: " + nextText;
   const slots = sch.slots || [];
-  $("tonight").innerHTML = slots.length ? slots.map(r =>
-    `<tr><td>Show ${esc(r.show)}</td><td>${esc(r.start)}</td><td>${esc(r.status)}</td><td class="dim">${esc(r.reason || "")}</td></tr>`).join("")
-    : `<tr><td class="dim">No shows tonight.</td></tr>`;
-  if(sch.current_operator && document.activeElement !== $("op-pick") && ME && ME.local)
-    $("op-pick").value = sch.current_operator;
+  const open = new Set([...document.querySelectorAll(".slot.open")].map(e => e.dataset.k));
+  $("tonight").innerHTML = slots.length ? slots.map(r => {
+    const k = esc(r.show + "@" + r.start);
+    return `<div class="slot${open.has(r.show + "@" + r.start) ? " open" : ""}" data-k="${k}"><b>Show ${esc(r.show)}</b><span class="t">${esc(r.start)}</span><span class="s">${esc(r.status)}</span><span class="r">${esc(r.reason || "")}</span></div>`;
+  }).join("") : `<div class="dim">No shows tonight.</div>`;
   renderStale();
 }
+$("tonight").addEventListener("click", e => {
+  const el = e.target.closest(".slot");
+  if(el) el.classList.toggle("open");
+});
 
 // What a lamp reads, in the Stream Deck's words: ARMED in green, OFF in
 // dark bronze, held back in amber (flashing when cycling the arm is the
@@ -637,14 +660,16 @@ function lampLook(g, c){
   if(/cycle/i.test(r)) return {word:"Cycle the arm", held:"cycle"};
   return {word:LAMP_SHORT[r] || "Held back", held:"steady"};
 }
-function countdown(sec){
-  if(!(sec > 0)) return "now";
-  sec = Math.floor(sec);
-  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
-  const two = (n) => String(n).padStart(2, "0");
-  return "in " + (h ? h + ":" + two(m) : String(m)) + ":" + two(x);
+// The lamp grid: as few rows as fit, each row as full as the others
+// (six groups on a 1024 wide iPad are one row of six, not five and one).
+function lampColumns(){
+  const box = $("fl-lamps");
+  const n = box.querySelectorAll(".lamp").length || 1;
+  const fit = Math.max(1, Math.floor((box.clientWidth + 8) / (150 + 8)));
+  const rows = Math.ceil(n / Math.min(n, fit));
+  box.style.gridTemplateColumns = "repeat(" + Math.ceil(n / rows) + ", minmax(0,1fr))";
 }
-
+window.addEventListener("resize", lampColumns);
 // The lamps are built once per set of group names and then only updated,
 // so a finger held on an Arm button is never under a replaced element.
 let LAMP_KEY = "";
@@ -668,6 +693,7 @@ function renderLamps(fl){
     });
     box.querySelectorAll("[data-gdis]").forEach(b =>
       b.addEventListener("click", () => { armStop("disarm"); press("group-disarm", {group:Number(b.dataset.gdis)}); }));
+    lampColumns();
   }
   groups.forEach((g, i) => {
     const el = box.querySelector(`[data-lamp="${i}"]`);
@@ -746,23 +772,9 @@ async function press(route, extra, msgEl){
     const j = await post("/api/remote/" + route, actor(extra));
     el.textContent = j.text || "Done.";
   }catch(e){ el.textContent = e.message; }
+  el.title = el.textContent;
 }
 
-$("li-go").addEventListener("click", async () => {
-  $("li-err").textContent = "";
-  try{
-    await post("/api/remote/login", {who:$("li-who").value, device:$("li-dev").value, pin:$("li-pin").value});
-    $("li-pin").value = "";
-    await whoami();
-  }catch(e){ $("li-err").textContent = e.message; $("li-pin").value = ""; }
-});
-$("li-pin").addEventListener("keydown", e => { if(e.key === "Enter") $("li-go").click(); });
-$("signout").addEventListener("click", async () => {
-  POLLING = false;
-  try{ await post("/api/remote/logout"); }catch(e){}
-  ST = null; LAST_OK = null;
-  whoami();
-});
 $("b-abort").addEventListener("click", async () => {
   armStop("Abort");
   if(await confirmBox("Abort the show?", "Every flame group disarms at once, show or no show. If a show is live it also stops: flames zero, everything fades to black, and it stays dark until Reset. The answer below says what was done.", "Yes, ABORT", ""))
@@ -773,8 +785,7 @@ $("b-start").addEventListener("click", async () => {
     press("start-now", {confirmed:true});
 });
 // Run and Stop: the show machine only, through the engine's own Run and
-// Stop (every guard they have applies). This screen is the one operator
-// screen in Fire & Ice (Jeff, 2026-10-04); the old operator page is not.
+// Stop (every guard they have applies), on the Programming screen.
 async function loadShowFiles(){
   try{
     const j = await getJSON("/api/timelines", 3000);
@@ -784,21 +795,20 @@ async function loadShowFiles(){
 }
 $("b-run").addEventListener("click", async () => {
   const f = $("run-file").value;
-  if(!f){ $("ctl-msg").textContent = "No show file in the show folder."; return; }
+  if(!f){ $("run-msg").textContent = "No show file in the show folder."; return; }
   if(!(await confirmBox("Press Run?", "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "start"))) return;
-  try{ const j = await post("/api/start", {timeline:f}); $("ctl-msg").textContent = j.banner || "Running."; }
-  catch(e){ $("ctl-msg").textContent = e.message; }
+  try{ const j = await post("/api/start", {timeline:f}); $("run-msg").textContent = j.banner || "Running."; }
+  catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-stoprun").addEventListener("click", async () => {
   if(!(await confirmBox("Stop?", "Stop playback. No show starts until Run is pressed again.", "Yes, Stop", ""))) return;
-  try{ await post("/api/stop", {}); $("ctl-msg").textContent = "Stopped."; }
-  catch(e){ $("ctl-msg").textContent = e.message; }
+  try{ await post("/api/stop", {}); $("run-msg").textContent = "Stopped."; }
+  catch(e){ $("run-msg").textContent = e.message; }
 });
 $("b-hold").addEventListener("click", () => press("hold"));
 $("b-resume").addEventListener("click", () => press("resume"));
 $("b-reset").addEventListener("click", () => press("reset"));
 $("b-disarm").addEventListener("click", () => { armStop("Disarm every flame group"); press("disarm-all"); });
-$("b-op").addEventListener("click", () => press("operator", {pick:$("op-pick").value}));
 $("tr-play").addEventListener("click", () => press("play-from", {at:$("tr-at").value}, "tr-msg"));
 document.querySelectorAll("[data-jump]").forEach(b =>
   b.addEventListener("click", () => press("jump", {seconds:Number(b.dataset.jump)}, "tr-msg")));
@@ -809,6 +819,22 @@ $("tr-b").addEventListener("click", () => press("mark-b", {}, "tr-msg"));
 $("tr-loop").addEventListener("click", () => press("loop", {on: !$("tr-loop").dataset.on}, "tr-msg"));
 $("tr-follow").addEventListener("click", () => press("follow", {}, "tr-msg"));
 
+// The Stream Deck's operator gate (Jeff, 2026-10-01) reads the scheduler's
+// current operator; on this machine only, through the scheduler's own route.
+async function loadDeckOp(){
+  try{
+    const j = await getJSON("/api/schedule/operator", 3000);
+    fill($("deck-op-pick"), j.operators || [], false);
+    $("deck-op-pick").value = j.current_operator || "";
+    $("deck-op-msg").textContent = j.current_operator ? ("Chosen: " + j.current_operator) : "Nobody chosen: the Stream Deck's keys other than Abort and Disarm are locked.";
+  }catch(e){ $("deck-op-msg").textContent = e.message; }
+}
+$("b-deck-op").addEventListener("click", async () => {
+  try{
+    await post("/api/schedule/operator", {who:$("deck-op-pick").value, screen:"Rack screen"});
+    loadDeckOp();
+  }catch(e){ $("deck-op-msg").textContent = e.message; }
+});
 async function loadNetwork(){
   try{
     const n = await getJSON("/api/remote/network", 3000);
@@ -822,15 +848,8 @@ $("net-save").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/network", {address:$("net-addr").value}); $("net-msg").textContent = j.note; }
   catch(e){ $("net-msg").textContent = e.message; }
 });
-$("pin-save").addEventListener("click", async () => {
-  try{
-    const j = await post("/api/remote/pin", {who:$("pin-who").value, pin:$("pin-new").value});
-    $("pin-new").value = "";
-    $("pin-msg").textContent = "Saved. PINs set for: " + ((j.pins_set || []).join(", ") || "nobody");
-  }catch(e){ $("pin-msg").textContent = e.message; }
-});
 
-// The show's name and the credit come from ltcplay_brand.json, so a new
+// The show's name and where it plays come from the settings, so a new
 // show is a settings change. The page reads fine without them.
 async function loadBrand(){
   try{
@@ -839,12 +858,11 @@ async function loadBrand(){
     $("brandshow").textContent = title;
     document.title = title + " remote";
     $("brandkicker").textContent = b.venue ? ("At " + b.venue) : (b.name || "");
-    $("brandfoot").textContent = (b.name || "") + (b.venue ? " at " + b.venue : "") +
-      (b.beyond_blank ? ". Lasers blanked by " + ({timecode:"timecode (black zone)", osc:"OSC", both:"timecode and OSC"}[b.beyond_blank] || b.beyond_blank) : "");
   }catch(e){ /* the credit is not worth failing the page over */ }
 }
 loadBrand();
-whoami().catch(e => { $("stale").hidden = false; $("stale").textContent = "Cannot reach the show engine: " + e.message; });
+showView();
+whoami().catch(e => { $("stale").hidden = false; $("stale").textContent = "Cannot reach the show engine: " + e.message; startPolling(); });
 </script>
 </body>
 </html>

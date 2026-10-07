@@ -116,9 +116,13 @@ needs its stems under `clock.audio.cues`.
   blank. Lasers come back only once the timecode is moving and only while
   the scheduler is in a show, never in intermission. Abort blanks them at
   once (Jeff and Andy, 2026-10-04: BEYOND only accepts on or off).
-- **How the lasers are blanked** (`beyond_blank` in ltcplay_fire_ice.json,
-  decided at tech): `"timecode"` (the default, for BEYOND Essentials, which
-  has no OSC input), `"osc"` (brightness 0 or 100) or `"both"`. In timecode
+- **How the lasers are blanked** (`beyond_blank` in ltcplay_fire_ice.json):
+  `"osc"` (brightness 0 or 100 on BEYOND's
+  `/beyond/master/livecontrol/brightness`, through the `"beyond"` block's
+  host and port, 127.0.0.1:8100 unless set; the default since Jeff,
+  2026-10-07), `"timecode"` (for BEYOND Essentials, which has no OSC input)
+  or `"both"`. With `"osc"` and no `"beyond"` block nothing blanks the
+  lasers, so a rig with lasers needs that block. In timecode
   mode BEYOND gets its own Art-Net timecode stream (the show file's node
   named BEYOND, 127.0.0.2 on the bench; MadMapper's stream is never
   touched). Whenever the lasers must be dark it jumps to the black zone,

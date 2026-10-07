@@ -222,28 +222,47 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the page, go to `/remote` (or
-http://127.0.0.1:7878/remote), set a PIN for each operator, and pick this
-machine's show Wi-Fi address under "Show network". Then start it with the
-show network on (Run ltcplay, answer y to the iPad question).
+Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
+press Programming, and pick this machine's show Wi-Fi address under "Show
+network". Then start it with the show network on (Run ltcplay, answer y to
+the iPad question). There is no PIN and no sign in: anything on the show
+Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
+to the crew.
 
-On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. Pick your
-name and "iPad", type your PIN. The big red ABORT bar is always at the
-bottom; it asks once. Start now asks once too. Hold, Resume and Reset are
-one press. Disarm every flame group is one press and never asks.
+On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. It goes
+straight to the show screen. Everything you need during a show is on that
+one screen, with no scrolling: the show state, the timecode, the current
+show and how long is left in it, the next show, Start now, Hold, Resume,
+Reset, the flame groups and the status strip along the top (deck,
+flamesafe, audio, video, lasers, pixels). The big red ABORT bar is always at
+the bottom, on every screen; it asks once. Start now asks once too. Hold,
+Resume and Reset are one press. Disarm every flame group is one press and
+never asks.
+
+"Left in this show" counts down the show that is playing. On Hold it stands
+still, because the show's own clock is stopped. Between shows the next
+show's countdown is shown instead. If the show's length is not known,
+nothing is shown rather than a guess.
+
+Tonight shows the night's shows on one screen; tap a show to read all of its
+note. Programming has the scrubbing controls and, on the show machine only,
+Run and Stop, the Stream Deck operator and the show network. Back to the
+show returns to the show screen.
 
 If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
 The show carries on by itself and a Hold stays held. Start now, Resume, Reset
 and the programming buttons go grey until it is back.
 
-Arming from the iPad or the rack screen: sign in with your own PIN (on
-the show machine too), then press and HOLD a group's "Hold to arm" button
-until the bar fills and the lamp goes green. Lift early and nothing
-happens. The Stream Deck does the arming for you, with all of its own
-rules, so it has to be plugged in and running. If the page loses the
-engine, or the lamps are not live, the button goes grey and a hold stops.
-Disarm on the page is one press. The physical key switch on the flame
-system is still the master: off means nothing fires.
+Arming from the iPad or the rack screen (when screen arming is switched on):
+press and HOLD a group's "Hold to arm" button until the bar fills and the
+lamp goes green. Lift early and nothing happens. One hold at a time per
+group. The Stream Deck does the arming for you, with all of its own rules,
+so it has to be plugged in and running, and an operator has to be chosen
+for it (Programming, Stream Deck operator). If the page loses the engine,
+or the lamps are not live, the button goes grey and a hold stops. Disarm on
+the page is one press. The journal says which screen or iPad did it. The
+physical key switch on the flame system is still the master: off means
+nothing fires.
 
 ## What it will not do
 

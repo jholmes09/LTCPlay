@@ -1,27 +1,26 @@
-"""The show-network remote: operator sign-in with a PIN, and the few show
-controls an iPad (or the rack screen) may press, over web.py's server.
+"""The show-network remote: the few show controls an iPad (or the rack
+screen) may press, over web.py's server. No sign-in (Jeff, 2026-10-07).
 
 What this is, and what it is not
 ================================
 
 The engine and the show live in the `ltc serve` process. The page is only a
 window onto them: closing it, an iPad that sleeps or loses the Wi-Fi, a
-session that runs out, none of those is an event this module acts on. There
+connection that drops, none of those is an event this module acts on. There
 is no timer here that does anything to the show when a page goes quiet, and
 the selftest proves a dropped page changes nothing.
 
 Who may press what
 ------------------
-- On the show machine itself (a loopback request that does not look
-  proxied), nothing changes from before: no sign-in, as today. The page
-  names the operator and screen it presses from, checked against the lists.
-- From anywhere else, every route except the sign-in page needs a session:
-  an operator from the existing operator list, signed in with their own PIN
-  from a device named on the screen list ("iPad" by default). The session
-  is a cookie on that device only. Who pressed and which device are taken
-  from the session, never from the request body.
-- The Stream Deck keeps Jeff's 2026-10-01 rule: no PIN. It never comes
-  through here.
+- No sign-in, no PIN, no operator names (Jeff, 2026-10-07). What keeps the
+  page to the show is the network: the engine listens only on the one
+  listed show-network address and on 127.0.0.1 (never 0.0.0.0), and
+  refuses anything that looks proxied, cross-site or misaddressed.
+- The journal names the surface a press came from, never a person: "Rack
+  screen" for the machine itself, "iPad at <its address>" for a device on
+  the show network (screen "iPad"). Taken from the request's own address,
+  never from the request body.
+- The Stream Deck keeps Jeff's 2026-10-01 rule and never comes through here.
 
 The controls
 ------------
@@ -31,24 +30,25 @@ press goes through, journaled with who and which screen, the Abort latch
 saved before the conductor is asked). Reset is Service.reset_conductor.
 "Disarm every flame group" is the show's own flames_disarm_all (the flame
 link's disarm_all, the same call the conductor's Abort makes), journaled
-with who and which screen. Picking the operator is Service.set_operator.
+with the surface and which screen.
 
 ARMING (Jeff, 2026-10-03, its own PR): the page never arms anything. A
-signed-in operator's hold to arm (arm-hold, repeated every 100 ms while the
+hold to arm (arm-hold, repeated every 100 ms while the
 finger is down) is read by the Stream Deck process (deck-input) as a remote
 press of that group's key. The deck owns flamesafe's arm link and runs its
 own rules (the hold, the refractory window, the latched refusal) and
 flamesafe runs all of its own (consent, dwell, the post-Abort window, the
 round-4 veto, the second-copy guard) exactly as for a finger on the deck.
-It needs a PIN session even on the show machine, a page status and a
+It needs a listed address (above), a page status and a
 flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
 received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
 (default on). A gap in the heartbeats, an Abort, a disarm or a sign out
 lets the hold go; an interrupted hold never carries on.
 
+
 Fresh state
 -----------
-Start now, Resume, Reset and choosing the operator act on what the page
+Start now, Resume and Reset act on what the page
 shows, so they are refused when the page's last status is more than
 FRESH_S old (the page sends the `served_at` of the status it is showing).
 Hold, Abort and disarm are never refused for that: they only take risk
@@ -64,79 +64,20 @@ from anywhere, loopback included: a proxy or tunnel on the show machine
 would make the whole world look like the machine itself. NEVER put remote
 access software, a tunnel or a port forward on the show machine.
 """
-import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
-import secrets
 import socket
 import threading
 import time
-from http import cookies as http_cookies
 
 from . import appdata
 from . import settings as settings_mod
 
-# The scheduler's operator and screen lists (schedule_service.OPERATORS_FILE,
-# SCREENS_FILE, DEFAULT_SCREENS and schedule.DEFAULT_OPERATORS), repeated
-# here so the GPL path can read them without importing the scheduler. The
-# selftest checks they match.
-OPERATORS_FILE = "ltcplay_operators.json"
-SCREENS_FILE = "ltcplay_screens.json"
-DEFAULT_OPERATORS = ("Andy", "Jeff")
-DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
-
-
-def read_names(path, key, default):
-    """The names in {key: [names]} at `path`, by schedule_service's rules
-    (that one key only, at least one name, each a non-empty string, no
-    name twice whatever its case, each stripped), or `default` when the
-    file is missing or breaks a rule. Never writes and never raises."""
-    try:
-        with open(path, encoding="utf-8-sig") as fh:
-            doc = json.load(fh)
-    except (OSError, ValueError):
-        return tuple(default)
-    if not isinstance(doc, dict) or set(doc) != {key}:
-        return tuple(default)
-    names = doc[key]
-    if not isinstance(names, list) or not names:
-        return tuple(default)
-    out, seen = [], set()
-    for n in names:
-        if not isinstance(n, str) or not n.strip():
-            return tuple(default)
-        if n.strip().lower() in seen:
-            return tuple(default)
-        seen.add(n.strip().lower())
-        out.append(n.strip())
-    return tuple(out)
-
 FIXED_PORT = 7878
 SETTINGS_FILE = "ltcplay_remote.json"
-PIN_FILE = "ltcplay_remote_pins.json"
-COOKIE = "ltcplay_session"
-
-# A PIN is 4 to 8 digits. Stored as PBKDF2-SHA256 with a salt of its own;
-# the number of rounds makes one guess cost about a tenth of a second.
-PIN_MIN, PIN_MAX = 4, 8
-PBKDF2_ITERATIONS = 200_000
-
-# Wrong PINs: the first FREE_TRIES cost nothing extra; after that each one
-# locks that device's address AND that operator's name out for
-# LOCK_BASE_S * 2**(n - FREE_TRIES - 1), capped at LOCK_MAX_S. A right PIN
-# clears both counts.
-FREE_TRIES = 3
-LOCK_BASE_S = 5.0
-LOCK_MAX_S = 300.0
-
-# A session ends after this long without a request, and in any case after
-# SESSION_MAX_S. Ending it changes nothing on the show; the operator signs
-# in again to press anything.
-SESSION_IDLE_S = 12 * 3600
-SESSION_MAX_S = 18 * 3600
-
 # How old the page's status may be for a press that acts on what it shows.
 FRESH_S = 2.0
 # How old flamesafe's last status may be before the lamps read "stale"
@@ -145,7 +86,7 @@ FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
-                  "disarm-all", "operator")
+                  "disarm-all")
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
 # in a programming session (a show started from the page as Rehearse, or in
@@ -153,7 +94,7 @@ CONTROL_ROUTES = ("start-now", "hold", "resume", "abort", "reset",
 # show is live; see _scrub_refusal.
 TRANSPORT_ROUTES = ("play-from", "jump", "pause", "continue", "mark-a",
                     "mark-b", "loop", "follow")
-FRESH_ROUTES = frozenset(("start-now", "resume", "reset", "operator")
+FRESH_ROUTES = frozenset(("start-now", "resume", "reset")
                          + TRANSPORT_ROUTES)
 JUMP_MAX_S = 600.0
 CONFIRM_ROUTES = frozenset(("start-now", "abort"))
@@ -168,8 +109,8 @@ BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 GET_ROUTES = ("whoami", "status", "network", "deck-input")
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "login", "logout", "pin", "network")
-LOCAL_ONLY = frozenset(("pin", "network"))
+    "network",)
+LOCAL_ONLY = frozenset(("network",))
 
 # Any of these on a request means something forwarded it. A browser on the
 # show network never sends them; a reverse proxy, tunnel or CDN does.
@@ -331,181 +272,6 @@ def host_ok(host_header, client_is_loopback, bind, port):
     return name == want or name == f"[{want}]"
 
 
-# --------------------------------------------------------------- PINs --
-
-class PinStore:
-    """Operator PINs, hashed, in the settings folder. Never the PIN."""
-
-    def __init__(self, folder, iterations=PBKDF2_ITERATIONS):
-        self.path = os.path.join(folder, PIN_FILE)
-        self.iterations = iterations
-        self._lock = threading.Lock()
-
-    def _load(self):
-        try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError):
-            return {}
-        pins = doc.get("pins") if isinstance(doc, dict) else None
-        return pins if isinstance(pins, dict) else {}
-
-    def names(self):
-        return sorted(self._load())
-
-    def has(self, name):
-        return name.lower() in {n.lower() for n in self._load()}
-
-    @staticmethod
-    def check_pin(pin):
-        pin = str(pin or "")
-        if not (pin.isdigit() and PIN_MIN <= len(pin) <= PIN_MAX
-                and pin.isascii()):
-            raise ValueError(f"A PIN is {PIN_MIN} to {PIN_MAX} digits.")
-        return pin
-
-    def _hash(self, pin, salt, iterations):
-        return hashlib.pbkdf2_hmac("sha256", pin.encode(), salt,
-                                   iterations).hex()
-
-    def set(self, name, pin):
-        pin = self.check_pin(pin)
-        salt = secrets.token_bytes(16)
-        with self._lock:
-            pins = self._load()
-            pins = {k: v for k, v in pins.items()
-                    if k.lower() != name.lower()}
-            pins[name] = {"salt": salt.hex(), "iterations": self.iterations,
-                          "hash": self._hash(pin, salt, self.iterations)}
-            _write_json(self.path, {"pins": pins}, private=True)
-
-    def clear(self, name):
-        with self._lock:
-            pins = {k: v for k, v in self._load().items()
-                    if k.lower() != name.lower()}
-            _write_json(self.path, {"pins": pins}, private=True)
-
-    def verify(self, name, pin):
-        rec = None
-        for k, v in self._load().items():
-            if k.lower() == str(name or "").lower():
-                rec = v
-        pin = str(pin or "")
-        if not isinstance(rec, dict):
-            # Spend the same time as a real check, so a missing PIN does
-            # not read differently from a wrong one.
-            self._hash(pin, b"\0" * 16, self.iterations)
-            return False
-        try:
-            salt = bytes.fromhex(rec["salt"])
-            want = str(rec["hash"])
-            n = int(rec.get("iterations") or self.iterations)
-        except (KeyError, ValueError, TypeError):
-            return False
-        return hmac.compare_digest(self._hash(pin, salt, n), want)
-
-
-class Throttle:
-    """Counts wrong PINs per key (a device address, an operator name)."""
-
-    def __init__(self, clock=time.monotonic):
-        self.clock = clock
-        self._fails = {}
-        self._until = {}
-        self._lock = threading.Lock()
-        self._key_locks = {}
-
-    def serial(self, keys):
-        """Fix round 1 of #39, F3: one PIN check at a time per device
-        address and per name. Without it, 24 overlapping guesses all read
-        "not locked out" before any of them recorded a failure, and 20 were
-        checked. Held across the whole check-verify-record, so the lock-out
-        is seen by the very next guess. The locks are taken in a fixed
-        order, so two keys can never deadlock."""
-        import contextlib
-        with self._lock:
-            locks = [self._key_locks.setdefault(k, threading.Lock())
-                     for k in sorted(keys)]
-
-        @contextlib.contextmanager
-        def held():
-            for lk in locks:
-                lk.acquire()
-            try:
-                yield
-            finally:
-                for lk in reversed(locks):
-                    lk.release()
-        return held()
-
-    def wait_s(self, keys):
-        now = self.clock()
-        with self._lock:
-            return max([self._until.get(k, 0.0) - now for k in keys] + [0.0])
-
-    def fail(self, keys):
-        now = self.clock()
-        with self._lock:
-            for k in keys:
-                n = self._fails.get(k, 0) + 1
-                self._fails[k] = n
-                if n > FREE_TRIES:
-                    lock = min(LOCK_MAX_S,
-                               LOCK_BASE_S * 2 ** (n - FREE_TRIES - 1))
-                    self._until[k] = now + lock
-
-    def succeed(self, keys):
-        with self._lock:
-            for k in keys:
-                self._fails.pop(k, None)
-                self._until.pop(k, None)
-
-
-class Sessions:
-    """Signed-in devices, in memory. A restart signs everyone out, which
-    changes nothing on the show."""
-
-    def __init__(self, clock=time.monotonic):
-        self.clock = clock
-        self._by_token = {}
-        self._lock = threading.Lock()
-
-    def create(self, who, device, ip):
-        tok = secrets.token_urlsafe(32)
-        now = self.clock()
-        with self._lock:
-            self._by_token[tok] = {"who": who, "device": device, "ip": ip,
-                                   "created": now, "seen": now}
-        return tok
-
-    def get(self, tok):
-        if not tok:
-            return None
-        now = self.clock()
-        with self._lock:
-            s = self._by_token.get(tok)
-            if s is None:
-                return None
-            if now - s["seen"] > SESSION_IDLE_S or \
-                    now - s["created"] > SESSION_MAX_S:
-                del self._by_token[tok]
-                return None
-            s["seen"] = now
-            return dict(s, token=tok)
-
-    def drop(self, tok):
-        with self._lock:
-            return self._by_token.pop(tok, None) is not None
-
-    def drop_who(self, who):
-        with self._lock:
-            for t in [t for t, s in self._by_token.items()
-                      if s["who"].lower() == who.lower()]:
-                del self._by_token[t]
-
-
 # ------------------------------------------------ flamesafe's status --
 
 def load_flamesafe_status_link(path):
@@ -622,28 +388,54 @@ class FlameStatus:
 # ------------------------------------------------------- the remote --
 
 class Ctx:
-    """Who is asking: the machine itself, or a signed-in device."""
+    """Where a request came from: the machine itself, or a device on the
+    show network. That is all a press is known by (no sign-in)."""
 
-    def __init__(self, local, ip, session=None):
+    def __init__(self, local, ip):
         self.local = local
         self.ip = ip
-        self.session = session
 
     @property
-    def allowed(self):
-        return self.local or self.session is not None
+    def screen(self):
+        """The screen-list name the scheduler checks."""
+        return "Rack screen" if self.local else "iPad"
+
+    @property
+    def device(self):
+        """What the journal calls it: the surface, never a person."""
+        return "Rack screen" if self.local else f"iPad at {self.ip}"
 
 
-def cookie_token(header):
-    if not header:
-        return ""
-    try:
-        c = http_cookies.SimpleCookie()
-        c.load(header)
-    except http_cookies.CookieError:
-        return ""
-    m = c.get(COOKIE)
-    return m.value if m is not None else ""
+def countdown_view(sched, show, cue_now):
+    """What the page's countdown shows (Jeff, 2026-10-07). During a show,
+    running or held, the time left in THAT show: its length minus where
+    the engine's own show clock is in it (session.snapshot()'s "now", so a
+    Hold, which freezes the clock, freezes this too). A show whose length
+    is not known shows no countdown at all, never a guess. Between shows,
+    the countdown to the next one, as before. None means show nothing.
+    Display only: nothing here starts or stops anything."""
+    sched = sched or {}
+    if sched.get("attached"):
+        live = sched.get("state") in ("SHOW", "PAUSED")
+        held = sched.get("state") == "PAUSED"
+    else:
+        live = bool((show or {}).get("running")) and cue_now is not None
+        held = False
+    if live:
+        now = cue_now if isinstance(cue_now, dict) else {}
+        dur, el = now.get("duration"), now.get("elapsed")
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                   and math.isfinite(x) for x in (dur, el)) or dur <= 0:
+            return None
+        return {"kind": "left", "label": "Left in this show",
+                "s": round(max(0.0, dur - max(0.0, el)), 1),
+                "running": not held}
+    nx = sched.get("next") if sched.get("attached") else None
+    if isinstance(nx, dict) and isinstance(nx.get("in_s"), (int, float)) \
+            and not isinstance(nx.get("in_s"), bool):
+        return {"kind": "next", "label": "Next show", "s": nx["in_s"],
+                "running": True}
+    return None
 
 
 class Remote:
@@ -655,15 +447,11 @@ class Remote:
 
     def __init__(self, control, schedule=None, folder=None,
                  flame_status=None, flame_disarm=None,
-                 clock=time.monotonic, wall=time.time,
-                 iterations=PBKDF2_ITERATIONS, log=print):
+                 clock=time.monotonic, wall=time.time, log=print):
         self.control = control
         self.schedule = schedule
         self.folder = folder or (schedule.state_dir if schedule is not None
                                  else settings_folder())
-        self.pins = PinStore(self.folder, iterations=iterations)
-        self.sessions = Sessions(clock)
-        self.throttle = Throttle(clock)
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
@@ -679,41 +467,27 @@ class Remote:
         self._hold_ids = 0
         self._disarms = collections.deque(maxlen=64)
         self._disarm_ids = 0
+        self._deck_seen = None       # clock() of the deck's last read
 
     # -- who ---------------------------------------------------------------
-    # With no scheduler (the GPL path) the lists are read here, read-only,
-    # by the same rules as schedule_service.load_operators/load_screens, so
-    # the GPL path never imports the scheduler (PR #43 review, finding 7).
-    # Nothing is written: a missing file means the defaults. The selftest
-    # holds both readers and both default lists to the same answers.
-    def operators(self):
-        if self.schedule is not None:
-            return list(self.schedule.operators)
-        return list(read_names(os.path.join(self.folder, OPERATORS_FILE),
-                               "operators", DEFAULT_OPERATORS))
+    def context(self, local, ip):
+        return Ctx(local, ip)
 
-    def screens(self):
-        if self.schedule is not None:
-            return list(self.schedule.screens)
-        return list(read_names(os.path.join(self.folder, SCREENS_FILE),
-                               "screens", DEFAULT_SCREENS))
-
-    def context(self, local, ip, cookie_header):
-        # The machine itself is let in with or without a session, as
-        # before; a session there still names who is pressing, and arming
-        # needs one wherever it comes from.
-        return Ctx(local, ip, self.sessions.get(cookie_token(cookie_header)))
-
-    def _actor(self, ctx, body):
-        """(who, screen) for a press: the session's on the network, the
-        page's own choice on the machine itself."""
-        if ctx.session is not None:
-            return ctx.session["who"], ctx.session["device"]
-        who = str(body.get("who") or "").strip()
-        if not who and self.schedule is not None:
-            who = self.schedule.current_operator or ""
-        screen = str(body.get("screen") or "Rack screen").strip()
-        return who, screen
+    @staticmethod
+    def _actor(ctx, body=None):
+        """(who, screen, surface) for a press. From the network: the
+        surface it came from, by the request's own address, whatever the
+        body says. On the machine itself the Stream Deck process names its
+        chosen operator (or none) and "Stream Deck" (EngineConductor), and
+        that is kept, checked against the lists as before; the page sends
+        neither, and is the Rack screen."""
+        body = body if isinstance(body, dict) else {}
+        if ctx.local:
+            who = str(body.get("who") or "").strip()
+            screen = str(body.get("screen") or "").strip()
+            if who or screen:
+                return who, screen or "Rack screen", False
+        return ctx.device, ctx.screen, True
 
     def _journal(self, who, screen, action, outcome, text, fault=False):
         if self.schedule is not None:
@@ -744,8 +518,6 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return 200, self.deck_input()
-        if not ctx.allowed:
-            return 401, {"error": "Sign in with your PIN first."}
         if name == "status":
             return 200, self.status(ctx)
         if name == "network":
@@ -758,17 +530,9 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
-        if name == "login":
-            return self.login(body, ctx)
-        if name == "logout":
-            return self.logout(ctx)
-        if not ctx.allowed:
-            return 401, {"error": "Sign in with your PIN first."}, {}
         if name in LOCAL_ONLY and not ctx.local:
-            return 403, {"error": "PINs and the show network are set on the "
-                                  "show machine itself, not from here."}, {}
-        if name == "pin":
-            return (*self.set_pin(body),) + ({},)
+            return 403, {"error": "The show network is set on the show "
+                                  "machine itself, not from here."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
@@ -781,113 +545,9 @@ class Remote:
             return (*self.group_disarm(body, ctx),) + ({},)
         return 404, {"error": "no such thing here"}, {}
 
-    # -- sign in -----------------------------------------------------------
     def whoami(self, ctx):
-        s = ctx.session
-        out = {"local": ctx.local, "signed_in": s is not None,
-               "who": s["who"] if s else None,
-               "device": s["device"] if s else None,
-               "operators": self.operators(),
-               "screens": [n for n in self.screens()
-                           if n.lower() != "stream deck"],
-               "fresh_s": FRESH_S}
-        if ctx.local:
-            out["pins_set"] = self.pins.names()
-        return out
-
-    def login(self, body, ctx):
-        who = str(body.get("who") or "").strip()
-        device = str(body.get("device") or "").strip()
-        pin = str(body.get("pin") or "")
-        names = {n.lower(): n for n in self.operators()}
-        screens = {n.lower(): n for n in self.screens()
-                   if n.lower() != "stream deck"}
-        if who.lower() not in names:
-            return 400, {"error": "Pick your name from the list."}, {}
-        if device.lower() not in screens:
-            return 400, {"error": "Pick this device's name from the list."}, {}
-        who, device = names[who.lower()], screens[device.lower()]
-        keys = (("ip", ctx.ip), ("who", who.lower()))
-        with self.throttle.serial(keys):
-            refused = self._check_pin(who, device, pin, keys, ctx)
-            if refused is not None:
-                return refused
-            self.throttle.succeed(keys)
-        tok = self.sessions.create(who, device, ctx.ip)
-        self._journal(who, device, "sign in", "done",
-                      f"{who} signed in on the {device} ({ctx.ip}).")
-        cookie = (f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; "
-                  f"Max-Age={SESSION_MAX_S}")
-        return 200, {"ok": True, "who": who, "device": device}, \
-            {"Set-Cookie": cookie}
-
-    def _check_pin(self, who, device, pin, keys, ctx):
-        """None when the PIN is right; else the refusal to send. Called
-        only with throttle.serial(keys) held."""
-        wait = self.throttle.wait_s(keys)
-        if wait > 0:
-            self._journal(who, device, "sign in", "refused",
-                          f"A sign in as {who} from {ctx.ip} was refused "
-                          f"without checking the PIN: too many wrong PINs, "
-                          f"{wait:.0f} s left to wait.")
-            return 429, {"error": f"Too many wrong PINs. Wait {wait:.0f} s "
-                                  f"and try again.",
-                         "wait_s": round(wait, 1)}, {}
-        if not self.pins.has(who):
-            self.pins.verify(who, pin)        # same time as a real check
-            self.throttle.fail(keys)
-            self._journal(who, device, "sign in", "refused",
-                          f"{who} tried to sign in from {ctx.ip} but has no "
-                          f"PIN set. Set one on the show machine.")
-            # The same answer as a wrong PIN: the network is never told
-            # which operators have a PIN (fix round 1, A10b). The journal
-            # on the show machine says the truth.
-            return 403, {"error": "That PIN is not right."}, {}
-        if not self.pins.verify(who, pin):
-            self.throttle.fail(keys)
-            self._journal(who, device, "sign in", "refused",
-                          f"A wrong PIN for {who} from {ctx.ip} "
-                          f"({device}).")
-            return 403, {"error": "That PIN is not right."}, {}
-        return None
-
-    def logout(self, ctx):
-        s = ctx.session
-        if s is not None:
-            self.sessions.drop(s["token"])
-            with self._arm_lock:
-                for i in [i for i, h in self._holds.items()
-                          if h["token"] == s["token"]]:
-                    del self._holds[i]
-            self._journal(s["who"], s["device"], "sign out", "done",
-                          f"{s['who']} signed out on the {s['device']}.")
-        return 200, {"ok": True}, {
-            "Set-Cookie": f"{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; "
-                          f"Max-Age=0"}
-
-    def set_pin(self, body):
-        who = str(body.get("who") or "").strip()
-        names = {n.lower(): n for n in self.operators()}
-        if who.lower() not in names:
-            return 400, {"error": "Pick a name from the operator list."}
-        who = names[who.lower()]
-        pin = str(body.get("pin") or "")
-        if not pin:
-            self.pins.clear(who)
-            self.sessions.drop_who(who)
-            self._journal(who, "Rack screen", "PIN", "done",
-                          f"{who}'s PIN was removed on the show machine. "
-                          f"{who} can no longer sign in from the network.")
-            return 200, {"ok": True, "pins_set": self.pins.names()}
-        try:
-            self.pins.set(who, pin)
-        except ValueError as e:
-            return 400, {"error": str(e)}
-        # A new PIN signs out every device signed in with the old one.
-        self.sessions.drop_who(who)
-        self._journal(who, "Rack screen", "PIN", "done",
-                      f"{who}'s PIN was set on the show machine.")
-        return 200, {"ok": True, "pins_set": self.pins.names()}
+        return {"local": ctx.local, "device": ctx.device,
+                "screen": ctx.screen, "fresh_s": FRESH_S}
 
     def network_view(self):
         try:
@@ -929,7 +589,7 @@ class Remote:
         # with the latest Abort's, so work done first never reorders them.
         stamp = getattr(self.schedule, "stamp_press", None)
         pressed = stamp() if stamp is not None else None
-        who, screen = self._actor(ctx, body)
+        who, screen, surface = self._actor(ctx, body)
         if name in FRESH_ROUTES:
             why = self._stale(body)
             if why:
@@ -974,24 +634,16 @@ class Remote:
                                   "engine, so there is no show to press "
                                   "this on. Nothing was changed."}
         try:
-            if name == "operator":
-                if ctx.session is not None:
-                    want = str(body.get("pick") or "").strip()
-                    if want.lower() != who.lower():
-                        return 403, {
-                            "error": f"Signed in as {who}, this device can "
-                                     f"only pick {who}. To pick someone "
-                                     f"else, sign in as them with their "
-                                     f"own PIN."}
-                    pick = who
-                else:
-                    pick = str(body.get("pick") or "").strip()
-                return 200, svc.set_operator({"who": pick, "screen": screen})
+            # surface: the press names the surface, not a person on the
+            # operator list (Jeff, 2026-10-07). Every other rule the
+            # scheduler has for these presses still applies.
             if name == "reset":
-                r = svc.reset_conductor(who, screen, pressed=pressed)
+                r = svc.reset_conductor(who, screen, pressed=pressed,
+                                        surface=surface)
             else:
                 r = svc.operator_press(name, who, screen,
-                                       confirmed=body.get("confirmed") is True)
+                                       confirmed=body.get("confirmed") is True,
+                                       surface=surface)
         except ValueError as e:
             return 400, {"error": str(e)}
         return (200 if r.get("ok") else 409), r
@@ -1180,11 +832,10 @@ class Remote:
             return 403, {"error": "Arming from a screen is switched off in "
                                   "ltcplay_remote.json. Arm from the Stream "
                                   "Deck.", "let_go": True}
-        s = ctx.session
-        if s is None:
-            return 401, {"error": "Arming needs your own PIN sign in, even "
-                                  "on the show machine."}
-        who, device, token = s["who"], s["device"], s["token"]
+        # The hold belongs to the surface it came from: one device, one
+        # hold, and another device cannot carry it on.
+        who, device = ctx.device, ctx.screen
+        token = ctx.device
         try:
             i, gname = self._group_index(body)
         except ValueError as e:
@@ -1235,17 +886,13 @@ class Remote:
                                "and hold again.")
         with self._arm_lock:
             h = self._holds.get(i)
-            if h is not None and h["token"] != token and \
-                    now - h["beat"] <= BEAT_STALE_S:
-                theirs = f"{h['who']} on the {h['device']}"
+            # A live hold is nobody else's to take over or restart: not
+            # another device's, and with no sign-in not another tab's on
+            # the same device either (Jeff, 2026-10-07). Only one hold at a
+            # time, and a new one starts only once it has gone.
+            if h is not None and now - h["beat"] <= BEAT_STALE_S:
+                theirs = h["who"]
                 h = "busy"
-            elif h is not None and h["token"] == token and \
-                    now - h["beat"] <= BEAT_STALE_S and \
-                    body.get("hold_id") == h["id"]:
-                h["beat"] = now                 # still holding
-                return 200, {"ok": True, "hold_id": h["id"],
-                             "held_s": round(now - h["start"], 3),
-                             "needs_s": SCREEN_HOLD_S}
             else:
                 self._hold_ids += 1
                 h = {"token": token, "who": who, "device": device,
@@ -1267,19 +914,16 @@ class Remote:
                      "needs_s": SCREEN_HOLD_S}
 
     def arm_release(self, body, ctx):
-        s = ctx.session
-        if s is None:
-            return 200, {"ok": True}
         try:
             i, gname = self._group_index(body)
         except ValueError:
             return 200, {"ok": True}
-        h = self._drop_hold(i, s["token"])
+        h = self._drop_hold(i, ctx.device)
         if h is not None:
             held = h["beat"] - h["start"]
-            self._journal(s["who"], s["device"], "arm hold", "let go",
-                          f"{s['who']} let go of {gname} on the "
-                          f"{s['device']} after {held:.1f} s.")
+            self._journal(h["who"], h["device"], "arm hold", "let go",
+                          f"{h['who']} let go of {gname} on the "
+                          f"{h['device']} after {held:.1f} s.")
         return 200, {"ok": True}
 
     def group_disarm(self, body, ctx):
@@ -1290,7 +934,7 @@ class Remote:
             i, gname = self._group_index(body)
         except ValueError as e:
             return 400, {"error": str(e)}
-        who, device = self._actor(ctx, body)
+        who, device, _surface = self._actor(ctx, body)
         if not self.arming_enabled():
             # The Stream Deck reads a screen's per-group disarm only while
             # screen arming is on (review of PR #43, P0-4): said, never
@@ -1320,6 +964,7 @@ class Remote:
         fresh holds (with the held time the engine has heartbeats for) and
         the per-group disarms."""
         now = self.clock()
+        self._deck_seen = now
         enabled = self.arming_enabled()
         holds = []
         with self._arm_lock:
@@ -1448,6 +1093,65 @@ class Remote:
         return (200 if ok else 409), {"ok": ok, "text": text}
 
     # -- status ------------------------------------------------------------
+    DECK_QUIET_S = 2.0
+
+    def subsystems(self, cs):
+        """The rack screen's compact strip: one word per subsystem, and
+        "ok", "warn", "bad" or "off". Display only, read from what the
+        engine already knows; never raises."""
+        out = []
+
+        def add(name, state, word):
+            out.append({"name": name, "state": state, "word": word})
+        seen = self._deck_seen
+        if seen is None:
+            add("Deck", "off", "not heard")
+        else:
+            age = self.clock() - seen
+            add("Deck", "ok" if age <= self.DECK_QUIET_S else "bad",
+                "ok" if age <= self.DECK_QUIET_S else f"quiet {age:.0f} s")
+        try:
+            fl = self.flame_status.view() if self.flame_status else None
+        except Exception:
+            fl = None
+        if not fl or not fl.get("connected"):
+            add("Flamesafe", "off", "not connected")
+        elif fl.get("stale"):
+            add("Flamesafe", "bad", "no status")
+        elif fl.get("fault"):
+            add("Flamesafe", "bad", "fault")
+        else:
+            add("Flamesafe", "ok", "linked")
+        audio = ((cs or {}).get("clock") or {}).get("audio")
+        if not isinstance(audio, dict):
+            add("Audio", "off", "none")
+        elif audio.get("fault") or not audio.get("connected"):
+            add("Audio", "bad", "fault" if audio.get("fault") else "lost")
+        else:
+            add("Audio", "ok", "ok")
+        applied = {}
+        cond = getattr(self.schedule, "conductor", None)
+        try:
+            applied = (cond.snapshot() or {}).get("applied") or {}
+        except Exception:
+            applied = {}
+        for name, key in (("Video", "video"), ("Lasers", "lasers")):
+            v = applied.get(key)
+            if cond is None or v is None:
+                add(name, "off", "none")
+            elif str(v) == "unknown":
+                add(name, "warn", "not known")
+            else:
+                add(name, "ok", str(v).lower())
+        if not (cs or {}).get("running"):
+            add("Pixels", "off", "stopped")
+        elif (cs.get("send_errors") or 0) and \
+                (cs.get("since_ok") or 0) > 2.0:
+            add("Pixels", "bad", "not sending")
+        else:
+            add("Pixels", "ok", "sending")
+        return out
+
     def status(self, ctx):
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
                "me": self.whoami(ctx)}
@@ -1470,9 +1174,7 @@ class Remote:
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
-                    "slots": tn.get("slots", []),
-                    "current_operator": svc.current_operator,
-                    "operators": list(svc.operators)}
+                    "slots": tn.get("slots", [])}
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
                                    "error": f"{type(e).__name__}: {e}"}
@@ -1483,9 +1185,15 @@ class Remote:
                            "timeline": cs.get("timeline"),
                            "timecode": cs.get("playing") or cs.get("ltc_in"),
                            "state": cs.get("state")}
+            cue_now = cs.get("now")
+            out["subsystems"] = self.subsystems(cs)
         except Exception as e:
             out["show"] = {"running": False,
                            "error": f"{type(e).__name__}: {e}"}
+            cue_now = None
+            out["subsystems"] = self.subsystems({})
+        out["countdown"] = countdown_view(out["schedule"], out["show"],
+                                          cue_now)
         try:
             out["transport"] = self._transport_view()
         except Exception as e:
@@ -1505,7 +1213,7 @@ class Remote:
             getattr(self.flame_cues, "fault", "") or "")
         out["disarm_connected"] = self._disarm_fn() is not None
         now = self.clock()
-        tok = ctx.session["token"] if ctx.session else None
+        tok = ctx.device
         with self._arm_lock:
             holds = [{"group": i, "who": h["who"], "device": h["device"],
                       "held_s": round(h["beat"] - h["start"], 2),
@@ -1513,7 +1221,6 @@ class Remote:
                      for i, h in self._holds.items()
                      if now - h["beat"] <= BEAT_STALE_S]
         out["arming"] = {"enabled": self.arming_enabled(),
-                         "signed_in": ctx.session is not None,
                          "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
                          "holds": holds}
         return out

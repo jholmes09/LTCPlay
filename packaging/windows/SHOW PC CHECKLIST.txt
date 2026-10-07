@@ -60,10 +60,11 @@ LTC PLAYER'S OWN FILES
     the schedule is there, the show page says no show is scheduled.
 [ ] Also in ltcplay_fire_ice.json: "show_name": "Ignite the Night" and
     "venue": "Thanksgiving Point" (the rack screen's title), and
-    "beyond_blank": how the lasers are kept dark, decided at tech.
-    "timecode" (the default; BEYOND Essentials has no OSC input), "osc"
-    or "both".
-[ ] Timecode blanking: BEYOND gets its own Art-Net timecode (the show
+    "beyond_blank": how the lasers are kept dark. "osc" is the default
+    (BEYOND's brightness over OSC, through the "beyond" block's host and
+    port, so that block must be there). "timecode" (BEYOND Essentials has
+    no OSC input) or "both" can still be chosen.
+[ ] Only with "timecode" or "both", timecode blanking: BEYOND gets its own Art-Net timecode (the show
     file's node named BEYOND). Whenever the lasers must be dark it is sent
     to hour 23, running. In the BEYOND show, Andy leaves hour 23 EMPTY (no
     laser cues there), and BEYOND's "keep running when timecode stops" is

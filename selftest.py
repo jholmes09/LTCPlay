@@ -4045,8 +4045,9 @@ def test_web_ui():
 
 
 def test_web_token_gate():
-    section("serving onto a venue network needs an operator PIN, not a link "
-            "token (the old shared token opens nothing now)")
+    section("serving onto a venue network: the old shared link token opens "
+            "nothing, and the network reaches only the remote page's own "
+            "routes (no sign-in since Jeff, 2026-10-07)")
     import threading
     import urllib.request
     from ltcplay import web as web_mod
@@ -4061,20 +4062,17 @@ def test_web_token_gate():
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
         # A request FROM loopback is always allowed: it is the operator's own
-        # machine, and demanding a PIN there would only lock them out.
+        # machine.
         with urllib.request.urlopen(base + "/api/state", timeout=5) as r:
-            check(r.status == 200, "loopback should not need a PIN")
+            check(r.status == 200, "loopback reads the state")
         check(httpd.token is None, "no shared token is minted any more")
-        h = web_mod.Handler.__new__(web_mod.Handler)
-        h.server = httpd
-        h.client_address = ("10.0.0.44", 5000)
         for path, headers in (("/api/state", {}),
                               ("/api/state?t=anything", {}),
                               ("/api/state", {"X-ltcplay-token": "x"})):
-            h.path, h.headers, h._ctx_cache = path, headers, None
-            check(h._authorised() is False,
-                  f"a network request with no PIN session was let in: "
-                  f"{path} {headers}")
+            st, _h, out = _ask(httpd, "GET", path,
+                               client=("10.0.0.44", 5000), headers=headers)
+            check(st == 403, f"a network request for the operator page's "
+                             f"API was let in: {path} {headers} {st}")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -32350,7 +32348,7 @@ class _TcSock:
 
 def test_beyond_timecode_blanking():
     section("fire & ice: BEYOND's lasers kept dark by timecode (beyond_blank "
-            "\"timecode\", the default): BEYOND's own stream jumps to the "
+            "\"timecode\", selectable; \"osc\" is the default): BEYOND's own stream jumps to the "
             "running hour-23 black zone within one frame in every blanking "
             "case, comes back to the right show frame, MadMapper's stream is "
             "never touched, a send that fails is a fault, and the setting is "
@@ -32361,8 +32359,13 @@ def test_beyond_timecode_blanking():
     C = _cond_mod()
     # The setting.
     cfg = F.FireIceConfig.parse({})
-    check(cfg.beyond_blank == "timecode" and cfg.beyond_black_hour == 23,
-          "default: timecode blanking, black zone hour 23")
+    check(cfg.beyond_blank == "osc" and cfg.beyond_black_hour == 23 and
+          F.FireIceConfig().beyond_blank == "osc" and
+          F.BEYOND_BLANK_DEFAULT == BT.DEFAULT_MODE == "osc" and
+          not F.blanks_by_timecode(types.SimpleNamespace()),
+          "default (Jeff, 2026-10-07): OSC blanking, in the file, the "
+          "config object, beyondtc and an object with no setting at all; "
+          "black zone hour 23 when timecode is chosen")
     for bad, words in (({"beyond_blank": "dim"}, "beyond_blank"),
                        ({"beyond_black_hour": 24}, "beyond_black_hour"),
                        ({"beyond_black_hour": True}, "beyond_black_hour"),
@@ -32374,7 +32377,7 @@ def test_beyond_timecode_blanking():
         except F.FireIceConfigError as e:
             check(words in str(e) and "\u2014" not in str(e),
                   f"refused in a sentence: {e}")
-    for m in ("osc", "both"):
+    for m in ("timecode", "osc", "both"):
         check(F.FireIceConfig.parse({"beyond_blank": m}).beyond_blank == m,
               f"{m} is a mode")
 
@@ -32618,7 +32621,8 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
                 check(words[label] in str(e) and "\u2014" not in str(e) and
                       "\u2013" not in str(e),
                       f"{label}: refused in a sentence: {e}")
-            cfg = F.FireIceConfig(beyond_timecode_ip="127.0.0.3"
+            cfg = F.FireIceConfig(beyond_blank="timecode",
+                                  beyond_timecode_ip="127.0.0.3"
                                   if label == "two" else "127.0.0.2")
             try:
                 F.check_beyond_timecode_routes(folder, cfg)
@@ -32637,14 +32641,14 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
         check(F.beyond_timecode_route(p, "127.0.0.2") is None,
               "a show file with no Art-Net timecode has no route")
         skipped = F.check_beyond_timecode_routes(
-            folder, F.FireIceConfig(beyond_timecode_ip="127.0.0.2"))
+            folder, F.FireIceConfig(beyond_blank="timecode", beyond_timecode_ip="127.0.0.2"))
         check(len(skipped) == 1 and "bad.json" in skipped[0] and
               "sends no Art-Net timecode" in skipped[0],
               f"serve starts, saying which show it passed over: {skipped}")
         p = show_file("bad", bad["no BEYOND"])
         check(F.beyond_timecode_route(p, None, lasers=False) is None,
               "no BEYOND configured and none named: nothing to route")
-        skipped = F.check_beyond_timecode_routes(folder, F.FireIceConfig())
+        skipped = F.check_beyond_timecode_routes(folder, F.FireIceConfig(beyond_blank="timecode"))
         check(len(skipped) == 1 and "no BEYOND is configured" in skipped[0],
               f"a bench with no lasers starts: {skipped}")
         # Re-review P2-h: beyond_timecode_ip and the show file's BEYOND
@@ -32666,7 +32670,9 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
         from ltcplay import cli as _cli
         show_file("bad", bad["broadcast"])
         with open(os.path.join(work, "ltcplay_fire_ice.json"), "w") as fh:
-            _json.dump({}, fh)
+            # Timecode blanking chosen: "osc" is the default since Jeff,
+            # 2026-10-07.
+            _json.dump({"beyond_blank": "timecode"}, fh)
         out = io.StringIO()
         with contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(out):
@@ -32677,7 +32683,7 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
               "bad.json" in out.getvalue(),
               f"ltc serve refuses it in a sentence: {rc} {out.getvalue()!r}")
         os.remove(os.path.join(folder, "bad.json"))
-        F.check_beyond_timecode_routes(folder, F.FireIceConfig())
+        F.check_beyond_timecode_routes(folder, F.FireIceConfig(beyond_blank="timecode"))
         check(True, "every show file routes BEYOND through the gate: serve "
                     "starts")
         # At Run: attach() refuses it before anything opens, and gives the
@@ -32687,7 +32693,7 @@ def test_beyond_timecode_needs_one_route_through_the_gate():
             return
         control = web_mod.Control(folder, sd=FakeSD())
         lines = []
-        w = F.attach(n.svc, control, F.FireIceConfig(), threaded=False,
+        w = F.attach(n.svc, control, F.FireIceConfig(beyond_blank="timecode"), threaded=False,
                      journal=lambda text, **k: lines.append(text))
         try:
             g = w.devices.beyond.gate
@@ -33093,10 +33099,12 @@ def test_fire_ice_config_defaults_and_refusals():
           f"/api/brand names the Fire & Ice show from its own config, "
           f"under the global brand: {b}")
     plain = W.brand_doc(types.SimpleNamespace(fire_ice_config=None))
-    check(b.get("beyond_blank") == "timecode" and
-          "Lasers blanked by" in open(os.path.join(
-              os.path.dirname(W.__file__), "web", "remote.html")).read(),
-          "the rack screen shows how the lasers are blanked")
+    page = open(os.path.join(os.path.dirname(W.__file__), "web",
+                             "remote.html")).read()
+    check("beyond_blank" not in b and "Lasers blanked" not in page and
+          "black zone" not in page.lower(),
+          "the web pages say nothing about how the lasers are blanked "
+          "(Jeff, 2026-10-07)")
     check(plain["show"] == B.load()["show"] and
           "Ignite" not in json.dumps(B.load()),
           f"without Fire & Ice the shared brand file names no show: "
@@ -34050,7 +34058,6 @@ def test_fire_ice_flame_cue_refusals_are_faults_on_the_screens():
                 check(st == 200 and out.get("flame_cues", {}).get(
                     "fault") == why,
                     f"/api/conductor carries the fault: {st} {out}")
-                R.sign_in()
                 st, _h, out = R.ask("GET", "/api/remote/status")
                 check(st == 200 and out["flames"]["cues_fault"] == why,
                       f"the rack screen's status carries it: "
@@ -36905,51 +36912,6 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
 
 
-def test_remote_name_lists_match_the_scheduler():
-    section("iPad remote: with no scheduler (the GPL path) the operator and "
-            "screen lists are read without importing the scheduler, by the "
-            "same rules and with the same defaults (PR #43 review, item 7)")
-    import json as _j
-    import shutil
-    import tempfile
-    from ltcplay import remote as RM, schedule as SC
-    from ltcplay import schedule_service as SV
-    check(RM.OPERATORS_FILE == SV.OPERATORS_FILE and
-          RM.SCREENS_FILE == SV.SCREENS_FILE and
-          RM.DEFAULT_OPERATORS == SC.DEFAULT_OPERATORS and
-          RM.DEFAULT_SCREENS == SV.DEFAULT_SCREENS,
-          "the file names and default lists are the scheduler's")
-    docs = [None, b"not json", {"operators": ["Ann", "Bo"]},
-            {"operators": [" Ann ", "bo"], "x": 1}, {"operators": []},
-            {"operators": ["Ann", "ann"]}, {"operators": ["Ann", " "]},
-            {"operators": ["Ann", 3]}, {"operators": "Ann"}, ["Ann"],
-            {"operators": [" Ann", "Bo "]}]
-    for key, fname, load in (("operators", SV.OPERATORS_FILE,
-                              SV.load_operators),
-                             ("screens", SV.SCREENS_FILE, SV.load_screens)):
-        for doc in docs:
-            work = tempfile.mkdtemp()
-            try:
-                path = os.path.join(work, fname)
-                if isinstance(doc, bytes):
-                    open(path, "wb").write(b"\xef\xbb\xbf" + doc)
-                elif doc is not None:
-                    if isinstance(doc, dict) and "operators" in doc:
-                        doc = {(key if k == "operators" else k): v
-                               for k, v in doc.items()}
-                    with open(path, "w", encoding="utf-8") as fh:
-                        _j.dump(doc, fh)
-                default = (RM.DEFAULT_OPERATORS if key == "operators"
-                           else RM.DEFAULT_SCREENS)
-                mine = RM.read_names(path, key, default)
-                theirs = tuple(load(work)[0])
-                check(mine == theirs,
-                      f"{key} {doc!r}: remote {mine} == scheduler {theirs}")
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
-    print("  ok")
-
-
 def test_the_gpl_path_never_loads_the_flame_link():
     section("GPL: the flame link is never imported by the program")
     import subprocess as _sp
@@ -37160,34 +37122,22 @@ class _RemoteRig:
         self.remote = remote_mod.Remote(
             self.httpd.control, self.svc, folder=self.work,
             clock=lambda: self.mono[0], wall=lambda: self.wall[0],
-            iterations=1000, log=lambda t: None)
+            log=lambda t: None)
         self.httpd.remote = self.remote
-        self.cookie = None
 
     def settle(self):
         if self.c is not None:
             check(self.svc.flush_conductor(5), "the conductor calls all ran")
             self.c.run_pending()
 
-    def ask(self, method, path, body=None, cookie=True, **kw):
+    def ask(self, method, path, body=None, **kw):
+        """As a device on the show network (10.20.0.44) unless `client`
+        says otherwise. No sign-in (Jeff, 2026-10-07)."""
         hd = dict(kw.pop("headers", None) or {})
-        if cookie and self.cookie:
-            hd["Cookie"] = self.cookie
         return _ask(self.httpd, method, path, body, headers=hd, **kw)
 
     def seen(self):
         return int(self.wall[0] * 1000)
-
-    def sign_in(self, who="Andy", pin="2468", device="iPad", set_pin=True):
-        if set_pin:
-            self.remote.pins.set(who, pin)
-        st, hd, out = self.ask("POST", "/api/remote/login",
-                               {"who": who, "pin": pin, "device": device},
-                               cookie=False)
-        check(st == 200, f"sign in as {who}: {st} {out}")
-        sc = (hd.get("set-cookie") or [""])[0]
-        self.cookie = sc.split(";")[0]
-        return st, out
 
     def lines_for(self, action):
         return [r for r in self.svc.journal if r.get("action") == action]
@@ -37212,126 +37162,80 @@ def _live_show(R):
     check(R.svc.machine.state == S.SHOW, "setup: show 1 is running")
 
 
-def test_remote_pin_required_over_the_network():
-    section("iPad remote: over the network every route needs an operator's "
-            "PIN session; the session cookie is per device; sign out ends it")
+def test_remote_no_sign_in_over_the_network():
+    section("iPad remote (Jeff, 2026-10-07): no PIN, no sign-in, no operator "
+            "names; a device on the show network uses the remote page's own "
+            "routes as it is, the journal names the surface by its address, "
+            "and the legacy routes and wildcard binds stay refused")
     S = _sched()
     if S is None:
         return
+    from ltcplay import remote as RM
+    from ltcplay import web as web_mod
     R = _RemoteRig(S)
     try:
+        for name in ("PinStore", "Sessions", "Throttle", "PIN_FILE",
+                     "COOKIE", "FREE_TRIES", "LOCK_BASE_S", "LOCK_MAX_S"):
+            check(not hasattr(RM, name), f"remote.{name} is gone")
+        for r in ("login", "logout", "pin", "operator"):
+            check(r not in RM.POST_ROUTES, f"no {r} route")
+        check(not hasattr(web_mod, "OPEN_POSTS") and
+              not hasattr(web_mod.Handler, "_authorised"),
+              "web.py has no sign-in gate left")
+        for path in ("/api/remote/login", "/api/remote/logout",
+                     "/api/remote/pin", "/api/remote/operator"):
+            st, _h, out = R.ask("POST", path, {"who": "Andy", "pin": "2468",
+                                               "device": "iPad"})
+            check(st == 404, f"{path} does not exist: {st} {out}")
+        st, _h, out = R.ask("GET", "/")
+        check(st == 200 and "<title>Show remote</title>" in str(out) and
+              "li-pin" not in str(out) and "PIN" not in str(out) and
+              "Sign in" not in str(out) and 'id="op-pick"' not in str(out)
+              and "/api/remote/login" not in str(out),
+              f"the network gets the remote page, with no sign-in form, PIN "
+              f"or operator picker for presses: {st}")
+        st, _h, out = R.ask("GET", "/api/remote/whoami")
+        check(st == 200 and out == {"local": False,
+                                    "device": "iPad at 10.20.0.44",
+                                    "screen": "iPad", "fresh_s": RM.FRESH_S},
+              f"whoami names the surface by its address: {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(st == 200 and "served_at" in out and
+              "operators" not in out["schedule"] and
+              "current_operator" not in out["schedule"] and
+              "signed_in" not in out["arming"],
+              f"the status answers with no sign-in, and names nobody: {st}")
+        st, _h, out = R.ask("POST", "/api/remote/hold",
+                            {"who": "Andy", "screen": "Rack screen"})
+        held = [r for r in R.svc.journal
+                if "Hold" in str(r.get("text", ""))]
+        check(held and all(r.get("who") == "iPad at 10.20.0.44" and
+                           r.get("screen") == "iPad" for r in held),
+              f"a Hold from the iPad is journaled as the iPad at its "
+              f"address, never as the name the body gave: "
+              f"{[(r.get('who'), r.get('screen')) for r in held]}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=("127.0.0.1", 5000))
+        check(out.get("device") == "Rack screen" and out.get("local"),
+              f"the machine itself is the Rack screen: {out}")
         for method, path, body in (
                 ("GET", "/api/state", None),
                 ("GET", "/api/timelines", None),
-                ("GET", "/api/remote/status", None),
                 ("GET", "/api/schedule/state", None),
                 ("POST", "/api/stop", {}),
                 ("POST", "/api/start", {"timeline": "x.json"}),
-                ("POST", "/api/remote/hold", {"who": "Andy",
-                                              "screen": "iPad"}),
-                ("POST", "/api/remote/abort", {"confirmed": True}),
-                ("POST", "/api/remote/disarm-all", {}),
                 ("POST", "/api/schedule/operator", {"who": "Andy"})):
             st, _h, out = R.ask(method, path, body)
-            want = 401 if path.startswith("/api/remote/") else 403
-            check(st == want, f"{method} {path} from the network without a "
-                              f"session is refused: {st} {out}")
-        check(not R.lines_for("HOLD_ON") and not R.lines_for("HOLD"),
-              "and nothing was held")
-        # The remote routes check the session themselves too, not only
-        # behind web.py's gate: a second wall, tested on its own.
-        from ltcplay import remote as RM0
-        nobody = RM0.Ctx(False, "10.20.0.44")
-        for route in ("/api/remote/status", "/api/remote/network"):
-            st, out = R.remote.get(route, nobody)
-            check(st == 401, f"Remote.get {route} with no session: {st}")
-        for route in ("/api/remote/hold", "/api/remote/abort",
-                      "/api/remote/disarm-all", "/api/remote/jump",
-                      "/api/remote/pin"):
-            st, out, _hh = R.remote.post(route, {"confirmed": True},
-                                         nobody)
-            check(st == 401, f"Remote.post {route} with no session: {st}")
-        st, _h, out = R.ask("GET", "/")
-        check(st == 200 and "Sign in" in str(out) and
-              "<title>Show remote</title>" in str(out),
-              f"the network gets the remote page, which signs in: {st}")
-        st, _h, out = R.ask("GET", "/api/remote/whoami")
-        check(st == 200 and out["signed_in"] is False and
-              "Andy" in out["operators"] and "iPad" in out["screens"] and
-              "Stream Deck" not in out["screens"] and
-              "pins_set" not in out,
-              f"whoami says who may sign in, never which PINs exist: {out}")
-        st, _h, out = R.ask("POST", "/api/remote/login",
-                            {"who": "Andy", "pin": "1234", "device": "iPad"})
-        check(st == 403 and out["error"] == "That PIN is not right.",
-              f"an operator with no PIN set cannot sign in, and the network "
-              f"is not told whether a PIN exists: {st} {out}")
-        st, out = R.sign_in("Andy", "2468", "iPad")
-        sc = R.cookie
-        check(sc.startswith("ltcplay_session=") and len(sc) > 40,
-              f"a session cookie: {sc[:24]}")
-        st, hd, out = R.ask("POST", "/api/remote/login",
-                            {"who": "Jeff", "pin": "2468", "device": "iPad"},
-                            cookie=False)
-        R.remote.pins.set("Jeff", "1357")
-        # The cookie attributes.
-        R2 = R.ask("POST", "/api/remote/login",
-                   {"who": "Jeff", "pin": "1357", "device": "Phone"},
-                   cookie=False)
-        attrs = (R2[1].get("set-cookie") or [""])[0]
-        check("HttpOnly" in attrs and "SameSite=Strict" in attrs and
-              "Path=/" in attrs, f"the cookie is HttpOnly, SameSite=Strict: "
-                                 f"{attrs}")
-        st, _h, out = R.ask("GET", "/api/remote/whoami")
-        check(out["signed_in"] and out["who"] == "Andy" and
-              out["device"] == "iPad", f"signed in as Andy on the iPad: {out}")
-        st, _h, out = R.ask("GET", "/api/state")
-        check(st == 403, f"even signed in, the operator page's API is not "
-                         f"served to the network: {st}")
-        st, _h, out = R.ask("GET", "/api/remote/status")
-        check(st == 200 and out["me"]["who"] == "Andy" and
-              "served_at" in out, f"and the status: {st}")
-        # A forged or someone else's cookie is nobody.
-        st, _h, _o = R.ask("GET", "/api/remote/status", cookie=False,
-                           headers={"Cookie": "ltcplay_session=forged"})
-        check(st == 401, f"a forged cookie is refused: {st}")
-        # PINs are stored hashed, in the settings folder, never as typed.
-        from ltcplay import remote as RM
-        txt = open(os.path.join(R.work, RM.PIN_FILE), encoding="utf-8").read()
-        check("2468" not in txt and "1357" not in txt and "salt" in txt
-              and "hash" in txt, "the PIN file holds hashes, not PINs")
-        # Sign out ends it.
-        st, hd, out = R.ask("POST", "/api/remote/logout", {})
-        check(st == 200 and "Max-Age=0" in (hd.get("set-cookie") or [""])[0],
-              f"sign out clears the cookie: {st}")
-        st, _h, _o = R.ask("GET", "/api/remote/status")
-        check(st == 401, f"after sign out the old cookie opens nothing: {st}")
-        check(any(r.get("action") == "sign in" and r.get("who") == "Andy"
-                  and r.get("screen") == "iPad" for r in R.svc.journal) and
-              any(r.get("action") == "sign out" for r in R.svc.journal),
-              "sign in and sign out are journaled with who and device")
-        # A new PIN signs out every device that used the old one.
-        R.sign_in("Andy", "2468", "iPad")
-        st, _h, _o = R.ask("POST", "/api/remote/pin",
-                           {"who": "Andy", "pin": "9999"})
-        check(st == 403, f"PINs are not set from the network: {st}")
-        st, _h, _o = R.ask("GET", "/api/state", cookie=False,
-                           client=("127.0.0.1", 5000),
-                           headers={})
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
-                           {"who": "Andy", "pin": "9999"},
-                           client=("127.0.0.1", 5000))
-        check(st == 200 and "Andy" in out["pins_set"],
-              f"on the machine itself a PIN is set: {st} {out}")
-        st, _h, _o = R.ask("GET", "/api/remote/status")
-        check(st == 401, "and the device signed in with the old PIN is out")
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
-                           {"who": "Andy", "pin": "12"},
-                           client=("127.0.0.1", 5000))
-        check(st == 400 and "4 to 8 digits" in out["error"],
-              f"a PIN is 4 to 8 digits: {out}")
+            check(st == 403, f"{method} {path} from the network is still "
+                             f"refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/network",
+                            {"address": "10.20.0.9"})
+        check(st == 403, f"the show network is set only on the machine "
+                         f"itself: {st}")
+        check(not os.path.exists(os.path.join(R.work,
+                                              "ltcplay_remote_pins.json")),
+              "no PIN file is written")
         # Wildcard binds are refused outright.
-        from ltcplay import web as web_mod
         for wild in ("0.0.0.0", "::", "", "0", "0.0", "000.000.000.000"):
             try:
                 h2 = web_mod.serve(R.folder, port=0, bind=wild)
@@ -37367,7 +37271,7 @@ LEGACY_GETS = ("/api/state", "/api/devices", "/api/timelines", "/api/log",
 
 
 def test_remote_network_session_reaches_only_remote_routes():
-    section("iPad remote, fix round 1 F1: a signed-in network session "
+    section("iPad remote, fix round 1 F1: a device on the network "
             "reaches the remote page's own routes and nothing else; every "
             "legacy and scheduler route is refused from the network, and "
             "the Stream Deck's journal route answers only the machine")
@@ -37377,20 +37281,19 @@ def test_remote_network_session_reaches_only_remote_routes():
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
     try:
-        R.sign_in("Andy", "2468", "iPad")
         op0 = R.svc.current_operator
         n0 = len(R.svc.journal)
         for path, body in LEGACY_POSTS:
             st, _h, out = R.ask("POST", path, dict(body, seen=R.seen()))
-            check(st == 403, f"POST {path} with an iPad session is refused: "
+            check(st == 403, f"POST {path} from the iPad is refused: "
                              f"{st} {out}")
         for path in LEGACY_GETS:
             st, _h, out = R.ask("GET", path)
-            check(st == 403, f"GET {path} with an iPad session is refused: "
+            check(st == 403, f"GET {path} from the iPad is refused: "
                              f"{st}")
         check(R.svc.current_operator == op0,
-              f"the operator was not changed behind /api/remote/operator's "
-              f"back: {R.svc.current_operator}")
+              f"the operator was not changed from the network: "
+              f"{R.svc.current_operator}")
         new = list(R.svc.journal)[n0:]
         check(not any("arm pressed" in r.get("text", "") for r in new) and
               not any(r.get("action") in ("operator", "deck", "arm")
@@ -37422,6 +37325,89 @@ def test_remote_network_session_reaches_only_remote_routes():
     print("  ok")
 
 
+def test_remote_countdown_left_in_this_show():
+    section("rack screen countdown (Jeff, 2026-10-07): during a running show "
+            "the time left in THIS show from the engine's own show clock; "
+            "held, it stays still; between shows the countdown to the next; "
+            "a show of unknown length shows none")
+    from ltcplay import remote as RM
+    cv = RM.countdown_view
+    run = {"attached": True, "state": "SHOW",
+           "next": {"show": 2, "start": "19:00", "in_s": 3600}}
+    c = cv(run, {"running": True}, {"duration": 440.0, "elapsed": 100.25})
+    check(c == {"kind": "left", "label": "Left in this show", "s": 339.8,
+                "running": True},
+          f"running: length minus the show clock's place, not the next "
+          f"show: {c}")
+    c = cv(dict(run, state="PAUSED"), {"running": True},
+           {"duration": 440.0, "elapsed": 100.25})
+    check(c and c["kind"] == "left" and c["s"] == 339.8 and
+          c["running"] is False,
+          f"held: the same time left, marked not running so the page does "
+          f"not age it: {c}")
+    c = cv(dict(run, state="WAITING"), {"running": False}, None)
+    check(c == {"kind": "next", "label": "Next show", "s": 3600,
+                "running": True},
+          f"between shows: the countdown to the next show: {c}")
+    for now in (None, {}, {"duration": None, "elapsed": 3.0},
+                {"duration": 0, "elapsed": 1.0},
+                {"duration": float("nan"), "elapsed": 1.0},
+                {"duration": True, "elapsed": 1.0},
+                {"duration": 300.0}):
+        check(cv(run, {"running": True}, now) is None,
+              f"a show of unknown length shows no countdown at all, never "
+              f"the next show's: {now}")
+    c = cv(run, {"running": True}, {"duration": 300.0, "elapsed": 320.0})
+    check(c["s"] == 0.0, "past its end: zero, never negative")
+    check(cv({"attached": True, "state": "WAITING", "next": None},
+             {}, None) is None, "nothing next: nothing shown")
+    c = cv({"attached": False}, {"running": True},
+           {"duration": 60.0, "elapsed": 10.0})
+    check(c and c["kind"] == "left" and c["s"] == 50.0,
+          "with no scheduler, a playing show still shows its time left")
+    # Through the real status route: the engine's own snapshot.
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    try:
+        _live_show(R)
+        real = R.httpd.control.state
+        R.httpd.control.state = lambda: {"running": True, "show": "x",
+                                         "now": {"duration": 444.0,
+                                                 "elapsed": 44.0}}
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(st == 200 and out["countdown"] == {
+            "kind": "left", "label": "Left in this show", "s": 400.0,
+            "running": True}, f"the status carries it: {out.get('countdown')}")
+        R.svc.operator_press("hold", "Jeff", "Rack screen")
+        R.settle()
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["countdown"]["running"] is False and
+              out["countdown"]["s"] == 400.0,
+              f"held: frozen: {out['countdown']}")
+        names = [x["name"] for x in out.get("subsystems", [])]
+        check(names == ["Deck", "Flamesafe", "Audio", "Video", "Lasers",
+                        "Pixels"] and all(x["state"] in
+                                          ("ok", "warn", "bad", "off")
+                                          for x in out["subsystems"]),
+              f"the compact status strip names each subsystem: "
+              f"{out.get('subsystems')}")
+        check(out["subsystems"][0]["state"] == "off",
+              "the deck has not asked yet: off")
+        R.remote.deck_input()
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["subsystems"][0]["state"] == "ok", "the deck asked: ok")
+        R.mono[0] += 5
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["subsystems"][0]["state"] == "bad",
+              "the deck quiet for 5 s: bad")
+        R.httpd.control.state = real
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_remote_cross_site_posts_refused_on_loopback():
     section("iPad remote, fix round 1 F2: on the show machine itself, a "
             "press from a sandboxed or data: page (Origin null), from "
@@ -37432,7 +37418,6 @@ def test_remote_cross_site_posts_refused_on_loopback():
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
     try:
-        pins0 = R.remote.pins.names()
         state0 = R.svc.machine.state
         cases = [("Origin null", {"Origin": "null"}, None),
                  ("Origin NULL", {"Origin": "NULL"}, None),
@@ -37446,8 +37431,6 @@ def test_remote_cross_site_posts_refused_on_loopback():
                            "application/x-www-form-urlencoded"}, None),
                  ("no content type", {"Content-Type": None}, None)]
         for path, body in (("/api/stop", {}),
-                           ("/api/remote/pin", {"who": "Jeff",
-                                                "pin": "4321"}),
                            ("/api/remote/network",
                             {"address": "198.51.100.7"}),
                            ("/api/remote/start-now",
@@ -37459,15 +37442,27 @@ def test_remote_cross_site_posts_refused_on_loopback():
                                    client=loop, headers=hd)
                 check(st == 403, f"{path} with {label} from loopback is "
                                  f"refused: {st} {out}")
+        # With no sign-in (Jeff, 2026-10-07) these walls are what keep
+        # another site's page off the controls from the show network too.
+        for path, body in (("/api/remote/start-now",
+                            {"confirmed": True, "seen": R.seen()}),
+                           ("/api/remote/arm-hold",
+                            {"group": 0, "seen": R.seen()}),
+                           ("/api/remote/abort", {"confirmed": True})):
+            for label, hd, _x in cases:
+                st, _h, out = R.ask("POST", path, body, headers=hd)
+                check(st == 403, f"{path} with {label} from the network is "
+                                 f"refused: {st} {out}")
+        check(not R.lines_for("abort") and not R.lines_for("arm hold"),
+              "no Abort or arm hold reached the remote")
         from ltcplay import remote as RM
-        check(R.remote.pins.names() == pins0, "no PIN was planted")
         check(RM.load_settings(R.work)["show_network_address"] is None,
               "no show network address was planted")
         check(R.svc.machine.state == state0, "nothing was started")
         # The page's own presses still work: same origin, JSON.
         port = R.httpd.server_address[1]
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/pin",
-                           {"who": "Jeff", "pin": "4321"}, client=loop,
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/network",
+                           {"address": "10.20.0.5"}, client=loop,
                            headers={"Origin": f"http://127.0.0.1:{port}",
                                     "Sec-Fetch-Site": "same-origin"})
         check(st == 200, f"a same-origin JSON press from the page is "
@@ -37482,109 +37477,8 @@ def test_remote_cross_site_posts_refused_on_loopback():
     print("  ok")
 
 
-def test_remote_lockout_holds_under_a_concurrent_burst():
-    section("iPad remote, fix round 1 F3: 24 overlapping wrong PINs check "
-            "no more than FREE_TRIES + 1 of them; the rest are refused "
-            "unchecked")
-    S = _sched()
-    if S is None:
-        return
-    import threading
-    from ltcplay import remote as RM
-    R = _RemoteRig(S)
-    try:
-        # A slow enough hash that guesses really overlap.
-        R.remote.pins = RM.PinStore(R.work, iterations=60000)
-        R.remote.pins.set("Andy", "2468")
-        ctx = RM.Ctx(False, "10.20.0.66")
-        codes = []
-        go = threading.Event()
-
-        def one():
-            go.wait()
-            st, out, _h = R.remote.login(
-                {"who": "Andy", "pin": "0000", "device": "iPad"}, ctx)
-            codes.append(st)
-        ts = [threading.Thread(target=one) for _ in range(24)]
-        for t in ts:
-            t.start()
-        go.set()
-        for t in ts:
-            t.join(60)
-        checked = codes.count(403)
-        check(len(codes) == 24 and checked <= RM.FREE_TRIES + 1 and
-              codes.count(429) == 24 - checked,
-              f"of 24 overlapping wrong guesses {checked} were checked "
-              f"(at most {RM.FREE_TRIES + 1}): {sorted(codes)}")
-        # A different device and name are not held up by that lock.
-        st, out, _h = R.remote.login({"who": "Jeff", "pin": "1",
-                                      "device": "iPad"},
-                                     RM.Ctx(False, "10.20.0.67"))
-        check(st == 403, f"another name from another device is checked: "
-                         f"{st}")
-    finally:
-        R.close()
-    print("  ok")
-
-
-def test_remote_wrong_pin_refused_and_throttled():
-    section("iPad remote: a wrong PIN is refused, and after three the device "
-            "and the name are locked out for longer each time")
-    S = _sched()
-    if S is None:
-        return
-    from ltcplay import remote as RM
-    R = _RemoteRig(S)
-    try:
-        R.remote.pins.set("Andy", "2468")
-
-        def login(pin, client=("10.20.0.44", 5000), who="Andy"):
-            return R.ask("POST", "/api/remote/login",
-                         {"who": who, "pin": pin, "device": "iPad"},
-                         cookie=False, client=client)
-        for i in range(RM.FREE_TRIES):
-            st, _h, out = login("0000")
-            check(st == 403 and "not right" in out["error"],
-                  f"wrong PIN {i + 1} is refused: {st} {out}")
-        st, _h, out = login("1111")
-        check(st == 403, f"the fourth wrong one is refused too: {st}")
-        st, _h, out = login("2468")
-        check(st == 429 and out["wait_s"] > 0,
-              f"then even the RIGHT PIN is refused, unchecked, while locked "
-              f"out: {st} {out}")
-        st, _h, out = login("2468", client=("10.20.0.99", 5000))
-        check(st == 429, f"and from another device too, for the same name: "
-                         f"{st}")
-        R.mono[0] += RM.LOCK_BASE_S + 0.1
-        st, _h, out = login("2222")
-        check(st == 403, "after the wait, a wrong PIN is checked again")
-        st, _h, out = login("2468")
-        check(st == 429 and out["wait_s"] > RM.LOCK_BASE_S,
-              f"and the next lock-out is longer: {out}")
-        R.mono[0] += RM.LOCK_MAX_S + 1
-        st, _h, out = login("2468")
-        check(st == 200, f"the right PIN after the wait signs in: {st}")
-        refused = [r for r in R.svc.journal if r.get("action") == "sign in"
-                   and r.get("outcome") == "refused"]
-        check(len(refused) >= 6 and any("wrong PIN" in r["text"]
-                                        for r in refused) and
-              any("too many wrong PINs" in r["text"] for r in refused),
-              f"every refusal is journaled: {len(refused)}")
-        check(RM.FREE_TRIES == 3 and RM.LOCK_BASE_S == 5.0 and
-              RM.LOCK_MAX_S == 300.0 and RM.PIN_MIN == 4,
-              "the throttle numbers are what the PR says")
-        # The PIN check itself.
-        p = RM.PinStore(R.work, iterations=1000)
-        check(p.verify("Andy", "2468") and not p.verify("Andy", "2469") and
-              not p.verify("Andy", "") and not p.verify("Nobody", "2468"),
-              "verify takes only the right PIN for the right name")
-    finally:
-        R.close()
-    print("  ok")
-
-
 def test_remote_localhost_unaffected_and_proxies_refused():
-    section("iPad remote: the machine itself needs no sign in, as before; "
+    section("iPad remote: the machine itself is the Rack screen; "
             "anything that looks proxied, misaddressed or cross-site is "
             "refused, loopback included")
     S = _sched()
@@ -37604,7 +37498,7 @@ def test_remote_localhost_unaffected_and_proxies_refused():
         check(st == 200 and "<title>Show remote</title>" in str(out),
               "and the remote page at /remote")
         st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami", client=loop)
-        check(out["local"] is True and "pins_set" in out,
+        check(out["local"] is True and out["device"] == "Rack screen",
               f"whoami says it is the machine itself: {out}")
         # The real thing, over a real loopback socket.
         import threading
@@ -37636,10 +37530,9 @@ def test_remote_localhost_unaffected_and_proxies_refused():
                                headers={hname: val})
             check(st == 403 and "proxy" in out["error"],
                   f"{hname} from loopback is refused: {st}")
-        R.sign_in()
         st, _h, _o = R.ask("GET", "/api/state",
                            headers={"X-Forwarded-For": "10.0.0.1"})
-        check(st == 403, "and from a signed-in device too")
+        check(st == 403, "and from a device on the network too")
         st, _h, _o = R.ask("GET", "/api/state", host="evil.example:7878")
         check(st == 403, f"a Host that is not this server is refused: {st}")
         st, _h, _o = _ask(R.httpd, "GET", "/api/state", client=loop,
@@ -37687,11 +37580,10 @@ def test_live_show_refuses_the_page_transport():
             st, _h, out = _ask(R.httpd, "POST", route, body, client=loop)
             check(st == 409 and "show is live" in str(out),
                   f"live show: {route} {body} refused, by name: {st}")
-        R.sign_in()
         st, _h, out = R.ask("POST", "/api/go", {})
         # Since #39's fix round (F1) the network never reaches these routes
-        # at all (403); either way a signed-in iPad's GO is refused.
-        check(st in (403, 409), f"and from a signed-in iPad: {st} {out}")
+        # at all (403); either way an iPad's GO is refused.
+        check(st in (403, 409), f"and from an iPad: {st} {out}")
         st, _h, out = _ask(R.httpd, "GET", "/api/state", client=loop)
         check(st == 200, f"reading the state still works: {st}")
         R.svc.operator_press("hold", "Jeff", "Rack screen")
@@ -38141,15 +38033,16 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
 
 
 def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
-    section("iPad remote: Start now, Hold, Resume, Abort, Reset, disarm and "
-            "the operator go through the scheduler and conductor paths every "
-            "other press uses, journaled with the operator and the device")
+    section("iPad remote: Start now, Hold, Resume, Abort, Reset and disarm "
+            "go through the scheduler and conductor paths every other press "
+            "uses, journaled with the surface they came from (no sign-in, "
+            "Jeff 2026-10-07)")
     S = _sched()
     if S is None:
         return
     R = _RemoteRig(S)
     try:
-        R.sign_in("Andy", "2468", "iPad")
+        ME = "iPad at 10.20.0.44"
         _live_show(R)
         n0 = len(R.svc.journal)
         st, _h, out = R.ask("POST", "/api/remote/hold",
@@ -38161,17 +38054,18 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
               f"{R.c.snapshot()}")
         rows = [r for r in list(R.svc.journal)[n0:]
                 if r.get("action") == S.HOLD_ON]
-        check(rows and rows[-1]["who"] == "Andy" and
+        check(rows and rows[-1]["who"] == ME and
               rows[-1]["screen"] == "iPad" and
-              "pressed Hold on the iPad" in rows[-1]["text"],
-              f"journaled as Andy on the iPad, never as the body's Jeff: "
-              f"{rows[-1:]}")
+              "pressed Hold on the iPad" in rows[-1]["text"] and
+              "Jeff" not in rows[-1]["text"],
+              f"journaled as the iPad at its address, never as the body's "
+              f"Jeff: {rows[-1:]}")
         st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()})
         R.settle()
         check(st == 200 and R.svc.machine.state == S.SHOW and
               R.c.snapshot()["look"] == "PLAYING",
               f"Resume: {st} {out} {R.c.snapshot()}")
-        check(any(r.get("action") == S.RESUME and r["who"] == "Andy" and
+        check(any(r.get("action") == S.RESUME and r["who"] == ME and
                   r["screen"] == "iPad" for r in R.svc.journal),
               "Resume journaled with who and where")
         # The same press straight into the engine reads the same.
@@ -38184,7 +38078,7 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
               R.rig.count("flames_disarm_all") == before + 2,
               f"Abort latched the scheduler and the conductor disarmed "
               f"every group: {st} {out} {R.c.snapshot()}")
-        check(any(r.get("action") == S.ABORT and r["who"] == "Andy" and
+        check(any(r.get("action") == S.ABORT and r["who"] == ME and
                   r["screen"] == "iPad" for r in R.svc.journal),
               "Abort journaled with who and where")
         st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()})
@@ -38199,9 +38093,9 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
               f"disarm-all is the conductor's own flames_disarm_all: {st} "
               f"{out}")
         reason = R.rig.calls[-1][1][0]
-        check("Andy" in reason and "iPad" in reason,
-              f"the reason sent to flamesafe names who and where: {reason}")
-        check(any(r.get("action") == "disarm all" and r["who"] == "Andy" and
+        check(ME in reason, f"the reason sent to flamesafe names the "
+                            f"surface: {reason}")
+        check(any(r.get("action") == "disarm all" and r["who"] == ME and
                   r["screen"] == "iPad" for r in R.svc.journal),
               "disarm-all journaled with who and where")
         # Disarm is never gated on a fresh page or a show.
@@ -38215,42 +38109,59 @@ def test_remote_controls_reach_the_same_paths_and_journal_who_and_where():
         st, _h, out = R.ask("POST", "/api/remote/start-now",
                             {"confirmed": True, "seen": R.seen()})
         check(st in (200, 409), f"Start now answered: {st} {out}")
-        check(any(r.get("action") == S.START_NOW and r["who"] == "Andy" and
+        check(any(r.get("action") == S.START_NOW and r["who"] == ME and
                   r["screen"] == "iPad" for r in R.svc.journal),
               "Start now journaled with who and where")
-        # The operator: a device signed in as Andy can pick only Andy.
+        # No operator picker any more: the route is gone.
         st, _h, out = R.ask("POST", "/api/remote/operator",
                             {"pick": "Jeff", "seen": R.seen()})
-        check(st == 403 and "sign in as them" in out["error"],
-              f"picking someone else from a device is refused: {out}")
-        st, _h, out = R.ask("POST", "/api/remote/operator",
-                            {"pick": "Andy", "seen": R.seen()})
-        check(st == 200 and R.svc.current_operator == "Andy",
-              f"picking yourself sets the current operator: {st} {out}")
-        check(any(r.get("action") == "operator" and r["screen"] == "iPad"
-                  for r in R.svc.journal), "journaled from the iPad")
-        # On the machine itself the page names who and where.
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/operator",
-                           {"pick": "Jeff", "screen": "Rack screen",
-                            "seen": R.seen()}, client=("127.0.0.1", 5000))
-        check(st == 200 and R.svc.current_operator == "Jeff",
-              f"locally any listed operator is picked: {st} {out}")
-        # On the machine itself the page names who presses: someone off the
-        # operator list is refused by the scheduler, journaled, and nothing
-        # happens (Resume: Hold and Abort are taken from anyone since PR
-        # #43's fix round 1).
+        check(st == 404, f"no operator route: {st} {out}")
+        # On the machine itself the page sends no name: the press is the
+        # Rack screen's, a surface press (no operator-list lookup).
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/hold", {},
+                           client=("127.0.0.1", 5000))
+        R.settle()
+        rows = [r for r in R.svc.journal if r.get("action") == S.HOLD_ON]
+        check(rows and rows[-1]["who"] == "Rack screen" and
+              rows[-1]["screen"] == "Rack screen",
+              f"journaled as the Rack screen: {rows[-1:]}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/resume",
+                           {"seen": R.seen()}, client=("127.0.0.1", 5000))
+        R.settle()
+        check(st == 200 and R.svc.machine.state == S.SHOW,
+              f"the Rack screen's Resume needs no operator name: {st} {out}")
+        # The Stream Deck process on this machine names its operator, and
+        # that name is still checked against the list, as before.
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/hold",
+                           {"who": "Jeff", "screen": "Stream Deck"},
+                           client=("127.0.0.1", 5000))
+        R.settle()
         state0 = R.svc.machine.state
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/resume",
-                           {"who": "Mallory", "screen": "Rack screen",
-                            "seen": R.seen()},
-                           client=("127.0.0.1", 5000))
+                           {"who": "Mallory", "screen": "Stream Deck",
+                            "seen": R.seen()}, client=("127.0.0.1", 5000))
         R.settle()
         check(st == 400 and "not on the operator list" in out["error"] and
               R.svc.machine.state == state0,
-              f"a press from someone off the list is refused: {st} {out}")
-        check(any(r.get("outcome") == "refused" and
-                  "Mallory" in r.get("text", "") for r in R.svc.journal),
-              "and journaled")
+              f"a named press from someone off the list is refused: {st} "
+              f"{out}")
+        # The scheduler's own list check still holds for everything that
+        # is not the remote page (the deck, the engine's own callers).
+        state0 = R.svc.machine.state
+        try:
+            R.svc.operator_press("resume", "Mallory", "Rack screen")
+            check(False, "an off-list name was taken without surface=True")
+        except ValueError as e:
+            check("not on the operator list" in str(e),
+                  f"off the list, not a surface: refused: {e}")
+        check(R.svc.machine.state == state0, "and nothing changed")
+        try:
+            R.svc.operator_press("resume", "Rack screen", "Nowhere",
+                                 surface=True)
+            check(False, "a surface press from an unlisted screen was taken")
+        except ValueError as e:
+            check("not on the screen list" in str(e),
+                  f"a surface press still names a listed screen: {e}")
         # No disarm path connected: refused loudly, never "done".
         R.remote._flame_disarm = None
         cond = R.svc.conductor
@@ -38278,7 +38189,6 @@ def test_remote_abort_disarms_with_no_show_live():
         return
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         sent = []
         R.remote._flame_disarm = lambda reason: (
             sent.append(reason) or _Result(True, "a disarm was sent to "
@@ -38301,9 +38211,9 @@ def test_remote_abort_disarms_with_no_show_live():
         check(not R.svc.machine.abort_latched and not R.c.latched,
               "nothing is latched by an Abort with no show live")
         rows = R.lines_for("abort disarm")
-        check(rows and rows[-1]["who"] == "Andy" and
+        check(rows and rows[-1]["who"] == "iPad at 10.20.0.44" and
               rows[-1].get("outcome") == "done",
-              f"the disarm is journaled with who: {rows[-1:]}")
+              f"the disarm is journaled with the surface: {rows[-1:]}")
         # The disarm fails: a fault, said, never "done".
         R.remote._flame_disarm = lambda reason: _Result(False, "the socket "
                                                         "is closed")
@@ -38346,7 +38256,6 @@ def test_deck_reads_reset_after_an_engine_restart():
     R = _RemoteRig(S)
     try:
         R.httpd.conductor = R.c
-        R.sign_in()
         _live_show(R)
         st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
         R.settle()
@@ -38500,7 +38409,6 @@ def test_remote_reset_and_abort_1_ms_apart_under_a_slow_save():
         R = _RemoteRig(S)
         real_reset = R.svc.reset_conductor
         try:
-            R.sign_in()
             _live_show(R)
             SV.write_json_atomic = slow_save
             if first == "reset":
@@ -38582,7 +38490,6 @@ def test_remote_abort_disarm_never_waits_on_the_tonight_save():
     R = _RemoteRig(S)
     real = SV.write_json_atomic
     try:
-        R.sign_in()
         _live_show(R)
         seen = {}
 
@@ -38643,7 +38550,6 @@ def test_remote_abort_and_start_need_the_confirm():
         return
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         _live_show(R)
         for body in ({}, {"confirmed": "yes"}, {"confirmed": 1},
                      {"confirmed": False}):
@@ -38689,7 +38595,6 @@ def test_remote_stale_state_refused_and_banner():
     from ltcplay import remote as RM
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         _live_show(R)
         check(RM.FRESH_S == 2.0, "fresh means 2 s")
         st, _h, out = R.ask("POST", "/api/remote/hold", {"seen": 1})
@@ -38711,7 +38616,7 @@ def test_remote_stale_state_refused_and_banner():
         check(st == 200 and R.svc.machine.state == S.SHOW,
               f"on a 1.5 s old status it goes: {st} {out}")
         for route, extra in (("start-now", {"confirmed": True}),
-                             ("reset", {}), ("operator", {"pick": "Andy"}),
+                             ("reset", {}),
                              ("jump", {"seconds": 5}),
                              ("play-from", {"at": "00:00:10:00"})):
             body = dict(extra, seen=old)
@@ -38775,7 +38680,6 @@ def _remote_page_logic_in_node():
                  "$(\"b-start\").disabled = !cs.startNow;",
                  "$(\"b-resume\").disabled = !cs.resume;",
                  "$(\"b-reset\").disabled = !cs.reset;",
-                 "$(\"b-op\").disabled = !cs.operator;",
                  "el.disabled = !cs.transport;",
                  "el.className = \"lamp unknown\";",
                  "setInterval(renderStale, 250);",
@@ -38804,10 +38708,10 @@ t(isStale(10000, 7900, 2), "2.1 s old is stale");
 const st = {schedule:{attached:true}, transport:{programming:true}};
 let c = controlStates(st, true);
 t(c.abort && c.hold && c.disarm, "stale: Abort, Hold, disarm stay on");
-t(!c.startNow && !c.resume && !c.reset && !c.operator && !c.transport,
+t(!c.startNow && !c.resume && !c.reset && !c.transport,
   "stale: everything acting on shown state is off");
 c = controlStates(st, false);
-t(c.startNow && c.resume && c.reset && c.operator && c.transport,
+t(c.startNow && c.resume && c.reset && c.transport,
   "fresh: all on");
 c = controlStates(null, false);
 t(!c.startNow && !c.transport && c.abort, "no status yet: only the safe ones");
@@ -38819,22 +38723,31 @@ t(lampClass({armed:"armed"}, {connected:true, stale:false}) === "armed",
   "a fresh armed lamp reads armed");
 t(staleText(10000, 6000).indexOf("CONNECTION LOST") === 0,
   "the banner says connection lost");
-const ast = {arming:{enabled:true, signed_in:true, fresh_s:1.0},
+const ast = {arming:{enabled:true, fresh_s:1.0},
   flames:{connected:true, stale:false, age_ms:100,
           groups:[{name:"a", armed:"disarmed", wanted:false},
                   {name:"b", armed:"armed", wanted:true}]}};
-t(armState(ast, 10000, 9500, 0).ok, "live, signed in, off: may hold to arm");
+t(armState(ast, 10000, 9500, 0).ok, "live, no sign-in, off: may hold to arm");
 t(!armState(ast, 10000, 8900, 0).ok, "1.1 s since the engine: may not");
 t(!armState(ast, 10000, 9500, 1).ok, "already armed: may not");
-t(!armState(Object.assign({}, ast, {arming:{enabled:false, signed_in:true}}),
+t(!armState(Object.assign({}, ast, {arming:{enabled:false}}),
   10000, 9500, 0).ok, "arming switched off: may not");
-t(!armState(Object.assign({}, ast, {arming:{enabled:true, signed_in:false}}),
-  10000, 9500, 0).ok, "not signed in: may not");
 t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
   {age_ms:1200})}), 10000, 9500, 0).ok, "flamesafe 1.2 s old: may not");
 t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
   {stale:true})}), 10000, 9500, 0).ok, "flamesafe stale: may not");
 t(!armState(null, 10000, 9500, 0).ok, "no status: may not");
+// The countdown (Jeff, 2026-10-07): left in this show while it runs,
+// frozen while held, the next show between shows, nothing when unknown.
+let cd = countdownNow({kind:"left", label:"Left in this show", s:300, running:true}, 10000, 8000);
+t(cd && cd.kind === "left" && Math.abs(cd.s - 298) < 1e-9, "running: ages by the time since it was heard");
+cd = countdownNow({kind:"left", label:"Left in this show", s:300, running:false}, 10000, 8000);
+t(cd && cd.s === 300, "held: frozen, not aged");
+cd = countdownNow({kind:"next", label:"Next show", s:60, running:true}, 10000, 9000);
+t(cd && cd.kind === "next" && cd.s === 59, "between shows: the next show");
+t(countdownNow(null, 10000, 9000) === null, "unknown length: nothing shown");
+t(countdownNow({kind:"left", s:2, running:true}, 10000, 5000).s === 0, "never below zero");
+t(clockText(3725) === "1:02:05" && clockText(65.9) === "1:05" && clockText(-3) === "0:00", "clock text");
 console.log(JSON.stringify(out));
 """
     r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
@@ -38881,7 +38794,6 @@ def test_remote_has_no_arm_route():
         return
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         for path in ("/api/remote/arm", "/api/remote/arm-all",
                      "/api/remote/arm-group", "/api/arm"):
             st, _h, out = R.ask("POST", path, {"group": "front row",
@@ -38900,7 +38812,7 @@ def test_remote_has_no_arm_route():
 
 def test_remote_page_loss_changes_nothing():
     section("iPad remote: an iPad that drops mid-show (half a request, a "
-            "closed connection, a session that ends, no more polls) changes "
+            "closed connection, hours with no more polls) changes "
             "nothing on the show; a Hold stays held")
     S = _sched()
     if S is None:
@@ -38909,7 +38821,6 @@ def test_remote_page_loss_changes_nothing():
     import threading
     R = _RemoteRig(S)
     try:
-        R.sign_in()
         _live_show(R)
         st, _h, out = R.ask("POST", "/api/remote/hold", {})
         R.settle()
@@ -38951,14 +38862,11 @@ def test_remote_page_loss_changes_nothing():
             h2.shutdown()
             h2.server_close()
         R.settle()
-        # The session runs out and nobody polls for a long time.
-        from ltcplay import remote as RM
-        R.mono[0] += RM.SESSION_MAX_S + 10
+        # Nobody polls for a long time.
+        R.mono[0] += 18 * 3600 + 10
         R.now[0] = _den(S, 18, 5)
         R.svc.tick()
         R.settle()
-        st, _h, _o = R.ask("GET", "/api/remote/status")
-        check(st == 401, "the session ended")
         check(R.svc.machine.state == S.PAUSED and
               R.c.snapshot()["look"] == look,
               f"and the Hold is still held: {R.svc.machine.state} "
@@ -38996,7 +38904,6 @@ def test_remote_scrubbing_only_in_a_programming_session():
         return
     R = _RemoteRig(S, at=_den(S, 17, 0))
     try:
-        R.sign_in()
         st, _h, out = R.ask("POST", "/api/remote/jump",
                             {"seconds": 5, "seen": R.seen()})
         check(st == 409 and "Nothing is playing" in out["error"],
@@ -39070,7 +38977,8 @@ def test_remote_scrubbing_only_in_a_programming_session():
                             {"on": True, "seen": R.seen()})
         check(st == 200 and p.loop is not None,
               f"loop on between the marks: {st} {out} {p.loop}")
-        check(all(any(r.get("action") == a and r.get("who") == "Andy" and
+        check(all(any(r.get("action") == a and
+                      r.get("who") == "iPad at 10.20.0.44" and
                       r.get("screen") == "iPad" and r.get("outcome") == "done"
                       for r in R.svc.journal)
                   for a in ("jump", "pause", "continue", "mark-a", "mark-b",
@@ -39185,12 +39093,12 @@ def _arm_rig(S):
     return R
 
 
-def _hold(R, group, hold_id=None, **kw):
+def _hold(R, group, hold_id=None, client=("10.20.0.44", 50000), **kw):
     body = {"group": group, "seen": R.seen()}
     if hold_id is not None:
         body["hold_id"] = hold_id
     body.update(kw)
-    return R.ask("POST", "/api/remote/arm-hold", body)
+    return R.ask("POST", "/api/remote/arm-hold", body, client=client)
 
 
 def test_screen_arming_is_off_unless_switched_on():
@@ -39217,7 +39125,6 @@ def test_screen_arming_is_off_unless_switched_on():
               f"an arm-hold on the show machine with no session at all is "
               f"refused as switched off, before anything else is looked "
               f"at: {st} {out}")
-        R.sign_in()
         st, _h, out = R.ask("POST", "/api/remote/arm-hold",
                             {"group": "front row", "seen": R.seen()})
         check(st == 403 and "switched off" in out.get("error", ""),
@@ -39298,10 +39205,10 @@ def test_screen_arming_is_off_unless_switched_on():
 
 
 def test_screen_arm_engine_rules():
-    section("screen arming, the engine: a PIN session (the show machine "
-            "too), arming switched on, a live page and a live flamesafe, "
-            "one hold per group, heartbeats it actually received; a gap, "
-            "an Abort, a disarm or a sign out lets go and never carries on")
+    section("screen arming, the engine: no sign-in (Jeff, 2026-10-07), "
+            "arming switched on, a live page and a live flamesafe, one hold "
+            "per group, heartbeats it actually received; a gap, an Abort or "
+            "a disarm lets go and never carries on")
     S = _sched()
     if S is None:
         return
@@ -39311,14 +39218,6 @@ def test_screen_arm_engine_rules():
     R = _arm_rig(S)
     loop = ("127.0.0.1", 5000)
     try:
-        st, _h, out = _ask(R.httpd, "POST", "/api/remote/arm-hold",
-                           {"group": "front row", "seen": R.seen()},
-                           client=loop)
-        check(st == 401 and "PIN" in out["error"],
-              f"the show machine itself needs a PIN session to arm: {st}")
-        st, _h, out = _hold(R, "front row")
-        check(st == 401, f"the network without a session: {st}")
-        R.sign_in("Andy", "2468", "iPad")
         # Switched off.
         RM.save_settings(R.work, screen_arming=False)
         st, _h, out = _hold(R, "front row")
@@ -39378,10 +39277,10 @@ def test_screen_arm_engine_rules():
         d = R.remote.deck_input()
         check(d["enabled"] and len(d["holds"]) == 1 and
               d["holds"][0]["group"] == 0 and d["holds"][0]["fresh"] and
-              d["holds"][0]["who"] == "Andy" and
+              d["holds"][0]["who"] == "iPad at 10.20.0.44" and
               d["holds"][0]["device"] == "iPad" and
               abs(d["holds"][0]["held_s"] - 0.6) < 1e-6,
-              f"the deck sees the hold, its operator and device: {d}")
+              f"the deck sees the hold and the surface it came from: {d}")
         # A gap: the hold is let go and never carries on.
         R.mono[0] += 0.3
         R.feed()
@@ -39394,42 +39293,47 @@ def test_screen_arm_engine_rules():
               f"an interrupted hold never carries on: {st} {out}")
         check(R.remote.deck_input()["holds"] == [],
               "and it is gone for the deck")
-        # A second browser on the same group.
+        # A second device on the same group.
+        other = ("10.20.0.45", 50000)
         st, _h, out = _hold(R, "front row")
         hid = out["hold_id"]
-        R.remote.pins.set("Jeff", "1357")
-        andy = R.cookie
-        R.sign_in("Jeff", "1357", "Phone", set_pin=False)
-        jeff = R.cookie
+        st, _h, out = _hold(R, "front row", client=other)
+        check(st == 409 and "iPad at 10.20.0.44 is already holding" in
+              out["error"],
+              f"a second device on the same group is refused: {st} {out}")
+        st, _h, out = _hold(R, "front row", hold_id=hid, client=other)
+        check(st == 409, f"and cannot carry the first device's hold on with "
+                         f"its id: {st} {out}")
         st, _h, out = _hold(R, "front row")
-        check(st == 409 and "Andy on the iPad is already holding" in
-              out["error"], f"a second browser on the same group is "
-                            f"refused: {st} {out}")
-        st, _h, out = _hold(R, "cat-walk")
+        check(st == 409 and "already holding" in out["error"],
+              f"nor can a second tab on the same device restart it: {st}")
+        st, _h, out = _hold(R, "front row", hold_id=hid)
+        check(st == 200, f"the first hold carries on: {st} {out}")
+        st, _h, out = _hold(R, "cat-walk", client=other)
         check(st == 200, "a different group is its own hold")
-        R.ask("POST", "/api/remote/arm-release", {"group": "cat-walk"})
+        R.ask("POST", "/api/remote/arm-release", {"group": "cat-walk"},
+              client=other)
         # Any disarm on the group cancels the hold.
         st, _h, out = R.ask("POST", "/api/remote/group-disarm",
-                            {"group": "front row"})
+                            {"group": "front row"}, client=other)
         check(st == 200 and R.remote.deck_input()["disarms"][-1]["group"]
-              == 0 and R.remote.deck_input()["disarms"][-1]["who"] == "Jeff"
-              and R.remote.deck_input()["disarms"][-1]["device"] == "Phone",
-              "a per-group disarm goes to the deck with who and where")
-        R.cookie = andy
+              == 0 and R.remote.deck_input()["disarms"][-1]["who"] ==
+              "iPad at 10.20.0.45"
+              and R.remote.deck_input()["disarms"][-1]["device"] == "iPad",
+              "a per-group disarm goes to the deck with the surface")
         st, _h, out = _hold(R, "front row", hold_id=hid)
-        check(st == 409, "and Andy's hold on it is over")
+        check(st == 409, "and the first device's hold on it is over")
         # An Abort cancels every hold, before anything else.
         _live_show(R)
         R.feed()
         st, _h, out = _hold(R, "front row")
         check(st == 200, "a new hold")
         hid = out["hold_id"]
-        R.cookie = jeff
-        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True})
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=other)
         R.settle()
-        R.cookie = andy
         check(R.remote.deck_input()["holds"] == [],
-              "Jeff's Abort let Andy's hold go")
+              "an Abort from another device let the hold go")
         st, _h, out = _hold(R, "front row", hold_id=hid)
         check(st == 409, "and it does not carry on")
         check(any(r.get("action") == "arm hold" and
@@ -39440,16 +39344,29 @@ def test_screen_arm_engine_rules():
         R.ask("POST", "/api/remote/disarm-all", {})
         check(R.remote.deck_input()["holds"] == [],
               "Disarm every flame group lets every hold go")
-        # Signing out drops your holds.
+        # Letting go releases only your own hold.
         st, _h, out = _hold(R, "front row")
-        R.ask("POST", "/api/remote/logout", {})
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+              client=other)
+        check(len(R.remote.deck_input()["holds"]) == 1,
+              "another device's release does not let your hold go")
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"})
         check(R.remote.deck_input()["holds"] == [],
-              "signing out lets your holds go")
-        # Every hold is journaled with who and where.
+              "your own release does")
+        # The machine itself arms with no sign-in too, as the Rack screen.
+        R.feed()
+        st, _h, out = _hold(R, "front row", client=loop)
+        check(st == 200, f"the Rack screen holds with no sign-in: {st} {out}")
+        check(R.remote.deck_input()["holds"][0]["who"] == "Rack screen",
+              "as the Rack screen")
+        R.ask("POST", "/api/remote/arm-release", {"group": "front row"},
+              client=loop)
+        # Every hold is journaled with the surface.
         check(any(r.get("action") == "arm hold" and
-                  r.get("outcome") == "started" and r.get("who") == "Andy"
+                  r.get("outcome") == "started" and
+                  r.get("who") == "iPad at 10.20.0.44"
                   and r.get("screen") == "iPad" for r in R.svc.journal),
-              "a hold is journaled with who and where")
+              "a hold is journaled with the surface it came from")
     finally:
         R.close()
     print("  ok")
@@ -39803,9 +39720,6 @@ def test_screen_arm_end_to_end_probes():
     # Screen arming is off by default (review of PR #43, P0-4): these
     # probes are of arming switched on.
     RM.save_settings(work, screen_arming=True)
-    rem.pins = RM.PinStore(work, iterations=1000)
-    rem.pins.set("Andy", "2468")
-    rem.pins.set("Jeff", "1357")
     threading.Thread(target=httpd.serve_forever,
                      kwargs={"poll_interval": 0.05}, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -39815,24 +39729,19 @@ def test_screen_arm_end_to_end_probes():
     _noproxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def http(path, body=None, cookie=None):
+        # `cookie` only names which browser tab is asking (no sign-in,
+        # Jeff 2026-10-07): every tab here is the Rack screen, on loopback.
         req = urllib.request.Request(
             base + path, data=None if body is None else
             _j.dumps(body).encode(), method="GET" if body is None else "POST",
-            headers={"Content-Type": "application/json",
-                     **({"Cookie": cookie} if cookie else {})})
+            headers={"Content-Type": "application/json"})
         try:
             with _noproxy.open(req, timeout=5) as r:
                 return r.status, _j.loads(r.read()), r.headers
         except urllib.error.HTTPError as e:
             return e.code, _j.loads(e.read() or b"{}"), e.headers
 
-    def login(who, pin, dev):
-        st, out, h = http("/api/remote/login",
-                          {"who": who, "pin": pin, "device": dev})
-        check(st == 200, f"sign in {who}: {st} {out}")
-        return h.get("Set-Cookie").split(";")[0]
-    andy = login("Andy", "2468", "iPad")
-    jeff = login("Jeff", "1357", "Phone")
+    andy, jeff = "first tab", "second tab"
     # The deck: the real controller, arm socket and status socket, and
     # ScreenKeys reading the engine over HTTP; no hardware.
     arm = sd.ArmSocket("127.0.0.1", armp, key, 3)
@@ -39967,8 +39876,9 @@ def test_screen_arm_end_to_end_probes():
                         f"the engine's answers to each hold: {tries}; "
                         f"why each ended: {whys.get('front row')}; the "
                         f"deck's lines: {events[-6:]}")
-        check(any("arm pressed (held 1 s on the iPad) by Andy" in e
-                  for e in events), "and the deck journaled who and where")
+        check(any("arm pressed (held 1 s on the Rack screen) by Rack "
+                  "screen" in e for e in events),
+              "and the deck journaled the surface the hold came from")
         # Disarm it from the page: a tap through the deck.
         http("/api/remote/group-disarm", {"group": "front row"}, andy)
         end = time.perf_counter() + 2
@@ -40600,12 +40510,10 @@ if __name__ == "__main__":
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
     test_the_gpl_path_never_loads_the_flame_link()
-    test_remote_name_lists_match_the_scheduler()
-    test_remote_pin_required_over_the_network()
-    test_remote_wrong_pin_refused_and_throttled()
+    test_remote_no_sign_in_over_the_network()
+    test_remote_countdown_left_in_this_show()
     test_remote_network_session_reaches_only_remote_routes()
     test_remote_cross_site_posts_refused_on_loopback()
-    test_remote_lockout_holds_under_a_concurrent_burst()
     test_remote_localhost_unaffected_and_proxies_refused()
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
     test_deck_fix_round_2_abort_reset_and_disarm()

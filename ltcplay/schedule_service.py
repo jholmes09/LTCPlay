@@ -1379,7 +1379,8 @@ class Service:
         journaled. For tests, and for stop()."""
         return self._calls.flush(timeout)
 
-    def reset_conductor(self, who, screen, wait_s=2.0, pressed=None):
+    def reset_conductor(self, who, screen, wait_s=2.0, pressed=None,
+                        surface=False):
         """The operator's Reset, for the Abort latch: the same
         Conductor.reset() an operator's own Reset press calls, queued
         behind every conductor call already decided, so it can never land
@@ -1404,6 +1405,10 @@ class Service:
                                "and which screen it came from. Nothing was "
                                "reset.")
         names = {n.lower(): n for n in self.operators}
+        if surface:
+            # The remote page's Reset: `who` is the surface (see
+            # operator_press).
+            names[who.lower()] = who
         if who.lower() not in names:
             self._refuse_reset(who, screen, f"{who!r} is not on the operator "
                                f"list ({', '.join(self.operators)}). Nothing "
@@ -2771,13 +2776,16 @@ class Service:
                "resume": sch.RESUME, "abort": sch.ABORT}
 
     def operator_press(self, what, who, screen, confirmed=False,
-                       pressed=None):
+                       pressed=None, surface=False):
         """One operator press from a screen: Start now, Hold, Resume or
         Abort. `who` must be on the operator list and `screen` on the
         screen list; anything else is refused in the journal and raised as
         ValueError with the sentence. Abort needs confirmed=True (the
         engine refuses it otherwise, as it always has). Returns {"ok",
-        "text"}: ok False with the engine's own refusal sentence."""
+        "text"}: ok False with the engine's own refusal sentence.
+        surface=True: the remote page's press, where `who` names the
+        surface it came from (Jeff, 2026-10-07: no sign-in), so it is not
+        looked up on the operator list; the screen still is."""
         kind = self.PRESSES.get(what)
         if kind is None:
             raise ValueError(f"{what!r} is not a press this program knows. "
@@ -2790,6 +2798,8 @@ class Service:
             # Abort and Hold are never refused for who pressed them (PR #43
             # fix round 1): no operator chosen, or a name not on the list,
             # still stops the show; the journal says which (schedule.step).
+            names[who.lower()] = who
+        if surface and who:
             names[who.lower()] = who
         if who.lower() not in names:
             sentence = (f"{who or 'Nobody'!r} is not on the operator list "
@@ -2817,7 +2827,8 @@ class Service:
             try:
                 out = self._apply(sch.Event(kind, "operator", who=who,
                                             screen=screen,
-                                            confirmed=bool(confirmed)))
+                                            confirmed=bool(confirmed),
+                                            surface=bool(surface)))
             finally:
                 self._press_stamp = None
         if out.refused:

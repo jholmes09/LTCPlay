@@ -585,11 +585,26 @@ MUTATIONS = [
   "        kw.update(no_output=True, no_log=True, sd=self._sd)",
   "        kw.update(no_output=False, no_log=True, sd=self._sd)"),
 
- # -- the iPad remote (2026-10-03): PIN sessions, the show network, the
- #    controls, stale state, no arm route, scrubbing and the seek guard --
- ("remote: a network request needs no PIN session", "ltcplay/web.py",
-  "        return self._ctx().session is not None",
-  "        return True"),
+ # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
+ #    show network, the controls, stale state, no arm route, scrubbing and
+ #    the seek guard --
+ ("remote: the show network can be set from the network", "ltcplay/remote.py",
+  "        if name in LOCAL_ONLY and not ctx.local:",
+  "        if False:"),
+
+ ("remote: the journal names whoever the body says", "ltcplay/remote.py",
+  "        return ctx.device, ctx.screen, True",
+  "        return body.get(\"who\") or ctx.device, ctx.screen, True"),
+
+ ("remote: a name in the page's body skips the operator list",
+  "ltcplay/remote.py",
+  "                return who, screen, False",
+  "                return who, screen, True"),
+
+ ("scheduler: the operator list is asked of the page and not of others",
+  "ltcplay/schedule.py",
+  "            not ev.surface and \\\n",
+  "            ev.surface and \\\n"),
 
  # -- fix round 1 of #39 (independent review) --
  ("remote: a network GET reaches the legacy routes", "ltcplay/web.py",
@@ -597,16 +612,26 @@ MUTATIONS = [
   "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
   "                                             \"the remote page's own routes \"\n"
   "                                             \"answer here.\"})\n"
-  "        authorised = self._authorised()",
-  "        authorised = self._authorised()"),
+  "        c = self.server.control\n        try:\n"
+  "            if route in (\"/\", \"/index.html\") and \\",
+  "        c = self.server.control\n        try:\n"
+  "            if route in (\"/\", \"/index.html\") and \\"),
 
  ("remote: a network POST reaches the legacy routes", "ltcplay/web.py",
   "        if not self._local() and not network_may_reach(route):\n"
   "            return self._send(403, {\"error\": \"Not from the network. Only \"\n"
   "                                             \"the remote page's own routes \"\n"
   "                                             \"answer here.\"})\n"
-  "        if not self._authorised() and route not in OPEN_POSTS:",
-  "        if not self._authorised() and route not in OPEN_POSTS:"),
+  "        if route == \"/api/remote\" or route.startswith(\"/api/remote/\"):\n"
+  "            remote = getattr(self.server, \"remote\", None)\n"
+  "            if remote is None:\n"
+  "                return self._send(404, {\"error\": \"no such thing here\"})\n"
+  "            # Read the whole body",
+  "        if route == \"/api/remote\" or route.startswith(\"/api/remote/\"):\n"
+  "            remote = getattr(self.server, \"remote\", None)\n"
+  "            if remote is None:\n"
+  "                return self._send(404, {\"error\": \"no such thing here\"})\n"
+  "            # Read the whole body"),
 
  ("remote: Origin null counts as this site", "ltcplay/web.py",
   "            origin = self.headers.get(\"Origin\")\n            if origin is not None:",
@@ -621,51 +646,8 @@ MUTATIONS = [
   "            if ctype.split(\";\")[0].strip().lower() != \"application/json\":",
   "            if False:"),
 
- ("remote: PIN checks are not serialized", "ltcplay/remote.py",
-  "        with self.throttle.serial(keys):",
-  "        with threading.Lock():"),
-
- ("remote: login says which operators have no PIN", "ltcplay/remote.py",
-  "            # on the show machine says the truth.\n"
-  "            return 403, {\"error\": \"That PIN is not right.\"}, {}",
-  "            # on the show machine says the truth.\n"
-  "            return 403, {\"error\": f\"{who} has no PIN yet.\"}, {}"),
-
  ("web: odd spellings of every interface are served", "ltcplay/web.py",
   "    bind = normalize_bind(bind)", "    bind = bind"),
-
- ("remote: the remote routes skip the session check", "ltcplay/remote.py",
-  "        if not ctx.allowed:\n            return 401, {\"error\": \"Sign in "
-  "with your PIN first.\"}, {}",
-  "        if False:\n            return 401, {\"error\": \"Sign in "
-  "with your PIN first.\"}, {}"),
-
- ("remote: any PIN opens a session", "ltcplay/remote.py",
-  "        return hmac.compare_digest(self._hash(pin, salt, n), want)",
-  "        return True"),
-
- ("remote: wrong PINs are never throttled", "ltcplay/remote.py",
-  "        wait = self.throttle.wait_s(keys)\n        if wait > 0:",
-  "        wait = self.throttle.wait_s(keys)\n        if False:"),
-
- ("remote: the lock-out never grows", "ltcplay/remote.py",
-  "                               LOCK_BASE_S * 2 ** (n - FREE_TRIES - 1))",
-  "                               LOCK_BASE_S)"),
-
- ("remote: a new PIN leaves old sessions signed in", "ltcplay/remote.py",
-  "        # A new PIN signs out every device signed in with the old one.\n"
-  "        self.sessions.drop_who(who)",
-  "        pass"),
-
- ("remote: PINs can be set from the network", "ltcplay/remote.py",
-  "        if name in LOCAL_ONLY and not ctx.local:",
-  "        if False:"),
-
- ("remote: the press names whoever the body says", "ltcplay/remote.py",
-  "        if ctx.session is not None:\n            return ctx.session[\"who\"], "
-  "ctx.session[\"device\"]",
-  "        if False:\n            return ctx.session[\"who\"], "
-  "ctx.session[\"device\"]"),
 
  ("remote: proxied requests are let in", "ltcplay/web.py",
   "        h = remote_mod.looks_proxied(self.headers)\n        if h:",
@@ -712,9 +694,9 @@ MUTATIONS = [
 
  ("remote: an arm route appears", "ltcplay/remote.py",
   "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
-  "                  \"disarm-all\", \"operator\")",
+  "                  \"disarm-all\")",
   "CONTROL_ROUTES = (\"start-now\", \"hold\", \"resume\", \"abort\", \"reset\",\n"
-  "                  \"disarm-all\", \"operator\", \"arm\")"),
+  "                  \"disarm-all\", \"arm\")"),
 
  ("remote: half a request is acted on", "ltcplay/web.py",
   "            return None if \"/api/remote/\" in self.path else {}",
@@ -734,11 +716,6 @@ MUTATIONS = [
   "        if not rehearsal:\n            return False, (\"This show was",
   "        if False:\n            return False, (\"This show was"),
 
- ("remote: a device can pick someone else as the operator",
-  "ltcplay/remote.py",
-  "                    if want.lower() != who.lower():",
-  "                    if False:"),
-
  ("scheduler: a remote press from someone off the list is taken",
   "ltcplay/schedule_service.py",
   "        if who.lower() not in names:\n            sentence = (f\"{who or "
@@ -747,13 +724,6 @@ MUTATIONS = [
   "'Nobody'!r} is not on the operator list \""),
 
  # -- arming from a screen (2026-10-03, its own PR) --
- ("arm: a hold needs no PIN session", "ltcplay/remote.py",
-  "        s = ctx.session\n        if s is None:\n            return 401, "
-  "{\"error\": \"Arming needs your own PIN sign in, even \"",
-  "        s = ctx.session or {\"who\": \"Andy\", \"device\": \"iPad\", "
-  "\"token\": \"x\"}\n        if s is None:\n            return 401, "
-  "{\"error\": \"Arming needs your own PIN sign in, even \""),
-
  ("arm: the screen_arming switch is ignored", "ltcplay/remote.py",
   "            return load_settings(self.folder)[\"screen_arming\"] is True",
   "            return True"),
@@ -771,8 +741,41 @@ MUTATIONS = [
   "        if g[\"armed\"] == \"armed\" or g[\"wanted\"]:", "        if False:"),
 
  ("arm: a second browser can hold the same group", "ltcplay/remote.py",
-  "            if h is not None and h[\"token\"] != token and \\",
-  "            if False and h is not None and h[\"token\"] != token and \\"),
+  "            if h is not None and now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "                theirs = h[\"who\"]",
+  "            if False:\n                theirs = h[\"who\"]"),
+
+ ("arm: a second tab on the same device restarts a live hold",
+  "ltcplay/remote.py",
+  "            if h is not None and now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "                theirs = h[\"who\"]",
+  "            if h is not None and h[\"token\"] != token and \\\n"
+  "                    now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "                theirs = h[\"who\"]"),
+
+ ("countdown: a held show's time left keeps running", "ltcplay/remote.py",
+  "                \"running\": not held}",
+  "                \"running\": True}"),
+
+ ("countdown: a show of unknown length is guessed", "ltcplay/remote.py",
+  "                   and math.isfinite(x) for x in (dur, el)) or dur <= 0:\n"
+  "            return None",
+  "                   and math.isfinite(x) for x in (dur, el)) or dur <= 0:\n"
+  "            return {\"kind\": \"left\", \"label\": \"Left in this show\", "
+  "\"s\": 0.0, \"running\": True}"),
+
+ ("countdown: during a show it counts to the next show", "ltcplay/remote.py",
+  "        live = sched.get(\"state\") in (\"SHOW\", \"PAUSED\")",
+  "        live = False"),
+
+ ("countdown: the page ages a held show's time left",
+  "ltcplay/web/remote.html",
+  "  const aged = c.running && lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;",
+  "  const aged = lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;"),
+
+ ("beyond blanking: the default is timecode again", "ltcplay/fire_ice.py",
+  "BEYOND_BLANK_DEFAULT = \"osc\"",
+  "BEYOND_BLANK_DEFAULT = \"timecode\""),
 
  ("arm: an interrupted hold carries on", "ltcplay/remote.py",
   "                        now - h[\"beat\"] <= BEAT_STALE_S)\n"
@@ -791,12 +794,6 @@ MUTATIONS = [
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
   "            self._disarm_ids += 1",
   "        with self._arm_lock:\n            self._disarm_ids += 1"),
-
- ("arm: signing out leaves your holds running", "ltcplay/remote.py",
-  "                for i in [i for i, h in self._holds.items()\n"
-  "                          if h[\"token\"] == s[\"token\"]]:\n"
-  "                    del self._holds[i]",
-  "                pass"),
 
  ("arm: deck-input is served to the network", "ltcplay/remote.py",
   "            if not ctx.local:\n                return 403, {\"error\": "
@@ -6767,26 +6764,6 @@ def build():
   '        if not levels:\n            return 0.0',
   '        if not levels:\n            return 1.0 if end <= 0.0 else 0.0'),
 
-
- ('fix round 1: the GPL remote loads the scheduler for its operator list',
-  'ltcplay/remote.py',
-  '        return list(read_names(os.path.join(self.folder, OPERATORS_FILE),\n                               "operators", DEFAULT_OPERATORS))',
-  '        from . import schedule_service\n        return list(schedule_service.load_operators(self.folder)[0])'),
-
- ('fix round 1: the GPL remote reads a list with a name on it twice',
-  'ltcplay/remote.py',
-  '        if n.strip().lower() in seen:\n            return tuple(default)',
-  '        if False:\n            return tuple(default)'),
-
- ('fix round 1: the GPL remote does not strip names',
-  'ltcplay/remote.py',
-  '        out.append(n.strip())\n    return tuple(out)',
-  '        out.append(n)\n    return tuple(out)'),
-
- ('fix round 1: the GPL remote takes a list with another key beside it',
-  'ltcplay/remote.py',
-  '    if not isinstance(doc, dict) or set(doc) != {key}:',
-  '    if not isinstance(doc, dict) or key not in doc:'),
 
 
  ('fix round 1: fire_ice imports the flame link outside its two builders',

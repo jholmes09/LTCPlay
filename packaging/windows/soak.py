@@ -75,8 +75,9 @@ MM_PORT = 8010             # MadMapper's OSC port, as the bench config says
 # copy of the Art-Net timecode then go to this address instead, where this
 # program times them; MadMapper and BEYOND keep 127.0.0.1.
 SOAK_IP = "127.0.0.9"
-# BEYOND's own Art-Net timecode (beyond_blank "timecode", the default:
-# BEYOND Essentials has no OSC input). In fallback mode this program
+# BEYOND's own Art-Net timecode (beyond_blank "timecode", set explicitly
+# below; the shipped default is "osc" since Jeff, 2026-10-07, and this soak
+# keeps timecode so it can time the black zone). In fallback mode this program
 # listens there and times the black zone against the show zone.
 BEYOND_TC_IP = "127.0.0.2"
 BEYOND_PORT = 8100         # BEYOND's OSC port (bench B8 used 8100)
@@ -2433,8 +2434,8 @@ class Soak:
             c = ex.counts
             ok = c["arms"] > 0 and not ex.failures
             out.append(("PASS" if ok else "FAIL",
-                        "Flame arming exerciser (signed in on the rack "
-                        "screen, arming through the Stream Deck program, "
+                        "Flame arming exerciser (on the rack screen, no "
+                        "sign-in, arming through the Stream Deck program, "
                         "Hold, Resume, Abort and Reset)",
                         f"{len(ex.failures)} failure(s) (limit 0)"
                         + (": " + "; ".join(f"{now_text(a)} {w}" for a, w in

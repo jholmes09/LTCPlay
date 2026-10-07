@@ -705,6 +705,11 @@ class Event:
     at: str = ""             # a wall clock time for an edit, "18:25"
     screen: str = ""         # operator events: which screen, from config
     who: str = ""            # operator events: the operator's name
+    # A press from the remote page (Jeff, 2026-10-07: no sign-in): `who`
+    # names the surface ("Rack screen", "iPad at 10.20.0.44"), not a person
+    # on the operator list, so the list check is not asked of it. Every
+    # other rule (state, confirm, the screen named) applies as before.
+    surface: bool = False
     # TICK, BOOT_DONE, START_NOW, HOLD_ON and RESUME: the show conductor is
     # latched after an Abort and nobody has pressed Reset. Filled in by the
     # service, never by an operator; always False without a conductor.
@@ -2021,6 +2026,7 @@ def step(m, ev, now):
                        f"night journal can say who did what. Nothing was "
                        f"changed.")
     if ev.actor == "operator" and ev.kind not in ALWAYS_TAKEN and \
+            not ev.surface and \
             ev.who.strip().lower() not in {n.lower() for n in m.operators}:
         return _refuse(m, ev, now,
                        f"{ev.who.strip()!r} is not on the operator list "

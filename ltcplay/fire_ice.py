@@ -73,6 +73,13 @@ KEYS = frozenset(("scheduler_performs", "auto_start", "show_cue",
 # Every start, automatic or Start now, is journaled either way.
 AUTO_START = ("when_run_pressed", "off")
 
+# How the lasers are kept dark when the file does not say (Jeff,
+# 2026-10-07): by OSC, beyond.py's brightness 0 or 100. "timecode" (BEYOND's
+# own Art-Net timecode sent to the black zone) and "both" stay selectable
+# with "beyond_blank". beyondtc.DEFAULT_MODE says the same; the selftest
+# holds them equal.
+BEYOND_BLANK_DEFAULT = "osc"
+
 
 class FireIceConfigError(ValueError):
     """The Fire & Ice config is wrong, in a sentence."""
@@ -92,11 +99,11 @@ class FireIceConfig:
                  madmapper=None, beyond=None, path=None,
                  auto_start="when_run_pressed", flamesafe_config=None,
                  flame_controller=None, show_name=None, venue=None,
-                 beyond_blank="timecode", beyond_black_hour=23,
+                 beyond_blank=BEYOND_BLANK_DEFAULT, beyond_black_hour=23,
                  beyond_timecode_ip=None):
-        # How the lasers are kept dark (beyondtc.py, Jeff 2026-10-04):
-        # "timecode" (BEYOND's own timecode to the black zone, the default),
-        # "osc" (beyond.py's brightness 0/100) or "both".
+        # How the lasers are kept dark (beyondtc.py): "osc" (beyond.py's
+        # brightness 0/100, the default since Jeff 2026-10-07), "timecode"
+        # (BEYOND's own timecode to the black zone) or "both".
         self.beyond_blank = beyond_blank
         self.beyond_black_hour = beyond_black_hour
         self.beyond_timecode_ip = beyond_timecode_ip
@@ -173,12 +180,12 @@ class FireIceConfig:
                     f"{where}: {k!r} is words for the screens' title, or "
                     f"leave it out.")
             titles[k] = v.strip() if v else None
-        blank = doc.get("beyond_blank", "timecode")
+        blank = doc.get("beyond_blank", BEYOND_BLANK_DEFAULT)
         if blank not in ("timecode", "osc", "both"):
             raise FireIceConfigError(
                 f"{where}: 'beyond_blank' is how the lasers are kept dark: "
-                f"\"timecode\" (the black zone, the default), \"osc\" or "
-                f"\"both\", not {blank!r}.")
+                f"\"osc\" (brightness, the default), \"timecode\" (the "
+                f"black zone) or \"both\", not {blank!r}.")
         hour = doc.get("beyond_black_hour", 23)
         if isinstance(hour, bool) or not isinstance(hour, int) or \
                 not 0 <= hour <= 23:
@@ -758,7 +765,8 @@ def beyond_gate_address(cfg):
 
 
 def blanks_by_timecode(cfg):
-    return getattr(cfg, "beyond_blank", "timecode") in ("timecode", "both")
+    return getattr(cfg, "beyond_blank", BEYOND_BLANK_DEFAULT) in (
+        "timecode", "both")
 
 
 def lasers_configured(cfg):
@@ -1726,7 +1734,7 @@ def build_blanking(cfg, beyond, journal=None, threaded=True):
     mode. None only when there is no BEYOND at all (OSC mode, no BEYOND
     configured)."""
     from . import beyondtc
-    mode = getattr(cfg, "beyond_blank", "timecode")
+    mode = getattr(cfg, "beyond_blank", BEYOND_BLANK_DEFAULT)
     if mode == "osc" and beyond is None:
         return None
     gate = None

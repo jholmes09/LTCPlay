@@ -40,12 +40,6 @@ REMOTE_PAGE = os.path.join(HERE, "web", "remote.html")
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 WILDCARD = ("0.0.0.0", "::", "")
 
-# What a device on the show network may load before it has signed in: the
-# remote page (which is the sign-in form until it has a session), the logo,
-# and the sign-in route itself. Everything else needs a PIN session.
-OPEN_GETS = ("/", "/index.html", "/remote", "/api/brand",
-             "/api/remote/whoami")
-OPEN_POSTS = ("/api/remote/login", "/api/remote/logout")
 # The show's own transport and output routes. While a scheduled show is live
 # (the scheduler in SHOW or PAUSED) every one of them is refused, on every
 # door, the machine's own page included: Hold, Resume and Abort are the only
@@ -102,7 +96,7 @@ def normalize_bind(bind):
 
 def network_may_reach(route):
     """Fix round 1 of #39, F1: what a request from the network may reach
-    at all, signed in or not. The remote page and its own routes, the
+    at all. The remote page and its own routes, the
     logo, and nothing else: the operator page's API (Stop, Start, GO, the
     input, the show folder) and the scheduler's routes (choosing the
     operator, the Stream Deck's journal lines) are the machine's own, and
@@ -739,24 +733,16 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0] in LOOPBACK
 
     def _ctx(self):
+        """Where this request came from (ltcplay/remote.py Ctx): the
+        machine itself or a device on the show network. No sign-in (Jeff,
+        2026-10-07); network_may_reach() is what keeps a device on the
+        network to the remote page's own routes."""
         ctx = getattr(self, "_ctx_cache", None)
         if ctx is None:
-            remote = getattr(self.server, "remote", None)
-            if remote is None:
-                from . import remote as remote_mod
-                ctx = remote_mod.Ctx(self._local(), self.client_address[0])
-            else:
-                ctx = remote.context(self._local(), self.client_address[0],
-                                     self.headers.get("Cookie"))
+            from . import remote as remote_mod
+            ctx = remote_mod.Ctx(self._local(), self.client_address[0])
             self._ctx_cache = ctx
         return ctx
-
-    def _authorised(self):
-        """Loopback, as before: the operator's own machine. Anything else
-        needs an operator's PIN session (ltcplay/remote.py)."""
-        if self._local():
-            return True
-        return self._ctx().session is not None
 
     def _refusal(self, post=False):
         """A sentence when this request must be turned away before any
@@ -940,11 +926,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "Not from the network. Only "
                                              "the remote page's own routes "
                                              "answer here."})
-        authorised = self._authorised()
-        if not authorised and not (route in OPEN_GETS
-                                   or route.startswith("/brand/")):
-            return self._send(401, {"error": "Sign in with your operator "
-                                             "PIN first."})
         c = self.server.control
         try:
             if route in ("/", "/index.html") and \
@@ -1042,9 +1023,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "Not from the network. Only "
                                              "the remote page's own routes "
                                              "answer here."})
-        if not self._authorised() and route not in OPEN_POSTS:
-            return self._send(401, {"error": "Sign in with your operator "
-                                             "PIN first."})
         if route == "/api/remote" or route.startswith("/api/remote/"):
             remote = getattr(self.server, "remote", None)
             if remote is None:
@@ -1249,7 +1227,6 @@ def brand_doc(server):
             b["show"] = cfg.show_name
         if getattr(cfg, "venue", None):
             b["venue"] = cfg.venue
-        b["beyond_blank"] = getattr(cfg, "beyond_blank", None)
     return b
 
 
@@ -1363,9 +1340,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             f"network this machine is on. Set its show Wi-Fi address on the "
             f"page (Show network), then start Web ltcplay on the show "
             f"network.")
-    # The old shared link token is gone: over the network every operator
-    # signs in with their own PIN (ltcplay/remote.py). `token` is accepted
-    # and ignored so an old caller does not break.
+    # The old shared link token is gone, and so is the PIN sign-in (Jeff,
+    # 2026-10-07): the network is kept to the remote page's own routes by
+    # network_may_reach(). `token` is accepted and ignored so an old caller
+    # does not break.
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.control = control
     httpd.token = None
