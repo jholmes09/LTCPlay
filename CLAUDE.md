@@ -5,7 +5,7 @@ Timecode-driven FSEQ show player for Jeff Holmes Presents. Runs GPL 2026 at Doll
 ## Every change
 
 - Run `python3 selftest.py`. Every check must pass. Put its last line in the PR.
-- Changes to `trigger.py`, `output.py`, `player.py`, `session.py`, `clock.py` or anything under `flamesafe/` also run `python3 mutate.py`. Every mutation must be caught.
+- Run `python3 mutate.py --changed origin/main`: the mutations your change can have broken (every flamesafe, conductor and flame link mutation when a safety file changed). Every one must be caught. CI runs the same per PR; the whole list runs nightly and on every release tag. TESTING.md says what runs when and what a failure means.
 - Work on your branch and open a PR. Never push to main, never force-push, never rewrite history. Merge only when Jeff says yes in the session.
 - One PR does one thing. A PR never changes show behavior under a title that says something else.
 
