@@ -1,0 +1,16 @@
+{
+  "timezone": "America/Denver",
+  "season": {"first_date": "2026-11-14", "last_date": "2027-01-02"},
+  "weekly": {
+    "thu": {"first_start": "17:30", "interval_min": 20, "last_end": "21:30"},
+    "fri": {"first_start": "17:30", "interval_min": 20, "last_end": "22:00"},
+    "sat": {"first_start": "17:00", "interval_min": 20, "last_end": "22:00"}
+  },
+  "exceptions": {
+    "2026-11-26": null,
+    "2026-12-24": {"first_start": "17:00", "interval_min": 20, "last_end": "20:00"}
+  },
+  "show_len_s": 440,
+  "guard_s": 120,
+  "late_grace_s": 15
+}

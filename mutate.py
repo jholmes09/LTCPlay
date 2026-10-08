@@ -18,6 +18,18 @@ For CI, two options that change nothing about a plain run:
                        each with its reason; see mutate_expected_misses.txt.
                        In this mode a mutation counts as caught only when
                        the suite fails under it twice running.
+
+And three that narrow the sweep to what a change can have broken (the
+per-PR gate; the nightly sweep and a release tag still run everything):
+
+    --changed BASE     run only the mutations a diff against git revision
+                       BASE can have changed the result of: see
+                       select_affected() for the rules
+    --files a,b,c      the same, with the changed files named by hand
+                       (no git needed, e.g. on the show PC)
+    --list             print what would run and why, then stop
+    --catchers FILE    {mutation name: test that caught it} from an earlier
+                       sweep, so a changed test re-runs only what it guards
 """
 import subprocess
 import sys
@@ -1499,8 +1511,8 @@ MUTATIONS = [
 
  ("the scheduler's own lines stay in memory only, as before",
   "ltcplay/schedule_service.py",
-  '        for le in out.log:\n            self._record_logevent(le)',
-  '        for le in out.log:\n            self.journal.append(le.to_dict())'),
+  '            self._record_logevent(le)\n        claimed = set()',
+  '            self.journal.append(le.to_dict())\n        claimed = set()'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
   '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
@@ -2587,6 +2599,338 @@ MUTATIONS = [
   '            self._frozen_pos = position_s + n / MASTER_FPS\n'
   '            self.last_sent = (h, m, s, f)'),
 
+ # -- madmapper.py: device layer (OSC transport, watchdog) --
+
+ ("a cancelled ramp keeps sending anyway", "ltcplay/madmapper.py",
+  "            if self._gen_current() != gen:\n"
+  "                break",
+  "            pass"),
+
+ ("restore_levels never touches the surfaces, only the audio",
+  "ltcplay/madmapper.py",
+  "        self.set_audio(1.0, wait=wait)\n"
+  "        self.set_surfaces(1.0, wait=wait)",
+  "        self.set_audio(1.0, wait=wait)"),
+
+ ("the watchdog counts MadMapper's stale re-sent value at bank select "
+  "as a real position again (S1)", "ltcplay/madmapper.py",
+  "            if self._awaiting_start:\n"
+  "                near_start = (show_len_s is not None\n"
+  "                             and isinstance(value, (int, float))\n"
+  "                             and not math.isnan(value)\n"
+  "                             and value * show_len_s <= START_WINDOW_S)\n"
+  "                if not near_start:\n"
+  "                    return\n"
+  "                self._awaiting_start = False",
+  "            if self._awaiting_start:\n"
+  "                self._awaiting_start = False"),
+
+ ("a NaN heartbeat value is read as zero drift", "ltcplay/madmapper.py",
+  "            bad = not isinstance(value, (int, float)) or "
+  "math.isnan(value)",
+  "            bad = False"),
+
+ ("the heartbeat listener can be bound off loopback by accident",
+  "ltcplay/madmapper.py",
+  "        if not _is_loopback(bind) and not allow_non_loopback:",
+  "        if False:"),
+
+ ("a heartbeat bind failure crashes instead of naming the heartbeat "
+  "port", "ltcplay/madmapper.py",
+  "        try:\n"
+  "            self._sock = self._factory()\n"
+  "        except OSError as e:\n"
+  "            # Its own sentence, naming the heartbeat port "
+  "specifically:\n"
+  "            # a bind failure here must never read as the web "
+  "server's own\n"
+  "            # port being unavailable, which is a different problem "
+  "with a\n"
+  "            # different fix.\n"
+  "            self.bind_error = (",
+  "        self._sock = self._factory()\n"
+  "        if False:\n"
+  "            self.bind_error = ("),
+
+ ("a MadMapper command can hang _submit() forever again",
+  "ltcplay/madmapper.py",
+  "            got = done.wait(self._submit_timeout_s)",
+  "            done.wait()\n"
+  "            got = True"),
+
+ # -- beyond.py: the laser blank/unblank device layer --
+
+ ("the allow-list accepts any brightness value, not only 0.0/100.0",
+  "ltcplay/beyond.py",
+  "    return any(value == v for v in ALLOWED_VALUES)",
+  "    return True"),
+
+ ("the allow-list no longer checks for OSC special characters",
+  "ltcplay/beyond.py",
+  "    if any(c in _SPECIAL_CHARS for c in address):\n"
+  "        return False\n"
+  "    if address != BRIGHTNESS_ADDR:",
+  "    if address != BRIGHTNESS_ADDR:"),
+
+ ("_send()'s guard is removed, so anything can reach the socket",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py refuses to send {address!r} with value \"\n"
+  "                f\"{value!r}: only the brightness address, with 0.0 or \"\n"
+  "                f\"100.0, is ever allowed (S5), and BlackOut/MasterPause \"\n"
+  "                f\"are refused by name as well (BlackOut restarts "
+  "BEYOND's \"\n"
+  "                f\"own core and needs a manual recovery; MasterPause \"\n"
+  "                f\"freezes the beams, a static-beam hazard).\")\n"
+  "        return self._osc.send(address, value, force=force)",
+  "        return self._osc.send(address, value, force=force)"),
+
+ ("the socket's own send() no longer enforces the allow-list at all",
+  "ltcplay/beyond.py",
+  "        if address in FORBIDDEN_ADDRESSES or not _allowed(address, "
+  "value):\n"
+  "            raise BeyondConfigError(\n"
+  "                f\"beyond.py's socket layer refuses to send {address!r} \"\n"
+  "                f\"with value {value!r}: only the brightness address, \"\n"
+  "                f\"with 0.0 or 100.0, is ever allowed off this module "
+  "(S5).\")\n"
+  "        now = self._clock()",
+  "        now = self._clock()"),
+
+ ("blank() only sends the packet once, not 3 times", "ltcplay/beyond.py",
+  "    def _send_retried(self, value):\n        ok = False\n"
+  "        for i in range(RETRY_COUNT):",
+  "    def _send_retried(self, value):\n        ok = False\n"
+  "        for i in range(1):"),
+
+ ("a failed blank is still reported and journaled as a success",
+  "ltcplay/beyond.py",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\" if ok else \"failed\"\n"
+  "        if ok:",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        self.last_command = \"blank\"\n"
+  "        self.last_result = \"ok\"\n"
+  "        ok = True\n"
+  "        if ok:"),
+
+ ("build() no longer blanks at construction", "ltcplay/beyond.py",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)\n"
+  "    link.blank()",
+  "    link = Beyond(cfg, socket_factory=socket_factory, clock=clock,\n"
+  "                 sleep=sleep, journal=journal)"),
+
+ ("close() no longer blanks before closing the socket",
+  "ltcplay/beyond.py",
+  "        try:\n"
+  "            self.blank()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        self._osc.close()",
+  "        self._osc.close()"),
+
+ ("BEYOND's port 8000 clash with MadMapper is no longer refused",
+  "ltcplay/beyond.py",
+  "        if port == 8000:",
+  "        if False:"),
+
+ ("unblank()'s in_show type check is removed, so a truthy value like "
+  "\"STANDBY\" or 1 unblanks the lasers during intermission",
+  "ltcplay/beyond.py",
+  "        if not isinstance(in_show, bool):\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")",
+  "        if False:\n"
+  "            raise TypeError(\n"
+  "                f\"unblank() needs in_show=True or in_show=False, not "
+  "\"\n"
+  "                f\"{in_show!r}: whether the lasers may come back is "
+  "never \"\n"
+  "                f\"guessed from a truthy value.\")"),
+
+ ("unblank() ignores in_show=False and unblanks BEYOND during "
+  "intermission anyway", "ltcplay/beyond.py",
+  "        if in_show is not True:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\"",
+  "        if False:\n"
+  "            self.last_command = \"unblank\"\n"
+  "            self.last_result = \"refused\""),
+
+ ("unblank(in_show=False)'s refusal is never journalled, a silent skip "
+  "instead", "ltcplay/beyond.py",
+  "            self.last_result = \"refused\"\n"
+  "            self._note(\n"
+  "                f\"BEYOND stays blanked{_for_show(show)}: unblank() "
+  "was \"\n"
+  "                f\"called with in_show=False (no lasers during \"\n"
+  "                f\"intermission).\", action=\"unblank\", "
+  "outcome=\"refused\",\n"
+  "                show=show)\n"
+  "            return False",
+  "            self.last_result = \"refused\"\n"
+  "            return False"),
+
+ ("the first heartbeat after a recovery is judged for drift again "
+  "(bench B14)", "ltcplay/madmapper.py",
+  "            if self._settle_count > 0:\n"
+  "                self._settle_count -= 1\n"
+  "                skip_drift = True",
+  "            pass"),
+
+ ("the perceptual video curve fades down the same as up (no longer "
+  "mirrored)", "ltcplay/madmapper.py",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (1 - (1 - frac) ** 2) * (end - start)",
+  "        frac = (v_lin - end) / (start - end)\n"
+  "        return end + (frac ** 2) * (start - end)\n"
+  "    frac = (v_lin - start) / (end - start)\n"
+  "    return start + (frac ** 2) * (end - start)"),
+
+ # -- madmapper.py: fade_all() -- audio and surfaces ramped TOGETHER,
+ # in one worker job (devices.on_abort's own fade) --
+
+ ("fade_all()'s cancellation check is removed, so a superseded ramp "
+  "keeps sending anyway", "ltcplay/madmapper.py",
+  "                if self._gen_current() != gen:\n"
+  "                    break\n"
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))"),
+
+ ("fade_all()'s surfaces are no longer shaped by the configured video "
+  "curve, only plain linear", "ltcplay/madmapper.py",
+  "            surface_values = shape_values(ramp_values(start, end, steps),\n"
+  "                                          start, end, surface_curve)",
+  "            surface_values = ramp_values(start, end, steps)"),
+
+ ("fade_all() stops sending the master audio level, only the surfaces",
+  "ltcplay/madmapper.py",
+  "                self._send(AUDIO_ADDR, float(audio_values[i]))\n"
+  "                for addr in addrs:",
+  "                for addr in addrs:"),
+
+ # -- devices.py: on_hold()/on_resume()/on_abort(), composing madmapper.py
+ # and beyond.py's own primitives with the handoff's ordering built in --
+
+ ("on_hold() no longer blanks BEYOND, only fades the music",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "    if madmapper is not None:\n"
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_hold() fades the music UP instead of down", "ltcplay/devices.py",
+  "madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)",
+  "madmapper.fade_audio(0.0, 1.0, seconds=fade_seconds, wait=wait)"),
+
+ ("on_resume() ignores in_show and unblanks BEYOND during intermission "
+  "too", "ltcplay/devices.py",
+  "        if in_show is True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:",
+  "        if True:\n"
+  "            return beyond.unblank(show=show, in_show=True)\n"
+  "        else:"),
+
+ ("on_resume() reads any truthy in_show (\"STANDBY\", 1) as a show and "
+  "unblanks the lasers during intermission", "ltcplay/devices.py",
+  "    if not isinstance(in_show, bool):\n"
+  "        raise TypeError(",
+  "    if False:\n"
+  "        raise TypeError("),
+
+ ("on_resume() checks in_show's type but unblanks on anything truthy",
+  "ltcplay/devices.py",
+  "        if in_show is True:\n",
+  "        if in_show or True:\n"),
+
+ ("on_hold() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return blanked",
+  "        madmapper.fade_audio(1.0, 0.0, seconds=fade_seconds, wait=wait)\n"
+  "    return True"),
+
+ ("on_abort() swallows a failed BEYOND blank and reports nothing",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return blanked",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)\n"
+  "    return True"),
+
+ ("on_resume()'s intermission refusal is never journalled, a silent "
+  "skip instead", "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND stays blanked{_for_show(show)} (re-sent "
+  "as \"\n"
+  "                     f\"a defensive check): Resume is between shows "
+  "(no \"\n"
+  "                     f\"lasers during intermission), not during a "
+  "show.\",\n"
+  "                     action=\"unblank\", outcome=\"refused\", "
+  "show=show)",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if False:\n"
+  "                pass"),
+
+ ("on_resume()'s defensive re-blank is sent but a FAILED re-blank is "
+  "never journalled as a fault, only the calm refusal wording",
+  "ltcplay/devices.py",
+  "            else:\n"
+  "                _note(journal,\n"
+  "                     f\"BEYOND was told to stay blanked{_for_show(show)} "
+  "\"\n"
+  "                     f\"(Resume is between shows, no lasers during \"\n"
+  "                     f\"intermission), but the defensive re-blank "
+  "FAILED: \"\n"
+  "                     f\"no packet got out. The lasers may still be "
+  "live \"\n"
+  "                     f\"through intermission.\", action=\"unblank\",\n"
+  "                     outcome=\"refused\", show=show, fault=True)\n"
+  "            return reblanked",
+  "            return reblanked"),
+
+ ("on_resume(in_show=False) no longer re-sends a defensive blank at all",
+  "ltcplay/devices.py",
+  "            reblanked = beyond.blank(show=show)\n"
+  "            if reblanked:",
+  "            reblanked = True\n"
+  "            if reblanked:"),
+
+ ("on_abort() no longer blanks BEYOND, only fades MadMapper",
+  "ltcplay/devices.py",
+  "    if beyond is not None:\n"
+  "        blanked = beyond.blank(show=show)\n"
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}",
+  "    if madmapper is not None:\n"
+  "        kwargs = {\"wait\": wait}"),
+
+ ("on_abort() fades everything UP to full instead of down to black",
+  "ltcplay/devices.py",
+  "        madmapper.fade_all(1.0, 0.0, **kwargs)",
+  "        madmapper.fade_all(0.0, 1.0, **kwargs)"),
+
+ ("on_abort() ignores an explicit fade_seconds override", "ltcplay/devices.py",
+  "        if fade_seconds is not None:\n"
+  "            kwargs[\"seconds\"] = fade_seconds",
+  "        if False:\n"
+  "            kwargs[\"seconds\"] = fade_seconds"),
+
  ("show length no longer follows the show's own media when nothing is "
   "configured", "ltcplay/clock.py",
   "        if show_len is None:\n"
@@ -2623,12 +2967,15 @@ MUTATIONS = [
   "            if False:\n"
   "                self.hold_epoch += 1"),
 
+ # Reachable again (fix round of #30): a night still on Hold is set aside
+ # at the 2 AM nightly reset, and the epoch has to move.
+ # test_schedule_delayed_night_closes_at_the_2am_reset.
  ("midnight sweeping a held night never bumps the hold epoch",
   "ltcplay/schedule_service.py",
-  "            if self.machine.state == sch.HOLD:\n"
-  "                self.hold_epoch += 1",
-  "            if False:\n"
-  "                self.hold_epoch += 1"),
+  "        if self.machine.state == sch.HOLD:\n"
+  "            self.hold_epoch += 1",
+  "        if False:\n"
+  "            self.hold_epoch += 1"),
 
  ("the second check re-Holds instead of only reading the state",
   "ltcplay/announce.py",
@@ -3347,13 +3694,13 @@ def build():
 
  ("conductor: Abort's flame cut waits for the executor",
   "ltcplay/conductor.py",
-  "            self._flames_cut()\n            self._accept(\"Abort\"",
-  "            self._accept(\"Abort\""),
+  "                self._flames_cut()\n                self._video_cancel()\n",
+  "                self._video_cancel()\n"),
 
  ("conductor: Abort no longer disarms the flames at once",
   "ltcplay/conductor.py",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN\n"
-  "        self._disarm()",
+  "        self._disarm(reason)",
   "        self._applied[\"flames\"] = ZERO if r.ok else UNKNOWN"),
 
  ("conductor: a failed disarm is never sent again",
@@ -3363,8 +3710,10 @@ def build():
 
  ("conductor: a second Abort starts a second fade",
   "ltcplay/conductor.py",
-  "            if self._latched:\n                # Idempotent:",
-  "            if False:\n                # Idempotent:"),
+  "            latched = self._latched\n            if not latched:\n"
+  "                if not self._playing():",
+  "            latched = False\n            if not latched:\n"
+  "                if not self._playing():"),
 
  ("conductor: the Abort latch no longer refuses other presses",
   "ltcplay/conductor.py",
@@ -3378,18 +3727,21 @@ def build():
 
  ("conductor: Abort is taken with nothing playing",
   "ltcplay/conductor.py",
-  "            if not self._playing():\n                return self._refused(\"Abort\",",
-  "            if False:\n                return self._refused(\"Abort\","),
+  "                if not self._playing():\n"
+  "                    return self._refused(\"Abort\",",
+  "                if False:\n"
+  "                    return self._refused(\"Abort\","),
 
  ("conductor: Abort blanks the lasers instead of ramping them",
   "ltcplay/conductor.py",
-  "\"lasers faded\", progress,\n                            self.devices.lasers_fade_out, fade)",
-  "\"lasers faded\", progress,\n                            self.devices.lasers_blank)"),
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
+  "                           ABORT_FADE_S)",
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_blank)"),
 
  ("conductor: Abort never stops the video",
   "ltcplay/conductor.py",
   "        self._step(gen, \"video\", STOPPED, \"video stopped\", progress,\n"
-  "                   self.devices.video_stop)",
+  "                   self.devices.video_stop, force=True)",
   "        pass"),
 
  ("conductor: the Abort fade is not 1 s",
@@ -3511,8 +3863,8 @@ def build():
 
  ("conductor: a second Hold starts a new effect",
   "ltcplay/conductor.py",
-  "            if self._look in HOLDING_LOOKS:\n                return done(",
-  "            if False:\n                return done("),
+  "            held = self._look in HOLDING_LOOKS\n",
+  "            held = False\n"),
 
  ("conductor: Resume is taken when nothing is held",
   "ltcplay/conductor.py",
@@ -3565,8 +3917,329 @@ def build():
 
  ("conductor: intermission cuts an Abort's fade short",
   "ltcplay/conductor.py",
-  "            if self._latched:\n                return done(\"The show is aborted, so",
-  "            if False:\n                return done(\"The show is aborted, so"),
+  "            latched = self._latched\n            if not latched:\n"
+  "                if self._look == STOPPED_DARK:",
+  "            latched = False\n            if not latched:\n"
+  "                if self._look == STOPPED_DARK:"),
+
+ # -- the conductor wired to BEYOND and MadMapper (ConductorDevices, and
+ # the lasers-dark re-send that keeps devices.py's "never assume a blank
+ # landed" rule). Still "conductor:", so `mutate.py conductor:` runs them.
+ ("conductor: lasers already dark are trusted and not blanked again",
+  "ltcplay/conductor.py",
+  "            if again and not force and (output, value) not in ALWAYS_RESENT:",
+  "            if again and not force:"),
+
+ ("conductor: a laser blank re-sent to lasers already dark earns another "
+  "0.5 s in the dark",
+  "ltcplay/conductor.py",
+  "        want[\"changed\"] = any(AGAIN not in p for p in progress)",
+  "        want[\"changed\"] = bool(progress)"),
+
+ ("conductor: Abort's laser blank waits for the executor, so the video "
+  "fades first (review of PR #29, finding D)",
+  "ltcplay/conductor.py",
+  "            r = self._call(\"lasers blanked\", self.devices.lasers_fade_out,\n"
+  "                           ABORT_FADE_S)",
+  "            r = failed(\"left to the executor\")"),
+
+ ("conductor: a Hold fades the music before the lasers go dark",
+  "ltcplay/conductor.py",
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n",
+  "        froze = a[\"music\"] in (MUSIC_PLAYING, UNKNOWN)\n"
+  "        self._step(gen, \"music\", MUSIC_HELD, \"music fading\", progress,\n"
+  "                   self.show.music_hold, fade, only_from=(MUSIC_PLAYING,\n"
+  "                                                          UNKNOWN))\n"
+  "        if look == DARK and fade > 0:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_fade_out, fade)\n"
+  "        else:\n"
+  "            self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                       self.devices.lasers_blank)\n"),
+
+ ("conductor: the real device layer says it is wired without BEYOND or "
+  "MadMapper",
+  "ltcplay/conductor.py",
+  "        self.wired = madmapper is not None and beyond is not None",
+  "        self.wired = True"),
+
+ ("conductor: a BEYOND command that never got out is reported as sent",
+  "ltcplay/conductor.py",
+  "        if ok is True:\n            return done(f\"{what}: sent to BEYOND.\")",
+  "        if True:\n            return done(f\"{what}: sent to BEYOND.\")"),
+
+ ("conductor: a broken BEYOND raises into the conductor",
+  "ltcplay/conductor.py",
+  "        try:\n"
+  "            ok = getattr(self.beyond, method)(show=self.show, **kw)\n"
+  "        except Exception as e:\n"
+  "            return failed(f\"{what} failed: {type(e).__name__}: {e}. \"\n"
+  "                          f\"{failed_means}\")\n",
+  "        ok = getattr(self.beyond, method)(show=self.show, **kw)\n"),
+
+ ("conductor: the Abort's instant laser blank is not journaled as not a fade",
+  "ltcplay/conductor.py",
+  "        if self.beyond is not None and r.ok:\n            _device_note(",
+  "        if False:\n            _device_note("),
+
+ ("conductor: the Abort's laser command lights the lasers instead",
+  "ltcplay/conductor.py",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"blank\", self._BLANK_FAILED)",
+  "        Journaled every time, so the record never says \"faded\" alone.\"\"\"\n"
+  "        r = self._beyond(\"Laser blank\", \"unblank\", self._BLANK_FAILED,\n"
+  "                         in_show=True)"),
+
+ ("conductor: a Resume never lights the lasers through the real device layer",
+  "ltcplay/conductor.py",
+  "        r = self._beyond(\"Laser restore\", \"unblank\",\n"
+  "                         \"The lasers stay dark.\", **kw)",
+  "        r = self._beyond(\"Laser restore\", \"blank\",\n"
+  "                         \"The lasers stay dark.\")"),
+
+ ("conductor: the video fade blocks the conductor until it ends",
+  "ltcplay/conductor.py",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=False,\n",
+  "            self.mm.fade_surfaces(start, end, seconds=seconds, wait=True,\n"),
+
+ ("conductor: an instant video level does not stop a fade still running",
+  "ltcplay/conductor.py",
+  "        self.mm.cancel()\n        start = self._from_level(end)\n"
+  "        with self._vlock:\n"
+  "            self._ramp = (start, end, max(seconds, 0.0), self._clock())\n"
+  "        if seconds <= 0 or start == end:\n"
+  "            # One level, at once, still cancellable by a newer command.\n"
+  "            self.mm.fade_surfaces(end, end, seconds=0.0, steps=1,\n"
+  "                                  wait=False, on_done=on_done)\n",
+  "        start = self._from_level(end)\n"
+  "        with self._vlock:\n"
+  "            self._ramp = (start, end, max(seconds, 0.0), self._clock())\n"
+  "        if seconds <= 0 or start == end:\n"
+  "            self.mm.set_surfaces(end, wait=False)\n"),
+
+ ("conductor: Abort stops the intermission bank instead of the show's",
+  "ltcplay/conductor.py",
+  "self.mm.stop_bank(self.mm.cfg.show_bank, wait=False,",
+  "self.mm.stop_bank(self.mm.cfg.intermission_bank, wait=False,"),
+
+ ("conductor: a closed MadMapper link is reported as sent",
+  "ltcplay/conductor.py",
+  "        if getattr(self.mm, \"_closed\", False):",
+  "        if False:"),
+
+ ("conductor: the video fade to black fades up instead",
+  "ltcplay/conductor.py",
+  "            lambda cb: self._surfaces(0.0, seconds, cb), BLACK, seconds)",
+  "            lambda cb: self._surfaces(1.0, seconds, cb), BLACK, seconds)"),
+
+ # -- the independent review of PR #29 (real UDP, real time probes),
+ # findings A to E. Still "conductor:", so `mutate.py conductor` runs them.
+ ("conductor: a failed MadMapper send never reaches the conductor "
+  "(finding A)",
+  "ltcplay/conductor.py",
+  "        if not ok:\n            why = why or \"no reason given\"",
+  "        if False:\n            why = why or \"no reason given\""),
+
+ ("conductor: a stalled MadMapper sender is never reported (finding A)",
+  "ltcplay/conductor.py",
+  "            if seq not in self._open:\n                return",
+  "            if True:\n                return"),
+
+ ("conductor: a queued video command is recorded as done before MadMapper "
+  "sends it (finding A)",
+  "ltcplay/conductor.py",
+  "                    self._set(output, UNKNOWN)\n"
+  "                    self._async_seq[output]",
+  "                    self._set(output, value)\n"
+  "                    self._async_seq[output]"),
+
+ ("conductor: an older MadMapper command's success overwrites a newer "
+  "video record (finding A)",
+  "ltcplay/conductor.py",
+  "            elif seq is None or seq == self._async_seq.get(output):",
+  "            elif True:"),
+
+ ("conductor: the Link's failed send is reported as a success (finding A)",
+  "ltcplay/madmapper.py",
+  "                    self._tell(on_done, not errors, why)",
+  "                    self._tell(on_done, True, why)"),
+
+ ("conductor: web.py builds the MadMapper link with no journal (finding A)",
+  "ltcplay/web.py",
+  "            madmapper = madmapper_mod.build(\n"
+  "                madmapper, journal=_device_journal(httpd_schedule))",
+  "            madmapper = madmapper_mod.build(madmapper)"),
+
+ ("conductor: a second Abort sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "            return done(f\"Already aborted. {self._reblank('Abort')} Press \"",
+  "            return done(f\"Already aborted. Press \""),
+
+ ("conductor: intermission while aborted sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "                    f\"Reset. {self._reblank('Intermission')}\")",
+  "                    f\"Reset. The rig is already dark.\")"),
+
+ ("conductor: a second Hold sends no blank (finding B)",
+  "ltcplay/conductor.py",
+  "        return done(f\"Already on hold. {self._reblank('Hold')}\")",
+  "        return done(\"Already on hold. Nothing was changed.\")"),
+
+ ("conductor: a re-blank says the lasers are dark whatever happened "
+  "(finding B)",
+  "ltcplay/conductor.py",
+  "        if now == BLACK:\n"
+  "            return \"The laser blank was sent again: the lasers are dark.\"",
+  "        if True:\n"
+  "            return \"The laser blank was sent again: the lasers are dark.\""),
+
+ ("conductor: a video fade starts from a fixed level again (finding C)",
+  "ltcplay/conductor.py",
+  "        return min(levels) if end <= 0.0 else max(levels)",
+  "        return 1.0 if end <= 0.0 else 0.0"),
+
+ ("conductor: Hold does not stop a running video fade at the press "
+  "(finding C)",
+  "ltcplay/conductor.py",
+  "                self._video_cancel()\n"
+  "                self._accept(\"Hold\"",
+  "                self._accept(\"Hold\""),
+
+ ("conductor: Abort does not stop a running video fade at the press "
+  "(finding C)",
+  "ltcplay/conductor.py",
+  "                self._flames_cut()\n                self._video_cancel()\n",
+  "                self._flames_cut()\n"),
+
+ ("conductor: Abort trusts a video record that says black (finding C)",
+  "ltcplay/conductor.py",
+  "                            self.devices.video_fade_out, fade, force=True)",
+  "                            self.devices.video_fade_out, fade)"),
+
+ ("conductor: BEYOND is called with the lock an Abort needs held "
+  "(finding D)",
+  "ltcplay/conductor.py",
+  "UNLOCKED_OUTPUTS = frozenset((\"lasers\",))",
+  "UNLOCKED_OUTPUTS = frozenset()"),
+
+ ("conductor: a laser restore ignores the conductor's guard (finding D)",
+  "ltcplay/conductor.py",
+  "        return (self._restore_gen is not None",
+  "        return True or (self._restore_gen is not None"),
+
+ ("conductor: a laser record written outside the lock overwrites a newer "
+  "one (finding D)",
+  "ltcplay/conductor.py",
+  "                if self._ver[output] == ver:\n"
+  "                    self._set(output, value if r.ok else UNKNOWN)",
+  "                if True:\n"
+  "                    self._set(output, value if r.ok else UNKNOWN)"),
+
+ ("conductor: BEYOND's unblank is not stopped before its next packet "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "                if self._blank_epoch != epoch or \\\n"
+  "                        not self._wanted(still_wanted):\n"
+  "                    return ok, True",
+  "                if False:\n"
+  "                    return ok, True"),
+
+ ("conductor: a 100 already on its way out is not followed by a 0 "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "            if late:\n",
+  "            if False:\n"),
+
+ ("conductor: a blank does not stop an unblank on another thread "
+  "(finding D)",
+  "ltcplay/beyond.py",
+  "        with self._lock:\n            self._blank_epoch += 1\n",
+  ""),
+
+ ("conductor: the laser gate is asked on the executor again (finding D)",
+  "ltcplay/conductor.py",
+  "        if not self.threaded:\n            return ask()",
+  "        if True:\n            return ask()"),
+
+ ("conductor: the announcement is played on the executor again "
+  "(finding D)",
+  "ltcplay/conductor.py",
+  "        if self.threaded:\n            # announce.play reads",
+  "        if False:\n            # announce.play reads"),
+
+ ("conductor: BEYOND takes a host name again (finding D)",
+  "ltcplay/beyond.py",
+  "        try:\n            ipaddress.IPv4Address(host)\n",
+  "        try:\n            pass\n"),
+
+ ("conductor: an announcement after Abort and Reset runs the Abort again "
+  "(finding E)",
+  "ltcplay/conductor.py",
+  "                look = BETWEEN if self._look == ABORTED else self._look",
+  "                look = self._look"),
+
+ # -- review round 3 of PR #29: the second independent review's surviving
+ # hand mutations, and its two beyond.py fixes.
+ ("conductor: the 0 after a late 100 is one packet with no retry again "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "                self._send_retried(BLANK_VALUE)\n"
+  "                return ok, True",
+  "                self._send(BRIGHTNESS_ADDR, BLANK_VALUE, force=True)\n"
+  "                return ok, True"),
+
+ ("conductor: BEYOND takes an IPv6 address its IPv4 socket cannot reach "
+  "(round 3)",
+  "ltcplay/beyond.py",
+  "            ipaddress.IPv4Address(host)\n",
+  "            ipaddress.ip_address(host)\n"),
+
+ ("conductor: an unblank takes a fresh blank count before every packet, "
+  "so never sees a blank (round 3)",
+  "ltcplay/beyond.py",
+  "            with self._lock:\n"
+  "                if self._blank_epoch != epoch or \\",
+  "            with self._lock:\n"
+  "                epoch = self._blank_epoch\n"
+  "                if self._blank_epoch != epoch or \\"),
+
+ ("conductor: a blank counts itself only after its packets, so 100s go "
+  "out while it is sending (round 3)",
+  "ltcplay/beyond.py",
+  "        with self._lock:\n            self._blank_epoch += 1\n"
+  "        ok = self._send_retried(BLANK_VALUE)\n",
+  "        ok = self._send_retried(BLANK_VALUE)\n"
+  "        with self._lock:\n            self._blank_epoch += 1\n"),
+
+ ("conductor: a laser gate that never answers counts as a yes (round 3)",
+  "ltcplay/conductor.py",
+  "        return (f\"the laser gate did not answer within \"",
+  "        return None\n"
+  "        return (f\"the laser gate did not answer within \""),
+
+ ("conductor: stopping a video fade leaves its success report current, "
+  "so a rehearsal Hold records the video lit (round 3)",
+  "ltcplay/conductor.py",
+  "            self.video_seq += 1      # no older command's success counts "
+  "now",
+  "            pass"),
+
+ ("conductor: a fade's last value is computed, so a fade to black can end "
+  "on 1e-32 instead of 0 (round 3)",
+  "ltcplay/madmapper.py",
+  "    return [float(start + step * i) for i in range(steps - 1)] + "
+  "[float(end)]",
+  "    return [float(start + step * i) for i in range(steps)]"),
+
 
  # ---------------------------------------------------------------------
  # the arm link (build step 7b, 2026-10-01): the Stream Deck's wire into
@@ -4679,6 +5352,659 @@ def build():
   "            if kind in LOW_PRIORITY_KINDS and \\\n",
   "            if True and \\\n"),
 
+
+ # -- PR #30 fix round (independent review), 2026-10-02. All named
+ # "scheduler fix round: ..." so `python3 mutate.py "fix round"` runs them.
+ # Item 1: conductor calls after the save, in order, off the lock, faults.
+ ("scheduler fix round: the conductor is asked before tonight is saved",
+  "ltcplay/schedule_service.py",
+  "        self._record(out, now, plan)\n"
+  "        if DRY_RUN and self.machine.state == sch.CLOSING:",
+  "        self._queue_conductor(plan, ev)\n"
+  "        self._calls.flush(0.5)\n"
+  "        plan = []\n"
+  "        self._record(out, now, plan)\n"
+  "        if DRY_RUN and self.machine.state == sch.CLOSING:"),
+
+ ("scheduler fix round: conductor calls are made inside the scheduler's lock",
+  "ltcplay/schedule_service.py",
+  "            self._calls.put(call)\n\n    def _new_call",
+  "            self._run_conductor_call(call)\n\n    def _new_call"),
+
+ ("scheduler fix round: conductor calls lose their order",
+  "ltcplay/schedule_service.py",
+  "                call = self._q.popleft()",
+  "                call = self._q.pop()"),
+
+ ("scheduler fix round: a conductor that raises is not a fault",
+  "ltcplay/schedule_service.py",
+  '            ok, said = False, f"it raised {type(e).__name__}: {e}"',
+  '            ok, said = True, ""'),
+
+ ("scheduler fix round: a failed conductor result is not a fault",
+  "ltcplay/schedule_service.py",
+  '            ok = getattr(r, "ok", None) is True',
+  '            ok = True'),
+
+ # Item 2: what the conductor is asked, and when.
+ ("scheduler fix round: show_starting on START_SHOW again, before any cue "
+  "plays",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind == sch.SHOW_CONFIRMED and \\",
+  "        if sch.START_SHOW in kinds and \\"),
+
+ ("scheduler fix round: the last show and Close for the night never reach "
+  "the conductor",
+  "ltcplay/schedule_service.py",
+  "        if sch.BLACKOUT in kinds:\n"
+  "            plan.append((\"Out of the show\", \"intermission\",",
+  "        if False:\n"
+  "            plan.append((\"Out of the show\", \"intermission\","),
+
+ ("scheduler fix round: the Service's Reset never reaches the conductor",
+  "ltcplay/schedule_service.py",
+  "            self._calls.put(call)\n"
+  "        if not call.done.wait(wait_s):",
+  "            call.ok, call.sentence = False, \"not sent\"\n"
+  "            call.done.set()\n"
+  "        if not call.done.wait(wait_s):"),
+
+ ("scheduler fix round: the Abort line still says nothing was disarmed",
+  "ltcplay/schedule_service.py",
+  "            if self.conductor is not None and le.action == sch.ABORT and \\",
+  "            if False and \\"),
+
+ ("scheduler fix round: effects the conductor does not perform are "
+  "journaled as performed",
+  "ltcplay/schedule_service.py",
+  "            claimed |= set(kinds)",
+  "            claimed |= {e.kind for e in out.effects}"),
+
+ # Item 3: a failed start goes dark, no disarm, no latch.
+ ("scheduler fix round: a failed start or a cut show is an Abort again",
+  "ltcplay/schedule_service.py",
+  "            if ev.kind == sch.ABORT:\n"
+  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))",
+  "            if True:\n"
+  "                plan.append((\"Abort\", \"abort\", self._ABORT_EFFECTS))"),
+
+ ("scheduler fix round: conductor: a stopped show disarms the flames",
+  "ltcplay/conductor.py",
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                   self.devices.lasers_blank)\n"
+  "        faded = False",
+  "        self._step(gen, \"lasers\", BLACK, \"lasers blanked\", progress,\n"
+  "                   self.devices.lasers_blank)\n"
+  "        self._disarm()\n"
+  "        faded = False"),
+
+ ("scheduler fix round: conductor: a stopped show latches",
+  "ltcplay/conductor.py",
+  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,",
+  "            self._latched = True\n"
+  "            self._accept(\"Show stopped\", STOPPED_DARK, who, screen,"),
+
+ ("scheduler fix round: conductor: leaving the show cuts a stopped show's "
+  "fade short",
+  "ltcplay/conductor.py",
+  "            if self._look == STOPPED_DARK:",
+  "            if False:"),
+
+ ("scheduler fix round: conductor: a stopped show leaves the video and "
+  "pixels up",
+  "ltcplay/conductor.py",
+  "        faded |= self._step(gen, \"pixels\", BLACK, \"pixels faded\", progress,\n"
+  "                            self.show.pixels_fade_out, fade)\n"
+  "        faded |= self._step(gen, \"music\", MUSIC_STOPPED, \"music faded\",\n"
+  "                            progress, self.show.music_halt, fade)\n"
+  "        if faded:\n"
+  "            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\"",
+  "        faded |= self._step(gen, \"music\", MUSIC_STOPPED, \"music faded\",\n"
+  "                            progress, self.show.music_halt, fade)\n"
+  "        if faded:\n"
+  "            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
+
+ # Item 4: a delayed night across midnight (since 2026-10-03 it closes at
+ # the 2 AM nightly reset; see the "2 AM reset" mutations at the end).
+ ("scheduler fix round: a delayed night never closes at the 2 AM reset",
+  "ltcplay/schedule_service.py",
+  "        if now < sch.night_reset(m.date, m.tz):\n"
+  "            return None",
+  "        if True:\n"
+  "            return None"),
+
+ ("scheduler fix round: the delayed show is not missed when its night "
+  "closes at the reset",
+  "ltcplay/schedule.py",
+  "    tx.set_slot(d.n, status=MISSED, reason=RESET_MISSED)",
+  "    pass"),
+
+ ("scheduler fix round: a start after midnight never picks up last night",
+  "ltcplay/schedule_service.py",
+  "            old = self._open_night_before(d, now)",
+  "            old = None"),
+
+ ("scheduler fix round: a show running after midnight is not picked up on "
+  "restart",
+  "ltcplay/schedule_service.py",
+  "                       if st == sch.RUNNING and back == 1]",
+  "                       if False]"),
+
+ ("scheduler fix round: the 2 AM reset miss is written quietly, not as a "
+  "fault",
+  "ltcplay/schedule.py",
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED, text, show=d.n,",
+  "    tx.note(\"miss\", \"done\", RESET_MISSED, text, show=d.n,"),
+
+ # Item 5: a restart after a stopped show stays dark.
+ ("scheduler fix round: a restart after a stopped show brings the "
+  "intermission back",
+  "ltcplay/schedule.py",
+  "    dark = cut or m.dark",
+  "    dark = cut"),
+
+ ("scheduler fix round: dark is never saved, so a restart forgets it",
+  "ltcplay/schedule.py",
+  "    if m.dark:\n"
+  "        doc[\"dark\"] = True",
+  "    if False:\n"
+  "        doc[\"dark\"] = True"),
+
+ # Item 6: Start now runs an extra show (Jeff, 2026-10-02).
+ ("scheduler fix round: Start now jumps the next show early again",
+  "ltcplay/schedule.py",
+  "        _fire(tx, d, DELAYED_START)\n"
+  "    else:",
+  "        _fire(tx, d, DELAYED_START)\n"
+  "    elif m.next_slot() is not None:\n"
+  "        _fire(tx, m.next_slot(), EXTRA_SHOW)\n"
+  "    else:"),
+
+ ("scheduler fix round: a show an extra show pushed aside is missed",
+  "ltcplay/schedule.py",
+  "            if extra:\n"
+  "                _hold_back(tx, s, extra=extra)",
+  "            if False:\n"
+  "                _hold_back(tx, s, extra=extra)"),
+
+ ("scheduler fix round: an extra show's guard does not delay the next show",
+  "ltcplay/schedule.py",
+  "        if s.ended_at == m.last_end and s.origin == \"operator\":",
+  "        if False:"),
+
+ # Coordinator's item A: after an Abort, dark until Reset.
+ ("scheduler fix round: a show due while aborted starts anyway",
+  "ltcplay/schedule.py",
+  "            if tx.ev.latched:\n"
+  "                # Jeff",
+  "            if False:\n"
+  "                # Jeff"),
+
+ ("scheduler fix round: Start now works while aborted",
+  "ltcplay/schedule.py",
+  "    if ev.latched:\n"
+  "        return _refuse(m, ev, now, \"The show was aborted",
+  "    if False:\n"
+  "        return _refuse(m, ev, now, \"The show was aborted"),
+
+ ("scheduler fix round: the service never tells the engine it is aborted",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind in self.LATCH_EVENTS and self._aborted():",
+  "        if False:"),
+
+ ("scheduler fix round: an Abort still queued does not count yet",
+  "ltcplay/schedule_service.py",
+  "            self.machine = replace(self.machine, abort_latched=True)",
+  "            pass"),
+
+ # The review's own survivors.
+ ("scheduler fix round: the tick never moves IDLE to STANDBY at the lead",
+  "ltcplay/schedule.py",
+  "    elif before == IDLE and st == IDLE and _in_preshow_lead(tx.m, now):",
+  "    elif False:"),
+
+ ("scheduler fix round: Resume ignores the preshow lead",
+  "ltcplay/schedule.py",
+  "    if back == IDLE and (any(s.status != PENDING for s in m.slots) or\n"
+  "                          _in_preshow_lead(m, now)):",
+  "    if back == IDLE and any(s.status != PENDING for s in m.slots):"),
+
+ # -- PR #30 fix round 2 (independent re-review), 2026-10-02. All named
+ # "scheduler fix round 2: ..." so `python3 mutate.py "fix round 2"` runs
+ # them. Item 1: the dark sequence is sent again on every dark start.
+ ("scheduler fix round 2: a dark restart sends the conductor nothing",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind == sch.BOOT_DONE and out.machine.dark and \\",
+  "        if False and \\"),
+
+ # Item 2: the Abort latch is saved, read back, outlives the night, and
+ # only Reset ends it.
+ ("scheduler fix round 2: the Abort latch is never written to tonight's file",
+  "ltcplay/schedule.py",
+  "    if m.abort_latched:\n        doc[\"abort_latched\"] = True",
+  "    if False:\n        doc[\"abort_latched\"] = True"),
+
+ ("scheduler fix round 2: the Abort latch is never read back",
+  "ltcplay/schedule.py",
+  "        abort_latched=doc.get(\"abort_latched\", False))",
+  "        abort_latched=False)"),
+
+ ("scheduler fix round 2: the scheduler ignores its own saved Abort latch",
+  "ltcplay/schedule_service.py",
+  "        if self.machine is not None and self.machine.abort_latched:\n"
+  "            return True",
+  "        if False:\n            return True"),
+
+ ("scheduler fix round 2: Reset never clears the saved Abort latch",
+  "ltcplay/schedule_service.py",
+  "        self.machine = replace(m, abort_latched=False)\n"
+  "        self._unreadable_night = None\n",
+  "        self._unreadable_night = None\n"),
+
+ ("scheduler fix round 2: a Reset after a restart can never end the Abort",
+  "ltcplay/schedule_service.py",
+  "        if not ok and still:\n            return ok, said",
+  "        if not ok:\n            return ok, said"),
+
+ ("scheduler fix round 2: a Reset pressed before an Abort ends it",
+  "ltcplay/schedule_service.py",
+  "        if call.seq < self._abort_seq:",
+  "        if False:"),
+
+ ("scheduler fix round 2: an unreset Abort does not make the start dark",
+  "ltcplay/schedule.py",
+  "    dark = cut or m.dark or ev.latched",
+  "    dark = cut or m.dark"),
+
+ ("scheduler fix round 2: a latched night with every show to come shows "
+  "the preshow look",
+  "ltcplay/schedule.py",
+  "    elif dark:\n        # Every show is still to come",
+  "    elif False:\n        # Every show is still to come"),
+
+ ("scheduler fix round 2: the Abort latch is not carried into the next night",
+  "ltcplay/schedule_service.py",
+  "        if latched and not m.abort_latched:\n"
+  "            m = replace(m, abort_latched=True)",
+  "        if False:\n            m = replace(m, abort_latched=True)"),
+
+ ("scheduler fix round 2: a fresh start forgets last night's Abort latch",
+  "ltcplay/schedule_service.py",
+  "                if fresh and self._latched_before(d):",
+  "                if False:"),
+
+ # Item 3: while latched, Hold, Resume and an announcement stay dark.
+ ("scheduler fix round 2: Hold while aborted brings the intermission back",
+  "ltcplay/schedule.py",
+  "    _enter(tx, HOLD, after_stop=ev.latched)",
+  "    _enter(tx, HOLD)"),
+
+ ("scheduler fix round 2: Resume while aborted brings the intermission back",
+  "ltcplay/schedule.py",
+  "    _enter(tx, back, after_stop=ev.latched)",
+  "    _enter(tx, back)"),
+
+ ("scheduler fix round 2: Hold and Resume are never told about the latch",
+  "ltcplay/schedule_service.py",
+  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW, sch.HOLD_ON,\n"
+  "                    sch.RESUME)",
+  "    LATCH_EVENTS = (sch.TICK, sch.BOOT_DONE, sch.START_NOW)"),
+
+ # Item 4: a stuck or dead line is loud, and Abort does not wait behind it.
+ ("scheduler fix round 2: the tick never watches the conductor's line",
+  "ltcplay/schedule_service.py",
+  "            self._watch_conductor()\n", ""),
+
+ ("scheduler fix round 2: a hung conductor request is silent",
+  "ltcplay/schedule_service.py",
+  "        elif h[\"stuck\"] is not None and \\\n"
+  "                h[\"age_s\"] >= self.CONDUCTOR_STUCK_S:",
+  "        elif False:"),
+
+ ("scheduler fix round 2: a hung conductor request is a fault every tick",
+  "ltcplay/schedule_service.py",
+  "            if was is not None and was[\"key\"] == problem[0]:\n"
+  "                return",
+  "            if False:\n                return"),
+
+ ("scheduler fix round 2: no line says the conductor is answering again",
+  "ltcplay/schedule_service.py",
+  "        if was is not None:\n            self._conductor_trouble = None",
+  "        if False:\n            self._conductor_trouble = None"),
+
+ ("scheduler fix round 2: a dead line of conductor requests stays dead",
+  "ltcplay/schedule_service.py",
+  "        if not h[\"alive\"]:\n            self._calls.revive()\n",
+  "        if not h[\"alive\"]:\n"),
+
+ ("scheduler fix round 2: the conductor's trouble never reaches the page",
+  "ltcplay/schedule_service.py",
+  "                    \"trouble\": t[\"text\"] if t else None}",
+  "                    \"trouble\": None}"),
+
+ ("scheduler fix round 2: Abort waits behind a hung conductor request",
+  "ltcplay/schedule_service.py",
+  "            urgent = call.method == \"abort\" and (",
+  "            urgent = False and ("),
+
+ ("scheduler fix round 2: requests an Abort supersedes still go out after it",
+  "ltcplay/schedule_service.py",
+  "            dropped = [c for c in self._q if c.seq < call.seq and\n"
+  "                       c.method in self.SUPERSEDED_BY_ABORT]",
+  "            dropped = []"),
+
+ ("scheduler fix round 2: an Abort that goes ahead drops later Resets too",
+  "ltcplay/schedule_service.py",
+  "            dropped = [c for c in self._q if c.seq < call.seq and\n",
+  "            dropped = [c for c in self._q if\n"),
+
+ ("scheduler fix round 2: a conductor request raising SystemExit is not a "
+  "fault",
+  "ltcplay/schedule_service.py",
+  "        except BaseException as e:      # SystemExit too: never the thread",
+  "        except Exception as e:"),
+
+ # Item 5: Reset refusals are journaled.
+ ("scheduler fix round 2: a refused Reset is not journaled",
+  "ltcplay/schedule_service.py",
+  "    def _refuse_reset(self, who, screen, sentence):\n"
+  "        with self._locked():",
+  "    def _refuse_reset(self, who, screen, sentence):\n"
+  "        if False:"),
+
+ # Item 6: the review's hand mutations that nothing caught.
+ ("scheduler fix round 2: show_starting even while the confirmed show is "
+  "paused",
+  "ltcplay/schedule_service.py",
+  "        if ev.kind == sch.SHOW_CONFIRMED and \\\n"
+  "                out.machine.state == sch.SHOW:",
+  "        if ev.kind == sch.SHOW_CONFIRMED:"),
+
+ ("scheduler fix round 2: conductor: a stopped show leaves the music playing",
+  "ltcplay/conductor.py",
+  "        faded |= self._step(gen, \"music\", MUSIC_STOPPED, \"music faded\",\n"
+  "                            progress, self.show.music_halt, fade)\n"
+  "        if faded:\n            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\"",
+  "        if faded:\n            self._pause(gen, fade)\n"
+  "        self._step(gen, \"video\", STOPPED, \"video bank stopped\""),
+
+ ("scheduler fix round 2: the 2 AM reset miss is not on the night's fault "
+  "list",
+  "ltcplay/schedule.py",
+  "    tx.m = replace(tx.m, faults=tx.m.faults + (text,))\n"
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED",
+  "    tx.note(\"miss\", \"fault\", RESET_MISSED"),
+
+ ("scheduler fix round 2: every conductor call is made as the scheduler",
+  "ltcplay/schedule_service.py",
+  "        who = ev.who if op else \"the scheduler\"\n"
+  "        screen = ev.screen if op else \"\"",
+  "        who = \"the scheduler\"\n        screen = \"\""),
+
+ ("scheduler fix round 2: stop() does not wait for the conductor's last lines",
+  "ltcplay/schedule_service.py",
+  "        self._calls.flush(1.0)\n", ""),
+
+ ("scheduler fix round 2: an open night is looked for only one day back",
+  "ltcplay/schedule_service.py",
+  "    OPEN_NIGHT_LOOK_BACK = 7", "    OPEN_NIGHT_LOOK_BACK = 1"),
+
+ # Item 7: tonight's file format.
+ ("scheduler fix round 2: a dark night is written as format 3",
+  "ltcplay/schedule.py",
+  "        \"format\": TONIGHT_FORMAT if marked else TONIGHT_PLAIN_FORMAT,",
+  "        \"format\": TONIGHT_PLAIN_FORMAT,"),
+
+ ("scheduler fix round 2: format 3 files may carry dark and the latch",
+  "ltcplay/schedule.py",
+  "    allowed = TONIGHT_KEYS | (TONIGHT_OPTIONAL if fmt == TONIGHT_FORMAT\n"
+  "                              else frozenset())",
+  "    allowed = TONIGHT_KEYS | TONIGHT_OPTIONAL"),
+
+ # -- PR #30 fix round 3 (third independent review), 2026-10-03. All named
+ # "scheduler fix round 3: ..." so `python3 mutate.py "fix round 3"` runs
+ # them. The first group breaks the Abort latch file and the start-up
+ # latch; the second is the review's own hand mutations (R3xx) that the
+ # suite did not catch before this round.
+ ("scheduler fix round 3: the Abort latch file is never written",
+  "ltcplay/schedule_service.py",
+  "        marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n",
+  "        marker_error = None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n"),
+
+ ("scheduler fix round 3: the Abort latch file is written after tonight's "
+  "list",
+  "ltcplay/schedule_service.py",
+  "        marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        path = tonight_path(m.date, self.state_dir)\n"
+  "        try:\n"
+  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
+  "        except OSError as e:\n",
+  "        path = tonight_path(m.date, self.state_dir)\n"
+  "        try:\n"
+  "            write_json_atomic(path, sch.machine_to_doc(m), tries=tries)\n"
+  "            marker_error = self._write_latch_marker(m) if latched else None\n"
+  "        except OSError as e:\n"
+  "            marker_error = self._write_latch_marker(m) if latched else None\n"),
+
+ ("scheduler fix round 3: the Abort latch file is never read at start",
+  "ltcplay/schedule_service.py",
+  "        if os.path.exists(marker) and not m.abort_latched:\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: the Abort latch file latches with no conductor",
+  "ltcplay/schedule_service.py",
+  "        if self.conductor is None:\n            return m\n        whys = []",
+  "        whys = []"),
+
+ ("scheduler fix round 3: an unreadable or set aside list does not latch",
+  "ltcplay/schedule_service.py",
+  "        if self._unreadable_night == m.date or os.path.exists(aside):\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: an unreadable earlier night does not latch a "
+  "fresh start",
+  "ltcplay/schedule_service.py",
+  "                action=\"load tonight\", outcome=\"still aborted\", "
+  "fault=True)\n            return True",
+  "                action=\"load tonight\", outcome=\"still aborted\", "
+  "fault=True)\n            return False"),
+
+ ("scheduler fix round 3: Reset leaves the Abort latch file in place",
+  "ltcplay/schedule_service.py",
+  "            remove_latch_marker(path)\n"
+  "            self._marker_clear_pending = False",
+  "            self._marker_clear_pending = False"),
+
+ ("scheduler fix round 3: Reset leaves the set aside list latching",
+  "ltcplay/schedule_service.py",
+  "                os.replace(aside, done)\n",
+  "                pass\n"),
+
+ ("scheduler fix round 3: a latch that could not be saved is not said",
+  "ltcplay/schedule_service.py",
+  "        if text is not None:\n"
+  "            self._journal_line(\"system\", text, action=\"save abort latch\",",
+  "        if False:\n"
+  "            self._journal_line(\"system\", text, action=\"save abort latch\","),
+
+ ("scheduler fix round 3: a failed latch save says the list holds it",
+  "ltcplay/schedule_service.py",
+  "        elif list_saved:\n            text = self.LATCH_HALF",
+  "        elif True:\n            text = self.LATCH_HALF"),
+
+ ("scheduler fix round 3: a latch that could not be saved is never tried "
+  "again",
+  "ltcplay/schedule_service.py",
+  "            self._keep_latch_on_disk()\n            m = self.machine",
+  "            m = self.machine"),
+
+ ("scheduler fix round 3: a Reset that overtakes an Abort in flight ends it",
+  "ltcplay/schedule_service.py",
+  "        if self._calls.aborts_beside():\n",
+  "        if False:\n"),
+
+ ("scheduler fix round 3: R303 an Abort that goes ahead still sends a queued "
+  "show start",
+  "ltcplay/schedule_service.py",
+  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\", \"show_starting\")",
+  "    SUPERSEDED_BY_ABORT = (\"reset\", \"hold\", \"resume\")"),
+
+ ("scheduler fix round 3: R304 an Abort waits behind a dead line",
+  "ltcplay/schedule_service.py",
+  "                self._busy or len(self._q) > 1 or not self._alive())",
+  "                self._busy)"),
+
+ ("scheduler fix round 3: R307 a fresh start reads the oldest earlier night "
+  "for the latch",
+  "ltcplay/schedule_service.py",
+  "        y = max(dates)", "        y = min(dates)"),
+
+ ("scheduler fix round 3: R309 a schedule change rebuild drops the latch",
+  "ltcplay/schedule.py",
+  "                abort_latched=saved.abort_latched)",
+  "                abort_latched=False)"),
+
+ ("scheduler fix round 3: R312 a hung conductor request is a fault only "
+  "after 30 s",
+  "ltcplay/schedule_service.py",
+  "    CONDUCTOR_STUCK_S = 3.0", "    CONDUCTOR_STUCK_S = 30.0"),
+
+ ("scheduler fix round 3: R313 an Abort sent beside the line is never "
+  "watched for a hang",
+  "ltcplay/schedule_service.py",
+  "            running = list(self._side.items())",
+  "            running = []"),
+
+ ("scheduler fix round 3: R314 flush does not wait for an Abort sent beside "
+  "the line",
+  "ltcplay/schedule_service.py",
+  "                lambda: not self._q and not self._busy and not self._side,",
+  "                lambda: not self._q and not self._busy,"),
+
+ ("scheduler fix round 3: R315 a revived line still thinks it is busy",
+  "ltcplay/schedule_service.py",
+  "            self._busy = False\n            self._current = self._since = None\n"
+  "            self._start()",
+  "            self._start()"),
+
+ ("scheduler fix round 3: R317 a conductor that cannot say whether it is "
+  "latched counts as not latched in Reset",
+  "ltcplay/schedule_service.py",
+  "        except Exception:\n            still = True",
+  "        except Exception:\n            still = False"),
+
+ ("scheduler fix round 3: R318 a Reset refused while the Abort still fades "
+  "clears the scheduler's latch",
+  "ltcplay/schedule_service.py",
+  "        if not ok and still:\n            return ok, said",
+  "        if False:\n            return ok, said"),
+
+ ("scheduler fix round 3: R322 a dark or latch that is not true or false is "
+  "accepted",
+  "ltcplay/schedule.py",
+  "    for k in sorted(TONIGHT_OPTIONAL):\n"
+  "        if not isinstance(doc.get(k, False), bool):",
+  "    for k in sorted(TONIGHT_OPTIONAL):\n        if False:"),
+
+ # Jeff's decisions, 2026-10-03: the 2 AM nightly reset.
+ ("scheduler 2 AM reset: the nightly reset is at 3 AM",
+  "ltcplay/schedule.py",
+  "NIGHT_RESET = time(2, 0)", "NIGHT_RESET = time(3, 0)"),
+
+ ("scheduler 2 AM reset: the nightly reset is at 1 AM",
+  "ltcplay/schedule.py",
+  "NIGHT_RESET = time(2, 0)\n", "NIGHT_RESET = time(1, 0)\n"),
+
+ ("scheduler 2 AM reset: 02:00 itself still belongs to last night (<=)",
+  "ltcplay/schedule.py",
+  "    if local.time() < NIGHT_RESET:",
+  "    if local.time() <= NIGHT_RESET:"),
+
+ ("scheduler 2 AM reset: the night is read on UTC, not the local clock",
+  "ltcplay/schedule.py",
+  "    local = _utc(_aware(now)).astimezone(tz)",
+  "    local = _utc(_aware(now))"),
+
+ ("scheduler 2 AM reset: a night ends at its own date's reset, not the "
+  "next day's",
+  "ltcplay/schedule.py",
+  "    return _utc(datetime.combine(d + timedelta(days=1), NIGHT_RESET,",
+  "    return _utc(datetime.combine(d, NIGHT_RESET,"),
+
+ ("scheduler 2 AM reset: the service moves on at midnight (calendar date)",
+  "ltcplay/schedule_service.py",
+  "        return sch.night_of(now, self.rule.tz)",
+  "        return now.astimezone(self.rule.tz).date()"),
+
+ ("scheduler 2 AM reset: a first show before 2 AM is accepted",
+  "ltcplay/schedule.py",
+  "    if first < NIGHT_RESET:",
+  "    if False:"),
+
+ ("scheduler 2 AM reset: a show running at the reset is cut by it",
+  "ltcplay/schedule_service.py",
+  "        if m.state in (sch.SHOW, sch.PAUSED):\n"
+  "            return None\n"
+  "        words = sch.reset_words()",
+  "        words = sch.reset_words()"),
+
+ # Jeff's decisions, 2026-10-03: a failed start disarms every flame group.
+ ("failed start disarms: the scheduler sends show_stopped (no disarm)",
+  "ltcplay/schedule_service.py",
+  "            elif ev.kind == sch.SHOW_FAILED:",
+  "            elif False:"),
+
+ ("failed start disarms: the conductor only zeroes the cues at once",
+  "ltcplay/conductor.py",
+  "            self._flames_cut(self.FAILED_START)",
+  "            self.show.flames_zero()"),
+
+ ("failed start disarms: the disarm is never sent at all",
+  "ltcplay/conductor.py",
+  "            self._flames_cut(self.FAILED_START)\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
+  "                         fade_s=ABORT_FADE_S, disarm=self.FAILED_START)",
+  "            self.show.flames_zero()\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
+  "                         fade_s=ABORT_FADE_S)"),
+
+ ("failed start disarms: a failed disarm is never sent again",
+  "ltcplay/conductor.py",
+  "                if not self._applied[\"disarmed\"]:\n"
+  "                    self._disarm(why)",
+  "                if False:\n"
+  "                    self._disarm(why)"),
+
+ ("failed start disarms: the conductor latches a failed start",
+  "ltcplay/conductor.py",
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
+  "            self._latched = True\n"
+  "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
+
+ ("failed start disarms: the scheduler latches a failed start",
+  "ltcplay/schedule_service.py",
+  "        if any(p[1] == \"abort\" for p in plan):",
+  "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
+
+ ("failed start disarms: the journal never says why the flames were "
+  "disarmed",
+  "ltcplay/schedule_service.py",
+  "                le = replace(le, text=le.text.replace(\n"
+  "                    sch.FAILED_START_NOT_DISARMED,\n"
+  "                    self.CONDUCTOR_DISARMS_FAILED_START))",
+  "                pass"),
+
+ ("failed start disarms: a cut show disarms too",
+  "ltcplay/schedule_service.py",
+  "                plan.append((\"Show stopped\", \"show_stopped\",\n"
+  "                             self._ABORT_EFFECTS))",
+  "                plan.append((\"Failed start\", \"failed_start\",\n"
+  "                             self._ABORT_EFFECTS))"),
 ]
 
 
@@ -4741,10 +6067,14 @@ def main():
         os.remove(LOCK)
 
 
+OPTS = {"changed": None, "files": None, "list": False, "catchers": None}
+
+
 def _args(argv):
-    """Name filters, plus the two CI options. Anything else is a filter, as
-    it always was."""
+    """Name filters, plus the CI options. Anything else is a filter, as it
+    always was."""
     wants, shard, expected = [], None, None
+    OPTS.update(changed=None, files=None, list=False, catchers=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -4752,6 +6082,14 @@ def _args(argv):
             shard = (int(i), int(n))
         elif a == "--expected":
             expected = next(it)
+        elif a == "--changed":
+            OPTS["changed"] = next(it)
+        elif a == "--files":
+            OPTS["files"] = next(it)
+        elif a == "--catchers":
+            OPTS["catchers"] = next(it)
+        elif a == "--list":
+            OPTS["list"] = True
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -4778,17 +6116,276 @@ def _load_expected(path):
     return out, unknown
 
 
+# ---------------------------------------------------------- affected mode --
+# The per-PR gate runs only the mutations whose result the diff can have
+# changed. A mutation's result depends on two things: the file it breaks and
+# the tests that notice. So a mutation runs when its target file changed, or
+# the mutation itself is new or edited, or its expected-miss line changed, or
+# the test that caught it last time changed (when a catchers file says
+# which; without one, a deleted test means the whole list). Any change to a
+# file the flame, laser, Abort or arming paths run through also re-runs the
+# whole of flamesafe, the conductor and the flame link, whatever else
+# changed: those are the guarantees that must never go quiet. Everything
+# else (a doc, a launcher, the brand, an installer script) selects nothing,
+# and a shard with nothing to run returns at once. The nightly sweep and
+# every release tag run the whole list, so a loss this misses (a test
+# weakened without being renamed, a change in one file that silences a test
+# of another) shows within a day, and never reaches a tag unseen.
+
+# A change to any of these re-runs every SAFETY_CORE mutation.
+SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
+                   "ltcplay/streamdeck.py", "ltcplay/schedule_service.py",
+                   "ltcplay/schedule.py", "ltcplay/beyond.py",
+                   "ltcplay/madmapper.py", "ltcplay/devices.py",
+                   "ltcplay/trigger.py", "ltcplay/output.py",
+                   "ltcplay/player.py", "ltcplay/session.py",
+                   "ltcplay/clock.py", "ltcplay/announce.py",
+                   "ltcplay/showaudio.py", "ltcplay/onlyone.py")
+# The mutations that then always run: the safety program, the conductor
+# (Hold, Resume, Abort, the gates) and the link between them.
+SAFETY_CORE = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py")
+# A change here changes what the whole suite means: run everything.
+HARNESS = ("test_show_fixtures.py",)
+
+
+def _git(*args, base=None):
+    r = subprocess.run(["git"] + list(args), cwd=HERE, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def _git_changed(base):
+    """Files that differ between the work tree and the merge base of BASE
+    and HEAD (so a PR is judged on its own commits, not on what main did
+    since it branched). Uncommitted edits count too."""
+    try:
+        point = _git("merge-base", base, "HEAD").strip() or base
+    except RuntimeError:
+        point = base
+    names = _git("diff", "--name-only", "-z", point).split("\0")
+    return point, sorted({n for n in names if n})
+
+
+def _base_text(base, path):
+    """The file at BASE, or None when it did not exist there."""
+    try:
+        return _git("show", f"{base}:{path}")
+    except RuntimeError:
+        return None
+
+
+def _mutations_in(text):
+    """The MUTATIONS list of a mutate.py source text, parsed and never run,
+    as {name: (file, old, new)}. Raises if it is not a plain list of
+    constant 4-tuples (the CI workflow checks the same shape)."""
+    import ast
+    tree = ast.parse(text)
+    lists = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "MUTATIONS"
+                     for t in n.targets)]
+    if len(lists) != 1 or not isinstance(lists[0].value, ast.List):
+        raise ValueError("expected exactly one plain `MUTATIONS = [...]`")
+    out = {}
+    for e in lists[0].value.elts:
+        if not (isinstance(e, ast.Tuple) and len(e.elts) == 4
+                and all(isinstance(x, ast.Constant) for x in e.elts)):
+            raise ValueError(f"the entry at line {e.lineno} is not a "
+                             f"constant (name, file, old, new)")
+        name, rel, old, new = (x.value for x in e.elts)
+        out[name] = (rel, old, new)
+    return out
+
+
+def _tests_in(text):
+    """{test function name: its source} for a selftest.py text."""
+    import ast
+    tree = ast.parse(text)
+    lines = text.splitlines()
+    return {n.name: "\n".join(lines[n.lineno - 1:n.end_lineno])
+            for n in tree.body if isinstance(n, ast.FunctionDef)
+            and n.name.startswith("test_")}
+
+
+def _expected_names(text):
+    names = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line.count("|") >= 2:
+            names.add(line.split("|", 2)[1].strip())
+    return names
+
+
+def _load_catchers(path):
+    """{mutation name: test that caught it}, or {} when the file is missing
+    or unreadable (then a changed test is judged without it)."""
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return {str(k): str(v) for k, v in d.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def select_affected(changed, base=None, catchers=None):
+    """(names to run or None for everything, reasons).
+
+    `changed` is the list of changed paths (repo relative, forward
+    slashes). `base` is the git revision to read the old mutate.py,
+    selftest.py and expected-miss list from; without it (--files) those
+    three count as changed in full when they are in the list."""
+    reasons = []
+    chosen = set()
+    by_file = {}
+    for name, rel, _old, _new in MUTATIONS:
+        by_file.setdefault(rel, set()).add(name)
+
+    def every(why):
+        reasons.append(f"EVERYTHING: {why}")
+        return None, reasons
+
+    for p in changed:
+        if p in by_file:
+            chosen |= by_file[p]
+            reasons.append(f"{p}: its {len(by_file[p])} mutations")
+    def safety(p):
+        # Code only: CONTRACT.md and the example config prove nothing by
+        # changing, and the config's own tests run with flamesafe's suite.
+        return p.startswith(SAFETY_TRIGGERS) and p.endswith(".py")
+
+    if any(safety(p) for p in changed):
+        core = {n for n, rel, _o, _n in MUTATIONS if rel.startswith(SAFETY_CORE)}
+        hit = sorted(p for p in changed if safety(p))
+        new = core - chosen
+        chosen |= core
+        reasons.append(f"a safety file changed ({', '.join(hit)}): every "
+                       f"flamesafe, conductor and flame link mutation "
+                       f"({len(new)} more)")
+    if any(p in HARNESS for p in changed):
+        return every("the shared test fixtures changed")
+
+    if "mutate.py" in changed:
+        if base is None:
+            return every("mutate.py changed and there is no base to compare")
+        old_text = _base_text(base, "mutate.py")
+        try:
+            old = _mutations_in(old_text) if old_text else {}
+        except (ValueError, SyntaxError) as e:
+            return every(f"the old mutate.py could not be read ({e})")
+        edited = {n for n, rel, o, nw in MUTATIONS if old.get(n) != (rel, o, nw)}
+        chosen |= edited
+        reasons.append(f"mutate.py: {len(edited)} new or edited mutations")
+
+    if "mutate_expected_misses.txt" in changed:
+        here = _expected_names(_read(os.path.join(HERE, "mutate_expected_misses.txt")))
+        there = _expected_names(_base_text(base, "mutate_expected_misses.txt")) \
+            if base else set()
+        listed = (here | there) & {n for n, *_ in MUTATIONS}
+        chosen |= listed
+        reasons.append(f"the expected-miss list: its {len(listed)} mutations")
+
+    if "selftest.py" in changed or "flamesafe/test_flamesafe.py" in changed:
+        if base is None:
+            return every("the suite changed and there is no base to compare")
+        old_text = _base_text(base, "selftest.py")
+        try:
+            old_tests = _tests_in(old_text) if old_text else {}
+            new_tests = _tests_in(_read(os.path.join(HERE, "selftest.py")))
+        except SyntaxError as e:
+            return every(f"selftest.py could not be parsed ({e})")
+        gone = sorted(set(old_tests) - set(new_tests))
+        altered = sorted(n for n in old_tests if n in new_tests
+                         and old_tests[n] != new_tests[n])
+        if "flamesafe/test_flamesafe.py" in changed:
+            # Run by test_flamesafe_in_its_own_process: that is the test
+            # that changed, as far as this sweep can tell.
+            altered.append("test_flamesafe_in_its_own_process")
+        if gone and not catchers:
+            return every(f"{len(gone)} test(s) deleted or renamed "
+                         f"({', '.join(gone[:3])}{'...' if len(gone) > 3 else ''}) "
+                         f"and no catchers file says what they guarded")
+        if catchers:
+            touched = set(gone) | set(altered)
+            # A mutation whose last catcher changed, or that no catcher is
+            # recorded for (never swept with the file, or a new entry).
+            dep = {n for n, *_ in MUTATIONS
+                   if catchers.get(n) in touched or n not in catchers}
+            chosen |= dep
+            reasons.append(f"selftest.py: {len(gone)} test(s) gone, "
+                           f"{len(altered)} changed; {len(dep)} mutations "
+                           f"they caught last time, or that no sweep has "
+                           f"recorded a catcher for")
+        else:
+            reasons.append(f"selftest.py: {len(altered)} test(s) changed, "
+                           f"none deleted; the nightly sweep re-proves what "
+                           f"they catch in files this change did not touch")
+    return chosen, reasons
+
+
 def _run():
     wants, shard, expected_file = _args(sys.argv[1:])
     expected, unknown = ({}, [])
     if expected_file:
         expected, unknown = _load_expected(expected_file)
+    only = None
+    if OPTS["changed"] or OPTS["files"] is not None:
+        base = None
+        if OPTS["changed"]:
+            try:
+                base, changed = _git_changed(OPTS["changed"])
+            except RuntimeError as e:
+                print(f"cannot read the diff: {e}")
+                return 2
+        else:
+            changed = sorted({p.strip().replace("\\", "/")
+                              for p in OPTS["files"].split(",") if p.strip()})
+        print(f"changed ({len(changed)} files"
+              f"{', against ' + base[:10] if base else ''}):")
+        for p in changed:
+            print(f"  {p}")
+        catchers = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
+        only, reasons = select_affected(changed, base, catchers)
+        for r in reasons:
+            print(f"  -> {r}")
+        if only is None:
+            print(f"running every mutation ({len(MUTATIONS)})")
+        else:
+            print(f"running {len(only)} of {len(MUTATIONS)} mutations")
+            if not only:
+                print("nothing this change can have broken is mutated "
+                      "here: nothing to run")
+                return 0
+    if OPTS["list"]:
+        for index, (name, rel, _o, _n) in enumerate(MUTATIONS):
+            if only is not None and name not in only:
+                continue
+            if wants and not any(w in name.lower() for w in wants):
+                continue
+            if shard and index % shard[1] != shard[0]:
+                continue
+            print(f"  would run  {rel}: {name}")
+        return 0
+    if only is not None and shard:
+        mine = [n for i, (n, *_r) in enumerate(MUTATIONS)
+                if n in only and i % shard[1] == shard[0]]
+        if not mine:
+            print(f"shard {shard[0]}/{shard[1]}: none of the selected "
+                  f"mutations fall in this shard: nothing to run")
+            return 0
+        print(f"shard {shard[0]}/{shard[1]}: {len(mine)} mutations to run")
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
     if not run_suite():
+        for _l in _LAST_FAILS:
+            print("  " + _l)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print("::error title=mutate baseline::" + " | ".join(
+                _LAST_FAILS)[:900].replace("%", "%25").replace("\n", "%0A"))
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
@@ -4796,12 +6393,19 @@ def _run():
         return 2
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    # The bytes of every file this run breaks, before it does: the restore
+    # is proved against them at the end, byte for byte.
+    originals = {}
     for index, (name, rel, old, new) in enumerate(MUTATIONS):
+        if only is not None and name not in only:
+            continue
         if wants and not any(w in name.lower() for w in wants):
             continue
         if shard and index % shard[1] != shard[0]:
             continue
         path = os.path.join(HERE, rel)
+        if rel not in originals:
+            originals[rel] = _read(path)
         # Bytes in, the same bytes out: UTF-8 whatever the OS default is, and
         # no newline translation, so a restore on Windows cannot turn an LF
         # file into a CRLF one and a pattern cannot miss on a line ending.
@@ -4848,15 +6452,22 @@ def _run():
     print(f"\ncaught {caught}, missed {missed}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
-    # Prove the tree is back the way it started before reporting anything.
-    if not run_suite():
-        print("\nTHE TREE IS NOT CLEAN: the suite fails with nothing mutated, "
-              "so a restore did not land. Fix that before trusting any line "
-              "above.")
-        for w in _LAST_FAILS:
-            print(f"      {w}")
+    # Prove the tree is back the way it started before reporting anything:
+    # every file this run broke is compared with the bytes it had before,
+    # which is a stronger proof than a green suite (a restore that landed the
+    # wrong text could still pass) and costs nothing. The suite runs once
+    # more only when that comparison fails, to say how bad it is.
+    dirty = [rel for rel, text in originals.items()
+             if _read(os.path.join(HERE, rel)) != text]
+    if dirty:
+        print(f"\nTHE TREE IS NOT CLEAN: a restore did not land in "
+              f"{', '.join(dirty)}. Fix that before trusting any line above.")
+        if not run_suite():
+            print("  and the suite fails with nothing mutated:")
+            for w in _LAST_FAILS:
+                print(f"      {w}")
         return 2
-    print("tree restored and green")
+    print(f"tree restored byte for byte ({len(originals)} files)")
     if not expected_file:
         return 1 if missed else 0
     return _against_expected(expected, unknown, missed_names, caught_names,
