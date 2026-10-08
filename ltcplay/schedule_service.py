@@ -1174,9 +1174,20 @@ class Service:
             (f" over {eff.seconds:g} s" if eff.seconds else "")
 
     # -- the show conductor's calls, in order, off the scheduler's lock -------
-    def _queue_conductor(self, plan, ev):
+    def _decide_conductor(self, plan, ev):
+        """The conductor requests a step decided, numbered now, in the order
+        they will be sent (_queue_conductor sends them, after the save). An
+        Abort among them is stamped here, in the same locked instant _apply
+        sets the Abort latch: from that instant every Reset numbered or
+        pressed before it is older than it (_after_reset, reset_conductor).
+        The stamps used to be set only when the Abort was queued, after
+        tonight's save, so a Reset the conductor answered during a slow
+        save (0.2 s of fsync on a shared CI runner) found the latch set
+        but the Abort not yet numbered, and cleared it (#46's Windows run,
+        2026-10-08)."""
+        calls = []
         if not plan:
-            return
+            return calls
         op = ev.actor == "operator"
         who = ev.who if op else "the scheduler"
         screen = ev.screen if op else ""
@@ -1190,6 +1201,15 @@ class Service:
                 self._abort_pressed = (self._press_stamp
                                        if self._press_stamp is not None
                                        else self.stamp_press())
+            calls.append(call)
+        return calls
+
+    def _queue_conductor(self, plan, ev, calls=None):
+        if not plan:
+            return
+        if calls is None:
+            calls = self._decide_conductor(plan, ev)
+        for call in calls:
             self._calls.put(call)
 
     def stamp_press(self):
@@ -1468,6 +1488,17 @@ class Service:
                     sch.RESUME)
 
     def _apply(self, ev, now=None):
+        # Every caller already holds the lock; this makes it so for any
+        # that does not (the selftest steps the machine directly), because
+        # the Abort latch, the Abort's number and the save that records
+        # them have to be one step to a Reset answered on the conductor's
+        # thread (_after_reset runs under the same lock). The lock is
+        # reentrant and _locked() counts depth, so nothing changes for a
+        # caller inside it.
+        with self._locked():
+            return self._apply_locked(ev, now)
+
+    def _apply_locked(self, ev, now=None):
         now = now or self.clock()
         before = self.machine
         if ev.kind in self.LATCH_EVENTS and self._aborted():
@@ -1479,7 +1510,10 @@ class Service:
         out = sch.step(self.machine, ev, now)
         self.machine = out.machine
         plan = self._drive_conductor(out, ev)
-        if any(p[1] == "abort" for p in plan):
+        # Numbered (and an Abort stamped) now, with the latch, not when
+        # they are sent after the save: see _decide_conductor.
+        calls = self._decide_conductor(plan, ev)
+        if any(c.method == "abort" for c in calls):
             # The latch is saved with the Abort itself, before the conductor
             # is asked, so a restart in between still knows (and only a
             # Reset clears it, see _after_reset).
@@ -1498,7 +1532,7 @@ class Service:
         # anything: a conductor that raises or hangs can no longer lose
         # the save or the "Show N started" line, which is what keeps a
         # restart inside the grace from starting the same show twice.
-        self._queue_conductor(plan, ev)
+        self._queue_conductor(plan, ev, calls)
         # A latch file created by this save is made to survive a power cut
         # only now, once the conductor has the Abort (fix round 3).
         self._sync_latch_marker()

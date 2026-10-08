@@ -7563,6 +7563,22 @@ def build():
   '                self._abort_pressed = (self._press_stamp\n',
   '                self._abort_pressed = 0 and (self._press_stamp\n'),
 
+ # -- #46's Windows run, 2026-10-08: a Reset the conductor answered while the
+ # Abort pressed after it was still saving tonight.json found the latch set
+ # but the Abort not yet numbered, and cleared it. --
+ ("abort save: the Abort is numbered only after tonight is saved, not with "
+  "its latch",
+  'ltcplay/schedule_service.py',
+  '        calls = self._decide_conductor(plan, ev)\n'
+  '        if any(c.method == "abort" for c in calls):',
+  '        calls = None\n'
+  '        if any(p[1] == "abort" for p in plan):'),
+
+ ("abort save: a step is taken outside the scheduler's lock",
+  'ltcplay/schedule_service.py',
+  '        with self._locked():\n            return self._apply_locked(ev, now)',
+  '        if True:\n            return self._apply_locked(ev, now)'),
+
  # Look A, the deck artwork Jeff approved on the real deck (2026-09-27).
  ("deck look: the two snakes run opposite ways",
   "ltcplay/streamdeck.py",
