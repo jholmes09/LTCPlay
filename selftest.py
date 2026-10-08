@@ -31576,6 +31576,86 @@ def test_schedule_conductor_wiring_details():
     print("  ok")
 
 
+def test_schedule_reset_answered_during_abort_save():
+    section("scheduler: a Reset pressed before an Abort cannot end that "
+            "Abort even if the conductor answers it while the Abort is "
+            "still being saved, in the line or past it on the bypass (#46's "
+            "Windows run, 2026-10-08)")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading as _th
+    # On #46's windows-latest run the conductor's hold answered while the
+    # Abort pressed after the Reset was still saving tonight.json (0.2 s
+    # of fsync): the line ran the Reset, which found the latch set but the
+    # Abort not yet numbered, and cleared it. Here the save is that slow
+    # moment, made deterministic: it lets the hold answer, gives the Reset
+    # 0.3 s to be answered, and looks at what the Reset would be judged
+    # against. With `bypass`, the line is then kept busy so the Abort,
+    # with URGENT_WAIT_S tiny, is sent beside it rather than in order.
+    for bypass in (False, True):
+        work = tempfile.mkdtemp()
+        now = [_den(S, 18, 0)]
+        rec = _RecCond(S)
+        svc = _svc(S, work, now, conductor=rec)
+        svc._calls.URGENT_WAIT_S = 0.01
+        svc.start(thread=False)
+        _confirm(S, svc)
+        _settle(svc)
+        hold, gate = _th.Event(), _th.Event()
+        rec.block_on["hold"] = hold
+        rec.block_on["resume"] = gate
+        seen = {}
+        reset_call = []
+        orig = svc._save_tonight
+
+        def save(*a, **k):
+            if svc.machine.abort_latched and "stamps" not in seen:
+                r = reset_call[0]
+                seen["stamps"] = (svc._abort_seq > r.seq and
+                                  svc._abort_pressed > r.pressed)
+                hold.set()
+                seen["answered during the save"] = r.done.wait(0.3)
+                if bypass:
+                    svc._calls.put(svc._new_call("Resume", "resume",
+                                                 "Andy", "Rack screen"))
+            return orig(*a, **k)
+        svc._save_tonight = save
+        try:
+            svc._apply(_op(S, S.HOLD_ON))
+            svc.reset_conductor("Andy", "Rack screen", wait_s=0.0)
+            with svc._calls._cv:
+                reset_call[:] = [c for c in svc._calls._q
+                                 if c.method == "reset"]
+            svc._apply(_op(S, S.ABORT, confirmed=True))
+            t0 = time.perf_counter()
+            while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
+                time.sleep(0.01)
+        finally:
+            hold.set()
+            gate.set()
+        _settle(svc)
+        how = "bypass" if bypass else "in order"
+        ahead = [r for r in svc.journal if r.get("outcome") == "sent ahead"]
+        rows = [r for r in svc.journal if r.get("action") == "reset"]
+        said = rows[-1]["text"] if rows else ""
+        check("abort" in rec.names() and svc.machine.abort_latched and
+              svc._aborted() and
+              ("before the latest Abort" in said or "not sent" in said),
+              f"[{how}] the Reset pressed before the Abort does not end it: "
+              f"{rec.names()} latched={svc.machine.abort_latched} "
+              f"sent ahead={bool(ahead)} {rows[-1:]}")
+        check(seen.get("stamps") is True,
+              f"[{how}] the instant the Abort latch is set, the Abort is "
+              f"already numbered and stamped after that Reset: {seen}")
+        check(seen.get("answered during the save") is False,
+              f"[{how}] nothing the conductor answers lands on the scheduler "
+              f"while the Abort is still being saved: {seen}")
+        svc.stop()
+    print("  ok")
+
+
 def test_schedule_tonight_file_format():
     section("scheduler: tonight's file is format 3 as before unless it is "
             "dark or latched, then format 4, which an older ltcplay refuses "
@@ -40876,6 +40956,7 @@ if __name__ == "__main__":
     test_schedule_conductor_line_stuck_or_dead_is_loud()
     test_schedule_reset_refusals_are_journaled()
     test_schedule_conductor_wiring_details()
+    test_schedule_reset_answered_during_abort_save()
     test_schedule_tonight_file_format()
     test_schedule_abort_latch_survives_a_damaged_disk()
     test_schedule_reset_never_overtakes_an_abort()
