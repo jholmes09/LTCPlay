@@ -8936,6 +8936,41 @@ def test_the_app_starts_the_page_by_itself():
                       f"{line.strip()[:90]}")
 
 
+def test_frozen_app_build_id_is_the_source_it_was_built_from():
+    section("version: a frozen Windows app's stamp names the source it was "
+            "built from (\"build\"), and the on-disk check uses \"files\", "
+            "so a code change gives a new build id while nothing reads as "
+            "MODIFIED (2026-10-05: two builds with different code both said "
+            "194dbb4c09)")
+    import json as _json
+    import shutil
+    import tempfile
+    from ltcplay import version as ver
+    d = tempfile.mkdtemp()
+    saved = (ver.folder, ver.build)
+    try:
+        ver.folder = lambda: d
+        ver.build = lambda: ("aaaaaaaaaa", 3, 0.0)
+        with open(os.path.join(d, ver.STAMP), "w") as fh:
+            _json.dump({"release": "R", "build": "bbbbbbbbbb",
+                        "files": "aaaaaaaaaa"}, fh)
+        check(ver.status() == "release R, build bbbbbbbbbb",
+              f"frozen: the source's build id, not modified: {ver.status()}")
+        with open(os.path.join(d, ver.STAMP), "w") as fh:
+            _json.dump({"release": "R", "build": "bbbbbbbbbb",
+                        "files": "cccccccccc"}, fh)
+        check("MODIFIED SINCE" in ver.status(),
+              f"files changed on disk still read as modified: {ver.status()}")
+        with open(os.path.join(d, ver.STAMP), "w") as fh:
+            _json.dump({"release": "R", "build": "aaaaaaaaaa"}, fh)
+        check(ver.status() == "release R, build aaaaaaaaaa",
+              "a Mac release stamp (no \"files\") reads as before")
+    finally:
+        ver.folder, ver.build = saved
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
 def test_you_can_tell_which_version_is_installed():
     section("every machine must be able to say what it is running")
     # Jeff, 2026-09-15: "I have no idea which version im runnning." Four
@@ -11091,12 +11126,38 @@ def test_the_gpl_path_never_loads_the_scheduler():
     for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
         files += [os.path.join(dirpath, n) for n in names]
     for f in files:
+        if f.replace(os.sep, "/").endswith("packaging/windows/supervisor.py"):
+            # The Windows show PC's supervisor: its "fire_ice" show mode IS
+            # the Fire & Ice scheduler, on purpose. Its "plain" mode must
+            # never pass --schedule; proved below on the real function.
+            continue
         try:
             text = open(f, errors="replace", encoding="utf-8").read()
         except OSError:
             continue
         check("--schedule" not in text,
               f"{os.path.relpath(f, root)} turns the scheduler on")
+    import tempfile as _tf
+    sp = os.path.join(root, "packaging", "windows")
+    if os.path.isfile(os.path.join(sp, "supervisor.py")):
+        sys.path.insert(0, sp)
+        d = _tf.mkdtemp()
+        try:
+            import supervisor as _sup
+            want = _sup.wanted_args({
+                "show_folder": d, "flamesafe_config": os.path.join(d, "x"),
+                "port": 7878, "run_flamesafe": True, "run_deck": True,
+                "show_mode": "plain", "schedule": os.path.join(d, "s.json")})
+            eng = want["engine"][0] or []
+            check("--schedule" not in eng,
+                  f"the Windows supervisor's plain mode never turns the "
+                  f"scheduler on: {eng}")
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+            sys.path.remove(sp)
+            sys.modules.pop("supervisor", None)
+            sys.modules.pop("ltcwin", None)
     print("  ok")
 
 
@@ -32270,6 +32331,7 @@ if __name__ == "__main__":
     test_the_app_launcher_finds_its_way_home()
     test_the_app_starts_the_page_by_itself()
     test_you_can_tell_which_version_is_installed()
+    test_frozen_app_build_id_is_the_source_it_was_built_from()
     test_the_beta_window_app_stays_a_window()
     test_schedule_rule_is_validated()
     test_schedule_expands_the_season()
