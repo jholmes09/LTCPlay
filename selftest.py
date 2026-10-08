@@ -25763,8 +25763,10 @@ def test_streamdeck_pure_logic():
           f"a key refuses to even start a new arm-hold for this long "
           f"after its own disarm or an Abort: {sd.REARM_REFRACTORY_S}")
 
-    check(sd.group_look(None) == ("NO", "LINK", (26, 24, 21), sd.DIM_TEXT, True),
-          "no status ever received (or stale): NO LINK, flashing, never a guess")
+    check([sd.group_look(None, slot=i) for i in range(3)] ==
+          [(w, None, sd.RED, sd.CHAMPAGNE, False) for w in ("NO", "FLAME", "LINK")],
+          "no status ever received (or stale): NO / FLAME / LINK, one red "
+          "word per key, steady, never a guess")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
           "a real 'armed' status reads ARMED")
     check(sd.group_look({"armed": "disarmed"})[0] == "OFF",
@@ -26247,7 +26249,7 @@ def _deck_draw_stubs(sd):
             Image = None
 
         sd.Fonts = _NoPillowFonts
-        sd.Controller.draw = lambda self, fonts, blink_on, chase: _Img()
+        sd.Controller.draw = lambda self, *a, **kw: _Img()
 
     def restore():
         sd.Fonts = real_fonts
@@ -26256,26 +26258,155 @@ def _deck_draw_stubs(sd):
     return restore
 
 
+def test_streamdeck_look_a_marquee():
+    section("Stream Deck: the approved look A (Jeff, 2026-09-27): a ring of "
+            "marquee dots round every key and no solid outline; two snakes "
+            "the same way round the deck's outside dots, half a lap apart; "
+            "Abort fills every key's own ring red, clockwise, all at once, "
+            "and fully while latched; an arm-hold fills that key's ring gold")
+    from ltcplay import streamdeck as sd
+    check((sd.DOT_INSET, sd.DOT_SPACING, sd.DOT_R) == (6, 11.0, 2.6)
+          and sd.RUN_FRACTION == 0.16 and sd.CHASE_STEP_S == 0.06
+          and sd.FACE_MARGIN == 12 and sd.ABORT_HOLD_S == 0.5,
+          "look A's geometry and pace are the demo's own numbers")
+    check(sd.face_box(4) == (92, 92, 148, 148),
+          f"faces sit 12 px inside each key: {sd.face_box(4)}")
+    rings = [sd.key_ring(k) for k in range(6)]
+    check(all(len(r) == 24 for r in rings) and len(sd.ALL_DOTS) == 144,
+          f"24 dots round each key, 144 in all: "
+          f"{[len(r) for r in rings]}, {len(sd.ALL_DOTS)}")
+    check(rings[0][0] == (6, 6) and rings[0][6] == (74, 6)
+          and rings[0][12] == (74, 74) and rings[0][18] == (6, 74),
+          f"each ring runs clockwise from its top-left dot: "
+          f"{rings[0][0]}, {rings[0][6]}, {rings[0][12]}, {rings[0][18]}")
+    outer = sd.OUTER_DOTS
+    n = len(outer)
+    check(n == 66 and outer[0] == (6, 6) and outer[1][1] == 6
+          and outer[1][0] > 6,
+          f"66 outside dots, clockwise along the top first: {n}, "
+          f"{outer[:2]}")
+    run = round(n * sd.RUN_FRACTION)
+    for chase in (0, 7, 59, 123):
+        c = sd.marquee_colours(chase, 0.0)
+        heads = [i for i, p in enumerate(outer) if c[p] == sd.CHAMPAGNE]
+        gold = [p for p in sd.ALL_DOTS if c[p] == sd.GOLD]
+        want = sorted({chase % n, (chase + n // 2) % n})
+        check(heads == want and len(gold) == 2 * (run - 1)
+              and all(p in outer for p in gold)
+              and all(c[outer[(h - j) % n]] == sd.GOLD
+                      for h in heads for j in range(1, run))
+              and all(c[p] == sd.BULB_OFF for p in sd.ALL_DOTS
+                      if p not in outer),
+              f"chase {chase}: two champagne heads half a lap apart at "
+              f"{want}, each trailing {run - 1} gold dots behind it on the "
+              f"outside, every other dot unlit: heads {heads}, "
+              f"{len(gold)} gold")
+    c0, c1 = sd.marquee_colours(10, 0.0), sd.marquee_colours(11, 0.0)
+    h0 = [i for i, p in enumerate(outer) if c0[p] == sd.CHAMPAGNE]
+    h1 = [i for i, p in enumerate(outer) if c1[p] == sd.CHAMPAGNE]
+    check([(b - a) % n for a, b in zip(h0, h1)] == [1, 1],
+          f"both snakes step the same way, one dot per step: {h0} -> {h1}")
+    half = sd.marquee_colours(5, 0.5)
+    check(all([half[p] for p in r] == [sd.RED] * 12 + [sd.BULB_OFF] * 12
+              for r in rings),
+          "Abort held halfway: every key's own ring is red for its first "
+          "half, clockwise, all keys at once, and nothing chases")
+    full = sd.marquee_colours(5, 1.0)
+    check(set(full.values()) == {sd.RED},
+          "Abort complete or latched: every dot on the deck is red")
+    arm = sd.marquee_colours(0, 0.0, {4: 0.5})
+    check([arm[p] for p in rings[4]] == [sd.GOLD] * 12 + [sd.BULB_OFF] * 12,
+          "an arm-hold halfway fills that key's ring gold, clockwise, with "
+          "no snake across it")
+    check(sd.CHAMPAGNE in {arm[p] for p in rings[0]},
+          "the snakes keep running round the other keys meanwhile")
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        print("  note: Pillow is not installed here, so look A's pixels are "
+              "not checked on this machine.")
+        print("  ok")
+        return
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None
+    t = [10.0]
+    ctl = sd.Controller(_FakeArmSocket(3), _FakeStatusSocket(),
+                        ["front row", "cat-walk", "wave flamer"],
+                        operator_provider=lambda: "Andy",
+                        show_running_provider=lambda: True,
+                        clock=lambda: t[0])
+    img = ctl.draw(fonts, blink_on=True, chase=3)
+    want = sd.marquee_colours(3, 0.0)
+    check(all(img.getpixel((round(x), round(y))) == want[(x, y)]
+              for (x, y) in sd.ALL_DOTS),
+          "the drawn deck carries every dot in its marquee colour")
+    # Between two dots of a ring, on the ring's own line, is the deck's
+    # black: a solid outline (the old look B) would be drawn there.
+    edge = {img.getpixel((ox + x, oy + y)) for k in range(6)
+            for ox, oy in [sd.key_origin(k)]
+            for x, y in ((6, 12), (12, 6), (74, 12), (12, 74))}
+    check(edge == {sd.BLACK},
+          f"no solid outline round any key, only dots: {edge}")
+    ctl._latched = True
+    img = ctl.draw(fonts, blink_on=True, chase=3)
+    check(all(img.getpixel((round(x), round(y))) == sd.RED
+              for (x, y) in sd.ALL_DOTS),
+          "latched: every dot of every ring is drawn red")
+    print("  ok")
+
+
 def test_streamdeck_idle_deck_draws_rarely():
-    section("Stream Deck: with nothing happening the keys are drawn every "
-            "DRAW_IDLE_S, not every pass, while the arm link still goes out "
-            "every pass; a key held is drawn every pass (show PC, "
-            "2026-10-04: an idle deck took 14% of a core)")
+    section("Stream Deck: what moves on the keys is evidence of life, never "
+            "the deck's own clock (Jeff, 2026-10-05; the approved demo's "
+            "freeze). The snakes step on flamesafe's status frames, one step "
+            "per 0.06 s of its ticks; the bottom row flashes on them too; "
+            "the top row flashes on the engine's fresh answers. Frozen "
+            "flamesafe and engine: nothing moves. The keys are redrawn only "
+            "when something on them changed, a held key every FRAME_S, and "
+            "the arm link still goes out every pass")
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer"]
     arm = _FakeArmSocket(3)
     t = [0.0]
-    c = sd.Controller(arm, _FakeStatusSocket(), names,
+    alive = [True]
+
+    class _TickingStatus:
+        """flamesafe at 40 Hz: each poll reads the newest status frame,
+        whose heartbeat counts its ticks, until it freezes."""
+        last = None
+        hb = 0
+
+        def poll(self, clock=None):
+            if alive[0]:
+                self.hb = int(t[0] / 0.025)
+            self.last = {"heartbeat": self.hb, "tick_ms": 25.0,
+                         "fault": "", "confirmed": True, "groups": []}
+
+        def stale(self, clock=None):
+            return False
+
+    class _AnsweringEngine:
+        """The engine answering a 4 Hz poll, until it freezes."""
+        at = None
+
+        def answered_at(self):
+            if alive[0]:
+                self.at = int(t[0] / 0.25) * 0.25
+            return self.at
+
+        def snapshot(self):
+            return {"latched": False, "look": ""}
+
+    c = sd.Controller(arm, _TickingStatus(), names,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True,
-                      clock=lambda: t[0])
+                      conductor=_AnsweringEngine(), clock=lambda: t[0])
 
     class _Stop(BaseException):
         pass
     press = [False] * 6
     press[sd.GROUP_KEYS[0]] = True
     draws = []
-    real_draw = None
 
     class _Deck:
         def __init__(self):
@@ -26284,11 +26415,14 @@ def test_streamdeck_idle_deck_draws_rarely():
         def keys_down(self):
             i, self.i = self.i, self.i + 1
             if i == 200:
-                draws.append(("held", None))
+                draws.append("held")
                 return [press]
             if i == 220:
                 return [[False] * 6]
-            if i >= 240:
+            if i == 300:
+                alive[0] = False
+                draws.append("frozen")
+            if i >= 340:
                 raise _Stop()
             return []
 
@@ -26300,9 +26434,10 @@ def test_streamdeck_idle_deck_draws_rarely():
     restore = _deck_draw_stubs(sd)
     real_draw = sd.Controller.draw
 
-    def counting_draw(self, fonts, blink_on, chase):
-        draws.append((t[0], self._prev_keys[sd.GROUP_KEYS[0]]))
-        return real_draw(self, fonts, blink_on, chase)
+    def counting_draw(self, fonts, blink_on, chase, group_blink=None):
+        draws.append((t[0], self._prev_keys[sd.GROUP_KEYS[0]], chase,
+                      blink_on, group_blink))
+        return real_draw(self, fonts, blink_on, chase, group_blink)
     sd.Controller.draw = counting_draw
     try:
         sd.run_forever(c, deck_factory=_Deck,
@@ -26313,17 +26448,268 @@ def test_streamdeck_idle_deck_draws_rarely():
     finally:
         sd.Controller.draw = real_draw
         restore()
-    i = draws.index(("held", None))
-    idle, held = draws[:i], [d for d in draws[i + 1:] if d[1]]
-    passes_idle = 200
-    check(len(idle) <= passes_idle * (1.0 / sd.ARM_SEND_HZ) /
-          sd.DRAW_IDLE_S + 2,
-          f"idle: {len(idle)} draws in {passes_idle} passes (every "
-          f"{sd.DRAW_IDLE_S:g} s, not every pass)")
-    check(len(held) >= 18, f"a key held is drawn every pass: {len(held)} "
-                           f"draws in 20 passes")
-    check(len(arm.sends) >= 230, f"the arm link went out every pass: "
+    i, j = draws.index("held"), draws.index("frozen")
+    idle = [d for d in draws[1:i]]          # the first draw is the connect
+    held = [d for d in draws[i + 1:j] if d[1]]
+    frozen = [d for d in draws[j + 1:] if d[0] > t[0] - 1.9]
+    span = idle[-1][0] - idle[0][0]
+    rate = (idle[-1][2] - idle[0][2]) / span
+    check(abs(rate - 1.0 / sd.CHASE_STEP_S) < 0.5,
+          f"healthy: the snakes step {rate:.1f} times a second, the "
+          f"demo's one step per {sd.CHASE_STEP_S:g} s")
+    toggles = sum(1 for a, b in zip(idle, idle[1:]) if a[3] != b[3])
+    gtoggles = sum(1 for a, b in zip(idle, idle[1:]) if a[4] != b[4])
+    check(abs(toggles - span / 0.5) <= 2 and abs(gtoggles - span / 0.5) <= 2,
+          f"healthy: the top row changes phase every 2 engine answers and "
+          f"the bottom row every 0.5 s of flamesafe's ticks: {toggles} and "
+          f"{gtoggles} changes in {span:.1f} s")
+    check(all(a[2:] != b[2:] for a, b in zip(idle, idle[1:])),
+          "healthy and idle: the keys are drawn only when the snakes or a "
+          "flash moved, never twice the same")
+    steps = span / sd.CHASE_STEP_S
+    check(steps - 2 <= len(idle) <= steps + toggles + gtoggles + 2,
+          f"idle: {len(idle)} draws in {span:.1f} s, one per change "
+          f"({steps:.0f} steps, {toggles + gtoggles} flashes)")
+    check(len(frozen) >= 3 and len({d[2:] for d in frozen}) == 1,
+          f"frozen flamesafe and engine: the snakes and every flash stop "
+          f"dead: {sorted({d[2:] for d in frozen})}")
+    check(len(frozen) <= 1.9 / sd.DRAW_IDLE_S + 2,
+          f"frozen: drawn only every {sd.DRAW_IDLE_S:g} s, for a state "
+          f"change: {len(frozen)} draws in 1.9 s")
+    frames = 20 * (1.0 / sd.ARM_SEND_HZ) / sd.FRAME_S
+    check(len(held) >= frames - 3,
+          f"a key held is drawn every {sd.FRAME_S:g} s, its ring on the "
+          f"deck's own clock: {len(held)} draws in 20 passes "
+          f"({frames:.0f} frames)")
+    check(len(arm.sends) >= 335, f"the arm link went out every pass: "
                                  f"{len(arm.sends)}")
+    print("  ok")
+
+
+def _deck_face_recorder(sd):
+    """A real Fonts whose show_key and text_block only record what each
+    key was told to read (lines, colours, background), with the module's
+    arm_key_image recorded the same way. Returns (fonts, faces, restore),
+    `faces` a dict of key number -> (lines, text, bg) or, for a bottom-row
+    key, (name, look), refilled on every draw. None without Pillow."""
+    try:
+        import PIL.Image  # noqa: F401
+    except Exception:                     # noqa: BLE001
+        return None, None, lambda: None
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None
+    faces = {}
+    key_of = {sd.face_box(k): k for k in range(6)}
+
+    def show_key(d, box, lines, text, bg=None, kind="serif", max_size=24):
+        faces[key_of[tuple(box)]] = (list(lines), text, bg)
+    fonts.show_key = show_key
+    real_arm_key_image = sd.arm_key_image
+
+    def arm_key_image(fonts_, d, box, name, look, blink_on):
+        faces[key_of[tuple(box)]] = (name, tuple(look))
+    sd.arm_key_image = arm_key_image
+
+    def restore():
+        sd.arm_key_image = real_arm_key_image
+    return fonts, faces, restore
+
+
+def test_streamdeck_start_key_during_a_show():
+    section("Stream Deck: during a show the Start key reads NOW PLAYING, "
+            "flashing green on the engine's own answers; PAUSED while the "
+            "show is held; AUDIO LOST, flashing amber, while the engine "
+            "says the show audio is lost, on that one key only, Hold and "
+            "Abort never covered (Jeff, 2026-09-27, the approved demo and "
+            "\"Lock them in\")")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatus()
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": "", "amber": "", "dwell_s": 0}
+                    for n in names]})
+    running = [True]
+    lines = []
+
+    class _Engine:
+        look = "PLAYING"
+        lost = False
+        calls = []
+
+        def snapshot(self):
+            return {"latched": False, "look": self.look}
+
+        def audio_lost(self):
+            return self.lost
+
+        def hold(self, who, screen):
+            self.calls.append("hold")
+            return sd.EngineResult(True, "Hold: ok.")
+    eng = _Engine()
+    t = [10.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: running[0],
+                      conductor=eng, clock=lambda: t[0],
+                      journal=lambda text, **kw: lines.append((text, kw)))
+    # Pressing Start Now during the show: refused in the journal, nothing
+    # started, nothing asked of the engine. NOW PLAYING is honest.
+    c.run_once([True, False, False, False, False, False])
+    c.run_once([False] * 6)
+    check(len(lines) == 1 and "Nothing was started" in lines[0][0]
+          and lines[0][1].get("action") == "start" and not eng.calls,
+          f"Start Now during a show journals a refusal and does nothing: "
+          f"{lines}")
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  note: Pillow is not installed here, so the Start key's "
+              "words are not checked on this machine.")
+        print("  ok")
+        return
+    try:
+        for on in (True, False):
+            c.draw(fonts, blink_on=on, chase=0)
+            bg, text = sd.PLAYING_ON if on else sd.PLAYING_OFF
+            check(faces[0] == (["NOW", "PLAYING"], text, bg),
+                  f"show playing, flash phase {on}: NOW PLAYING in the "
+                  f"demo's green: {faces[0]}")
+            check(faces[1] == (["HOLD"], sd.CHAMPAGNE, None)
+                  and faces[2] == (["ABORT"], sd.RED, None),
+                  f"Hold and Abort are live: {faces[1]}, {faces[2]}")
+        check(sd.PLAYING_ON == ((50, 205, 95), (4, 28, 10))
+              and sd.PLAYING_OFF == ((8, 40, 16), (60, 200, 100)),
+              "the green is the approved demo's")
+        eng.look = "HELD"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG)
+              and faces[1] == (["RESUME"], sd.BLACK, sd.GOLD),
+              f"held: PAUSED on the Start key, RESUME on Hold: "
+              f"{faces[0]}, {faces[1]}")
+        eng.lost = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["PAUSED"], sd.CHAMPAGNE, sd.PAUSED_BG),
+              f"held with the audio lost: still PAUSED, the operator's own "
+              f"Hold: {faces[0]}")
+        eng.look = "PLAYING"
+        eng.lost = False
+        c.draw(fonts, blink_on=True, chase=0)
+        calm = dict(faces)
+        eng.lost = True
+        for on in (True, False):
+            c.draw(fonts, blink_on=on, chase=0)
+            bg, text = sd.AUDIO_LOST_ON if on else sd.AUDIO_LOST_OFF
+            check(faces[0] == (["AUDIO", "LOST"], text, bg),
+                  f"audio lost mid-show, flash phase {on}: AUDIO LOST, "
+                  f"amber: {faces[0]}")
+            check({k: v for k, v in faces.items() if k} ==
+                  {k: v for k, v in calm.items() if k},
+                  f"only the Start key changed: Hold, Abort and the arm "
+                  f"keys read exactly as before: {faces}")
+        check(sd.AUDIO_LOST_ON == (sd.AMBER, (40, 20, 0))
+              and sd.AUDIO_LOST_OFF == (sd.AMBER_DIM, sd.AMBER),
+              "AUDIO LOST flashes amber like CYCLE ARM")
+        running[0] = False
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.CHAMPAGNE, None),
+              f"no show running: START NOW, lost audio or not: {faces[0]}")
+        eng.look = "HELD"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.DIM_TEXT, None),
+              f"held with no show: START NOW dims, as the demo has it: "
+              f"{faces[0]}")
+        eng.look = "PLAYING"
+        eng.lost = False
+        running[0] = True
+        # The flash is the engine's liveness, never the deck's own clock:
+        # the same phase whatever the clock says, a new phase on answers.
+        c.conductor = type("_AnsweringEngine", (), {
+            "at": [None],
+            "answered_at": lambda s: s.at[0],
+            "snapshot": lambda s: {"latched": False, "look": "PLAYING"},
+            "audio_lost": lambda s: False})()
+        seen = set()
+        for step in range(8):
+            t[0] = 10.0 + step * 0.26
+            c.conductor.at[0] = 1.0      # frozen engine: no new answer
+            c.draw(fonts, c.engine_blink(), chase=0)
+            seen.add(faces[0][2])
+        check(len(seen) == 1, f"a frozen engine freezes NOW PLAYING's "
+                              f"flash whatever the deck's clock says: "
+                              f"{seen}")
+        for n in range(2 * sd.ENGINE_ANSWERS_PER_BLINK):
+            c.conductor.at[0] = 2.0 + n
+            c.draw(fonts, c.engine_blink(), chase=0)
+            seen.add(faces[0][2])
+        check(seen == {sd.PLAYING_ON[0], sd.PLAYING_OFF[0]},
+              f"fresh answers change its phase: {seen}")
+    finally:
+        restore()
+    print("  ok")
+
+
+def test_streamdeck_no_flame_link_words():
+    section("Stream Deck: with no link to flamesafe the arm keys read "
+            "NO / FLAME / LINK, one red word per key, steady, in place of "
+            "the old dim flashing NO LINK (Jeff, 2026-09-27, locked "
+            "wording); the arm link is held OFF exactly as before")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [10.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      clock=lambda: t[0])
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  note: Pillow is not installed here, so the arm keys' "
+              "words are not checked on this machine.")
+        print("  ok")
+        return
+    words = [(w, None, sd.RED, sd.CHAMPAGNE, False)
+             for w in ("NO", "FLAME", "LINK")]
+    try:
+        for blink in (True, False):
+            c.draw(fonts, blink_on=blink, chase=0, group_blink=blink)
+            check([faces[k] for k in sd.GROUP_KEYS] ==
+                  list(zip(names, words)),
+                  f"no link, flash phase {blink}: the three arm keys read "
+                  f"NO / FLAME / LINK in red, steady, each over its own "
+                  f"group's name: {[faces[k] for k in sd.GROUP_KEYS]}")
+        c._latched = True
+        c.draw(fonts, blink_on=True, chase=0)
+        check([faces[k] for k in sd.GROUP_KEYS] == list(zip(names, words)),
+              f"latched: the missing link still shows, never greyed over: "
+              f"{[faces[k] for k in sd.GROUP_KEYS]}")
+        c._latched = False
+        check(arm.wanted == [False] * 3 and not arm.sends,
+              "drawing changed nothing on the arm link: every group still "
+              "wanted off")
+        one = sd.Controller(_FakeArmSocket(1), _FakeStatusSocket(),
+                            ["front row"], operator_provider=lambda: "Andy",
+                            show_running_provider=lambda: False,
+                            clock=lambda: t[0])
+        one.draw(fonts, blink_on=True, chase=0)
+        check([faces[k] for k in sd.GROUP_KEYS] ==
+              [("front row", words[0]), ("", words[1]), ("", words[2])],
+              f"one group: the message still reads whole across the three "
+              f"keys: {[faces[k] for k in sd.GROUP_KEYS]}")
+        faces.clear()
+        st = _FakeStatus()
+        st.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": "front row", "armed": "disarmed",
+                     "wanted": False, "reason": "", "amber": "",
+                     "dwell_s": 0}]})
+        one.status = st
+        one.draw(fonts, blink_on=True, chase=0)
+        check(faces[sd.GROUP_KEYS[0]][1][0] == "OFF"
+              and sd.GROUP_KEYS[1] not in faces,
+              f"the link back: OFF, and the spare keys go blank: {faces}")
+    finally:
+        restore()
     print("  ok")
 
 
@@ -36120,6 +36506,117 @@ def test_deck_presses_reach_the_engine_conductor():
     print("  ok")
 
 
+def test_api_conductor_reports_audio_loss():
+    section("/api/conductor carries a read-only \"audio\" field: the show "
+            "audio is lost while a cue is playing and the show clock has "
+            "stopped following it (AudioMaster's freerun after a loss); "
+            "never between cues; the deck's EngineConductor reads it and "
+            "forgets it the moment the engine stops answering")
+    import tempfile
+    from ltcplay import web as web_mod
+    from ltcplay import streamdeck as sd
+
+    class _Cond:
+        def snapshot(self):
+            return {"look": "PLAYING", "latched": False}
+
+    class _Clk:
+        playing = True
+        _mode = "follow"
+        _fault = None
+
+    class _FI:
+        clk = _Clk()
+
+        def clock_nolock(self):
+            return self.clk
+    httpd = web_mod.serve(tempfile.mkdtemp(), port=0, bind="127.0.0.1")
+    try:
+        httpd.conductor = _Cond()
+        fi = _FI()
+        httpd.fire_ice = fi
+
+        def audio():
+            st, _h, out = _ask(httpd, "GET", "/api/conductor",
+                               client=("127.0.0.1", 50000))
+            check(st == 200 and out.get("conductor", {}).get("look") ==
+                  "PLAYING", f"/api/conductor answers: {st} {out}")
+            return out.get("audio")
+        check(audio() == {"playing": True, "lost": False, "fault": None},
+              f"a cue playing with the clock following it: not lost: "
+              f"{audio()}")
+        fi.clk._mode = "freerun"
+        fi.clk._fault = ("The show audio stopped playing at 00:01:02.000 "
+                         "of 00:07:20.000 with nothing asking it to.")
+        check(audio() == {"playing": True, "lost": True,
+                          "fault": fi.clk._fault},
+              f"the clock freerunning after a loss, a cue still playing: "
+              f"lost, with the clock's own sentence: {audio()}")
+        fi.clk._mode = "follow"
+        fi.clk._fault = None
+        check(audio()["lost"] is False, "the audio back: not lost")
+        fi.clk._mode = "freerun"
+        fi.clk.playing = False
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"the cue over: nothing is lost between cues: {audio()}")
+        fi.clk = None
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"no show audio clock (Run not pressed): not lost: {audio()}")
+        del httpd.fire_ice
+        check(audio() == {"playing": False, "lost": False, "fault": None},
+              f"no Fire & Ice wiring at all: the field is still there, not "
+              f"lost: {audio()}")
+    finally:
+        httpd.server_close()
+
+    # The deck's own reader of that field.
+    t = [100.0]
+    view = {"v": {"conductor": {"look": "PLAYING", "latched": False},
+                  "audio": {"playing": True, "lost": True, "fault": "x"}}}
+    e = sd.EngineConductor("http://127.0.0.1:1", fetcher=lambda p: view["v"],
+                           clock=lambda: t[0], poll_hz=200.0)
+    check(e.audio_lost() is False, "before any answer: not lost")
+    e.start()
+    try:
+        for _ in range(100):
+            if e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is True and
+              e.snapshot() == {"latched": False, "look": "PLAYING"},
+              f"the engine says lost: the deck reads it, and its snapshot "
+              f"is unchanged: {e.snapshot()}")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False},
+                     "audio": {"playing": True, "lost": False,
+                               "fault": None}}
+        for _ in range(100):
+            if not e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is False, "the audio back: not lost")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False},
+                     "audio": {"playing": True, "lost": True, "fault": "x"}}
+        for _ in range(100):
+            if e.audio_lost():
+                break
+            time.sleep(0.01)
+        view["v"] = None
+        for _ in range(100):
+            if not e.audio_lost():
+                break
+            time.sleep(0.01)
+        check(e.audio_lost() is False,
+              "the engine gone quiet: the loss is not remembered (the deck "
+              "shows ENGINE FAULT instead)")
+        view["v"] = {"conductor": {"look": "PLAYING", "latched": False}}
+        time.sleep(0.05)
+        check(e.audio_lost() is False,
+              "an older engine without the field: never lost")
+    finally:
+        e.stop()
+    print("  ok")
+
+
 def test_deck_fix_round_2_abort_reset_and_disarm():
     section("Stream Deck (PR #43 fix round 2, C to E): the arm link goes "
             "false before the engine is asked to Abort; while aborted the "
@@ -37957,7 +38454,10 @@ if __name__ == "__main__":
     test_streamdeck_pure_logic()
     test_streamdeck_controller_with_fakes()
     test_streamdeck_tick_drives_holds_without_new_key_snapshots()
+    test_streamdeck_look_a_marquee()
     test_streamdeck_idle_deck_draws_rarely()
+    test_streamdeck_start_key_during_a_show()
+    test_streamdeck_no_flame_link_words()
     test_streamdeck_reconnect_resets_hold_state_and_key_snapshot()
     test_streamdeck_abort_same_pass_as_arm_hold_completion()
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
@@ -38055,6 +38555,7 @@ if __name__ == "__main__":
     test_remote_controls_reach_the_same_paths_and_journal_who_and_where()
     test_deck_fix_round_2_abort_reset_and_disarm()
     test_deck_presses_reach_the_engine_conductor()
+    test_api_conductor_reports_audio_loss()
     test_live_show_refuses_the_page_transport()
     test_remote_abort_and_start_need_the_confirm()
     test_remote_stale_state_refused_and_banner()
