@@ -6280,8 +6280,8 @@ def build():
 
  ("failed start disarms: the scheduler latches a failed start",
   "ltcplay/schedule_service.py",
-  "        if any(p[1] == \"abort\" for p in plan):",
-  "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
+  "        if any(c.method == \"abort\" for c in calls):",
+  "        if any(c.method in (\"abort\", \"failed_start\") for c in calls):"),
 
  ('failed start disarms: the journal never says why the flames were disarmed',
   'ltcplay/schedule_service.py',
