@@ -8493,9 +8493,15 @@ def test_a_trigger_never_blocks_the_output_loop():
     # A pulse is 3 packets 50ms apart plus a release. Sent from the playback
     # thread that is 8 dropped frames on the sixteen live controllers at the
     # exact moment a cue starts.
+    # The socket stays stuck until this test lets it go, AFTER the check,
+    # so there is no clock to beat: if fire_async() waited on a send at
+    # all it would wait the whole of one sendto (2 s here), not the 50 ms
+    # this check used to allow a shared CI runner for five queue puts.
+    stuck = threading.Event()
+
     class SlowSock:
         def sendto(self, b, a):
-            time.sleep(0.25)
+            stuck.wait(2.0)
 
         def close(self):
             pass
@@ -8508,9 +8514,11 @@ def test_a_trigger_never_blocks_the_output_loop():
         for i in range(5):
             t.fire_async(i + 1)
         took = time.monotonic() - t0
-        check(took < 0.05,
-              f"queuing five fires took {took*1000:.0f}ms; it must not block")
+        check(took < 1.0,
+              f"queuing five fires took {took*1000:.0f}ms while the socket "
+              f"was stuck; it must not block on the send")
     finally:
+        stuck.set()
         t.stop()
 
 
@@ -13488,7 +13496,9 @@ def test_announce_show_start_hook_never_touches_the_stream():
     t0 = time.time()
     svc.on_show_started("SHOW")
     elapsed = time.time() - t0
-    check(elapsed < 0.5,
+    # Half the hang: a hook that reached stop() takes 2 s or more, a hook
+    # that did not takes milliseconds, and a slow runner's hiccup is not 1 s.
+    check(elapsed < 1.0,
           f"on_show_started must never call into the output stream "
           f"(stop() here deliberately hangs for 2 s): took {elapsed:.2f} s"
           f" (audit13b_scheduler_stall.py)")
@@ -13529,6 +13539,7 @@ def test_schedule_hook_runs_outside_service_lock():
 
     HANG_S = 1.0
     calls = []
+    release = threading.Event()
 
     def slow_hook(state, reason=None):
         calls.append(state)
@@ -13536,8 +13547,11 @@ def test_schedule_hook_runs_outside_service_lock():
         # is not as careful as announce.py's own about never touching a
         # stream: schedule_service.py must not trust that. It must simply
         # never let a hook run while Service.lock is held, by anyone, at
-        # any depth (audit13b_scheduler_stall.py).
-        time.sleep(HANG_S)
+        # any depth (audit13b_scheduler_stall.py). It stays stuck until
+        # this test lets it go, after the checks below, so a tick() or a
+        # lock that waited for it waits the whole HANG_S + 5 s, never
+        # something a slow runner could also take.
+        release.wait(HANG_S + 5)
 
     svc.on_show_started = slow_hook
     now[0] = _den(S, 17, 50, 0)
@@ -13569,13 +13583,15 @@ def test_schedule_hook_runs_outside_service_lock():
           f"{svc.machine.state}")
     check(calls == [S.SHOW],
           f"the hook must fire exactly once, with the new state: {calls}")
-    check(tick_elapsed < 0.5,
+    check(tick_elapsed < 3.0,
           f"tick() must not wait for the hook it queued: took "
-          f"{tick_elapsed:.2f} s (the hook itself takes {HANG_S:g} s)")
-    check(lock_wait.get("s", 999) < 0.5,
+          f"{tick_elapsed:.2f} s (the hook itself is stuck for "
+          f"{HANG_S + 5:g} s)")
+    check(lock_wait.get("s", 999) < 3.0,
           f"a separate thread wanting Service.lock (Abort, Hold, Start "
           f"now, any status poll) must not wait behind a slow hook: "
           f"waited {lock_wait.get('s')} s")
+    release.set()
     print("  ok")
 
 
@@ -19147,11 +19163,17 @@ def test_madmapper_submit_has_a_timeout():
     link = MM.Link(_mm_cfg(), socket_factory=lambda: _FakeMMSock(),
                   journal=_mm_journal(j))
     link._submit_timeout_s = 0.05
+    # The job stays stuck until this test lets it go, after the check: a
+    # _submit() that waited for the job waits 3 s, one that gave up after
+    # its own 50 ms timeout is back in well under a second even on a busy
+    # runner (this used to allow 0.2 s and failed at exactly 0.20).
+    release = threading.Event()
     t0 = _time.monotonic()
-    link._submit(lambda: _time.sleep(0.3), wait=True)
+    link._submit(lambda: release.wait(3.0), wait=True)
     elapsed = _time.monotonic() - t0
-    check(elapsed < 0.2, f"_submit() must give up after its own timeout, "
+    check(elapsed < 1.5, f"_submit() must give up after its own timeout, "
                         f"not the job's: waited {elapsed:.2f}s")
+    release.set()
     check(any("did not finish" in t and "timeout" == e.get("outcome")
               for t, e in j), f"a timeout must be journaled as a fault: "
                              f"{j}")
@@ -21552,8 +21574,12 @@ def test_journal_a_full_disk_stops_the_logging_not_the_show():
     for i in range(20):
         svc._journal_line("system", f"Line {i} while the disk hangs.")
     took = _t.monotonic() - t0
-    check(took < 0.5, f"with the writer running, a hung disk never holds up "
-                      f"the scheduler: {took:.2f} s for 20 lines")
+    # A line that waited on the writer would wait MAX_LINE_WAIT_S; twenty
+    # of them, 20 s. Twenty that did not take milliseconds. The bound is
+    # the code's own constant, not a number a slow runner can reach.
+    check(took < J.MAX_LINE_WAIT_S,
+          f"with the writer running, a hung disk never holds up the "
+          f"scheduler: {took:.2f} s for 20 lines")
     gate.set()
     svc.logbook.close()
     tail = [r for r in _jsonl_rows(mp) if r][-20:]
@@ -27428,7 +27454,9 @@ def test_streamdeck_local_schedule_never_blocks_the_main_loop():
     calls.clear()
     t0 = time.monotonic()
     check(sched.current_operator() == "Andy", "still cached after stop()")
-    check(time.monotonic() - t0 < 0.05,
+    # `not calls` below is the proof that nothing was fetched; the time is
+    # only a backstop against a wait on something else, so it is generous.
+    check(time.monotonic() - t0 < 1.0,
           "reading the cache after stop() is instant: no network call")
     check(not calls, "and no fetch happened: the thread is really stopped")
 
@@ -28020,8 +28048,12 @@ def test_conductor_devices_failures_missing_links_and_speed():
     check(not r.ok and "closed" in r.sentence,
           f"a closed MadMapper link is not reported as sent: {r}")
 
-    # Real time: every call returns well inside SLOW_CALL_S, the 1 s video
-    # fade included (it runs on the Link's own worker).
+    # Real time: every call hands its work to the Link's or BEYOND's own
+    # worker and returns, the 1 s fades included. A call that ran a fade
+    # itself would take the fade (1 s); the bound is half of that. It is
+    # not SLOW_CALL_S (100 ms): that is the conductor's own fault threshold,
+    # judged on the show PC's clock, and a shared CI runner has taken 110
+    # to 300 ms over a thread handoff with nothing wrong.
     link = MM.Link(_mm_cfg(), socket_factory=_FakeMMSock)
     bey = B.Beyond(B.BeyondConfig.parse({}), socket_factory=_FakeMMSock,
                    sleep=_on_time_sleep)
@@ -28033,8 +28065,9 @@ def test_conductor_devices_failures_missing_links_and_speed():
         t0 = _time.perf_counter()
         r = getattr(dev, name)(*args)
         took = _time.perf_counter() - t0
-        check(r.ok and took < C.SLOW_CALL_S,
-              f"{name}{args} returns at once: {took * 1000:.0f} ms, {r}")
+        check(r.ok and took < 0.5,
+              f"{name}{args} returns at once, not after a fade: "
+              f"{took * 1000:.0f} ms, {r}")
     link.close()
     bey.close()
     print("  ok")
@@ -28784,7 +28817,10 @@ def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
     t0 = time.perf_counter()
     ok = bey.blank()
     took = time.perf_counter() - t0
-    check(ok and took < 0.2,
+    # The unblank's packet is stuck for 2 s (release.wait above); a blank
+    # that waited for it takes that long, one that did not takes a few ms.
+    # Half the stall, not 0.2 s, which a runner's handoff has exceeded.
+    check(ok and took < 1.0,
           f"the blank went out without waiting for the stuck unblank "
           f"({took * 1000:.0f} ms)")
     release.set()
@@ -28902,7 +28938,15 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
             "few ms of the press, whatever BEYOND, the laser gate or an "
             "announcement is doing (review of PR #29, finding D)")
     C = _cond_mod()
-    FEW = 0.02
+    # Every stall below is 300 ms or longer (a BEYOND packet, the laser
+    # gate, an announcement's file read). The Abort lands 150 ms into the
+    # stuck packet in case 1, so a flame cut or a blank that waited behind
+    # it lands about 150 ms after the press (measured 172 ms under the
+    # mutation that makes it wait), and one that did not lands in a few
+    # ms. FEW is half of that 150 ms: the same margin either way. It was
+    # 20 ms, which measured the runner's thread handoffs, not the
+    # conductor.
+    FEW = 0.075
     # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
     #    show start's unblank is part way out.
     c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
@@ -28980,8 +29024,8 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               and zeros[0][3] - t0 < FEW,
               f"flame cut and blank within {FEW * 1000:.0f} ms during a "
               f"slow gate")
-        check(px and px[0][2] - t0 < 0.1,
-              f"and the Abort's fades did not wait for the gate "
+        check(px and px[0][2] - t0 < 0.25,
+              f"and the Abort's fades did not wait for the 500 ms gate "
               f"({(px[0][2] - t0) * 1000 if px else None} ms)")
         check(not _rt_vals(log, "beyond", since=t0, value=100.0),
               "the gate's late yes lit nothing")
@@ -29039,8 +29083,8 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               and zeros[0][3] - t0 < FEW,
               f"flame cut and blank within {FEW * 1000:.0f} ms during an "
               f"announcement's file read")
-        check(mh and mh[0][2] - t0 < 0.1,
-              f"and the Abort's fades did not wait for the file "
+        check(mh and mh[0][2] - t0 < 0.2,
+              f"and the Abort's fades did not wait for the 400 ms file read "
               f"({(mh[0][2] - t0) * 1000 if mh else None} ms)")
     finally:
         c.close()
@@ -29666,7 +29710,12 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     work = tempfile.mkdtemp()
     now = [_den(S, 18, 0)]
     rec = _RecCond(S)
-    rec.sleep_on = {"show_starting": 0.6, "hold": 0.6}
+    # The conductor sleeps 1.5 s on two calls and every bound below is half
+    # of that: a press that waited for it takes 1.5 s or more, one that did
+    # not takes milliseconds (0.6 s and 0.2 s, the old numbers, left a slow
+    # runner's hiccup able to fail this for no reason).
+    SLOW = 1.5
+    rec.sleep_on = {"show_starting": SLOW, "hold": SLOW}
     svc = _svc(S, work, now, conductor=rec)
     svc.start(thread=False)
     now[0] = _den(S, 18, 0, 1)
@@ -29680,15 +29729,15 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     svc._apply(_op(S, S.HOLD_ON))
     svc._apply(_op(S, S.RESUME))
     c_ = time.perf_counter() - t0
-    check(a < 0.2 and b < 0.2 and c_ < 0.2,
-          f"nothing waits for a 0.6 s conductor: confirm {a:.2f} s, a "
+    check(a < SLOW / 2 and b < SLOW / 2 and c_ < SLOW / 2,
+          f"nothing waits for a {SLOW:g} s conductor: confirm {a:.2f} s, a "
           f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
     _settle(svc)
     check(rec.names() == ["intermission", "show_starting", "hold", "resume"],
           f"and the conductor got them in order: {rec.names()}")
     t0 = time.perf_counter()
     svc._apply(_op(S, S.ABORT, confirmed=True))
-    check(time.perf_counter() - t0 < 0.2, "nor does an Abort")
+    check(time.perf_counter() - t0 < SLOW / 2, "nor does an Abort")
     _settle(svc)
     check(rec.names()[-1:] == ["abort"], f"which follows them: {rec.names()}")
     # An Abort still waiting in the queue already counts: nothing can
@@ -30730,9 +30779,15 @@ def test_schedule_conductor_line_stuck_or_dead_is_loud():
         while "abort" not in rec.names() and time.perf_counter() - t0 < 3:
             time.sleep(0.01)
         took = time.perf_counter() - t0
-        check("abort" in rec.names() and took < 0.6,
-              f"Abort reaches the conductor while show_starting hangs, "
-              f"within 0.6 s: {rec.names()} {took:.2f} s")
+        # The hung request never finishes inside this wait (its gate is
+        # opened in the finally below), so an Abort that waited behind it
+        # never arrives here at all; one sent ahead arrives after
+        # CONDUCTOR_STUCK_S plus whatever the runner adds. Arriving inside
+        # the wait is the proof; 0.6 s, the old bound, measured the runner.
+        check("abort" in rec.names(),
+              f"Abort reaches the conductor while show_starting hangs: "
+              f"{rec.names()} ({took:.2f} s, CONDUCTOR_STUCK_S "
+              f"{svc.CONDUCTOR_STUCK_S:g})")
         check("hold" not in rec.names() and "reset" not in rec.names(),
               f"the Hold and the Reset pressed before the Abort are not sent "
               f"after it: {rec.names()}")
@@ -30924,6 +30979,17 @@ def test_schedule_conductor_wiring_details():
     _confirm(S, svc)
     _settle(svc)
     rec.sleep_on = {"hold": 0.1}
+    # This is the IN-ORDER path: the line reaches the Abort behind the
+    # 0.1 s Hold, so the Reset is sent and refused for being pressed
+    # before the latest Abort. An Abort waits at most URGENT_WAIT_S
+    # (0.25 s) for the line before going ahead on its own and dropping
+    # the Reset unsent ("an Abort was pressed after it"), which is the
+    # other safe outcome and has its own test (stuck_or_dead). On the
+    # Windows runner the 0.1 s Hold plus the handoffs took longer than
+    # 0.25 s and the Abort went ahead, so this check read the other path
+    # as a failure. The wait is made long here so the path is the line's,
+    # whatever the machine; the invariant checked is unchanged.
+    svc._calls.URGENT_WAIT_S = 10.0
     svc._apply(_op(S, S.HOLD_ON))
     svc.reset_conductor("Andy", "Rack screen", wait_s=0.0)
     svc._apply(_op(S, S.ABORT, confirmed=True))
@@ -34771,7 +34837,8 @@ def test_flame_link_fix_round_1():
         ok1 = lk12.disarm_all("Abort from the rack screen")
         ok2 = lk12.zero()
         dt = time.perf_counter() - t0
-        check(ok1 and ok2 and dt < 0.5,
+        # Half the 3 s hang: waiting on it takes 3 s, not waiting takes ms.
+        check(ok1 and ok2 and dt < 1.5,
               f"a show state hung for 3 s does not hold up disarm_all() or "
               f"zero(): {dt:.3f} s")
     finally:
@@ -34971,8 +35038,24 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     cfg = fl.FlameLinkConfig.parse({"port": rx.getsockname()[1],
                                     "universe": 1, "key": _fl_key(),
                                     "send_hz": 40, "frame_stale_ms": 500})
+    # A plain time.sleep(0.025) loop on a thread of its own, running WHILE
+    # the frames are measured: whether this machine can keep a 25 ms sleep
+    # is judged over the same second as the sender, not over a quiet
+    # half-second before it. (Calibrating first and measuring after read
+    # fit=True and then 11 frames in a second on a CI runner that was
+    # starved only during the measurement.)
+    import threading as _th
+    sl = []
+
+    def reference():
+        for _ in range(36):
+            w0 = time.perf_counter()
+            time.sleep(0.025)
+            sl.append(time.perf_counter() - w0)
+    ref = _th.Thread(target=reference, daemon=True)
     link = fl.FlameLink(cfg).start()
     got, srcs = [], set()
+    ref.start()
     end = time.perf_counter() + 1.0
     try:
         while time.perf_counter() < end:
@@ -34985,6 +35068,7 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     finally:
         link.stop()
         rx.close()
+    ref.join(5)
     check(len(srcs) == 1, f"every frame from ONE socket: {srcs}")
     check(all(not any(f["values"]) and f["tc"] is None for f in got),
           "idle, nothing wired: every frame is all zeros with no timecode")
@@ -35001,16 +35085,11 @@ def test_flame_link_sends_at_its_rate_on_one_socket():
     mean = sum(gaps) / len(gaps) if gaps else 0
     p95 = gaps[int(len(gaps) * 0.95)] if gaps else 0
     # The same calibration as test_pixel_output_frame_jitter: these bounds
-    # only mean anything on a machine that can keep a 25 ms sleep AT ALL.
-    # macOS CI was seen taking 80 to 170 ms over time.sleep(0.025) at this
+    # only mean anything on a machine that could keep a 25 ms sleep while
+    # the frames were being sent (the reference thread above). CI runners
+    # have been seen taking 80 to 170 ms over time.sleep(0.025) at this
     # point in the run; there the fake-clock proof below carries it.
-    import threading as _th
-    sl = []
-    for _ in range(20):
-        w0 = time.perf_counter()
-        time.sleep(0.025)
-        sl.append(time.perf_counter() - w0)
-    fit = sorted(sl)[len(sl) // 2] < 0.035 and max(sl) <= 0.075
+    fit = bool(sl) and sorted(sl)[len(sl) // 2] < 0.035 and max(sl) <= 0.075
     print(f"  note: {len(got)} frames in 1 s, mean gap {mean * 1000:.1f}ms, "
           f"95% under {p95 * 1000:.1f}ms, longest "
           f"{(gaps[-1] if gaps else 0) * 1000:.1f}ms; time.sleep(0.025) here "
@@ -35394,28 +35473,35 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         t_fire = time.perf_counter() - t_stop
         s = wait_for(lambda s: s["frames"]["state"] == "stale", 2.0)
         t_stale = time.perf_counter() - t_stop
-        # Where the time went, for a failure on a slow machine: how long
-        # stop() itself took, when the first "zeroed" status arrived and how
-        # old flamesafe said the last frame was in it, and the largest gap
-        # between status frames (40 Hz expected) since the stop.
-        after = [(t_ - t_stop, x) for t_, x in list(statuses)
-                 if t_ >= t_stop - 0.05]
-        first_zero = next(((dt, x) for dt, x in after
-                           if x["frames"]["fire"] == "zeroed"), None)
-        gaps = [b[0] - a[0] for a, b in zip(after, after[1:])]
-        where = (f"stop() took {t_stopped:.3f} s; first zeroed status "
-                 f"received {first_zero[0]:.3f} s after the stop, "
-                 f"frames.age_ms {first_zero[1]['frames']['age_ms']}"
-                 if first_zero else f"stop() took {t_stopped:.3f} s; no "
-                 f"zeroed status")
-        check(t_fire < 0.1 + 0.15, f"fire zeroed {t_fire:.3f} s after the "
-                                   f"sender stopped (fire_hold_ms 100): "
-                                   f"{where}; largest gap between status "
-                                   f"frames {max(gaps or [0]):.3f} s")
-        check(s is not None and t_stale < 0.5 + 0.2
+        # What this proves is the SEQUENCE through two real processes and a
+        # real socket: the sender stops, the fire slots go to zero, then the
+        # link goes stale and every group disarms, with nothing else
+        # needed. The exact windows (fire_hold_ms 100, frame_stale_ms 500)
+        # are proved in flamesafe's own suite on a fake clock, where they
+        # mean something; measured here, on a shared runner, they read
+        # 0.25 to 0.34 s and 0.76 to 0.82 s with the code right, so the
+        # bounds here are only wide enough to tell "did" from "never did".
+        # The real timing is measured on the show PC by the bench soak.
+        print(f"  note: fire zeroed {t_fire:.3f} s and link stale "
+              f"{t_stale:.3f} s after the sender stopped (fire_hold_ms "
+              f"100, frame_stale_ms 500; exact on the show PC only)")
+        check(t_fire < 1.0, f"fire zeroed {t_fire:.3f} s after the sender "
+                            f"stopped (fire_hold_ms 100)")
+        check(s is not None and t_stale < 2.0
               and all(g["sent_safety"] == 0 for g in s["groups"]),
               f"link stale and every group disarmed {t_stale:.3f} s after "
               f"the sender stopped (frame_stale_ms 500)")
+        # And the order, with no clock at all: fire_hold_ms is shorter than
+        # frame_stale_ms, so flamesafe's own status frames must show the
+        # fire slots zeroed WHILE the link still reads fresh. A fire value
+        # held until the link went stale (a real mutation) never shows
+        # that frame, however fast or slow the runner.
+        after = [x for t_, x in statuses if t_ > t_stop]
+        check(any(x["frames"]["fire"] == "zeroed"
+                  and x["frames"]["state"] == "fresh" for x in after),
+              f"flamesafe reported the fire zeroed while the link was still "
+              f"fresh, before it went stale: "
+              f"{[(x['frames']['fire'], x['frames']['state']) for x in after][:12]}")
         check(link.disarm_all("Abort") is False,
               "a disarm_all on a stopped link answers False")
         # The rejection episodes close after 5 s of quiet (the arm link's
