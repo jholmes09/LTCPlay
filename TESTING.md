@@ -83,6 +83,18 @@ the deliberate stall), so a red one is a real wait, not a slow runner. If
 it still looks like the runner, re-run once; if it is red twice it is
 real.
 
+**Where to read why, without the job log.** Every red job says so three
+ways: its annotations (the Checks tab, or the API's check-run
+annotations) name the shard, the kind of failure, the mutation or test
+and the first lines that matter; its job summary carries a table (shard,
+mutations, caught, missed, flaky, baseline, time, result) and the reason;
+and its full log is an artifact on the run page, `selftest-log-<os>` or
+`mutate-log-<os>-shard-<n>`, kept 7 days. The `mutate-report` job at the
+end of the run lists the red shards with a link to each. A shard that
+ends with "exit code 1" and no sentence is a bug in mutate.py's own
+reporting; `test_mutate_reports_every_failure_it_can_have` in selftest.py
+forces every way it can end red and checks the sentence is there.
+
 **A mutate shard red.** One of:
 
 - `NOT CAUGHT` or `UNEXPECTED MISS <name>`: the suite stayed green with
