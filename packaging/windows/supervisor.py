@@ -59,7 +59,12 @@ import urllib.request
 
 import ltcwin
 
-MUTEX_NAME = "LTCPlayerSupervisor"
+# Global\, not the session's own namespace (locked decision 21): a second
+# supervisor started in another Windows session (a second sign-in, Remote
+# Desktop, a task running as another user) must see the first one too, or two
+# would start two sets of show programs.
+MUTEX_NAME = "Global\\LTCPlayerSupervisor"
+ERROR_ACCESS_DENIED = 5
 TASK_NAME = "LTC Player"
 DEFAULT_PORT = 7878
 STOP_WAIT_S = 20.0
@@ -213,36 +218,60 @@ def _k32():
 _MUTEX = None
 
 
+LOCAL_MUTEX_NAME = "Local\\LTCPlayerSupervisor"
+ERROR_FILE_NOT_FOUND = 2
+
+
+def _mutex_there(k, name):
+    """True when a mutex called `name` exists, even one this account may
+    not open (another user's): only "not found" means it is not."""
+    import ctypes
+    k.OpenMutexW.restype = ctypes.c_void_p
+    h = k.OpenMutexW(0x00100000, False, name)          # SYNCHRONIZE
+    if h:
+        k.CloseHandle(ctypes.c_void_p(h))
+        return True
+    return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND
+
+
 def take_mutex():
-    """True if this is now the only supervisor in this Windows session."""
+    """True if this is now the only supervisor on this machine. Global\
+    first; "access denied" there means another user's supervisor holds it
+    only when that mutex is really there. An account that may not make
+    Global\ names at all falls back to Local\ and logs it loudly."""
     global _MUTEX
     if not ltcwin.WINDOWS:
         return True
     import ctypes
     k = _k32()
     k.CreateMutexW.restype = ctypes.c_void_p
-    h = k.CreateMutexW(None, False, MUTEX_NAME)
-    err = ctypes.get_last_error()
-    if not h:
-        return False
-    if err == 183:          # ERROR_ALREADY_EXISTS
-        k.CloseHandle(ctypes.c_void_p(h))
-        return False
-    _MUTEX = h
-    return True
+    for name in (MUTEX_NAME, LOCAL_MUTEX_NAME):
+        h = k.CreateMutexW(None, False, name)
+        err = ctypes.get_last_error()
+        if h:
+            if err == 183:          # ERROR_ALREADY_EXISTS
+                k.CloseHandle(ctypes.c_void_p(h))
+                return False
+            _MUTEX = h
+            if name == LOCAL_MUTEX_NAME:
+                log(f"WARNING: the supervisor's lock could not be made "
+                    f"machine wide ({MUTEX_NAME}), so it is {name}: a "
+                    f"supervisor in another Windows session would NOT be "
+                    f"seen. Run only one LTC Player on this machine.")
+            return True
+        if err == ERROR_ACCESS_DENIED and _mutex_there(k, name):
+            return False            # another user's supervisor
+        log(f"the supervisor's lock {name} could not be made (error {err})")
+    log("not starting a second supervisor on a guess: neither lock could "
+        "be made")
+    return False
 
 
 def supervisor_running():
     if not ltcwin.WINDOWS:
         return False
-    import ctypes
     k = _k32()
-    k.OpenMutexW.restype = ctypes.c_void_p
-    h = k.OpenMutexW(0x00100000, False, MUTEX_NAME)    # SYNCHRONIZE
-    if h:
-        k.CloseHandle(ctypes.c_void_p(h))
-        return True
-    return False
+    return any(_mutex_there(k, n) for n in (MUTEX_NAME, LOCAL_MUTEX_NAME))
 
 
 _HANDLER = []
@@ -391,6 +420,7 @@ class Program:
         self.proc = None
         self.pid = None         # also set for a program adopted at start
         self.started = 0.0
+        self.started_wall = 0.0
         self.backoff = 2.0
         self.next_try = 0.0
         self.said_why_not = ""
@@ -401,7 +431,7 @@ class Program:
             return self.proc.poll() is None
         return self.pid is not None and pid_alive(self.pid)
 
-    def start(self, args):
+    def start(self, args, settings=None):
         path = os.path.join(log_dir(), f"{self.name}.log")
         rotate(path)
         self.out = open(path, "a", encoding="utf-8")
@@ -416,6 +446,12 @@ class Program:
         env.pop(ltcwin.PRIORITY_ENV, None)
         if priority_boost_on():
             env[ltcwin.PRIORITY_ENV] = "high"
+        env.pop(ltcwin.FLAMESAFE_ENV, None)
+        if settings is not None and settings.get("flamesafe_config"):
+            # One flamesafe config for all three programs (P1-4): the same
+            # path flamesafe and the deck get on their command lines.
+            env[ltcwin.FLAMESAFE_ENV] = os.path.abspath(
+                settings["flamesafe_config"])
         self.proc = subprocess.Popen([self.exe] + args,
                                      stdin=subprocess.DEVNULL,
                                      stdout=self.out,
@@ -424,6 +460,7 @@ class Program:
                                      creationflags=flags, env=env)
         self.pid = self.proc.pid
         self.started = time.monotonic()
+        self.started_wall = time.time()
         log(f"started {EXE[self.name]} (pid {self.pid}): {' '.join(args)}")
 
     def exited(self):
@@ -478,7 +515,7 @@ def priority_boost_on(settings=None):
 
 def wanted_args(settings):
     port = settings["port"]
-    fs = settings["flamesafe_config"]
+    fs = os.path.abspath(settings["flamesafe_config"])
     fs_ok = bool(settings["run_flamesafe"]) and os.path.isfile(fs)
     out = {}
     out["flamesafe"] = ([fs], "") if fs_ok else (
@@ -541,6 +578,140 @@ def fire_ice_files(settings):
     return out
 
 
+# Set once Windows is shutting down or signing out: nothing is started or
+# restarted after it.
+import threading as _threading
+ENDING = _threading.Event()
+
+
+def end_session_stop(progs, wait_s=ltcwin.END_SESSION_WAIT_S,
+                     breaker=None, clock=time.monotonic):
+    """A Windows shutdown or sign-out (review of PR #38, P1-2): every show
+    program gets its clean stop at once, the deck and the engine first and
+    flamesafe last, so flamesafe's safe zeros go out before Windows ends
+    it. No show-running refusal here: Windows is ending the session either
+    way, and a clean stop is the only kind that sends zeros. Returns the
+    names of the programs still running after `wait_s`."""
+    ENDING.set()
+    breaker = breaker or send_ctrl_break
+    for name in reversed(PROGRAMS):
+        p = progs[name]
+        if p.alive():
+            log(f"Windows is ending the session: stopping {EXE[name]} "
+                f"(pid {p.pid}) with Ctrl-Break")
+            why = breaker(p.pid)
+            if why:
+                log(f"{EXE[name]}: {why}")
+    end = clock() + wait_s
+    while clock() < end:
+        if not any(progs[n].alive() for n in PROGRAMS):
+            log("every show program stopped cleanly for the end of the "
+                "session")
+            return []
+        time.sleep(0.05)
+    left = [EXE[n] for n in PROGRAMS if progs[n].alive()]
+    log(f"still running when Windows ended the session: {', '.join(left)}")
+    return left
+
+
+def _watch_end_session(progs):
+    """The supervisor's own hidden window for WM_QUERYENDSESSION and
+    WM_ENDSESSION. This process has no console, so no console event ever
+    reaches it; without this a shutdown stopped nothing cleanly."""
+    if not ltcwin.WINDOWS:
+        return None
+    done = _threading.Event()
+
+    def stop():
+        _threading.Thread(target=lambda: (end_session_stop(progs),
+                                          done.set()),
+                          daemon=True, name="ltcplay-end-session").start()
+    handler = ltcwin.EndSession(stop, done, log=log)
+    th = ltcwin.end_session_window(handler, "LTC Player end session")
+    if th is None or not th.hwnd:
+        log("could not make the shutdown window: a Windows shutdown or "
+            "sign-out may not stop the show programs cleanly")
+        return None
+    return handler
+
+
+def leave_at_end_of_session(ending, wait_s=ltcwin.END_SESSION_WAIT_S + 1.0):
+    """Before the supervisor ends for a shutdown: the clean stops are done
+    (or the wait is over), AND the window procedure's TRUE has reached
+    Windows (re-review of #47, P2-e: a process that ends first answers 0,
+    which Windows reads as a refusal)."""
+    if ending is None:
+        return
+    ending.done.wait(wait_s)
+    ending.let_windows_have_its_answer()
+
+
+REFUSED_FILE = "ltcplay_engine_refused.txt"   # ltcplay/cli.py writes it
+
+
+def engine_refusal(since):
+    """The engine's own sentence for refusing to start (re-review of #46
+    and #47, P2-g), when it wrote one at or after `since` (time.time()),
+    else ""."""
+    path = os.path.join(appdata_dir(), REFUSED_FILE)
+    try:
+        if os.path.getmtime(path) < since - 1.0:
+            return ""
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    return " ".join(l.strip() for l in lines[1:] if l.strip())
+
+
+def refusal_page(text):
+    """A page for the rack screen saying why the engine did not start (the
+    engine, which serves the rack screen, is not running to say it)."""
+    import html
+    path = os.path.join(appdata_dir(), "engine-refused.html")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("<!doctype html><meta charset=utf-8><title>LTC Player did "
+                 "not start</title><body style=\"background:#200;color:#fff;"
+                 "font:28px sans-serif;padding:40px\"><h1>The show engine did "
+                 "not start</h1><p>" + html.escape(text) + "</p><p>Fix it, "
+                 "then start LTC Player again. Nothing was sent to the "
+                 "rig.</p></body>")
+    return path
+
+
+def say_engine_refused(text, said, show=None):
+    """Logged, and put on the rack screen, once per distinct sentence.
+    `show` opens the page (show_refusal_page, which starts a browser);
+    the selftest passes its own so no browser is started on a runner."""
+    if not text or text == said[0]:
+        return False
+    said[0] = text
+    log(f"the engine refused to start: {text}")
+    try:
+        page = refusal_page(text)
+        (show or show_refusal_page)(page)
+    except Exception as e:
+        log(f"could not show the engine's refusal on the rack screen: {e}")
+    return True
+
+
+def show_refusal_page(page):
+    """The refusal page full screen on the rack monitor (Edge kiosk), or in
+    the default browser."""
+    if not ltcwin.WINDOWS:
+        return
+    cmd = rack_page_command(0, load_settings().get("page_monitor", 1),
+                            monitors(), edge_exe(),
+                            os.path.join(appdata_dir(), "rack-screen"))
+    if cmd:
+        cmd[2] = "file:///" + page.replace("\\", "/")
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+    else:
+        os.startfile(page)
+
+
 def run_loop(open_page=False):
     if not take_mutex():
         log("another LTC Player supervisor is already running; leaving it")
@@ -570,8 +741,17 @@ def run_loop(open_page=False):
                 progs[n].pid = pids[0]
                 log(f"{name} was already running (pid {pids[0]}); adopted")
     handled_stop = 0.0
+    refused_said = [""]
     page_opened = not open_page
+    ending = _watch_end_session(progs)
     while True:
+        if ENDING.is_set():
+            # The clean stops go out on the end-session thread; this
+            # process must not end before they have.
+            leave_at_end_of_session(ending)
+            log("Windows is ending the session; supervisor exiting")
+            keep_awake(False)
+            return 0
         # A stop request newer than anything handled so far.
         try:
             m = os.path.getmtime(stop_file())
@@ -599,6 +779,9 @@ def run_loop(open_page=False):
             p = progs[n]
             args, why_not = want[n]
             if p.proc is not None and p.proc.poll() is not None:
+                if n == "engine":
+                    say_engine_refused(engine_refusal(p.started_wall),
+                                       refused_said)
                 p.exited()
             elif p.proc is None and p.pid is not None and not p.alive():
                 log(f"{EXE[n]} (adopted, pid {p.pid}) has stopped")
@@ -611,9 +794,9 @@ def run_loop(open_page=False):
                     p.said_why_not = why_not
                 continue
             p.said_why_not = ""
-            if now >= p.next_try:
+            if now >= p.next_try and not ENDING.is_set():
                 try:
-                    p.start(args)
+                    p.start(args, settings)
                 except OSError as e:
                     log(f"could not start {EXE[n]}: {e}")
                     p.next_try = now + p.backoff

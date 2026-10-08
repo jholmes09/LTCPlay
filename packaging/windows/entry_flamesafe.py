@@ -41,6 +41,12 @@ def main():
     if rc is not None:
         return rc
     ltcwin.clean_stop_on_logoff()
+    # A shutdown or sign-out reaches a program that has loaded user32 only
+    # through a window (review of PR #38, P1-2): flamesafe stops cleanly,
+    # safe zeros and all, before Windows is told it may go on.
+    import threading
+    stopped = threading.Event()
+    ending = ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)
     ltcwin.say_keep_time("flamesafe")
     if ltcwin.boosted():
         # flamesafe's tick loop runs on this, its main thread.
@@ -50,7 +56,12 @@ def main():
               f"{'Highest' if ok else 'NOT raised (Windows refused)'}",
               flush=True)
     from flamesafe.__main__ import main as flamesafe_main
-    return flamesafe_main(argv)
+    try:
+        return flamesafe_main(argv)
+    finally:
+        stopped.set()            # the zeros are out: Windows may go on
+        if ending is not None:
+            ending.let_windows_have_its_answer()
 
 
 if __name__ == "__main__":

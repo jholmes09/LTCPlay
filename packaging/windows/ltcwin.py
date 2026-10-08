@@ -108,6 +108,185 @@ def clean_stop_on_logoff():
     ctypes.windll.kernel32.SetConsoleCtrlHandler(h, True)
 
 
+# Window messages for a Windows shutdown or sign-out (winuser.h).
+WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
+END_SESSION_WAIT_S = 4.5
+
+
+class EndSession:
+    """What a Windows shutdown or sign-out does to this program, apart from
+    the window that hears it (review of PR #38, P1-2).
+
+    Once a console program has loaded user32.dll (winmm, which keep_time
+    uses for the 1 ms timer, loads it), Windows stops calling its console
+    handler for CTRL_LOGOFF_EVENT and CTRL_SHUTDOWN_EVENT
+    (SetConsoleCtrlHandler's own documentation), so clean_stop_on_logoff
+    alone may never run at a shutdown: for flamesafe that is no safe zeros.
+    A program with a window is asked instead, with WM_QUERYENDSESSION and
+    then WM_ENDSESSION. On the first of either this calls `stop` once (the
+    program's own clean stop) and waits up to `wait_s` for `done` (set once
+    the program has finished stopping: for flamesafe, its zeros are on the
+    wire) before answering, so Windows does not end the process first.
+    It never refuses the shutdown."""
+
+    def __init__(self, stop, done, wait_s=END_SESSION_WAIT_S, log=None):
+        import threading
+        self.stop = stop
+        self.done = done
+        self.wait_s = wait_s
+        self.log = log or (lambda text: None)
+        self._lock = threading.Lock()
+        self.stopped = False
+        self.messages = []
+        # Set as the window procedure hands Windows its answer, so the
+        # program does not end before Windows has it (a window whose thread
+        # is gone answers 0, which reads as a refusal).
+        self.answered = threading.Event()
+
+    def on_message(self, msg, wparam):
+        """The window procedure's answer for `msg`, or None for a message
+        this does not handle."""
+        if msg == WM_QUERYENDSESSION:
+            self.messages.append("query")
+            self._stop_and_wait("Windows is shutting down or signing out")
+            self.answered.set()
+            return 1                      # TRUE: never block the shutdown
+        if msg == WM_ENDSESSION:
+            self.messages.append("end" if wparam else "cancelled")
+            if wparam:
+                self._stop_and_wait("Windows is ending the session")
+            self.answered.set()
+            return 0
+        return None
+
+    def let_windows_have_its_answer(self, timeout=1.0):
+        """Called by the program once its stop is done: when the stop came
+        from Windows, wait (briefly) until the window procedure has
+        answered, so TRUE reaches Windows before the process ends."""
+        import time
+        if self.stopped and self.answered.wait(timeout):
+            time.sleep(0.05)
+
+    def _stop_and_wait(self, why):
+        with self._lock:
+            first = not self.stopped
+            self.stopped = True
+        if first:
+            self.log(f"{why}: stopping cleanly")
+            try:
+                self.stop()
+            except Exception as e:
+                self.log(f"the clean stop could not be started: "
+                         f"{type(e).__name__}: {e}")
+        if not self.done.wait(self.wait_s):
+            self.log(f"not stopped within {self.wait_s:g} s of {why.lower()}")
+
+
+def end_session_window(handler, title="ltcplay end session"):
+    """Windows only: a hidden window on a thread of its own whose window
+    procedure answers WM_QUERYENDSESSION and WM_ENDSESSION through
+    `handler` (an EndSession). Top level, never shown: a message-only
+    window (HWND_MESSAGE) does not get these, because Windows sends them
+    only to top-level windows. Returns the thread, which sets
+    `thread.hwnd` once the window exists (0 when it could not be made), or
+    None off Windows."""
+    if not WINDOWS:
+        return None
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    LRESULT = ctypes.c_ssize_t
+    WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
+                                 wintypes.WPARAM, wintypes.LPARAM)
+
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+                    ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int),
+                    ("hInstance", wintypes.HINSTANCE),
+                    ("hIcon", wintypes.HICON),
+                    ("hCursor", wintypes.HANDLE),
+                    ("hbrBackground", wintypes.HBRUSH),
+                    ("lpszMenuName", wintypes.LPCWSTR),
+                    ("lpszClassName", wintypes.LPCWSTR)]
+    u32.DefWindowProcW.argtypes = (wintypes.HWND, wintypes.UINT,
+                                   wintypes.WPARAM, wintypes.LPARAM)
+    u32.DefWindowProcW.restype = LRESULT
+    u32.CreateWindowExW.restype = wintypes.HWND
+    u32.CreateWindowExW.argtypes = (
+        wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID)
+    u32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                                wintypes.UINT, wintypes.UINT)
+    k32.GetModuleHandleW.restype = wintypes.HMODULE
+
+    def proc(hwnd, msg, wparam, lparam):
+        try:
+            got = handler.on_message(msg, wparam)
+        except Exception:
+            got = None
+        if got is not None:
+            return got
+        return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
+    wndproc = WNDPROC(proc)
+    _KEEP.append(wndproc)
+    ready = threading.Event()
+
+    def run():
+        th.hwnd = 0
+        try:
+            hinst = k32.GetModuleHandleW(None)
+            name = f"ltcplay.endsession.{os.getpid()}.{id(handler)}"
+            wc = WNDCLASSW()
+            wc.lpfnWndProc = wndproc
+            wc.hInstance = hinst
+            wc.lpszClassName = name
+            if not u32.RegisterClassW(ctypes.byref(wc)):
+                return
+            # WS_EX_TOOLWINDOW: never on the taskbar; never ShowWindow'd.
+            th.hwnd = u32.CreateWindowExW(0x80, name, title, 0, 0, 0, 0, 0,
+                                          None, None, hinst, None) or 0
+        finally:
+            ready.set()
+        if not th.hwnd:
+            return
+        msg = wintypes.MSG()
+        while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            u32.TranslateMessage(ctypes.byref(msg))
+            u32.DispatchMessageW(ctypes.byref(msg))
+    th = threading.Thread(target=run, daemon=True, name="ltcwin-endsession")
+    th.hwnd = 0
+    th.start()
+    ready.wait(5.0)
+    return th
+
+
+def stop_cleanly_at_shutdown(program, done, log=None):
+    """For a console program (flamesafe, the engine): a shutdown or sign-out
+    raises the same SIGBREAK its clean stop already handles, and waits for
+    `done` (set once that stop has finished). Returns the EndSession, or
+    None off Windows or when the window could not be made."""
+    if not WINDOWS:
+        return None
+    import signal
+
+    def say(text):
+        print(f"{program}: {text}", flush=True)
+    handler = EndSession(lambda: signal.raise_signal(signal.SIGBREAK), done,
+                         log=log or say)
+    th = end_session_window(handler, f"{program} end session")
+    if th is None or not th.hwnd:
+        say("could not make its shutdown window: a Windows shutdown or "
+            "sign-out may end it without its clean stop")
+        return None
+    return handler
+
+
 def package_name():
     """The full name of the MSIX package this process runs inside (another
     app's container, e.g. the Claude desktop app's shell), or "" when it
@@ -221,6 +400,11 @@ def keep_time(above_normal=True):
 
 
 PRIORITY_ENV = "LTCPLAY_PRIORITY"      # "high": set by the supervisor
+# The ONE flamesafe config every show program uses, set by the supervisor
+# from showpc.json (review of PR #38, P1-4). flamesafe and the deck get it on
+# their command line too; the engine refuses to start when its own settings
+# name a different one.
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
 
 
 def boosted():
