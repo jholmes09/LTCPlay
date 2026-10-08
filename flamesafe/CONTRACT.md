@@ -653,8 +653,13 @@ every heartbeat; any failure lets the hold go and is journaled):
 
 - a PIN session, on the network AND on the show machine itself (the one
   route that needs a session even on loopback);
-- `screen_arming` on in `ltcplay_remote.json` (default on; `false` turns
-  screen arming off without a code change; a broken file reads as off);
+- `screen_arming` on in `ltcplay_remote.json`: **off by default** since the
+  review of PR #43 (2026-10-05, P0-4), until PR #41's own safety review
+  decides; only the JSON word `true` turns it on, and a broken file reads as
+  off. While it is off the engine refuses every `arm-hold` before looking at
+  anything else, refuses a screen's per-group Disarm (Disarm every flame
+  group and the Stream Deck still work), and `ltc deck` does not read the
+  screen holds at all (no `ScreenKeys` is made);
 - the page's own status no older than 1 s, and flamesafe's status (the
   `status_mirror_port` copy) no older than 1 s, so the page is showing
   flamesafe's real state, not a cached one;
