@@ -1251,11 +1251,35 @@ def take_lock(spec, clock=time.monotonic, sleep=time.sleep):
             sleep(0.05)
 
 
+def _raise_priority():
+    """Windows, with LTCPLAY_PRIORITY=high (the Windows supervisor's
+    scheduling protection, show PC 2026-10-04: MadMapper's video decoding
+    starved the show programs): the audio process runs at High priority and
+    this thread at Highest. Unset (the Mac, and every other use), it does
+    nothing. Never raises."""
+    if os.environ.get("LTCPLAY_PRIORITY") != "high" or \
+            not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentThread.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k32.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+        k32.SetPriorityClass(wintypes.HANDLE(k32.GetCurrentProcess()), 0x80)
+        k32.SetThreadPriority(wintypes.HANDLE(k32.GetCurrentThread()), 2)
+    except Exception:
+        pass
+
+
 def child_main(conn, arr, spec):
     """The audio process. Runs until told to close, or until the main
     program goes away (its end of the pipe closes), so the sound never
     outlives the program that started it. Only one runs at a time on this
     computer: a second refuses, says so, and exits."""
+    _raise_priority()
     try:
         from . import onlyone
         try:

@@ -26,7 +26,7 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
             "log_dir", "groups"}
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
-             "arm_ip", "arm_port"}
+             "arm_ip", "arm_port", "status_mirror_port"}
 GROUP_KEYS = {"name", "safety", "fire", "arm_value"}
 
 
@@ -83,6 +83,7 @@ class Config:
     __slots__ = ("universe", "destination_ip", "destination_port",
                  "link_listen_ip", "link_listen_port", "link_status_ip",
                  "link_status_port", "link_arm_ip", "link_arm_port",
+                 "link_status_mirror_port",
                  "link_key", "gflame_range", "arm_value",
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
                  "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
@@ -260,9 +261,30 @@ def from_dict(d, source="config"):
     else:
         c.link_arm_ip = None
         c.link_arm_port = None
+    # A second copy of every status frame, for ltcplay's engine (the remote
+    # page's flame lamps) while the Stream Deck process holds status_port.
+    # Optional, loopback (status_ip), display only: the same keyed frame,
+    # and nothing ever comes back on it. A port of its own, never one that
+    # already means something else.
+    if "status_mirror_port" in link:
+        c.link_status_mirror_port = _int(link, "status_mirror_port",
+                                         PORT_MIN, PORT_MAX,
+                                         "link status_mirror_port")
+        for other_ip, other_port, other_name in (
+                (c.link_listen_ip, c.link_listen_port, "listen_port"),
+                (c.link_status_ip, c.link_status_port, "status_port"),
+                (c.link_arm_ip, c.link_arm_port, "arm_port")):
+            if c.link_status_ip == other_ip and \
+                    c.link_status_mirror_port == other_port:
+                raise ConfigError(f"link status_mirror_port is the same as "
+                                  f"{other_name}; set it to a port of its "
+                                  f"own.")
+    else:
+        c.link_status_mirror_port = None
     if ipaddress.ip_address(c.destination_ip).is_loopback and \
             c.destination_port in (c.link_listen_port, c.link_status_port,
-                                   c.link_arm_port):
+                                   c.link_arm_port,
+                                   c.link_status_mirror_port):
         raise ConfigError(f"destination port {c.destination_port} is one of "
                           f"the link ports; the flame universe would land on "
                           f"the link.")

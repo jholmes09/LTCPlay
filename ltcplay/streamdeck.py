@@ -221,6 +221,25 @@ ARM_HOLD_S = 0.6
 # flinch-press, short enough that a deliberate re-arm a few seconds later
 # is never mistaken for one.
 REARM_REFRACTORY_S = 2.0
+# The keys are drawn every pass only while something on them moves (a key
+# held, a screen hold, a hold ring filling); otherwise every DRAW_IDLE_S,
+# fast enough for the 2 Hz blink. Show PC, 2026-10-04: drawing all six keys
+# at 20 Hz took 14% of a core with nothing happening. The arm link, key
+# reads and holds still run every pass.
+DRAW_IDLE_S = 0.2
+# Reset (Jeff's approved design, decisions of 2026-09-26): Abort fires
+# after a 0.5 s hold and latches. While latched the deck border is solid
+# red, the Abort key reads RESET (flashing), every other key is greyed, and
+# one press of the Abort key is Reset. Meaning wins over grey: a group
+# flamesafe still reports armed (or a fault, or no link) shows its real
+# state, and a tap on it disarms it. A press only counts
+# as Reset once this deck has shown RESET for RESET_SHOWN_S (PR #43 review):
+# before that it is an Abort again, so a reflexive second press after an
+# Abort from another screen can never undo it. Reset's own rules still
+# apply (an operator chosen; refused while the Abort is still fading), and
+# after Reset every flame group stays disarmed until it is armed again.
+RESET_SHOWN_S = 0.5
+LATCHED_GREY = (30, 28, 26)   # a key with nothing to do while latched
 
 # Item 1's second line of defence (Controller._spoof_reason): a mismatch
 # between what this deck sent and what flamesafe reports back must PERSIST
@@ -547,6 +566,14 @@ _SHORT_REASON = {
     # link. Hand-copied: this module never imports flamesafe.
     "Another sender is on the arm link: a cycle cannot arm until it "
     "stops. Cycle the arm again once it has gone.": "OTHER SENDER",
+    # Second-copy guard (2026-10-03, flamesafe/composer.py's
+    # FLAME_OTHER_SENDER): a second sender on the show program's flame link
+    # (every group disarmed), that link just changing hands (which every
+    # normal ltcplay restart does, so this shows for about half a second
+    # after one), or a flood on it.
+    "Another sender is on the show program link, or it just changed "
+    "hands: every group is disarmed and a cycle cannot arm until that has "
+    "settled. Cycle the arm again once it has.": "OTHER SENDER",
     # The show's Abort from the rack screen or phone (flamesafe's
     # disarm_all, CONTRACT.md 2026-10-02): flashing, cycle the arm.
     "Disarmed by the show's Abort. Cycle the arm to re-arm.": "ABORTED",
@@ -647,6 +674,22 @@ def releases(prev, cur):
 # web.py or schedule_service.py: this module may run as its own process,
 # entirely separate from `ltc serve`.
 # --------------------------------------------------------------------------
+_OPENER = []
+
+
+def _opener():
+    """One urllib opener for the whole process, built on first use (no
+    proxies: the engine is on this machine). Building one per request costs
+    about 20 ms of CPU on Python 3.12, which makes a fresh TLS context and
+    loads the system certificates every time, and on Windows the memory
+    grew steadily with it (the deck program, show PC and CI, 2026-10-04:
+    about 14 to 190 MB an hour at the 4 Hz engine poll)."""
+    if not _OPENER:
+        _OPENER.append(urllib.request.build_opener(
+            urllib.request.ProxyHandler({})))
+    return _OPENER[0]
+
+
 POLL_HZ = 4.0            # how often the BACKGROUND thread refreshes the
                          # cache; the main loop never waits on this
 FETCH_TIMEOUT_S = 1.0    # per HTTP GET, same as before -- it just no
@@ -747,6 +790,336 @@ class LocalSchedule:
         before the first successful poll). Never touches the network."""
         with self._lock:
             return self._show_running
+
+
+ENGINE_POST_TIMEOUT_S = 3.0
+ENGINE_QUEUE_MAX = 50
+
+
+class EngineResult:
+    """What a press handed to EngineConductor answers at once: Controller
+    journals `sentence`, as a fault when `ok` is False."""
+
+    def __init__(self, ok, sentence):
+        self.ok = ok
+        self.sentence = sentence
+
+
+class EngineConductor:
+    """The engine's show conductor, for Controller, reached over this
+    machine's loopback (PR #43 review, finding 8: `ltc deck` passed
+    conductor=None, so the deck's Abort only disarmed flames while lasers,
+    video and music carried on, and Hold, Resume and Reset did nothing).
+
+    Duck-typed like conductor.Conductor as Controller uses it: hold(),
+    resume(), abort() and reset() with who and screen, and snapshot().
+
+    Each press is POSTed to `ltc serve`'s own loopback remote routes
+    (/api/remote/hold, resume, abort, reset): the same scheduler and
+    conductor path every other screen's press takes, journaled by the
+    engine with the operator and "Stream Deck". The POST runs on a
+    BACKGROUND thread, never the main loop (the same rule as LocalSchedule
+    and DeckJournal: a slow or hung web server must not delay a key read
+    or an arm frame), so a press returns at once saying it was sent; the
+    engine's answer is journaled when it comes, a refusal or no answer as
+    a fault. The deck's own Abort has already sent every group's wanted
+    state false on the arm link before this is asked anything.
+
+    snapshot() never touches the network and never raises: a background
+    poll caches GET /api/conductor. "latched" is the newer of this deck's
+    own last Abort or Reset and the engine's last answer, so the deck
+    reads latched from the moment its Abort is pressed, and falls back to
+    its own presses alone while the engine cannot be reached (an unknown
+    engine never turns the Abort key into Reset by itself)."""
+
+    def __init__(self, base_url, journal=None, poll_hz=POLL_HZ,
+                 clock=time.monotonic, wall=time.time, poster=None,
+                 fetcher=None):
+        self.base_url = base_url.rstrip("/")
+        self._journal = journal or (lambda text, **kw: None)
+        self._period = 1.0 / poll_hz
+        self._clock = clock
+        self._wall = wall
+        self._poster = poster or self._http_post
+        self._fetch = fetcher or self._http_get
+        self._lock = threading.Lock()
+        self._engine = None        # (snapshot dict, monotonic time it came)
+        self._local = (False, None)   # (latched, monotonic time of press)
+        self._q = queue.Queue(maxsize=ENGINE_QUEUE_MAX)
+        self._stop = threading.Event()
+        self._threads = []
+        self.dropped = 0
+        # The last press the engine did not take (or could not be reached
+        # for), for the deck's own keys to show, not only its console; ""
+        # once a press is taken again (fix round 2, E).
+        self.fault = ""
+        self._last_ok = None      # when the engine last answered a poll
+
+    def start(self):
+        if self._threads:
+            return
+        self._started_at = self._clock()
+        self._stop.clear()
+        for target, name in ((self._post_loop, "ltcplay-deck-engine-press"),
+                             (self._poll_loop, "ltcplay-deck-engine-poll")):
+            t = threading.Thread(target=target, daemon=True, name=name)
+            t.start()
+            self._threads.append(t)
+
+    def stop(self):
+        self._stop.set()
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass
+        for t in self._threads:
+            t.join(timeout=2.0)
+        self._threads = []
+
+    # -- presses ------------------------------------------------------------
+    def hold(self, who="", screen="Stream Deck"):
+        return self._press("hold", who, screen)
+
+    def resume(self, who="", screen="Stream Deck"):
+        return self._press("resume", who, screen)
+
+    def abort(self, who="", screen="Stream Deck"):
+        with self._lock:
+            self._local = (True, self._clock())
+        return self._press("abort", who, screen)
+
+    def reset(self, who="", screen="Stream Deck"):
+        with self._lock:
+            self._local = (False, self._clock())
+        return self._press("reset", who, screen)
+
+    def _press(self, name, who, screen):
+        body = {"who": who, "screen": screen or "Stream Deck",
+                "seen": int(self._wall() * 1000)}
+        if name == "abort":
+            body["confirmed"] = True
+            # Abort never waits behind another press (fix round 2, D: a deck
+            # Abort waited 2.6 s behind a slow Hold): a thread of its own,
+            # at once, like the scheduler's own Abort bypass.
+            threading.Thread(target=self._post_one, args=(name, body),
+                             daemon=True,
+                             name="ltcplay-deck-engine-abort").start()
+            return EngineResult(True, "abort sent to the engine's show "
+                                      "conductor at once; the engine's "
+                                      "journal says what it did.")
+        try:
+            self._q.put_nowait((name, body))
+        except queue.Full:
+            self.dropped += 1
+            return EngineResult(False, f"{name} could NOT be sent to the "
+                                       f"engine's show conductor: too many "
+                                       f"presses are waiting for it.")
+        return EngineResult(True, f"{name} sent to the engine's show "
+                                  f"conductor; the engine's journal says "
+                                  f"what it did.")
+
+    def _post_loop(self):
+        while not self._stop.is_set():
+            item = self._q.get()
+            if item is None:
+                return
+            self._post_one(*item)
+
+    def _post_one(self, name, body):
+        """One press to the engine; its answer journaled, and kept as
+        the deck's engine fault when the engine did not take it."""
+        try:
+            ok, text = self._poster("/api/remote/" + name, body)
+        except Exception as e:
+            ok, text = False, f"{type(e).__name__}: {e}"
+        self.fault = "" if ok else f"{name.title()}: {text}"
+        if ok:
+            line = f"Stream Deck {name.title()}: the engine says: {text}"
+        else:
+            line = (f"Stream Deck {name.title()}: the engine's show "
+                    f"conductor did NOT take it: {text}")
+        try:
+            self._journal(line, fault=not ok, action=name,
+                          who=body.get("who") or "",
+                          screen=body.get("screen") or "Stream Deck")
+        except Exception:
+            pass
+
+    def _http_post(self, path, body):
+        """(ok, sentence) for one blocking POST, from the press thread."""
+        req = urllib.request.Request(
+            self.base_url + path, data=json.dumps(body).encode("utf-8"),
+            method="POST", headers={"Content-Type": "application/json"})
+        opener = _opener()
+        try:
+            with opener.open(req, timeout=ENGINE_POST_TIMEOUT_S) as r:
+                doc = json.loads(r.read().decode("utf-8") or "{}")
+            return bool(doc.get("ok", True)), str(doc.get("text") or "done")
+        except urllib.error.HTTPError as e:
+            try:
+                doc = json.loads(e.read().decode("utf-8") or "{}")
+                why = doc.get("text") or doc.get("error") or str(e)
+            except Exception:
+                why = str(e)
+            return False, str(why)
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            return False, (f"ltc serve could not be reached at "
+                           f"{self.base_url} ({e})")
+
+    # -- what the engine says -----------------------------------------------
+    def _poll_loop(self):
+        while not self._stop.is_set():
+            got = self._fetch("/api/conductor")
+            snap = got.get("conductor") if isinstance(got, dict) else None
+            with self._lock:
+                self._engine = ((snap, self._clock())
+                                if isinstance(snap, dict) else None)
+                if self._engine is not None:
+                    self._last_ok = self._clock()
+            self._stop.wait(self._period)
+
+    def _http_get(self, path):
+        opener = _opener()
+        try:
+            with opener.open(self.base_url + path,
+                             timeout=FETCH_TIMEOUT_S) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+
+    def unreachable(self):
+        """True once the engine has not answered a poll for 2 s (or never
+        has, after the first 2 s): for the deck's keys to show."""
+        with self._lock:
+            last = self._last_ok
+        if last is None:
+            return bool(self._threads) and self._clock() - \
+                self._started_at > 2.0
+        return self._clock() - last > 2.0
+
+    def snapshot(self):
+        """{"latched", "look"}: never the network, never raises."""
+        with self._lock:
+            engine, (local, pressed_at) = self._engine, self._local
+        if engine is not None and (pressed_at is None or
+                                   engine[1] > pressed_at):
+            snap = engine[0]
+            return {"latched": bool(snap.get("latched")),
+                    "look": snap.get("look") or ""}
+        return {"latched": local, "look": ""}
+
+
+# --------------------------------------------------------------------------
+# Screen and browser arming (Jeff, 2026-10-03): a signed-in operator's
+# "hold to arm" on the remote page (ltcplay/remote.py) reaches flamesafe
+# THROUGH THIS PROCESS, as a remote press of the same group key. There is
+# still exactly one sender on flamesafe's arm link (this deck process), so
+# every flamesafe rule (consent, dwell, chatter, edge quiet, the round-4
+# veto, the post-Abort window, the second-copy guard) applies unchanged,
+# and so does every deck rule (the hold, the re-arm refractory window, the
+# latched refusal, the operator gate). See flamesafe/CONTRACT.md, "Arming
+# from a screen".
+#
+# A screen hold counts only while the engine says it is fresh, and only
+# while this process has heard from the engine within SCREEN_STALE_S: a
+# dropped page, a dead engine or an unreachable one all read as "let go".
+# It fires only once BOTH the deck's own ARM_HOLD_S has run since this
+# process saw the press AND the engine has seen the page's heartbeats
+# carry on for SCREEN_HOLD_S (held_s, measured from beats the engine
+# actually received), so a page that drops before then can never finish
+# an arm.
+# --------------------------------------------------------------------------
+SCREEN_POLL_HZ = 20.0
+SCREEN_STALE_S = 0.3
+SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
+
+
+class ScreenKeys:
+    """The remote page's arm holds and per-group disarms, read from the
+    engine's /api/remote/deck-input on a BACKGROUND thread, like
+    LocalSchedule: holds() and new_disarms() never touch the network."""
+
+    def __init__(self, base_url, poll_hz=SCREEN_POLL_HZ, fetcher=None,
+                 clock=time.monotonic):
+        self.base_url = base_url.rstrip("/")
+        self._period = 1.0 / poll_hz
+        self._fetch = fetcher or self._http_fetch
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._last = None          # (answer, clock) of the last good fetch
+        self._seen_disarm = None   # highest disarm id already handed out
+        self._pending = []
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread is not None:
+            return self
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="ltcplay-deck-screen-poll")
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        t, self._thread = self._thread, None
+        if t is not None:
+            t.join(timeout=2.0)
+
+    def _loop(self):
+        while not self._stop.is_set():
+            self.poll_once()
+            self._stop.wait(self._period)
+
+    def poll_once(self):
+        ans = self._fetch("/api/remote/deck-input")
+        with self._lock:
+            if not isinstance(ans, dict):
+                self._last = None          # unreachable: every hold let go
+                return
+            self._last = (ans, self._clock())
+            evs = [e for e in (ans.get("disarms") or [])
+                   if isinstance(e, dict) and isinstance(e.get("id"), int)]
+            if self._seen_disarm is None:
+                # Disarms from before this process started are history.
+                self._seen_disarm = max([e["id"] for e in evs] + [0])
+                return
+            for e in sorted(evs, key=lambda e: e["id"]):
+                if e["id"] > self._seen_disarm:
+                    self._pending.append(e)
+                    self._seen_disarm = e["id"]
+
+    def _http_fetch(self, path):
+        try:
+            with urllib.request.urlopen(self.base_url + path,
+                                        timeout=FETCH_TIMEOUT_S) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (OSError, ValueError, urllib.error.URLError):
+            return None
+
+    def holds(self):
+        """{group index: hold} for every fresh screen hold, or {} when the
+        engine has not answered within SCREEN_STALE_S, says screen arming
+        is off, or has none."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return {}
+        ans = last[0]
+        if ans.get("enabled") is not True:
+            return {}
+        out = {}
+        for h in ans.get("holds") or []:
+            if isinstance(h, dict) and h.get("fresh") is True and \
+                    isinstance(h.get("group"), int):
+                out[h["group"]] = h
+        return out
+
+    def new_disarms(self):
+        with self._lock:
+            out, self._pending = self._pending, []
+        return out
 
 
 JOURNAL_QUEUE_MAX = 1000
@@ -1196,7 +1569,7 @@ class Controller:
     def __init__(self, arm_socket, status_socket, group_names, deck_factory=Deck,
                 operator_provider=lambda: "", show_running_provider=lambda: None,
                 conductor=None, journal=None, clock=time.monotonic,
-                sleep=time.sleep):
+                sleep=time.sleep, screen=None):
         if not (1 <= len(group_names) <= GROUP_KEY_LIMIT):
             raise ValueError(
                 f"the Stream Deck has {GROUP_KEY_LIMIT} arm keys; it was "
@@ -1216,6 +1589,7 @@ class Controller:
         self._clock = clock
         self._sleep = sleep
         self._abort_hold = AbortHold()
+        self._reset_shown_since = None   # see RESET_SHOWN_S
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -1223,6 +1597,16 @@ class Controller:
         self._arm_holds = [AbortHold(hold_s=ARM_HOLD_S)
                           for _ in self.names]
         self._disarmed_at = [None] * len(self.names)
+        # Screen arming (2026-10-03): the remote page's holds, as remote
+        # presses of the group keys. _vholds: group -> the engine's hold id
+        # this deck has seen; _vpressed: the ones whose arm-hold timer it
+        # actually started; _vwho: (operator, device); _vheld: the engine's
+        # beat-evidenced held_s. See ScreenKeys and screen_pass.
+        self.screen = screen
+        self._vholds = {}
+        self._vpressed = set()
+        self._vwho = {}
+        self._vheld = {}
         # Item 1's second line of defence: what THIS deck itself last sent,
         # so a status frame that disagrees can be caught even if a rogue
         # sender briefly won the arm link's own lock (arminput.py).
@@ -1273,6 +1657,15 @@ class Controller:
         self._abort_hold.release()
         for h in self._arm_holds:
             h.release()
+        self._vholds.clear()
+        self._vpressed.clear()
+        self._vwho.clear()
+        self._vheld.clear()
+
+    def animating(self):
+        """True while something on the keys moves every pass: a key held
+        down (a hold ring filling) or a screen hold in progress."""
+        return any(self._prev_keys) or bool(getattr(self, "_vpressed", ()))
 
     def _latched_now(self):
         if self.conductor is not None:
@@ -1285,9 +1678,14 @@ class Controller:
                 return False
         return self._latched
 
-    def _do_abort(self):
+    def _do_abort(self, again=False):
         """ALWAYS real: every group's wanted goes false on the arm link at
         once, whether or not a conductor is connected (module docstring).
+        The arm link goes FIRST, before the engine is asked anything.
+
+        `again`: the rig is already aborted (pressed while latched, fix
+        round 2, C): the arm link is sent false again and that is all; the
+        engine already has its Abort.
 
         Also starts every group's own re-arm refractory window (item 8):
         Abort is itself the panic button, and a reflexive "make sure it's
@@ -1299,7 +1697,14 @@ class Controller:
         now = self._clock()
         self._disarmed_at = [now] * len(self.names)
         who = self.operator_provider() or ""
-        if self.conductor is not None:
+        if again:
+            self._log("Stream Deck Abort pressed again while aborted: every "
+                      "flame group's wanted state was sent false again. "
+                      "Reset is one press of the Abort key once it shows "
+                      "RESET.", action="abort",
+                      who=who,
+                      screen="Stream Deck")
+        elif self.conductor is not None:
             r = self.conductor.abort(who=who, screen="Stream Deck")
             self._log(f"Stream Deck Abort: {r.sentence}", fault=not r.ok,
                       action="abort", who=who, screen="Stream Deck")
@@ -1389,19 +1794,83 @@ class Controller:
         left = REARM_REFRACTORY_S - (now - at)
         return left if left > 0 else 0.0
 
-    def _do_disarm(self, i):
+    def _do_disarm(self, i, who=None, screen="Stream Deck"):
         """Disarm stays an instant single tap, no hold, gate or no gate
         (Jeff, 2026-10-01; items 5 and 7: disarm is NEVER behind the
         operator gate, and NEVER waits on anything -- flip `wanted` and
         send BEFORE looking up who, so even a slow operator_provider()
-        cannot delay the disarm itself)."""
+        cannot delay the disarm itself). `who` and `screen` are given for a
+        disarm pressed on the remote page (screen_pass)."""
         self.arm.set_group(i, False)
         self.arm.send(self.names)
         self._disarmed_at[i] = self._clock()
-        who = self.operator_provider() or ""
-        self._log(f"Stream Deck: {self.names[i]} disarm pressed by "
+        if who is None:
+            who = self.operator_provider() or ""
+        where = "" if screen == "Stream Deck" else f" on the {screen}"
+        self._log(f"Stream Deck: {self.names[i]} disarm pressed{where} by "
                   f"{who or 'an operator the deck could not name'}.",
-                  action="disarm", who=who, screen="Stream Deck")
+                  action="disarm", who=who, screen=screen)
+
+    def screen_pass(self):
+        """Once per MAIN-LOOP pass, before tick(): the remote page's
+        per-group disarms (instant, like a tap) and its arm holds (remote
+        presses of the group key; see ScreenKeys). A screen hold goes
+        through _on_group_press's own rules (refractory, operator gate);
+        it never disarms, and it never starts while the group is already
+        wanted. Anything the engine stops reporting (let go, a dropped
+        page, an Abort, an unreachable engine) releases the hold at once."""
+        if self.screen is None:
+            return
+        now = self._clock()
+        for ev in self.screen.new_disarms():
+            i = ev.get("group")
+            if not isinstance(i, int) or not 0 <= i < len(self.names):
+                continue
+            self._screen_release(i)
+            if self.arm.wanted[i]:
+                self._do_disarm(i, who=str(ev.get("who") or ""),
+                                screen=str(ev.get("device") or "screen"))
+        holds = {} if self._latched_now() else self.screen.holds()
+        for i in list(self._vholds):
+            h = holds.get(i)
+            if h is None or h.get("id") != self._vholds[i]:
+                self._screen_release(i)
+        for i, h in holds.items():
+            if not 0 <= i < len(self.names):
+                continue
+            if i in self._vholds:
+                self._vheld[i] = float(h.get("held_s") or 0.0)
+                continue
+            self._vholds[i] = h.get("id")
+            self._vheld[i] = float(h.get("held_s") or 0.0)
+            who = str(h.get("who") or "")
+            device = str(h.get("device") or "screen")
+            self._vwho[i] = (who, device)
+            if self.arm.wanted[i] or self._prev_keys[GROUP_KEYS[i]]:
+                continue            # already wanted, or the key itself is down
+            left = self._in_rearm_refractory(i, now)
+            if left > 0:
+                self._log(f"Stream Deck: {self.names[i]} arm hold on the "
+                          f"{device} by {who or 'someone'} refused, "
+                          f"{left:.1f} s left in the re-arm refractory "
+                          f"window after its last disarm.",
+                          action="arm-refused", who=who, screen=device)
+                continue
+            refusal = operator_gate(who, "arm")
+            if refusal:
+                self._log(f"Stream Deck: {refusal}", action="arm")
+                continue
+            self._arm_holds[i].press(now)
+            self._vpressed.add(i)
+
+    def _screen_release(self, i):
+        self._vholds.pop(i, None)
+        self._vwho.pop(i, None)
+        self._vheld.pop(i, None)
+        if i in self._vpressed:
+            self._vpressed.discard(i)
+            if not self._prev_keys[GROUP_KEYS[i]]:
+                self._arm_holds[i].release()
 
     def _on_group_press(self, i, now):
         """One group key went down. Disarm fires at once; arming only
@@ -1427,7 +1896,7 @@ class Controller:
             return
         self._arm_holds[i].press(now)
 
-    def _do_arm_fire(self, i, now):
+    def _do_arm_fire(self, i, now, who=None, screen="Stream Deck"):
         """A group's arm-hold reached ARM_HOLD_S: send wanted=True, but
         only after two independent guards (item 3, round 2 of the safety
         review): a latched rig (post-Abort, pre-Reset) and the re-arm
@@ -1460,17 +1929,19 @@ class Controller:
                       f"refractory window (a disarm or Reset landed during "
                       f"the hold); refused.", action="arm-refused")
             return
-        who = self.operator_provider() or ""
+        if who is None:
+            who = self.operator_provider() or ""
         refusal = operator_gate(who, "arm")
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
             return
         self.arm.set_group(i, True)
         self.arm.send(self.names)
-        self._log(f"Stream Deck: {self.names[i]} arm pressed (held "
-                  f"{ARM_HOLD_S:g} s) by "
+        held = (f"held {ARM_HOLD_S:g} s" if screen == "Stream Deck" else
+                f"held {SCREEN_HOLD_S:g} s on the {screen}")
+        self._log(f"Stream Deck: {self.names[i]} arm pressed ({held}) by "
                   f"{who or 'an operator the deck could not name'}.",
-                  action="arm", who=who, screen="Stream Deck")
+                  action="arm", who=who, screen=screen)
 
     def run_once(self, down):
         """One pass given ONE of the deck's 6-key snapshots (item 3 of
@@ -1497,11 +1968,27 @@ class Controller:
         now = self._clock()
         latched = self._latched_now()
         if latched:
-            # Aborted: only a plain press of the Abort/Reset key (index 2)
-            # does anything (the demo's own rule, kept exactly).
+            # Aborted (Jeff's approved design, see RESET_SHOWN_S):
+            # - the Abort key reads RESET; one press is Reset, but only once
+            #   this deck has shown RESET for RESET_SHOWN_S. Before that a
+            #   press is an Abort again (every group's wanted false on the
+            #   arm link), so a reflexive "make sure" press after an Abort
+            #   from another screen cannot undo it;
+            # - Start and Hold are greyed and do nothing;
+            # - a group key disarms that group if this deck wants it or
+            #   flamesafe still reports it armed: disarm is never behind
+            #   any gate. Nothing can be armed.
             for k in edges(self._prev_keys, down):
                 if k == TOP_ABORT:
-                    self._do_reset()
+                    shown = self._reset_shown_since
+                    if shown is not None and now - shown >= RESET_SHOWN_S:
+                        self._do_reset()
+                    else:
+                        self._do_abort(again=True)
+                elif k in GROUP_KEYS:
+                    i = k - GROUP_KEYS[0]
+                    if self.arm.wanted[i] or self._reported_armed(i):
+                        self._do_disarm(i)
             self._abort_hold.release()
             for h in self._arm_holds:
                 h.release()
@@ -1550,9 +2037,8 @@ class Controller:
         now = self._clock()
         if self._latched_now():
             # While latched, run_once's own latched branch releases every
-            # hold on its next call; there is nothing for tick() to fire
-            # here, and the only key that does anything (Reset) is instant,
-            # not hold-based.
+            # hold; nothing here fires (Reset is a single press, handled
+            # there).
             return
         if self._prev_keys[TOP_ABORT] and self._abort_hold.fired(now):
             self._do_abort()
@@ -1568,8 +2054,19 @@ class Controller:
             return
         for i in range(len(self.names)):
             gk = GROUP_KEYS[i]
-            if self._prev_keys[gk] and self._arm_holds[i].fired(now):
-                self._do_arm_fire(i, now)
+            if self._prev_keys[gk]:
+                if self._arm_holds[i].fired(now):
+                    self._do_arm_fire(i, now)
+            elif i in self._vpressed:
+                # A screen hold: the deck's own ARM_HOLD_S AND the engine's
+                # beat-evidenced SCREEN_HOLD_S, both, before anything goes
+                # out. Checked before fired(), which consumes the press.
+                if self._vheld.get(i, 0.0) < SCREEN_HOLD_S:
+                    continue
+                if self._arm_holds[i].fired(now):
+                    self._vpressed.discard(i)
+                    who, device = self._vwho.get(i, ("", "screen"))
+                    self._do_arm_fire(i, now, who=who, screen=device)
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
@@ -1729,12 +2226,24 @@ class Controller:
         d = ImageDraw.Draw(canvas)
         now = self._clock()
         latched = self._latched_now()
+        self._track_reset_face(latched, now)
         abort_frac = 1.0 if latched else self._abort_hold.fraction(now)
         draw_outline_chase(d, chase, abort_frac)
         live = abort_is_live(self._anything_armed_or_wanted(),
                              self.show_running_provider())
         b0 = face_box(TOP_START)
-        if latched:
+        engine_fault = (getattr(self.conductor, "fault", "") or
+                        (self.conductor is not None and
+                         hasattr(self.conductor, "unreachable") and
+                         self.conductor.unreachable()))
+        if engine_fault:
+            # Fix round 2, E: the engine did not take a press (or cannot be
+            # reached): said on the deck itself, not only its console.
+            fonts.show_key(d, b0, ["ENGINE", "FAULT"],
+                           BLACK if blink_on else RED,
+                           bg=RED if blink_on else None, kind="sans",
+                           max_size=16)
+        elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
         else:
             op = self.operator_provider()
@@ -1755,7 +2264,7 @@ class Controller:
         b2 = face_box(TOP_ABORT)
         if latched:
             fonts.show_key(d, b2, ["RESET"], BLACK if blink_on else RED,
-                           bg=RED if blink_on else None)
+                           bg=RED if blink_on else None, max_size=26)
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
         fault, confirmed = self._top_fault_confirmed()
@@ -1787,8 +2296,15 @@ class Controller:
                 # run_once already released every arm-hold the instant it
                 # entered the latched branch, so there is no hold left to
                 # draw.
-                look = group_look(self.status_for(name), fault=fault,
-                                  confirmed=confirmed)
+                # Jeff's design greys every key but RESET while latched;
+                # meaning wins: a group still reported armed, a fault or no
+                # link keeps its real look. Only a group that is really off
+                # (disarmed or held) greys out.
+                st = self.status_for(name)
+                look = group_look(st, fault=fault, confirmed=confirmed)
+                if st is not None and not fault and \
+                        st.get("armed") != "armed":
+                    look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
                 arm_key_image(fonts, d, box, name, look, blink_on)
                 continue
             hold_frac = self._arm_holds[i].fraction(now)
@@ -1799,6 +2315,19 @@ class Controller:
                               confirmed=confirmed)
             arm_key_image(fonts, d, box, name, look, blink_on)
         return canvas
+
+    def _reported_armed(self, i):
+        st = self.status_for(self.names[i])
+        return bool(st) and st.get("armed") == "armed"
+
+    def _track_reset_face(self, latched, now):
+        """Called by draw(): remembers when this deck first drew RESET on
+        the Abort key. A press counts as Reset only RESET_SHOWN_S after
+        that; un-latched, it is forgotten."""
+        if not latched:
+            self._reset_shown_since = None
+        elif self._reset_shown_since is None:
+            self._reset_shown_since = now
 
     def _held_hint(self):
         """Whether the show looks HELD right now, for the HOLD key's own
@@ -1861,6 +2390,7 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     chase = 0
     period = 1.0 / ARM_SEND_HZ
     outage = _DeckOutage(journal)
+    last_draw = None
     while True:
         deck = None
         try:
@@ -1882,8 +2412,15 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 # since the last read, in order, not just the latest one
                 # -- a quick tap-and-release between read cycles must not
                 # vanish.
+                moved = False
                 for down in deck.keys_down():
                     controller.run_once(down)
+                    moved = True
+                # The remote page's holds and disarms (2026-10-03), as
+                # remote presses of the group keys, before tick() advances
+                # the holds. Only while a deck is connected: unplugged, the
+                # link is held OFF below and nothing arms from anywhere.
+                controller.screen_pass()
                 # Item 2 (round 2 of the safety review): tick() runs every
                 # pass, unconditionally -- even when deck.keys_down() above
                 # returned nothing, which it will if the real hardware
@@ -1894,12 +2431,15 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 controller.check_links()
                 controller.arm.send(controller.names)
                 chase += 1
-                blink_on = int(t0 * 2) % 2 == 0
-                img = controller.draw(fonts, blink_on, chase)
-                for k in range(6):
-                    ox, oy = key_origin(k)
-                    deck.set_key(fonts.Image, k,
-                                img.crop((ox, oy, ox + K, oy + K)))
+                if moved or controller.animating() or last_draw is None or \
+                        t0 - last_draw >= DRAW_IDLE_S:
+                    last_draw = t0
+                    blink_on = int(t0 * 2) % 2 == 0
+                    img = controller.draw(fonts, blink_on, chase)
+                    for k in range(6):
+                        ox, oy = key_origin(k)
+                        deck.set_key(fonts.Image, k,
+                                     img.crop((ox, oy, ox + K, oy + K)))
                 elapsed = clock() - t0
                 outage.ran_clean(clock() - connected_at)
                 if elapsed < period:
@@ -2068,6 +2608,26 @@ def main(argv=None):
                     "on, so the operator gate and journal routing silently "
                     "never reached the real server by default)")
     args = ap.parse_args(argv)
+    # Second-copy guard (2026-10-03, onlyone.py): one deck process per
+    # machine. A second `ltc deck` would be a second sender on the arm link:
+    # the round-4 veto would refuse every cycle while both ran, and the two
+    # would fight over the hardware.
+    from . import onlyone
+    try:
+        only = onlyone.only_copy(
+            onlyone.DECK_LOCK,
+            f"ltc deck for {os.path.abspath(args.flamesafe_config)}, "
+            f"started {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    except onlyone.AlreadyRunning as e:
+        print(f"error: {onlyone.refusal(onlyone.DECK_LOCK, e.holder)}")
+        return 2
+    try:
+        return _main(args)
+    finally:
+        only.release()
+
+
+def _main(args):
     try:
         arm_ip, arm_port, status_ip, status_port, key, names = \
             load_flamesafe_link(args.flamesafe_config)
@@ -2086,14 +2646,22 @@ def main(argv=None):
     status = StatusSocket(status_ip, status_port, key)
     status.open()
 
+    # PR #43 review, finding 8: Abort, Hold, Resume and Reset reach the
+    # engine's own show conductor over loopback, on background threads.
+    engine = EngineConductor(args.ltcplay_url, journal=journal)
+    engine.start()
+    # Screen and browser arming: the remote page's holds, read on their own
+    # background thread (ScreenKeys), never on the main loop.
+    screen = ScreenKeys(args.ltcplay_url).start()
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
-                            conductor=None, journal=journal)
+                            conductor=engine, journal=journal,
+                            screen=screen)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
-         f"reading flamesafe's status on {status_ip}:{status_port}. No "
-         f"show conductor is connected in this build: Start Now, Hold and "
-         f"Resume will journal a refusal. Ctrl-C to stop.")
+         f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
+         f"Hold, Resume and Reset go to the show conductor in ltc serve at "
+         f"{args.ltcplay_url}; Start Now journals a refusal. Ctrl-C to stop.")
     try:
         run_forever(controller, journal=journal)
     except KeyboardInterrupt:
@@ -2102,6 +2670,8 @@ def main(argv=None):
         arm.close()
         status.close()
         sched.stop()
+        engine.stop()
+        screen.stop()
     return 0
 
 

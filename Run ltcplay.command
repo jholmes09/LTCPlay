@@ -156,9 +156,9 @@ while true; do
          echo "Leave the window that opens alone: it is the engine."
          echo "Ctrl-C in it stops the show. Closing the browser does not."
          echo
-         read -r -p "  Reach it from a phone or iPad on this network too? [y/N] " net
+         read -r -p "  Reach it from an iPad on the show network too? [y/N] " net
          if [ "$net" = "y" ] || [ "$net" = "Y" ]; then
-           ./ltc serve --bind 0.0.0.0
+           ./ltc serve --network
          else
            ./ltc serve
          fi

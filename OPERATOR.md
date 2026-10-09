@@ -67,6 +67,20 @@ the screen do the right thing before the rig does anything at all.
 
 **6, run.** It shows you the validation again and makes you type RUN.
 
+**Only one copy at a time.** Rehearse and Run are a second copy of the show
+program, and only one copy may run on a machine. While the LTC Player app,
+the autostart engine or a Web window is running, they stop at once and say
+what is running and how to stop it. Use the page of the one that is running,
+or stop it first (quit the app, turn autostart off with `Autostart
+ltcplay.command` then R, or Ctrl-C in its window) and then rehearse. A second
+`ltc deck` is refused the same way.
+
+**OTHER SENDER on the Stream Deck.** For about half a second after every
+ltcplay restart the deck's flame keys read OTHER SENDER, and a cycle in that
+half second does not count; cycle again. If it stays, a second copy of the
+show program is talking to the flame safety program: every group has been
+disarmed, and nothing can arm until it is gone.
+
 ## The screen
 
 ```
@@ -205,6 +219,31 @@ predictable one and needs nothing from the network at all. Either is correct;
 if the boxes do not respond to one, try the other.
 
 Turning it off puts every controller back on the live stream immediately.
+
+## The iPad
+
+Once, on the show machine: open the page, go to `/remote` (or
+http://127.0.0.1:7878/remote), set a PIN for each operator, and pick this
+machine's show Wi-Fi address under "Show network". Then start it with the
+show network on (Run ltcplay, answer y to the iPad question).
+
+On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. Pick your
+name and "iPad", type your PIN. The big red ABORT bar is always at the
+bottom; it asks once. Start now asks once too. Hold, Resume and Reset are
+one press. Disarm every flame group is one press and never asks.
+
+If the page shows a red CONNECTION LOST bar, the iPad has lost the engine.
+The show carries on by itself and a Hold stays held. Start now, Resume, Reset
+and the programming buttons go grey until it is back.
+
+Arming from the iPad or the rack screen: sign in with your own PIN (on
+the show machine too), then press and HOLD a group's "Hold to arm" button
+until the bar fills and the lamp goes green. Lift early and nothing
+happens. The Stream Deck does the arming for you, with all of its own
+rules, so it has to be plugged in and running. If the page loses the
+engine, or the lamps are not live, the button goes grey and a hold stops.
+Disarm on the page is one press. The physical key switch on the flame
+system is still the master: off means nothing fires.
 
 ## What it will not do
 

@@ -16,8 +16,9 @@ What it does, from the handoff and Jeff's decisions
 Abort (sections 4a and 5, Jeff 2026-09-26 and 2026-09-27): the software
 E-stop. Every flame cue channel goes to zero and every flame group is asked
 to disarm INSTANTLY, on the pressing thread, before this call returns. The
-lasers (a BEYOND brightness ramp, not an instant blank), video, pixels and
-music then fade to black TOGETHER over 1 s, and the video stops. It LATCHES:
+lasers blank at once (Jeff and Andy, 2026-10-04: BEYOND takes brightness 0
+or 100 only, so there is no laser ramp anywhere), then video, pixels and
+music fade to black TOGETHER over 1 s, and the video stops. It LATCHES:
 nothing else is accepted until one Reset press. Only while something plays.
 
 A show cut short by ltcplay restarting: show_stopped(). The same fade to
@@ -139,7 +140,8 @@ from collections import namedtuple
 
 # Seconds, from the handoff. The selftest pins every one of these.
 HOLD_FADE_S = 0.25        # production Hold: music fade, then freeze
-ABORT_FADE_S = 1.0        # Abort: lasers, video, pixels, music together
+ABORT_FADE_S = 1.0        # Abort: video, pixels, music together (the
+                          # lasers blank at once, before them)
 ANNOUNCE_FADE_S = 0.25    # an announcement's fade to black. The handoff
                           # gives no number; the Hold's own fade is used.
 ANNOUNCE_DARK_S = 0.5     # "waits about 0.5 s in the dark"
@@ -267,16 +269,9 @@ class DeviceOutputs:
 
     def lasers_blank(self):
         """Lasers dark at once (BEYOND brightness 0; never BlackOut, never
-        MasterPause). Hold, and an instant rehearsal announcement."""
-        raise NotImplementedError
-
-    def lasers_fade_out(self, seconds):
-        """Ramp BEYOND's brightness to 0 over `seconds` (Abort: 1 s, Jeff
-        2026-09-27; an announcement: 0.25 s). beyond.Beyond sends only 0
-        or 100 and refuses anything between (its reviewed allow-list), so
-        ConductorDevices (below) blanks at once instead and journals that
-        it was not a fade. A real ramp needs its own reviewed change to
-        beyond.py."""
+        MasterPause). Every dark look: Hold, an announcement, a show's end
+        and Abort (Jeff and Andy, 2026-10-04: BEYOND takes 0 or 100 only,
+        so the lasers never ramp)."""
         raise NotImplementedError
 
     def lasers_restore(self):
@@ -314,9 +309,6 @@ class NotWiredDevices(DeviceOutputs):
 
     def lasers_blank(self):
         return self._nothing("Laser blank")
-
-    def lasers_fade_out(self, seconds):
-        return self._nothing("Laser fade")
 
     def lasers_restore(self):
         return self._nothing("Laser restore")
@@ -415,23 +407,6 @@ class ConductorDevices(DeviceOutputs):
 
     def lasers_blank(self):
         return self._beyond("Laser blank", "blank", self._BLANK_FAILED)
-
-    def lasers_fade_out(self, seconds):
-        """NOT a fade: an instant blank, the same command as lasers_blank().
-        beyond.py's allow-list only ever lets brightness 0.0 or 100.0 off
-        the machine (a safety audit, S5), so there is no ramp to send.
-        Going dark at once is never later than the asked-for fade would
-        have been. Changing this to a real ramp is a laser-safety-relevant
-        change to beyond.py that needs its own review; it is not made here.
-        Journaled every time, so the record never says "faded" alone."""
-        r = self._beyond("Laser blank", "blank", self._BLANK_FAILED)
-        if self.beyond is not None and r.ok:
-            _device_note(self._journal,
-                  f"BEYOND was blanked at once, not faded over {seconds:g} "
-                  f"s: beyond.py only allows brightness 0 or 100, and a "
-                  f"brightness ramp has not been reviewed.",
-                  action="lasers", outcome="blanked_not_faded")
-        return r
 
     def lasers_restore(self):
         """The only unblank. in_show=True is the conductor's laser gate's
@@ -550,12 +525,16 @@ class ConductorDevices(DeviceOutputs):
         """Where a new fade to `end` starts: the estimated level now, or the
         level the Link last actually sent, whichever is nearer `end`. So a
         fade down never starts above the picture, nor a fade up below it.
-        Unknown (nothing sent yet): the far end, as before this fix."""
+        Unknown (nothing sent since this program started): a fade down is
+        opacity 0 at once, never a fade that starts at 1.0, which would
+        light the surfaces with no show running (PR #43 review, finding 6:
+        a failed start and a restart after a cut show or an Abort each
+        did); a fade up starts from 0."""
         levels = [v for v in (self.video_level(),
                               getattr(self.mm, "surfaces_level", None))
                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
         if not levels:
-            return 1.0 if end <= 0.0 else 0.0
+            return 0.0
         return min(levels) if end <= 0.0 else max(levels)
 
     def _surfaces(self, end, seconds, on_done):
@@ -826,6 +805,18 @@ class Conductor:
                          resume=False)
             return done("The rig comes up for the show.")
 
+    def music_started(self):
+        """A fact, not a command: the show cue has just been started on the
+        show audio, before anything confirms the show (the scheduler tells
+        show_starting() only on SHOW_CONFIRMED). From here a Hold freezes
+        the music and an Abort or a failed start stops it, whatever an
+        earlier Abort, stop or failed start recorded (PR #43 review,
+        finding 4: an Abort or Hold before the show was confirmed left the
+        music and timecode running, because the record still said
+        stopped). Starts nothing and changes no look."""
+        with self._lock:
+            self._set("music", MUSIC_PLAYING)
+
     def intermission(self, who="", screen=""):
         """The show has been left (intermission, preshow, closing): flame
         cues to zero and the lasers blanked with a real command, so "no
@@ -940,11 +931,9 @@ class Conductor:
         # executor is making. A restore under way stops before its next
         # packet (beyond.Beyond's blank epoch, and _restore_wanted).
         try:
-            # lasers_fade_out: Jeff's Abort is a brightness ramp; the real
-            # device layer blanks at once (beyond.py allows only 0 or 100)
-            # and journals that it did. Either way it starts here, now.
-            r = self._call("lasers blanked", self.devices.lasers_fade_out,
-                           ABORT_FADE_S)
+            # Abort blanks the lasers at once (Jeff and Andy, 2026-10-04:
+            # BEYOND takes brightness 0 or 100 only). It starts here, now.
+            r = self._call("lasers blanked", self.devices.lasers_blank)
             with self._lock:
                 if self._ver["lasers"] == ver:
                     self._set("lasers", BLACK if r.ok else UNKNOWN)
@@ -1239,12 +1228,8 @@ class Conductor:
         a = self._applied
         self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
                    self.show.flames_zero)
-        if look == DARK and fade > 0:
-            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
-                       self.devices.lasers_fade_out, fade)
-        else:
-            self._step(gen, "lasers", BLACK, "lasers blanked", progress,
-                       self.devices.lasers_blank)
+        self._step(gen, "lasers", BLACK, "lasers blanked", progress,
+                   self.devices.lasers_blank)
         froze = a["music"] in (MUSIC_PLAYING, UNKNOWN)
         self._step(gen, "music", MUSIC_HELD, "music fading", progress,
                    self.show.music_hold, fade, only_from=(MUSIC_PLAYING,

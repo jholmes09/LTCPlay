@@ -33,6 +33,42 @@ _WIN_LOCK_AT = 1 << 30
 
 FILENAME = "ltcplay_output.lock"
 
+# Windows: every lock is also a named kernel mutex (show PC, 2026-10-04).
+# A copy started from inside another app's MSIX container (the Claude
+# desktop app's shell) has its AppData redirected into that container, so
+# its lock FILE is a different file and the two copies never saw each
+# other. Named kernel objects are not redirected: every process on the
+# machine sees the same name. The mutex exists for as long as some process
+# holds a handle to it, and Windows closes that handle when the process
+# ends, however it ends.
+NAMED = WINDOWS
+
+
+def _win_create_named(name):
+    r"""(handle, already_existed) for the named mutex `name`; Global\ first,
+    Local\ (this logon session) if Global\ is refused. None when neither
+    can be made (the file lock still guards)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
+                                 wintypes.LPCWSTR)
+    for ns in ("Global\\", "Local\\"):
+        h = k32.CreateMutexW(None, False, ns + name)
+        if h:
+            return h, ctypes.get_last_error() == 183   # ALREADY_EXISTS
+    return None
+
+
+def _win_close_named(handle):
+    import ctypes
+    ctypes.WinDLL("kernel32").CloseHandle(handle)
+
+
+_create_named = _win_create_named
+_close_named = _win_close_named
+
 
 def path():
     """One lock per user on this Mac, not one per copy of the folder.
@@ -77,10 +113,82 @@ class OutputLock:
         self.path = where or path()
         self.note = note
         self._fh = None
+        self._named = None
+
+    def _take_named(self):
+        """The named mutex for this lock (NAMED): refuses when another
+        process anywhere on the machine holds it, whatever folder its
+        files went to."""
+        name = "ltcplay-" + os.path.basename(self.path)
+        try:
+            got = _create_named(name)
+        except Exception:
+            got = None
+        if got is None:
+            return
+        handle, existed = got
+        if existed:
+            try:
+                _close_named(handle)
+            except Exception:
+                pass
+            # The usual case is a copy whose files are in the SAME folder:
+            # its note (pid, port, show) is in this lock's file, and the
+            # refusal has to carry it. Only when the file lock is free is
+            # the holder somewhere this copy cannot see.
+            raise AlreadyRunning(
+                self._file_holder() or
+                "another copy (it may have been started from inside "
+                "another app, whose files go to that app's own folder)")
+        self._named = handle
+
+    def _file_holder(self):
+        """The note of the live copy holding this lock's FILE, or "" when
+        nobody holds it (or it cannot be checked). Takes nothing and writes
+        nothing: a free file lock is let go of at once, untouched."""
+        try:
+            fh = self._lock_file()
+        except AlreadyRunning as e:
+            return e.holder
+        except Exception:
+            return ""
+        if fh is not None:
+            self._unlock(fh)
+        return ""
+
+    def _lock_file(self):
+        if WINDOWS:
+            return self._lock_windows()
+        return self._lock_posix()
 
     def acquire(self):
-        if WINDOWS:
-            return self._acquire_windows()
+        if NAMED:
+            self._take_named()
+            try:
+                return self._acquire_file()
+            except BaseException:
+                self._drop_named()
+                raise
+        return self._acquire_file()
+
+    def _acquire_file(self):
+        fh = self._lock_file()
+        if fh is None:
+            # Fail open: this folder cannot hold or lock the file.
+            return self
+        return self._hold(fh)
+
+    def _drop_named(self):
+        h, self._named = self._named, None
+        if h is not None:
+            try:
+                _close_named(h)
+            except Exception:
+                pass
+
+    def _lock_posix(self):
+        """The open file, flocked; None to fail open; AlreadyRunning,
+        carrying the holder's note, when a live copy holds it."""
         import fcntl
         try:
             fh = open(self.path, "a+")
@@ -89,7 +197,7 @@ class OutputLock:
                 # A read-only or missing folder is not a reason to refuse to
                 # run a show. Carry on unlocked rather than failing closed on
                 # a guard.
-                return self
+                return None
             raise
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -100,7 +208,7 @@ class OutputLock:
                 # reason to refuse to run a show: fail open, the way a
                 # missing folder does.
                 fh.close()
-                return self
+                return None
             try:
                 fh.seek(0)
                 holder = fh.read(400).strip()
@@ -108,9 +216,9 @@ class OutputLock:
                 holder = ""
             fh.close()
             raise AlreadyRunning(holder)
-        return self._hold(fh)
+        return fh
 
-    def _acquire_windows(self):
+    def _lock_windows(self):
         """The same contract as the flock path, through msvcrt.locking."""
         import msvcrt
         try:
@@ -121,7 +229,7 @@ class OutputLock:
         except OSError as e:
             if e.errno in (errno.EACCES, errno.EROFS, errno.ENOENT):
                 # Fail open on a folder that cannot hold the file, as above.
-                return self
+                return None
             raise
         try:
             os.lseek(fh.fileno(), _WIN_LOCK_AT, os.SEEK_SET)
@@ -134,7 +242,7 @@ class OutputLock:
                     getattr(errno, "EDEADLK", errno.EACCES))
             if e.errno not in held:
                 fh.close()
-                return self
+                return None
             try:
                 fh.seek(0)
                 holder = fh.read(400).strip()
@@ -142,7 +250,7 @@ class OutputLock:
                 holder = ""
             fh.close()
             raise AlreadyRunning(holder)
-        return self._hold(fh)
+        return fh
 
     def _hold(self, fh):
         fh.seek(0)
@@ -155,9 +263,13 @@ class OutputLock:
 
     def release(self):
         _HELD.discard(self)
+        self._drop_named()
         fh, self._fh = self._fh, None
-        if fh is None:
-            return
+        if fh is not None:
+            self._unlock(fh)
+
+    @staticmethod
+    def _unlock(fh):
         try:
             if WINDOWS:
                 import msvcrt
@@ -178,3 +290,64 @@ class OutputLock:
 
     def __exit__(self, *a):
         self.release()
+
+
+# ---------------------------------------------------------------- one copy
+#
+# Second-copy guard (Jeff, 2026-10-03). The show machines are dedicated and
+# the flame and arm links bind 127.0.0.1 only, so the realistic second
+# sender on those links is a second copy of this program: a launcher
+# double-clicked twice, autostart plus a manual launch, an old copy still
+# running after a restart. So the show process (`ltc run` and `ltc serve`,
+# one lock between them) and the Stream Deck process (`ltc deck`) each take
+# a lock for their whole life and refuse to start while another copy holds
+# it. Same mechanism as the output lock above, in the same folder: the
+# kernel drops the lock when the holder dies, however it dies, so a crashed
+# copy never blocks a restart.
+
+SHOW_LOCK = "ltcplay_show.lock"
+DECK_LOCK = "ltcplay_deck.lock"
+
+def instance_path(filename):
+    """Beside the output lock: one per user on this machine, whichever
+    folder the program was started from."""
+    return os.path.join(os.path.dirname(path()), filename)
+
+
+def only_copy(filename, note):
+    """Take this program's one-copy lock and hold it until release() or
+    the process ends. Raises AlreadyRunning, carrying the running copy's
+    own note, if another copy holds it."""
+    return OutputLock(where=instance_path(filename), note=note).acquire()
+
+
+def refusal(filename, holder):
+    """The plain sentences a refused second copy prints: what is running,
+    and how to stop it. Fix round 1 of PR #40: the app and the autostart
+    engine have no window, so "use the window that is already open" told
+    the operator nothing."""
+    here = "computer" if WINDOWS else "Mac"
+    said = f"\nThe copy that is running says: {holder}" if holder else ""
+    if filename == DECK_LOCK:
+        return (f"ltc deck is already running on this {here}, so this copy "
+                f"has stopped. Only one copy may run at a time: two would "
+                f"both send on the Stream Deck's arm link, and flamesafe "
+                f"would refuse every arm cycle while both were there."
+                f"{said}\nThat copy is already driving the Stream Deck. To "
+                f"start this one instead, stop that one first (Ctrl-C where "
+                f"it is running, or end the process with the pid above), "
+                f"then start this one again.")
+    return (f"ltcplay's show program is already running on this {here}, so "
+            f"this copy has stopped. Only one copy may run at a time: two "
+            f"copies would both talk to the rig and the flame safety "
+            f"program.{said}\nIt is the LTC Player app, the autostart "
+            f"engine, or a Run or Web window. To use it: for the app, "
+            f"autostart or a Web window, open its page in a browser at "
+            f"http://127.0.0.1 and the port in the line above; for a Run "
+            f"window, go to that window. To run this copy "
+            f"instead, stop that one first: quit the LTC Player app, turn "
+            f"autostart off (Autostart ltcplay.command, then R), or press "
+            f"Ctrl-C in the window it runs in.\nRehearse (option 5 in Run "
+            f"ltcplay.command) is a copy too, so it is refused while the "
+            f"app or autostart is running. Stop that first, as above, and "
+            f"then rehearse.")

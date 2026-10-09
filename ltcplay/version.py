@@ -141,10 +141,14 @@ def status():
         return f"unreleased, build {bid} ({count} files, newest {when})"
     name = rel.get("release", "?")
     was = rel.get("build")
-    if was and was != bid:
+    # A frozen app (Windows, PyInstaller) has its code inside the programs,
+    # not as files here, so its stamp's "build" is the source it was built
+    # from and "files" is what this check can see on disk (2026-10-05).
+    seen = rel.get("files") or was
+    if seen and seen != bid:
         return (f"release {name}, MODIFIED SINCE (build {bid}, "
-                f"this release was cut as {was})")
-    return f"release {name}, build {bid}"
+                f"this release was cut as {seen})")
+    return f"release {name}, build {was or bid}"
 
 
 def show_status(show_dir, timeline_path=None):
