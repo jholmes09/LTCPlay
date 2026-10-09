@@ -32710,6 +32710,16 @@ def test_onlyone_named_lock_sees_a_copy_in_another_folder():
     import shutil
     import tempfile
     from ltcplay import onlyone as O
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            with open(O.__file__, encoding="utf-8") as f:
+                compile(f.read(), O.__file__, "exec")
+            check(True, "onlyone.py compiles with no warning")
+        except SyntaxError as e:
+            check(False, f"onlyone.py warns when compiled (a second copy "
+                         f"prints it ahead of its refusal): {e}")
     held = {}
 
     def fake_create(name):
@@ -32741,6 +32751,28 @@ def test_onlyone_named_lock_sees_a_copy_in_another_folder():
         b = O.OutputLock(where=os.path.join(b_dir, O.SHOW_LOCK)).acquire()
         b.release()
         check(True, "once the first has stopped, the second starts")
+        # The usual Windows case, both copies' files in the SAME folder
+        # (windows-latest CI, 2026-10-04 and 10-07): the mutex refuses
+        # first, and the refusal must still carry the running copy's own
+        # note (pid, port, show), read from the lock file it holds.
+        same = os.path.join(a_dir, O.SHOW_LOCK)
+        a = O.OutputLock(where=same, note="the Run window, port 8765"
+                         ).acquire()
+        try:
+            O.OutputLock(where=same, note="second").acquire()
+            check(False, "a second copy in the same folder must refuse")
+        except O.AlreadyRunning as e:
+            check("Run window, port 8765" in e.holder,
+                  f"the refusal names who is holding it: {e.holder!r}")
+        with open(same, encoding="utf-8") as f:
+            check("Run window" in f.read(),
+                  "the refused copy left the holder's note alone")
+        check(held == {"ltcplay-" + O.SHOW_LOCK: 1},
+              f"the refused copy let go of its handle: {held}")
+        a.release()
+        b = O.OutputLock(where=same, note="after").acquire()
+        b.release()
+        check(not held, "and the same folder starts again once it stops")
     finally:
         O.NAMED, O._create_named, O._close_named = saved
         shutil.rmtree(a_dir, ignore_errors=True)
