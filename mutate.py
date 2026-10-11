@@ -34,6 +34,8 @@ per-PR gate; the nightly sweep and a release tag still run everything):
 import subprocess
 import sys
 import os
+import time
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -6010,12 +6012,36 @@ def build():
 
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
+# How long one run of the suite may take. A test is 4 to 6 minutes on a CI
+# runner; a run that is still going at 300 s is hung, not slow.
+SUITE_TIMEOUT = 300
+
+
+def _what_failed(out, limit=10):
+    """The lines of a suite's output worth reading when it was red: its FAIL
+    lines first, then an uncaught exception's last lines, and failing both
+    the end of the output. The old rule, any line with "Error" in it, picked
+    up test headings that merely mention an error and pushed the FAIL line
+    off the end (PR #49 shard 25's baseline annotation showed a heading)."""
+    lines = [l.rstrip() for l in out.splitlines()]
+    fails = [l.strip() for l in lines if l.lstrip().startswith("FAIL")]
+    if fails:
+        return fails[:limit]
+    if any(l.startswith("Traceback (most recent call last)") for l in lines):
+        start = max(i for i, l in enumerate(lines)
+                    if l.startswith("Traceback (most recent call last)"))
+        tail = [l for l in lines[start:] if l.strip()]
+        return ["uncaught exception in the suite:"] + tail[-(limit - 1):]
+    tail = [l for l in lines if l.strip()][-limit:]
+    return ["the suite ended red without a FAIL line; its last lines:"] + tail
 
 
 def run_suite():
     try:
         r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
-                           capture_output=True, text=True, timeout=300)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=SUITE_TIMEOUT)
     except subprocess.TimeoutExpired as e:
         # A suite that does not finish is not a green suite. Under a
         # mutation that counts as caught (the mutation broke a test so
@@ -6026,15 +6052,17 @@ def run_suite():
                else b"")
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
-        _LAST_FAILS[:] = ["  FAIL  the suite did not finish inside 300 s "
-                          "(TimeoutExpired)"] + \
+        _LAST_FAILS[:] = [f"FAIL  the suite did not finish inside "
+                          f"{SUITE_TIMEOUT} s (TimeoutExpired)"] + \
             [l.strip() for l in out.splitlines()
-             if l.startswith("  FAIL")][:5]
+             if l.lstrip().startswith("FAIL")][:5]
         return False
     out = (r.stdout or "") + (r.stderr or "")
-    _LAST_FAILS[:] = [l.strip() for l in out.splitlines()
-                      if l.startswith("  FAIL") or "Error" in l][:6]
-    return r.returncode == 0
+    if r.returncode == 0:
+        _LAST_FAILS[:] = []
+        return True
+    _LAST_FAILS[:] = _what_failed(out)
+    return False
 
 
 LOCK = os.path.join(HERE, ".mutating")
@@ -6050,21 +6078,157 @@ def _write(path, text):
         fh.write(text)
 
 
+# ------------------------------------------------------- reporting to CI --
+# A shard that ends red has to say why somewhere that can be read without
+# the job log: PR #46's shards 14 and 28 ran for three hours and ended with
+# "Process completed with exit code 1" and nothing else, because every
+# verdict below was printed to the log only. So every way out of this file
+# with a non-zero code now goes through fail(): it names the shard, the kind
+# of failure and the first lines that matter as a GitHub annotation, and
+# main() writes the run's table to the job summary on every exit. Outside
+# Actions both are silent and the printed lines are as they were.
+
+CI = os.environ.get("GITHUB_ACTIONS") == "true"
+# GitHub keeps ten error annotations a step; the last one says there are
+# more rather than being one of them.
+ANNOTATIONS_MAX = 10
+_annotated = [0]
+
+
+class _Report:
+    """Everything the job summary says about this run."""
+
+    def reset(self):
+        self.where = "every mutation"
+        self.started = time.time()
+        self.due = 0
+        self.caught = []          # names
+        self.missed = []          # (name, file)
+        self.flaky = []           # (name, first failure's lines)
+        self.setup_fails = []     # (name, what was wrong)
+        self.expected = []        # (name, reason)
+        self.now_caught = []      # names
+        self.stale = []           # names not in MUTATIONS
+        self.baseline = "not run"
+        self.restored = "not checked"
+        self.failures = []        # (kind, lines), one per problem
+        return self
+
+    def table(self, code):
+        mins = (time.time() - self.started) / 60
+        took = f"{mins:.0f} min" if mins >= 1 else f"{mins * 60:.0f} s"
+        result = "ok" if code == 0 else f"FAIL (exit {code})"
+        rows = [("shard", self.where), ("mutations", str(self.due)),
+                ("caught", str(len(self.caught))),
+                ("missed", str(len(self.missed))),
+                ("expected misses", str(len(self.expected))),
+                ("flaky", str(len(self.flaky))),
+                ("setup failed", str(len(self.setup_fails))),
+                ("baseline", self.baseline), ("tree restored", self.restored),
+                ("time", took), ("result", result)]
+        out = [f"### mutate {self.where}: {result}, {took}", "",
+               "| " + " | ".join(r[0] for r in rows) + " |",
+               "|" + "---|" * len(rows),
+               "| " + " | ".join(r[1] for r in rows) + " |", ""]
+        if self.failures:
+            out.append("**Why it is red**")
+            out.append("")
+            for kind, lines in self.failures:
+                out.append(f"- **{kind}**")
+                for l in lines[:10]:
+                    out.append(f"  - `{l}`" if l.strip() else "")
+            out.append("")
+        for title, items in (
+                ("Missed", [f"`{rel}`: {n}" for n, rel in self.missed]),
+                ("Flaky (caught once, then not)",
+                 [f"{n}: " + " | ".join(w) for n, w in self.flaky]),
+                ("Setup failed", [f"{n}: {w}" for n, w in self.setup_fails]),
+                ("Now caught, delete from the list", list(self.now_caught)),
+                ("Expected misses",
+                 [f"{n} ({why})" for n, why in self.expected])):
+            if items:
+                out.append(f"**{title}** ({len(items)})")
+                out.append("")
+                out.extend(f"- {i}" for i in items)
+                out.append("")
+        return "\n".join(out) + "\n"
+
+
+REPORT = _Report().reset()
+
+
+def _esc(s, prop=False):
+    s = s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return s.replace(":", "%3A").replace(",", "%2C") if prop else s
+
+
+def annotation(title, lines, limit=10, size=3000):
+    """One ::error line: the first `limit` of `lines`, at most `size`
+    characters before escaping (GitHub cuts a message at 4096)."""
+    lines = list(lines)
+    text = "\n".join(l.rstrip() for l in lines[:limit])
+    if len(text) > size:
+        text = text[:size - 12] + "\n... (cut)"
+    if len(lines) > limit:
+        text += f"\n... and {len(lines) - limit} more lines in the log"
+    return f"::error title={_esc(title[:200], prop=True)}::{_esc(text)}"
+
+
+def fail(kind, lines=()):
+    """Record one reason this run is red; in Actions, also say it where it
+    can be read without the log."""
+    lines = [str(l).rstrip() for l in lines]
+    REPORT.failures.append((kind, lines))
+    if not CI:
+        return
+    _annotated[0] += 1
+    if _annotated[0] < ANNOTATIONS_MAX:
+        print(annotation(f"mutate {REPORT.where}: {kind}", lines))
+    elif _annotated[0] == ANNOTATIONS_MAX:
+        print(annotation(f"mutate {REPORT.where}: more problems",
+                         ["This step's annotations are full. The job summary "
+                          "and the mutate log artifact list every one."]))
+
+
+def _finish(code):
+    """Write the run's table to the job summary, whatever the exit."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(REPORT.table(code))
+        except OSError as e:
+            print(f"could not write the job summary: {e}")
+    return code
+
+
 def main():
+    REPORT.reset()
+    _annotated[0] = 0
     # While this runs, the working tree is deliberately broken. Anything else
     # that reads it — a capture, a soak, a live run — is measuring a mutant and
     # will produce a confident, entirely false result. The lock exists because
     # that has already happened once.
     if os.path.exists(LOCK):
-        print(f"{LOCK} exists: another mutation run is in progress, or one "
-              f"died and left the tree broken. Check `git diff` or the "
-              f"selftest before deleting it.")
-        return 3
+        why = (f"{LOCK} exists: another mutation run is in progress, or one "
+               f"died and left the tree broken. Check `git diff` or the "
+               f"selftest before deleting it.")
+        print(why)
+        fail("another run holds the tree", [why])
+        return _finish(3)
     open(LOCK, "w").write(str(os.getpid()))
     try:
-        return _run()
+        code = _run()
+    except Exception:
+        # The last lines of the traceback are the ones that say what broke.
+        text = traceback.format_exc()
+        print(text, end="")
+        fail("unexpected exception",
+             [l for l in text.rstrip().splitlines() if l.strip()][-10:])
+        code = 1
     finally:
         os.remove(LOCK)
+    return _finish(code)
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None}
@@ -6326,6 +6490,8 @@ def select_affected(changed, base=None, catchers=None):
 
 def _run():
     wants, shard, expected_file = _args(sys.argv[1:])
+    if shard:
+        REPORT.where = f"shard {shard[0]}/{shard[1]}"
     expected, unknown = ({}, [])
     if expected_file:
         expected, unknown = _load_expected(expected_file)
@@ -6337,6 +6503,7 @@ def _run():
                 base, changed = _git_changed(OPTS["changed"])
             except RuntimeError as e:
                 print(f"cannot read the diff: {e}")
+                fail("cannot read the diff", [str(e)])
                 return 2
         else:
             changed = sorted({p.strip().replace("\\", "/")
@@ -6367,14 +6534,18 @@ def _run():
                 continue
             print(f"  would run  {rel}: {name}")
         return 0
-    if only is not None and shard:
-        mine = [n for i, (n, *_r) in enumerate(MUTATIONS)
-                if n in only and i % shard[1] == shard[0]]
-        if not mine:
+    todo = [(name, rel, old, new)
+            for index, (name, rel, old, new) in enumerate(MUTATIONS)
+            if (only is None or name in only)
+            and not (wants and not any(w in name.lower() for w in wants))
+            and not (shard and index % shard[1] != shard[0])]
+    REPORT.due = len(todo)
+    if shard:
+        if only is not None and not todo:
             print(f"shard {shard[0]}/{shard[1]}: none of the selected "
                   f"mutations fall in this shard: nothing to run")
             return 0
-        print(f"shard {shard[0]}/{shard[1]}: {len(mine)} mutations to run")
+        print(f"shard {shard[0]}/{shard[1]}: {len(todo)} mutations to run")
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
@@ -6383,26 +6554,21 @@ def _run():
     if not run_suite():
         for _l in _LAST_FAILS:
             print("  " + _l)
-        if os.environ.get("GITHUB_ACTIONS"):
-            print("::error title=mutate baseline::" + " | ".join(
-                _LAST_FAILS)[:900].replace("%", "%25").replace("\n", "%0A"))
+        REPORT.baseline = "FAILED"
+        fail("the suite FAILS with nothing mutated, so the shard measured "
+             "nothing", _LAST_FAILS)
         print("The suite FAILS with nothing mutated. A previous run was "
               "killed before it restored the tree, or something else is "
               "broken. Fix that first: nothing measured from here would "
               "mean anything.")
         return 2
+    REPORT.baseline = "green"
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
     # The bytes of every file this run breaks, before it does: the restore
     # is proved against them at the end, byte for byte.
     originals = {}
-    for index, (name, rel, old, new) in enumerate(MUTATIONS):
-        if only is not None and name not in only:
-            continue
-        if wants and not any(w in name.lower() for w in wants):
-            continue
-        if shard and index % shard[1] != shard[0]:
-            continue
+    for name, rel, old, new in todo:
         path = os.path.join(HERE, rel)
         if rel not in originals:
             originals[rel] = _read(path)
@@ -6411,10 +6577,11 @@ def _run():
         # file into a CRLF one and a pattern cannot miss on a line ending.
         src = _read(path)
         if src.count(old) != 1:
-            print(f"  SETUP FAIL  {name} "
-                  f"(pattern appears {src.count(old)} times in {rel})")
+            what = f"pattern appears {src.count(old)} times in {rel}"
+            print(f"  SETUP FAIL  {name} ({what})")
             missed += 1
             setup_fails.append(name)
+            REPORT.setup_fails.append((name, what))
             continue
         backup = src
         _write(path, src.replace(old, new, 1))
@@ -6434,16 +6601,19 @@ def _run():
                           f"and the first failure was a flaky test: {name}")
                     for w in why:
                         print(f"      {w}")
+                    REPORT.flaky.append((name, why))
         finally:
             _write(path, backup)
         if green:
             print(f"  NOT CAUGHT  {name}")
             missed += 1
             missed_names.append(name)
+            REPORT.missed.append((name, rel))
         else:
             print(f"  caught      {name}")
             caught += 1
             caught_names.append(name)
+            REPORT.caught.append(name)
             # What caught it. A check that has nothing to do with this
             # mutation is a flaky test passing itself off as coverage, and
             # this is where that shows.
@@ -6462,43 +6632,89 @@ def _run():
     if dirty:
         print(f"\nTHE TREE IS NOT CLEAN: a restore did not land in "
               f"{', '.join(dirty)}. Fix that before trusting any line above.")
+        why = [f"a restore did not land in {rel}" for rel in dirty]
         if not run_suite():
             print("  and the suite fails with nothing mutated:")
             for w in _LAST_FAILS:
                 print(f"      {w}")
+            why += ["and the suite fails with nothing mutated:"] + _LAST_FAILS
+        REPORT.restored = "NO"
+        fail("restore proof failed: the tree is not clean", why)
         return 2
     print(f"tree restored byte for byte ({len(originals)} files)")
-    if not expected_file:
-        return 1 if missed else 0
-    return _against_expected(expected, unknown, missed_names, caught_names,
-                             setup_fails)
+    REPORT.restored = "yes"
+    return _verdict(expected if expected_file else None, unknown,
+                    missed_names, caught_names, setup_fails)
 
 
-def _against_expected(expected, unknown, missed_names, caught_names,
-                      setup_fails):
-    """Pass only if every miss is a listed one, and no listed one is caught.
+def _mutation_lines(name):
+    """What a miss is about: its file and the first lines of the text it
+    replaces and the text it puts there, so the annotation says what to
+    look at without opening mutate.py."""
+    for n, rel, old, new in MUTATIONS:
+        if n == name:
+            first = lambda s: [l for l in s.splitlines() if l.strip()][:2]
+            return ([f"file: {rel}", f"mutation: {name}"]
+                    + [f"was:  {l.strip()}" for l in first(old)]
+                    + [f"now:  {l.strip()}" for l in first(new)])
+    return [f"mutation: {name}"]
 
-    The list can only shrink: a listed mutation that is now caught fails the
-    run until its line is deleted, so the list never hides a guarantee that
-    has started being tested."""
+
+def _verdict(expected, unknown, missed_names, caught_names, setup_fails):
+    """The exit code, and why. Without an expected-miss list any miss is a
+    failure. With one, pass only if every miss is a listed one, and no
+    listed one is caught: the list can only shrink, so a listed mutation
+    that is now caught fails the run until its line is deleted, and the
+    list never hides a guarantee that has started being tested.
+
+    Every red reason goes through fail(), so a shard that ends 1 always
+    says which mutation, in which file, in its annotations and summary."""
     bad = False
-    for n in unknown:
-        print(f"  LIST IS STALE  {n!r} is not a mutation in this file")
+    flaky = dict(REPORT.flaky)
+    if expected is not None:
+        for n in unknown:
+            print(f"  LIST IS STALE  {n!r} is not a mutation in this file")
+            REPORT.stale.append(n)
+            bad = True
+        for n in setup_fails:
+            print(f"  SETUP FAIL is never expected: {n}")
+            bad = True
+    if REPORT.stale:
+        fail("the expected-miss list is stale: it names mutations that "
+             "are not in mutate.py", REPORT.stale)
+    if setup_fails:
         bad = True
-    for n in setup_fails:
-        print(f"  SETUP FAIL is never expected: {n}")
-        bad = True
+        fail("mutation setup failed: the text to break no longer matches "
+             "the code; refresh the mutation",
+             [f"{what}: {n}" for n, what in REPORT.setup_fails])
     for n in missed_names:
-        if n in expected:
+        if expected is not None and n in expected:
             print(f"  expected miss  {n}  ({expected[n]})")
-        else:
+            REPORT.expected.append((n, expected[n]))
+            continue
+        if expected is not None:
             print(f"  UNEXPECTED MISS  {n}")
-            bad = True
-    for n in caught_names:
-        if n in expected:
-            print(f"  NOW CAUGHT, delete it from the list  {n}")
-            bad = True
-    print("\nagainst the expected-miss list: " + ("FAIL" if bad else "ok"))
+        bad = True
+        why = _mutation_lines(n)
+        if n in flaky:
+            why = (["caught once, then not: the first failure was a flaky "
+                    "test, so it counts as NOT CAUGHT. That failure:"]
+                   + flaky[n] + why)
+        else:
+            why.append("the suite stayed green with this line broken "
+                       "(twice in CI): nothing tests this guarantee")
+        fail("mutation NOT CAUGHT" + (" (flaky)" if n in flaky else ""), why)
+    if expected is not None:
+        for n in caught_names:
+            if n in expected:
+                print(f"  NOW CAUGHT, delete it from the list  {n}")
+                REPORT.now_caught.append(n)
+                bad = True
+        if REPORT.now_caught:
+            fail("NOW CAUGHT: listed as an expected miss but the suite "
+                 "catches it; delete its line from mutate_expected_misses.txt",
+                 REPORT.now_caught)
+        print("\nagainst the expected-miss list: " + ("FAIL" if bad else "ok"))
     return 1 if bad else 0
 
 

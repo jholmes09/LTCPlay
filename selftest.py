@@ -33,11 +33,84 @@ FAILS = []
 SHOW_PROBLEMS = []
 
 
+CHECKS = [0]   # how many check() calls this run made, for the job summary
+
+
 def check(cond, msg):
+    CHECKS[0] += 1
     if not cond:
         FAILS.append(msg)
         print(f"  FAIL  {msg}")
     return cond
+
+
+# ----------------------------------------------------- reporting to CI --
+# In GitHub Actions the job log cannot always be fetched (a cloud session's
+# proxy blocks the log store), so each failure is also an annotation, and
+# the run's totals go to the job summary. A test that raises instead of
+# failing a check used to end the job with "exit code 1" and a traceback
+# only the log could show; the hook below turns that into an annotation
+# and a summary row too. Outside Actions none of this prints anything.
+IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+def _ci_escape(s, prop=False):
+    s = str(s).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return s.replace(":", "%3A").replace(",", "%2C") if prop else s
+
+
+def ci_annotate(title, text, size=3000):
+    """One ::error line for the job, when running in Actions."""
+    if IN_CI:
+        text = str(text)
+        if len(text) > size:
+            text = text[:size - 12] + "\n... (cut)"
+        print(f"::error title={_ci_escape(title[:200], prop=True)}::"
+              f"{_ci_escape(text)}")
+
+
+def ci_summary(result, took, fails, crash=None):
+    """The job summary table: what ran, what failed, how long."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    tests = len({n for n in RAN if n.startswith("test_")})
+    rows = [("os", sys.platform), ("tests", str(tests)),
+            ("checks", str(CHECKS[0])), ("failures", str(len(fails))),
+            ("time", f"{took:.0f} s"), ("result", result)]
+    out = [f"### selftest ({sys.platform}): {result}, {took:.0f} s", "",
+           "| " + " | ".join(r[0] for r in rows) + " |",
+           "|" + "---|" * len(rows),
+           "| " + " | ".join(r[1] for r in rows) + " |", ""]
+    if crash:
+        out += ["**The suite stopped on an uncaught exception**", "", "```",
+                crash.rstrip(), "```", ""]
+    if fails:
+        out += [f"**Failures** ({len(fails)})", ""]
+        out += [f"- {f}" for f in fails]
+        out.append("")
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(out) + "\n")
+    except OSError as e:
+        print(f"could not write the job summary: {e}")
+
+
+def _ci_crash_hook(started):
+    """sys.excepthook for the __main__ run: an exception a test let out ends
+    the suite as before (exit 1, the traceback printed) but also says so
+    where it can be read."""
+    import traceback
+
+    def hook(kind, value, tb):
+        text = "".join(traceback.format_exception(kind, value, tb))
+        sys.__stderr__.write(text)
+        tail = [l for l in text.rstrip().splitlines() if l.strip()][-10:]
+        ci_annotate("selftest stopped on an uncaught exception",
+                    "\n".join(tail))
+        ci_summary("CRASH (uncaught exception)", time.time() - started,
+                   list(FAILS), crash="\n".join(tail))
+    return hook
 
 
 def show_check(cond, msg):
@@ -32124,6 +32197,255 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_mutate_reports_every_failure_it_can_have():
+    """mutate.py is run against a tiny fake tree (its own selftest.py, one
+    target file) and forced into every way it can end red. Each one must
+    say what happened as a GitHub annotation that names the shard, the
+    kind of failure and the mutation or test, and write the run's table to
+    the job summary, with the exit codes and the log lines the workflow
+    reads left as they were. PR #46's shards 14 and 28 ran three hours and
+    ended with "exit code 1" and nothing else: that is what this forbids."""
+    section("mutate.py says why it is red: annotation, summary, exit code")
+    import contextlib
+    import io
+    import mutate
+
+    tree = tempfile.mkdtemp()
+    fake_suite = (
+        "import os, sys, time\n"
+        "src = open('target.py', encoding='utf-8').read()\n"
+        "if 'SLEEP' in src:\n"
+        "    time.sleep(10)\n"
+        "if 'CRASH' in src:\n"
+        "    raise ValueError('a test let this out')\n"
+        "if 'FLAKY' in src:\n"
+        "    if not os.path.exists('flaky.once'):\n"
+        "        open('flaky.once', 'w').close()\n"
+        "        print('  FAIL  took 0.9 s on a slow runner'); sys.exit(1)\n"
+        "if 'BAD' in src:\n"
+        "    print('  FAIL  the guard is gone'); sys.exit(1)\n"
+        "print('all checks passed')\n")
+    with open(os.path.join(tree, "selftest.py"), "w", encoding="utf-8") as fh:
+        fh.write(fake_suite)
+    target = os.path.join(tree, "target.py")
+    expected_file = os.path.join(tree, "expected.txt")
+    summary_file = os.path.join(tree, "summary.md")
+    GUARD = "ok\nGUARD\n"
+
+    def run(argv, mutations, target_text=GUARD, expected=None, **patch):
+        """(exit code, printed lines, annotations, summary text)."""
+        with open(target, "w", encoding="utf-8", newline="") as fh:
+            fh.write(target_text)
+        for p in ("flaky.once", ".mutating"):
+            try:
+                os.remove(os.path.join(tree, p))
+            except OSError:
+                pass
+        if expected is not None:
+            with open(expected_file, "w", encoding="utf-8") as fh:
+                fh.write(expected)
+            argv = argv + ["--expected", expected_file]
+        with open(summary_file, "w", encoding="utf-8") as fh:
+            fh.write("")
+        saved = {k: getattr(mutate, k) for k in
+                 ("HERE", "LOCK", "MUTATIONS", "CI", "SUITE_TIMEOUT",
+                  "_write")}
+        env_saved = os.environ.get("GITHUB_STEP_SUMMARY")
+        old_argv = sys.argv
+        buf = io.StringIO()
+        try:
+            mutate.HERE = tree
+            mutate.LOCK = os.path.join(tree, ".mutating")
+            mutate.MUTATIONS = list(mutations)
+            mutate.CI = True
+            for k, v in patch.items():
+                setattr(mutate, k, v)
+            os.environ["GITHUB_STEP_SUMMARY"] = summary_file
+            sys.argv = ["mutate.py"] + argv
+            with contextlib.redirect_stdout(buf):
+                code = mutate.main()
+        finally:
+            for k, v in saved.items():
+                setattr(mutate, k, v)
+            if env_saved is None:
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            else:
+                os.environ["GITHUB_STEP_SUMMARY"] = env_saved
+            sys.argv = old_argv
+        lines = buf.getvalue().splitlines()
+        notes = [l for l in lines if l.startswith("::error ")]
+        with open(summary_file, encoding="utf-8") as fh:
+            summary = fh.read()
+        check(not os.path.exists(os.path.join(tree, ".mutating")),
+              f"{argv}: the .mutating lock was left behind")
+        return code, lines, notes, summary
+
+    def said(notes, *words):
+        """One annotation carries every word. Newlines in a word are looked
+        for the way GitHub wants them escaped; a word is otherwise taken
+        as written, escaped or not."""
+        esc = lambda s: s.replace("\n", "%0A")
+        return any(all(esc(w) in n for w in words) for n in notes)
+
+    caught = ("the guard is gone", "target.py", "GUARD", "BAD")
+    missed = ("nothing notices this", "target.py", "GUARD", "NOTHING")
+
+    # Green: no annotation, a summary that says so, the log lines as before.
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught])
+    check(code == 0 and not notes, f"a clean sweep: exit {code}, {notes}")
+    check("  caught      the guard is gone" in lines,
+          "the caught line the workflow reads is unchanged")
+    check("shard 0/1: 1 mutations to run" in lines,
+          "the 'mutations to run' line the timeout step reads is printed")
+    check("| shard 0/1 | 1 | 1 | 0 |" in summary and "| green | yes |" in summary
+          and "ok" in summary, f"a clean sweep's summary table:\n{summary}")
+
+    # NOT CAUGHT, with and without the expected-miss list. This is the exit
+    # 1 that used to say nothing.
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught, missed])
+    check(code == 1, f"a miss exits 1, got {code}")
+    check(said(notes, "title=mutate shard 0/1%3A mutation NOT CAUGHT",
+               "file: target.py", "mutation: nothing notices this",
+               "was:  GUARD", "now:  NOTHING", "nothing tests this guarantee"),
+          f"a miss is annotated with the shard, the file and the mutation: {notes}")
+    check("  NOT CAUGHT  nothing notices this" in lines,
+          "the NOT CAUGHT log line is unchanged")
+    check("**Why it is red**" in summary and "mutation NOT CAUGHT" in summary
+          and "`target.py`: nothing notices this" in summary
+          and "FAIL (exit 1)" in summary, f"a miss is in the summary:\n{summary}")
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught, missed],
+                                      expected="")
+    check(code == 1 and said(notes, "mutation NOT CAUGHT", "nothing notices this")
+          and "  UNEXPECTED MISS  nothing notices this" in lines,
+          f"an UNEXPECTED MISS is annotated: {code} {notes}")
+    # Listed: an expected miss is not red and not annotated.
+    code, lines, notes, summary = run(
+        ["--shard", "0/1"], [caught, missed],
+        expected="all | nothing notices this | only the real show catches it")
+    check(code == 0 and not notes and "**Expected misses** (1)" in summary,
+          f"an expected miss is green and listed: {code} {notes}")
+
+    # NOW CAUGHT and a stale list line, each its own annotation.
+    code, lines, notes, summary = run(
+        ["--shard", "0/1"], [caught],
+        expected="all | the guard is gone | x\nall | ghost | y")
+    check(code == 1 and said(notes, "NOW CAUGHT", "the guard is gone")
+          and said(notes, "expected-miss list is stale", "ghost"),
+          f"NOW CAUGHT and a stale line are annotated: {code} {notes}")
+
+    # A flaky catch: red once, green the second time, is NOT CAUGHT and the
+    # annotation carries the first failure.
+    flaky = ("flaky guard", "target.py", "GUARD", "FLAKY")
+    code, lines, notes, summary = run(["--shard", "0/1"], [flaky], expected="")
+    check(code == 1 and said(notes, "NOT CAUGHT (flaky)",
+                             "caught once, then not",
+                             "FAIL  took 0.9 s on a slow runner"),
+          f"a flaky catch is annotated with its first failure: {code} {notes}")
+    check("| 1 | 0 | 1 | 0 | 1 | 0 |" in summary,
+          f"the flaky column counts it:\n{summary}")
+
+    # SETUP FAIL: the text to break is not in the file.
+    stale = ("refreshed away", "target.py", "ABSENT", "x")
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught, stale],
+                                      expected="")
+    check(code == 1 and said(notes, "mutation setup failed",
+                             "pattern appears 0 times in target.py: refreshed away"),
+          f"a SETUP FAIL is annotated: {code} {notes}")
+    check("  SETUP FAIL  refreshed away (pattern appears 0 times in target.py)"
+          in lines, "the SETUP FAIL log line is unchanged")
+
+    # The baseline fails: which test, from the first FAIL line.
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught],
+                                      target_text="BAD\nGUARD\n")
+    check(code == 2 and said(notes, "the suite FAILS with nothing mutated",
+                             "FAIL  the guard is gone"),
+          f"a red baseline is annotated with the failing check: {code} {notes}")
+    check("| FAILED |" in summary, f"the baseline column says so:\n{summary}")
+    # ... and when the suite hangs instead.
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught],
+                                      target_text="SLEEP\nGUARD\n",
+                                      SUITE_TIMEOUT=1)
+    check(code == 2 and said(notes, "nothing mutated",
+                             "did not finish inside 1 s"),
+          f"a hung baseline is annotated as a timeout: {code} {notes}")
+    # ... and when a test lets an exception out: the traceback's last line.
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught],
+                                      target_text="CRASH\nGUARD\n")
+    check(code == 2 and said(notes, "nothing mutated",
+                             "ValueError: a test let this out"),
+          f"a crashing baseline is annotated with its exception: {code} {notes}")
+
+    # The restore proof fails: a write that leaves the mutation behind.
+    real_write = mutate._write
+
+    def leaky_write(path, text):
+        real_write(path, text if "GUARD" not in text else text + "# left\n")
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught],
+                                      _write=leaky_write)
+    check(code == 2 and said(notes, "restore proof failed",
+                             "a restore did not land in target.py"),
+          f"a failed restore is annotated: {code} {notes}")
+    check("| NO |" in summary, f"the restored column says NO:\n{summary}")
+
+    # An unexpected exception: the traceback's last lines, and the lock is
+    # released all the same.
+    gone = ("file is gone", "missing.py", "a", "b")
+    code, lines, notes, summary = run(["--shard", "0/1"], [gone])
+    check(code == 1 and said(notes, "unexpected exception",
+                             "FileNotFoundError", "missing.py"),
+          f"an exception is annotated with its traceback: {code} {notes}")
+    check(not os.path.exists(os.path.join(tree, ".mutating")),
+          "the lock is released after an exception")
+
+    # Another run holds the tree.
+    open(os.path.join(tree, ".mutating"), "w").close()
+    saved_lock, saved_ci = mutate.LOCK, mutate.CI
+    env_saved = os.environ.get("GITHUB_STEP_SUMMARY")
+    try:
+        mutate.LOCK = os.path.join(tree, ".mutating")
+        with open(summary_file, "w"):
+            pass
+        os.environ["GITHUB_STEP_SUMMARY"] = summary_file
+        mutate.CI = True
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = mutate.main()
+    finally:
+        mutate.LOCK, mutate.CI = saved_lock, saved_ci
+        if env_saved is None:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        else:
+            os.environ["GITHUB_STEP_SUMMARY"] = env_saved
+        os.remove(os.path.join(tree, ".mutating"))
+    notes = [l for l in buf.getvalue().splitlines() if l.startswith("::error ")]
+    check(code == 3 and said(notes, "another run holds the tree", ".mutating"),
+          f"a held tree is annotated: {code} {notes}")
+
+    # The diff cannot be read (no git repository here).
+    code, lines, notes, summary = run(["--shard", "0/1", "--changed", "nope"],
+                                      [caught])
+    check(code == 2 and said(notes, "cannot read the diff"),
+          f"an unreadable diff is annotated: {code} {notes}")
+
+    # GitHub keeps ten annotations a step: the tenth says there are more
+    # and the summary lists every one.
+    many = [(f"miss number {i}", "target.py", "GUARD", "NOTHING")
+            for i in range(12)]
+    code, lines, notes, summary = run(["--shard", "0/1"], many)
+    check(code == 1 and len(notes) == 10 and "more problems" in notes[-1]
+          and summary.count("`target.py`: miss number") == 12,
+          f"twelve misses: {len(notes)} annotations, the last says more: "
+          f"{notes[-1:]}")
+
+    # An annotation never runs past GitHub's size, however long the lines.
+    note = mutate.annotation("t", ["x" * 5000] + ["y"] * 20)
+    check(len(note) < 3200 and "(cut)" in note and "more lines in the log" in note,
+          f"a long annotation is cut: {len(note)} chars")
+    check(mutate.annotation("a, b: c", ["p%q"]).startswith(
+        "::error title=a%2C b%3A c::p%25q"),
+          "the title's commas and colons are escaped, the body's percent too")
+
+
 def test_the_gpl_path_never_loads_the_flame_link():
     section("GPL: the flame link is never imported by the program")
     import subprocess as _sp
@@ -32151,6 +32473,7 @@ def test_the_gpl_path_never_loads_the_flame_link():
 
 if __name__ == "__main__":
     t0 = time.time()
+    sys.excepthook = _ci_crash_hook(t0)
     _TEMPRUN = _TempRun()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
@@ -32534,6 +32857,7 @@ if __name__ == "__main__":
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
     test_the_gpl_path_never_loads_the_flame_link()
+    test_mutate_reports_every_failure_it_can_have()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
@@ -32577,21 +32901,18 @@ if __name__ == "__main__":
         print("  Open Tools and run 'Set the Advatek triggers.command'.")
         print()
     if FAILS:
-        if os.environ.get("GITHUB_ACTIONS"):
-            for _f in FAILS[:10]:
-                print("::error title=selftest::"
-                      + _f.replace("%", "%25").replace("\r", "%0D")
-                      .replace("\n", "%0A")[:900])
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            # Job logs cannot always be fetched (a cloud session's proxy
-            # blocks the log store); annotations can, so each failure is
-            # also written as one.
-            for f in FAILS[:20]:
-                msg = (str(f)[:1500].replace("%", "%25")
-                       .replace("\r", "%0D").replace("\n", "%0A"))
-                print(f"::error title=selftest failure::{msg}")
+        # One annotation per failure, each with its sentence. GitHub keeps
+        # ten error annotations a step, so the tenth names the rest.
+        for f in FAILS[:9]:
+            ci_annotate("selftest failure", str(f)[:1500])
+        if len(FAILS) > 9:
+            ci_annotate("selftest: more failures",
+                        f"{len(FAILS) - 9} more; the job summary and the "
+                        f"selftest log artifact list every one")
+        ci_summary(f"FAIL ({len(FAILS)} failures)", time.time() - t0, FAILS)
         sys.exit(1)
+    ci_summary("ok", time.time() - t0, FAILS)
     print(f"all checks passed in {time.time()-t0:.1f}s")

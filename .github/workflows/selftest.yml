@@ -55,7 +55,20 @@ jobs:
       # pillow: the Stream Deck's key drawing (ltcplay/streamdeck.py), so
       # its pixel test runs here too. The suite also passes without it.
       - run: python -m pip install numpy zstandard tzdata pillow
-      - run: python -u selftest.py
+      # selftest.py writes each failure as an annotation and its totals to
+      # the job summary. The whole log is kept as an artifact for a week,
+      # since the job log cannot always be fetched (a cloud session's proxy
+      # blocks the log store). pipefail (bash's default in Actions) keeps
+      # selftest.py's exit code through tee.
+      - shell: bash
+        run: python -u selftest.py 2>&1 | tee "$RUNNER_TEMP/selftest.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-log-${{ matrix.os }}
+          path: ${{ runner.temp }}/selftest.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Decides what the mutate shards do:
   #   mode=full      a release tag: every mutation, ubuntu and windows
@@ -238,4 +251,69 @@ jobs:
           for n in todo:
               print("  did not run  " + n)
           raise SystemExit(1)
+          PY
+      # The whole shard log, kept a week, for the run page's Artifacts
+      # list; the job log cannot always be fetched from a cloud session.
+      - uses: actions/upload-artifact@v4
+        if: always() && needs.changes.outputs.mode != 'none'
+        with:
+          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutate.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # One place that says which shards are red, with a link to each, in the
+  # run's summary, so nobody opens 32 jobs to find the one that failed.
+  # Each red shard's own summary says why (the kind of failure and the
+  # mutation), its annotations carry the same, and its log is the artifact
+  # named after it. Nothing is posted to the PR, and this job is green
+  # whatever it finds: the required checks are the shards themselves.
+  mutate-report:
+    needs: [changes, mutate]
+    if: always() && needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          MODE: ${{ needs.changes.outputs.mode }}
+          JOB_PREFIX: "mutate ("
+        run: |
+          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          python3 - "$RUNNER_TEMP/jobs.tsv" <<'PY'
+          import os, sys
+
+          prefix, mode = os.environ["JOB_PREFIX"], os.environ.get("MODE", "")
+          shards = []
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              for line in fh:
+                  parts = line.rstrip("\n").split("\t")
+                  if len(parts) == 3 and parts[0].startswith(prefix):
+                      shards.append(parts)
+          red = [s for s in shards if s[1] not in ("success", "skipped")]
+          out = []
+          if not shards:
+              out.append("### mutate: no shard jobs were found in this run")
+          elif not red:
+              out.append(f"### mutate: all {len(shards)} shards green"
+                         + (" (nothing this change can have broken is mutated)"
+                            if mode == "none" else ""))
+          else:
+              out += [f"### mutate: {len(red)} of {len(shards)} shards red", "",
+                      "| shard | result | job |", "|---|---|---|"]
+              out += [f"| {n} | {c} | [open]({u}) |" for n, c, u in red]
+              out += ["",
+                      "Each red shard's own summary (above, under its job) says "
+                      "why: the kind of failure and the mutation or test. Its "
+                      "annotations say the same, and its full log is the "
+                      "artifact named `mutate-log-<os>-shard-<n>`, kept 7 days."]
+          text = "\n".join(out) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
           PY
