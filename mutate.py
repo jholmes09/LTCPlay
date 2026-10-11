@@ -5352,6 +5352,101 @@ def build():
   "            if kind in LOW_PRIORITY_KINDS and \\\n",
   "            if True and \\\n"),
 
+ # -- review of PR #38 (2026-10-05): P1-2, a Windows shutdown or sign-out stops the show programs cleanly --
+ ('review38: a shutdown query stops nothing',
+  'packaging/windows/ltcwin.py',
+  '            self._stop_and_wait("Windows is shutting down or signing out")',
+  '            pass'),
+
+ ('review38: the end of the session is answered before the stop is done',
+  'packaging/windows/ltcwin.py',
+  '        if not self.done.wait(self.wait_s):',
+  '        if False:'),
+
+ ('review38: the end of the session stops flamesafe first',
+  'packaging/windows/supervisor.py',
+  '    for name in reversed(PROGRAMS):\n        p = progs[name]\n        if p.alive():\n            log(f"Windows is ending',
+  '    for name in PROGRAMS:\n        p = progs[name]\n        if p.alive():\n            log(f"Windows is ending'),
+
+ ('review38: programs are restarted while the session ends',
+  'packaging/windows/supervisor.py',
+  '    ENDING.set()\n    breaker = breaker or send_ctrl_break',
+  '    breaker = breaker or send_ctrl_break'),
+
+ ('review38: flamesafe.exe makes no shutdown window',
+  'packaging/windows/entry_flamesafe.py',
+  '    ending = ltcwin.stop_cleanly_at_shutdown("flamesafe", stopped)\n',
+  '    ending = None\n'),
+
+ # -- review of PR #38: P2, the supervisor's lock is machine wide --
+ ("review38: the supervisor's lock is per Windows session again",
+  'packaging/windows/supervisor.py',
+  'MUTEX_NAME = "Global\\\\LTCPlayerSupervisor"',
+  'MUTEX_NAME = "LTCPlayerSupervisor"'),
+
+ ("review38: another user's supervisor reads as not running",
+  'packaging/windows/supervisor.py',
+  '    return ctypes.get_last_error() != ERROR_FILE_NOT_FOUND',
+  '    return False'),
+
+ ("review38: a refused Global name is a running supervisor even when it is not there",
+  'packaging/windows/supervisor.py',
+  '        if err == ERROR_ACCESS_DENIED and _mutex_there(k, name):',
+  '        if err == ERROR_ACCESS_DENIED:'),
+
+ ("review38: the supervisor's fall back to Local is quiet",
+  'packaging/windows/supervisor.py',
+  '            if name == LOCAL_MUTEX_NAME:\n                log(',
+  '            if False:\n                log('),
+
+ # -- review of PR #38: P1-4, one flamesafe config for every show program --
+ ("review38: the engine is not told the supervisor's flamesafe config",
+  'packaging/windows/supervisor.py',
+  '            env[ltcwin.FLAMESAFE_ENV] = os.path.abspath(',
+  "            env['UNUSED'] = os.path.abspath("),
+
+ ("review38: a flamesafe config left in the supervisor's environment reaches the engine",
+  'packaging/windows/supervisor.py',
+  '        env.pop(ltcwin.FLAMESAFE_ENV, None)\n',
+  ''),
+
+ # -- review of PR #38: P1-2 follow-up, TRUE reaches Windows before the program ends --
+ ('review38: the shutdown answer is never marked given',
+  'packaging/windows/ltcwin.py',
+  '            self._stop_and_wait("Windows is shutting down or signing out")\n            self.answered.set()\n',
+  '            self._stop_and_wait("Windows is shutting down or signing out")\n'),
+
+ ('review38: flamesafe.exe ends before Windows has its answer',
+  'packaging/windows/entry_flamesafe.py',
+  '            ending.let_windows_have_its_answer()',
+  '            pass'),
+
+ # -- re-review of #47: P2-e and P2-g in the supervisor --
+ ('rereview: the supervisor ends before its shutdown answer reaches Windows',
+  'packaging/windows/supervisor.py',
+  '    ending.done.wait(wait_s)\n    ending.let_windows_have_its_answer()\n',
+  '    ending.done.wait(wait_s)\n'),
+
+ ("rereview: the supervisor's loop skips the shutdown answer wait",
+  'packaging/windows/supervisor.py',
+  '            leave_at_end_of_session(ending)\n',
+  '            pass\n'),
+
+ ("rereview: the engine's refusal is not read",
+  'packaging/windows/supervisor.py',
+  '    return " ".join(l.strip() for l in lines[1:] if l.strip())',
+  '    return ""'),
+
+ ("rereview: the engine's refusal is said at every restart",
+  'packaging/windows/supervisor.py',
+  '    if not text or text == said[0]:',
+  '    if not text:'),
+
+ ("rereview: the supervisor never looks for the engine's refusal",
+  'packaging/windows/supervisor.py',
+  '                    say_engine_refused(engine_refusal(p.started_wall),\n                                       refused_said)\n',
+  '                    pass\n'),
+
 
  # -- PR #30 fix round (independent review), 2026-10-02. All named
  # "scheduler fix round: ..." so `python3 mutate.py "fix round"` runs them.
