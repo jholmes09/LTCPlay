@@ -35950,7 +35950,9 @@ def test_remote_pin_required_over_the_network():
         import json as _pj
         with open(os.path.join(R.work, RM.PIN_FILE), encoding="utf-8") as fh:
             pin_doc = _pj.load(fh)
-        recs = list(pin_doc.values()) if isinstance(pin_doc, dict) else []
+        by_name = (pin_doc.get("pins") if isinstance(pin_doc, dict)
+                   else None)
+        recs = list(by_name.values()) if isinstance(by_name, dict) else []
         check(len(recs) >= 2 and all(
             isinstance(r, dict) and set(r) >= {"salt", "hash"}
             and len(r["salt"]) == 32 and len(r["hash"]) == 64
