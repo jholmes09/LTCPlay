@@ -43,8 +43,6 @@ hotel has no 16R; the soak PC has nothing).
 import os
 import threading
 
-from .announce import resolve_output_device, _wav_info
-
 DEFAULT_RESPONSE_S = 30
 MAX_NOTE_S = 8.0          # a booth note is a short line plus a tone
 NOTE_KINDS = ("gate", "audio", "video", "deck", "start", "flames", "link",
@@ -102,6 +100,14 @@ def _import_sounddevice():
         return None
 
 
+def _announce():
+    """announce.py's device resolver and WAV check, imported only when a
+    note is checked or played: the GPL path never loads announcements
+    (a test proves it), and a booth that is off never needs them."""
+    from . import announce
+    return announce
+
+
 def _as_float(pcm):
     import numpy as np
     if pcm.dtype == np.float32:
@@ -144,7 +150,8 @@ class BoothPlayer:
         out = {}
         for kind, path in self.config["files"].items():
             try:
-                _pcm, _ch, _rate, length = _wav_info(path, decode=False)
+                _pcm, _ch, _rate, length = _announce()._wav_info(
+                    path, decode=False)
                 if length > MAX_NOTE_S:
                     out[kind] = (f"{path} is {length:.1f} s long; a booth "
                                  f"note is at most {MAX_NOTE_S:g} s.")
@@ -171,7 +178,7 @@ class BoothPlayer:
             return False, ("sounddevice is not installed here, so the booth "
                            "note was not played.")
         try:
-            dev = resolve_output_device(sd, name)
+            dev = _announce().resolve_output_device(sd, name)
         except ValueError as e:
             # Missing device: silent. Nothing else is ever used instead.
             return False, f"Booth speaker {name} is not attached. {e}"
@@ -185,7 +192,7 @@ class BoothPlayer:
             return False, (f"Booth speaker {name} has {have} outputs, so "
                            f"channels {a} and {b} are not there.")
         try:
-            pcm, ch, rate, length = _wav_info(path, decode=True)
+            pcm, ch, rate, length = _announce()._wav_info(path, decode=True)
         except ValueError as e:
             return False, f"The booth note for {kind} could not play: {e}"
         if length > MAX_NOTE_S:

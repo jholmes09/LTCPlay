@@ -41210,8 +41210,11 @@ def test_boothaudio_never_holds_and_never_uses_the_pa():
                  "query_devices()[", "schedule", "default_output",
                  "play_announcement", "Announcer("):
         check(word not in src, f"boothaudio.py never names {word}")
-    check("from .announce import resolve_output_device" in src,
-          "it finds the device with announce's exact-name resolver")
+    check("from . import announce" in src and "resolve_output_device" in src
+          and "import announce" not in src.split("def _announce")[0],
+          "it finds the device with announce's exact-name resolver, imported "
+          "only when a note is checked or played (the GPL path never loads "
+          "announcements)")
     work = tempfile.mkdtemp()
     wav = _booth_wav(os.path.join(work, "booth_deck.wav"))
 
