@@ -912,7 +912,7 @@ class _Stepped:
 
     def tick(self):
         p = self.p
-        frame = p._tick()
+        frame = p._alert_mix(p._tick())
         p.sender.send_frame(frame if frame is not None else b"")
         p.frames_sent += 1
         p._service_trigger()

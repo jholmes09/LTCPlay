@@ -1008,7 +1008,11 @@ class EngineConductor:
             with self._lock:
                 if self._local[0]:
                     self._local = (False, self._clock())
-        self.fault = "" if ok else f"{name.title()}: {text}"
+        if name != "alert":
+            # An alert post is not a press on the rig: a refused or late
+            # Acknowledge (two keys inside one poll) is journaled below,
+            # never shown as ENGINE FAULT on the keys.
+            self.fault = "" if ok else f"{name.title()}: {text}"
         if ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
         else:
