@@ -7417,8 +7417,8 @@ def build():
 
  ("review38: the named mutex's sentence hides the running copy's note",
   'ltcplay/onlyone.py',
-  '            busy = None\n            try:\n                self._take_named()\n            except AlreadyRunning as e:\n                busy = e\n',
-  '            busy = None\n            self._take_named()\n'),
+  '                self._file_holder() or\n',
+  '                "" or\n'),
 
  ('review38: onlyone.py has an invalid escape in a docstring again',
   'ltcplay/onlyone.py',
