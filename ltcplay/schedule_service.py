@@ -746,6 +746,11 @@ class Service:
         # only ever asked for anything while dry_run is False.
         self.dry_run = DRY_RUN
         self.performer = None
+        # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
+        # start raises a "start" alert for the rack screen and the booth
+        # (Jeff, 2026-10-12: the groups are left as they are, so a person
+        # has to be told). None: journaled only, as before.
+        self.alert_sink = None
         self.ntp_query = ntp_query
         # Injected so a test can move the wall clock and perf_counter apart
         # on purpose, deterministically, with nothing asleep and no real
@@ -1108,9 +1113,23 @@ class Service:
                 self.CONDUCTOR_DISARMS_FAILED_START))
         return le
 
+    FAILED_START_ALERT = ("The show did not start. The rig is dark and every "
+                          "flame group stays as it was. Press Acknowledge "
+                          "once you have seen it; Start now or the next show "
+                          "brings the rig back.")
+
     def _record(self, out, now, plan=()):
         for le in out.log:
             self._record_logevent(self._reworded(le))
+            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:
+                try:
+                    self.alert_sink("start", self.FAILED_START_ALERT)
+                except Exception as e:   # noqa: BLE001  never the scheduler
+                    self._journal_line(
+                        "system", f"The failed-start alert could not be "
+                                  f"raised ({type(e).__name__}: {e}); the "
+                                  f"journal line above is the only notice.",
+                        action="alert", outcome="not raised", fault=True)
         claimed = set()
         for entry in plan:
             label, method, kinds = entry[:3]

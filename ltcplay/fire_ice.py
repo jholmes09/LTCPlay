@@ -655,6 +655,34 @@ def refuse_active_flame_controller(show_file, name, fs_dest=None):
     return blocked
 
 
+def refuse_alert_pixels_on_flame_channels(show_file, name, pixels):
+    """The blue alert pulse (player.py, alerts.py) paints `pixels`
+    ((start0, count, order), remote.check_alert_pixels) over the pixel
+    frame. Those channels must not be the flame controller's: a pulse on a
+    flame channel would be a fire value sent around flamesafe. Raises
+    FlameControllerError naming both ranges when they overlap; quiet when
+    there is nothing to check (no pixels, no map, no such controller: the
+    other checks say so)."""
+    if not pixels:
+        return
+    path = _show_networks(show_file)
+    if not path or not os.path.exists(path):
+        return
+    try:
+        first, span = flame_channels(path, name)
+    except Exception:
+        return
+    start0, count, _order = pixels
+    lo, hi = start0 + 1, start0 + 3 * count
+    f_lo, f_hi = first, first + span - 1
+    if lo <= f_hi and f_lo <= hi:
+        raise FlameControllerError(
+            f"The alert pulse pixels (channels {lo} to {hi}, alert_pixels "
+            f"in ltcplay_remote.json) overlap the flame controller "
+            f"{name!r} (channels {f_lo} to {f_hi}). Pick a floor range "
+            f"that is not the flame controller's.")
+
+
 # The Stream Deck's arm keys (streamdeck.GROUP_KEY_LIMIT; not imported, so
 # this module never loads the deck).
 FLAME_GROUP_LIMIT = 3
@@ -1605,7 +1633,8 @@ class Wiring:
 
 
 def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
-           journal=None, flame_link=None, threaded=True, **conductor_kw):
+           journal=None, flame_link=None, threaded=True, alert_pixels=None,
+           **conductor_kw):
     """Build the real Conductor and attach it to the scheduler service
     `svc`. `madmapper` is web.serve's (link, watchdog) pair or None,
     `beyond` its Beyond or None. Call before svc.start(), so the first tick
@@ -1641,6 +1670,10 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
             try:
                 blocked = refuse_active_flame_controller(show_file, _name,
                                                          fs_dest)
+                # The alert pulse's floor pixels are never the flame
+                # controller's channels (alerts.py, 2026-10-12).
+                refuse_alert_pixels_on_flame_channels(show_file, _name,
+                                                      alert_pixels)
             except FlameControllerError as e:
                 raise SessionError(f"This show will not start: {e}")
             return {"exclude_destinations": tuple(sorted(blocked))}

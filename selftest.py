@@ -40569,6 +40569,512 @@ def test_flame_link_seek_guard():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Degraded mode, Phase 0 (Jeff's rulings, 2026-10-07 and 2026-10-12): the
+# alert service, the booth note, the blue floor pulse.
+# ---------------------------------------------------------------------------
+def test_alerts_pure_logic():
+    section("alerts: one open alert per kind; a re-raise updates the sentence "
+            "and never re-sounds the booth within 60 s; every raise is a "
+            "fault line and every clear a plain line naming the action, the "
+            "surface and the address; Acknowledge changes nothing; the pulse "
+            "runs for an audio alert or a note that could not play, and "
+            "during a show only for audio")
+    from ltcplay import alerts as AL
+    lines, booth_calls, changes = [], [], []
+    t, w, live = [100.0], [1_800_000_000.0], [False]
+
+    class _Booth:
+        ok = True
+        device_name = "Booth"
+
+        def play(self, kind):
+            booth_calls.append((t[0], kind))
+            if self.ok:
+                return True, "played"
+            return False, "Booth speaker Booth is not attached."
+    booth = _Booth()
+    A = AL.Alerts(journal=lambda text, **kw: lines.append((text, kw)),
+                  booth=booth, clock=lambda: t[0], wall=lambda: w[0],
+                  show_running=lambda: live[0],
+                  on_change=lambda: changes.append(1))
+    a = A.raise_("deck", "The Stream Deck is unplugged.",
+                 ["Acknowledge", "Disarm all"])
+    check(a.id == 1 and a.kind == "deck" and a.severity == "fault"
+          and a.options == ("Acknowledge", "Disarm all"),
+          f"a deck alert is a fault with its options: {a.view()}")
+    check(booth_calls == [(100.0, "deck")] and a.booth_ok is True,
+          f"the booth note plays once on the raise: {booth_calls}")
+    check(lines[-1][1].get("fault") is True
+          and lines[-1][1].get("action") == "alert"
+          and lines[-1][1].get("outcome") == "raised"
+          and "unplugged" in lines[-1][0],
+          f"a raise is journaled as a fault: {lines[-1]}")
+    t[0] = 130.0
+    b = A.raise_("deck", "The Stream Deck is back.")
+    check(b is a and a.text == "The Stream Deck is back."
+          and len(A.open()) == 1,
+          f"one open alert per kind: a re-raise updates the sentence: "
+          f"{[x.view() for x in A.open()]}")
+    check(len(booth_calls) == 1,
+          f"and does not re-sound the booth within 60 s: {booth_calls}")
+    check(lines[-1][1]["outcome"] == "updated" and lines[-1][1]["fault"],
+          f"the update is a fault line too: {lines[-1]}")
+    t[0] = 161.0
+    A.raise_("deck", "Still unplugged.")
+    check(len(booth_calls) == 2, f"after 60 s a raise sounds again: "
+                                 f"{booth_calls}")
+    c = A.raise_("video", "A video feed is gone.", ["Stop"])
+    check(c.options == ("Acknowledge", "Stop"),
+          f"an alert that only offers a choice can still be acknowledged: "
+          f"{c.options}")
+    check(A.raise_("video", "A video feed is gone.",
+                   ["Continue", "Stop"]).options == ("Continue", "Stop"),
+          "Continue already clears, so nothing is added to it")
+    for args in (("nope", "x"), ("deck", ""), ("deck", "x", ["Shout"])):
+        try:
+            A.raise_(*args)
+            check(False, f"raise_{args} must be refused")
+        except ValueError as e:
+            check(str(e).endswith("."), f"a plain sentence: {e}")
+    # The pulse rule.
+    check(A.pulse_wanted() is False,
+          "a deck or video alert whose note played does not pulse")
+    booth.ok = False
+    t[0] = 300.0
+    A.raise_("flames", "The flame link is quiet.")
+    check(A.pulse_wanted() is True,
+          "an alert whose booth note could not play pulses")
+    v = [x for x in A.view() if x["kind"] == "flames"][0]
+    check(v["text"].endswith(AL.BOOTH_UNAVAILABLE + ".") and v["pulse"],
+          f"and its banner says the booth speaker is not available: {v}")
+    live[0] = True
+    check(A.pulse_wanted() is False,
+          "during a show an alert that is not about audio does not pulse")
+    A.raise_("audio", "The show audio is gone.")
+    check(A.pulse_wanted() is True, "during a show an audio alert pulses")
+    au = [x for x in A.view() if x["kind"] == "audio"][0]
+    check(au["pulse"] is True and not [x for x in A.view()
+                                       if x["kind"] == "flames"][0]["pulse"],
+          f"the view says which alert the pulse is for: {A.view()}")
+    live[0] = False
+    booth.ok = True
+    # Clearing.
+    ok, why = A.clear(action="Stop", who="Andy", screen="Rack screen")
+    check(not ok and "not built" in why and len(A.open()) == 4,
+          f"Stop chooses; it is refused here and clears nothing: {why}")
+    ok, why = A.clear(id=a.id, who="Andy", screen="Rack screen",
+                      address="10.20.0.44")
+    check(ok and [x.kind for x in A.open()] == ["video", "flames", "audio"],
+          f"Acknowledge by id clears that one alert: {why} "
+          f"{[x.kind for x in A.open()]}")
+    check(lines[-1][1]["fault"] is False
+          and lines[-1][1]["outcome"] == "cleared"
+          and "Acknowledge by Andy on the Rack screen at 10.20.0.44"
+          in lines[-1][0] and "not changed" in lines[-1][0],
+          f"the clear is a plain line naming the action, the surface and "
+          f"the address: {lines[-1]}")
+    ok, why = A.clear(action="acknowledge", who="", screen="Stream Deck")
+    check(ok and not A.open() and "3 alerts" in why,
+          f"a deck key acknowledges every open alert: {why}")
+    ok, why = A.clear()
+    check(not ok and "no open alert" in why, f"nothing to clear: {why}")
+    check(len(changes) >= 8, f"on_change ran for every raise and clear: "
+                             f"{len(changes)}")
+    # No booth speaker configured at all: the pulse and the banner cover it.
+    B = AL.Alerts(journal=lambda text, **kw: None, booth=None,
+                  clock=lambda: t[0], wall=lambda: w[0])
+    x = B.raise_("deck", "The Stream Deck is unplugged.")
+    check(x.booth_ok is False and B.pulse_wanted() is True
+          and "No booth speaker is configured" in x.booth,
+          f"no booth speaker: the pulse runs and the banner says so: "
+          f"{x.view()}")
+    check(AL.SEVERITY["gate"] == "warning"
+          and all(AL.SEVERITY[k] == "fault" for k in AL.KINDS
+                  if k != "gate"),
+          "the gate is a warning; everything else is a fault")
+    print("  ok")
+
+
+def test_alerts_route_status_and_acknowledge():
+    section("alerts on the engine: the Stream Deck process raises over "
+            "loopback, the page and the deck read the same list, Acknowledge "
+            "from a page clears it and sends nothing to the rig, raising "
+            "from the network is refused, and the page draws the strip")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    body = {"raise": "deck", "text": "The Stream Deck is unplugged.",
+            "options": ["Acknowledge", "Disarm all"]}
+    try:
+        st, _h, out = R.ask("POST", "/api/remote/alert", dict(body))
+        check(st == 403, f"raising from the network is refused: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/alert", dict(body),
+                           client=loop)
+        check(st == 200 and out.get("alert", {}).get("kind") == "deck",
+              f"the show machine raises: {st} {out}")
+        st, _h, status = R.ask("GET", "/api/remote/status")
+        al = status.get("alerts") or []
+        check(len(al) == 1 and al[0]["text"].startswith(
+                  "The Stream Deck is unplugged.")
+              and al[0]["severity"] == "fault"
+              and al[0]["options"] == ["Acknowledge", "Disarm all"]
+              and status.get("booth") == {"configured": False, "device": ""},
+              f"the status carries the alert and says no booth speaker is "
+              f"configured: {al} {status.get('booth')}")
+        check(al[0]["text"].endswith("Booth speaker not available."),
+              f"with no booth speaker the banner says so: {al[0]['text']}")
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(st == 200 and (din.get("alerts") or [{}])[0].get("id")
+              == al[0]["id"],
+              f"the deck reads the same list on its own poll: {din}")
+        rows = R.lines_for("alert")
+        check(rows and rows[-1].get("fault") and "unplugged"
+              in rows[-1]["text"],
+              f"the raise is journaled as a fault: {rows[-1:]}")
+        k = len(R.rig.calls)
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": al[0]["id"], "action": "Stop",
+                            "seen": R.seen()})
+        check(st == 409 and "not built" in o2.get("error", ""),
+              f"Stop is refused with a sentence: {st} {o2}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": "1", "action": "acknowledge"})
+        check(st == 400, f"an id that is not a number is refused: {st} {o2}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": al[0]["id"], "action": "acknowledge",
+                            "seen": R.seen()})
+        check(st == 200 and "Nothing on the rig was changed" in o2["text"],
+              f"Acknowledge from the page clears it: {st} {o2}")
+        R.settle()
+        check(R.rig.names(k) == [],
+              f"and sent nothing to the rig: {R.rig.names(k)}")
+        st, _h, status = R.ask("GET", "/api/remote/status")
+        check(status.get("alerts") == [], "the strip is empty again")
+        rows = R.lines_for("alert")
+        check(rows and not rows[-1].get("fault")
+              and "10.20.0.44" in rows[-1]["text"]
+              and "Acknowledge" in rows[-1]["text"],
+              f"the clear names the action, the surface and the address, "
+              f"not as a fault: {rows[-1:]}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"action": "acknowledge"})
+        check(st == 409, f"acknowledging nothing is refused: {st} {o2}")
+        st, _h, o2 = _ask(R.httpd, "POST", "/api/remote/alert",
+                          {"raise": "nope", "text": "x"}, client=loop)
+        check(st == 400 and "not an alert kind" in o2.get("error", ""),
+              f"an unknown kind is refused: {st} {o2}")
+        # A clear from the show machine (the deck's own route).
+        _ask(R.httpd, "POST", "/api/remote/alert", dict(body), client=loop)
+        st, _h, o2 = _ask(R.httpd, "POST", "/api/remote/alert",
+                          {"clear": "deck"}, client=loop)
+        check(st == 200 and not R.remote.alerts.open(),
+              f"the show machine clears by kind: {st} {o2}")
+    finally:
+        R.close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('id="al-list"' in page and "renderAlerts(s.alerts" in page
+          and '"/api/remote/alert"' in page and 'action:"acknowledge"' in page
+          and ">Acknowledge</button>" in page
+          and 'includes("Disarm all")' in page,
+          "the page draws every open alert with Acknowledge, and Disarm "
+          "all for the alerts that offer it")
+    for bad in ("—", "–"):
+        for name in ("alerts.py", "boothaudio.py"):
+            src = open(os.path.join(here, "ltcplay", name),
+                       encoding="utf-8").read()
+            check(bad not in src, f"{name} has no em or en dashes")
+    print("  ok")
+
+
+def _booth_wav(path, seconds=0.5, rate=48000, channels=2):
+    import wave
+    import numpy as np
+    n = int(rate * seconds)
+    tone = (np.sin(np.arange(n) * 2 * np.pi * 440 / rate) * 12000)
+    frames = np.repeat(tone.astype(np.int16), channels)
+    with wave.open(path, "wb") as fh:
+        fh.setnchannels(channels)
+        fh.setsampwidth(2)
+        fh.setframerate(rate)
+        fh.writeframes(frames.tobytes())
+    return path
+
+
+def test_boothaudio_never_holds_and_never_uses_the_pa():
+    section("booth audio: the note goes to the EXACT named device and the "
+            "named output pair only, zero on every other output; a missing "
+            "or partly matching device is silent with a sentence, never the "
+            "default and never the show output; off until configured; the "
+            "module never holds the show")
+    import tempfile
+    import numpy as np
+    from ltcplay import boothaudio as BA
+    from ltcplay import remote as RM
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "boothaudio.py"),
+               encoding="utf-8").read()
+    for word in ("hold_requester", "default.device", "clock.audio",
+                 "AudioMaster", "showaudio", "interlock", "sd.default",
+                 "query_devices()[", "schedule", "default_output",
+                 "play_announcement", "Announcer("):
+        check(word not in src, f"boothaudio.py never names {word}")
+    check("from .announce import resolve_output_device" in src,
+          "it finds the device with announce's exact-name resolver")
+    work = tempfile.mkdtemp()
+    wav = _booth_wav(os.path.join(work, "booth_deck.wav"))
+
+    class _SD:
+        devices = [{"name": "Speakers (Realtek)", "max_output_channels": 2,
+                    "default_samplerate": 48000},
+                   {"name": "StudioLive 16R", "max_output_channels": 18,
+                    "default_samplerate": 48000}]
+
+        class default:
+            device = (0, 0)
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, **kw):
+            raise AssertionError(f"the real stream factory was used: {kw}")
+    opened = []
+
+    class _Stream:
+        def __init__(self, index, channels, rate):
+            self.spec = (index, channels, rate)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, block):
+            opened.append(self.spec + (block,))
+
+    def opener(sd, index, channels, rate):
+        return _Stream(index, channels, rate)
+
+    def wait(p):
+        for _ in range(200):
+            if p.playing == 0:
+                return
+            time.sleep(0.01)
+    cfg = {"device": "StudioLive 16R", "channels": [15, 16],
+           "files": {"deck": wav}}
+    p = BA.BoothPlayer(cfg, sd=_SD(), opener=opener)
+    check(p.enabled and p.check_files() == {}, f"configured and the file is "
+                                               f"sound: {p.check_files()}")
+    ok, why = p.play("deck")
+    wait(p)
+    check(ok and "outputs 15 and 16" in why and len(opened) == 1,
+          f"the note plays: {ok} {why} {len(opened)}")
+    index, channels, rate, block = opened[0]
+    check(index == 1 and channels == 16 and rate == 48000,
+          f"the exact device by name (index 1, not the default 0), a stream "
+          f"just wide enough for output 16: {opened[0][:3]}")
+    check(block.shape[1] == 16 and np.abs(block[:, 14]).max() > 0.1
+          and np.abs(block[:, 15]).max() > 0.1
+          and not np.any(block[:, :14]),
+          f"the note sits on outputs 15 and 16 only; outputs 1 to 14 are "
+          f"zero, so a pair on the show mixer never carries it: "
+          f"{np.abs(block).max(axis=0)}")
+    for name, word in (("StudioLive", "not attached"),
+                       ("Booth Monitor", "not attached"),
+                       ("studiolive 16r (2)", "not attached")):
+        q = BA.BoothPlayer(dict(cfg, device=name), sd=_SD(), opener=opener)
+        ok, why = q.play("deck")
+        wait(q)
+        check(not ok and word in why and name in why and len(opened) == 1,
+              f"{name!r}: silent, a sentence for the banner, nothing else "
+              f"used in its place: {ok} {why}")
+    q = BA.BoothPlayer(dict(cfg, device="Speakers (Realtek)"), sd=_SD(),
+                       opener=opener)
+    ok, why = q.play("deck")
+    check(not ok and "has 2 outputs" in why and len(opened) == 1,
+          f"a device without the pair is refused, not folded down: {why}")
+    ok, why = p.play("audio")
+    check(not ok and "No booth note file is set for audio" in why,
+          f"no file for a kind: silent with a sentence: {why}")
+    off = BA.BoothPlayer(None, sd=_SD(), opener=opener)
+    check(not off.enabled and off.play("deck") == (
+              False, "No booth speaker is configured, so the alert note was "
+                     "not played."), "off until configured: the safe default")
+    bad = os.path.join(work, "bad.wav")
+    open(bad, "wb").write(b"RIFF" + b"\0" * 40)
+    q = BA.BoothPlayer(dict(cfg, files={"deck": bad}), sd=_SD(),
+                       opener=opener)
+    pr = q.check_files()
+    ok, why = q.play("deck")
+    check("deck" in pr and not ok and len(opened) == 1,
+          f"a bad file is a load problem and a silent play: {pr} {why}")
+    long = _booth_wav(os.path.join(work, "long.wav"), seconds=9.0)
+    q = BA.BoothPlayer(dict(cfg, files={"deck": long}), sd=_SD(),
+                       opener=opener)
+    check("deck" in q.check_files() and not q.play("deck")[0],
+          "a 9 s file is too long for a booth note")
+    for doc, word in (({"device": "x", "channels": [1, 1]}, "two different"),
+                      ({"device": "x", "channels": [0, 1]}, "two different"),
+                      ({"device": "x", "files": {"siren": "a.wav"}},
+                       "not an alert kind"),
+                      ({"device": 3}, "exact name"),
+                      ([], "object"),
+                      ({"response_s": 0}, "response_s")):
+        try:
+            BA.parse_config(doc)
+            check(False, f"{doc} must be refused")
+        except ValueError as e:
+            check(word in str(e), f"{doc}: {e}")
+    # ltcplay_remote.json carries the block and the pulse pixels; a bad
+    # block is refused at load.
+    import json as _json
+    folder = tempfile.mkdtemp()
+    with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+              encoding="utf-8") as fh:
+        _json.dump({"booth_alert": cfg,
+                    "alert_pixels": {"start": 1, "count": 300,
+                                     "order": "GRB"}}, fh)
+    rs = RM.load_settings(folder)
+    check(rs["booth_alert"]["device"] == "StudioLive 16R"
+          and rs["booth_alert"]["channels"] == (15, 16)
+          and rs["alert_pixels"] == (0, 300, "GRB"),
+          f"the settings carry the booth block and the pulse pixels: {rs}")
+    check(RM.load_settings(tempfile.mkdtemp())["booth_alert"] is None,
+          "no file: no booth speaker")
+    for block in ({"booth_alert": {"device": "x", "channels": [2, 2]}},
+                  {"alert_pixels": {"start": 0, "count": 1}},
+                  {"alert_pixels": {"start": 1, "count": 1, "order": "RGW"}}):
+        with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+                  encoding="utf-8") as fh:
+            _json.dump(block, fh)
+        try:
+            RM.load_settings(folder)
+            check(False, f"{block} must be refused at load")
+        except ValueError as e:
+            check(RM.SETTINGS_FILE in str(e), f"refused at load: {e}")
+    print("  ok")
+
+
+def test_player_alert_look_pulse_shape():
+    section("the blue alert pulse: 0 to 255 and back over 1 s (0.5 s up, "
+            "0.5 s down), only the configured floor range, the rest of the "
+            "frame untouched, blue in the pixels' own order; blackout wins; "
+            "nothing without the flag")
+    import ltcplay.player as pl
+    for t_, want in ((0, 0), (0.25, 128), (0.5, 255), (0.75, 128), (1.0, 0),
+                     (1.25, 128), (2.5, 255)):
+        got = pl.pulse_level(t_)
+        check(abs(got - want) <= 2, f"level at {t_} s is {got}, want {want}")
+    fs = FakeFSEQ(frames=40, channels=64)
+    tl = _timeline([("01:00:00:00", "A", fs)])
+    snd = CountingSender()
+    p = Player(tl, FakeNetmap(total=64), snd)
+    base = bytes(range(1, 65))
+    check(p._alert_mix(base, now=10.25) == base and p._pulse_epoch is None,
+          "no flag: the frame goes out as it was")
+    p.alert_pulse = True
+    check(p._alert_mix(base, now=10.25) == base,
+          "the flag without a pixel range paints nothing")
+    p.alert_pixels = (9, 3, "RGB")       # channels 10 to 18, 1-based
+    out0 = p._alert_mix(base, now=10.0)
+    check(out0[:9] == base[:9] and out0[18:] == base[18:],
+          "the channels outside the range are untouched")
+    check(out0[9:18] == bytes(9),
+          f"at the start of the cycle the floor is dark: {list(out0[9:18])}")
+    out = p._alert_mix(base, now=10.5)
+    check(out[9:18] == bytes([0, 0, 255] * 3),
+          f"half way through, full blue on each pixel's blue channel, red "
+          f"and green zero: {list(out[9:18])}")
+    out = p._alert_mix(base, now=10.75)
+    check(all(abs(out[9 + 3 * i + 2] - 128) <= 2 for i in range(3))
+          and out[:9] == base[:9],
+          f"0.75 s in, half: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "GRB")
+    out = p._alert_mix(base, now=11.5)
+    check(out[9:18] == bytes([0, 0, 255] * 3),
+          f"blue is the third channel in GRB too: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "BGR")
+    out = p._alert_mix(base, now=11.5)
+    check(out[9:18] == bytes([255, 0, 0] * 3),
+          f"and the first in BGR: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "RGB")
+    empty = p._alert_mix(b"", now=11.5)
+    check(len(empty) == 64 and empty[9:18] == bytes([0, 0, 255] * 3)
+          and not any(empty[:9]) and not any(empty[18:]),
+          f"an empty frame (no preshow look) becomes a dark frame with "
+          f"only the pulse on it: {len(empty)} {list(empty[9:18])}")
+    p.override = "blackout"
+    check(p._alert_mix(b"", now=11.5) == b"" and
+          p._alert_mix(base, now=11.5) == base,
+          "blackout wins: a Hold's dark frame is never lit by the pulse")
+    p.override = None
+    p.alert_pulse = False
+    check(p._alert_mix(base, now=12.0) == base and p._pulse_epoch is None,
+          "the flag off: nothing painted and the cycle forgotten")
+    p.alert_pulse = True
+    p._alert_mix(base, now=20.0)
+    check(p._alert_mix(base, now=20.5)[9:18] == bytes([0, 0, 255] * 3),
+          "the cycle starts at the moment the pulse comes on")
+    # Through the real loop: the tick's frame is mixed before it is sent.
+    src = open(pl.__file__, encoding="utf-8").read()
+    check("frame = self._alert_mix(self._tick())" in src,
+          "the output loop mixes the pulse into every frame it sends")
+    print("  ok")
+
+
+def test_alert_pixels_never_the_flame_controllers():
+    section("the pulse's floor range must not be the flame controller's "
+            "channels: a pulse on a flame channel is a fire value sent "
+            "around flamesafe, so the show is refused")
+    import json as _json
+    import tempfile
+    from ltcplay import fire_ice as F
+    work = tempfile.mkdtemp()
+    _fs, show, _doc = _fi_flame_files(work, state="Inactive")
+    folder = os.path.join(work, "folder")
+    os.makedirs(folder)
+    tlp = os.path.join(folder, "fi_timeline.json")
+    with open(tlp, "w", encoding="utf-8") as fh:
+        _json.dump({"name": "fi", "fps": 30, "show_dir": show,
+                    "cues": [{"tc": "01:00:00:00", "fseq": "Show.fseq",
+                              "name": "Show"}]}, fh)
+
+    def refused(pixels):
+        try:
+            F.refuse_alert_pixels_on_flame_channels(tlp, "Flames", pixels)
+        except F.FlameControllerError as e:
+            return str(e)
+        return None
+    # The Flames controller sits at channels 511 to 1022.
+    check(refused((0, 170, "RGB")) is None, "channels 1 to 510: fine")
+    why = refused((0, 171, "RGB"))
+    check(why and "overlap" in why and "511 to 1022" in why
+          and "1 to 513" in why and "alert_pixels" in why,
+          f"channels 1 to 513 touch the flame controller: {why}")
+    check(refused((600, 1, "RGB")) and refused((1021, 1, "RGB")),
+          "a range inside or ending on the controller is refused")
+    check(refused((1022, 10, "RGB")) is None, "channels 1023 up: fine")
+    check(refused(None) is None, "no pulse pixels configured: nothing to "
+                                 "check")
+    check(F.refuse_alert_pixels_on_flame_channels(
+              os.path.join(work, "nowhere.json"), "Flames", (0, 999, "RGB"))
+          is None, "no show file: the other checks say so")
+    src = open(F.__file__, encoding="utf-8").read()
+    check("refuse_alert_pixels_on_flame_channels(show_file, _name,"
+          in src and "alert_pixels=httpd.remote.alert_pixels" in
+          open(os.path.join(os.path.dirname(F.__file__), "web.py"),
+               encoding="utf-8").read(),
+          "the check runs where the show is checked for the flame "
+          "controller, with the engine's pixel range")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     _TEMPRUN = _TempRun()
@@ -41034,6 +41540,11 @@ if __name__ == "__main__":
     test_engine_stall_probe_memory_is_bounded()
     test_tracemalloc_diagnostic_is_opt_in()
     test_lasers_blanking_not_set_up_is_loud()
+    test_alerts_pure_logic()
+    test_alerts_route_status_and_acknowledge()
+    test_boothaudio_never_holds_and_never_uses_the_pa()
+    test_player_alert_look_pulse_shape()
+    test_alert_pixels_never_the_flame_controllers()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

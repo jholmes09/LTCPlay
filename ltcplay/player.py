@@ -59,6 +59,18 @@ LOST, FREEWHEEL, LOCKED, PARKED = "LOST", "FREEWHEEL", "LOCKED", "PARKED"
 FREERUN = "FREERUN"
 SHOW, IDLE, HOLD, BLACK = "show", "preshow", "hold", "black"
 
+# The alert pulse (Jeff, 2026-10-07): blue, 0.5 s up and 0.5 s down,
+# repeating, a 1 s cycle.
+PULSE_PERIOD_S = 1.0
+
+
+def pulse_level(elapsed):
+    """0 to 255 and back over PULSE_PERIOD_S: a triangle, 0 at the start of
+    each cycle, 255 half way through."""
+    phase = (elapsed % PULSE_PERIOD_S) / PULSE_PERIOD_S
+    up = phase * 2.0 if phase < 0.5 else (1.0 - phase) * 2.0
+    return int(round(255.0 * up))
+
 
 class Player:
     def __init__(self, timeline, netmap, sender,
@@ -133,6 +145,14 @@ class Player:
         # button you want at 6pm when the generator is running timecode from
         # yesterday's rehearsal and you just need the preshow on the trees.
         self.override = None
+        # The blue floor-pixel pulse for an open alert (alerts.py, Jeff
+        # 2026-10-07): a flag the alert service sets, read on this
+        # player's own tick (no extra thread), painted over the configured
+        # floor range by _alert_mix after the look is decided. A blackout
+        # override wins: Hold's black stays black.
+        self.alert_pulse = False
+        self.alert_pixels = None      # (start0, count, order) or None
+        self._pulse_epoch = None
         # Free run: play the show off this machine's own clock, ignoring the
         # timecode feed entirely. Every show controller has a GO and this did
         # not: if the LTC line dies for good ten minutes before the set -- a
@@ -594,6 +614,38 @@ class Player:
         if self.source == HOLD:
             self.source = SHOW
         return self._buf
+
+    def _alert_mix(self, frame, now=None):
+        """The alert pulse over the frame the look decided on: the floor
+        range (alert_pixels) replaced by blue at pulse_level, the rest of
+        the frame untouched. Nothing happens without the flag or a range.
+        A blackout override wins (the frame stays black, so a Hold's dark
+        is never lit); every other look, the preshow loop or the show
+        frame, carries the pulse. An empty frame (no preshow look loaded)
+        becomes a dark frame with only the pulse on it."""
+        if not self.alert_pulse or self.alert_pixels is None:
+            self._pulse_epoch = None
+            return frame
+        if self.override == "blackout":
+            return frame
+        if now is None:
+            now = _now()
+        if self._pulse_epoch is None:
+            self._pulse_epoch = now
+        level = pulse_level(now - self._pulse_epoch)
+        start, count, order = self.alert_pixels
+        total = len(self._buf)
+        out = bytearray(frame or b"")
+        if len(out) < total:
+            out.extend(bytes(total - len(out)))
+        blue = order.upper().index("B")
+        for p in range(count):
+            base = start + 3 * p
+            if base + 2 >= len(out):
+                break
+            out[base] = out[base + 1] = out[base + 2] = 0
+            out[base + blue] = level
+        return bytes(out)
 
     def _idle_frame(self):
         """The preshow look, free-running and looped off the wall clock."""
@@ -1103,7 +1155,7 @@ class Player:
             # for why the epsilon matters at a large clock reading.
             n = max(int((now - t0) / period + 1e-9), n_next)
             try:
-                frame = self._tick()
+                frame = self._alert_mix(self._tick())
                 self.sender.send_frame(frame if frame is not None else b"")
                 self.frames_sent += 1
                 # After the frame, never before: a trigger is a consequence of
