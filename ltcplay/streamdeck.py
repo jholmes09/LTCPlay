@@ -80,32 +80,44 @@ and the approved layout is not to be changed.
 
 FAILURE MODES, assumptions made here (flag these in the safety review):
 
-  1. Deck unplugged mid-show, while armed. The Stream Deck's own
-     read/write failing (DeckDisconnected) ends the main loop, and from
-     then until a deck is back this module sends every group OFF on the
-     arm link at ARM_SEND_HZ, on the SAME socket (round 4 of the safety
-     review, item A; run_forever's _hold_link_off). Every group disarms on
-     the next frame, not after arm_stale_ms. It used to go silent instead
-     and let flamesafe's arm_stale_ms do the disarming, but silence also
-     released flamesafe's sender lock, and the round-4 review had another
-     local process take it while the deck was unplugged and arm every
-     group. Since round 5 (item 2) ANY exception out of the deck, the
-     deck's open, or one main-loop pass is handled exactly like an unplug,
-     not just DeckDisconnected: a plain OSError from hidapi mid-plug used
-     to end run_forever after a few frames, and the link went silent
-     anyway. Only a deliberate stop (Ctrl-C, SystemExit) ends the loop. If
-     this whole process dies, silence is still what flamesafe sees, and
-     arm_stale_ms still disarms every group; flamesafe's sender lock then
-     lapses too, which CONTRACT.md states as a residual.
-  2. Deck reconnected while armed. On every (re)connect, this module
-     resets its own `wanted` vector to all-false and ArmSocket's seq to 0
-     before sending anything (ArmSocket.restart, on the socket it already
-     had, so the sender lock never changes hands): it never remembers what
-     was pressed before the gap. This also could not re-arm anything even if it tried: flamesafe's
-     consent rule (rule 6) needs the counter seen advancing while already
-     fresh, and a counter that restarts fails that by construction. The
-     operator re-arms by pressing each group key again, same as the lamp
-     already says ("cycle the arm").
+  1. Deck HARDWARE unplugged mid-show, while armed (Jeff, 2026-10-07 and
+     ruling 4 of 2026-10-12: a Stream Deck dying must NOT disarm the
+     flames by itself; "audible booth note, then Andy confirms"). The
+     Stream Deck's own read/write failing (DeckDisconnected) ends the
+     main loop, and from then until a deck is back this process keeps
+     sending its CURRENT wanted vector on the SAME arm socket at
+     ARM_SEND_HZ with the counter still advancing (run_forever's
+     _hold_link_steady): flamesafe sees an input that is alive and
+     unchanged, so nothing disarms. The purpose reset is why: the
+     software flame layer exists so Andy can go into the field without
+     hitting the e-stop; the e-stop is the emergency layer, and a deck
+     cable is not an emergency. The first failure of an outage raises the
+     "deck" alert on the engine (alerts.py: booth note, rack-screen banner
+     with Acknowledge and Disarm all, no timer); a hold in progress at the
+     unplug is dropped, never finished off the wall clock. Before this
+     (round 4, item A) the outage sent every group OFF; the sender-lock
+     reason for staying on the air is unchanged, the OFF is not. Since
+     round 5 (item 2) ANY exception out of the deck, the deck's open, or
+     one main-loop pass is handled exactly like an unplug. Only a
+     deliberate stop (Ctrl-C, SystemExit) ends the loop.
+     RESIDUAL, accepted (Jeff, 2026-10-12): if this whole PROCESS dies,
+     silence is what flamesafe sees, arm_stale_ms (500 ms) disarms every
+     group, the supervisor restarts the process in about 2 s and it
+     begins at counter 0 with every group OFF (CONTRACT rule 3: the input
+     restarted, and the process is the input). That is a crash, not an
+     unplug. The alternative, an arm handover to the engine with a grace
+     window, needs a flamesafe change and is not built.
+  2. Deck HARDWARE reconnected while armed (ruling 4, 2026-10-12: unplug
+     and replug KEEPS the arm state). A reconnect inside a living process
+     keeps `wanted` and the counter: nothing is sent that flamesafe has
+     not been seeing all along, so nothing changes on the rig. Only the
+     holds in progress and the key snapshot are dropped
+     (Controller.reset_on_reconnect), so a key held at the unplug cannot
+     fire from time that passed during the gap. The "deck" alert is
+     updated to say the deck is back and still waits for its Acknowledge
+     (any deck key, or the rack screen). Before this every reconnect
+     restarted wanted and seq (ArmSocket.restart), which disarmed every
+     group; ArmSocket.restart stays for a process that starts over.
   3. A key press while flamesafe itself is in fault, or its own status
      link has gone quiet for more than a second (CONTRACT.md: "ltcplay
      shows red for the safety program"). Arm/disarm presses are still SENT
@@ -207,10 +219,19 @@ PLAYING_OFF = ((8, 40, 16), (60, 200, 100))    # the dark phase
 PAUSED_BG = BRONZE
 AUDIO_LOST_ON = (AMBER, (40, 20, 0))
 AUDIO_LOST_OFF = (AMBER_DIM, AMBER)
+# An alert is open on the engine (alerts.py; Jeff's ruling 2, 2026-10-12:
+# the key that acknowledges must visibly change while an alert is pending,
+# so nobody is confused, and return to normal after). The Start key reads
+# ACK / ALERT, white on blue, flashing to a dark blue: a look nothing else
+# on the deck uses, so it is never mistaken for Abort (red), an armed
+# group (green) or a hold (amber). Any key acknowledges; this one does
+# only that.
+ACK_ON = ((36, 110, 230), (245, 248, 255))     # (bg, text), the lit phase
+ACK_OFF = ((10, 32, 76), (150, 190, 255))      # the dark phase
 # No link to flamesafe: the arm keys read NO / FLAME / LINK, one word per
 # key, red (Jeff, 2026-09-27, locked wording). Steady: with no status
-# frames there are no ticks to flash on. The arm link is held OFF meanwhile
-# exactly as before; only the drawing changed.
+# frames there are no ticks to flash on. The arm link carries on exactly
+# as before; only the drawing changed.
 NO_FLAME_LINK = ("NO", "FLAME", "LINK")
 
 ABORT_HOLD_S = 0.5          # Jeff: unchanged from the demo. Disarm itself
@@ -918,14 +939,28 @@ class EngineConductor:
             self._local = (True, self._clock())
         return self._press("abort", who, screen)
 
+    def acknowledge(self, who="", screen="Stream Deck"):
+        """A deck key pressed while an alert is open (alerts.py): one
+        Acknowledge to the engine's alert route, clearing every open
+        alert and changing nothing on the rig. On the queue, like Hold."""
+        return self._press("alert", who, screen, action="acknowledge")
+
+    def alert(self, body):
+        """This process's own alerts: the deck hardware lost or back
+        ({"raise": "deck", "text": ..., "options": [...]}), posted to the
+        same route from the show machine. On the queue, never the main
+        loop."""
+        return self._press("alert", "", "Stream Deck", **body)
+
     def reset(self, who="", screen="Stream Deck"):
         with self._lock:
             self._local = (False, self._clock())
         return self._press("reset", who, screen)
 
-    def _press(self, name, who, screen):
+    def _press(self, name, who, screen, **extra):
         body = {"who": who, "screen": screen or "Stream Deck",
                 "seen": int(self._wall() * 1000)}
+        body.update(extra)
         if name == "abort":
             body["confirmed"] = True
             # Abort never waits behind another press (fix round 2, D: a deck
@@ -1205,6 +1240,18 @@ class ScreenKeys:
         with self._lock:
             out, self._pending = self._pending, []
         return out
+
+    def alerts(self):
+        """The engine's open alerts (alerts.py), as its last fresh answer
+        listed them; () when none, or when the engine has not answered
+        within SCREEN_STALE_S (a stale list must not keep a key reading
+        ACK, or acknowledge something the engine no longer shows)."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return ()
+        return tuple(a for a in (last[0].get("alerts") or [])
+                     if isinstance(a, dict))
 
 
 JOURNAL_QUEUE_MAX = 1000
@@ -1947,6 +1994,40 @@ class Controller:
         self._log(f"Stream Deck {action.title()}: {r.sentence}",
                   fault=not r.ok, action=action, who=who, screen="Stream Deck")
 
+    def alert_pending(self):
+        """The engine's open alerts, as this deck last read them on its
+        deck-input poll (ScreenKeys); () without one, or with no fresh
+        answer. While any is open the Start key reads ACK and every key
+        press acknowledges (Jeff's ruling 2, 2026-10-12)."""
+        s = self.screen
+        if s is None or not hasattr(s, "alerts"):
+            return ()
+        try:
+            return tuple(s.alerts())
+        except Exception:
+            return ()
+
+    def _do_acknowledge(self, pending):
+        """Any deck key while an alert is open: Acknowledge, which clears
+        the alert on the engine and changes nothing on the rig. The key
+        still does its own job (Abort still aborts) after this. Never
+        behind the operator gate: seeing the banner is not an action on
+        the rig."""
+        who = self.operator_provider() or ""
+        kinds = ", ".join(str(a.get("kind") or "?") for a in pending)
+        ack = getattr(self.conductor, "acknowledge", None)
+        if ack is None:
+            self._log(f"Stream Deck key pressed while an alert is open "
+                      f"({kinds}): no show conductor is connected in this "
+                      f"build, so the alert could not be acknowledged from "
+                      f"the deck.", fault=True, action="alert", who=who,
+                      screen="Stream Deck")
+            return
+        r = ack(who=who, screen="Stream Deck")
+        self._log(f"Stream Deck key pressed while an alert is open "
+                  f"({kinds}): Acknowledge. {r.sentence}", fault=not r.ok,
+                  action="alert", who=who, screen="Stream Deck")
+
     def _do_start_now(self):
         who = self.operator_provider() or ""
         refusal = operator_gate(who, "start")
@@ -2154,6 +2235,13 @@ class Controller:
         of whether this method ran this pass."""
         now = self._clock()
         latched = self._latched_now()
+        # An open alert (alerts.py): the first press of ANY key
+        # acknowledges it, and the key then does what it always does
+        # below (Abort still aborts; a group key still disarms). The Start
+        # key, which reads ACK meanwhile, does only the acknowledge.
+        pending = self.alert_pending()
+        if pending and edges(self._prev_keys, down):
+            self._do_acknowledge(pending)
         if latched:
             # Aborted (Jeff's approved design, see RESET_SHOWN_S):
             # - the Abort key reads RESET; one press is Reset, but only once
@@ -2190,7 +2278,8 @@ class Controller:
                 self._arm_holds[k - GROUP_KEYS[0]].release()
         for k in edges(self._prev_keys, down):
             if k == TOP_START:
-                self._do_start_now()
+                if not pending:
+                    self._do_start_now()
             elif k == TOP_HOLD:
                 self._do_hold_or_resume(self._held_hint())
             elif k == TOP_ABORT:
@@ -2477,7 +2566,14 @@ class Controller:
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
         cues_fault = getattr(self.conductor, "cues_fault", "") or ""
-        if engine_fault:
+        if self.alert_pending():
+            # Jeff's ruling 2 (2026-10-12): while an alert is open the key
+            # that acknowledges it says so, in a look of its own (ACK_ON /
+            # ACK_OFF), and reads START NOW again once it is cleared.
+            bg, text = ACK_ON if blink_on else ACK_OFF
+            fonts.show_key(d, b0, ["ACK", "ALERT"], text, bg=bg, kind="sans",
+                           max_size=16)
+        elif engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
             # reached): said on the deck itself, not only its console.
             fonts.show_key(d, b0, ["ENGINE", "FAULT"],
@@ -2642,29 +2738,33 @@ class Controller:
 def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                 clock=time.monotonic):
     """Opens the real Stream Deck and runs until interrupted (Ctrl-C) or
-    told to stop. Reconnects on DeckDisconnected: every reconnect goes
-    through controller.arm.open() again first, which resets `wanted` to
-    all-false and the seq counter to 0 before anything is sent (module
-    docstring, failure mode 2), AND controller.reset_on_reconnect(), which
-    clears every hold-start timestamp and the last-seen key snapshot
-    (round 3 of the safety review, item 2: those used to survive a
-    disconnect, so a hold in progress when the deck unplugged could read
-    as already complete, purely from wall-clock time passing during the
-    outage, the instant it reconnected) -- the operator sees every group
-    read OFF and every key released, and re-arms by pressing it for real,
-    same as after any other interruption.
+    told to stop. Reconnects on DeckDisconnected. Every (re)connect runs
+    controller.reset_on_reconnect(), which clears every hold-start
+    timestamp and the last-seen key snapshot (round 3 of the safety
+    review, item 2: those used to survive a disconnect, so a hold in
+    progress when the deck unplugged could read as already complete,
+    purely from wall-clock time passing during the outage, the instant it
+    reconnected); so does the unplug itself. The arm socket is opened ONCE,
+    at the first connect or the first no-deck frame, whichever comes
+    first: that is the process start, the one moment every group begins
+    OFF at counter 0.
 
-    Round 4 of the safety review, item A: while there is NO deck (before
-    the first connect, and between a disconnect and the next one), this
-    process keeps the arm socket open and keeps sending every group OFF at
-    ARM_SEND_HZ (_hold_link_off), and a reconnect restarts `wanted`/seq on
-    that same socket (ArmSocket.restart) instead of closing it and opening
-    a new one. It used to go silent instead, which released flamesafe's
-    sender lock after arm_stale_ms: the round-4 review had a second local
-    process take the free lock while the deck was unplugged, send its own
-    low then high, and arm every group on the wire. Every group still
-    disarms at once when the deck goes (the frames say OFF), and flamesafe
-    still disarms within arm_stale_ms if this whole process dies.
+    Ruling 4 (Jeff, 2026-10-12; purpose reset 2026-10-07): a deck unplug
+    and replug KEEPS the arm state. While there is no deck hardware
+    (before the first connect, and between a disconnect and the next
+    one), this process keeps the arm socket open and keeps sending its
+    CURRENT wanted vector at ARM_SEND_HZ with the counter advancing
+    (_hold_link_steady), and a reconnect keeps `wanted` and the counter
+    too. Flamesafe sees an input that is alive and unchanged: nothing
+    disarms. The engine is told (the "deck" alert, _DeckOutage: booth
+    note, rack-screen banner, Acknowledge or Disarm all, no timer) and the
+    operator decides. Round 4 of the safety review, item A, is why the
+    link stays on the air at all: going silent released flamesafe's
+    sender lock after arm_stale_ms, and the round-4 review had a second
+    local process take the free lock while the deck was unplugged and arm
+    every group on the wire. Flamesafe still disarms within arm_stale_ms
+    if this whole PROCESS dies, and the restarted process begins at 0
+    (module docstring, failure mode 1: the accepted residual).
 
     Round 5 of the safety review, item 2: ANY Exception from
     deck_factory() or from a main-loop pass is handled as a disconnect,
@@ -2679,19 +2779,25 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     fonts = Fonts()
     drawn = None
     period = 1.0 / ARM_SEND_HZ
-    outage = _DeckOutage(journal)
+    outage = _DeckOutage(journal,
+                         alert=getattr(controller.conductor, "alert", None))
     last_draw = None
     while True:
         deck = None
         try:
             deck = deck_factory()
-            controller.arm.restart()
+            # Ruling 4 (Jeff, 2026-10-12): a hardware (re)connect keeps
+            # `wanted` and the counter. Only a PROCESS start begins at 0,
+            # and that is ArmSocket.open's doing, once, here or in
+            # _hold_link_steady, whichever comes first.
+            if not controller.arm.is_open:
+                controller.arm.open()
             controller.reset_on_reconnect()
         except Exception as e:          # round 5, item 2: not only
-            outage.failed(e, "Retrying in 2 s; every group is held OFF "
-                             "on the arm link meanwhile.")
+            outage.failed(e, "Retrying in 2 s; every flame group stays as "
+                             "it was on the arm link meanwhile.")
             _close_quietly(deck)
-            _hold_link_off(controller, sleep, 2.0)
+            _hold_link_steady(controller, sleep, 2.0)
             continue
         outage.connected()
         connected_at = clock()
@@ -2708,8 +2814,8 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                     moved = True
                 # The remote page's holds and disarms (2026-10-03), as
                 # remote presses of the group keys, before tick() advances
-                # the holds. Only while a deck is connected: unplugged, the
-                # link is held OFF below and nothing arms from anywhere.
+                # the holds. _hold_link_steady runs the same two calls
+                # while the hardware is away, so the screen still works.
                 controller.screen_pass()
                 # Item 2 (round 2 of the safety review): tick() runs every
                 # pass, unconditionally -- even when deck.keys_down() above
@@ -2752,16 +2858,20 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
                         last_draw, drawn = clock(), motion
                         _draw_deck(controller, deck, fonts, motion)
         except Exception as e:          # round 5, item 2: not only
-            outage.failed(e, "Every group is sent OFF on the arm link "
-                             "until it reconnects.")
-            # NOT arm.close() (round 4, item A): see _hold_link_off.
+            outage.failed(e, "Every flame group stays as it was on the arm "
+                             "link until it reconnects; the alert on the "
+                             "rack screen waits for an Acknowledge.")
+            # NOT arm.close() (round 4, item A): see _hold_link_steady.
+            # NOT arm.set_all(False) either (ruling 4, 2026-10-12): the
+            # groups stay as they are. The holds in progress are dropped
+            # now, so none can finish off the wall clock during the gap.
+            controller.reset_on_reconnect()
             try:
-                controller.arm.set_all(False)
                 controller.arm.send(controller.names)
             except Exception:
                 pass
             _close_quietly(deck)
-            _hold_link_off(controller, sleep, 1.0)
+            _hold_link_steady(controller, sleep, 1.0)
 
 
 def _draw_deck(controller, deck, fonts, motion):
@@ -2778,6 +2888,13 @@ def _draw_deck(controller, deck, fonts, motion):
 # A deck that has run this long without a failure ends an outage: the next
 # failure after that is journaled again (_DeckOutage).
 DECK_STABLE_S = 10.0
+# The "deck" alert's sentences (alerts.py), as the rack screen shows them.
+DECK_LOST_TEXT = ("The Stream Deck is unplugged or not answering. Every "
+                  "flame group stays as it was. Press Acknowledge once you "
+                  "have seen it, or Disarm all.")
+DECK_BACK_TEXT = ("The Stream Deck is back. Every flame group stayed as it "
+                  "was while it was away. Press Acknowledge once you have "
+                  "seen it.")
 
 
 class _DeckOutage:
@@ -2791,12 +2908,24 @@ class _DeckOutage:
     line every 2 s retry, and a deck that failed on every pass would have
     written two lines a second."""
 
-    def __init__(self, journal):
+    def __init__(self, journal, alert=None):
         self._journal = journal
+        self._alert = alert          # EngineConductor.alert, or None
         self.active = False
         self._kinds = set()
         self._unlogged = 0
         self._reconnect_logged = False
+
+    def _post_alert(self, text):
+        """The "deck" alert (alerts.py), once per outage on the first
+        failure, updated once on the first reconnect. Never raises."""
+        if self._alert is None:
+            return
+        try:
+            self._alert({"raise": "deck", "text": text,
+                         "options": ["Acknowledge", "Disarm all"]})
+        except Exception:
+            pass
 
     def failed(self, e, tail):
         if not self.active:
@@ -2804,6 +2933,7 @@ class _DeckOutage:
             self._kinds = set()
             self._unlogged = 0
             self._reconnect_logged = False
+            self._post_alert(DECK_LOST_TEXT)
         kind = ("unplugged" if isinstance(e, DeckDisconnected)
                 else type(e).__name__)
         if kind in self._kinds:
@@ -2826,10 +2956,12 @@ class _DeckOutage:
                 self._unlogged += 1
                 return
             self._reconnect_logged = True
+            self._post_alert(DECK_BACK_TEXT)
         _journal_quietly(self._journal,
-                         "Stream Deck connected. Every group starts OFF "
-                         "until pressed; nothing on this machine remembers "
-                         "what was armed or held before.", action="deck")
+                         "Stream Deck connected. Every flame group stays as "
+                         "it was on the arm link (ruling 4, 2026-10-12); a "
+                         "hold that was in progress is dropped and has to "
+                         "be pressed again.", action="deck")
 
     def ran_clean(self, secs):
         if not self.active or secs < DECK_STABLE_S:
@@ -2859,19 +2991,27 @@ def _close_quietly(deck):
         pass
 
 
-def _hold_link_off(controller, sleep, secs):
-    """No deck: assert every group OFF at ARM_SEND_HZ for about `secs`,
-    on the arm socket this process already holds flamesafe's sender lock
-    with (opening it the first time), so the lock never lapses while the
-    deck is away (round 4 of the safety review, item A). Counted in sends,
-    not wall-clock time, so a test's fake sleep cannot spin it forever.
-    Round 5, item 2: never raises an Exception either; a socket that could
-    not be opened is tried again on the next frame."""
+def _hold_link_steady(controller, sleep, secs):
+    """No deck hardware: keep sending the CURRENT wanted vector at
+    ARM_SEND_HZ for about `secs`, on the arm socket this process already
+    holds flamesafe's sender lock with (opening it the first time, which
+    is the one moment every group starts OFF: a process start), so the
+    lock never lapses while the deck is away (round 4 of the safety
+    review, item A) and nothing on the rig changes (Jeff, 2026-10-07:
+    "Stream Deck dying mid-show must NOT disarm flames by itself"; ruling
+    4, 2026-10-12). Flamesafe sees an input that is alive and unchanged.
+    The remote page's holds and disarms keep working meanwhile
+    (screen_pass and tick, as in the main loop), so a group can still be
+    armed or disarmed from the rack screen with the hardware away.
+    Counted in sends, not wall-clock time, so a test's fake sleep cannot
+    spin it forever. Round 5, item 2: never raises an Exception either; a
+    socket that could not be opened is tried again on the next frame."""
     for _ in range(max(1, int(round(secs * ARM_SEND_HZ)))):
         try:
             if not controller.arm.is_open:
                 controller.arm.open()
-            controller.arm.set_all(False)
+            controller.screen_pass()
+            controller.tick()
             controller.arm.send(controller.names)
         except Exception:
             pass
@@ -2968,13 +3108,14 @@ def _main(args):
     # engine's own show conductor over loopback, on background threads.
     engine = EngineConductor(args.ltcplay_url, journal=journal)
     engine.start()
-    # Screen and browser arming: the remote page's holds, read on their own
-    # background thread (ScreenKeys), never on the main loop. Only when
-    # ltcplay_remote.json switches it on (review of PR #43, P0-4: off by
-    # default); otherwise no ScreenKeys is made and no screen hold can
-    # reach a group key, whatever the engine answers.
-    screen = ScreenKeys(args.ltcplay_url).start() \
-        if screen_arming_switched_on() else None
+    # The engine's deck input, read on its own background thread
+    # (ScreenKeys), never on the main loop: the remote page's holds and
+    # disarms, and the open alerts (alerts.py: the ACK key). Always made;
+    # the holds inside it still count only while ltcplay_remote.json
+    # switches screen arming on (the engine answers enabled false
+    # otherwise, and ScreenKeys.holds() is empty), so an alert can reach
+    # the keys with screen arming off.
+    screen = ScreenKeys(args.ltcplay_url).start()
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,

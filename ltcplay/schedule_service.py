@@ -1026,7 +1026,7 @@ class Service:
         exceptions that the kinds alone cannot tell apart:
           - the Abort bundle is an Abort only when the operator pressed
             Abort. A failed start fades the same way but goes to
-            failed_start(): dark, every flame group disarmed, no latch
+            failed_start(): dark, the flame groups left as they are, no latch
             (Jeff, 2026-10-03). A show cut by a restart goes to
             show_stopped(): dark, no disarm, no latch.
           - START_SHOW is NOT the conductor's: it brings the rig up only
@@ -1104,13 +1104,8 @@ class Service:
             # The engine never disarms; the conductor's abort() does.
             le = replace(le, text=le.text.replace(
                 sch.NOTHING_DISARMED, self.CONDUCTOR_DISARMS))
-        if self.conductor is not None and \
-                le.action == sch.SHOW_FAILED and \
-                sch.FAILED_START_NOT_DISARMED in le.text:
-            # Jeff, 2026-10-03: the conductor's failed_start() disarms.
-            le = replace(le, text=le.text.replace(
-                sch.FAILED_START_NOT_DISARMED,
-                self.CONDUCTOR_DISARMS_FAILED_START))
+        # A failed start's line is the same with or without a conductor
+        # (ruling 1, 2026-10-12): neither disarms a flame group.
         return le
 
     FAILED_START_ALERT = ("The show did not start. The rig is dark and every "
@@ -1159,11 +1154,6 @@ class Service:
 
     CONDUCTOR_DISARMS = ("The show conductor also sends a disarm to every "
                          "flame group; its own line says whether it went.")
-    CONDUCTOR_DISARMS_FAILED_START = (
-        "The flames are disarmed because the show failed to start: the show "
-        "conductor sends a disarm to every flame group, and its own line "
-        "says whether it went. Each group has to be armed again by hand "
-        "(off, then on) before flames can fire.")
     DARK_AGAIN = "Dark again after the start"
     CONDUCTOR_SAYS = {
         DARK_AGAIN: (" ltcplay started while the rig was meant to be dark "
@@ -1176,13 +1166,12 @@ class Service:
                          "operator presses Start now or the next show "
                          "starts. No flame group is disarmed and nothing "
                          "is latched, so no Reset is needed."),
-        "failed_start": (" The show failed to start, so every flame group "
-                         "is disarmed while it is looked at (Jeff, "
-                         "2026-10-03), and the rig goes dark until an "
-                         "operator presses Start now or the next show "
-                         "starts. Nothing is latched, so no Reset is "
-                         "needed; each flame group has to be armed again "
-                         "by hand (off, then on) before flames can fire."),
+        "failed_start": (" The show failed to start: the rig goes dark "
+                         "until an operator presses Start now or the next "
+                         "show starts, and every flame group is left as it "
+                         "was (Jeff, 2026-10-12). Nothing is latched, so no "
+                         "Reset is needed. An alert on the rack screen "
+                         "waits for an Acknowledge."),
         "intermission": (" Out of the show: flame cues to zero and the "
                          "lasers blanked."),
     }

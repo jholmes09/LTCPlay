@@ -26,9 +26,10 @@ black, but no disarm and no latch, so the rig stays dark only until Start
 now or the next show (Jeff's rule).
 
 A show that failed to start (no timecode within the confirm window):
-failed_start(). show_stopped()'s dark, and every flame group disarmed at
-once, the same disarm-all an Abort sends, on the calling thread (Jeff,
-2026-10-03: "disarm the flame units while we are troubleshooting"). It does
+failed_start(). show_stopped()'s dark, and NOTHING done to the flame groups:
+they are left exactly as they are (Jeff's ruling 1, 2026-10-12, which
+reverses 2026-10-03's "disarm the flame units while we are
+troubleshooting"); the scheduler raises an alert so a person is told. It does
 NOT latch: no Reset, and Start now stays allowed; flames fire again only
 once each group is re-armed by hand, off then on, on the deck.
 
@@ -169,7 +170,7 @@ BETWEEN = "BETWEEN"       # out of the show (intermission, preshow,
                           # music, video and pixels are the scheduler's
 STOPPED_DARK = "STOPPED_DARK"  # a show that did not start, or was cut by a
                           # restart: everything dark like ABORTED, but no
-                          # latch (show_stopped; failed_start also disarms)
+                          # latch (show_stopped and failed_start alike)
 HOLDING_LOOKS = (HELD, DARK)
 
 # What each output was last told. UNKNOWN is never "done".
@@ -853,7 +854,7 @@ class Conductor:
         with no Reset (Jeff's rule is "dark until the operator acts"; a real
         restart already disarms every group, because the flame controller
         disarms once ltcplay stops sending). A failed start is
-        failed_start(), which also disarms. It does not need a show
+        failed_start(), the same dark with an alert. It does not need a show
         playing: after a restart nothing is, and every output is UNKNOWN,
         so everything is sent. While aborted it changes nothing, like
         intermission()."""
@@ -869,35 +870,29 @@ class Conductor:
                         f"disarmed and nothing is latched: Start now or the "
                         f"next show brings the rig back.")
 
-    FAILED_START = "the show failed to start"
-
     def failed_start(self, who="", screen=""):
         """A show that failed to start (no timecode within the confirm
         window): everything show_stopped() does (the rig dark, no latch, no
-        Reset, Start now allowed at once), AND every flame group disarmed,
-        the same disarm-all an Abort sends (Jeff, 2026-10-03: "disarm the
-        flame units while we are troubleshooting"). Like Abort, the flame
-        cues are zeroed and the disarm is sent here, on the calling thread,
-        before this returns; the executor sends the disarm again only if
-        that failed. Flames fire again only once each group is re-armed by
-        hand, off then on, on the deck. It does not need a show playing (a
-        show that never started may not be). While aborted it changes
-        nothing: the Abort already disarmed."""
+        Reset, Start now allowed at once), and the flame groups left AS
+        THEY ARE: no disarm (Jeff's ruling 1, 2026-10-12, reversing the
+        2026-10-03 rule that a failed start disarmed every group like an
+        Abort). The flame cues go to zero like any dark, which is what
+        keeps the field safe; who is armed is the operator's business, and
+        the scheduler's "start" alert (alerts.py) tells them the show did
+        not start. It does not need a show playing (a show that never
+        started may not be). While aborted it changes nothing: the Abort
+        already disarmed."""
         with self._lock:
             if self._latched:
                 return done("Already aborted: the rig is dark and every "
                             "flame group was disarmed by the Abort.")
-            self._flames_cut(self.FAILED_START)
             self._accept("Failed start", STOPPED_DARK, who, screen,
-                         fade_s=ABORT_FADE_S, disarm=self.FAILED_START)
+                         fade_s=ABORT_FADE_S)
             return done(f"The show failed to start: flame cues zeroed and "
-                        f"a disarm sent to every flame group, because the "
-                        f"show failed to start; lasers blanked; video, "
-                        f"pixels and music fade to black over "
-                        f"{ABORT_FADE_S:g} s. Nothing is latched: Start now "
-                        f"works at once, and each flame group must be "
-                        f"armed again by hand (off, then on) before flames "
-                        f"can fire.")
+                        f"lasers blanked; video, pixels and music fade to "
+                        f"black over {ABORT_FADE_S:g} s. Every flame group "
+                        f"is left as it was and nothing is latched: Start "
+                        f"now works at once.")
 
     def abort(self, who="", screen=""):
         with self._lock:
@@ -1370,17 +1365,12 @@ class Conductor:
                        action="abort", outcome="done")
 
     def _run_stopped(self, gen, want, progress):
-        """STOPPED_DARK: Abort's sequence without the latch, and without the
-        disarm unless it is a failed start (want["disarm"], its reason)."""
+        """STOPPED_DARK: Abort's sequence without the latch and without the
+        disarm (show_stopped and failed_start alike; ruling 1,
+        2026-10-12)."""
         fade = want["fade_s"]
-        why = want.get("disarm")
         self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
                    self.show.flames_zero)
-        if why:
-            with self._lock:
-                self._check(gen)
-                if not self._applied["disarmed"]:
-                    self._disarm(why)
         self._step(gen, "lasers", BLACK, "lasers blanked", progress,
                    self.devices.lasers_blank)
         faded = False
@@ -1576,8 +1566,7 @@ class Conductor:
             return None
 
     def _flames_cut(self, reason="Abort"):
-        """Abort's (and a failed start's) instant half, called with the lock
-        held."""
+        """Abort's instant half, called with the lock held."""
         r = self._call("flame cues zeroed", self.show.flames_zero)
         self._applied["flames"] = ZERO if r.ok else UNKNOWN
         self._disarm(reason)

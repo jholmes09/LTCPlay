@@ -315,9 +315,9 @@ MUTATIONS = [
 
  ("output loop exception guard removed", "ltcplay/player.py",
   '''try:
-                frame = self._tick()''',
+                frame = self._alert_mix(self._tick())''',
   '''if True:
-                frame = self._tick()'''),
+                frame = self._alert_mix(self._tick())'''),
 
  ("supervisor never restarts a dead thread", "ltcplay/player.py",
   "if self._running and (t is None or not t.is_alive()):", "if False:"),
@@ -814,8 +814,10 @@ MUTATIONS = [
   "            if False:\n                self._screen_release(i)"),
 
  ("arm: the deck trusts an old engine answer", "ltcplay/streamdeck.py",
-  "        if last is None or self._clock() - last[1] > SCREEN_STALE_S:",
-  "        if last is None:"),
+  "        if last is None or self._clock() - last[1] > SCREEN_STALE_S:\n"
+  "            return {}",
+  "        if last is None:\n"
+  "            return {}"),
 
  ("arm: the deck keeps the last answer when the engine is unreachable",
   "ltcplay/streamdeck.py",
@@ -1820,8 +1822,8 @@ MUTATIONS = [
 
  ("the scheduler's own lines stay in memory only, as before",
   'ltcplay/schedule_service.py',
-  '            self._record_logevent(self._reworded(le))\n        claimed = set()',
-  '            self.journal.append(self._reworded(le).to_dict())\n        claimed = set()'),
+  '            self._record_logevent(self._reworded(le))\n            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:',
+  '            self.journal.append(self._reworded(le).to_dict())\n            if le.action == sch.SHOW_FAILED and self.alert_sink is not None:'),
 
  ("the service never prunes", "ltcplay/schedule_service.py",
   '            if prune:\n                self._log(self.logbook.prune, d, state=state,',
@@ -4783,9 +4785,12 @@ def build():
  ("round3: a Stream Deck reconnect no longer resets in-progress hold "
   "state",
   "ltcplay/streamdeck.py",
-  "            controller.arm.restart()\n"
-  "            controller.reset_on_reconnect()\n",
-  "            controller.arm.restart()\n"),
+  "            controller.reset_on_reconnect()\n"
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Retrying in 2 s;",
+  "            pass\n"
+  "        except Exception as e:          # round 5, item 2: not only\n"
+  "            outage.failed(e, \"Retrying in 2 s;"),
 
  ("round3: the arm-hold duration changes without any test noticing",
   "ltcplay/streamdeck.py",
@@ -4803,12 +4808,12 @@ def build():
  ("round4: with no deck the hold-off sends nothing (the link goes silent "
   "and flamesafe's sender lock lapses)",
   "ltcplay/streamdeck.py",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n"),
@@ -4817,15 +4822,16 @@ def build():
   "ltcplay/streamdeck.py",
   "            if not controller.arm.is_open:\n"
   "                controller.arm.open()\n"
-  "            controller.arm.set_all(False)\n",
+  "            controller.screen_pass()\n",
   "            if not controller.arm.is_open:\n"
   "                pass\n"
-  "            controller.arm.set_all(False)\n"),
+  "            controller.screen_pass()\n"),
 
  ("round4: a reconnect closes and reopens the arm socket (a new source "
   "port, so the sender lock changes hands)",
   "ltcplay/streamdeck.py",
-  "            controller.arm.restart()\n"
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
   "            controller.reset_on_reconnect()\n",
   "            controller.arm.close()\n"
   "            controller.arm.open()\n"
@@ -4833,12 +4839,174 @@ def build():
 
  ("round4: an unplug closes the arm socket again",
   "ltcplay/streamdeck.py",
-  "            # NOT arm.close() (round 4, item A): see _hold_link_off.\n"
+  "            controller.reset_on_reconnect()\n"
   "            try:\n"
-  "                controller.arm.set_all(False)\n",
+  "                controller.arm.send(controller.names)\n",
   "            controller.arm.close()\n"
+  "            controller.reset_on_reconnect()\n"
   "            try:\n"
-  "                controller.arm.set_all(False)\n"),
+  "                controller.arm.send(controller.names)\n"),
+
+ # ---- degraded mode, Phase 0 (Jeff's rulings 2026-10-07 and 2026-10-12) --
+ # Ruling 4: a deck unplug and replug keeps the arm state.
+ ("an unplugged deck sends every group OFF again", "ltcplay/streamdeck.py",
+  "            controller.tick()\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n",
+  "            controller.tick()\n"
+  "            controller.arm.set_all(False)\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"),
+
+ ("an unplug sends every group OFF before the hold-off",
+  "ltcplay/streamdeck.py",
+  "            controller.reset_on_reconnect()\n"
+  "            try:\n"
+  "                controller.arm.send(controller.names)\n",
+  "            controller.reset_on_reconnect()\n"
+  "            try:\n"
+  "                controller.arm.set_all(False)\n"
+  "                controller.arm.send(controller.names)\n"),
+
+ ("a hardware replug restarts the arm counter", "ltcplay/streamdeck.py",
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            controller.arm.restart()\n"
+  "            controller.reset_on_reconnect()\n"),
+
+ ("a hardware replug forgets what was armed", "ltcplay/streamdeck.py",
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
+  "            controller.reset_on_reconnect()\n",
+  "            if not controller.arm.is_open:\n"
+  "                controller.arm.open()\n"
+  "            controller.arm.set_all(False)\n"
+  "            controller.reset_on_reconnect()\n"),
+
+ ("an unplug drops no hold in progress", "ltcplay/streamdeck.py",
+  "            controller.reset_on_reconnect()\n"
+  "            try:\n"
+  "                controller.arm.send(controller.names)\n",
+  "            pass\n"
+  "            try:\n"
+  "                controller.arm.send(controller.names)\n"),
+
+ ("the outage loop stops reading the screen", "ltcplay/streamdeck.py",
+  "            controller.screen_pass()\n"
+  "            controller.tick()\n"
+  "            controller.arm.send(controller.names)\n",
+  "            controller.arm.send(controller.names)\n"),
+
+ ("the deck raises no alert when the hardware is lost",
+  "ltcplay/streamdeck.py",
+  "            self._post_alert(DECK_LOST_TEXT)\n",
+  "            pass\n"),
+
+ ("a replug clears the deck alert without an Acknowledge",
+  "ltcplay/streamdeck.py",
+  "            self._post_alert(DECK_BACK_TEXT)\n",
+  "            self._alert({\"clear\": \"deck\"})\n"),
+
+ # Ruling 2: the key that acknowledges visibly changes.
+ ("a deck key no longer acknowledges a pending alert", "ltcplay/streamdeck.py",
+  "        if pending and edges(self._prev_keys, down):\n"
+  "            self._do_acknowledge(pending)\n",
+  "        if False:\n"
+  "            self._do_acknowledge(pending)\n"),
+
+ ("the Start key still starts while an alert is open", "ltcplay/streamdeck.py",
+  "                if not pending:\n"
+  "                    self._do_start_now()\n",
+  "                if True:\n"
+  "                    self._do_start_now()\n"),
+
+ ("the ACK key never changes while an alert is open", "ltcplay/streamdeck.py",
+  "        if self.alert_pending():\n"
+  "            # Jeff's ruling 2 (2026-10-12)",
+  "        if False:\n"
+  "            # Jeff's ruling 2 (2026-10-12)"),
+
+ ("the ACK key reuses the Abort look", "ltcplay/streamdeck.py",
+  "ACK_ON = ((36, 110, 230), (245, 248, 255))",
+  "ACK_ON = (RED, CHAMPAGNE)"),
+
+ ("a stale engine answer keeps the ACK key lit", "ltcplay/streamdeck.py",
+  "        if last is None or self._clock() - last[1] > SCREEN_STALE_S:\n"
+  "            return ()\n",
+  "        if last is None:\n"
+  "            return ()\n"),
+
+ # The alert service.
+ ("an alert re-sounds on every raise", "ltcplay/alerts.py",
+  "        if last is not None and now - last < RESOUND_S:",
+  "        if False:"),
+
+ ("an alert clear is journaled as a fault", "ltcplay/alerts.py",
+  "                          fault=False, action=\"alert\", outcome=\"cleared\",",
+  "                          fault=True, action=\"alert\", outcome=\"cleared\","),
+
+ ("an alert raise is not journaled as a fault", "ltcplay/alerts.py",
+  "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=True,",
+  "        self._journal(f\"Alert ({a.severity}, {kind}): {text}\", fault=False,"),
+
+ ("a second alert of the same kind opens a second banner", "ltcplay/alerts.py",
+  "        a = self._open.get(kind)\n        if a is not None:",
+  "        a = None\n        if a is not None:"),
+
+ ("Stop clears an alert like Acknowledge", "ltcplay/alerts.py",
+  "        if action not in CLEARING:",
+  "        if False:"),
+
+ ("the pulse runs during a show for a video alert", "ltcplay/alerts.py",
+  "            if live and a.kind not in PULSE_DURING_SHOW:\n"
+  "                mine = False",
+  "            if False:\n"
+  "                mine = False"),
+
+ ("the pulse ignores a booth note that could not play", "ltcplay/alerts.py",
+  "            mine = a.kind in PULSE_DURING_SHOW or a.booth_ok is False",
+  "            mine = a.kind in PULSE_DURING_SHOW"),
+
+ ("an alert is raised from the network", "ltcplay/remote.py",
+  "            if not ctx.local:\n"
+  "                return 403, {\"error\": \"Alerts are raised on the show \"",
+  "            if False:\n"
+  "                return 403, {\"error\": \"Alerts are raised on the show \""),
+
+ # The booth note.
+ ("the booth note goes to the show's main outputs", "ltcplay/boothaudio.py",
+  "        block[:, a - 1] = left\n        block[:, b - 1] = right",
+  "        block[:] = left[:, None]"),
+
+ ("the booth player falls back to the default device",
+  "ltcplay/boothaudio.py",
+  "        except ValueError as e:\n"
+  "            # Missing device: silent. Nothing else is ever used instead.\n"
+  "            return False, f\"Booth speaker {name} is not attached. {e}\"",
+  "        except ValueError as e:\n"
+  "            dev = {\"index\": 0, \"name\": name, \"channels\": 64}"),
+
+ # The blue pulse.
+ ("the pulse overlaps the flame controller's channels", "ltcplay/fire_ice.py",
+  "    if lo <= f_hi and f_lo <= hi:",
+  "    if False:"),
+
+ ("the pulse paints over a blackout", "ltcplay/player.py",
+  "        if self.override == \"blackout\":\n            return frame",
+  "        if False:\n            return frame"),
+
+ ("the pulse is a square wave, not a fade", "ltcplay/player.py",
+  "    up = phase * 2.0 if phase < 0.5 else (1.0 - phase) * 2.0",
+  "    up = 1.0 if phase < 0.5 else 0.0"),
+
+ ("the pulse paints the whole frame, not the floor range", "ltcplay/player.py",
+  "        start, count, order = self.alert_pixels",
+  "        start, count, order = 0, len(self._buf) // 3, self.alert_pixels[2]"),
+
+ ("the output loop sends the frame without the pulse", "ltcplay/player.py",
+  "                frame = self._alert_mix(self._tick())",
+  "                frame = self._tick()"),
 
  # B: no consent while anyone else is on the link.
  ('round4: consent ignores another sender on the arm link',
@@ -5489,14 +5657,14 @@ def build():
  # ---- round 5 of the safety review (PR #31) ------------------------------
  # 1: a long unplug. The round-4 test's no-deck time added up to exactly 6 s,
  # so this one (the review's hand mutation) passed the whole suite.
- ("round5: the OFF sender stops for good after 6 s with no deck",
+ ("round5: the no-deck sender stops for good after 6 s",
   "ltcplay/streamdeck.py",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
   "            if _n[0] <= 120:\n"
@@ -5505,14 +5673,14 @@ def build():
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n"),
 
- ("round5: the OFF sender stops for good after 60 s with no deck",
+ ("round5: the no-deck sender stops for good after 60 s",
   "ltcplay/streamdeck.py",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.arm.set_all(False)\n"
+  "            controller.tick()\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
   "            if _n[0] <= 1200:\n"
@@ -5532,9 +5700,9 @@ def build():
  ("round5: a plain error in a main-loop pass ends run_forever again",
   "ltcplay/streamdeck.py",
   "        except Exception as e:          # round 5, item 2: not only\n"
-  "            outage.failed(e, \"Every group is sent OFF",
+  "            outage.failed(e, \"Every flame group stays as it was on the arm \"",
   "        except DeckDisconnected as e:\n"
-  "            outage.failed(e, \"Every group is sent OFF"),
+  "            outage.failed(e, \"Every flame group stays as it was on the arm \""),
 
  ("round5: Deck() lets a raw hidapi OSError escape as itself again",
   "ltcplay/streamdeck.py",
@@ -6230,50 +6398,42 @@ def build():
   "        words = sch.reset_words()",
   "        words = sch.reset_words()"),
 
- # Jeff's decisions, 2026-10-03: a failed start disarms every flame group.
- ("failed start disarms: the scheduler sends show_stopped (no disarm)",
+ # Jeff's ruling 1, 2026-10-12: a failed start leaves the flame groups AS
+ # THEY ARE (it reverses 2026-10-03's "a failed start disarms every group").
+ # It still goes dark, still latches nothing, and now raises an alert.
+ ("failed start: the scheduler sends show_stopped (no alert)",
   "ltcplay/schedule_service.py",
   "            elif ev.kind == sch.SHOW_FAILED:",
   "            elif False:"),
 
- ("failed start disarms: the conductor only zeroes the cues at once",
-  "ltcplay/conductor.py",
-  "            self._flames_cut(self.FAILED_START)",
-  "            self.show.flames_zero()"),
-
- ("failed start disarms: the disarm is never sent at all",
-  "ltcplay/conductor.py",
-  "            self._flames_cut(self.FAILED_START)\n"
+ ("a failed start disarms every group", "ltcplay/conductor.py",
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
-  "                         fade_s=ABORT_FADE_S, disarm=self.FAILED_START)",
-  "            self.show.flames_zero()\n"
+  "                         fade_s=ABORT_FADE_S)",
+  "            self._flames_cut(\"the show failed to start\")\n"
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,\n"
   "                         fade_s=ABORT_FADE_S)"),
 
- ("failed start disarms: a failed disarm is never sent again",
-  "ltcplay/conductor.py",
-  "                if not self._applied[\"disarmed\"]:\n"
-  "                    self._disarm(why)",
-  "                if False:\n"
-  "                    self._disarm(why)"),
-
- ("failed start disarms: the conductor latches a failed start",
+ ("failed start: the conductor latches a failed start",
   "ltcplay/conductor.py",
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,",
   "            self._latched = True\n"
   "            self._accept(\"Failed start\", STOPPED_DARK, who, screen,"),
 
- ("failed start disarms: the scheduler latches a failed start",
+ ("failed start: the scheduler latches a failed start",
   "ltcplay/schedule_service.py",
-  "        if any(p[1] == \"abort\" for p in plan):",
-  "        if any(p[1] in (\"abort\", \"failed_start\") for p in plan):"),
+  "        if any(c.method == \"abort\" for c in calls):",
+  "        if any(c.method in (\"abort\", \"failed_start\") for c in calls):"),
 
- ('failed start disarms: the journal never says why the flames were disarmed',
-  'ltcplay/schedule_service.py',
-  '            le = replace(le, text=le.text.replace(\n                sch.FAILED_START_NOT_DISARMED,\n                self.CONDUCTOR_DISARMS_FAILED_START))',
-  '            pass'),
+ ("a failed start raises no alert", "ltcplay/schedule_service.py",
+  "                    self.alert_sink(\"start\", self.FAILED_START_ALERT)",
+  "                    pass"),
 
- ("failed start disarms: a cut show disarms too",
+ ("the failed-start line still says the groups were disarmed",
+  "ltcplay/schedule.py",
+  "    \"No flame group is disarmed: every group stays as it was (Jeff, \"",
+  "    \"Every flame group is disarmed because the show failed to start (Jeff, \""),
+
+ ("failed start: a cut show is treated as a failed start",
   "ltcplay/schedule_service.py",
   "                plan.append((\"Show stopped\", \"show_stopped\",\n"
   "                             self._ABORT_EFFECTS))",
@@ -7223,8 +7383,8 @@ def build():
  # -- review of PR #43: P0-4, screen arming is off unless switched on --
  ('review43: screen arming is on with no settings file again',
   'ltcplay/remote.py',
-  '           "screen_arming": False, "path": path}',
-  '           "screen_arming": True, "path": path}'),
+  '           "screen_arming": False, "booth_alert": None,',
+  '           "screen_arming": True, "booth_alert": None,'),
 
  ('review43: arm-hold looks at the session before the switch',
   'ltcplay/remote.py',
@@ -7235,11 +7395,6 @@ def build():
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
   '        if False:\n            # The Stream Deck reads'),
-
- ('review43: ltc deck makes ScreenKeys with screen arming off',
-  'ltcplay/streamdeck.py',
-  '        if screen_arming_switched_on() else None',
-  '        if True else None'),
 
  ('review43: the deck reads any truthy screen_arming as on',
   'ltcplay/streamdeck.py',
