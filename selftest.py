@@ -33037,15 +33037,28 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
     real_open, real_stat = builtins.open, os.stat
     on_caller = []
     me = threading.current_thread()
+    # The background reader is held at its first file call until the first
+    # cues() below has answered. Without this the test raced the reader: on
+    # a fast runner the new thread read the layout and the whole 400 frame
+    # render before cues() got back to look at it, and "zeros until the
+    # background read is done" failed with the cues already there (PR #43
+    # shard 31, PR #46 shard 5, PR #49 shard 25: the baseline, with nothing
+    # mutated). The gate makes the first answer a real "still reading"
+    # answer every time; what the test proves is unchanged.
+    gate = threading.Event()
 
     def spy_open(*a, **k):
         if threading.current_thread() is me:
             on_caller.append(("open", a[0] if a else None))
+        else:
+            gate.wait(5.0)
         return real_open(*a, **k)
 
     def spy_stat(*a, **k):
         if threading.current_thread() is me:
             on_caller.append(("stat", a[0] if a else None))
+        else:
+            gate.wait(5.0)
         return real_stat(*a, **k)
     try:
         show = os.path.join(work, "show")
@@ -33069,6 +33082,7 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
                            background=True)
         builtins.open, os.stat = spy_open, spy_stat
         first = cues("00:00:02:15")
+        gate.set()
         got = None
         for _ in range(100):
             got = cues("00:00:02:15")
@@ -33083,6 +33097,7 @@ def test_fire_ice_flame_cues_never_touch_the_disk_on_the_sender():
                              f"opened or looked at a file: {on_caller[:3]}")
         cues.close()
     finally:
+        gate.set()
         builtins.open, os.stat = real_open, real_stat
         shutil.rmtree(work, ignore_errors=True)
     print("  ok")
