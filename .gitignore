@@ -65,3 +65,8 @@ Claude-Brain/
 # Python and macOS
 __pycache__/
 .DS_Store
+
+# Windows app build output (packaging/windows/ltcplay.spec, installer.iss)
+/build/
+/dist/
+packaging/windows/build/
