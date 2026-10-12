@@ -26177,14 +26177,24 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
         c.run_pending()
         check(rig.count("flames_zero") == 2,
               f"{mode}: Abort cuts the flames again")
-    # A failed start's inline disarm fails: the executor sends it again.
+    # A failed start sends no disarm at all (Jeff's ruling 1, 2026-10-12),
+    # failing rig or not, so there is nothing to send again; its dark still
+    # goes out past a failing output, which is journaled as a fault.
     c, rig, T, lines = _cond()
+    _cond_live(c, rig)
     rig.fail = {"flames_disarm_all"}
     c.failed_start("the scheduler", "")
     rig.fail = set()
     c.run_pending()
-    check(rig.count("flames_disarm_all") == 2,
-          "a failed start's failed disarm is sent again by its own effect")
+    check(rig.count("flames_disarm_all") == 0,
+          f"a failed start never sends a disarm, whatever the rig does: "
+          f"{rig.names()}")
+    check(rig.count("flames_zero") >= 1 and rig.count("music_halt") == 1
+          and rig.count("lasers_blank") >= 1 and not c.latched
+          and any("dark after a failed start" in t and "left as it was"
+                  in t and not f for t, f in lines),
+          f"its dark still goes out, its own line says the groups are left "
+          f"as they were, and nothing latches: {rig.names()} {lines[-2:]}")
     # Abort's inline disarm fails: the executor sends it again.
     c, rig, T, lines = _cond()
     _cond_live(c, rig)

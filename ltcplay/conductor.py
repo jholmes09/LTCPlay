@@ -1385,11 +1385,11 @@ class Conductor:
             self._pause(gen, fade)
         self._step(gen, "video", STOPPED, "video bank stopped", progress,
                    self.devices.video_stop)
-        if progress and why:
+        if progress and want["label"] == "Failed start":
             self._note(f"The rig is dark after a failed start: "
-                       f"{', '.join(progress)}. Every flame group was sent "
-                       f"a disarm because {why}; nothing is latched.",
-                       action="failed start", outcome="done")
+                       f"{', '.join(progress)}. Every flame group is left "
+                       f"as it was (Jeff, 2026-10-12) and nothing is "
+                       f"latched.", action="failed start", outcome="done")
         elif progress:
             self._note(f"The rig is dark after a stopped show: "
                        f"{', '.join(progress)}. Nothing was disarmed and "
