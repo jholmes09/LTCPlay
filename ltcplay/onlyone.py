@@ -45,7 +45,7 @@ NAMED = WINDOWS
 
 
 def _win_create_named(name):
-    """(handle, already_existed) for the named mutex `name`; Global\ first,
+    r"""(handle, already_existed) for the named mutex `name`; Global\ first,
     Local\ (this logon session) if Global\ is refused. None when neither
     can be made (the file lock still guards)."""
     import ctypes
@@ -132,24 +132,51 @@ class OutputLock:
                 _close_named(handle)
             except Exception:
                 pass
+            # The usual case is a copy whose files are in the SAME folder:
+            # its note (pid, port, show) is in this lock's file, and the
+            # refusal has to carry it. Only when the file lock is free is
+            # the holder somewhere this copy cannot see.
             raise AlreadyRunning(
+                self._file_holder() or
                 "another copy (it may have been started from inside "
                 "another app, whose files go to that app's own folder)")
         self._named = handle
+
+    def _file_holder(self):
+        """The note of the live copy holding this lock's FILE, or "" when
+        nobody holds it (or it cannot be checked). Takes nothing and writes
+        nothing: a free file lock is let go of at once, untouched."""
+        try:
+            fh = self._lock_file()
+        except AlreadyRunning as e:
+            return e.holder
+        except Exception:
+            return ""
+        if fh is not None:
+            self._unlock(fh)
+        return ""
+
+    def _lock_file(self):
+        if WINDOWS:
+            return self._lock_windows()
+        return self._lock_posix()
 
     def acquire(self):
         if NAMED:
             self._take_named()
             try:
-                if WINDOWS:
-                    return self._acquire_windows()
-                return self._acquire_posix()
+                return self._acquire_file()
             except BaseException:
                 self._drop_named()
                 raise
-        if WINDOWS:
-            return self._acquire_windows()
-        return self._acquire_posix()
+        return self._acquire_file()
+
+    def _acquire_file(self):
+        fh = self._lock_file()
+        if fh is None:
+            # Fail open: this folder cannot hold or lock the file.
+            return self
+        return self._hold(fh)
 
     def _drop_named(self):
         h, self._named = self._named, None
@@ -159,7 +186,9 @@ class OutputLock:
             except Exception:
                 pass
 
-    def _acquire_posix(self):
+    def _lock_posix(self):
+        """The open file, flocked; None to fail open; AlreadyRunning,
+        carrying the holder's note, when a live copy holds it."""
         import fcntl
         try:
             fh = open(self.path, "a+")
@@ -168,7 +197,7 @@ class OutputLock:
                 # A read-only or missing folder is not a reason to refuse to
                 # run a show. Carry on unlocked rather than failing closed on
                 # a guard.
-                return self
+                return None
             raise
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -179,7 +208,7 @@ class OutputLock:
                 # reason to refuse to run a show: fail open, the way a
                 # missing folder does.
                 fh.close()
-                return self
+                return None
             try:
                 fh.seek(0)
                 holder = fh.read(400).strip()
@@ -187,9 +216,9 @@ class OutputLock:
                 holder = ""
             fh.close()
             raise AlreadyRunning(holder)
-        return self._hold(fh)
+        return fh
 
-    def _acquire_windows(self):
+    def _lock_windows(self):
         """The same contract as the flock path, through msvcrt.locking."""
         import msvcrt
         try:
@@ -200,7 +229,7 @@ class OutputLock:
         except OSError as e:
             if e.errno in (errno.EACCES, errno.EROFS, errno.ENOENT):
                 # Fail open on a folder that cannot hold the file, as above.
-                return self
+                return None
             raise
         try:
             os.lseek(fh.fileno(), _WIN_LOCK_AT, os.SEEK_SET)
@@ -213,7 +242,7 @@ class OutputLock:
                     getattr(errno, "EDEADLK", errno.EACCES))
             if e.errno not in held:
                 fh.close()
-                return self
+                return None
             try:
                 fh.seek(0)
                 holder = fh.read(400).strip()
@@ -221,7 +250,7 @@ class OutputLock:
                 holder = ""
             fh.close()
             raise AlreadyRunning(holder)
-        return self._hold(fh)
+        return fh
 
     def _hold(self, fh):
         fh.seek(0)
@@ -236,8 +265,11 @@ class OutputLock:
         _HELD.discard(self)
         self._drop_named()
         fh, self._fh = self._fh, None
-        if fh is None:
-            return
+        if fh is not None:
+            self._unlock(fh)
+
+    @staticmethod
+    def _unlock(fh):
         try:
             if WINDOWS:
                 import msvcrt
