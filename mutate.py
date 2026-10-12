@@ -4798,23 +4798,26 @@ def build():
  ("round4: with no deck the hold-off sends nothing (the link goes silent "
   "and flamesafe's sender lock lapses)",
   "ltcplay/streamdeck.py",
-  "            controller.tick()\n"
+  "        try:\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.tick()\n"
-  "        except Exception:\n"
-  "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n"),
 
  ("round4: the deck process sends nothing until the first deck is found",
   "ltcplay/streamdeck.py",
   "            if not controller.arm.is_open:\n"
   "                controller.arm.open()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        try:\n"
   "            controller.screen_pass()\n",
   "            if not controller.arm.is_open:\n"
   "                pass\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        try:\n"
   "            controller.screen_pass()\n"),
 
  ("round4: a reconnect closes and reopens the arm socket (a new source "
@@ -4840,13 +4843,17 @@ def build():
  # ---- degraded mode, Phase 0 (Jeff's rulings 2026-10-07 and 2026-10-12) --
  # Ruling 4: a deck unplug and replug keeps the arm state.
  ("an unplugged deck sends every group OFF again", "ltcplay/streamdeck.py",
-  "            controller.tick()\n"
+  "        try:\n"
   "            controller.arm.send(controller.names)\n"
-  "        except Exception:\n",
-  "            controller.tick()\n"
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n",
+  "        try:\n"
   "            controller.arm.set_all(False)\n"
   "            controller.arm.send(controller.names)\n"
-  "        except Exception:\n"),
+  "        except Exception:\n"
+  "            pass\n"
+  "        sleep(1.0 / ARM_SEND_HZ)\n"),
 
  ("an unplug sends every group OFF before the hold-off",
   "ltcplay/streamdeck.py",
@@ -4882,16 +4889,61 @@ def build():
   "            try:\n"
   "                controller.arm.send(controller.names)\n"),
 
+ ("an exception from the screen pass stops the no-deck sender",
+  "ltcplay/streamdeck.py",
+  "        except Exception as e:\n"
+  "            if outage is not None:\n"
+  "                outage.screen_failed(e)\n"
+  "        try:\n"
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception:\n"
+  "            pass\n",
+  "            controller.arm.send(controller.names)\n"
+  "        except Exception as e:\n"
+  "            if outage is not None:\n"
+  "                outage.screen_failed(e)\n"),
+
+ ("a screen pass that raises is never journaled while the deck is away",
+  "ltcplay/streamdeck.py",
+  "            if outage is not None:\n"
+  "                outage.screen_failed(e)\n",
+  "            pass\n"),
+
+ ("a lost alert post is never tried again", "ltcplay/streamdeck.py",
+  "        if text == self._alert_text and self._alert_landed():\n",
+  "        if text == self._alert_text:\n"),
+
+ ("the engine's answer to an alert post is never recorded",
+  "ltcplay/streamdeck.py",
+  "        elif \"raise\" in body:\n"
+  "            self.alert_delivered = bool(ok)\n",
+  "        elif \"raise\" in body:\n"
+  "            self.alert_delivered = True\n"),
+
+ ("the ACK key hides an engine fault", "ltcplay/streamdeck.py",
+  "        if engine_fault:\n"
+  "            # Fix round 2, E: the engine did not take a press (or cannot be\n",
+  "        if engine_fault and not self.alert_pending():\n"
+  "            # Fix round 2, E: the engine did not take a press (or cannot be\n"),
+
+ ("the pulse range is not checked at startup", "ltcplay/fire_ice.py",
+  "            refuse_alert_pixels_on_flame_channels(p, cfg.flame_controller,\n"
+  "                                                  alert_pixels)\n",
+  "            pass\n"),
+
  ("the outage loop stops reading the screen", "ltcplay/streamdeck.py",
   "            controller.screen_pass()\n"
   "            controller.tick()\n"
-  "            controller.arm.send(controller.names)\n",
-  "            controller.arm.send(controller.names)\n"),
+  "        except Exception as e:\n"
+  "            if outage is not None:\n",
+  "            pass\n"
+  "        except Exception as e:\n"
+  "            if outage is not None:\n"),
 
  ("the deck raises no alert when the hardware is lost",
   "ltcplay/streamdeck.py",
-  "            self._post_alert(DECK_LOST_TEXT)\n",
-  "            pass\n"),
+  "        self._post_alert(DECK_LOST_TEXT)\n",
+  "        pass\n"),
 
  ("a replug clears the deck alert without an Acknowledge",
   "ltcplay/streamdeck.py",
@@ -4912,9 +4964,9 @@ def build():
   "                    self._do_start_now()\n"),
 
  ("the ACK key never changes while an alert is open", "ltcplay/streamdeck.py",
-  "        if self.alert_pending():\n"
+  "        elif self.alert_pending():\n"
   "            # Jeff's ruling 2 (2026-10-12)",
-  "        if False:\n"
+  "        elif False:\n"
   "            # Jeff's ruling 2 (2026-10-12)"),
 
  ("the ACK key reuses the Abort look", "ltcplay/streamdeck.py",
@@ -5649,12 +5701,12 @@ def build():
  # so this one (the review's hand mutation) passed the whole suite.
  ("round5: the no-deck sender stops for good after 6 s",
   "ltcplay/streamdeck.py",
-  "            controller.tick()\n"
+  "        try:\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.tick()\n"
+  "        try:\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
   "            if _n[0] <= 120:\n"
@@ -5665,12 +5717,12 @@ def build():
 
  ("round5: the no-deck sender stops for good after 60 s",
   "ltcplay/streamdeck.py",
-  "            controller.tick()\n"
+  "        try:\n"
   "            controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
-  "            controller.tick()\n"
+  "        try:\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
   "            if _n[0] <= 1200:\n"
@@ -5721,10 +5773,11 @@ def build():
 
  ("round5: every deck retry is journaled again (no once-per-outage)",
   "ltcplay/streamdeck.py",
+  "                else type(e).__name__)\n"
   "        if kind in self._kinds:\n"
   "            self._unlogged += 1\n"
   "            return\n",
-  ""),
+  "                else type(e).__name__)\n"),
 
  ("round5: a deck outage never ends, so a later unplug is never journaled",
   "ltcplay/streamdeck.py",
@@ -7379,10 +7432,12 @@ def build():
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
   '        if False:\n            # The Stream Deck reads'),
 
- ('review43: the deck reads any truthy screen_arming as on',
-  'ltcplay/streamdeck.py',
-  '        return load()["screen_arming"] is True',
-  '        return bool(load()["screen_arming"])'),
+ ('review43: the engine reads any truthy screen_arming as on',
+  'ltcplay/remote.py',
+  '        if v is not True and v is not False:\n'
+  '            raise ValueError(f"{path}: screen_arming must be true or false.")\n'
+  '        out["screen_arming"] = v',
+  '        out["screen_arming"] = bool(v)'),
 
  # -- review of PR #43: P0-6, a render older than the layout, or checked at another flame start, is refused --
  ('review43: a render older than xlights_networks.xml is read as flames',

@@ -897,6 +897,7 @@ class EngineConductor:
         self._stop = threading.Event()
         self._threads = []
         self.dropped = 0
+        self.alert_delivered = None   # the last alert raise: None, False, True
         # The last press the engine did not take (or could not be reached
         # for), for the deck's own keys to show, not only its console; ""
         # once a press is taken again (fix round 2, E).
@@ -949,7 +950,9 @@ class EngineConductor:
         """This process's own alerts: the deck hardware lost or back
         ({"raise": "deck", "text": ..., "options": [...]}), posted to the
         same route from the show machine. On the queue, never the main
-        loop."""
+        loop. alert_delivered reads False from here until the engine
+        answers 200 to it (_post_one), so the caller can post it again."""
+        self.alert_delivered = False
         return self._press("alert", "", "Stream Deck", **body)
 
     def reset(self, who="", screen="Stream Deck"):
@@ -1013,6 +1016,8 @@ class EngineConductor:
             # Acknowledge (two keys inside one poll) is journaled below,
             # never shown as ENGINE FAULT on the keys.
             self.fault = "" if ok else f"{name.title()}: {text}"
+        elif "raise" in body:
+            self.alert_delivered = bool(ok)
         if ok:
             line = f"Stream Deck {name.title()}: the engine says: {text}"
         else:
@@ -1145,17 +1150,6 @@ class EngineConductor:
 SCREEN_POLL_HZ = 20.0
 SCREEN_STALE_S = 0.3
 SCREEN_HOLD_S = 1.0       # must equal remote.SCREEN_HOLD_S (selftest pins it)
-
-
-def screen_arming_switched_on(load=None):
-    """True only when ltcplay_remote.json says "screen_arming": true. A
-    missing or broken file, or any error reading it, is off."""
-    try:
-        if load is None:
-            from .remote import load_settings as load
-        return load()["screen_arming"] is True
-    except Exception:
-        return False
 
 
 class ScreenKeys:
@@ -2570,16 +2564,11 @@ class Controller:
                          hasattr(self.conductor, "unreachable") and
                          self.conductor.unreachable()))
         cues_fault = getattr(self.conductor, "cues_fault", "") or ""
-        if self.alert_pending():
-            # Jeff's ruling 2 (2026-10-12): while an alert is open the key
-            # that acknowledges it says so, in a look of its own (ACK_ON /
-            # ACK_OFF), and reads START NOW again once it is cleared.
-            bg, text = ACK_ON if blink_on else ACK_OFF
-            fonts.show_key(d, b0, ["ACK", "ALERT"], text, bg=bg, kind="sans",
-                           max_size=16)
-        elif engine_fault:
+        if engine_fault:
             # Fix round 2, E: the engine did not take a press (or cannot be
-            # reached): said on the deck itself, not only its console.
+            # reached): said on the deck itself, not only its console. A
+            # fault face outranks the ACK face below (review of PR #59):
+            # a refused press is never hidden behind a waiting alert.
             fonts.show_key(d, b0, ["ENGINE", "FAULT"],
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
@@ -2591,6 +2580,13 @@ class Controller:
             fonts.show_key(d, b0, ["CUES", "FAULT"],
                            BLACK if blink_on else RED,
                            bg=RED if blink_on else None, kind="sans",
+                           max_size=16)
+        elif self.alert_pending():
+            # Jeff's ruling 2 (2026-10-12): while an alert is open the key
+            # that acknowledges it says so, in a look of its own (ACK_ON /
+            # ACK_OFF), and reads START NOW again once it is cleared.
+            bg, text = ACK_ON if blink_on else ACK_OFF
+            fonts.show_key(d, b0, ["ACK", "ALERT"], text, bg=bg, kind="sans",
                            max_size=16)
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
@@ -2783,8 +2779,11 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
     fonts = Fonts()
     drawn = None
     period = 1.0 / ARM_SEND_HZ
-    outage = _DeckOutage(journal,
-                         alert=getattr(controller.conductor, "alert", None))
+    cond = controller.conductor
+    outage = _DeckOutage(
+        journal, alert=getattr(cond, "alert", None),
+        delivered=(lambda: cond.alert_delivered)
+        if hasattr(cond, "alert_delivered") else None)
     last_draw = None
     while True:
         deck = None
@@ -2801,7 +2800,7 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
             outage.failed(e, "Retrying in 2 s; every flame group stays as "
                              "it was on the arm link meanwhile.")
             _close_quietly(deck)
-            _hold_link_steady(controller, sleep, 2.0)
+            _hold_link_steady(controller, sleep, 2.0, outage)
             continue
         outage.connected()
         connected_at = clock()
@@ -2875,7 +2874,7 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
             except Exception:
                 pass
             _close_quietly(deck)
-            _hold_link_steady(controller, sleep, 1.0)
+            _hold_link_steady(controller, sleep, 1.0, outage)
 
 
 def _draw_deck(controller, deck, fonts, motion):
@@ -2912,24 +2911,64 @@ class _DeckOutage:
     line every 2 s retry, and a deck that failed on every pass would have
     written two lines a second."""
 
-    def __init__(self, journal, alert=None):
+    def __init__(self, journal, alert=None, delivered=None):
         self._journal = journal
         self._alert = alert          # EngineConductor.alert, or None
+        # EngineConductor's alert_delivered: whether the engine answered
+        # 200 to the last alert post. None: no way to know, so no retry.
+        self._delivered = delivered
         self.active = False
         self._kinds = set()
         self._unlogged = 0
         self._reconnect_logged = False
+        self._alert_text = None      # the sentence last posted
+
+    def _alert_landed(self):
+        if self._delivered is None:
+            return True
+        try:
+            return self._delivered() is True
+        except Exception:
+            return True
 
     def _post_alert(self, text):
-        """The "deck" alert (alerts.py), once per outage on the first
-        failure, updated once on the first reconnect. Never raises."""
+        """The "deck" alert (alerts.py): the sentence the engine should
+        show. Posted when it changes, and posted AGAIN on every failed()
+        while the engine has not answered 200 to it (the engine down, or
+        the post queue full, when the deck process starts first: review
+        of PR #59). Never raises."""
         if self._alert is None:
             return
+        if text == self._alert_text and self._alert_landed():
+            return
+        self._alert_text = text
         try:
             self._alert({"raise": "deck", "text": text,
                          "options": ["Acknowledge", "Disarm all"]})
         except Exception:
             pass
+
+    def screen_failed(self, e):
+        """The no-deck loop's screen pass or tick raised: journaled once
+        per outage, per kind of error; the arm send went out regardless
+        (_hold_link_steady)."""
+        kind = "screen:" + type(e).__name__
+        if not self.active:
+            self.active = True
+            self._kinds = set()
+            self._unlogged = 0
+            self._reconnect_logged = False
+        if kind in self._kinds:
+            self._unlogged += 1
+            return
+        self._kinds.add(kind)
+        _journal_quietly(self._journal,
+                         f"Stream Deck: the screen's holds could not be read "
+                         f"while the deck is away ({type(e).__name__}: {e}). "
+                         f"The arm link carries on unchanged. This line does "
+                         f"not repeat until the deck has run "
+                         f"{DECK_STABLE_S:g} s without a failure.",
+                         fault=True, action="deck")
 
     def failed(self, e, tail):
         if not self.active:
@@ -2937,7 +2976,7 @@ class _DeckOutage:
             self._kinds = set()
             self._unlogged = 0
             self._reconnect_logged = False
-            self._post_alert(DECK_LOST_TEXT)
+        self._post_alert(DECK_LOST_TEXT)
         kind = ("unplugged" if isinstance(e, DeckDisconnected)
                 else type(e).__name__)
         if kind in self._kinds:
@@ -2995,7 +3034,7 @@ def _close_quietly(deck):
         pass
 
 
-def _hold_link_steady(controller, sleep, secs):
+def _hold_link_steady(controller, sleep, secs, outage=None):
     """No deck hardware: keep sending the CURRENT wanted vector at
     ARM_SEND_HZ for about `secs`, on the arm socket this process already
     holds flamesafe's sender lock with (opening it the first time, which
@@ -3011,11 +3050,25 @@ def _hold_link_steady(controller, sleep, secs):
     spin it forever. Round 5, item 2: never raises an Exception either; a
     socket that could not be opened is tried again on the next frame."""
     for _ in range(max(1, int(round(secs * ARM_SEND_HZ)))):
+        # Three steps, each in its own try: a persistent exception from the
+        # screen pass or the tick must never skip the send below. If it
+        # did, the link would go silent, flamesafe would disarm every
+        # group within arm_stale_ms and the sender lock would lapse (the
+        # round-4 item A hazard, found again in review of PR #59). The
+        # exception is journaled once per outage (_DeckOutage), never
+        # raised.
         try:
             if not controller.arm.is_open:
                 controller.arm.open()
+        except Exception:
+            pass
+        try:
             controller.screen_pass()
             controller.tick()
+        except Exception as e:
+            if outage is not None:
+                outage.screen_failed(e)
+        try:
             controller.arm.send(controller.names)
         except Exception:
             pass

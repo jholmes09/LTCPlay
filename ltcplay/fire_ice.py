@@ -758,10 +758,14 @@ def check_flame_groups(folder, cfg):
                     f"{count} in {xml}. There is no such head.")
 
 
-def check_flame_controllers(folder, cfg):
+def check_flame_controllers(folder, cfg, alert_pixels=None):
     """At `ltc serve` startup: every show file in the folder, checked with
-    refuse_active_flame_controller. Raises FireIceConfigError naming the
-    first one that would put fire values on the pixel output."""
+    refuse_active_flame_controller, and with the alert pulse's pixel range
+    (`alert_pixels`, remote.check_alert_pixels) against the flame
+    controller's channels: the pulse runs before a show too, so the
+    overlap is refused at startup, not only at Run (review of PR #59).
+    Raises FireIceConfigError naming the first show file that would put
+    fire values on the pixel output."""
     if not cfg.flame_controller or not folder or not os.path.isdir(folder):
         return
     for n in sorted(os.listdir(folder)):
@@ -780,6 +784,8 @@ def check_flame_controllers(folder, cfg):
                 p, cfg.flame_controller,
                 flamesafe_destination(cfg.flamesafe_config)
                 if cfg.flamesafe_config else None)
+            refuse_alert_pixels_on_flame_channels(p, cfg.flame_controller,
+                                                  alert_pixels)
         except FlameControllerError as e:
             raise FireIceConfigError(f"{n}: {e}")
 
