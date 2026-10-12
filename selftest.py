@@ -26492,9 +26492,12 @@ def _deck_face_recorder(sd):
     arm_key_image recorded the same way. Returns (fonts, faces, restore),
     `faces` a dict of key number -> (lines, text, bg) or, for a bottom-row
     key, (name, look), refilled on every draw. None without Pillow."""
-    try:
-        import PIL.Image  # noqa: F401
-    except Exception:                     # noqa: BLE001
+    # Without Pillow the deck tests that read `faces` skip themselves; in
+    # CI that is a FAIL (_pillow_missing), since this is exactly how PR
+    # #49's "deck states" and "deck look" mutations went NOT CAUGHT in a
+    # mutate job that never installed Pillow (shards 0 to 3, 8, 9, 24, 30
+    # and 31).
+    if _pillow_missing("the deck's key faces"):
         return None, None, lambda: None
     fonts = sd.Fonts()
     fonts.text_block = lambda *a, **kw: None
