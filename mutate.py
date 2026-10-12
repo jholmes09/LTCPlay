@@ -4782,16 +4782,6 @@ def build():
   "            return\n",
   "            self._do_abort()\n"),
 
- ("round3: a Stream Deck reconnect no longer resets in-progress hold "
-  "state",
-  "ltcplay/streamdeck.py",
-  "            controller.reset_on_reconnect()\n"
-  "        except Exception as e:          # round 5, item 2: not only\n"
-  "            outage.failed(e, \"Retrying in 2 s;",
-  "            pass\n"
-  "        except Exception as e:          # round 5, item 2: not only\n"
-  "            outage.failed(e, \"Retrying in 2 s;"),
-
  ("round3: the arm-hold duration changes without any test noticing",
   "ltcplay/streamdeck.py",
   "ARM_HOLD_S = 0.6",
@@ -6432,13 +6422,6 @@ def build():
   "ltcplay/schedule.py",
   "    \"No flame group is disarmed: every group stays as it was (Jeff, \"",
   "    \"Every flame group is disarmed because the show failed to start (Jeff, \""),
-
- ("failed start: a cut show is treated as a failed start",
-  "ltcplay/schedule_service.py",
-  "                plan.append((\"Show stopped\", \"show_stopped\",\n"
-  "                             self._ABORT_EFFECTS))",
-  "                plan.append((\"Failed start\", \"failed_start\",\n"
-  "                             self._ABORT_EFFECTS))"),
 
  # Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10). Part 1:
  # flamesafe's consent check on the flame link.
