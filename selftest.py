@@ -36843,10 +36843,24 @@ def test_remote_pin_required_over_the_network():
                            headers={"Cookie": "ltcplay_session=forged"})
         check(st == 401, f"a forged cookie is refused: {st}")
         # PINs are stored hashed, in the settings folder, never as typed.
+        # Read as the JSON it is, not as text: the salts and hashes are
+        # random hex, and about one file in 150 happened to contain the
+        # digits 2468 or 1357 somewhere inside one (PR #49, ubuntu selftest,
+        # run 38222584924), which a substring check read as a stored PIN.
         from ltcplay import remote as RM
-        txt = open(os.path.join(R.work, RM.PIN_FILE), encoding="utf-8").read()
-        check("2468" not in txt and "1357" not in txt and "salt" in txt
-              and "hash" in txt, "the PIN file holds hashes, not PINs")
+        import json as _pj
+        with open(os.path.join(R.work, RM.PIN_FILE), encoding="utf-8") as fh:
+            pin_doc = _pj.load(fh)
+        recs = list(pin_doc.values()) if isinstance(pin_doc, dict) else []
+        check(len(recs) >= 2 and all(
+            isinstance(r, dict) and set(r) >= {"salt", "hash"}
+            and len(r["salt"]) == 32 and len(r["hash"]) == 64
+            and all(c in "0123456789abcdef" for c in r["salt"] + r["hash"])
+            and str(r.get("iterations", 0)).isdigit()
+            and not any(str(v) in ("2468", "1357") for v in r.values())
+            for r in recs),
+            f"the PIN file holds a hex salt and hash per operator, never a "
+            f"PIN: {pin_doc}")
         # Sign out ends it.
         st, hd, out = R.ask("POST", "/api/remote/logout", {})
         check(st == 200 and "Max-Age=0" in (hd.get("set-cookie") or [""])[0],
