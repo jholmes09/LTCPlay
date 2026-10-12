@@ -34,6 +34,11 @@ ltcplay_tonight_*.json
 ltcplay_operators.json
 ltcplay_current_operator.json
 ltcplay_announce.json
+ltcplay_screens.json
+ltcplay_abort_latch.json
+# The iPad remote: the show network address, and the operators' PIN hashes
+ltcplay_remote.json
+ltcplay_remote_pins.json
 
 # Written by Cut a release.command at packaging time
 VERSION

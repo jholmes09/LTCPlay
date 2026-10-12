@@ -112,8 +112,21 @@ class Session:
                  freewheel_ms=250, hold_ms=2000, on_end="blackout",
                  fps=None, drop=None, device=None, channel=None, rate=None,
                  echo_log=False, sd=None, allow_missing=False,
-                 auto_reload=False):
+                 auto_reload=False, exclude_controllers=(),
+                 exclude_destinations=(), log_factory=None):
         self.timeline_path = timeline_path
+        # Fire & Ice only (fire_ice.BackgroundShowLog): what builds the show
+        # log, in place of showlog.ShowLog. The GPL path never passes it.
+        self.log_factory = log_factory
+        # Fire & Ice only (fire_ice.py): xLights controllers whose channels
+        # the pixel output never sends, whatever xlights_networks.xml says
+        # (the flame controller: its universe goes to flamesafe only). The
+        # GPL path never passes this.
+        self.exclude_controllers = tuple(exclude_controllers or ())
+        # And every (address, universe, protocol) the flame node is reached
+        # at: a controller of another name sending there is left out too.
+        self.exclude_destinations = frozenset(
+            tuple(d) for d in (exclude_destinations or ()))
         self.allow_missing = allow_missing
         self.auto_reload = auto_reload
         self.no_output = no_output
@@ -183,6 +196,20 @@ class Session:
                 f"folder beside the .fseq files. Either \"show_dir\" in the "
                 f"timeline points somewhere else, or give the real path.")
         self.nm = netmap_mod.load(self.nm_path)
+        if self.exclude_controllers or self.exclude_destinations:
+            def _out(u):
+                return (u.controller in self.exclude_controllers or
+                        (u.ip, u.universe, u.protocol) in
+                        self.exclude_destinations)
+            dropped = [u for u in self.nm.universes if _out(u)]
+            if dropped:
+                self.nm.universes = [u for u in self.nm.universes
+                                     if not _out(u)]
+                self.notes.append(
+                    f"Not sent by the pixel output: "
+                    f"{', '.join(sorted({u.controller for u in dropped}))} "
+                    f"({len(dropped)} universe(s)); its channels go to "
+                    f"flamesafe only.")
         if not self.nm.universes and not self.no_output:
             raise SessionError(f"{self.nm_path} has no ArtNet or E1.31 "
                                f"universes to send to.")
@@ -195,7 +222,8 @@ class Session:
                                       os.path.abspath(self.timeline_path)),
                                       "ltcplay.log"))
             try:
-                self.log = ShowLog(p, echo=self.echo_log)
+                self.log = (self.log_factory or ShowLog)(
+                    p, echo=self.echo_log)
             except OSError as e:
                 # A bundle on a read-only volume, a team folder with no
                 # write permission, a locked card. The show can still run;

@@ -2846,18 +2846,24 @@ def test_service_over_loopback():
               and s["frames"]["last_reject"] == "another sender",
               f"wrong key and another sender rejected: {s['frames']}")
         rogue.close()
+        # Second-copy guard (2026-10-03): the rogue counts as on the link
+        # for frame_stale_ms after its datagram, and no cycle counts while
+        # it does.  Let it go first, with ltcplay still sending.
+        for k in range(2, 2 + int(0.6 / cfg.tick_period_s)):
+            send(k, {})
+            tick()
         # arm group 0 with consent, clean edge: the counter must be seen
         # advancing, then a down edge on a live counter, then the request
         tick()
-        send(2, {})
+        send(102, {})
         tick()
         tick()
         inp.set(0)
-        send(3, {})
+        send(103, {})
         tick()
         p = _drain(node)[-1]
         check(p[126 + 400] == 78, "the safety slot carries 78 on the wire")
-        for k in range(4, 8):
+        for k in range(104, 108):
             send(k, {411: 200})
             tick()
         p = _drain(node)[-1]
@@ -2871,7 +2877,7 @@ def test_service_over_loopback():
         # rubbish and wrong-universe frames are rejected and change nothing
         ltc_tx.sendto(b"\x00\xff garbage", ("127.0.0.1", lp))
         ltc_tx.sendto(b'{"v":2,"t":"flame"}', ("127.0.0.1", lp))
-        send(8, {411: 0}, universe=2)
+        send(108, {411: 0}, universe=2)
         time.sleep(0.02)
         tick()
         p = _drain(node)[-1]
@@ -2907,19 +2913,19 @@ def test_service_over_loopback():
         # has something to zero: ltcplay first (the link must be live before
         # a cycle counts), then the cycle
         inp.silent = False
-        for k in range(9, 14):
+        for k in range(109, 114):
             send(k, {411: 0})
             tick()
         inp.set(0, on=False)
-        send(14, {411: 0})
+        send(114, {411: 0})
         tick()
-        send(15, {411: 0})
+        send(115, {411: 0})
         tick()
         inp.set(0)
-        for k in range(16, 60):
+        for k in range(116, 160):
             send(k, {411: 0})
             tick()
-        for k in range(60, 66):
+        for k in range(160, 166):
             send(k, {411: 200})
             tick()
         p = _drain(node)[-1]
@@ -4016,8 +4022,7 @@ def test_disarm_all_rejections():
             "sender, in order; a refused one changes nothing and is "
             "journaled once per episode")
     r = _two_armed()
-    for label, kw in (("another sender", {"sender": ("127.0.0.1", 40999)}),
-                      ("out of order", {"seq": 1}),
+    for label, kw in (("out of order", {"seq": 1}),
                       ("clock went backwards", {"mono": -5.0})):
         before = r.c.stats["disarm_all"]
         why = _disarm(r, **kw)
@@ -4027,6 +4032,19 @@ def test_disarm_all_rejections():
               f"{label}: refused ({why!r}), both groups still armed")
         check(r.out.status["frames"]["last_reject"] == why,
               "and the reason is in the status frame")
+    # From another sender it is refused as a disarm_all (never counted as
+    # the show's Abort), but a second keyed sender on the flame link
+    # disarms every group (fix round 1 of PR #40, the second-copy guard).
+    before = r.c.stats["disarm_all"]
+    why = _disarm(r, sender=("127.0.0.1", 40999))
+    r.step()
+    check("another sender" in why and r.c.stats["disarm_all"] == before
+          and r.safety(0) != ARM and r.safety(1) != ARM
+          and r.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"another sender: refused as a disarm_all ({why!r}), and every "
+          f"group disarmed as a second sender: {r.group(0)}")
+    check(r.out.status["frames"]["last_reject"] == why,
+          "and the reason is in the status frame")
     check(r.c.stats["disarm_all_rejected"] == 3, "every refusal is counted")
     why = r.c.disarm_all("not a message", sender=SENDER)
     check(why and r.c.stats["disarm_all_rejected"] == 4,
@@ -4050,7 +4068,9 @@ def test_disarm_all_rejections():
     check(len(rej) == 2 and "stopped after 50" in rej[1]
           and "50 distinct source addresses" in rej[1],
           f"and one more when it stops, with the count: {rej}")
-    check(r.safety(0) == ARM, "the flood disarmed nothing")
+    check(r.safety(0) != ARM and r.c.stats["disarm_all"] == 0,
+          "the foreign flood was never taken as the show's Abort, and "
+          "(second-copy guard) left nothing armed")
     # With the flame link stale, there is no sender to take it from.
     r.link_alive = False
     r.wait(0.7)
@@ -4190,15 +4210,21 @@ def test_disarm_all_over_loopback():
         out = tick()
         check(out.universe[400] == ARM and out.universe[401] == ARM,
               "setup: two groups armed through a real Service")
-        rogue.sendto(link.encode_disarm_all(10 ** 6, t[0], 1, "Abort", KEY),
-                     ("127.0.0.1", lp))
         ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort",
                                           "wrong-key-wrong-key-x"),
                    ("127.0.0.1", lp))
         out = tick()
         check(out.universe[400] == ARM and out.universe[401] == ARM,
-              "a disarm_all from another socket, or with the wrong key from "
-              "the right one, disarms nothing")
+              "a disarm_all with the wrong key from the right socket "
+              "disarms nothing")
+        rogue.sendto(link.encode_disarm_all(10 ** 6, t[0], 1, "Abort", KEY),
+                     ("127.0.0.1", lp))
+        out = tick()
+        check(out.universe[400] == 0 and out.universe[401] == 0
+              and svc.composer.stats["disarm_all"] == 0,
+              "a keyed disarm_all from another socket is refused as the "
+              "show's Abort, but a second keyed sender on the flame link "
+              "disarms every group (second-copy guard, fix round 1 of #40)")
         check(svc.composer.stats["disarm_all_rejected"] == 1
               and svc.composer.stats["frames_rejected"] >= 1,
               f"both refused and counted: {svc.composer.stats}")
@@ -4206,6 +4232,20 @@ def test_disarm_all_over_loopback():
         check(any("another sender" in m for m in kinds)
               and any("wrong key" in m for m in kinds),
               f"both journaled: {kinds}")
+        # Let the other socket go (frame_stale_ms), then cycle both groups
+        # again so the real Abort below has something to take off.
+        for _ in range(int(0.6 / cfg.tick_period_s)):
+            out = tick()
+        inp.set(0, 1, on=False)
+        for _ in range(3):
+            tick()
+        inp.set(0, 1)
+        for _ in range(int((cfg.min_arm_dwell_ms / 1000.0 + 0.3)
+                           / cfg.tick_period_s)):
+            out = tick()
+        check(out.universe[400] == ARM and out.universe[401] == ARM,
+              "re-armed by a fresh cycle once the other socket has gone")
+        _drain(ltc_status)
         ltc.sendto(link.encode_disarm_all(nxt(), t[0], 1, "Abort", KEY),
                    ("127.0.0.1", lp))
         time.sleep(0.01)
@@ -4225,6 +4265,475 @@ def test_disarm_all_over_loopback():
         rogue.close()
         node.close()
         ltc_status.close()
+
+
+# =========================================================================
+# Second-copy guard (Jeff, 2026-10-03; PR #34 open question 10, probe p2 s5)
+# =========================================================================
+
+OTHER = ("127.0.0.1", 40777)
+
+
+def _step_both(r, first, second=None, n=1):
+    """n ticks with `first` sending a frame every tick and, if given,
+    `second` sending one right after it (refused while `first` holds the
+    lock).  The arm input is polled exactly as Rig.step does."""
+    for _ in range(n):
+        r.t += r.period
+        r.frame(r.cue, sender=first)
+        if second is not None:
+            r.frame({}, sender=second)
+        a = r.inp.poll()
+        if a is not None:
+            r.c.assert_arm(a.wanted, a.seq, names=a.names, forced=a.forced)
+        r.out = r.c.tick()
+    return r.out
+
+
+def test_second_copy_another_flame_sender_blocks_consent():
+    section("second-copy guard: while another sender with the key is on the "
+            "flame link no cycle counts, a down edge from before it cannot "
+            "be finished, and once it has gone a genuine off-then-on arms "
+            "(the arm link's round-4 veto, on the flame link)")
+    stale = make_config().frame_stale_ms / 1000.0
+    r = Rig()
+    r.prove_alive()                      # a pending genuine down edge
+    r.link_alive = False                 # this test sends the frames itself
+    _step_both(r, SENDER, OTHER)         # a second copy turns up
+    r.inp.set(0)
+    _step_both(r, SENDER, OTHER, n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM,
+          f"a cycle finished while another sender is on the flame link does "
+          f"not arm: {g}")
+    check(g["armed"] == "held" and g["reason"] == composer.FLAME_OTHER_SENDER
+          and g["amber"] == "steady",
+          f"held, saying why, steady: {g}")
+    f = r.out.status["frames"]
+    check(f["foreign_senders"] == 1 and f["new_sender"] is False
+          and f["state"] == "fresh",
+          f"the status frame counts the other sender: {f}")
+    r.inp.set(0, on=False)
+    _step_both(r, SENDER, OTHER, n=3)
+    r.inp.set(0)
+    _step_both(r, SENDER, OTHER, n=int(1.5 / r.period))
+    check(r.safety(0) != ARM,
+          f"a fresh cycle made while it is still there does not count "
+          f"either: {r.group(0)}")
+    # It stops.  Within frame_stale_ms it still counts as there.
+    _step_both(r, SENDER, n=int(stale / r.period) - 2)
+    check(r.out.status["frames"]["foreign_senders"] == 1,
+          f"inside frame_stale_ms of its last datagram it still counts: "
+          f"{r.out.status['frames']}")
+    _step_both(r, SENDER, n=int(1.0 / r.period))
+    g = r.group(0)
+    check(r.out.status["frames"]["foreign_senders"] == 0,
+          f"after frame_stale_ms quiet it is gone: {r.out.status['frames']}")
+    check(r.safety(0) != ARM and g["reason"] == "cycle the arm",
+          f"and the group does NOT arm by itself: {g}")
+    r.inp.set(0, on=False)
+    _step_both(r, SENDER, n=2)
+    r.inp.set(0)
+    _step_both(r, SENDER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+                                / r.period))
+    check(r.safety(0) == ARM,
+          f"a genuine off-then-on afterwards arms it: {r.group(0)}")
+    msgs = [m for k, m in r.log.events if k == "link-reject"]
+    check(any("another sender" in m and "newly armed" in m for m in msgs),
+          f"the journal line says no group can be newly armed: {msgs[:2]}")
+    # Fix round 1 of PR #40 (Jeff): a second sender turning up while the
+    # lock holder is live DISARMS every group, on the tick it arrives.
+    r.log.events.clear()
+    _step_both(r, SENDER, OTHER)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a group armed before the other sender came is disarmed on the "
+          f"tick its first datagram arrives: {g}")
+    lines = [m for k, m in r.log.events if k == "second-sender"]
+    check(len(lines) == 1 and "every group disarmed (disarmed: front row"
+          in lines[0] and "127.0.0.1:40777" in lines[0],
+          f"journaled plainly, once, naming the sender and the groups: "
+          f"{lines}")
+    # A keyed disarm_all from another sender is a second sender too.
+    r2 = Rig()
+    r2.prove_alive()
+    r2.c.disarm_all(link.DisarmAll(10 ** 6, r2.t, 7, "x"), sender=OTHER)
+    r2.inp.set(0)
+    r2.step(n=2)
+    check(r2.safety(0) != ARM
+          and r2.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a refused disarm_all from another socket blocks consent too: "
+          f"{r2.group(0)}")
+
+
+def test_second_copy_flame_lock_changing_hands_blocks_consent():
+    section("second-copy guard: when the flame link's lock passes to a "
+            "different sender, no cycle counts until the newcomer has been "
+            "the only sender for frame_stale_ms; the same sender coming "
+            "back is not a change")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)                          # the link goes stale
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER)                 # a different sender takes the lock
+    f = r.out.status["frames"]
+    check(f["state"] == "fresh" and f["new_sender"] is True
+          and f["foreign_senders"] == 0,
+          f"the status frame says the lock just changed hands: {f}")
+    check(any(k == "link" and "taken by 127.0.0.1:40777" in m
+              and "newly armed" in m for k, m in r.log.events),
+          f"journaled once, naming both: {r.log.events[-3:]}")
+    _step_both(r, OTHER, n=3)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER,
+          f"a cycle inside frame_stale_ms of the change does not arm: {g}")
+    _step_both(r, OTHER, n=int(1.0 / r.period))
+    check(r.safety(0) != ARM and r.out.status["frames"]["new_sender"] is False,
+          f"nor by itself once it has settled: {r.group(0)}")
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER, n=2)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+                               / r.period))
+    check(r.safety(0) == ARM,
+          f"a genuine off-then-on after it has settled arms: {r.group(0)}")
+    # A change of hands inside one tick: the link goes stale just after a
+    # tick and the newcomer's frame arrives before the next one, so no tick
+    # ever saw the link lost.  The change itself must disarm.
+    r = armed_rig()
+    r.link_alive = False
+    t0 = r.t                             # the last frame was on this tick
+    stale = r.cfg.frame_stale_ms / 1000.0
+    while r.t + r.period <= t0 + stale:
+        r.step()
+    check(r.safety(0) == ARM and r.out.status["frames"]["state"] == "fresh",
+          f"setup: still armed on the last tick inside frame_stale_ms: "
+          f"{r.out.status['frames']}")
+    r.t = t0 + stale + 0.002             # stale now, before the next tick
+    check(r.frame({}, sender=OTHER) == "", "the newcomer takes the lock")
+    r.t = t0 + stale + 0.010
+    a = r.inp.poll()
+    r.c.assert_arm(a.wanted, a.seq, names=a.names, forced=a.forced)
+    r.out = r.c.tick()
+    check(r.out.status["frames"]["state"] == "fresh" and r.safety(0) != ARM,
+          f"a group armed under the old sender is disarmed by the change of "
+          f"hands even though no tick saw the link lost: {r.group(0)}")
+    # The same sender back after a gap: no change of hands.
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)
+    r.link_alive = True
+    r.step()
+    check(r.out.status["frames"]["new_sender"] is False,
+          f"the same sender taking the lock back is not a change: "
+          f"{r.out.status['frames']}")
+    # The first sender ever is not a change either.
+    r = Rig()
+    r.step()
+    check(r.out.status["frames"]["new_sender"] is False,
+          f"the first sender ever is not a change: {r.out.status['frames']}")
+
+
+def test_second_copy_a_sustained_second_sender_never_lets_a_cycle_through():
+    section("second-copy guard, fix round 1 of PR #40: a second sender that "
+            "keeps sending for well over frame_stale_ms keeps counting for as "
+            "long as it sends (its LAST datagram, not its first), so cycles "
+            "at 0.25 s, 0.75 s and 1.25 s never arm, not even for one tick, "
+            "and the episode is journaled once")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    _step_both(r, SENDER)
+    r.log.events.clear()
+    t0 = r.t
+    armed_ticks = 0
+    counts = set()
+    for at in (0.25, 0.75, 1.25):
+        while r.t < t0 + at - 0.15:
+            _step_both(r, SENDER, OTHER)
+            armed_ticks += r.safety(0) == ARM
+            counts.add(r.out.status["frames"]["foreign_senders"])
+        r.inp.set(0, on=False)
+        _step_both(r, SENDER, OTHER, n=2)
+        r.inp.set(0)
+        for _ in range(int(0.12 / r.period)):
+            _step_both(r, SENDER, OTHER)
+            armed_ticks += r.safety(0) == ARM
+            counts.add(r.out.status["frames"]["foreign_senders"])
+    check(armed_ticks == 0,
+          f"no cycle armed group 0 for even one tick while the second "
+          f"sender kept sending: {armed_ticks} armed ticks")
+    check(counts == {1},
+          f"the status counted it on every tick it was sending: {counts}")
+    lines = [m for k, m in r.log.events if k == "second-sender"]
+    check(len(lines) == 1,
+          f"one journal line for the whole episode, not one every "
+          f"frame_stale_ms: {len(lines)}")
+
+
+def test_second_copy_a_flood_blocks_consent_and_clears_a_pending_edge():
+    section("second-copy guard, fix round 1 of PR #40: a flood on the flame "
+            "link blocks consent for frame_stale_ms (the arm link's rule), "
+            "and a down edge seen before it cannot be finished by a key "
+            "still held high when it lifts")
+    r = Rig()
+    r.prove_alive()                      # a pending genuine down edge
+    r.c.note_flame_link_flooded(True, 300, 600000)
+    r.inp.set(0)
+    r.step(n=3)
+    g = r.group(0)
+    check(r.safety(0) != ARM and g["reason"] == composer.FLAME_OTHER_SENDER
+          and r.out.status["frames"]["flooded"] is True,
+          f"a cycle finished during a flood does not arm, and the lamp and "
+          f"status say why: {g} {r.out.status['frames']}")
+    check(sum(1 for k, _ in r.log.events if k == "flame-flood") == 1,
+          f"the flood is journaled: {r.log.events[-3:]}")
+    r.wait(r.cfg.frame_stale_ms / 1000.0 + r.cfg.min_arm_dwell_ms / 1000.0)
+    g = r.group(0)
+    check(r.out.status["frames"]["flooded"] is False
+          and r.safety(0) != ARM and g["reason"] == "cycle the arm",
+          f"once it has stopped the held key does NOT arm by itself: the "
+          f"down edge from before the flood was cleared: {g}")
+    r.inp.set(0, on=False)
+    r.step(n=2)
+    r.inp.set(0)
+    r.wait(r.cfg.min_arm_dwell_ms / 1000.0 + 0.5)
+    check(r.safety(0) == ARM, f"a genuine cycle afterwards arms: "
+                              f"{r.group(0)}")
+    # The service flags a flood from what is waiting in one tick.
+    node = _udp()
+    ltc_status = _udp()
+    lp_sock = _udp()
+    lp = lp_sock.getsockname()[1]
+    lp_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    svc = Service(cfg, arminput.ScriptedArmInput(cfg.n, names=NAMES),
+                  clock=lambda: t[0], log=Log())
+    svc.open()
+    junk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _ in range(composer.FLAME_FLOOD_DATAGRAMS_PER_TICK - 5):
+            junk.sendto(b"x", ("127.0.0.1", lp))
+        time.sleep(0.05)
+        t[0] += cfg.tick_period_s
+        out = svc.run_once()
+        check(out.status["frames"]["flooded"] is False,
+              "fewer datagrams than the threshold in one tick: no flood")
+        for _ in range(composer.FLAME_FLOOD_DATAGRAMS_PER_TICK + 5):
+            junk.sendto(b"x", ("127.0.0.1", lp))
+        time.sleep(0.05)
+        t[0] += cfg.tick_period_s
+        out = svc.run_once()
+        check(out.status["frames"]["flooded"] is True,
+              "more than the threshold, keyed or not: a flood")
+    finally:
+        svc.close()
+        junk.close()
+        node.close()
+        ltc_status.close()
+
+
+def test_second_copy_armed_in_a_restart_gap_disarms_when_ltcplay_returns():
+    section("second-copy guard, fix round 1 of PR #40 (review s8): a group "
+            "armed while a second sender was the only one on the flame link "
+            "is disarmed the moment the real ltcplay comes back")
+    r = Rig()
+    r.prove_alive()
+    r.link_alive = False
+    r.wait(0.6)                          # ltcplay restarts; the link is lost
+    _step_both(r, OTHER, n=int(0.7 / r.period))   # the other one settles in
+    r.inp.set(0, on=False)
+    _step_both(r, OTHER, n=2)
+    r.inp.set(0)
+    _step_both(r, OTHER, n=int((r.cfg.min_arm_dwell_ms / 1000.0 + 0.3)
+                               / r.period))
+    check(r.safety(0) == ARM,
+          f"setup (the accepted residual): a cycle under the only sender "
+          f"arms: {r.group(0)}")
+    _step_both(r, OTHER, ("127.0.0.1", 40888))   # ltcplay back, new port
+    check(r.safety(0) != ARM
+          and r.group(0)["reason"] == composer.FLAME_OTHER_SENDER,
+          f"disarmed on the tick the real ltcplay's first frame arrives: "
+          f"{r.group(0)}")
+
+
+def test_second_copy_restart_gap_takeover_over_loopback():
+    section("second-copy guard, end to end over real UDP (probe p2 s5): a "
+            "second sender with the key takes the flame link in an ltcplay "
+            "restart gap; the real ltcplay comes back and is refused; the "
+            "operator cycles the arm; nothing arms and none of the second "
+            "sender's fire values reach the wire")
+    node = _udp()
+    ltc_status = _udp()
+    lp_sock = _udp()
+    lp = lp_sock.getsockname()[1]
+    lp_sock.close()
+    cfg = make_config(destination={"ip": "127.0.0.1",
+                                   "port": node.getsockname()[1]},
+                      link={"listen_ip": "127.0.0.1", "listen_port": lp,
+                            "status_ip": "127.0.0.1",
+                            "status_port": ltc_status.getsockname()[1],
+                            "key": KEY})
+    t = [0.0]
+    log = Log()
+    inp = arminput.ScriptedArmInput(cfg.n, names=NAMES)
+    svc = Service(cfg, inp, clock=lambda: t[0], log=log)
+    svc.open()
+    socks = {"ltc": socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+             "rogue": socket.socket(socket.AF_INET, socket.SOCK_DGRAM)}
+    seqs = {"ltc": 0, "rogue": 0}
+    fire = [0] * 512
+    for s in FRONT_FIRE:
+        fire[s - 1] = 255
+
+    def send(who, values=None):
+        seqs[who] += 1
+        socks[who].sendto(link.encode_flame(seqs[who], "00:00:01:00", t[0],
+                                            1, values or [0] * 512, KEY),
+                          ("127.0.0.1", lp))
+
+    def tick(*who, values=None):
+        t[0] += cfg.tick_period_s
+        for w in who:
+            send(w, values if w == "rogue" else None)
+        time.sleep(0.003)
+        return svc.run_once()
+
+    try:
+        for _ in range(3):
+            tick("ltc")
+        inp.set(0)
+        out = tick("ltc")
+        check(out.universe[FRONT_SAFETY - 1] == ARM,
+              "setup: group 0 armed through a real Service")
+        # ltcplay restarts: nothing for 0.6 s, so the link is lost
+        for _ in range(int(0.6 / cfg.tick_period_s)):
+            out = tick()
+        check(out.universe[FRONT_SAFETY - 1] == 0, "link lost: disarmed")
+        # the second sender gets in first; ltcplay comes back on a new port
+        tick("rogue")
+        socks["ltc"].close()
+        socks["ltc"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for _ in range(10):
+            out = tick("rogue", "ltc")
+        check("another sender" in out.status["frames"]["last_reject"],
+              f"the real ltcplay is refused: {out.status['frames']}")
+        # the operator cycles the arm, as the lamp asked, more than once
+        armed = False
+        for _ in range(3):
+            inp.set(0, on=False)
+            for _ in range(int(1.2 / cfg.tick_period_s)):
+                out = tick("rogue", "ltc")
+                armed |= out.universe[FRONT_SAFETY - 1] == ARM
+            inp.set(0)
+            for _ in range(int(1.2 / cfg.tick_period_s)):
+                out = tick("rogue", "ltc", values=fire)
+                armed |= out.universe[FRONT_SAFETY - 1] == ARM
+                armed |= any(out.universe[s - 1] for s in FRONT_FIRE)
+        check(not armed,
+              "nothing armed and no fire on the wire while both are sending")
+        g = out.status["groups"][0]
+        check(g["armed"] == "held"
+              and g["reason"] == composer.FLAME_OTHER_SENDER
+              and out.status["frames"]["foreign_senders"] == 1,
+              f"held, saying another sender is on the show program link: "
+              f"{g['reason']!r} {out.status['frames']}")
+    finally:
+        svc.close()
+        for s in socks.values():
+            s.close()
+        node.close()
+        ltc_status.close()
+def _free_udp_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def test_status_mirror_port():
+    section("status_mirror_port (2026-10-03, the iPad remote): optional, a "
+            "byte-for-byte copy of every status frame, display only, never "
+            "a fault, never on a port that means something else")
+    doc = example_dict()
+    check("status_mirror_port" not in doc["link"],
+          "the example config has no mirror: off unless configured")
+    check(config.from_dict(doc).link_status_mirror_port is None,
+          "absent means none")
+    a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    a.bind(("127.0.0.1", 0))
+    b.bind(("127.0.0.1", 0))
+    a.settimeout(2)
+    b.settimeout(2)
+    try:
+        d = copy.deepcopy(doc)
+        d["link"]["status_port"] = a.getsockname()[1]
+        d["link"]["status_mirror_port"] = b.getsockname()[1]
+        d["link"]["listen_port"] = _free_udp_port()
+        d["link"]["arm_port"] = _free_udp_port()
+        d["link"]["key"] = "test-mirror-key-0123456"
+        cfg = config.from_dict(d)
+        check(cfg.link_status_mirror_port == b.getsockname()[1],
+              "the mirror port is read")
+        for clash in ("status_port", "listen_port", "arm_port"):
+            bad = copy.deepcopy(d)
+            bad["link"]["status_mirror_port"] = bad["link"][clash]
+            try:
+                config.from_dict(bad)
+                check(False, f"a mirror on {clash} was accepted")
+            except config.ConfigError as e:
+                check("status_mirror_port" in str(e), f"{clash}: {e}")
+        bad = copy.deepcopy(d)
+        bad["destination"] = {"ip": "127.0.0.1",
+                              "port": d["link"]["status_mirror_port"]}
+        try:
+            config.from_dict(bad)
+            check(False, "a loopback destination on the mirror was accepted")
+        except config.ConfigError:
+            pass
+        svc = Service(cfg, arminput.NullArmInput())
+        svc.open()
+        try:
+            svc.run_once()
+            one = a.recv(65535)
+            two = b.recv(65535)
+            check(one == two and b'"status"' in one,
+                  "the mirror gets the same keyed status frame")
+            b.close()
+            svc.cfg.link_status_mirror_port = 9   # nothing listens there
+            for _ in range(3):
+                svc.run_once()
+            last = None
+            a.settimeout(0.2)
+            try:
+                while True:
+                    last = a.recv(65535)
+            except OSError:
+                pass
+            st = json.loads(last.decode()) if last else {}
+            check(svc.status_errors == 0 and st.get("fault") == "",
+                  f"a mirror that is not there is never a status error or "
+                  f"a fault: {svc.status_errors} {st.get('fault')!r}")
+        finally:
+            svc.close()
+    finally:
+        a.close()
+        try:
+            b.close()
+        except OSError:
+            pass
 
 
 def test_the_wall_from_this_side():
@@ -4322,6 +4831,13 @@ if __name__ == "__main__":
     test_disarm_all_duplicates_journal_once()
     test_flame_link_rejections_journal_once_per_episode()
     test_disarm_all_over_loopback()
+    test_second_copy_another_flame_sender_blocks_consent()
+    test_second_copy_flame_lock_changing_hands_blocks_consent()
+    test_second_copy_a_sustained_second_sender_never_lets_a_cycle_through()
+    test_second_copy_a_flood_blocks_consent_and_clears_a_pending_edge()
+    test_second_copy_armed_in_a_restart_gap_disarms_when_ltcplay_returns()
+    test_second_copy_restart_gap_takeover_over_loopback()
+    test_status_mirror_port()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

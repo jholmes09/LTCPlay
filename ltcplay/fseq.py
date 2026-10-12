@@ -44,10 +44,14 @@ class FSEQError(Exception):
 class FSEQ:
     """Random-access reader. Decompresses one block at a time and caches it."""
 
-    def __init__(self, path):
+    def __init__(self, path, fileobj=None):
+        """`fileobj`: the file already read into memory (an io.BytesIO of
+        its bytes), so reading frames never touches the disk; Fire & Ice's
+        flame cues use it. None (the player) opens `path` as always."""
         self.path = path
-        self._f = open(path, "rb")
-        self._file_size = os.path.getsize(path)
+        self._f = fileobj if fileobj is not None else open(path, "rb")
+        self._file_size = (len(fileobj.getbuffer()) if fileobj is not None
+                           else os.path.getsize(path))
         head = self._f.read(32)
         if len(head) < 32:
             raise FSEQError(f"{path}: shorter than a header")

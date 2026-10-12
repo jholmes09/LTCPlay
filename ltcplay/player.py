@@ -140,6 +140,13 @@ class Player:
         # come back -- the alternative was a preshow loop for thirty minutes
         # in front of an audience. Added after the 2026-09-13 design audit.
         self.freerun_epoch = None
+        # Programming-session transport on a free run (the remote page,
+        # 2026-10-03): a paused free run holds this show time, and a loop
+        # (a, b) jumps back to a whenever the free run reaches b. Both are
+        # only ever set by freerun_pause / set_loop, and cleared by GO and
+        # release, so a show following timecode never sees either.
+        self.freerun_paused_at = None
+        self.loop = None
         # The FEED's own state while a free run is on; the show's
         # state is FREERUN. Kept apart so the display can tell the
         # truth about the feed without logging a flip per frame.
@@ -482,6 +489,8 @@ class Player:
             self._hard_parked = False
             self._last_tc_value = None
             self.freerun_epoch = None
+            self.freerun_paused_at = None
+            self.loop = None
         self._event("clock", "the show clock stopped; back to the idle look")
 
     def _now_tc(self):
@@ -640,7 +649,18 @@ class Player:
             # visibly counting.
             self.feed_state = self.state
             self.state = FREERUN
-            self.tc_seconds = now - self.freerun_epoch
+            paused = self.freerun_paused_at
+            if paused is not None:
+                self.tc_seconds = paused
+            else:
+                self.tc_seconds = now - self.freerun_epoch
+                loop = self.loop
+                if loop is not None and self.tc_seconds >= loop[1]:
+                    # The loop wraps: back to A on the same clock. A jump
+                    # like any other locate, so the flame link sees it as
+                    # one (flamelink's seek guard).
+                    self.freerun_epoch = now - loop[0]
+                    self.tc_seconds = loop[0]
             return self._play_at(self.tc_seconds, prev_state, prev_cue,
                                  prev_source)
 
@@ -821,6 +841,7 @@ class Player:
             raise ValueError("a free run has to start somewhere on the "
                              "show clock")
         self.freerun_epoch = _now() - tc_seconds
+        self.freerun_paused_at = None
         self.override = None
         self._event("freerun", f"GO from {tc_seconds:.3f}s on this machine's "
                                f"own clock; the timecode feed is being "
@@ -839,10 +860,52 @@ class Player:
             raise ValueError("The show is following timecode, so this Mac "
                              "cannot move it. Skipping only applies to a free "
                              "run: press GO first.")
-        at = max(0.0, (_now() - self.freerun_epoch) + float(seconds))
+        here = (self.freerun_paused_at if self.freerun_paused_at is not None
+                else _now() - self.freerun_epoch)
+        at = max(0.0, here + float(seconds))
         self.freerun_epoch = _now() - at
+        if self.freerun_paused_at is not None:
+            self.freerun_paused_at = at
         self._event("freerun", f"skipped {float(seconds):+.1f}s to {at:.3f}s")
         return at
+
+    def freerun_pause(self, on):
+        """Pause a free run on the frame it is at, or carry on from it.
+        Programming sessions only (the remote page refuses it otherwise).
+        Returns the show time it paused or continued at."""
+        if self.freerun_epoch is None:
+            raise ValueError("The show is following timecode, so this Mac "
+                             "cannot pause it. Pause only applies to a free "
+                             "run: play from a timecode first.")
+        if on:
+            if self.freerun_paused_at is None:
+                self.freerun_paused_at = max(0.0, _now() - self.freerun_epoch)
+                self._event("freerun", f"paused at "
+                                       f"{self.freerun_paused_at:.3f}s")
+            return self.freerun_paused_at
+        at = self.freerun_paused_at
+        if at is None:
+            return _now() - self.freerun_epoch
+        self.freerun_epoch = _now() - at
+        self.freerun_paused_at = None
+        self._event("freerun", f"continued from {at:.3f}s")
+        return at
+
+    def set_loop(self, a, b):
+        """Loop the free run between show times a and b (b after a), or
+        clear the loop with a = b = None."""
+        if a is None and b is None:
+            self.loop = None
+            self._event("freerun", "loop off")
+            return None
+        a, b = float(a), float(b)
+        if not (0.0 <= a < b):
+            raise ValueError("A loop needs mark B after mark A.")
+        if b - a < 1.0:
+            raise ValueError("A loop has to be at least 1 second long.")
+        self.loop = (a, b)
+        self._event("freerun", f"looping {a:.3f}s to {b:.3f}s")
+        return self.loop
 
     def go_to_cue(self, step):
         """Jump a free run to the previous or next cue, or restart this one.
@@ -858,7 +921,8 @@ class Player:
         cues = self.timeline.cues
         if not cues:
             raise ValueError("This show has no cues to skip between.")
-        at = _now() - self.freerun_epoch
+        at = (self.freerun_paused_at if self.freerun_paused_at is not None
+              else _now() - self.freerun_epoch)
         here = self.timeline._index_at(at)
         if step == 0:
             # The top of the current cue -- unless we are only just into it,
@@ -875,6 +939,8 @@ class Player:
             i = min(len(cues) - 1, (here + 1) if here >= 0 else 0)
         target = cues[i]
         self.freerun_epoch = _now() - target.tc_seconds
+        if self.freerun_paused_at is not None:
+            self.freerun_paused_at = target.tc_seconds
         self._event("freerun", f"skipped to {target.name} at "
                                f"{target.tc_text}")
         return target
@@ -884,6 +950,8 @@ class Player:
         if self.freerun_epoch is None:
             return False
         self.freerun_epoch = None
+        self.freerun_paused_at = None
+        self.loop = None
         live = self.feed_state == LOCKED
         self._event("freerun", "released; the show is following timecode "
                                "again" if live else
