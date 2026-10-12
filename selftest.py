@@ -27107,6 +27107,28 @@ def test_streamdeck_builds_one_http_opener():
     print("  ok")
 
 
+def _pillow_missing(what):
+    """True when Pillow cannot be imported, after saying so. On a developer's
+    box that is a note and the pixel checks are skipped. In CI it is a FAIL:
+    the mutate job ran without Pillow for weeks while this file said "CI
+    installs Pillow", so the three "Deck latched" mutations in streamdeck.py
+    were NOT CAUGHT in every sweep there (PR #43, #46 and #49, shards 14 and
+    15) and caught on any box that had it. A runner without Pillow now fails
+    the baseline loudly instead of hiding what these tests prove."""
+    try:
+        import PIL.Image  # noqa: F401
+        return False
+    except Exception:                     # noqa: BLE001
+        if os.environ.get("GITHUB_ACTIONS"):
+            check(False, f"Pillow is not installed on this CI runner, so "
+                         f"{what} cannot be checked: every job that runs "
+                         f"this suite must pip install pillow")
+        else:
+            print(f"  note: Pillow is not installed here, so {what} is "
+                  f"not checked on this machine.")
+        return True
+
+
 def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
     section("Stream Deck: a latched screen (post-Abort, pre-Reset) must "
             "show any group flamesafe is STILL actually reporting armed, "
@@ -27134,14 +27156,12 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
                           {"name": "wave flamer", "armed": "disarmed",
                            "wanted": False, "reason": "", "amber": "",
                            "dwell_s": 0}]})
-    try:
-        import PIL.Image  # noqa: F401
-    except Exception:                     # noqa: BLE001
-        # Pixels need Pillow. Without it Fonts() raises SystemExit, which
-        # used to end the whole suite here (round 5). CI installs Pillow
-        # so this runs there; a box without it says so and carries on.
-        print("  note: Pillow is not installed here, so the latched "
-              "screen's pixels are not checked on this machine.")
+    # Pixels need Pillow. Without it Fonts() raises SystemExit, which used
+    # to end the whole suite here (round 5). Both CI jobs install Pillow
+    # (the mutate job did not until PR #46's fix round, which is how the
+    # "Deck latched" mutations below went uncaught there); a developer's
+    # box without it says so and carries on, a CI runner without it FAILS.
+    if _pillow_missing("the latched screen's pixels and taps"):
         return
     fonts = sd.Fonts()
     # This CI box has none of the system font paths Fonts._sans_bold() /
@@ -33721,6 +33741,23 @@ def test_fire_ice_review_hand_mutations():
         check(rc not in (0, None) and not served,
               f"ltc serve stops on flamesafe's config before binding: "
               f"{rc!r} served={bool(served)}")
+        # A file every other check reads fine (valid JSON, the example's
+        # groups, destination and universe) whose link block only the flame
+        # link's own check refuses: a listen address that is not loopback.
+        # "{ not json" above no longer tells the H10 check apart from
+        # check_flame_groups, which opens the same file and so also stops
+        # serve on it; with the H10 line gone this case reaches the bind
+        # (NOT CAUGHT in CI: PR #43 shard 23, PR #46 shard 22).
+        link_only = os.path.join(work, "flamesafe_bad_link.json")
+        with open(good, encoding="utf-8") as fh:
+            doc2 = _json.load(fh)
+        doc2["link"]["listen_ip"] = "10.0.0.5"
+        with open(link_only, "w", encoding="utf-8") as fh:
+            _json.dump(doc2, fh)
+        rc = serve_with(link_only)
+        check(rc not in (0, None) and not served,
+              f"ltc serve stops on a flame link block only flame_link_config "
+              f"refuses, before binding: {rc!r} served={bool(served)}")
     finally:
         web_mod.serve = real_serve
         import shutil
@@ -36793,11 +36830,7 @@ def test_deck_fix_round_2_abort_reset_and_disarm():
                                 "unreachable after 2 s")
     finally:
         e2.stop()
-    try:
-        import PIL.Image  # noqa: F401
-    except Exception:                     # noqa: BLE001
-        print("  note: Pillow is not installed here, so the deck's ENGINE "
-              "FAULT key is not checked on this machine.")
+    if _pillow_missing("the deck's ENGINE FAULT key"):
         print("  ok")
         return
     fonts = sd.Fonts()

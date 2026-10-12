@@ -148,7 +148,13 @@ jobs:
         if: needs.changes.outputs.mode != 'none'
         with:
           python-version: "3.12"
-      - run: python -m pip install numpy zstandard tzdata
+      # The same packages as the selftest job, pillow included: without it
+      # the Stream Deck pixel tests skip themselves, and the three "Deck
+      # latched" mutations in streamdeck.py were NOT CAUGHT in every sweep
+      # here while they were caught on any box with Pillow (PR #43, #46 and
+      # #49, shards 14 and 15). selftest.py now fails in CI when Pillow is
+      # missing, so this line cannot drift from the one above again.
+      - run: python -m pip install numpy zstandard tzdata pillow
         if: needs.changes.outputs.mode != 'none'
       # The expected-miss list is the mutations only the real show folder
       # can catch. Any other miss, any listed one that is now caught, and any
