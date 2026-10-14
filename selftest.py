@@ -25282,11 +25282,22 @@ def test_conductor_generation_guard_stops_a_stale_effect():
               for t, _f in lines), "the journal says so")
     # A press landing DURING a step: the step itself happened (the lasers
     # came up), but the Resume's next step, releasing the flames, must not.
+    C = _cond_mod()
     c, rig, T, lines = _cond()
     _cond_live(c, rig)
     c.hold("Andy", "rack screen")
     c.run_pending()
-    rig.on_call["lasers_restore"] = lambda: c.abort("Andy", "rack screen")
+    # The record as the Abort's executor re-sends its blank: what the
+    # press's blank wrote, or the restore's late "lit" if that got through.
+    at_resend = []
+
+    def abort_mid_restore():
+        c.abort("Andy", "rack screen")
+        # The press's own blank has been made inside abort(); the next
+        # lasers_blank is the executor's re-send.
+        rig.on_call["lasers_blank"] = lambda: at_resend.append(
+            c.snapshot()["applied"]["lasers"])
+    rig.on_call["lasers_restore"] = abort_mid_restore
     c.resume("Andy", "rack screen")
     c.run_pending()
     check(rig.count("lasers_restore") == 1 and
@@ -25299,14 +25310,23 @@ def test_conductor_generation_guard_stops_a_stale_effect():
     check(c.snapshot()["applied"]["lasers"] == "black",
           f"and the record says dark, not the restore's lit: "
           f"{c.snapshot()['applied']}")
-    # The restore returned after the Abort's blank: its "lit" must not
-    # overwrite the newer record (finding D), or the Abort's effect would
-    # think its blank had not landed and blank again.
-    check(rig.count("lasers_blank") == 3 and
-          any("lasers blanked again" in t for t, _f in lines),
+    check(rig.count("lasers_blank") == 3,
           f"the Hold's blank, then the Abort's own, which stands, and the "
           f"Abort's executor's once more (review of PR #43, P0-3): "
           f"{rig.names()}")
+    # The restore returned after the Abort's blank: its "lit" must not
+    # overwrite the newer record (finding D). The executor's re-send goes
+    # out whatever the record says (P0-3), so the proof is the record
+    # itself: as that blank is sent it already says dark, and the journal
+    # calls it a re-send of a blank that had landed. A late "lit" that got
+    # through would read as lit here, and the re-send as a fresh blank.
+    check(at_resend == ["black"],
+          f"the record still says dark when the executor re-sends the "
+          f"blank: the restore's late \"lit\" was dropped (finding D): "
+          f"{at_resend}")
+    check(any(f"lasers blanked again {C.AGAIN}" in t for t, _f in lines),
+          f"and the journal says the re-send found the lasers already "
+          f"dark: {[t for t, _f in lines if 'Abort finished' in t]}")
     # Straight at the guard: a step or an announcement for an older
     # generation does nothing at all.
     C = _cond_mod()
