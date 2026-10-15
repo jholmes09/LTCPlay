@@ -109,8 +109,10 @@ ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 GET_ROUTES = ("whoami", "status", "network", "deck-input")
+# "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
+# (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network",)
+    "network", "alert")
 LOCAL_ONLY = frozenset(("network",))
 
 # Any of these on a request means something forwarded it. A browser on the
@@ -177,7 +179,8 @@ def load_settings(folder=None):
     # P0-4): arming from a screen came in from PR #41, whose own safety
     # review decides whether it is switched on.
     out = {"show_network_address": None, "flamesafe_config": None,
-           "screen_arming": False, "path": path}
+           "screen_arming": False, "booth_alert": None,
+           "alert_pixels": None, "path": path}
     if not os.path.exists(path):
         return out
     try:
@@ -200,7 +203,36 @@ def load_settings(folder=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
+    if doc.get("booth_alert") is not None:
+        # Checked by boothaudio.parse_config, which owns the shape; a bad
+        # block is refused here, at load, never at show time.
+        from .boothaudio import parse_config
+        out["booth_alert"] = parse_config(doc["booth_alert"],
+                                          f"{path} booth_alert")
+    if doc.get("alert_pixels") is not None:
+        out["alert_pixels"] = check_alert_pixels(doc["alert_pixels"], path)
     return out
+
+
+def check_alert_pixels(doc, path="ltcplay_remote.json"):
+    """The floor pixels the blue alert pulse paints (player.py):
+    {"start": 1, "count": 300, "order": "RGB"}, start the 1-based
+    absolute channel of the first pixel. Returns (start0, count, order)
+    with start0 counted from 0, or raises ValueError."""
+    if not isinstance(doc, dict):
+        raise ValueError(f"{path}: alert_pixels has to be an object like "
+                         f'{{"start": 1, "count": 300, "order": "RGB"}}.')
+    start, count = doc.get("start"), doc.get("count")
+    order = str(doc.get("order", "RGB") or "RGB").upper()
+    for name, v in (("start", start), ("count", count)):
+        if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+            raise ValueError(f"{path}: alert_pixels {name} has to be a "
+                             f"whole number from 1 up.")
+    if sorted(order) != ["B", "G", "R"]:
+        raise ValueError(f"{path}: alert_pixels order has to be the three "
+                         f"letters R, G and B in the pixels' order, like "
+                         f"RGB or GRB.")
+    return (start - 1, count, order)
 
 
 def save_settings(folder, **changes):
@@ -470,6 +502,49 @@ class Remote:
         self._disarm_ids = 0
         self._deck_seen = None       # clock() of the deck's last read
         self._version = None         # version_line(), once asked
+        # The alert service (alerts.py, 2026-10-12): the rack screen's
+        # banners, the booth note and the blue pulse. web.serve gives it
+        # the booth player and the pulse's pixel range from the settings;
+        # the scheduler raises its failed-start alert through alert_sink.
+        from .alerts import Alerts
+        self.alerts = Alerts(journal=self._alert_journal, clock=clock,
+                             wall=wall, show_running=self._show_live,
+                             on_change=self._apply_pulse)
+        self.alert_pixels = None     # (start0, count, order) or None
+        if schedule is not None and hasattr(schedule, "alert_sink"):
+            schedule.alert_sink = self.alerts.raise_
+
+    def _alert_journal(self, text, fault=False, action="alert",
+                       outcome="", who="", screen="", **_kw):
+        self._journal(who or "system", screen or "engine", action,
+                      outcome or ("fault" if fault else "done"), text,
+                      fault=fault)
+
+    def _show_live(self):
+        """True while the scheduler says a show is live (SHOW or PAUSED):
+        the pulse's during-show rule (alerts.py)."""
+        svc = self.schedule
+        if svc is None:
+            return False
+        try:
+            return svc.state_view().get("state") in ("SHOW", "PAUSED")
+        except Exception:                # noqa: BLE001
+            return False
+
+    def _apply_pulse(self):
+        """The blue floor pulse follows the open alerts: a flag the live
+        player reads on its own tick (player.alert_pulse), set here on
+        every alert change and again on every status read, so a Run
+        pressed after the alert was raised still shows it."""
+        s = getattr(self.control, "session", None)
+        p = getattr(s, "player", None)
+        if p is None:
+            return
+        try:
+            p.alert_pixels = self.alert_pixels
+            p.alert_pulse = self.alerts.pulse_wanted()
+        except Exception:                # noqa: BLE001
+            pass
 
     # -- who ---------------------------------------------------------------
     def context(self, local, ip):
@@ -545,7 +620,48 @@ class Remote:
             return (*self.arm_release(body, ctx),) + ({},)
         if name == "group-disarm":
             return (*self.group_disarm(body, ctx),) + ({},)
+        if name == "alert":
+            return (*self.alert(body, ctx),) + ({},)
         return 404, {"error": "no such thing here"}, {}
+
+    # -- alerts (alerts.py) ------------------------------------------------
+    def alert(self, body, ctx):
+        """POST /api/remote/alert. From this machine only: {"raise": kind,
+        "text": sentence, "options": [...]} and {"clear": kind}, the
+        Stream Deck process's and the scheduler's. From any page: {"id":
+        n, "action": "acknowledge"}; an Acknowledge with no id clears
+        every open alert (a deck key). Acknowledge changes nothing on the
+        rig; the options that choose are refused with a sentence."""
+        who, screen, _surface = self._actor(ctx, body)
+        if "raise" in body or "clear" in body:
+            if not ctx.local:
+                return 403, {"error": "Alerts are raised on the show "
+                                      "machine itself, not from here."}
+            if "raise" in body:
+                try:
+                    a = self.alerts.raise_(body.get("raise"),
+                                           body.get("text"),
+                                           body.get("options") or
+                                           ("Acknowledge",))
+                except ValueError as e:
+                    return 400, {"error": str(e)}
+                return 200, {"text": f"Alert {a.kind} is up: {a.text}",
+                             "alert": a.view()}
+            ok, text = self.alerts.clear(kind=str(body.get("clear") or ""),
+                                         action="Confirm", who=who,
+                                         screen=screen, address=ctx.ip)
+            return (200 if ok else 409), ({"text": text} if ok
+                                          else {"error": text})
+        action = str(body.get("action") or "").strip()
+        aid = body.get("id")
+        if aid is not None and (not isinstance(aid, int) or
+                                isinstance(aid, bool)):
+            return 400, {"error": "id has to be the alert's number."}
+        ok, text = self.alerts.clear(id=aid, action=action or "Acknowledge",
+                                     who=who, screen=screen, address=ctx.ip)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"text": text}
 
     def whoami(self, ctx):
         return {"local": ctx.local, "device": ctx.device,
@@ -988,8 +1104,11 @@ class Remote:
                               "fresh": age <= BEAT_STALE_S,
                               "who": h["who"], "device": h["device"]})
             disarms = list(self._disarms)
+        self._apply_pulse()
+        # The open alerts too: the deck relights a key as ACK while one is
+        # open, and any key press acknowledges (alerts.py).
         return {"enabled": enabled, "holds": holds if enabled else [],
-                "disarms": disarms}
+                "disarms": disarms, "alerts": self.alerts.view()}
 
     def _disarm_fn(self):
         if self._flame_disarm is not None:
@@ -1261,4 +1380,8 @@ class Remote:
         out["arming"] = {"enabled": self.arming_enabled(),
                          "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
                          "holds": holds}
+        self._apply_pulse()
+        out["alerts"] = self.alerts.view()
+        booth = getattr(self.alerts.booth, "device_name", "") or ""
+        out["booth"] = {"configured": bool(booth), "device": booth}
         return out
