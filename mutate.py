@@ -43,6 +43,8 @@ per-PR gate; the weekly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+    --catchers-out F   write that file from this run: the weekly sweep does,
+                       and the per-PR gate reads the newest one
 """
 import subprocess
 import sys
@@ -5781,7 +5783,7 @@ def main():
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
-        "windows": False, "unfinished": None}
+        "windows": False, "unfinished": None, "catchers_out": None}
 
 
 def _args(argv):
@@ -5789,7 +5791,7 @@ def _args(argv):
     always was."""
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
-                windows=False, unfinished=None)
+                windows=False, unfinished=None, catchers_out=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -5803,6 +5805,8 @@ def _args(argv):
             OPTS["files"] = next(it)
         elif a == "--catchers":
             OPTS["catchers"] = next(it)
+        elif a == "--catchers-out":
+            OPTS["catchers_out"] = next(it)
         elif a == "--list":
             OPTS["list"] = True
         elif a == "--windows":
@@ -5858,10 +5862,12 @@ def _load_expected(path):
 # whole of flamesafe, the conductor and the flame link, whatever else
 # changed: those are the guarantees that must never go quiet. Everything
 # else (a doc, a launcher, the brand, an installer script) selects nothing,
-# and a shard with nothing to run returns at once. The nightly sweep and
-# every release tag run the whole list, so a loss this misses (a test
-# weakened without being renamed, a change in one file that silences a test
-# of another) shows within a day, and never reaches a tag unseen.
+# and no shard runs. The weekly sweep and every release tag run the whole
+# list, and the weekly sweep writes the catchers file (--catchers-out) the
+# per-PR gate reads, so a test weakened without being renamed re-runs what
+# it caught last time, and a loss the gate still misses (a change in one
+# file that silences a test of another, with no catchers file) shows
+# within a week, and never reaches a tag unseen.
 
 # A change to any of these re-runs every SAFETY_CORE mutation.
 SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
@@ -6050,8 +6056,9 @@ def select_affected(changed, base=None, catchers=None):
                            f"recorded a catcher for")
         else:
             reasons.append(f"selftest.py: {len(altered)} test(s) changed, "
-                           f"none deleted; the nightly sweep re-proves what "
-                           f"they catch in files this change did not touch")
+                           f"none deleted, and no catchers file: the weekly "
+                           f"sweep re-proves what they catch in files this "
+                           f"change did not touch")
     return chosen, reasons
 
 
@@ -6158,6 +6165,7 @@ def _run():
     REPORT.baseline = "green"
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    catchers_out = {}          # mutation -> the test that caught it
     # The bytes of every file this run breaks, before it does: the restore
     # is proved against them at the end, byte for byte.
     originals = {}
@@ -6209,12 +6217,23 @@ def _run():
             caught += 1
             caught_names.append(name)
             REPORT.caught.append(name)
+            if _LAST_TESTS:
+                catchers_out[name] = _LAST_TESTS[0]
             # What caught it. A check that has nothing to do with this
             # mutation is a flaky test passing itself off as coverage, and
             # this is where that shows.
             for w in _LAST_FAILS[:3]:
                 print(f"      {w}")
     print(f"\ncaught {caught}, missed {missed}")
+    if OPTS["catchers_out"]:
+        import json
+        try:
+            with open(OPTS["catchers_out"], "w", encoding="utf-8") as fh:
+                json.dump(catchers_out, fh, indent=1, sort_keys=True)
+            print(f"catchers written: {len(catchers_out)} to "
+                  f"{OPTS['catchers_out']}")
+        except OSError as e:
+            print(f"could not write the catchers file: {e}")
     # A mutation runner that leaves a mutation behind is the worst tool in the
     # box: the tree looks fine, the suite is green, and one guarantee is gone.
     # Prove the tree is back the way it started before reporting anything:

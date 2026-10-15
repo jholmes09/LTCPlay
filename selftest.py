@@ -7,6 +7,7 @@ and where a real show folder is available, actual FSEQ files off disk.
 """
 import json
 import os
+import queue as _queue_mod
 import random
 import re
 import struct
@@ -461,6 +462,15 @@ def wait_for(pred, timeout=3.0, step=0.02):
             return True
         time.sleep(step)
     return False
+
+
+def _names(text, *things):
+    """Does `text` name every one of `things` (case-insensitive)? A check on
+    what a sentence SAYS (who, which file, which number, which button)
+    rather than on its exact wording, so an edit to the wording does not go
+    red while an edit that drops the fact still does."""
+    low = str(text).lower()
+    return all(str(t).lower() in low for t in things)
 
 
 # ---------------------------------------------------------------- LTC ----
@@ -1140,7 +1150,8 @@ def test_loop_never_dies():
         p3._running = False
         p3._thread.join(timeout=1.0)
         p3._running = True                # thread is gone, player still "on"
-        time.sleep(1.2)
+        wait_for(lambda: p3.thread_restarts >= 1 and p3.thread_alive(),
+                 timeout=3.0)
         check(p3.thread_alive(), "the supervisor did not restart a dead thread")
         check(p3.thread_restarts >= 1, "the restart was not recorded")
     finally:
@@ -4901,8 +4912,8 @@ def test_the_bundle_stands_on_its_own():
     dirty = r.stdout + r.stderr
     check(r.returncode != 0,
           f"a corrupted bundle must fail verify:\n{dirty}")
-    check("the bytes have changed since this bundle was made" in dirty,
-          f"and must say exactly that, by name:\n{dirty}")
+    check(_names(dirty, "bytes", "changed", "bundle"),
+          f"and must say the bytes changed since the bundle was made:\n{dirty}")
     check("GPL 2026_Set 1_Opener.fseq" in dirty,
           f"naming the file that changed:\n{dirty}")
 
@@ -6218,23 +6229,30 @@ def test_only_one_player_sends_at_a_time():
     import subprocess
     code = ("import sys, time; sys.path.insert(0, %r);"
             "from ltcplay.onlyone import OutputLock;"
-            "OutputLock(%r, 'a crashed run').acquire(); time.sleep(30)"
+            "OutputLock(%r, 'a crashed run').acquire();"
+            "print('held', flush=True); time.sleep(30)"
             % (os.path.dirname(os.path.abspath(__file__)), where))
-    proc = subprocess.Popen([sys.executable, "-c", code])
-    time.sleep(1.0)
+    proc = subprocess.Popen([sys.executable, "-c", code],
+                            stdout=subprocess.PIPE, text=True)
+    check(proc.stdout.readline().strip() == "held",
+          "set up: the other process took the lock")
     try:
         onlyone.OutputLock(where, "me").acquire()
         check(False, "the lock did not hold against a live process")
     except onlyone.AlreadyRunning:
         pass
     proc.kill(); proc.wait()
-    time.sleep(0.3)
-    try:
-        got = onlyone.OutputLock(where, "after the crash").acquire()
-        got.release()
-    except onlyone.AlreadyRunning:
-        check(False, "a killed holder left the lock stuck; the operator would "
-                     "have to know about a lock file to run a show")
+    proc.stdout.close()
+
+    def free_again():
+        try:
+            onlyone.OutputLock(where, "after the crash").acquire().release()
+            return True
+        except onlyone.AlreadyRunning:
+            return False
+    check(wait_for(free_again, timeout=3.0),
+          "a killed holder left the lock stuck; the operator would "
+          "have to know about a lock file to run a show")
 
     # Stopping must say what actually reached the rig. "outputs blacked out"
     # used to print whether or not a single packet left the machine; with the
@@ -10578,10 +10596,9 @@ def test_schedule_rule_change_rebuilds_tonight():
           f"after a restart the corrected rule's 18:10 is the first show, "
           f"got {b.machine.hm(b.machine.slot(1).start)}")
     texts = [r["text"] for r in b.journal if r["outcome"] == "rebuilt"]
-    check(any("rebuilt from the new schedule" in t for t in texts)
-          and any("18:10 is new in the schedule" in t for t in texts)
-          and any("18:00 show is no longer in the schedule" in t
-                  for t in texts),
+    check(any(_names(t, "rebuilt", "schedule") for t in texts)
+          and any(_names(t, "18:10", "new") for t in texts)
+          and any(_names(t, "18:00", "no longer") for t in texts),
           f"the journal names each change: {texts[:4]}")
 
     # A hand edit with no version bump counts as well.
@@ -10627,11 +10644,10 @@ def test_schedule_rule_change_rebuilds_tonight():
           f"tonight's move of show 3 is dropped: {m.hm(m.slot(3).start)}")
     check(m.last_end is not None, "when the last show ended is kept")
     texts = [r["text"] for r in b.journal if r["outcome"] == "rebuilt"]
-    check(any("move of the 18:40 show to 18:45 is dropped" in t
-              for t in texts)
-          and any("Show 1 at 18:00 keeps its status, DONE" in t
-                  for t in texts),
-          f"each change is a sentence: {texts}")
+    check(any(_names(t, "18:40", "18:45", "dropped") for t in texts)
+          and any(_names(t, "18:00", "keeps", "DONE") for t in texts),
+          f"each change is a sentence naming the show and what happened: "
+          f"{texts}")
 
     # The times themselves change: history stays, nothing passed fires.
     SV.save_rule(os.path.join(work, SV.RULE_FILE), rule(first="18:05"))
@@ -14537,7 +14553,8 @@ def test_a_stopped_cue_hands_the_rig_back():
             check(wait_for(lambda: not sess.clock.playing, timeout=3.0),
                   "a one second cue never ended")
             ran = time.perf_counter() - began
-            nothing_plays(sess, 1.6, BLACK, f"cue end, on_lost {on_lost}")
+            # A free run after the hold (300 ms) would show inside this.
+            nothing_plays(sess, 0.8, BLACK, f"cue end, on_lost {on_lost}")
             # A ceiling and "not early": a stall across the end skips the
             # last frames, and can only make the end later. The exact end is
             # proven on the simulated clock.
@@ -14563,7 +14580,7 @@ def test_a_stopped_cue_hands_the_rig_back():
                            timeout=2.0), "the cue never reached the pixels")
             sess.clock_halt()
             n = len(out.sent)
-            nothing_plays(sess, 0.7, IDLE if idle else BLACK,
+            nothing_plays(sess, 0.5, IDLE if idle else BLACK,
                           f"halt, on_lost {on_lost}"
                           + (", with a preshow" if idle else ""))
             check(len(out.sent) == n, "timecode went out after a halt")
@@ -14584,7 +14601,7 @@ def test_a_stopped_cue_hands_the_rig_back():
         real_sink = sess.clock.sink
         sess.clock.sink = lambda *a: None
         stalled = []
-        end = time.time() + 0.8                 # hold is 300 ms
+        end = time.time() + 0.7                 # hold is 300 ms
         while time.time() < end:
             stalled.append((sess.player.freerun_epoch is not None,
                             sess.player.current_cue is not None))
@@ -16060,7 +16077,13 @@ def test_pause_resume_survive_a_real_ticker_under_pressure():
                                "artnet": {"nodes": {"t": "127.0.0.1"}}})
     out = _TcOut()
     fed = []
-    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a))
+    # The ticker still ticks at the real 30 fps on the real clock; it only
+    # WAKES every millisecond instead of every frame, so each resume()'s
+    # ticker.stop() is noticed at once (300 cycles took 10 s waiting out
+    # 300 frame-long sleeps) and more ticks interleave with the presses,
+    # not fewer.
+    m = C.ArtNetMaster(cfg, out=out, sink=lambda *a: fed.append(a),
+                       sleep=lambda s: time.sleep(min(s, 0.001)))
     m.start()
     old_interval = sys.getswitchinterval()
     sys.setswitchinterval(1e-5)
@@ -18949,8 +18972,8 @@ def test_journal_rotation_and_pruning_across_dst():
     check(all(n in left for n in strangers)
           and os.path.isdir(os.path.join(old, "night_2020-01-01.jsonl")),
           "nothing this module did not write is touched")
-    check(any("Removed 66 night log file(s) and 2 incident folder(s)" in
-              r["text"] for r in p.memory),
+    check(any(_names(r["text"], "removed", "66 night log file",
+                     "2 incident folder") for r in p.memory),
           "the journal says what was removed by the date rule (the "
           "stale .partial is reported separately, below)")
     check(any("Removed 1 incident folder(s) left unfinished (.partial)" in
@@ -19631,10 +19654,11 @@ def test_journal_incident_bundle():
     if names == want:
         jt = open(os.path.join(folder, "journal.txt"),
                   encoding="utf-8").read()
-        check("Show 1 started on schedule at 18:00" in jt and
-              "Andy pressed Save the last incident on the Rack screen (lights"
-              " dropped in song 3)." in jt,
-              "the journal so far, including who asked for the bundle")
+        check(_names(jt, "Show 1", "started", "18:00")
+              and _names(jt, "Andy", "Save the last incident", "Rack screen",
+                         "lights dropped in song 3"),
+              "the journal so far, including who asked for the bundle, "
+              "from where and why")
         ml = _jsonl_rows(os.path.join(folder, "machine_log.jsonl"))
         check(ml and all(ml), "the machine log, every line whole")
         cfg = json.load(open(os.path.join(folder, "config.json"),
@@ -19794,8 +19818,9 @@ def test_journal_a_full_disk_stops_the_logging_not_the_show():
     svc._journal_line("system", "A line with the disk nearly full.")
     h = svc.logbook.health()
     check(J.FREE_FLOOR_MB == 500 and not h["ok"] and
-          "only 50 MB is free on the disk, under the 500 MB" in h["sentence"],
-          f"a nearly full disk stops the logging: {h['sentence']}")
+          _names(h["sentence"], "50 MB", "free", "500 MB"),
+          f"a nearly full disk stops the logging, and the sentence names "
+          f"the free space and the floor: {h['sentence']}")
     check(h["free_mb"] == 50 and h["free_checked_age_s"] is not None,
           "the free space carries the age of its reading")
     svc.logbook._disk_usage = lambda p: type("U", (), {"free": 10 ** 12})()
@@ -20515,8 +20540,8 @@ def test_journal_waiting_lines_are_capped_and_counted():
     rows = [r for r in _jsonl_rows(os.path.join(
         work, J.machine_name("2026-11-14"))) if r]
     resumed = [r["text"] for r in rows if r["action"] == "logging resumed"]
-    check(resumed and "11 line(s) from 18:00:00 to 18:00:09 were not "
-                      "written" in resumed[0],
+    check(resumed and _names(resumed[0], "11 line", "18:00:00", "18:00:09",
+                             "not written"),
           f"the resume line says which lines were lost: {resumed}")
     print("  ok")
 
@@ -20563,8 +20588,9 @@ def test_journal_screens_come_from_a_list():
                                            "who": "Andy", "screen": "Laptop"})
         check(False, "a screen not on the list was accepted")
     except ValueError as e:
-        check("'Laptop' is not on the screen list (Rack screen, Stream Deck, "
-              "Phone)" in str(e), f"refused with a sentence: {e}")
+        check(_names(e, "'Laptop'", "not on the screen list", "Rack screen",
+                     "Stream Deck", "Phone"),
+              f"refused with a sentence naming the screen and the list: {e}")
     check(any(r["outcome"] == "refused" and r["screen"] == "Laptop"
               and "Andy" in r["line"] for r in svc.journal),
           "and the refusal is in the journal, with who tried")
@@ -21264,8 +21290,8 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
     except (sa.Refusal, sa.Unavailable) as e:
         msg = str(e)
         check(isinstance(e, sa.Refusal)
-              and "WASAPI exclusive: it will not play 2 output(s) at 48000"
-              in msg and "WDM-KS: it would not open" in msg
+              and _names(msg, "WASAPI exclusive", "2 output", "48000")
+              and _names(msg, "WDM-KS", "would not open")
               and "allow_shared_mode" in msg and msg.endswith(".")
               and "\u2014" not in msg,
               f"the refusal does not say what was tried and why: {msg}")
@@ -21300,9 +21326,9 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
                               platform="darwin")
         check(False, "a device that cannot run at 48 kHz opened")
     except sa.Refusal as e:
-        check("will not play 8 output(s) at 48000 Hz" in str(e)
-              and "set the interface to 48 kHz" in str(e),
-              f"the rate refusal: {e}")
+        check(_names(e, "8 output", "48000 Hz", "48 kHz"),
+              f"the rate refusal names the outputs, the rate asked for and "
+              f"the rate to set: {e}")
     # SD_ENABLE_ASIO has to be in the environment BEFORE sounddevice is
     # imported, and only on Windows.
     import inspect
@@ -22776,10 +22802,10 @@ def test_journal_summary_is_written_however_the_night_closes():
               encoding="utf-8").read()
     j2 = open(os.path.join(work2, "nights", J.journal_name("2026-11-14")),
               encoding="utf-8").read()
-    check("closed by Andy with Close for the night" in t2
-          and "Andy pressed Close for the night on the rack screen" in j2
-          and "the night was closed" in j2,
-          "Close for the night writes it, in those words")
+    check(_names(t2, "closed", "Andy", "Close for the night")
+          and _names(j2, "Andy", "Close for the night", "rack screen")
+          and _names(j2, "night was closed"),
+          "Close for the night writes who, which button and which screen")
     check("End night" not in t2 and "End night" not in j2
           and "End the night" not in j2,
           "no operator sentence says End night any more")
@@ -22849,8 +22875,9 @@ class _CondRig:
     clock freezes `fade` after music_hold and moves `move_s` after
     music_resume, like AudioMaster; either can be told never to."""
 
-    def __init__(self, time_fn):
+    def __init__(self, time_fn, stamp=None):
         self.now = time_fn
+        self.stamp = stamp or time_fn      # what each call is recorded with
         self.calls = []
         self.cue = True
         self.frozen_at = None
@@ -22867,7 +22894,7 @@ class _CondRig:
         self.on_call = {}      # name -> fn: a press landing mid call
 
     def _rec(self, name, *args):
-        self.calls.append((name, args, self.now()))
+        self.calls.append((name, args, self.stamp()))
         hook = self.on_call.pop(name, None)
         if hook is not None:
             hook()
@@ -25684,8 +25711,8 @@ def test_schedule_abort_latch_survives_a_damaged_disk():
                 "save abort latch" and r.get("outcome") == "failed"]
         check("abort" in rec.names() and len(loud) == 1 and
               loud[0].get("fault") and
-              "if ltcplay restarts tonight the next show would start: press "
-              "nothing, fix the disk" in loud[0]["text"] and
+              _names(loud[0]["text"], "restarts", "next show would start",
+                     "fix the disk") and
               "No space left" in loud[0]["text"],
               f"a failed save of the Abort: the Abort still reaches the "
               f"conductor, and one loud line says a restart would start the "
@@ -28230,7 +28257,7 @@ def test_conductor_devices_abort_blanks_at_once_never_ramps():
           and min(mc) > max(b),
           f"the conductor calls MadMapper (fade, then stop) only after "
           f"BEYOND is dark: {names}")
-    check(any("blanked at once, not faded over 1 s" in t for t, _f in lines),
+    check(any(_names(t, "blanked at once", "not faded") for t, _f in lines),
           f"the journal says the lasers were blanked, not faded: {lines}")
     mm_ev = [ev[i][1] for i in m]
     check(all(a != MM.AUDIO_ADDR for a, _v in mm_ev),
@@ -28455,32 +28482,357 @@ def test_conductor_devices_instant_video_lands_after_a_running_fade():
 
 # ---------------------------------------------------------------------------
 # The independent review of PR #29 (real UDP, real time probes), findings A
-# to E. These run on real threads and real time, through a real
-# beyond.Beyond and a real madmapper.Link whose sockets stamp every packet
-# with perf_counter: when sendto() was entered and when it returned.
+# to E. These run on REAL threads (the conductor's executor, MadMapper's
+# worker, BEYOND's helper threads, the stand-in sockets) through a real
+# beyond.Beyond and a real madmapper.Link, but on a VIRTUAL clock (_VClock):
+# every thread reads the same fake perf_counter and nobody sleeps on the
+# wall clock. A thread that sleeps blocks until the test moves the clock
+# past its deadline, and the test moves it in exactly the steps the sleepers
+# are waiting for, letting each woken thread run before the next step. So
+# the 1 s fades and 20 ms packet gaps take no real time, a press "30 ms into
+# a fade" lands exactly there, and what used to be a bound in milliseconds
+# ("the flame cut went out within 75 ms") is an order of events ("the flame
+# cut went out while BEYOND's packet was still stuck"), which no runner's
+# scheduling can blur. The thread handoffs themselves are still real: a
+# stall is a thread really blocked in a socket, a gate or a file read.
 # ---------------------------------------------------------------------------
 
-class _RTSock:
-    """A real-time fake socket: logs (kind, address, value, entered,
-    returned) for every packet. `delay(value)` makes sendto() take that
-    long first, the way a stalled send buffer or an ARP wait would."""
+class _VClock:
+    """One virtual perf_counter for every thread of a real-time rig."""
 
-    def __init__(self, kind, log, delay=None):
-        self.kind, self.log, self.delay = kind, log, delay
+    SETTLE_S = 5.0        # real seconds a woken thread gets to re-sleep or
+                          # finish before the rig is called stuck
+
+    def __init__(self, t=1000.0):
+        self.t = t
+        self.cv = threading.Condition()
+        self.sleepers = {}      # thread -> virtual deadline
+        self.blocked = set()    # threads a test is holding on purpose
+        self.workers = []       # (label, is_idle, thread_getter)
+        self.timers = []        # _VTimer, armed
+        self.seq = 0
+        self.stopped = False
+
+    # -- what the code under test is handed ---------------------------------
+    def now(self):
+        return self.t
+
+    def stamp(self):
+        """(virtual time, event number): orders events, even several at one
+        instant, the way perf_counter stamps did."""
+        with self.cv:
+            self.seq += 1
+            return (self.t, self.seq)
+
+    def sleep(self, seconds):
+        """A sleep that blocks until the clock has been moved past its
+        deadline: MadMapper's worker between ramp steps."""
+        me = threading.current_thread()
+        with self.cv:
+            end = self.t + seconds
+            self.sleepers[me] = end
+            self.cv.notify_all()
+            try:
+                while self.t < end and not self.stopped:
+                    self.cv.wait(0.5)
+            finally:
+                self.sleepers.pop(me, None)
+                self.cv.notify_all()
+
+    def jump(self, seconds):
+        """A sleep that moves the clock itself: BEYOND's 20 ms packet gaps,
+        made on whichever thread is sending (the pressing thread for an
+        Abort's blank, which cannot wait for anyone)."""
+        with self.cv:
+            self.t += seconds
+            self.cv.notify_all()
+
+    def waiter_for(self, holder):
+        """The conductor's `waiter`: its executor waits on this clock the way
+        _pause waits on the real one, giving up the conductor's lock
+        meanwhile and waking at once for a newer request (the conductor
+        notifies its condition on every accepted press)."""
+        def wait(left):
+            me = threading.current_thread()
+            with self.cv:
+                end = self.t + left
+                self.sleepers[me] = end
+                self.cv.notify_all()
+            try:
+                while True:
+                    with self.cv:
+                        if self.t >= end or self.stopped:
+                            return
+                    if holder[0]._cv.wait(0.002):
+                        return          # notified: a press, a gate's answer
+            finally:
+                with self.cv:
+                    self.sleepers.pop(me, None)
+                    self.cv.notify_all()
+        return wait
+
+    def timer(self, interval, fn, args=()):
+        """threading.Timer on this clock (ConductorDevices' stall timer):
+        fires from advance() once the clock passes its deadline."""
+        return _VTimer(self, interval, fn, args)
+
+    def block(self):
+        """`with clock.block():` around a wait a test holds on purpose (a
+        stuck socket, a gate that will not answer): that thread is not
+        counted as running when the rig settles."""
+        return _VBlocked(self)
+
+    def shutdown(self):
+        """Let every sleeper go (the rig is being closed)."""
+        with self.cv:
+            self.stopped = True
+            self.cv.notify_all()
+
+    # -- what the test drives -----------------------------------------------
+    def watch(self, label, is_idle, thread_getter):
+        self.workers.append((label, is_idle, thread_getter))
+
+    def _unsettled(self):
+        """The workers still running: not idle, not asleep past now, not
+        held by the test."""
+        out = []
+        with self.cv:
+            for label, is_idle, get_thread in self.workers:
+                th = get_thread()
+                if th is None or not th.is_alive() or th in self.blocked:
+                    continue
+                due = self.sleepers.get(th)
+                if due is not None and due > self.t:
+                    continue
+                if is_idle():
+                    continue
+                out.append(label)
+        return out
+
+    def settle(self):
+        """Wait (real time, bounded) until every worker has run whatever
+        the clock's last move let it run: it is idle, asleep until later,
+        or held by the test. True if it did."""
+        end = time.perf_counter() + self.SETTLE_S
+        while True:
+            left = self._unsettled()
+            if not left:
+                return True
+            if time.perf_counter() > end:
+                check(False, f"the rig did not settle: {left} still running "
+                             f"at t={self.t:.3f} (sleepers "
+                             f"{[(th.name, d) for th, d in self.sleepers.items()]})")
+                return False
+            time.sleep(0.0005)
+
+    def _next_due(self):
+        with self.cv:
+            dues = list(self.sleepers.values()) + [
+                tm.at for tm in self.timers if tm.armed]
+            return min(dues, default=None)
+
+    def _move_to(self, t):
+        with self.cv:
+            self.t = max(self.t, t)
+            self.cv.notify_all()
+        for tm in list(self.timers):
+            if tm.armed and tm.at <= self.t:
+                tm.armed = False
+                self.timers.remove(tm)
+                tm.fn(*tm.args)
+
+    def advance(self, seconds):
+        """Move the clock `seconds` on, stopping at every sleeper's and
+        timer's deadline on the way so each runs in order."""
+        target = self.t + seconds
+        while True:
+            self.settle()
+            nxt = self._next_due()
+            if nxt is None or nxt > target:
+                self._move_to(target)
+                self.settle()
+                return
+            self._move_to(nxt)
+
+    def idle(self):
+        return not self._unsettled() and all(
+            is_idle() for _l, is_idle, _g in self.workers)
+
+    def run_until(self, pred, limit=10.0):
+        """Advance, deadline by deadline, until pred() (checked after every
+        step) or `limit` virtual seconds have passed. True if pred() held."""
+        end = self.t + limit
+        patience = time.perf_counter() + self.SETTLE_S
+        while True:
+            self.settle()
+            if pred():
+                return True
+            nxt = self._next_due()
+            if nxt is not None and nxt <= end:
+                self._move_to(nxt)
+                patience = time.perf_counter() + self.SETTLE_S
+                continue
+            # Nothing due on the clock. A thread the test is holding (or
+            # has just let go of, and that has not run yet) may still be
+            # about to: give it real time before calling it stuck.
+            if self.blocked and time.perf_counter() < patience:
+                time.sleep(0.0005)
+                continue
+            return False
+
+    def run_until_idle(self, limit=10.0):
+        """Advance until every worker is idle (the executor has finished the
+        latest request, MadMapper's worker has nothing queued)."""
+        ok = self.run_until(self.idle, limit)
+        check(ok, f"the rig did not go idle within {limit:g} s of virtual "
+                  f"time: {self._unsettled()}")
+        return ok
+
+
+class _VTimer:
+    def __init__(self, clock, interval, fn, args):
+        self.clock, self.fn, self.args = clock, fn, args
+        self.at = clock.t + interval
+        self.armed = False
+        self.daemon = True
+
+    def start(self):
+        with self.clock.cv:
+            self.armed = True
+            self.clock.timers.append(self)
+
+    def cancel(self):
+        with self.clock.cv:
+            self.armed = False
+            if self in self.clock.timers:
+                self.clock.timers.remove(self)
+
+
+class _VBlocked:
+    def __init__(self, clock):
+        self.clock = clock
+
+    def __enter__(self):
+        with self.clock.cv:
+            self.clock.blocked.add(threading.current_thread())
+            self.clock.cv.notify_all()
+
+    def __exit__(self, *a):
+        with self.clock.cv:
+            self.clock.blocked.discard(threading.current_thread())
+            self.clock.cv.notify_all()
+
+
+class _IdleQueue(_queue_mod.Queue):
+    """MadMapper's job queue, able to say whether the worker is between
+    jobs: idle is set under the queue's own mutex when the worker goes to
+    wait on an empty queue, and cleared the moment it takes a job."""
+
+    def __init__(self):
+        super().__init__()
+        self._idle = False
+
+    def get(self, block=True, timeout=None):
+        with self.mutex:
+            if not self._qsize():
+                self._idle = True
+        return super().get(block, timeout)
+
+    def _get(self):
+        self._idle = False
+        return super()._get()
+
+    def is_idle(self):
+        with self.mutex:
+            return self._idle and not self._qsize()
+
+
+class _RTSock:
+    """A stand-in socket that logs (kind, address, value, entered, returned)
+    for every packet, stamped by the virtual clock when given one (the
+    conductor rigs) and by perf_counter when not (the beyond test above
+    these, on real time). `stall(value)` returns an Event the packet waits
+    on first (the way a stuck send buffer or an ARP wait holds a send), or
+    None."""
+
+    def __init__(self, kind, log, clock=None, stall=None):
+        self.kind, self.log, self.clock, self.stall = kind, log, clock, stall
+
+    def _stamp(self):
+        return self.clock.stamp() if self.clock else time.perf_counter()
 
     def sendto(self, pkt, addr):
         from ltcplay import madmapper as MM
         address, _at = MM._read_osc_string(pkt, 0)
         f = MM.decode_float(pkt)
         v = None if f is None else f[1]
-        t_in = time.perf_counter()
-        d = self.delay(v) if self.delay else 0
-        if d:
-            time.sleep(d)
-        self.log.append((self.kind, address, v, t_in, time.perf_counter()))
+        entered = self._stamp()
+        ev = self.stall(v) if self.stall else None
+        if ev is not None:
+            if self.clock:
+                with self.clock.block():
+                    ev.wait(5.0)
+            else:
+                ev.wait(5.0)
+        self.log.append((self.kind, address, v, entered, self._stamp()))
 
     def close(self):
         pass
+
+
+def _rt_rig(beyond_stall=None, gate=None, announcer=None, mm_factory=None):
+    """A threaded conductor over a real madmapper.Link and a real
+    beyond.Beyond, every thread on one virtual clock. Returns (conductor,
+    rig, packet log, journal lines, link, beyond, clock). `beyond_stall(v)`
+    is an Event a BEYOND packet of value v waits on, or None."""
+    from ltcplay import madmapper as MM, beyond as B
+    C = _cond_mod()
+    V = _VClock()
+    log, lines = [], []
+
+    def journal(text, **f):
+        lines.append((text, f.get("fault", False)))
+    rig = _CondRig(V.now, stamp=V.stamp)
+    link = MM.Link(_mm_cfg(ramp_steps=31),
+                   socket_factory=mm_factory or (lambda: _RTSock("mm", log, V)),
+                   clock=V.now, sleep=V.sleep, journal=journal)
+    # The worker's queue, replaced before any job, so the clock can tell
+    # when the worker is between jobs. The worker may already be waiting on
+    # the old queue: one empty job there moves it over to the new one.
+    old_q, link._q = link._q, _IdleQueue()
+    old_q.put((lambda: None, None, None))
+    bey = B.Beyond(B.BeyondConfig.parse({}),
+                   socket_factory=lambda: _RTSock("beyond", log, V,
+                                                  beyond_stall),
+                   clock=V.now, sleep=V.jump, journal=journal)
+    dev = C.ConductorDevices(link, bey, show=1, journal=journal, clock=V.now,
+                             timer=V.timer)
+    holder = []
+    c = C.Conductor(dev, rig, gate or (lambda: None),
+                    hold_gate=lambda *a: (None, 1), announcer=announcer,
+                    journal=journal, clock=V.now, waiter=V.waiter_for(holder))
+    holder.append(c)
+    V.watch("madmapper worker", link._q.is_idle, lambda: link._worker)
+    V.watch("conductor executor", lambda: c._done_gen == c._gen,
+            lambda: c._thread)
+    return c, rig, log, lines, link, bey, V
+
+
+def _rt_close(c, link, V):
+    V.shutdown()
+    c.close()
+    link.close()
+
+
+def _rt_vals(log, kind, since=None, value=None):
+    return [e for e in log if e[0] == kind
+            and (since is None or e[3] >= since)
+            and (value is None or e[2] == value)]
+
+
+def _rt_calls(rig, name, since=None):
+    return [cl for cl in rig.calls if cl[0] == name
+            and (since is None or cl[2] >= since)]
 
 
 def _on_time_sleep(seconds):
@@ -28495,33 +28847,6 @@ def _on_time_sleep(seconds):
     while time.perf_counter() < end:
         time.sleep(0)
 
-
-def _rt_rig(beyond_delay=None, gate=None, announcer=None, mm_factory=None):
-    from ltcplay import madmapper as MM, beyond as B
-    C = _cond_mod()
-    log, lines = [], []
-
-    def journal(text, **f):
-        lines.append((text, f.get("fault", False)))
-    rig = _CondRig(time.perf_counter)
-    link = MM.Link(_mm_cfg(ramp_steps=31),
-                   socket_factory=mm_factory or (lambda: _RTSock("mm", log)),
-                   journal=journal)
-    bey = B.Beyond(B.BeyondConfig.parse({}),
-                   socket_factory=lambda: _RTSock("beyond", log,
-                                                  beyond_delay),
-                   sleep=_on_time_sleep, journal=journal)
-    dev = C.ConductorDevices(link, bey, show=1, journal=journal)
-    c = C.Conductor(dev, rig, gate or (lambda: None),
-                    hold_gate=lambda *a: (None, 1), announcer=announcer,
-                    journal=journal)
-    return c, rig, log, lines, link, bey
-
-
-def _rt_vals(log, kind, since=None, value=None):
-    return [e for e in log if e[0] == kind
-            and (since is None or e[3] >= since)
-            and (value is None or e[2] == value)]
 
 
 def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
@@ -28666,40 +28991,42 @@ def test_beyond_a_blank_cuts_an_unblank_short_from_any_thread():
 
 
 def test_conductor_abort_is_never_held_up_by_a_slow_device():
-    section("conductor: Abort's flame cut and laser blank go out within a "
-            "few ms of the press, whatever BEYOND, the laser gate or an "
-            "announcement is doing (review of PR #29, finding D)")
+    section("conductor: Abort's flame cut and laser blank go out at the "
+            "press, whatever BEYOND, the laser gate or an announcement is "
+            "doing (review of PR #29, finding D)")
     C = _cond_mod()
-    # Every stall below is 300 ms or longer (a BEYOND packet, the laser
-    # gate, an announcement's file read). The Abort lands 150 ms into the
-    # stuck packet in case 1, so a flame cut or a blank that waited behind
-    # it lands about 150 ms after the press (measured 172 ms under the
-    # mutation that makes it wait), and one that did not lands in a few
-    # ms. FEW is half of that 150 ms: the same margin either way. It was
-    # 20 ms, which measured the runner's thread handoffs, not the
-    # conductor.
-    FEW = 0.075
-    # 1) Every BEYOND packet takes 300 ms to leave; Abort lands while the
-    #    show start's unblank is part way out.
-    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    # 1) BEYOND's unblank packet (the show start's 100) is stuck on its way
+    #    out, with the executor behind it. The Abort does not wait for it:
+    #    the flame cut and the first blank packet are logged while the 100
+    #    is still stuck, and no 100 starts after the press.
+    stuck_100 = threading.Event()
+    entered_100 = threading.Event()
+
+    def stall(v):
+        if v == 100.0:
+            entered_100.set()
+            return stuck_100
+        return None
+    c, rig, log, lines, link, bey, V = _rt_rig(beyond_stall=stall)
     try:
         c.show_starting("Andy", "rack screen")
-        time.sleep(0.15)
-        t0 = time.perf_counter()
+        check(entered_100.wait(2.0), "the show start's unblank is on its "
+                                     "way out, and stuck")
+        s0 = V.stamp()
         check(c.abort("Andy", "rack screen").ok, "Abort accepted")
-        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
-              and cl[2] >= t0]
-        check(fz and fz[0][2] - t0 < FEW,
-              f"the flame cut went out within {FEW * 1000:.0f} ms "
-              f"({(fz[0][2] - t0) * 1000 if fz else None} ms)")
+        fz = _rt_calls(rig, "flames_zero", since=s0)
+        zeros = _rt_vals(log, "beyond", since=s0, value=0.0)
+        check(fz and not stuck_100.is_set(),
+              "the flame cut went out at the press, while BEYOND's unblank "
+              "packet was still stuck")
+        check(zeros and not stuck_100.is_set(),
+              f"the first blank packet was handed to the socket at the "
+              f"press, while the unblank packet was still stuck: "
+              f"{[e[2] for e in log if e[0] == 'beyond']}")
+        stuck_100.set()
+        V.run_until_idle()
         check(c.wait_idle(5), "the Abort finished")
-        time.sleep(0.8)
-        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
-        check(zeros and zeros[0][3] - t0 < FEW,
-              f"the first blank packet was handed to the socket within "
-              f"{FEW * 1000:.0f} ms of the press "
-              f"({(zeros[0][3] - t0) * 1000 if zeros else None} ms)")
-        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+        check(not _rt_vals(log, "beyond", since=s0, value=100.0),
               "no unblank packet was started after the press")
         b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
         check(b and b[-1][2] == 0.0,
@@ -28707,120 +29034,151 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         check(c.snapshot()["applied"]["lasers"] == C.BLACK,
               f"recorded dark: {c.snapshot()['applied']}")
     finally:
-        c.close()
-        link.close()
+        stuck_100.set()
+        _rt_close(c, link, V)
 
     # 1b) The same, with a Hold: its blank waits its turn on the executor,
     #     but the restore stops before its next packet all the same (the
     #     conductor's restore guard), so no 100 starts after the press.
-    c, rig, log, lines, link, bey = _rt_rig(beyond_delay=lambda v: 0.3)
+    stuck_100, entered_100 = threading.Event(), threading.Event()
+    c, rig, log, lines, link, bey, V = _rt_rig(beyond_stall=stall)
     try:
         c.show_starting("Andy", "rack screen")
-        time.sleep(0.15)
-        t0 = time.perf_counter()
+        check(entered_100.wait(2.0), "the unblank is stuck on its way out")
+        s0 = V.stamp()
         check(c.hold("Andy", "rack screen").ok, "Hold accepted")
+        stuck_100.set()
+        V.run_until_idle()
         check(c.wait_idle(5), "the Hold finished")
-        time.sleep(0.5)
-        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+        check(not _rt_vals(log, "beyond", since=s0, value=100.0),
               f"no unblank packet was started after the Hold press: "
-              f"{[(e[2], round(e[3] - t0, 3)) for e in log if e[0] == 'beyond']}")
+              f"{[e[2] for e in log if e[0] == 'beyond']}")
         b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
         check(b and b[-1][2] == 0.0,
               f"BEYOND's last word is 0: {[e[2] for e in b]}")
     finally:
-        c.close()
-        link.close()
+        stuck_100.set()
+        _rt_close(c, link, V)
 
-    # 2) A laser gate that takes 500 ms: the Abort's fade does not wait.
+    # 2) A laser gate that has not answered: the Abort's fades do not wait
+    #    for it, and its late yes lights nothing.
+    in_gate, gate_go = threading.Event(), threading.Event()
+
     def slow_gate():
-        time.sleep(0.5)
+        in_gate.set()
+        gate_go.wait(5.0)
         return None
-    c, rig, log, lines, link, bey = _rt_rig(gate=slow_gate)
+    c, rig, log, lines, link, bey, V = _rt_rig(gate=slow_gate)
     try:
         c.show_starting("Andy", "rack screen")
+        check(in_gate.wait(2.0), "the show start asked the gate")
+        gate_go.set()
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
         c.hold("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "hold done")
+        in_gate.clear()
+        gate_go.clear()
         c.resume("Andy", "rack screen")
-        time.sleep(0.2)                  # the executor is in the gate
-        t0 = time.perf_counter()
+        check(V.run_until(in_gate.is_set), "the Resume is in the gate")
+        s0 = V.stamp()
         c.abort("Andy", "rack screen")
-        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
-              and cl[2] >= t0]
+        fz = _rt_calls(rig, "flames_zero", since=s0)
+        zeros = _rt_vals(log, "beyond", since=s0, value=0.0)
+        check(fz and zeros and not gate_go.is_set(),
+              "flame cut and blank at the press, while the gate still had "
+              "not answered")
+        # The executor is asleep in its poll of the gate. The press has to
+        # wake it THEN, with the clock standing still: an executor that
+        # only noticed the Abort when its poll ran out (a real mutation)
+        # starts the fades a step of the clock later, and here the clock
+        # does not move until the fades are on record.
+        V.settle()
+        px = _rt_calls(rig, "pixels_fade_out", since=s0)
+        check(px and not gate_go.is_set(),
+              f"the Abort's fades started at the press, without waiting out "
+              f"the executor's poll of the gate (t={V.t:.3f}, "
+              f"{[c_[0] for c_ in rig.calls if c_[2] >= s0]})")
+        V.run_until_idle()
         check(c.wait_idle(5), "the Abort finished")
-        time.sleep(0.2)
-        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
-        px = [cl for cl in rig.calls if cl[0] == "pixels_fade_out"
-              and cl[2] >= t0]
-        check(fz and fz[0][2] - t0 < FEW and zeros
-              and zeros[0][3] - t0 < FEW,
-              f"flame cut and blank within {FEW * 1000:.0f} ms during a "
-              f"slow gate")
-        check(px and px[0][2] - t0 < 0.25,
-              f"and the Abort's fades did not wait for the 500 ms gate "
-              f"({(px[0][2] - t0) * 1000 if px else None} ms)")
-        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
+        check(not gate_go.is_set(),
+              "and the whole Abort finished before the gate ever answered")
+        gate_go.set()                    # the gate's late yes
+        V.run_until_idle()
+        check(not _rt_vals(log, "beyond", since=s0, value=100.0),
               "the gate's late yes lit nothing")
     finally:
-        c.close()
-        link.close()
+        gate_go.set()
+        _rt_close(c, link, V)
 
     # 2b) Review round 3: a laser gate that hangs past GATE_TIMEOUT_S and
     #     only then says yes. No Abort this time: the timeout itself has to
     #     be a no, and the late yes must light nothing.
-    def hung_gate():
-        time.sleep(C.GATE_TIMEOUT_S + 0.5)
-        return None
-    c, rig, log, lines, link, bey = _rt_rig(gate=hung_gate)
+    in_gate, gate_go = threading.Event(), threading.Event()
+    c, rig, log, lines, link, bey, V = _rt_rig(gate=slow_gate)
     try:
         c.show_starting("Andy", "rack screen")
+        check(in_gate.wait(2.0), "the show start asked the gate")
+        gate_go.set()
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
         c.hold("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "hold done")
-        t0 = time.perf_counter()
+        in_gate.clear()
+        gate_go.clear()
+        s0 = V.stamp()
         c.resume("Andy", "rack screen")
-        check(c.wait_idle(C.GATE_TIMEOUT_S + 3), "the Resume finished")
-        time.sleep(0.8)                  # past the gate's late yes
-        check(not _rt_vals(log, "beyond", since=t0, value=100.0),
-              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
-              f"{[e[2] for e in _rt_vals(log, 'beyond', since=t0)]}")
-        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
-              f"and the lasers are recorded dark: "
-              f"{c.snapshot()['applied']['lasers']}")
+        check(V.run_until(in_gate.is_set), "the Resume is in the gate")
+        V.advance(C.GATE_TIMEOUT_S + 0.5)
+        V.run_until_idle()
+        check(c.wait_idle(5), "the Resume finished without the gate")
         check(any("did not answer within" in t for t, _f in lines),
               f"the journal says the gate did not answer: "
               f"{[t for t, _f in lines if 'gate' in t]}")
+        gate_go.set()                    # the late yes
+        V.run_until_idle()
+        check(not _rt_vals(log, "beyond", since=s0, value=100.0),
+              f"a gate hung past {C.GATE_TIMEOUT_S:g} s lights nothing: "
+              f"{[e[2] for e in _rt_vals(log, 'beyond', since=s0)]}")
+        check(c.snapshot()["applied"]["lasers"] == C.BLACK,
+              f"and the lasers are recorded dark: "
+              f"{c.snapshot()['applied']['lasers']}")
     finally:
-        c.close()
-        link.close()
+        gate_go.set()
+        _rt_close(c, link, V)
 
-    # 3) An announcement still reading its file (400 ms).
-    c, rig, log, lines, link, bey = _rt_rig(
-        announcer=lambda *a: time.sleep(0.4))
+    # 3) An announcement still reading its file. The read is on its own
+    #    thread (finding D); the Abort's fades never wait behind it.
+    in_file, file_go = threading.Event(), threading.Event()
+
+    def slow_announcer(*a):
+        in_file.set()
+        file_go.wait(5.0)
+    c, rig, log, lines, link, bey, V = _rt_rig(announcer=slow_announcer)
     try:
         c.show_starting("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
         c.announce("welcome", "Andy", "rack screen")
-        time.sleep(C.ANNOUNCE_FADE_S + C.ANNOUNCE_DARK_S + 0.2)
-        t0 = time.perf_counter()
+        check(V.run_until(in_file.is_set), "the announcement is reading its "
+                                           "file")
+        s0 = V.stamp()
         c.abort("Andy", "rack screen")
-        fz = [cl for cl in rig.calls if cl[0] == "flames_zero"
-              and cl[2] >= t0]
+        fz = _rt_calls(rig, "flames_zero", since=s0)
+        zeros = _rt_vals(log, "beyond", since=s0, value=0.0)
+        check(fz and zeros and not file_go.is_set(),
+              "flame cut and blank at the press, during the announcement's "
+              "file read")
+        V.run_until_idle()
         check(c.wait_idle(5), "the Abort finished")
-        time.sleep(0.2)
-        zeros = _rt_vals(log, "beyond", since=t0, value=0.0)
-        mh = [cl for cl in rig.calls if cl[0] == "music_halt"
-              and cl[2] >= t0]
-        check(fz and fz[0][2] - t0 < FEW and zeros
-              and zeros[0][3] - t0 < FEW,
-              f"flame cut and blank within {FEW * 1000:.0f} ms during an "
-              f"announcement's file read")
-        check(mh and mh[0][2] - t0 < 0.2,
-              f"and the Abort's fades did not wait for the 400 ms file read "
-              f"({(mh[0][2] - t0) * 1000 if mh else None} ms)")
+        mh = _rt_calls(rig, "music_halt", since=s0)
+        check(mh and not file_go.is_set(),
+              "and the Abort's fades did not wait for the file read")
     finally:
-        c.close()
-        link.close()
+        file_go.set()
+        _rt_close(c, link, V)
     print("  ok")
 
 
@@ -28832,13 +29190,14 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
 
     def no_net():
         raise OSError("network is down")
-    c, rig, log, lines, link, bey = _rt_rig(mm_factory=no_net)
+    c, rig, log, lines, link, bey, V = _rt_rig(mm_factory=no_net)
     try:
         c.show_starting("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
         c.hold("Andy", "rack screen")
+        V.run_until_idle()               # the Link's worker has run it
         check(c.wait_idle(5), "hold done")
-        time.sleep(0.4)                  # the Link's worker has run it
         snap = c.snapshot()
         check(snap["applied"]["video"] == C.UNKNOWN,
               f"a video fade that never got out is UNKNOWN, never black: "
@@ -28851,36 +29210,40 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
         n = sum(1 for t, f in lines if f and "Video fade to black over 1 s"
                 in t)
         c.abort("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "the Abort finished")
-        time.sleep(0.3)
         check(sum(1 for t, f in lines if f and "Video fade to black over 1 s"
                   in t) > n,
               "a later Abort sends the video fade again (and says it "
               "failed again)")
     finally:
-        c.close()
-        link.close()
+        _rt_close(c, link, V)
 
-    # A stalled sender: the Link's worker is stuck behind another job.
+    # A stalled sender: the Link's worker is stuck behind another job. The
+    # stall timer (VIDEO_STALL_S past the fade) says so, on the clock.
     saved = C.VIDEO_STALL_S
     C.VIDEO_STALL_S = 0.4
-    c, rig, log, lines, link, bey = _rt_rig()
+    c, rig, log, lines, link, bey, V = _rt_rig()
     stuck = threading.Event()
     try:
         c.show_starting("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
-        time.sleep(0.1)
-        link._submit(lambda: stuck.wait(3.0), wait=False)
-        t0 = time.perf_counter()
+
+        def held():
+            with V.block():
+                stuck.wait(5.0)
+        link._submit(held, wait=False)
         c.hold("Andy", "rack screen")
+        V.advance(C.HOLD_FADE_S + 0.1)   # the clock froze; the fade did not go
         check(c.wait_idle(5), "hold done")
         early = c.snapshot()["applied"]["video"]
-        check(time.perf_counter() - t0 > C.HOLD_FADE_S + 0.4 or
-              early == C.UNKNOWN,
+        check(early == C.UNKNOWN,
               f"a fade MadMapper has not sent yet is not recorded black: "
               f"{early}")
-        time.sleep(max(0.0, t0 + C.HOLD_FADE_S + 0.4 + 0.3
-                       - time.perf_counter()))
+        check(not any(f and "has not sent it yet" in t for t, f in lines),
+              "no stall is reported before the stall timer is due")
+        V.advance(0.4 + 0.3)             # past the stall timer
         snap = c.snapshot()
         check(snap["applied"]["video"] == C.UNKNOWN and any(
             f and "has not sent it yet" in t for t, f in lines),
@@ -28889,8 +29252,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     finally:
         stuck.set()
         C.VIDEO_STALL_S = saved
-        c.close()
-        link.close()
+        _rt_close(c, link, V)
 
     # Only the latest video command's success counts: a Hold's fade that
     # goes out after a Resume asked for the video back up does not make
@@ -28921,21 +29283,21 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     link.close()
 
     # And when it all goes out, the record says so (and only then).
-    c, rig, log, lines, link, bey = _rt_rig()
+    c, rig, log, lines, link, bey, V = _rt_rig()
     try:
         c.show_starting("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "show start done")
         c.hold("Andy", "rack screen")
+        V.run_until_idle()
         check(c.wait_idle(5), "hold done")
-        time.sleep(0.2)
         check(c.snapshot()["applied"]["video"] == C.BLACK,
               f"a fade the Link sent is recorded black: "
               f"{c.snapshot()['applied']}")
         check(not any(f for _t, f in lines),
               f"and nothing is a fault: {[t for t, f in lines if f]}")
     finally:
-        c.close()
-        link.close()
+        _rt_close(c, link, V)
     print("  ok")
 
 
@@ -29014,29 +29376,32 @@ def test_conductor_video_never_rises_after_abort_or_hold():
     C = _cond_mod()
     for press in ("abort", "hold"):
         for delay in (0.03, 0.12, 0.2):
-            c, rig, log, lines, link, bey = _rt_rig()
+            c, rig, log, lines, link, bey, V = _rt_rig()
             rig.move_s = 0.3
             try:
                 c.show_starting("Andy", "rack screen")
+                V.run_until_idle()
                 check(c.wait_idle(5), "show start done")
                 c.hold("Andy", "rack screen")
+                V.run_until_idle()
                 check(c.wait_idle(5), "hold done")
-                time.sleep(0.4)
+                V.advance(0.4)
                 c.resume("Andy", "rack screen")
-                time.sleep(delay)
-                t0 = time.perf_counter()
+                V.advance(delay)         # this far into the fade-up
+                s0 = V.stamp()
                 getattr(c, press)("Andy", "rack screen")
+                V.run_until_idle()
                 check(c.wait_idle(5), f"{press} done")
-                time.sleep(1.3)
                 q1 = [e for e in log if e[0] == "mm"
                       and e[1] == "/surfaces/Quad-1/opacity"]
-                before = [e[2] for e in q1 if e[3] < t0]
-                after = [e[2] for e in q1 if e[3] >= t0]
+                before = [e[2] for e in q1 if e[3] < s0]
+                after = [e[2] for e in q1 if e[3] >= s0]
                 at = before[-1] if before else None
                 # One ramp step may already have been on its way out at
                 # the press (the perceptual fade-up's biggest is 2/30).
                 step = 2.0 / 30
-                ok = (at is not None and after and after[-1] == 0.0
+                ok = (at is not None and 0.0 < at < 1.0 and after
+                      and after[-1] == 0.0
                       and after[0] <= at + step + 1e-6
                       and all(b <= a + 1e-6 for a, b in
                               zip(after, after[1:])))
@@ -29045,8 +29410,7 @@ def test_conductor_video_never_rises_after_abort_or_hold():
                           f"{[round(v, 3) for v in after[:6]]} ... "
                           f"{after[-1:] if after else None}")
             finally:
-                c.close()
-                link.close()
+                _rt_close(c, link, V)
     print("  ok")
 
 
@@ -29055,48 +29419,42 @@ def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
             "part way leaves the video recorded unknown, not lit, and the "
             "next Resume brings it back up (review round 3)")
     C = _cond_mod()
-    # The Hold has to land inside a 0.25 s fade-up. On a loaded machine it
-    # may land after the fade has finished; that run proves nothing, so the
-    # setup is tried again (up to 3 times) rather than passed or failed.
-    for attempt in range(3):
-        c, rig, log, lines, link, bey = _rt_rig()
-        rig.move_s = 0.3
-        try:
-            c.show_starting("Andy", "rack screen")
-            check(c.wait_idle(5), "show start done")
-            c.hold("Andy", "rack screen")
-            check(c.wait_idle(5), "hold done")
-            time.sleep(0.5)
-            c.resume("Andy", "rack screen")        # a production fade-up
-            time.sleep(0.06)
-            c.set_mode(C.REHEARSAL)
-            check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
-            check(c.wait_idle(5), "hold done")
-            time.sleep(1.5)   # the stopped fade's own report has arrived
-            q1 = [e for e in log if e[0] == "mm"
-                  and e[1] == "/surfaces/Quad-1/opacity"]
-            last = q1[-1][2] if q1 else None
-            if last is not None and not 0.0 < last < 1.0 and attempt < 2:
-                continue                 # the Hold missed the fade
-            rec = c.snapshot()["applied"]["video"]
-            # video_cancel() has to make the stopped fade's success stale:
-            # if it does not, that report lands after the Hold and records
-            # the video lit at whatever level the fade had reached.
-            check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
-                  f"the fade stopped part way ({last}) and the video is "
-                  f"not recorded lit: {rec}")
-            t1 = time.perf_counter()
-            c.resume("Andy", "rack screen")
-            check(c.wait_idle(5), "rehearsal Resume done")
-            time.sleep(1.0)
-            up = [e[2] for e in log if e[0] == "mm"
-                  and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= t1]
-            check(up and up[-1] == 1.0,
-                  f"the next Resume brings the video back to full: {up}")
-            break
-        finally:
-            c.close()
-            link.close()
+    c, rig, log, lines, link, bey, V = _rt_rig()
+    rig.move_s = 0.3
+    try:
+        c.show_starting("Andy", "rack screen")
+        V.run_until_idle()
+        check(c.wait_idle(5), "show start done")
+        c.hold("Andy", "rack screen")
+        V.run_until_idle()
+        check(c.wait_idle(5), "hold done")
+        V.advance(0.5)
+        c.resume("Andy", "rack screen")        # a production fade-up
+        V.advance(0.06)                         # part way up
+        c.set_mode(C.REHEARSAL)
+        check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
+        V.run_until_idle()
+        check(c.wait_idle(5), "hold done")
+        q1 = [e for e in log if e[0] == "mm"
+              and e[1] == "/surfaces/Quad-1/opacity"]
+        last = q1[-1][2] if q1 else None
+        rec = c.snapshot()["applied"]["video"]
+        # video_cancel() has to make the stopped fade's success stale: if
+        # it does not, that report lands after the Hold and records the
+        # video lit at whatever level the fade had reached.
+        check(last is not None and 0.0 < last < 1.0 and rec != C.LIT,
+              f"the fade stopped part way ({last}) and the video is not "
+              f"recorded lit: {rec}")
+        s1 = V.stamp()
+        c.resume("Andy", "rack screen")
+        V.run_until_idle()
+        check(c.wait_idle(5), "rehearsal Resume done")
+        up = [e[2] for e in log if e[0] == "mm"
+              and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= s1]
+        check(up and up[-1] == 1.0,
+              f"the next Resume brings the video back to full: {up}")
+    finally:
+        _rt_close(c, link, V)
     print("  ok")
 
 
@@ -30153,6 +30511,14 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
     section("flame link end to end: the real flamesafe in its own process, "
             "the real FlameLink, a deck sending real arm frames, over "
             "loopback UDP")
+    # Two real processes and a real socket: the one test here that cannot
+    # run on a fake clock. It waits for EVENTS (status frames saying so),
+    # never for a fixed time where a frame can say it; the few fixed waits
+    # left are the contract's own windows (the re-arm dwell, an Abort's
+    # repeats, a rejection episode's 5 s of quiet), and the longest of
+    # those, the episode close, runs underneath the steps after it rather
+    # than at the end on its own. 17 s before, about 9 s now, the same
+    # checks.
     import json
     import socket as _so
     import subprocess
@@ -30179,6 +30545,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
     listen, arm = free_port(), free_port()
     work = tempfile.mkdtemp()
     cfg_path = os.path.join(work, "flamesafe.json")
+    DWELL_MS = 1000
     json.dump({
         "flamesafe_config": 1, "confirmed": False, "note": "selftest",
         "universe": 1,
@@ -30188,7 +30555,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
                  "status_port": status_rx.getsockname()[1],
                  "arm_port": arm, "key": key},
         "gflame_range": "30-50%", "arm_value": 78,
-        "accept_unsourced_risk": False, "min_arm_dwell_ms": 1000,
+        "accept_unsourced_risk": False, "min_arm_dwell_ms": DWELL_MS,
         "arm_stale_ms": 500, "frame_stale_ms": 500, "fire_hold_ms": 100,
         "tick_hz": 40, "overrun_ms": 250, "log_dir": None,
         "groups": [{"name": "front row", "safety": 401, "fire": [411, 412]},
@@ -30259,12 +30626,29 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
             time.sleep(0.01)
         return None
 
+    def frames(n, timeout=None):
+        """Wait for n more status frames (flamesafe ticks at 40 Hz), and
+        return them: a window measured in flamesafe's own ticks, not in
+        this machine's sleep."""
+        start = len(statuses)
+        end = time.perf_counter() + (timeout or n / 40.0 * 3 + 1.0)
+        while len(statuses) < start + n and time.perf_counter() < end:
+            time.sleep(0.01)
+        return [x for _t, x in statuses[start:]]
+
     def armed(s, i):
         return s["groups"][i]["armed"] == "armed" and \
             s["groups"][i]["sent_safety"] == 78
 
     def journal(fragment):
         return [l for l in out_lines if fragment in l]
+
+    def genuine_cycle(wanted_low, wanted_high):
+        """A real arm cycle on the deck: low long enough to count, then
+        high."""
+        deck["wanted"] = wanted_low
+        frames(16)                      # 0.4 s of frames reading low
+        deck["wanted"] = wanted_high
 
     threads = [threading.Thread(target=f, daemon=True)
                for f in (read_out, read_status, run_deck)]
@@ -30281,19 +30665,17 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         link.start()
         s = wait_for(lambda s: s["frames"]["state"] == "fresh", 3.0)
         check(s is not None, "flamesafe accepts the real sender's frames")
-        t0 = time.perf_counter()
-        time.sleep(1.0)
-        window = [x for t_, x in statuses if t_ > t0]
-        check(window and all(x["frames"]["state"] == "fresh"
-                             and x["frames"]["rejected"] == 0
-                             for x in window),
-              "a second of zeros keeps the link fresh, nothing rejected")
+        window = frames(20)
+        check(len(window) >= 20 and all(x["frames"]["state"] == "fresh"
+                                        and x["frames"]["rejected"] == 0
+                                        for x in window),
+              "half a second of zeros keeps the link fresh, nothing rejected")
         check(link.lock_alarm == "" and link.first_seq is not None
               and link.first_seq <= latest()["frames"]["seq"] <= link.seq,
               "the last accepted seq is ours: no lock alarm")
 
         # The operator arms two groups with a genuine cycle.
-        time.sleep(0.3)
+        frames(12)
         deck["wanted"] = [True, True, False]
         s = wait_for(lambda s: armed(s, 0) and armed(s, 1), 3.0)
         check(s is not None, f"a genuine deck cycle arms two groups: "
@@ -30303,7 +30685,7 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         fire = [0] * 512
         fire[410] = 200
         cue["v"] = fire
-        time.sleep(0.2)
+        frames(8)
         check(latest()["groups"][0]["commanded_fire"][0] == 0,
               "zeroed (no release yet): flamesafe is commanded nothing")
         link.release()
@@ -30328,35 +30710,73 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
               and s["groups"][0]["amber"] == "flashing",
               f"and flamesafe says which Abort, and why, on the lamp: "
               f"{s and (s['disarm_all'], s['groups'][0]['reason'])}")
-        time.sleep(0.1)
+        frames(4)
         check(link._pending_abort is None
               and "disarm_unconfirmed" not in j.outcomes(),
               "the sender saw flamesafe confirm it")
 
         # The deck never stopped asking. Nothing comes back by itself, even
-        # with the cues released again (a new show) and well past the dwell.
+        # with the cues released again (a new show) and past the re-arm
+        # dwell (min_arm_dwell_ms, plus a margin).
         cue["v"] = None
         link.release()
-        t0 = time.perf_counter()
-        time.sleep(2.0)
-        window = [x for t_, x in statuses if t_ > t0]
+        window = frames(int((DWELL_MS / 1000.0 + 0.3) * 40))
         check(window and not any(g["sent_safety"] for x in window
                                  for g in x["groups"]),
-              "2 s of the deck still asking: no group re-arms")
+              f"{len(window)} frames of the deck still asking, past the "
+              f"{DWELL_MS} ms dwell: no group re-arms")
         check(len(journal("disarm-all: the show program's Abort")) == 1,
               f"flamesafe journaled the Abort once, though it got "
               f"{fl.DISARM_COPIES} copies: "
               f"{journal('disarm-all')}")
 
         # A fresh genuine cycle re-arms that group only.
-        deck["wanted"] = [False, True, False]
-        time.sleep(0.4)
-        deck["wanted"] = [True, True, False]
+        genuine_cycle([False, True, False], [True, True, False])
         s = wait_for(lambda s: armed(s, 0), 3.0)
         check(s is not None and not armed(s, 1)
               and s["groups"][1]["reason"] == FLAME_ABORT_WORDS,
               f"a fresh genuine cycle re-arms that group, and only that "
               f"one: {latest()['groups'][:2]}")
+
+        # A foreign sender with the right key: refused, journaled once.
+        # (Done here, with group 0 armed and an Abort on record, so the 5 s
+        # of quiet that closes each rejection episode runs underneath the
+        # steps below instead of as a wait of its own at the end.)
+        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+        for i in range(20):
+            rogue.sendto(fl.encode_disarm_all(10 ** 7 + i, 1e9, 99, "rogue",
+                                              key), ("127.0.0.1", listen))
+            time.sleep(0.005)
+        frames(8)
+        s = latest()
+        check(armed(s, 0) and "another sender" in s["frames"]["last_reject"],
+              f"a disarm_all from another socket is refused: "
+              f"{s['frames']['last_reject']!r} {s['groups'][0]['armed']}")
+        # The wrong key and the wrong version, from the locked socket itself.
+        for i in range(10):
+            link._sock.sendto(fl.encode_disarm_all(
+                link.seq + 1, 1e9, 98, "x", "wrong-" + key),
+                (cfg.ip, cfg.port))
+            d = json.loads(fl.encode_disarm_all(link.seq + 1, 1e9, 97, "x",
+                                                key))
+            d["v"] = 3
+            link._sock.sendto(json.dumps(d).encode(), (cfg.ip, cfg.port))
+            time.sleep(0.005)
+        frames(8)
+        check(armed(latest(), 0), "a wrong-key or wrong-version disarm_all "
+                                  "from the locked sender disarms nothing")
+        frames(12)
+        t_last_reject = time.perf_counter()
+        check(len(journal(": disarm_all: another sender.")) == 1,
+              f"the foreign disarm_alls: one journal line: "
+              f"{journal('another sender')}")
+        check(len(journal(": wrong key.")) == 1
+              and len(journal(": wrong contract version")) == 1,
+              f"wrong key, wrong version: one line each: "
+              f"{journal('datagram rejected')}")
+        check(latest()["disarm_all"]["last_id"] == link.abort_id,
+              "no refused disarm_all was counted as an Abort")
+        rogue.close()
 
         # Fix round 1, item 1 (the review's p6): every one of an Abort's
         # immediate copies lost. The repeats on the following frames carry
@@ -30394,12 +30814,12 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         # Fix round 1, item 2 (the review's p2 s2): an arm-hold begun before
         # a screen Abort completes after it. The deck kept reporting group
         # 2 low all through the hold; that low must not count.
-        time.sleep(2.0)            # past that Abort's repeats and window
+        frames(int((cfg.abort_repeat_s + 0.3) * 40))     # past the repeats
         t_ab = time.perf_counter()
         link.disarm_all("Abort during an arm-hold")
-        time.sleep(0.3)
+        frames(12)
         deck["wanted"] = [True, True, True]     # the hold completes
-        time.sleep(2.0)
+        window = frames(int((DWELL_MS / 1000.0 + 0.5) * 40))
         window = [x for t_, x in statuses if t_ > t_ab]
         check(window and not any(x["groups"][2]["sent_safety"]
                                  for x in window)
@@ -30407,49 +30827,10 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
               f"a hold begun before the Abort and finished after it arms "
               f"nothing: {latest()['groups'][2]}")
         # A fresh cycle afterwards still works (group 0, for what follows).
-        deck["wanted"] = [False, True, False]
-        time.sleep(0.4)
-        deck["wanted"] = [True, True, False]
+        genuine_cycle([False, True, False], [True, True, False])
         s = wait_for(lambda s: armed(s, 0), 3.0)
         check(s is not None, f"and a fresh cycle afterwards re-arms as "
                              f"before: {latest()['groups'][0]}")
-
-        # A foreign sender with the right key: refused, journaled once.
-        rogue = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
-        for i in range(20):
-            rogue.sendto(fl.encode_disarm_all(10 ** 7 + i, 1e9, 99, "rogue",
-                                              key), ("127.0.0.1", listen))
-            time.sleep(0.005)
-        time.sleep(0.2)
-        s = latest()
-        check(armed(s, 0) and "another sender" in s["frames"]["last_reject"],
-              f"a disarm_all from another socket is refused: "
-              f"{s['frames']['last_reject']!r} {s['groups'][0]['armed']}")
-        # The wrong key and the wrong version, from the locked socket itself.
-        for i in range(10):
-            link._sock.sendto(fl.encode_disarm_all(
-                link.seq + 1, 1e9, 98, "x", "wrong-" + key),
-                (cfg.ip, cfg.port))
-            d = json.loads(fl.encode_disarm_all(link.seq + 1, 1e9, 97, "x",
-                                                key))
-            d["v"] = 3
-            link._sock.sendto(json.dumps(d).encode(), (cfg.ip, cfg.port))
-            time.sleep(0.005)
-        time.sleep(0.2)
-        check(armed(latest(), 0), "a wrong-key or wrong-version disarm_all "
-                                  "from the locked sender disarms nothing")
-        time.sleep(0.3)
-        t_last_reject = time.perf_counter()
-        check(len(journal(": disarm_all: another sender.")) == 1,
-              f"the foreign disarm_alls: one journal line: "
-              f"{journal('another sender')}")
-        check(len(journal(": wrong key.")) == 1
-              and len(journal(": wrong contract version")) == 1,
-              f"wrong key, wrong version: one line each: "
-              f"{journal('datagram rejected')}")
-        check(latest()["disarm_all"]["last_id"] == link.abort_id,
-              "no refused disarm_all was counted as an Abort")
-        rogue.close()
 
         # The sender stops: flamesafe fails safe inside frame_stale_ms.
         t_stop = time.perf_counter()
@@ -30490,7 +30871,8 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         check(link.disarm_all("Abort") is False,
               "a disarm_all on a stopped link answers False")
         # The rejection episodes close after 5 s of quiet (the arm link's
-        # own throttle), each with one line and its count.
+        # own throttle), each with one line and its count. Most of that
+        # 5 s has passed underneath the steps above.
         time.sleep(max(0.0, 5.6 - (time.perf_counter() - t_last_reject)))
         check(len(journal("(disarm_all: another sender) stopped after 20 "
                           "rejected")) == 1

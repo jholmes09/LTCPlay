@@ -162,6 +162,9 @@ class Player:
         self.thread_restarts = 0
         self.render_errors = 0
         self._render_bad_since = None
+        # Set by stop(): the supervisor's half-second nap ends at once, so a
+        # Stop never waits for it.
+        self._stopping = threading.Event()
 
         # (mtime, size) each render had when it was opened, and the readers
         # a reload has replaced but not yet closed.
@@ -1065,7 +1068,7 @@ class Player:
         cost of being wrong about that is a show that stops, and the cost of
         carrying it is a thread that wakes twice a second."""
         while self._running:
-            time.sleep(0.5)
+            self._stopping.wait(0.5)
             t = self._thread
             if self._running and (t is None or not t.is_alive()):
                 self.thread_restarts += 1
@@ -1148,6 +1151,7 @@ class Player:
         self.step_ms = step_ms
         self._idle_epoch = _now()
         self._running = True
+        self._stopping.clear()
         self._spawn()
         self._super = threading.Thread(target=self._supervise, daemon=True,
                                        name="ltcplay-supervisor")
@@ -1156,6 +1160,7 @@ class Player:
 
     def stop(self):
         self._running = False
+        self._stopping.set()
         if self._thread:
             self._thread.join(timeout=2.0)
         if self._super:
