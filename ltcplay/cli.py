@@ -1288,6 +1288,10 @@ def _cmd_serve(args):
             fire_ice_mod.check_flame_groups(
                 os.path.abspath(args.folder or settings_mod.folder()),
                 fire_ice)
+            for _line in fire_ice_mod.check_beyond_timecode_routes(
+                    os.path.abspath(args.folder or settings_mod.folder()),
+                    fire_ice):
+                print(f"Lasers: {_line}")
         except ValueError as e:
             return _err(str(e))
     announce = None
@@ -1298,7 +1302,11 @@ def _cmd_serve(args):
         from . import announce as announce_mod
         announce = os.path.abspath(os.path.expanduser(
             args.announce or announce_mod.default_config_path()))
-    flamesafe_config = getattr(args, "flamesafe_config", None)
+    flamesafe_config, why = _one_flamesafe_config(args, fire_ice)
+    if why:
+        _say_refused(why)
+        return _err(why)
+    _say_refused(None)
     if getattr(args, "network", False):
         # The show network: one address, saved on the page (Show network),
         # on the fixed port. Never every interface.
@@ -1397,6 +1405,91 @@ def _cmd_serve(args):
     return 0
 
 
+# Set by the Windows app's supervisor from showpc.json: the ONE flamesafe
+# config flamesafe and the Stream Deck were started with (review of PR #38,
+# P1-4; packaging/windows/ltcwin.py FLAMESAFE_ENV).
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"
+
+
+def _one_flamesafe_config(args, fire_ice):
+    """(path or None, refusal or None). Up to four places can name
+    flamesafe's config: the Windows app (FLAMESAFE_ENV, from showpc.json),
+    --flamesafe-config, ltcplay_fire_ice.json and ltcplay_remote.json. They
+    must all name the same file, or the flame link, the flame lamps and the
+    flamesafe that is really running could be three different ones (review
+    of PR #43, P1-4): a mismatch is refused in one sentence."""
+    named = []
+    env = os.environ.get(FLAMESAFE_ENV)
+    if env:
+        named.append(("the Windows app's showpc.json", env))
+    if getattr(args, "flamesafe_config", None):
+        named.append(("--flamesafe-config", args.flamesafe_config))
+    if fire_ice is not None and fire_ice.flamesafe_config:
+        named.append((fire_ice.path or "ltcplay_fire_ice.json",
+                      fire_ice.flamesafe_config))
+    try:
+        from . import remote as remote_mod
+        rs = remote_mod.load_settings()
+        if rs.get("flamesafe_config"):
+            named.append((rs["path"], rs["flamesafe_config"]))
+    except (ValueError, OSError):
+        pass                 # read again, and refused, where it is used
+
+    def same(p):
+        return os.path.normcase(os.path.realpath(os.path.expanduser(p)))
+    if len({same(p) for _w, p in named}) > 1:
+        lines = "; ".join(f"{w} names {p}" for w, p in named)
+        return None, (f"The settings name different flamesafe configs: "
+                      f"{lines}. The flame link, the flame lamps and the "
+                      f"flamesafe that is running must all use the same one, "
+                      f"so nothing was started. Make every one of them name "
+                      f"the same file (on the show PC, the one in "
+                      f"showpc.json).")
+    return (named[0][1] if named else None), None
+
+
+REFUSED_FILE = "ltcplay_engine_refused.txt"
+
+
+def _say_refused(why):
+    """The engine's refusal to start, where the Windows supervisor (and so
+    the rack screen) can find it, not only in the engine's own log (re-review
+    of #46, P2-g): REFUSED_FILE in this machine's settings folder, first
+    line the time, then the sentence. None removes it (a start that got
+    past the check). Never raises."""
+    try:
+        from . import remote as remote_mod
+        path = os.path.join(remote_mod.settings_folder(), REFUSED_FILE)
+        if why is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{why}\n")
+    except Exception:
+        pass
+
+
+def _lasers_dark_first(httpd):
+    """Fire & Ice: BEYOND's timecode into the black zone, a few black frames
+    over about 100 ms, right after the show's own stop on the way out
+    (review of PR #43, P1-1). Ctrl-C, a closed console window and the Windows app's stop
+    (Ctrl-Break, and a shutdown's WM_QUERYENDSESSION) all come through
+    here. The gate sends them again when it closes."""
+    gate = getattr(getattr(getattr(getattr(httpd, "fire_ice", None),
+                                   "devices", None), "beyond", None),
+                   "gate", None)
+    if gate is None:
+        return
+    try:
+        sent = gate.black_burst()
+        print(f"Lasers: BEYOND's timecode sent to the black zone "
+              f"({sent} black frame(s)).")
+    except Exception as e:
+        print(f"Lasers: the black zone could NOT be sent on the way out "
+              f"({e}). Check the lasers are dark.")
+
+
 def _shutdown(httpd):
     """The way out, in the order that keeps the rig safe: the show's own
     stop (the blackout) first, then the announcements, then the scheduler
@@ -1410,6 +1503,10 @@ def _shutdown(httpd):
         except Exception as e:
             print(f"The scheduler did not halt cleanly: {e}")
     httpd.control.stop()
+    # Straight after the show's own stop, before anything that may wait on
+    # a disk: a failed black frame is journaled, and the blackout comes
+    # first (above).
+    _lasers_dark_first(httpd)
     announce = getattr(httpd, "announce", None)
     if announce is not None:
         try:
