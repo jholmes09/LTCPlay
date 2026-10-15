@@ -59,7 +59,10 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             v="${GITHUB_REF_NAME#gpl-}"
           elif [[ "$GITHUB_REF" == refs/heads/bench-build ]]; then
-            v="BENCH-ONLY-not-for-shows-$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
+            # The same string as the pre-release tag below, so the rack
+            # screen, the installer's name and the Releases page all say
+            # the one thing (2026-10-15).
+            v="bench-$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           else
             v="${INPUT_VERSION:-}"
             [[ -z "$v" ]] && v="dev-${GITHUB_SHA::7}"
@@ -126,15 +129,32 @@ jobs:
           $mb = [math]::Round($f.Length / 1MB, 1)
           Write-Output "::notice title=Installer size::$($f.Name) is $mb MB"
 
-      - name: Smoke test (refuse during a show, install, run, update, stop, uninstall)
-        run: python -u packaging/windows/ci_smoke.py "dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe"
+      # The checksum is published beside the installer, so a download can be
+      # checked before it is run on the show PC: in PowerShell,
+      #   Get-FileHash "LTC Player Setup <version>.exe" -Algorithm SHA256
+      # must print the hex in the .sha256 file. The smoke test checks the
+      # file against the installer it is about to run.
+      - name: Write the installer's SHA-256
+        shell: bash
+        run: |
+          set -eu
+          cd dist
+          f="LTC Player Setup ${{ steps.ver.outputs.version }}.exe"
+          sha256sum "$f" > "$f.sha256"
+          cat "$f.sha256"
+          echo "::notice title=Installer SHA-256::$(cat "$f.sha256")"
+
+      - name: Smoke test (refuse during a show, install, run, update, crash restart, stop, uninstall)
+        run: python -u packaging/windows/ci_smoke.py "dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe" "${{ steps.ver.outputs.version }}"
 
       - name: Keep the installer on this run's page
         if: ${{ always() }}
         uses: actions/upload-artifact@v5
         with:
           name: LTC Player Setup ${{ steps.ver.outputs.version }}
-          path: dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe
+          path: |
+            dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe
+            dist/LTC Player Setup ${{ steps.ver.outputs.version }}.exe.sha256
           if-no-files-found: ignore
           retention-days: 14
 
@@ -147,12 +167,22 @@ jobs:
         run: |
           set -eu
           # Created with the workflow's own token, so the new tag starts no
-          # other workflow (no selftest or mutate run for it).
-          tag="bench-$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
-          gh release create "$tag" "$FILE" --prerelease --target "$GITHUB_SHA" \
-            --title "LTC Player BENCH ONLY, not for shows ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})" \
-            --notes "BENCH ONLY, NOT FOR SHOWS. A PC-only stress test build for the Windows show PC, with NO lasers, flames or lights connected. Built from the throwaway branch bench-build: the Windows app (#38) on top of the full show assembly (#43: #29, #30, #31, #34, #32, #39, #40), none of it merged to main or reviewed together. Start menu, LTC Player bench soak test runs the whole Fire & Ice stack (scheduler, conductor, show audio on the Scarlett, Art-Net timecode, pixels, BEYOND, MadMapper, flame link to flamesafe) with every output to this PC only. With MadMapper and BEYOND installed it runs in blocks of 1 h 50 min (8 hours is 4 blocks), waits at each block start until both answer, and says what to click; between blocks quit and start both again. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway."
-          echo "::notice title=BENCH pre-release::https://github.com/${GITHUB_REPOSITORY}/releases/tag/$tag"
+          # other workflow (no selftest or mutate run for it). The tag is
+          # the version the build was stamped with (see "Work out the
+          # version"), so the Releases page, the installer's name and the
+          # rack screen all read the same.
+          tag="${{ steps.ver.outputs.version }}"
+          sum="$(cut -d' ' -f1 "$FILE.sha256")"
+          latest="$(git log -1 --format=%s "$GITHUB_SHA" | head -c 300)"
+          p1="Windows show PC installer built from bench-build at ${GITHUB_SHA::7} ($(date -u +%Y-%m-%d)). Pre-release: proven on a clean Windows runner by the installer smoke test (silent install, every program starts, the rack screen answers, flamesafe sends its safe zeros, an update in place keeps the settings and show files, the engine is restarted after a crash, Stop and uninstall are clean), not yet by a show night."
+          p2="What is in it: LTC Player (the supervisor), the show engine (ltc serve with the Fire & Ice scheduler, show conductor and flame link), flamesafe and the Stream Deck program, with every merge made to bench-build up to this commit. Latest change: ${latest}"
+          p3="Install: download LTC Player Setup ${tag}.exe, check its SHA-256 (the .sha256 file beside it; in PowerShell: Get-FileHash 'LTC Player Setup ${tag}.exe' -Algorithm SHA256) and double-click it with no show running. It stops LTC Player the safe way, installs, and starts it again. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. The rack screen shows this version at the bottom of its header. To go back: Start menu, Roll back to the previous version."
+          p4="SHA-256 of the installer: ${sum}"
+          notes="$p1"$'\n\n'"$p2"$'\n\n'"$p3"$'\n\n'"$p4"
+          gh release create "$tag" "$FILE" "$FILE.sha256" --prerelease --target "$GITHUB_SHA" \
+            --title "LTC Player ${tag} (Windows show PC, pre-release)" \
+            --notes "$notes"
+          echo "::notice title=Pre-release::https://github.com/${GITHUB_REPOSITORY}/releases/tag/$tag"
 
       - name: Attach the installer to the GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -165,6 +195,6 @@ jobs:
           set -eu
           if ! gh release view "$TAG" > /dev/null 2>&1; then
             gh release create "$TAG" --title "LTC Player $TAG" --verify-tag \
-              --notes "Windows show PC installer for $TAG. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. See SHOW PC CHECKLIST.txt in the program folder."
+              --notes "Windows show PC installer for $TAG. Check the download against the .sha256 file beside it (PowerShell: Get-FileHash). Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. See SHOW PC CHECKLIST.txt in the program folder."
           fi
-          gh release upload "$TAG" "$FILE" --clobber
+          gh release upload "$TAG" "$FILE" "$FILE.sha256" --clobber
