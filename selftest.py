@@ -1190,12 +1190,16 @@ def test_pixel_output_frame_jitter():
         def close(self):
             pass
 
-    def run_for(seconds, step_ms=25):
+    def run_for(seconds, step_ms=25, judge=None):
         snd = TimingSender()
         p = Player(tl, FakeNetmap(), snd)
         p.start(step_ms=step_ms)
+        if judge is not None:
+            judge.start()
         time.sleep(seconds)
         p.stop()
+        if judge is not None:
+            judge.join(2.0)
         return snd.at
 
     period = 0.025          # 40fps, this project's pixel rate
@@ -1203,7 +1207,30 @@ def test_pixel_output_frame_jitter():
     base_gaps = [b - a for a, b in zip(base, base[1:])]
     fit = len(base) >= 36 and (max(base_gaps, default=1.0) <= 0.075)
 
-    at = run_for(2.0)
+    # The machine is judged over the SAME two seconds as the measurement,
+    # not only in the unloaded second before it: a plain 25 ms sleep loop
+    # on another thread, asking nothing of the player. A stall it shows too
+    # (a container's CPU quota, the OS scheduling the whole process out) is
+    # the machine's, and the strict bound below is not applied to it; a
+    # frame the player lands late while this loop kept time is the
+    # player's, and still fails. Seen here: a 40 ms late frame three times
+    # in 50 runs on a cloud box with nothing else running.
+    ref_wakes = []
+    ref_stop = threading.Event()
+
+    def reference():
+        due = _now()
+        while not ref_stop.is_set():
+            due += period
+            left = due - _now()
+            if left > 0:
+                time.sleep(left)
+            ref_wakes.append(_now() - due)
+    judge = threading.Thread(target=reference, daemon=True)
+    at = run_for(2.0, judge=judge)
+    ref_stop.set()
+    judge.join(1.0)
+    ref_worst_ms = max(ref_wakes, default=0.0) * 1000.0
     gaps = [b - a for a, b in zip(at, at[1:])]
     check(len(at) > 0, "the output thread sent nothing in 2s")
     mean_ms = (sum(gaps) / len(gaps) * 1000.0) if gaps else 0.0
@@ -1216,15 +1243,24 @@ def test_pixel_output_frame_jitter():
           f"(target {period*1000:.0f}ms), worst deviation {worst_ms:.2f}ms, "
           f"90th pct deviation {p90_ms:.2f}ms; unloaded baseline "
           f"{len(base)} frames/s, longest gap "
-          f"{(max(base_gaps, default=0) * 1000):.1f}ms (fit={fit})")
+          f"{(max(base_gaps, default=0) * 1000):.1f}ms (fit={fit}); a plain "
+          f"sleep loop beside it woke at worst {ref_worst_ms:.2f}ms late")
     if fit:
         check(abs(mean_ms - period * 1000.0) < 3.0,
               f"mean frame interval {mean_ms:.2f}ms strayed more than 3ms "
               f"from the {period*1000:.0f}ms target")
-        check(worst_ms < 15.0,
-              f"one frame interval was {worst_ms:.2f}ms off target; pixel "
-              f"pacing should hold within half a frame ({period*500:.1f}ms) "
-              f"on a machine that can keep time at all")
+        if worst_ms >= 15.0 and ref_worst_ms >= 10.0:
+            print(f"  note: the machine itself stalled during the "
+                  f"measurement (a plain sleep woke {ref_worst_ms:.1f}ms "
+                  f"late), so the worst frame ({worst_ms:.1f}ms off) is not "
+                  f"held against the player; the mean above still is")
+        else:
+            check(worst_ms < 15.0,
+                  f"one frame interval was {worst_ms:.2f}ms off target while "
+                  f"a plain sleep loop beside it kept time (worst "
+                  f"{ref_worst_ms:.2f}ms late); pixel pacing should hold "
+                  f"within half a frame ({period*500:.1f}ms) on a machine "
+                  f"that can keep time at all")
     else:
         print("  note: this machine cannot hold 40 frames a second even "
               "unloaded, so the bounds above are not applied here; "
