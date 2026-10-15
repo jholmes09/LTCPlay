@@ -13,7 +13,7 @@ What it proves, in order:
      says the version the build was stamped with.
   4. LTC Player starts all three; flamesafe puts zeros on the wire at
      priority 200, the engine's page answers, and the rack screen
-     (/remote and its /api/remote/status) answers.
+     (/remote and its /api/remote/status) answers and names the version.
   5. Running Setup again (an update) stops flamesafe the proper way: zeros,
      then the stream-terminated flag. Then everything comes back, and the
      settings (showpc.json) and the show folder's files are untouched.
@@ -462,14 +462,9 @@ def main(installer, version=""):
               f"{body[:200]!r}")
         if version:
             said = str(status.get("version") or "")
-            if version in said:
+            if check(version in said, f"the rack screen's status does not "
+                                      f"name {version}: {said!r}"):
                 NOTES.append(f"the rack screen's status says {said!r}")
-            else:
-                # Becomes an error once the rack screen carries the version
-                # (its own change); until then only noted.
-                print(f"::warning title=rack screen version::the rack "
-                      f"screen's status does not name {version}: {said!r}",
-                      flush=True)
 
         say("5. an update stops flamesafe the proper way, then restarts, "
             "and the settings and show files are untouched")
