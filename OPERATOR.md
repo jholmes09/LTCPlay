@@ -81,6 +81,28 @@ half second does not count; cycle again. If it stays, a second copy of the
 show program is talking to the flame safety program: every group has been
 disarmed, and nothing can arm until it is gone.
 
+**Alerts.** When something needs a person (the Stream Deck unplugged, a show
+that did not start), a banner appears at the top of the rack screen and on
+every remote page, in plain words, and a short note plays on the booth
+speaker if one is set up (ltcplay_remote.json, booth_alert; off until it
+is). It stays until you press Acknowledge on the banner or any key on the
+Stream Deck. Acknowledge only clears the banner: nothing on the rig changes.
+While an alert is open the Stream Deck's Start key reads ACK / ALERT in
+blue; it goes back to START NOW once the alert is cleared. An audio alert,
+or an alert the booth speaker could not play, also pulses the floor pixels
+blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
+
+**Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
+on the flame groups: whatever was armed stays armed, whatever was off stays
+off, and the deck process keeps telling the flame safety program so. A
+"Stream Deck" alert comes up (banner, booth note) with Acknowledge and Disarm
+all; the groups wait for you, there is no timer. A key that was held down at
+the moment of the unplug is forgotten and has to be pressed again. The
+exception is the deck PROGRAM itself dying (a crash, not a cable): the flame
+safety program then hears nothing for half a second and disarms every group,
+and the program restarts in about 2 s with every group OFF. The hardware
+e-stop is still the only emergency control.
+
 ## The screen
 
 ```
