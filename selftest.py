@@ -30918,15 +30918,27 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     # A slow conductor no longer holds the scheduler: the press, a status
     # poll and the next press all return at once, and the requests still
     # reach it in the order they were made.
+    #
+    # The conductor here does not answer until this test lets it (a gate it
+    # blocks on), so "did not wait" is a fact, not a stopwatch reading: a
+    # press that waited would sit on the gate for the conductor's whole 10 s
+    # patience, and the proof that one did not is that it has returned
+    # while the conductor is still inside the gated call (flush_conductor(0)
+    # says the line is still busy). The old form slept 1.5 s in the
+    # conductor and bounded each press at 0.75 s of wall clock, which also
+    # timed the press's own disk work: a confirm or an Abort saves
+    # tonight.json (flushed to disk, os.replace retried with sleeps while a
+    # scanner holds the file), creates the latch file and fsyncs several
+    # journal lines. On a shared Windows runner that alone passed 0.75 s and
+    # "nor does an Abort" failed with the conductor not even slow on abort
+    # (#64's windows-latest run, 2026-10-15). The times are still printed,
+    # for the eye, and nothing is decided by them.
+    import threading as _th
     work = tempfile.mkdtemp()
     now = [_den(S, 18, 0)]
     rec = _RecCond(S)
-    # The conductor sleeps 1.5 s on two calls and every bound below is half
-    # of that: a press that waited for it takes 1.5 s or more, one that did
-    # not takes milliseconds (0.6 s and 0.2 s, the old numbers, left a slow
-    # runner's hiccup able to fail this for no reason).
-    SLOW = 1.5
-    rec.sleep_on = {"show_starting": SLOW, "hold": SLOW}
+    gate = _th.Event()
+    rec.block_on = {"show_starting": gate}
     svc = _svc(S, work, now, conductor=rec)
     svc.start(thread=False)
     now[0] = _den(S, 18, 0, 1)
@@ -30940,15 +30952,27 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     svc._apply(_op(S, S.HOLD_ON))
     svc._apply(_op(S, S.RESUME))
     c_ = time.perf_counter() - t0
-    check(a < SLOW / 2 and b < SLOW / 2 and c_ < SLOW / 2,
-          f"nothing waits for a {SLOW:g} s conductor: confirm {a:.2f} s, a "
-          f"status poll {b:.2f} s, Hold and Resume {c_:.2f} s")
+    still_in = not svc.flush_conductor(0)
+    seen = rec.names()
+    gate.set()
+    check(still_in and "hold" not in seen,
+          f"nothing waits for a conductor that has not answered: the confirm "
+          f"({a:.2f} s), a status poll ({b:.2f} s) and Hold then Resume "
+          f"({c_:.2f} s) all returned while it was still inside "
+          f"show_starting, the Hold still waiting its turn: {seen}")
     _settle(svc)
     check(rec.names() == ["intermission", "show_starting", "hold", "resume"],
           f"and the conductor got them in order: {rec.names()}")
+    gate = _th.Event()
+    rec.block_on = {"abort": gate}
     t0 = time.perf_counter()
     svc._apply(_op(S, S.ABORT, confirmed=True))
-    check(time.perf_counter() - t0 < SLOW / 2, "nor does an Abort")
+    took = time.perf_counter() - t0
+    still_in = not svc.flush_conductor(0)
+    gate.set()
+    check(still_in, f"nor does an Abort: the press returned ({took:.2f} s) "
+                    f"while the conductor had not answered it")
+    rec.block_on = {}
     _settle(svc)
     check(rec.names()[-1:] == ["abort"], f"which follows them: {rec.names()}")
     # An Abort still waiting in the queue already counts: nothing can
@@ -38568,6 +38592,11 @@ def test_remote_no_sign_in_over_the_network():
               "current_operator" not in out["schedule"] and
               "signed_in" not in out["arming"],
               f"the status answers with no sign-in, and names nobody: {st}")
+        from ltcplay import version as _ver
+        check(out.get("version") == _ver.status() and
+              ("build" in out["version"] or "release" in out["version"]),
+              f"the status names which LTC Player this is (release and "
+              f"build id), as version.status() says it: {out.get('version')!r}")
         st, _h, out = R.ask("POST", "/api/remote/hold",
                             {"who": "Andy", "screen": "Rack screen"})
         held = [r for r in R.svc.journal

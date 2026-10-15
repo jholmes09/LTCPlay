@@ -75,6 +75,7 @@ import time
 
 from . import appdata
 from . import settings as settings_mod
+from . import version as version_mod
 
 FIXED_PORT = 7878
 SETTINGS_FILE = "ltcplay_remote.json"
@@ -500,6 +501,7 @@ class Remote:
         self._disarms = collections.deque(maxlen=64)
         self._disarm_ids = 0
         self._deck_seen = None       # clock() of the deck's last read
+        self._version = None         # version_line(), once asked
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
         # The alert service (alerts.py, 2026-10-12): the rack screen's
         # banners, the booth note and the blue pulse. web.serve gives it
@@ -1309,9 +1311,22 @@ class Remote:
             add("Pixels", "ok", "sending")
         return out
 
+    def version_line(self):
+        """Which LTC Player this is, for the rack screen's header: the
+        release it was stamped with and its build id, or that it has been
+        edited since (version.status()). Worked out once: the build id
+        hashes every file the program ships, which is cheap once and not on
+        every poll. Never raises."""
+        if self._version is None:
+            try:
+                self._version = version_mod.status()
+            except Exception as e:                  # noqa: BLE001
+                self._version = f"version unknown ({type(e).__name__})"
+        return self._version
+
     def status(self, ctx):
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
-               "me": self.whoami(ctx)}
+               "me": self.whoami(ctx), "version": self.version_line()}
         svc = self.schedule
         if svc is None:
             out["schedule"] = {"attached": False}
