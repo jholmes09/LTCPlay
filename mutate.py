@@ -17,10 +17,23 @@ For CI, two options that change nothing about a plain run:
     --expected FILE    a list of mutations this machine is known to miss,
                        each with its reason; see mutate_expected_misses.txt.
                        In this mode a mutation counts as caught only when
-                       the suite fails under it twice running.
+                       the failure reproduces: the tests that failed are
+                       run again on their own under the same mutation and
+                       must fail the same way (seconds), or failing that
+                       the whole suite is run again and must fail (minutes,
+                       as it always was). Caught once and then not is a
+                       flaky test, never coverage.
+    --windows          only the mutations of Windows-only code and the
+                       Windows clock and audio choices (WINDOWS_PROOF), for
+                       the weekly sweep's windows runner. WINDOWS_ONLY
+                       mutations are skipped, not missed, on any other OS.
+    --unfinished LOG   after a shard ran out of time: name every mutation
+                       of the shard with no result in LOG, as an
+                       annotation and in the job summary, and exit 1. Exit
+                       0 when the shard finished or stopped some other way.
 
 And three that narrow the sweep to what a change can have broken (the
-per-PR gate; the nightly sweep and a release tag still run everything):
+per-PR gate; the weekly sweep and a release tag still run everything):
 
     --changed BASE     run only the mutations a diff against git revision
                        BASE can have changed the result of: see
@@ -46,29 +59,9 @@ MUTATIONS = [
   "        want(self.rate, chans)",
   "        if False:\n            want(self._good[0], self._good[1])"),
 
- ("a working setting is never remembered", "ltcplay/audio.py",
-  "            self._good = (rate, ch)",
-  "            pass"),
-
  ("a changed channel count is not followed", "ltcplay/audio.py",
   "            self._open_channels = ch",
   "            pass"),
-
- ("a failed open says nothing about the device", "ltcplay/audio.py",
-  'f". The device reports {have} input(s) at "',
-  'f". "'),
-
- ("a fault that stopped is drawn red forever again", "ltcplay/display.py",
-  "def _recent(obj):\n    \"\"\"Did this thing fail within the window that still counts as now?\"\"\"\n    age = getattr(obj, \"seconds_since_error\", None)\n    return age is not None and age <= RECENT_S",
-  "def _recent(obj):\n    return True"),
-
- ("history is dropped instead of shown quietly", "ltcplay/display.py",
-  "def history_for(p):",
-  "def history_for(p):\n    return []\ndef _unused_history(p):"),
-
- ("the page never shows the history list", "ltcplay/web/index.html",
-  '  (s.history||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });\n',
-  ''),
 
  ("a recovered input keeps reporting its old failure", "ltcplay/session.py",
   """            "input_error": ("" if (a is not None and a.attached)
@@ -103,11 +96,6 @@ MUTATIONS = [
  ("rebuilding the input reuses the old decoder", "ltcplay/session.py",
   "        self.dec = LTCDecoder(self.rate)\n        opened = src.start()",
   "        opened = src.start()"),
-
- ("the page calls a queue acceptance a good send again",
-  "ltcplay/web/index.html",
-  "` · accepted by this Mac ${s.since_ok.toFixed(1)}s ago` : \"\") +",
-  "` · last good send ${s.since_ok.toFixed(1)}s ago` : \"\") +"),
 
  ("a dead controller is hammered every frame forever", "ltcplay/output.py",
   """            if p["quiet_until"] > now:
@@ -144,16 +132,6 @@ MUTATIONS = [
   """            return False
         self._stream = s"""),
 
- ("the audio system is rebuilt on every single failed open",
-  "ltcplay/audio.py",
-  "    FAILURES_BEFORE_RESET = 3",
-  "    FAILURES_BEFORE_RESET = 0"),
-
- ("a good open does not clear the failure count", "ltcplay/audio.py",
-  """        self.attached = True
-        self._fails_since_reset = 0""",
-  """        self.attached = True"""),
-
  ("a rebuild that failed is reported as having happened",
   "ltcplay/audio.py",
   """            self._event("audio", self.last_error, throttle=10.0)
@@ -161,53 +139,6 @@ MUTATIONS = [
         self.pa_resets += 1""",
   """            self._event("audio", self.last_error, throttle=10.0)
         self.pa_resets += 1"""),
-
- ("an input stuck forever keeps reporting itself as recovering",
-  "ltcplay/display.py",
-  '        if getattr(a, "stuck", False):',
-  "        if False:"),
-
- ("the installer trusts that python3 exists instead of running it",
-  "Install ltcplay.command",
-  'if ! PYV=$("$PY" -V 2>&1); then',
-  'PYV="assumed"; if false; then'),
-
- ("the environment error is thrown away again",
-  "Install ltcplay.command",
-  'if ! VENVLOG=$("$PY" -m venv .venv 2>&1); then',
-  'VENVLOG=""; if ! "$PY" -m venv .venv; then'),
-
- ("the input caption goes back to claiming a missing input fails the run",
-  "ltcplay/web/index.html",
-  '`A run will start on the preshow look and pick it up when it ` +\n        `appears, or save a different one.`',
-  '`The run will fail until it is plugged in, or you save a different one.`'),
-
- ("the GO button claims it starts from the top again",
-  "ltcplay/web/index.html",
-  '<button id="btn-go">GO</button>',
-  '<button id="btn-go">GO from the top</button>'),
-
- ("the terminal calls the button by a name it does not have",
-  "ltcplay/display.py",
-  '"the next one. Press Back to timecode on the web page to "',
-  '"the next one. Release it from the web page to "'),
-
- ("a button named in the copy is renamed out from under it",
-  "ltcplay/web/index.html",
-  '<button id="btn-release" hidden>Back to timecode</button>',
-  '<button id="btn-release" hidden>Follow the feed</button>'),
-
- ("Run asks a second time again", "ltcplay/web/index.html",
-  '$("btn-run").addEventListener("click", () => startShow(false));',
-  '$("btn-run").addEventListener("click", () => { if(!confirm("go?")) return; startShow(false); });'),
-
- ("Stop asks a second time again", "ltcplay/web/index.html",
-  '$("btn-stop").addEventListener("click", async () => {\n  try{ await post("/api/stop")',
-  '$("btn-stop").addEventListener("click", async () => {\n  if(!confirm("stop?")) return;\n  try{ await post("/api/stop")'),
-
- ("preflight findings vanish with the modal", "ltcplay/web/index.html",
-  '  (s.problems||[]).forEach(t => { const p=document.createElement("p"); p.className="info"; p.textContent=t; w.appendChild(p); });\n',
-  ''),
 
  ("a missing input refuses the start again", "ltcplay/session.py",
   """            except audio_mod.DeviceError as e:
@@ -263,26 +194,9 @@ MUTATIONS = [
   "        elif not attached:",
   "        elif False:"),
 
- ("the header hangs its text on the logo's baseline",
-  "ltcplay/web/index.html",
-  "header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;",
-  "header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;"),
-
- ("the title and the status pills lose their groups",
-  "ltcplay/web/index.html",
-  '  <div class="titles">\n    <h1>ltcplay</h1>',
-  '  <div class="nope">\n    <h1>ltcplay</h1>'),
-
  ("the folder picker accepts a folder with no sequences in it",
   "ltcplay/cli.py",
   """    if not counts["fseq"]:
-        return False,""",
-  """    if False:
-        return False,"""),
-
- ("the folder picker accepts a folder with no controller map",
-  "ltcplay/cli.py",
-  """    if not counts["networks"]:
         return False,""",
   """    if False:
         return False,"""),
@@ -296,10 +210,6 @@ MUTATIONS = [
   """        if self._starting or (self.session is not None
                               and self.session.running):""",
   "        if False:"),
-
- ("the folder can be changed while a start is in flight", "ltcplay/web.py",
-  "        if self._starting or (self.session is not None",
-  "        if False and self._starting or (self.session is not None"),
 
  ("a refused folder is written anyway", "ltcplay/web.py",
   """        if not ok:
@@ -321,11 +231,6 @@ MUTATIONS = [
     except BaseException:
         try:
             pass"""),
-
- ("the folder picker is drawn before a show file is chosen",
-  "ltcplay/web/index.html",
-  "  if(andFolder !== false) loadShowDir();",
-  "  if(false) loadShowDir();"),
 
  ("output loop exception guard removed", "ltcplay/player.py",
   '''try:
@@ -494,22 +399,6 @@ MUTATIONS = [
             continue""",
   """        return r"""),
 
- ("clipping is not reported", "ltcplay/audio.py",
-  """        if self.clipped:
-            return "clipping\"""",
-  """        if False:
-            return "clipping\""""),
-
- ("a very low level reads as fine", "ltcplay/audio.py",
-  """        if self.hold < 0.05:
-            return "very low\"""",
-  """        if False:
-            return "very low\""""),
-
- ("find only ever listens to input 1", "ltcplay/audio.py",
-  'chans = min(d["channels"], 8)     # past 8 this stops being useful',
-  "chans = 1"),
-
  ("the show file stops validating its input block", "ltcplay/timeline.py",
   """        for k in inp:
             if k not in ("device", "channel", "rate"):""",
@@ -518,41 +407,6 @@ MUTATIONS = [
 
  ("the display stops warning about a dead interface", "ltcplay/display.py",
   "if attached and quiet is not None and quiet > 1.0:", "if False:"),
-
- ("the display stops warning about a silent input", "ltcplay/display.py",
-  "elif a.blocks > 40 and a.level.hold < 0.02:", "elif False:"),
-
- ("the installer launcher collides with the package directory",
-  "Install ltcplay.command", "LAUNCHER=ltc", "LAUNCHER=ltcplay"),
-
- ("an unrecognised interface is treated as software and demoted",
-  "ltcplay/audio.py",
-  """    return "hardware\"""",
-  """    return "virtual\""""),
-
- ("software devices are no longer told apart from real ones",
-  "ltcplay/audio.py",
-  "    for pat in _VIRTUAL:", "    for pat in ():"),
-
- ("the real interface is no longer scanned first", "ltcplay/audio.py",
-  'order = {"hardware": 0, "jack": 1, "built in": 2, "phone": 3, "virtual": 4}',
-  'order = {"hardware": 9, "jack": 1, "built in": 2, "phone": 3, "virtual": 4}'),
-
- ("the scan is no longer narrowed to plausible inputs", "ltcplay/audio.py",
-  'return [d for d in hardware_first(inputs) if d["kind"] in CANDIDATE_KINDS]',
-  "return hardware_first(inputs)"),
-
- ("the headphone jack is not recognised", "ltcplay/audio.py",
-  """    for pat in _JACK:
-        if pat in n:
-            return "jack\"""",
-  """    for pat in ():
-        if pat in n:
-            return "jack\""""),
-
- ("the built-in mic is dropped from the scan", "ltcplay/audio.py",
-  'CANDIDATE_KINDS = ("hardware", "jack", "built in")',
-  'CANDIDATE_KINDS = ("hardware", "jack")'),
 
  ("the show file beats the saved input", "ltcplay/settings.py",
   """    sources = (("the command line", cli),
@@ -567,11 +421,6 @@ MUTATIONS = [
             for k in FIELDS:""",
   """        if True:
             for k in FIELDS:"""),
-
- ("a disagreement about the input is not reported", "ltcplay/settings.py",
-  """    if tl_dev and sv_dev and tl_dev.lower() != sv_dev.lower() \\
-            and not cli.get("device"):""",
-  """    if False:"""),
 
  ("a damaged settings file is trusted", "ltcplay/settings.py",
   """    if not isinstance(doc, dict):
@@ -606,14 +455,6 @@ MUTATIONS = [
  ("serving on the network mints no token", "ltcplay/web.py",
   "    if on_network and token is None:", "    if False:"),
 
- ("a wrong device name reads as a program fault", "ltcplay/web.py",
-  "USER_ERRORS = (SessionError, audio_mod.DeviceError, ValueError,\n"
-  "               FileNotFoundError)",
-  "USER_ERRORS = (SessionError,)"),
-
- ("the timecode lookup stops naming the file it read", "ltcplay/cli.py",
-  '    print(f"    path    {path}")', "    pass"),
-
  ("the timecode lookup answers with the next cue", "ltcplay/cli.py",
   """    cue = tl.cue_at(t)
     nxt = tl.next_cue(t)""",
@@ -631,10 +472,6 @@ MUTATIONS = [
   '            if was.get("hash") != digest or was.get("size") != size:',
   "            if False:"),
 
- ("verify stops recording fingerprints at all", "ltcplay/cli.py",
-  '    if not args.no_manifest:\n        # A read-only show folder',
-  '    if False:\n        # A read-only show folder'),
-
  ("a missing sequence is passed over in silence", "ltcplay/cli.py",
   """        if not os.path.exists(path):
             row["verdict"].append("FILE MISSING")""",
@@ -644,27 +481,6 @@ MUTATIONS = [
  ("an old render against a different model layout passes verify",
   "ltcplay/cli.py",
   "        if majority and mine and mine != maj_starts:", "        if False:"),
-
- ("the layout report stops saying which props go dark", "ltcplay/cli.py",
-  '                detail.append(f"    does not contain ch {s0+1}..{s0+maj_starts[s0]}"',
-  '                pass  # noqa'),
-
- ("a track number makes every numbered render look mislabelled",
-  "ltcplay/cli.py",
-  "            a, b = _norm_stem(mstem), _norm_stem(stem)",
-  "            a, b = _norm(mstem), _norm(stem)"),
-
- ("the set number stops counting as part of the identity", "ltcplay/cli.py",
-  '    parts = [p for p in _re.split(r"[_\\-]", s or "") if not p.strip().isdigit()]',
-  '    parts = [_re.sub(r"\\d+", "", p) for p in _re.split(r"[_\\-]", s or "")]'),
-
- ("the shared-file note lists the cue's own timecode back at it",
-  "ltcplay/cli.py",
-  '                  + ", ".join(t for t in shared if t != r["tc"])',
-  '                  + ", ".join(t for t in shared)'),
-
- ("verify stops saying a file is used twice", "ltcplay/cli.py",
-  "        if len(shared) > 1:", "        if False:"),
 
  ("the one-frame bridge between cues is removed", "ltcplay/player.py",
   "            if nxt is not None and self.bridge_s > 0 and \\",
@@ -751,12 +567,6 @@ MUTATIONS = [
   "        if now - self._last_reload_check < self.RELOAD_CHECK_S:\n"
   "            return None", "        if False:\n            return None"),
 
- ("the page and the server drift apart unnoticed", "ltcplay/web.py",
-  "API = 7", "API = 8"),
-
- ("the state stops carrying the API number", "ltcplay/web.py",
-  '        snap["api"] = API', '        snap["api"] = None'),
-
  ("opening a render stops proving it can be read", "ltcplay/player.py",
   "            f.verify()", "            pass  # noqa"),
 
@@ -768,30 +578,9 @@ MUTATIONS = [
   "        for n in {0, self.frame_count // 2, self.frame_count - 1}:",
   "        for n in {0}:"),
 
- ("the reload mode only takes effect at the next start", "ltcplay/web.py",
-  "            s.player.auto_reload = on", "            pass  # noqa"),
-
- ("the reload mode is not remembered between runs", "ltcplay/web.py",
-  '        settings_mod.save_pref("auto_reload", on)', "        pass  # noqa"),
-
  ("the page is not told which reload mode it is in", "ltcplay/session.py",
   '            "auto_reload": p.auto_reload,',
   '            "auto_reload": False,'),
-
- ("the stale-server banner goes back inside the hiding panel",
-  "ltcplay/web/index.html",
-  '<div class="warn" id="apiwarn" hidden style="margin:0 0 14px"></div>',
-  ''),
-
- ("the web launcher kills a live show to take the port",
-  "Web ltcplay.command",
-  '    read -r -p "Press return to close. " _\n    exit 1',
-  '    echo "(carrying on)"'),
-
- ("the web launcher stops looking for a stale server",
-  "Web ltcplay.command",
-  'OLD=$(pgrep -f "ltcplay.cli serve|LTC Player.app/Contents/Resources/boot.py" 2>/dev/null || true)',
-  'OLD=""'),
 
  ("a cue stops owning the channels it does not carry", "ltcplay/player.py",
   "        for a, b in gaps:", "        for a, b in []:"),
@@ -846,9 +635,6 @@ MUTATIONS = [
   "        live = self.feed_state == LOCKED",
   "        live = self.feed_state == LOCKED"),
 
- ("the bundle points back at the machine that made it", "ltcplay/cli.py",
-  '    doc["show_dir"] = "show"', '    pass  # noqa'),
-
  ("the bundle ships without checking anything is missing", "ltcplay/cli.py",
   "        if not args.force:\n"
   "            return _err(f\"{len(missing)} file(s) the show names are not there, \"",
@@ -858,10 +644,6 @@ MUTATIONS = [
  ("a relative show folder resolves against the working directory",
   "ltcplay/timeline.py",
   "    if not os.path.isabs(stored):", "    if False:"),
-
- ("the credit loses the phone number", "ltcplay/brand.py",
-  '    if b.get("phone"):\n        bits.append(b["phone"])',
-  '    if False:\n        bits.append(b["phone"])'),
 
  ("free run swallows the panic button again", "ltcplay/player.py",
   '        if self.freerun_epoch is not None and override not in ("preshow",\n'
@@ -921,16 +703,6 @@ MUTATIONS = [
   "            self._starting = False\n            self._start_gen += 1\n"
   "        if s is not None:\n            s.stop()",
   "        if s is not None:\n            s.stop()"),
-
- ("a read-only folder throws a stack trace again", "ltcplay/cli.py",
-  "    except OSError as e:\n"
-  "        # A stack trace at a console at 8pm helps nobody.",
-  "    except ZeroDivisionError as e:\n"
-  "        # A stack trace at a console at 8pm helps nobody."),
-
- ("verify dies instead of reporting when it cannot write", "ltcplay/cli.py",
-  "        try:\n            with open(mpath, \"w\") as fh:",
-  "        if True:\n            with open(mpath, \"w\") as fh:"),
 
  ("the chase engine's clock regresses to the coarse one on Windows",
   "ltcplay/player.py",
@@ -1025,49 +797,11 @@ MUTATIONS = [
   "            if self.channel_for(key) is None:\n                bad.append(",
   "            if False:\n                bad.append("),
 
- ("the panel stops saying which mode is running", "ltcplay/display.py",
-  "    if getattr(p, \"trigger_armed\", False) and trig is not None:",
-  "    if False and getattr(p, \"trigger_armed\", False) and trig is not None:"),
-
  ("stop leaves the Advateks muted through the blackout", "ltcplay/session.py",
   "                if self.sender is not None and hasattr(self.sender, \"set_muted\"):\n                    self.sender.set_muted(())",
   "                if False:\n                    self.sender.set_muted(())"),
 
  # -- LTC Player.app ------------------------------------------------------
- ("the app is written to after it is signed", "Build LTC Player app.command",
-  'step "signed"',
-  'printf x > "$B/Contents/Resources/late"\nstep "signed"'),
-
- ("the builder never actually launches the app", "Build LTC Player app.command",
-  'open -a "$HERE/$APP" --args --selfcheck',
-  'true -a "$HERE/$APP" --args --selfcheck'),
-
- ("a bundle macOS refuses is left in the folder", "Build LTC Player app.command",
-  '  rm -rf "$HERE/$APP"\n  bye "The app was built and signed, but macOS would not run it:',
-  '  : rm -rf "$HERE/$APP"\n  bye "The app was built and signed, but macOS would not run it:'),
-
- ("the app stops asking for the microphone", "Build LTC Player app.command",
-  "  <key>NSMicrophoneUsageDescription</key>",
-  "  <key>NSMicrophoneUsageDescriptionX</key>"),
-
- ("LaunchServices arguments crash the app", "Build LTC Player app.command",
-  '        if (strncmp(argv[i], "-psn_", 5) != 0) out[n++] = argv[i];',
-  '        out[n++] = argv[i];'),
-
- ("the app runs from the wrong folder", "Build LTC Player app.command",
-  '    if (chdir(folder) != 0)',
-  '    if (chdir("/") != 0)'),
-
- ("the app serves the rig to the whole venue network",
-  "Build LTC Player app.command",
-  '    args = ["serve", "--port", PORT, "--bind", "127.0.0.1", "--no-browser"]',
-  '    args = ["serve", "--port", PORT, "--bind", "0.0.0.0", "--no-browser"]'),
-
- ("the self-check writes inside the signed bundle",
-  "Build LTC Player app.command",
-  '    with open(os.path.join(folder, ".ltcplay_appcheck"), "w") as fh:',
-  '    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".ltcplay_appcheck"), "w") as fh:'),
-
  ("two different songs may share one recorded scene", "ltcplay/trigger.py",
   "            for other in cues[1:]:\n                why = _same_render(first.path, other.path)",
   "            for other in cues[1:]:\n                why = \"\"  # _same_render(first.path, other.path)"),
@@ -1294,10 +1028,6 @@ MUTATIONS = [
   '            "state": display_mod.shown_state(p),',
   '            "state": p.state,'),
 
- ('a master clock is told to check a cable it does not have', 'ltcplay/display.py',
-  '    if clk is not None and clk.master:\n        return out\n',
-  ''),
-
  ('"clock": null loads silently', 'ltcplay/timeline.py',
   '        if "clock" in doc:',
   '        if doc.get("clock") is not None:'),
@@ -1318,10 +1048,6 @@ MUTATIONS = [
   '    if clk is not None and clk.master:\n        return out\n',
   '    if True:\n        return out\n'),
 
- ('the lost-feed warnings are silenced for the LTC slave too', 'ltcplay/display.py',
-  '    if clk is not None and clk.master:\n        return out\n',
-  '    if clk is not None:\n        return out\n'),
-
  ('GPL: a lost feed reads STANDBY in every mode', 'ltcplay/display.py',
   '    if clk is not None and clk.master and p.state == LOST \\\n            and not getattr(clk, "playing", False):',
   '    if p.state == LOST:'),
@@ -1334,70 +1060,11 @@ MUTATIONS = [
   '        try:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        except ValueError as e:',
   '        if True:\n            self.clock.play(pick.tc_seconds, pick.duration, pick.name)\n        if False:'),
 
- ("tctest defaults to every node in the show file when --to is left off",
-  'ltcplay/tctest.py',
-  '        names = to\n        if not names:\n            raise TcTestError(\n'
-  '                "--show needs --to as well: name at least one node from "\n'
-  '                "its clock.artnet.nodes. tctest never defaults to sending "\n'
-  '                "to every node in the show file.")',
-  '        names = to or list(available)'),
-
- ("tctest ignores the output lock another ltcplay is holding",
-  'ltcplay/tctest.py',
-  '    lock = onlyone.OutputLock(where=lock_path, note=note)\n    try:\n        lock.acquire()\n    except onlyone.AlreadyRunning as e:',
-  '    lock = onlyone.OutputLock(where=lock_path, note=note)\n    try:\n        pass\n    except onlyone.AlreadyRunning as e:'),
-
- ("tctest sends something other than Art-Net timecode, as a pixel or "
-  "sACN sender would", 'ltcplay/tctest.py',
-  '        out_sock.send(arttimecode(h, m, s, f, MASTER_TYPE))',
-  '        out_sock.send(bytes(19))'),
-
- ("tctest skips the every-run destination warning", 'ltcplay/tctest.py',
-  '        print(f"Test timecode is about to go to: {dest_label}. "\n'
-  '              f"{GENERAL_WARNING}", file=err_stream)',
-  '        pass'),
-
- ("tctest only warns about a laser system named literally BEYOND again",
-  'ltcplay/tctest.py',
-  '    if is_broadcast:\n        return ["broadcast"]\n'
-  '    return [name for name, _ in dests\n'
-  '           if "beyond" in name.lower() or "laser" in name.lower()]',
-  '    return [name for name, _ in dests\n'
-  '           if name.strip().lower() == "beyond"]'),
  # -- the night journal (Fire & Ice logging, handoff section 9) --------
- ("a journal event may have a blank actor", "ltcplay/journal.py",
-  '    if actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor',
-  '    if actor and actor not in ACTORS:\n        raise ValueError(f"A journal event\'s actor'),
-
  ("an operator event may leave out who or which screen",
   "ltcplay/journal.py",
   '    if actor == "operator" and not (who and screen):',
   '    if False:'),
-
- ("a fault may be logged as just error", "ltcplay/journal.py",
-  '    if len(meaningful) < 3:',
-  '    if not words:'),
-
- ("the journal line loses its seconds and its two spaces",
-  "ltcplay/journal.py",
-  '    line = f"{local:%H:%M:%S}  {text}"',
-  '    line = f"{local:%H:%M} {text}"'),
-
- ("an operator line stops naming the operator", "ltcplay/journal.py",
-  '    if actor == "operator" and who.lower() not in text.lower():',
-  '    if False:'),
-
- ("a journal line can run onto a second line", "ltcplay/journal.py",
-  '    return " ".join(text.split())',
-  '    return text'),
-
- ("the page shows its own words, not the file's line", "ltcplay/journal.py",
-  '            out.append({"line": r["line"], "at": r.get("at"),',
-  '            out.append({"line": r["text"], "at": r.get("at"),'),
-
- ("the page's last lines come oldest first", "ltcplay/journal.py",
-  '            rows = list(self.memory)[-n:][::-1]',
-  '            rows = list(self.memory)[-n:]'),
 
  ("a night file is rewritten instead of appended to", "ltcplay/journal.py",
   '    return open(path, "ab", buffering=0)',
@@ -1422,10 +1089,6 @@ MUTATIONS = [
   '            self.ring.append((at or self.clock(), dict(data)))\n'
   '        self.record(actor="system", action="sample", outcome="done",\n'
   '                    reason="sample", text="A state sample.")'),
-
- ("the ring buffer keeps 30 s instead of 60", "ltcplay/journal.py",
-  'RING_SIZE = RING_SECONDS * RING_HZ',
-  'RING_SIZE = RING_SECONDS * RING_HZ // 2'),
 
  ("the state is sampled once a second", "ltcplay/schedule_service.py",
   '    SAMPLE_S = 1.0 / journal.RING_HZ',
@@ -1456,19 +1119,6 @@ MUTATIONS = [
   '        self._tails_ok.clear()\n        if first:',
   '        self._tails_ok.clear()\n        self._pending.clear()\n        if first:'),
 
- ("pruning keeps 89 days instead of 90", "ltcplay/journal.py",
-  '        cutoff = today - timedelta(days=self.keep_days)',
-  '        cutoff = today - timedelta(days=self.keep_days - 1)'),
-
- ("pruning goes by the file's timestamp, not its name",
-  "ltcplay/journal.py",
-  '                if keep_from is None or d >= keep_from:\n'
-  '                    continue\n',
-  '                if keep_from is None or datetime.fromtimestamp(\n'
-  '                        os.path.getmtime(os.path.join(root, name)),\n'
-  '                        timezone.utc).date() >= keep_from:\n'
-  '                    continue\n'),
-
  ("pruning removes files it did not write", "ltcplay/journal.py",
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)$")',
   '                   r"\\.(journal\\.txt|jsonl|summary\\.md)")'),
@@ -1478,18 +1128,6 @@ MUTATIONS = [
   '        rec = build_event(at=local, night=night or self.current_night(at),',
   '        rec = build_event(at=local, night=night or at.astimezone(\n'
   '                              timezone.utc).date(),'),
-
- ("a restart reads as a first start", "ltcplay/journal.py",
-  '        if prev is None:\n            text = (f"ltcplay started ({build}).',
-  '        if True:\n            text = (f"ltcplay started ({build}).'),
-
- ("the summary leaves out the faults", "ltcplay/journal.py",
-  '    out += _bullets(fault_rows, "None.", limit=None)',
-  '    out += _bullets([], "None.", limit=None)'),
-
- ("the summary leaves out the announcements", "ltcplay/journal.py",
-  '    out += _bullets([r["line"] for r in anns], "None played.")',
-  '    out += _bullets([], "None played.")'),
 
  ("End night writes no summary", "ltcplay/schedule_service.py",
   '            self._write_summary(how)\n        # A push, not a poll:',
@@ -1506,10 +1144,6 @@ MUTATIONS = [
   '                    "note": "Not available: there is no flame bus in this "',
   '        if self.flames is None:\n            return {"available": True,\n'
   '                    "note": "Not available: there is no flame bus in this "'),
-
- ("the incident bundle leaves out the config", "ltcplay/journal.py",
-  '        put("config.json", js(config if config is not None else',
-  '        put("config.json", js({"note": "none"} if config is not None else'),
 
  ("the scheduler's own lines stay in memory only, as before",
   "ltcplay/schedule_service.py",
@@ -1549,12 +1183,6 @@ MUTATIONS = [
   '        cut = bool(self.stopped_why) and path not in self._tails_ok \\\n'
   '            and not new and \\'),
 
- ("a line cut short by a full disk is not looked for afterwards",
-  "ltcplay/journal.py",
-  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'
-  '        self._tails_ok.clear()\n',
-  '        self._retry_at = now + timedelta(seconds=self.retry_s)\n'),
-
  ("a failing tick writes a line four times a second",
   "ltcplay/schedule_service.py",
   '            kinds[key] = kinds.get(key, 0) + 1\n',
@@ -1573,13 +1201,6 @@ MUTATIONS = [
   '        return self.logbook.night_of(now)',
   '        if False:\n            return self.machine.date\n'
   '        return self.logbook.night_of(now)'),
-
- ("a trusted clock still applies the newest-120 floor",
-  "ltcplay/journal.py",
-  '            if floor:\n'
-  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n',
-  '            if True:\n'
-  '                nights = sorted({d for d, _n, _r, inc in found if not inc},\n'),
 
  ("an untrusted clock prunes by age", "ltcplay/journal.py",
   '            if floor:\n'
@@ -1607,10 +1228,6 @@ MUTATIONS = [
   '            if len(self._pending) >= PENDING_MAX:',
   '            if False:'),
 
- ("the resume line no longer says lines were lost", "ltcplay/journal.py",
-  '        if self._dropped:\n            a, b = self._dropped_span',
-  '        if False:\n            a, b = self._dropped_span'),
-
  ("a clean stop is never written, so it reads as a crash",
   "ltcplay/schedule_service.py",
   '                self._log(self.logbook.stopping, state=self._state_name(),',
@@ -1626,14 +1243,6 @@ MUTATIONS = [
   '        if True:\n            return screen\n'
   '        names = {n.lower(): n for n in self.screens}'),
 
- ("the summary stops listing faults after 25", "ltcplay/journal.py",
-  '    out += _bullets(fault_rows, "None.", limit=None)',
-  '    out += _bullets(fault_rows, "None.")'),
-
- ("a summary's temp file left by a crash is never cleared",
-  "ltcplay/journal.py",
-  '                if _STALE.match(name):',
-  '                if False:'),
  # -- the journal, round 3 of the review of PR 14 ----------------------
  ("close() drains with no time limit", "ltcplay/journal.py",
   '        threading.Thread(target=last, daemon=True,\n'
@@ -2376,23 +1985,6 @@ MUTATIONS = [
   '        if outputs:\n'
   '            return outputs[0]'),
 
- ("a refused announcement play is not written to the journal",
-  "ltcplay/announce.py",
-  '                self._emit(actor="operator", action="play",\n'
-  '                          outcome="refused",\n'
-  '                          reason="another announcement is already playing",\n'
-  '                          text=text, ann_id=ann_id, who=who, screen=screen,\n'
-  '                          state=state)\n'
-  '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})',
-  '                raise ValueError(text)\n'
-  '            st = self.status_by_id.get(ann_id, {})'),
-
- ("an announcement's device name matches by substring again",
-  "ltcplay/announce.py",
-  '    hits = [d for d in outputs if d["name"].strip().lower() == want]',
-  '    hits = [d for d in outputs if want in d["name"].lower()]'),
-
  ("the announcement interlock is never rechecked before the stream starts",
   "ltcplay/announce.py",
   '            state = self._current_state()\n'
@@ -2401,12 +1993,6 @@ MUTATIONS = [
   '            state = self._current_state()\n'
   '            refusal = interlock_refusal(state)\n'
   '            if False:\n'),
-
- ("a 32-bit float announcement file is read as integers", "ltcplay/announce.py",
-  '    if is_float:\n'
-  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted',
-  '    if False:\n'
-  '        # A real 32-bit IEEE float WAV, decoded as float, not reinterpreted'),
 
  ("a 24-bit announcement file is shifted the wrong way, changing its "
   "level 256x", "ltcplay/announce.py",
@@ -2418,24 +2004,6 @@ MUTATIONS = [
   '        padded = np.zeros((n_samples, 4), dtype=np.uint8)\n'
   '        padded[:, :3] = np.frombuffer(raw, dtype=np.uint8)[\n'
   '            :n_samples * 3].reshape(-1, 3)'),
-
- ("24-bit PCM falls through to the wrong dtype lookup", "ltcplay/announce.py",
-  '    elif sampwidth == 3:\n'
-  '        # 24-bit PCM: 3 bytes per sample, little-endian.',
-  '    elif False:\n'
-  '        # 24-bit PCM: 3 bytes per sample, little-endian.'),
-
- ("an unsupported WAV format tag is accepted", "ltcplay/announce.py",
-  '    is_float = tag == 3\n'
-  '    if tag is not None and tag not in (1, 3):',
-  '    is_float = tag == 3\n'
-  '    if False:'),
-
- ("a non-32-bit floating point WAV is accepted as float", "ltcplay/announce.py",
-  '        if bits != 32:\n'
-  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "',
-  '        if False:\n'
-  '            raise ValueError(f"{_clean(path)} is a {bits}-bit floating "'),
 
  ("an announcement device that stopped answering is never noticed",
   "ltcplay/announce.py",
@@ -2475,13 +2043,6 @@ MUTATIONS = [
  ("the claim check compares the id, not the attempt", "ltcplay/announce.py",
   '            if self._claim_gen != my_gen or self.playing != ann_id:',
   '            if self.playing != ann_id:'),
-
- ("load_operators' own sentence is not cleaned of dashes",
-  "ltcplay/announce.py",
-  '            f"The operator list {_clean(path)} could not be used: "\n'
-  '            f"{_clean(str(e)).rstrip(\'.\')}. Using "',
-  '            f"The operator list {path} could not be used: "\n'
-  '            f"{str(e).rstrip(\'.\')}. Using "'),
 
  ("tick() waits for the show-start hook even after releasing the lock",
   "ltcplay/schedule_service.py",
@@ -2950,13 +2511,6 @@ MUTATIONS = [
   "        end = max(end or 0.0, c.end_seconds)",
   "        end = c.end_seconds"),
 
- ("the scheduler's show_len_s is never checked against the show's media",
-  "ltcplay/web.py",
-  "                configured = schedule.rule.show_len_s\n"
-  "                if configured < derived:",
-  "                configured = schedule.rule.show_len_s\n"
-  "                if False:"),
-
  ("the show length derivation for the scheduler check always finds "
   "nothing", "ltcplay/clock.py",
   "        if s.tl is None or s.tl.clock is None:",
@@ -2991,13 +2545,6 @@ MUTATIONS = [
   "                    and self.machine.state in (sch.HOLD, sch.PAUSED))",
   "            return self.machine.state in (sch.HOLD, sch.PAUSED)"),
 
- ("on_show_started always says a show started, never that it resumed",
-  "ltcplay/announce.py",
-  "            self._player.stop_reason = (\"the show resumed\"\n"
-  "                                        if reason == \"resume\" else\n"
-  "                                        \"a show started\")",
-  "            self._player.stop_reason = \"a show started\""),
-
  ("the resume reason is never computed, on_show_started never learns why",
   "ltcplay/schedule_service.py",
   "            reason = \"resume\" if ev.kind == sch.RESUME else \"new\"",
@@ -3009,14 +2556,6 @@ MUTATIONS = [
   "                return None, self.hold_epoch",
   "            if False:\n"
   "                return None, self.hold_epoch"),
-
- ("an announcement's Hold claim never names the announcement in the "
-  "journal", "ltcplay/announce.py",
-  "                hold_refusal, claim_epoch = self._request_hold(\n"
-  "                    who, screen,\n"
-  "                    detail=f\"played the {label} announcement{screen_txt}\")",
-  "                hold_refusal, claim_epoch = self._request_hold(\n"
-  "                    who, screen)"),
 
  ("schedule.py never uses the announcement's own claim wording, during a "
   "show", "ltcplay/schedule.py",
@@ -3045,39 +2584,6 @@ MUTATIONS = [
   "    if len(candidates) > 1:",
   "    if False:"),
 
- ("a folder with no derivable show length never warns, it silently skips",
-  "ltcplay/web.py",
-  "            elif warning:",
-  "            elif False:"),
-
- ("WAVE_FORMAT_EXTENSIBLE float is never resolved, it stays refused with "
-  "a raw GUID", "ltcplay/announce.py",
-  "                    if tag == 0xFFFE and len(body) >= 40:\n"
-  "                        guid = body[24:40]\n"
-  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
-  "                            return int.from_bytes(guid[:4], \"little\")",
-  "                    if False:\n"
-  "                        guid = body[24:40]\n"
-  "                        if guid[4:] == _EXTENSIBLE_SUBFORMAT_TAIL:\n"
-  "                            return int.from_bytes(guid[:4], \"little\")"),
-
- ("the data chunk size sanity check never runs", "ltcplay/announce.py",
-  "    problem = _data_chunk_size_problem(path, size)\n"
-  "    if problem:\n"
-  "        raise ValueError(problem)",
-  "    problem = None\n"
-  "    if problem:\n"
-  "        raise ValueError(problem)"),
-
- ("a placeholder data chunk size (0 or 0xFFFFFFFF) is accepted as healthy",
-  "ltcplay/announce.py",
-  "                    if size == 0 or size == 0xFFFFFFFF:",
-  "                    if False:"),
-
- ("a data chunk bigger than the file on disk is accepted, overstating "
-  "the length", "ltcplay/announce.py",
-  "                    if size > remaining:",
-  "                    if False:"),
  # -- the journal, Jeff's settings of 2026-09-26 ------------------------
  ("a batch goes to the disk without an fsync", "ltcplay/journal.py",
   '                self._fsync(fh.fileno())\n                if new:',
@@ -3086,10 +2592,6 @@ MUTATIONS = [
  ("a line can wait five seconds in memory", "ltcplay/journal.py",
   '            self._wake.wait(MAX_LINE_WAIT_S)',
   '            self._wake.wait(5.0)'),
-
- ("night files are kept 90 days again", "ltcplay/journal.py",
-  'KEEP_DAYS = 120',
-  'KEEP_DAYS = 90'),
 
  ("incident folders are never pruned", "ltcplay/journal.py",
   '            found.append((d, name, inc_root, True))',
@@ -3103,10 +2605,6 @@ MUTATIONS = [
  ("an unchecked clock prunes by age alone", "ltcplay/schedule_service.py",
   '                self._log(self.logbook.prune, d, state=state, floor=floor)',
   '                self._log(self.logbook.prune, d, state=state, floor=False)'),
-
- ("the free space floor is 100 MB again", "ltcplay/journal.py",
-  'FREE_FLOOR_MB = 500',
-  'FREE_FLOOR_MB = 100'),
 
  ("a start looks back only one night for a missing summary",
   "ltcplay/schedule_service.py",
@@ -3197,52 +2695,7 @@ MUTATIONS = [
   'with open(path, encoding="utf-8-sig") as fh:',
   'with open(path, encoding="utf-8") as fh:'),
 
- ("the page's show-folder read refuses a BOM show file again",
-  "ltcplay/web.py",
-  'with open(path, encoding="utf-8-sig") as fh:\n            doc = json.load(fh)\n        if folder is None:',
-  'with open(path, encoding="utf-8") as fh:\n            doc = json.load(fh)\n        if folder is None:'),
-
- ("tctest --show refuses a BOM show file again", "ltcplay/tctest.py",
-  'with open(show_path, encoding="utf-8-sig") as fh:',
-  'with open(show_path, encoding="utf-8") as fh:'),
-
- ("showdir refuses a BOM show file again", "ltcplay/cli.py",
-  'with open(tl_path, encoding="utf-8-sig") as fh:',
-  'with open(tl_path, encoding="utf-8") as fh:'),
-
- ("a BOM input settings file is refused again", "ltcplay/settings.py",
-  'with open(p, encoding="utf-8-sig") as fh:',
-  'with open(p, encoding="utf-8") as fh:'),
-
- ("a BOM brand file is refused again", "ltcplay/brand.py",
-  'with open(path(), encoding="utf-8-sig") as fh:',
-  'with open(path(), encoding="utf-8") as fh:'),
-
  # -- B11: the operator page's /api/state cache (web.py's Control.state()) --
-
- ("the /api/state cache never actually holds for its interval",
-  "ltcplay/web.py",
-  "    STATE_CACHE_S = 0.2",
-  "    STATE_CACHE_S = 0.0"),
-
- ("concurrent misses of the /api/state cache all rebuild it at once",
-  "ltcplay/web.py",
-  """        try:
-            cached = self._state_cache
-            now = time.monotonic()
-            if cached is not None and now - cached[1] < self.STATE_CACHE_S:
-                return cached[0]             # built while this waited for the lock
-            fresh = self._build_state()
-            self._state_cache = (fresh, time.monotonic())
-            return fresh
-        finally:
-            self._state_building.release()""",
-  """        try:
-            fresh = self._build_state()
-            self._state_cache = (fresh, time.monotonic())
-            return fresh
-        finally:
-            self._state_building.release()"""),
 
  ("a cached /api/state answer is the raw cache entry, not its payload",
   "ltcplay/web.py",
@@ -3256,55 +2709,6 @@ MUTATIONS = [
         if cached is not None and now - cached[1] < self.STATE_CACHE_S:
             return cached
         if not self._state_building.acquire(blocking=False):"""),
-
- ("the terminal/GPL build id is cached at module scope, "
-  "so it stops updating for the rest of the run",
-  "ltcplay/version.py",
-  '''def build():
-    """(id, file count, newest mtime) for the program as it sits on disk."""
-    h = hashlib.sha256()
-    newest = 0.0
-    files = _files()
-    for p in files:
-        # Forward slashes whatever the OS, so the same files give the same
-        # build id on a Mac and on Windows. On a Mac this changes nothing.
-        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
-        h.update(rel.encode("utf-8", "replace"))
-        h.update(b"\\0")
-        try:
-            with open(p, "rb") as fh:
-                for b in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(b)
-            newest = max(newest, os.path.getmtime(p))
-        except OSError:
-            h.update(b"<unreadable>")
-    return h.hexdigest()[:10], len(files), newest''',
-  '''_BUILD_CACHE = None
-
-
-def build():
-    """(id, file count, newest mtime) for the program as it sits on disk."""
-    global _BUILD_CACHE
-    if _BUILD_CACHE is not None:
-        return _BUILD_CACHE
-    h = hashlib.sha256()
-    newest = 0.0
-    files = _files()
-    for p in files:
-        # Forward slashes whatever the OS, so the same files give the same
-        # build id on a Mac and on Windows. On a Mac this changes nothing.
-        rel = os.path.relpath(p, folder()).replace(os.sep, "/")
-        h.update(rel.encode("utf-8", "replace"))
-        h.update(b"\\0")
-        try:
-            with open(p, "rb") as fh:
-                for b in iter(lambda: fh.read(1 << 20), b""):
-                    h.update(b)
-            newest = max(newest, os.path.getmtime(p))
-        except OSError:
-            h.update(b"<unreadable>")
-    _BUILD_CACHE = h.hexdigest()[:10], len(files), newest
-    return _BUILD_CACHE'''),
 
 
  # -- audio_master (handoff section 4a, Jeff 2026-09-27): ltcplay plays the
@@ -3581,11 +2985,6 @@ def build():
   'ltcplay/showaudio.py',
   '                main.__dict__.pop("__file__", None)\n                main.__dict__["__spec__"] = None\n',
   '                pass\n'),
-
- ("the Mac app's boot.py runs the engine without a __main__ guard",
-  'Build LTC Player app.command',
-  '\nif __name__ == "__main__":\n    # --selfcheck is used',
-  '\nif True:\n    # --selfcheck is used'),
 
 
  # -- audio_master, Jeff's answers (2026-09-27): no show without its
@@ -6007,11 +5406,58 @@ def build():
   "                             self._ABORT_EFFECTS))",
   "                plan.append((\"Failed start\", \"failed_start\",\n"
   "                             self._ABORT_EFFECTS))"),
+
+ # CONTRACT.md: ltcplay MUST reject a status frame whose key is not its
+ # own. flamelink.py's reader is above ("a status frame with another key is
+ # taken"); this is the deck's, the one that actually reads the port.
+ ("the deck takes a status frame with another key", "ltcplay/streamdeck.py",
+  '    if obj.get("k") != key or obj.get("t") != "status":',
+  '    if obj.get("t") != "status":'),
+
+ # Windows-only code (WINDOWS_ONLY below): the one-copy lock through
+ # msvcrt, which the show PC runs and only a windows runner can see break.
+ ("the Windows lock sits on byte 0, so the holder's note cannot be read back",
+  "ltcplay/onlyone.py",
+  "_WIN_LOCK_AT = 1 << 30",
+  "_WIN_LOCK_AT = 0"),
+
+ ("a lock another ltcplay holds on Windows reads as a filesystem that cannot lock, so both send",
+  "ltcplay/onlyone.py",
+  "            held = (errno.EACCES, getattr(errno, \"EDEADLOCK\", errno.EACCES),\n"
+  "                    getattr(errno, \"EDEADLK\", errno.EACCES))\n"
+  "            if e.errno not in held:",
+  "            if True:"),
 ]
 
+# Mutations of code that runs only on Windows (the show PC's OS). On any
+# other OS the suite cannot see them break, so a sweep there skips them, says
+# so, and never counts them as missed; the weekly sweep and every release tag
+# run them on a windows runner (`--windows`), together with the rest of
+# WINDOWS_PROOF: the Windows clock choices and audio device order, which the
+# suite proves on every OS by faking the platform and a windows runner proves
+# on the real one.
+WINDOWS_ONLY = frozenset((
+    "the Windows lock sits on byte 0, so the holder's note cannot be read back",
+    "a lock another ltcplay holds on Windows reads as a filesystem that cannot lock, so both send",
+))
+WINDOWS_PROOF = WINDOWS_ONLY | frozenset((
+    "the output lock can be garbage collected away",
+    "a second process is allowed onto the rig",
+    "the chase engine's clock regresses to the coarse one on Windows",
+    "the run loop's heartbeat reads the other clock",
+    "the pacer runs on the 15.6 ms Windows clock",
+    "audio_master: Windows falls back to the shared mixer on its own",
+    "audio_master: WASAPI is preferred over the interface's ASIO driver",
+    "audio_master: WDM-KS is never tried",
+))
+ON_WINDOWS = sys.platform == "win32"
 
-# What the last suite run failed on, so a surprising result can be read.
+
+# What the last suite run failed on, so a surprising result can be read, and
+# which tests those failures were in (selftest.py's "failed tests:" line),
+# so the failure can be reproduced by running those tests alone.
 _LAST_FAILS = []
+_LAST_TESTS = []
 # How long one run of the suite may take. A test is 4 to 6 minutes on a CI
 # runner; a run that is still going at 300 s is hung, not slow.
 SUITE_TIMEOUT = 300
@@ -6036,9 +5482,24 @@ def _what_failed(out, limit=10):
     return ["the suite ended red without a FAIL line; its last lines:"] + tail
 
 
-def run_suite():
+def _tests_named(out):
+    """The test functions selftest.py says its failures were in."""
+    for l in out.splitlines():
+        if l.startswith("failed tests: "):
+            return [t.strip() for t in l[len("failed tests: "):].split(",")
+                    if t.strip()]
+    return []
+
+
+def run_suite(only=None):
+    """Run the suite; True if it is green. `only` names test functions to
+    run on their own (selftest.py --only), for a second look at a failure."""
+    argv = [sys.executable, "selftest.py"]
+    if only:
+        argv += ["--only", ",".join(only)]
+    _LAST_TESTS[:] = []
     try:
-        r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
+        r = subprocess.run(argv, cwd=HERE,
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=SUITE_TIMEOUT)
@@ -6062,7 +5523,24 @@ def run_suite():
         _LAST_FAILS[:] = []
         return True
     _LAST_FAILS[:] = _what_failed(out)
+    _LAST_TESTS[:] = _tests_named(out)
     return False
+
+
+def reproduces(why, tests):
+    """A second look at a red suite under a mutation, before it counts as
+    caught: does the failure reproduce? First the failing tests alone,
+    under the same mutation (seconds): the mutation is confirmed when they
+    fail again with a FAIL line in common with the first run. If they pass
+    alone, fail some other way, or the suite could not say which tests
+    failed, the whole suite runs again and must fail (minutes), exactly the
+    rule this file had before. A test that fails for the runner's reasons
+    passes one of these and the mutation reads NOT CAUGHT (flaky)."""
+    if tests:
+        if not run_suite(only=tests) and set(_LAST_FAILS) & set(why):
+            print(f"      confirmed by {', '.join(tests)} alone")
+            return True
+    return not run_suite()
 
 
 LOCK = os.path.join(HERE, ".mutating")
@@ -6202,9 +5680,80 @@ def _finish(code):
     return code
 
 
+def unfinished(log_path, shard, windows=False):
+    """After a shard ran out of time: which of its mutations have no result
+    in its log. Tells a timeout apart from a missed mutation: a miss prints
+    NOT CAUGHT or UNEXPECTED MISS and the sweep reaches its "caught N,
+    missed M" line; a shard that ran out of time never reaches that line.
+    The mutation being run when the clock stopped has no result either:
+    unknown, not "caught". Exit 1 with the names, as an annotation and in
+    the job summary, when something did not run; 0 when the sweep finished
+    or stopped some other way (its own lines say why)."""
+    log = []
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            log = [l.rstrip("\r\n") for l in fh]
+    except OSError:
+        pass
+    if any(l.startswith("caught ") and ", missed " in l for l in log):
+        print("the sweep finished; any failure is in its own lines above")
+        return 0
+    if any("The suite FAILS with nothing mutated" in l for l in log):
+        print("the baseline failed; that is not a timeout")
+        return 0
+    if any("nothing to run" in l or "cannot read the diff" in l for l in log):
+        print("the shard stopped before any mutation ran; see its own lines "
+              "above")
+        return 0
+    i, n = shard if shard else (0, 1)
+    mine = [name for index, (name, *_r) in enumerate(MUTATIONS)
+            if index % n == i and not _skipped_here(name)
+            and (not windows or name in WINDOWS_PROOF)]
+    # In an affected run only part of the shard was due; the sweep says
+    # which ("would run" is --list's word, "to run" the sweep's).
+    due = None
+    for l in log:
+        if l.startswith("shard ") and " mutations to run" in l:
+            due = int(l.split(":")[1].split()[0])
+    done = set()
+    for l in log:
+        for pre in ("  caught      ", "  NOT CAUGHT  "):
+            if l.startswith(pre):
+                done.add(l[len(pre):])
+        if l.startswith("  SETUP FAIL  "):
+            done.add(l[len("  SETUP FAIL  "):].split(" (pattern", 1)[0])
+    todo = [name for name in mine if name not in done]
+    if not todo or (due is not None and len(done) >= due):
+        print("no mutation is missing a result; the shard stopped some other "
+              "way")
+        return 0
+    where = f"shard {i}/{n}" if shard else "the sweep"
+    head = (f"{where} TIMED OUT, it did not finish: {len(done)} of its "
+            f"{due if due is not None else len(mine)} mutations ran to a "
+            f"result. This is a timeout, not a missed mutation; re-run the "
+            f"shard.")
+    print(annotation("mutate shard timed out", [head, "Not run:"] + todo,
+                     limit=len(todo) + 2))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as fh:
+                fh.write("### " + head + "\n\n"
+                         + "\n".join("- " + t for t in todo) + "\n")
+        except OSError as e:
+            print(f"could not write the job summary: {e}")
+    print(head)
+    for t in todo:
+        print("  did not run  " + t)
+    return 1
+
+
 def main():
     REPORT.reset()
     _annotated[0] = 0
+    if "--unfinished" in sys.argv[1:]:
+        _wants, shard, _expected = _args(sys.argv[1:])
+        return unfinished(OPTS["unfinished"], shard, OPTS["windows"])
     # While this runs, the working tree is deliberately broken. Anything else
     # that reads it — a capture, a soak, a live run — is measuring a mutant and
     # will produce a confident, entirely false result. The lock exists because
@@ -6231,14 +5780,16 @@ def main():
     return _finish(code)
 
 
-OPTS = {"changed": None, "files": None, "list": False, "catchers": None}
+OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
+        "windows": False, "unfinished": None}
 
 
 def _args(argv):
     """Name filters, plus the CI options. Anything else is a filter, as it
     always was."""
     wants, shard, expected = [], None, None
-    OPTS.update(changed=None, files=None, list=False, catchers=None)
+    OPTS.update(changed=None, files=None, list=False, catchers=None,
+                windows=False, unfinished=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -6254,9 +5805,25 @@ def _args(argv):
             OPTS["catchers"] = next(it)
         elif a == "--list":
             OPTS["list"] = True
+        elif a == "--windows":
+            OPTS["windows"] = True
+        elif a == "--unfinished":
+            OPTS["unfinished"] = next(it)
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
+
+
+def _where_it_runs(name):
+    """Which OS this mutation can be proved on: "windows" for WINDOWS_ONLY,
+    else "all"."""
+    return "windows" if name in WINDOWS_ONLY else "all"
+
+
+def _skipped_here(name):
+    """True when this OS cannot see the mutation break: WINDOWS_ONLY code
+    on anything but Windows. Skipped is neither caught nor missed."""
+    return name in WINDOWS_ONLY and not ON_WINDOWS
 
 
 def _load_expected(path):
@@ -6524,6 +6091,22 @@ def _run():
                 print("nothing this change can have broken is mutated "
                       "here: nothing to run")
                 return 0
+    names = {m[0] for m in MUTATIONS}
+    if OPTS["windows"]:
+        # A renamed mutation would otherwise quietly drop out of the
+        # windows sweep (selftest.py checks the same on every run).
+        ghosts = sorted(WINDOWS_PROOF - names)
+        if ghosts:
+            print(f"  WINDOWS_PROOF names mutations that are not in the "
+                  f"list: {ghosts}")
+            fail("WINDOWS_PROOF is stale: it names mutations that are not "
+                 "in mutate.py", ghosts)
+            return 1
+        only = (set(only) if only is not None else names) & WINDOWS_PROOF
+        print(f"--windows: the {len(only)} mutations of Windows-only code "
+              f"and the Windows clock and audio choices"
+              + ("" if ON_WINDOWS else " (NOT on Windows: the "
+                 "WINDOWS_ONLY ones are skipped here)"))
     if OPTS["list"]:
         for index, (name, rel, _o, _n) in enumerate(MUTATIONS):
             if only is not None and name not in only:
@@ -6532,20 +6115,30 @@ def _run():
                 continue
             if shard and index % shard[1] != shard[0]:
                 continue
-            print(f"  would run  {rel}: {name}")
+            tag = " (windows only)" if name in WINDOWS_ONLY else ""
+            print(f"  would run  {rel}: {name}{tag}")
         return 0
     todo = [(name, rel, old, new)
             for index, (name, rel, old, new) in enumerate(MUTATIONS)
             if (only is None or name in only)
             and not (wants and not any(w in name.lower() for w in wants))
             and not (shard and index % shard[1] != shard[0])]
+    # Windows-only code on another OS: skipped, said so, never "missed".
+    skipped = [m for m in todo if _skipped_here(m[0])]
+    todo = [m for m in todo if not _skipped_here(m[0])]
+    for name, rel, _o, _n in skipped:
+        print(f"  windows only  {name}: {rel} runs only on Windows, so this "
+              f"OS cannot see it break; the windows sweep proves it")
     REPORT.due = len(todo)
     if shard:
-        if only is not None and not todo:
+        if (only is not None or skipped) and not todo:
             print(f"shard {shard[0]}/{shard[1]}: none of the selected "
                   f"mutations fall in this shard: nothing to run")
             return 0
         print(f"shard {shard[0]}/{shard[1]}: {len(todo)} mutations to run")
+    elif not todo and (only is not None or skipped):
+        print("nothing to run on this OS")
+        return 0
     # Prove the tree is clean BEFORE breaking it on purpose. A sweep that is
     # killed (a foreground timeout, a closed terminal) skips its restore and
     # leaves a mutation behind; the next sweep then measures that mutant and
@@ -6587,15 +6180,17 @@ def _run():
         _write(path, src.replace(old, new, 1))
         try:
             green = run_suite()
-            # In CI a mutation counts as caught only if the suite fails under
-            # it twice running. A test that fails for the runner's reasons
-            # would otherwise pass itself off as coverage: an unlisted
-            # mutation nothing really catches would read "caught", and a
-            # listed one would read "now caught". Caught once and then not is
-            # NOT CAUGHT, with what failed the first time printed.
+            # In CI a mutation counts as caught only if its failure
+            # reproduces (reproduces(): the failing tests alone, the same
+            # way, or the whole suite again). A test that fails for the
+            # runner's reasons would otherwise pass itself off as coverage:
+            # an unlisted mutation nothing really catches would read
+            # "caught", and a listed one would read "now caught". Caught once
+            # and then not is NOT CAUGHT, with what failed the first time
+            # printed.
             if not green and expected_file:
                 why = list(_LAST_FAILS)
-                if run_suite():
+                if not reproduces(why, list(_LAST_TESTS)):
                     green = True
                     print(f"  caught once, then not: counted as NOT CAUGHT, "
                           f"and the first failure was a flaky test: {name}")

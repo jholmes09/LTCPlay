@@ -19,8 +19,6 @@
 # Format: where | exact mutation name | reason
 #   where is "all" (every OS) or "windows" (Windows only).
 
-# -- macOS only
-windows | the app runs from the wrong folder | only compiling and running the macOS C launcher catches it; that cannot run on Windows
 
 # -- beyond.py: two guard layers by design (S5), so removing one alone is
 # not independently observable while the other still refuses the same

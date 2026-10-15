@@ -34,12 +34,24 @@ SHOW_PROBLEMS = []
 
 
 CHECKS = [0]   # how many check() calls this run made, for the job summary
+# The test function running now (section() records it) and the ones a
+# failure landed in. The run's last lines name them ("failed tests: ..."), so
+# mutate.py can run just those again under the same mutation to see whether
+# the failure reproduces, and `--only` runs a named few by hand.
+_CURRENT = [""]
+FAILED_IN = []
+
+
+def _blame():
+    if _CURRENT[0] and _CURRENT[0] not in FAILED_IN:
+        FAILED_IN.append(_CURRENT[0])
 
 
 def check(cond, msg):
     CHECKS[0] += 1
     if not cond:
         FAILS.append(msg)
+        _blame()
         print(f"  FAIL  {msg}")
     return cond
 
@@ -106,6 +118,9 @@ def _ci_crash_hook(started):
         text = "".join(traceback.format_exception(kind, value, tb))
         sys.__stderr__.write(text)
         tail = [l for l in text.rstrip().splitlines() if l.strip()][-10:]
+        _blame()
+        if FAILED_IN:
+            print("failed tests: " + ", ".join(FAILED_IN))
         ci_annotate("selftest stopped on an uncaught exception",
                     "\n".join(tail))
         ci_summary("CRASH (uncaught exception)", time.time() - started,
@@ -420,65 +435,6 @@ def _show_changes(root, before):
     return out
 
 
-def _find_bash():
-    """The bash that can syntax-check a Mac launcher, or None.
-
-    On a Mac and on Linux that is plain `bash`, exactly as it always was. On
-    Windows, `bash` on the PATH is usually WSL's launcher in System32, which
-    with no Linux installed prints its complaint and fails every script. Git
-    for Windows carries a real bash, so use that one when it is there."""
-    if sys.platform != "win32":
-        return "bash"
-    import shutil
-    cands = []
-    git = shutil.which("git")
-    if git:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(git)))
-        cands += [os.path.join(root, "bin", "bash.exe"),
-                  os.path.join(root, "usr", "bin", "bash.exe")]
-    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
-        if os.environ.get(env):
-            cands.append(os.path.join(os.environ[env], "Git", "bin",
-                                      "bash.exe"))
-    for c in cands:
-        if os.path.isfile(c):
-            return c
-    return None
-
-
-BASH = _find_bash()
-
-
-def bash_n(path):
-    """`bash -n` on one launcher: does it even parse?
-
-    The launchers are Mac .command files. A Windows machine with no Git for
-    Windows has no bash to parse them with; that is said once per script and
-    counted as nothing proven, not as a failure. CI has Git for Windows, so
-    there this always runs."""
-    import subprocess
-    if BASH is None:
-        print(f"  (no bash on this machine to parse "
-              f"{os.path.basename(path)!r}; the Mac launchers are parsed on "
-              f"the Mac and in CI, skipped)")
-        return subprocess.CompletedProcess([path], 0, "", "")
-    return subprocess.run([BASH, "-n", path], capture_output=True, text=True)
-
-
-def launcher(name, root=None):
-    """Where a launcher actually is: the install folder, or Tools/ in it.
-
-    The rarely-used ones moved into Tools/ so the folder a show operator
-    opens has four things in it instead of twelve. A test that only looks in
-    one place passes on one layout and fails on the other for reasons that
-    have nothing to do with the show."""
-    root = root or os.path.dirname(os.path.abspath(__file__))
-    for p in (os.path.join(root, name), os.path.join(root, "Tools", name)):
-        if os.path.exists(p):
-            return p
-    return os.path.join(root, name)
-
-
 def section(name):
     # Record which test function this heading came from. A test that is defined
     # but never called is worse than no test: it reads as coverage in the file
@@ -489,6 +445,8 @@ def section(name):
     _who = _sys._getframe(1).f_code.co_name
     if _TEMPRUN is not None and _who.startswith("test_"):
         _TEMPRUN.next_test(_who)
+    if _who.startswith("test_"):
+        _CURRENT[0] = _who
     RAN.add(_who)
     print(f"\n== {name}")
 
@@ -2790,660 +2748,6 @@ def test_timeline_input_block():
             check(False, f"{why} should have been rejected")
         except ValueError:
             pass
-    print("  ok")
-
-
-
-def test_installer_and_launcher_names():
-    section("the installer can actually create its launcher")
-    # This is here because it did not. The installer wrote a launcher named
-    # `ltcplay` into a folder whose python package directory is also named
-    # `ltcplay`, so the redirect hit a directory and the install died at the
-    # last line. No amount of unit testing the player would have caught it;
-    # only running the installer does, and nothing ever ran the installer.
-    here = os.path.dirname(os.path.abspath(__file__))
-    inst = launcher("Install ltcplay.command")
-    menu = launcher("Run ltcplay.command")
-    if not os.path.exists(inst):
-        print("  installer not in this folder, skipped")
-        return
-    text = open(inst).read()
-    m = re.search(r"^LAUNCHER=(\S+)", text, re.M)
-    if not check(m, "the installer does not name its launcher in one place"):
-        return
-    name = m.group(1)
-    check(not os.path.isdir(os.path.join(here, name)),
-          f"the installer wants to write a launcher called {name!r}, but a "
-          f"DIRECTORY of that name is sitting in the same folder. The redirect "
-          f"will fail and the install will die at the last step.")
-    check(name != "ltcplay",
-          "the launcher cannot be called 'ltcplay': that is the package "
-          "directory's name")
-    check(f'cat > "$LAUNCHER"' in text,
-          "the installer should write the launcher through $LAUNCHER so the "
-          "name is defined exactly once")
-
-    # /usr/bin/python3 on a Mac that has never had Xcode EXISTS and does
-    # nothing: macOS shows its own "developer tools not found" dialog and
-    # every call fails. The installer tested that python3 was present, which
-    # on that machine is always true, then died with "Could not create the
-    # Python environment" -- the second useless sentence in a row. Jeff hit
-    # this setting up the second Mac, 2026-09-14.
-    check('"$PY" -V' in text,
-          "the installer checks that python3 EXISTS but never runs it; on a "
-          "fresh Mac it exists and cannot run")
-    check("xcode-select --install" in text,
-          "nothing tells the operator the one command that fixes a Mac with "
-          "no Command Line Tools")
-    check("xcrun" in text,
-          "the installer does not recognise the developer-tools failure in "
-          "what python3 prints, so it reports a generic error instead")
-    check('VENVLOG=$("$PY" -m venv' in text,
-          "the environment error is not captured, so the operator is told "
-          "only that it failed. The name $VENVLOG appearing in the message "
-          "is not enough: it has to be assigned from the command.")
-    # And the launchers must survive a copy that drops the execute bit.
-    check("chmod +x" in text and "*.command" in text,
-          "the installer no longer repairs the execute bit on the launchers")
-
-    import subprocess
-    rc = bash_n(inst)
-    check(rc.returncode == 0,
-          f"the installer is not valid bash: {rc.stderr.strip()}")
-
-    # The autostart agent, same class of bug as the installer's python3 check:
-    # launchctl returning 0 means the job was ACCEPTED, not that the program
-    # runs. Jeff installed it on 2026-09-14, it reported success, nothing was
-    # listening, and no log was ever written. 2026-09-14.
-    # The menu is "everything anyone needs on a show day", and until
-    # 2026-09-14 there was no way on it to prove the copy in front of you is
-    # the one you think it is. Jeff asked how to test an update had landed and
-    # the honest answer was a path nobody would remember.
-    if os.path.exists(menu):
-        m = open(menu).read()
-        check("selftest.py" in m,
-              "the menu has no way to run the self test, so nobody can prove "
-              "an install or an update actually landed")
-        check("prove this copy works" in m,
-              "the self-test item is not offered in the menu's own list")
-        rc = bash_n(menu)
-        check(rc.returncode == 0,
-              f"the menu is not valid bash: {rc.stderr.strip()}")
-
-    # Jeff, 2026-09-14: "always give me command files to execute instead of
-    # asking me to type stuff into terminal. Its safer." The agent refuses
-    # folders macOS protects, so the remedy has to be double-clickable too.
-    mover = launcher("Move somewhere macOS allows.command")
-    check(os.path.exists(mover),
-          "the agent tells the operator to move the folder and ships no way "
-          "to do it without typing mv into a terminal")
-    if os.path.exists(mover):
-        mv = open(mover).read()
-        rc = bash_n(mover)
-        check(rc.returncode == 0,
-              f"the mover is not valid bash: {rc.stderr.strip()}")
-        check("rm -rf \"$DEST/.venv\"" in mv,
-              "moving the folder leaves a Python environment built for the "
-              "old path, which fails in a way nobody would connect to a move")
-        check("A SHOW IS RUNNING" in mv,
-              "the folder can be moved out from under a running show")
-        check("already something at" in mv,
-              "the mover would overwrite whatever is at the destination")
-        # Run from an update pack it used to move the PACK, leaving a second
-        # folder behind and updating nothing. Jeff, 2026-09-14.
-        check("Apply this update.command" in mv and "update pack" in mv,
-              "the mover can still be run from an update pack, where it "
-              "moves the pack and updates nothing")
-        check("Move somewhere macOS allows.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the mover, so the second Mac gets "
-              "the refusal with no way to act on it")
-
-    # Two copies of a show player on one machine is how the wrong renders got
-    # driven once already this season. Jeff, 2026-09-14: "some of these files
-    # are duplicates."
-    finder = launcher("Find every copy.command")
-    check(os.path.exists(finder),
-          "there is no way to see every copy of ltcplay on a Mac, so nobody "
-          "can tell which one is about to run the show")
-    if os.path.exists(finder):
-        fd = open(finder).read()
-        rc = bash_n(finder)
-        check(rc.returncode == 0,
-              f"the copy finder is not valid bash: {rc.stderr.strip()}")
-        check("never deletes" in fd,
-              "the copy finder does not promise to leave files alone")
-        check("_reset_portaudio" in fd,
-              "the copy finder cannot tell an old build from a new one")
-        check("Find every copy.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the copy finder")
-
-    # macOS decides which program is asking for the microphone from the
-    # code signature and Info.plist of the running executable. A bare python
-    # started by launchd has neither, so it is never prompted and never
-    # granted. DEF-0228, confirmed on the show Mac 2026-09-14.
-    app = launcher("Build LTC Player app.command")
-    check(os.path.exists(app),
-          "there is no way to build an app bundle, so the login agent can "
-          "never be granted a microphone")
-    if os.path.exists(app):
-        ab = open(app, encoding="utf-8").read()
-        rc = bash_n(app)
-        check(rc.returncode == 0,
-              f"the app builder is not valid bash: {rc.stderr.strip()}")
-        check("NSMicrophoneUsageDescription" in ab,
-              "the bundle declares no microphone reason, so macOS has "
-              "nothing to put in the dialog and may not show one")
-        plist_body = ab.split("<<PLIST", 1)[-1].split("\nPLIST\n", 1)[0]
-        check("LSUIElement" in plist_body,
-              "the bundle is not marked LSUIElement, so macOS would give it a "
-              "Dock icon and then report it as not responding, because it has "
-              "no windows and no event loop of its own")
-        check("LSBackgroundOnly" not in plist_body,
-              "a background-only app cannot put a permission dialog on "
-              "screen, which is the one thing this bundle exists to do")
-        check("codesign" in ab and "--sign -" in ab,
-              "the bundle is not signed, so the grant has no stable identity "
-              "to attach to and would not survive a relaunch")
-        check("import numpy, sounddevice, zstandard" in ab,
-              "the builder does not prove the bundle can load the audio "
-              "libraries, so the app could start and read nothing")
-        check("open(py, O_RDONLY)" in ab,
-              "the launcher hands over to a Python environment it never "
-              "checked it can open; a double-clicked app that does nothing "
-              "at all is the worst failure this has")
-        check("access(py" not in ab,
-              "access() is refused SILENTLY on a protected folder and reports "
-              "a file that is sitting right there as missing, which is "
-              "exactly the wrong thing to tell somebody at 3am. It has to be "
-              "a real open()")
-        check("strerror(err)" in ab and "EACCES" in ab,
-              "the launcher does not say WHY it could not use the file, so "
-              "'missing' and 'refused' look identical to the operator")
-        check("AppTranslocation" in ab,
-              "an app macOS is running from a temporary read-only copy sees "
-              "no show folder at all, and nothing would say so")
-        check("Library/Logs/LTCPlayer-start.log" in ab,
-              "the failure exists only in a dialog, which is gone the moment "
-              "it is dismissed")
-        # The builder must not leave a half-built bundle that Autostart then
-        # tries to use.
-        check("bye " in ab and "Nothing was built" in ab,
-              "a failed build does not say that nothing was built")
-        # Signing is not the same as macOS being willing to run it. Jeff got
-        # "ltcplay is damaged, move it to the Trash" at the next reboot,
-        # hours after the builder reported success. 2026-09-14.
-        check("spctl" in ab,
-              "the builder never asks Gatekeeper, so a bundle macOS refuses "
-              "is only discovered at the next reboot")
-        check("--verify --deep --strict" in ab,
-              "the signature is never verified after it is applied")
-        check(ab.count('rm -rf "$HERE/$APP"') >= 3,
-              "a rejected bundle is left in place, ready to be found on a "
-              "show night")
-
-    old_app = launcher("Build the login app.command")
-    if os.path.exists(old_app):
-        ob = open(old_app, encoding="utf-8").read()
-        check("Build LTC Player app.command" in ob,
-              "the superseded login-app builder does not point at the one "
-              "that replaced it, so it reads as a second, equal choice")
-
-    auto_t = open(launcher("Autostart ltcplay.command")).read()
-    check("LTC Player.app/Contents/MacOS/LTC Player" in auto_t,
-          "the agent never uses LTC Player.app, so building it changes "
-          "nothing about what starts at login")
-    check("ltcplay.app/Contents/MacOS/ltcplay" in auto_t,
-          "the agent dropped the older bundle, which is still installed on "
-          "machines that built one")
-    check('[ -f "$APPBOOT" ]' in auto_t,
-          "the agent would use a half-built bundle")
-    check("EnvironmentVariables" in auto_t,
-          "the agent cannot pass PYTHONHOME, so a copied interpreter that "
-          "needs it would fail to start at login")
-
-    # An update that is dragged in by hand is an update where one file gets
-    # missed. Jeff, 2026-09-14: "I need just the new stuff", and the standing
-    # rule is command files, not typed commands.
-    apply_ = launcher("Apply this update.command")
-    if os.path.exists(apply_):
-        at = open(apply_, encoding="utf-8").read()
-        # A rollback that restores the package and leaves the new launchers
-        # behind produces an install whose tools and code disagree. That is
-        # worse than either version on its own, and it happened for real on
-        # the show Mac: the new trigger tool ran against the old engine and
-        # reported the show file as unloadable.
-        check("restore()" in at and at.count("\n  restore\n") >= 2,
-              "the updater does not restore the WHOLE install on failure, so "
-              "a rolled-back machine is left with new tools running old code")
-        check('cp "$f" "$BACKUP/"' in at,
-              "the updater keeps only the package, so the launchers it is "
-              "about to overwrite cannot be put back")
-        # The suite is the gate. A finding about the SHOW FILE must not hold
-        # back a program the updater is forbidden to fix.
-        check('grep -q "SHOW FILE"' in at,
-              "the updater does not surface show-file findings, so they "
-              "either block the update or vanish")
-        check('[ -d "$SRC/_payload" ]' in at,
-              "an update pack with its payload loose at the top level "
-              "invites somebody to run an install-only tool from it")
-    if SOURCE_TREE:
-        check(os.path.exists(apply_),
-              "there is no double-clickable way to apply an update to an "
-              "existing install")
-    if os.path.exists(apply_):
-        ap = open(apply_).read()
-        rc = bash_n(apply_)
-        check(rc.returncode == 0,
-              f"the updater is not valid bash: {rc.stderr.strip()}")
-        check("ltcplay.previous" in ap,
-              "the updater overwrites the program with no way back")
-        check("selftest.py" in ap and "all checks passed" in ap,
-              "the updater does not prove the result, so a bad update is "
-              "discovered on show night")
-        check("A SHOW IS RUNNING" in ap,
-              "the program can be replaced under a running show")
-        check("-d \"$SRC/show\"" in ap,
-              "the updater does not refuse a FULL bundle, which would copy a "
-              "whole show into another install")
-        for keep in (".venv", "show"):
-            check(f'cp -R "$SRC/ltcplay/."' in ap,
-                  "the updater copies more than the program")
-
-    # Under the login agent there is no window to close and no obvious
-    # process to kill, and some faults (a poisoned PortAudio) only clear on a
-    # real process restart. Jeff, 2026-09-14.
-    restart = launcher("Restart ltcplay.command")
-    check(os.path.exists(restart),
-          "there is no way to force a real restart when the login agent owns "
-          "the engine; some faults only clear when the process dies")
-    if os.path.exists(restart):
-        rs = open(restart).read()
-        rc = bash_n(restart)
-        check(rc.returncode == 0,
-              f"the restart script is not valid bash: {rc.stderr.strip()}")
-        check("kickstart" in rs,
-              "the restart does not use launchctl kickstart, so it cannot "
-              "restart an agent-owned engine")
-        check("A SHOW IS RUNNING" in rs and "RESTART" in rs,
-              "a restart can be triggered mid-show without a hard "
-              "confirmation; it blacks the rig out for a few seconds")
-        check("ltcplay.cli" in rs,
-              "with no agent installed the restart cannot find the process "
-              "to stop")
-        check("Restart ltcplay.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the restart")
-
-    # The plist writes key and value on ONE line. Parsing it with
-    # "grep -A1 | tail -1" reads the NEXT key and prints nonsense, which is
-    # what Autostart did until 2026-09-14.
-    for f in (finder, launcher("Autostart ltcplay.command")):
-        if os.path.exists(f):
-            t = open(f).read()
-            check("workdir_of" in t,
-                  f"{os.path.basename(f)} reads the agent's folder out of the "
-                  f"plist by hand; key and value share a line, so it prints "
-                  f"the wrong thing")
-
-    auto = launcher("Autostart ltcplay.command")
-    if os.path.exists(auto):
-        a = open(auto).read()
-        rc = bash_n(auto)
-        check(rc.returncode == 0,
-              f"the autostart script is not valid bash: {rc.stderr.strip()}")
-        check("NEVER ANSWERED" in a,
-              "the agent still reports success on launchctl's exit code "
-              "alone; it has to wait for the engine to actually answer")
-        check("/api/state" in a.split("bootstrap")[-1],
-              "nothing polls the engine after the agent is accepted")
-        check("CloudStorage" in a,
-              "the agent can still be installed from a Dropbox or iCloud "
-              "folder, where launchd cannot reach it and fails silently")
-        # Desktop, Documents and Downloads are TCC protected: a launchd
-        # process does not inherit the consent Finder and Terminal have, and
-        # is refused with "Operation not permitted". Jeff hit this on
-        # 2026-09-14 following my own instruction to install from the Desktop
-        # bundle.
-        for prot in ("Desktop", "Documents", "Downloads"):
-            check(f'"$HOME/{prot}"' in a,
-                  f"the agent can still be installed from ~/{prot}, which "
-                  f"macOS protects; launchd is refused there with "
-                  f"Operation not permitted and writes no log")
-        check("Operation not permitted" in a,
-              "the refusal does not name the error the operator actually "
-              "saw, so they cannot connect the two")
-        # The agent used to promise a microphone prompt that never comes:
-        # macOS does not prompt for a login agent at all. Confirmed on the
-        # show Mac, 2026-09-14 (DEF-0228).
-        check("does NOT prompt" in a,
-              "the agent still tells the operator a microphone prompt will "
-              "appear; it does not, and they discover the silence later")
-        check("Web ltcplay.command' instead" in a or
-              "'Web ltcplay.command' instead" in a,
-              "nothing names the fallback that actually hears timecode")
-        check("No browser opens by itself" in a,
-              "nothing tells the operator that no browser will open; the "
-              "agent runs with --no-browser on purpose")
-
-    # A MacBook that sleeps mid-show freezes the rig on its last frame and
-    # stops the clock the chase runs on. Every launcher that can drive a rig
-    # has to hold the machine awake for as long as it is open.
-    for awake in ("Run ltcplay.command", "Web ltcplay.command"):
-        f = launcher(awake)
-        if not os.path.exists(f):
-            continue
-        t = open(f).read()
-        check("caffeinate" in t,
-              f"{awake} does not stop the Mac sleeping; a lid closed "
-              f"mid-set freezes the rig")
-        check("-w $$" in t or "-w $PPID" in t,
-              f"{awake}'s caffeinate is not tied to the window's "
-              f"lifetime, so it either dies immediately or outlives the show")
-
-    # The autostart agent is the answer to "the process is not there and
-    # nobody is standing at the laptop". It must never bring a rig to life on
-    # its own, though: it comes up idle and a person presses Run.
-    # The menu is "everything anyone needs on a show day", and until
-    # 2026-09-14 there was no way on it to prove the copy in front of you is
-    # the one you think it is. Jeff asked how to test an update had landed and
-    # the honest answer was a path nobody would remember.
-    if os.path.exists(menu):
-        m = open(menu).read()
-        check("selftest.py" in m,
-              "the menu has no way to run the self test, so nobody can prove "
-              "an install or an update actually landed")
-        check("prove this copy works" in m,
-              "the self-test item is not offered in the menu's own list")
-        rc = bash_n(menu)
-        check(rc.returncode == 0,
-              f"the menu is not valid bash: {rc.stderr.strip()}")
-
-    # Jeff, 2026-09-14: "always give me command files to execute instead of
-    # asking me to type stuff into terminal. Its safer." The agent refuses
-    # folders macOS protects, so the remedy has to be double-clickable too.
-    mover = launcher("Move somewhere macOS allows.command")
-    check(os.path.exists(mover),
-          "the agent tells the operator to move the folder and ships no way "
-          "to do it without typing mv into a terminal")
-    if os.path.exists(mover):
-        mv = open(mover).read()
-        rc = bash_n(mover)
-        check(rc.returncode == 0,
-              f"the mover is not valid bash: {rc.stderr.strip()}")
-        check("rm -rf \"$DEST/.venv\"" in mv,
-              "moving the folder leaves a Python environment built for the "
-              "old path, which fails in a way nobody would connect to a move")
-        check("A SHOW IS RUNNING" in mv,
-              "the folder can be moved out from under a running show")
-        check("already something at" in mv,
-              "the mover would overwrite whatever is at the destination")
-        # Run from an update pack it used to move the PACK, leaving a second
-        # folder behind and updating nothing. Jeff, 2026-09-14.
-        check("Apply this update.command" in mv and "update pack" in mv,
-              "the mover can still be run from an update pack, where it "
-              "moves the pack and updates nothing")
-        check("Move somewhere macOS allows.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the mover, so the second Mac gets "
-              "the refusal with no way to act on it")
-
-    # Two copies of a show player on one machine is how the wrong renders got
-    # driven once already this season. Jeff, 2026-09-14: "some of these files
-    # are duplicates."
-    finder = launcher("Find every copy.command")
-    check(os.path.exists(finder),
-          "there is no way to see every copy of ltcplay on a Mac, so nobody "
-          "can tell which one is about to run the show")
-    if os.path.exists(finder):
-        fd = open(finder).read()
-        rc = bash_n(finder)
-        check(rc.returncode == 0,
-              f"the copy finder is not valid bash: {rc.stderr.strip()}")
-        check("never deletes" in fd,
-              "the copy finder does not promise to leave files alone")
-        check("_reset_portaudio" in fd,
-              "the copy finder cannot tell an old build from a new one")
-        check("Find every copy.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the copy finder")
-
-    # macOS decides which program is asking for the microphone from the
-    # code signature and Info.plist of the running executable. A bare python
-    # started by launchd has neither, so it is never prompted and never
-    # granted. DEF-0228, confirmed on the show Mac 2026-09-14.
-    app = launcher("Build LTC Player app.command")
-    check(os.path.exists(app),
-          "there is no way to build an app bundle, so the login agent can "
-          "never be granted a microphone")
-    if os.path.exists(app):
-        ab = open(app, encoding="utf-8").read()
-        rc = bash_n(app)
-        check(rc.returncode == 0,
-              f"the app builder is not valid bash: {rc.stderr.strip()}")
-        check("NSMicrophoneUsageDescription" in ab,
-              "the bundle declares no microphone reason, so macOS has "
-              "nothing to put in the dialog and may not show one")
-        plist_body = ab.split("<<PLIST", 1)[-1].split("\nPLIST\n", 1)[0]
-        check("LSUIElement" in plist_body,
-              "the bundle is not marked LSUIElement, so macOS would give it a "
-              "Dock icon and then report it as not responding, because it has "
-              "no windows and no event loop of its own")
-        check("LSBackgroundOnly" not in plist_body,
-              "a background-only app cannot put a permission dialog on "
-              "screen, which is the one thing this bundle exists to do")
-        check("codesign" in ab and "--sign -" in ab,
-              "the bundle is not signed, so the grant has no stable identity "
-              "to attach to and would not survive a relaunch")
-        check("import numpy, sounddevice, zstandard" in ab,
-              "the builder does not prove the bundle can load the audio "
-              "libraries, so the app could start and read nothing")
-        check("open(py, O_RDONLY)" in ab,
-              "the launcher hands over to a Python environment it never "
-              "checked it can open; a double-clicked app that does nothing "
-              "at all is the worst failure this has")
-        check("access(py" not in ab,
-              "access() is refused SILENTLY on a protected folder and reports "
-              "a file that is sitting right there as missing, which is "
-              "exactly the wrong thing to tell somebody at 3am. It has to be "
-              "a real open()")
-        check("strerror(err)" in ab and "EACCES" in ab,
-              "the launcher does not say WHY it could not use the file, so "
-              "'missing' and 'refused' look identical to the operator")
-        check("AppTranslocation" in ab,
-              "an app macOS is running from a temporary read-only copy sees "
-              "no show folder at all, and nothing would say so")
-        check("Library/Logs/LTCPlayer-start.log" in ab,
-              "the failure exists only in a dialog, which is gone the moment "
-              "it is dismissed")
-        # The builder must not leave a half-built bundle that Autostart then
-        # tries to use.
-        check("bye " in ab and "Nothing was built" in ab,
-              "a failed build does not say that nothing was built")
-        # Signing is not the same as macOS being willing to run it. Jeff got
-        # "ltcplay is damaged, move it to the Trash" at the next reboot,
-        # hours after the builder reported success. 2026-09-14.
-        check("spctl" in ab,
-              "the builder never asks Gatekeeper, so a bundle macOS refuses "
-              "is only discovered at the next reboot")
-        check("--verify --deep --strict" in ab,
-              "the signature is never verified after it is applied")
-        check(ab.count('rm -rf "$HERE/$APP"') >= 3,
-              "a rejected bundle is left in place, ready to be found on a "
-              "show night")
-
-    old_app = launcher("Build the login app.command")
-    if os.path.exists(old_app):
-        ob = open(old_app, encoding="utf-8").read()
-        check("Build LTC Player app.command" in ob,
-              "the superseded login-app builder does not point at the one "
-              "that replaced it, so it reads as a second, equal choice")
-
-    auto_t = open(launcher("Autostart ltcplay.command")).read()
-    check("LTC Player.app/Contents/MacOS/LTC Player" in auto_t,
-          "the agent never uses LTC Player.app, so building it changes "
-          "nothing about what starts at login")
-    check("ltcplay.app/Contents/MacOS/ltcplay" in auto_t,
-          "the agent dropped the older bundle, which is still installed on "
-          "machines that built one")
-    check('[ -f "$APPBOOT" ]' in auto_t,
-          "the agent would use a half-built bundle")
-    check("EnvironmentVariables" in auto_t,
-          "the agent cannot pass PYTHONHOME, so a copied interpreter that "
-          "needs it would fail to start at login")
-
-    # An update that is dragged in by hand is an update where one file gets
-    # missed. Jeff, 2026-09-14: "I need just the new stuff", and the standing
-    # rule is command files, not typed commands.
-    apply_ = launcher("Apply this update.command")
-    if os.path.exists(apply_):
-        at = open(apply_, encoding="utf-8").read()
-        # A rollback that restores the package and leaves the new launchers
-        # behind produces an install whose tools and code disagree. That is
-        # worse than either version on its own, and it happened for real on
-        # the show Mac: the new trigger tool ran against the old engine and
-        # reported the show file as unloadable.
-        check("restore()" in at and at.count("\n  restore\n") >= 2,
-              "the updater does not restore the WHOLE install on failure, so "
-              "a rolled-back machine is left with new tools running old code")
-        check('cp "$f" "$BACKUP/"' in at,
-              "the updater keeps only the package, so the launchers it is "
-              "about to overwrite cannot be put back")
-        # The suite is the gate. A finding about the SHOW FILE must not hold
-        # back a program the updater is forbidden to fix.
-        check('grep -q "SHOW FILE"' in at,
-              "the updater does not surface show-file findings, so they "
-              "either block the update or vanish")
-        check('[ -d "$SRC/_payload" ]' in at,
-              "an update pack with its payload loose at the top level "
-              "invites somebody to run an install-only tool from it")
-    if SOURCE_TREE:
-        check(os.path.exists(apply_),
-              "there is no double-clickable way to apply an update to an "
-              "existing install")
-    if os.path.exists(apply_):
-        ap = open(apply_).read()
-        rc = bash_n(apply_)
-        check(rc.returncode == 0,
-              f"the updater is not valid bash: {rc.stderr.strip()}")
-        check("ltcplay.previous" in ap,
-              "the updater overwrites the program with no way back")
-        check("selftest.py" in ap and "all checks passed" in ap,
-              "the updater does not prove the result, so a bad update is "
-              "discovered on show night")
-        check("A SHOW IS RUNNING" in ap,
-              "the program can be replaced under a running show")
-        check("-d \"$SRC/show\"" in ap,
-              "the updater does not refuse a FULL bundle, which would copy a "
-              "whole show into another install")
-        for keep in (".venv", "show"):
-            check(f'cp -R "$SRC/ltcplay/."' in ap,
-                  "the updater copies more than the program")
-
-    # Under the login agent there is no window to close and no obvious
-    # process to kill, and some faults (a poisoned PortAudio) only clear on a
-    # real process restart. Jeff, 2026-09-14.
-    restart = launcher("Restart ltcplay.command")
-    check(os.path.exists(restart),
-          "there is no way to force a real restart when the login agent owns "
-          "the engine; some faults only clear when the process dies")
-    if os.path.exists(restart):
-        rs = open(restart).read()
-        rc = bash_n(restart)
-        check(rc.returncode == 0,
-              f"the restart script is not valid bash: {rc.stderr.strip()}")
-        check("kickstart" in rs,
-              "the restart does not use launchctl kickstart, so it cannot "
-              "restart an agent-owned engine")
-        check("A SHOW IS RUNNING" in rs and "RESTART" in rs,
-              "a restart can be triggered mid-show without a hard "
-              "confirmation; it blacks the rig out for a few seconds")
-        check("ltcplay.cli" in rs,
-              "with no agent installed the restart cannot find the process "
-              "to stop")
-        check("Restart ltcplay.command" in
-              open(os.path.join(here, "ltcplay", "cli.py")).read(),
-              "the bundle does not carry the restart")
-
-    # The plist writes key and value on ONE line. Parsing it with
-    # "grep -A1 | tail -1" reads the NEXT key and prints nonsense, which is
-    # what Autostart did until 2026-09-14.
-    for f in (finder, launcher("Autostart ltcplay.command")):
-        if os.path.exists(f):
-            t = open(f).read()
-            check("workdir_of" in t,
-                  f"{os.path.basename(f)} reads the agent's folder out of the "
-                  f"plist by hand; key and value share a line, so it prints "
-                  f"the wrong thing")
-
-    auto = launcher("Autostart ltcplay.command")
-    if os.path.exists(auto):
-        t = open(auto).read()
-        import subprocess as _sp2
-        r = bash_n(auto)
-        check(r.returncode == 0,
-              f"the autostart launcher is not valid shell: {r.stderr.strip()}")
-        check("KeepAlive" in t and "RunAtLoad" in t,
-              "an autostart that does not restart the engine is not an "
-              "autostart")
-        check("--no-browser" in t,
-              "a login agent that opens a browser window every boot is a "
-              "nuisance on a show machine")
-        i_serve = t.find("<string>serve</string>")
-        check(i_serve != -1, "the agent does not start the engine")
-        for danger in ("<string>run</string>", "--arm", "auto-start the show"):
-            check(danger not in t,
-                  f"the autostart agent contains {danger!r}: it must bring up "
-                  f"an IDLE engine, never start a show at a rig by itself")
-        check("bootout" in t and "rm -f" in t,
-              "an autostart with no way to remove it is a trap")
-
-    # The web launcher has to replace a stale server rather than sit behind
-    # one. But never behind a LIVE one: killing that blacks out the rig, and
-    # a script does not get to make that call.
-    web = launcher("Web ltcplay.command")
-    if os.path.exists(web):
-        wtext = open(web).read()
-        check(re.search(r"^OLD=\$\(\s*pgrep -f .*ltcplay\.cli serve",
-                        wtext, re.M),
-              "the web launcher must FIND the running server by asking the "
-              "system for it; anything else and a stale server keeps serving "
-              "old routes to a new page")
-        check(re.search(r"^OLD=\$\(\s*pgrep -f .*boot\.py", wtext, re.M),
-              "the web launcher cannot see an engine started by "
-              "LTC Player.app, so it would start a second one on top of it")
-        check("/api/state" in wtext and "running" in wtext,
-              "the web launcher must ASK the old server whether a show is "
-              "running before it kills it")
-        i_check = wtext.find("/api/state")
-        i_kill = wtext.find("kill $OLD")
-        check(i_check != -1 and i_kill != -1 and i_check < i_kill,
-              "the web launcher kills the old server before checking whether "
-              "a show is running on it")
-        check("exit 1" in wtext[i_check:i_kill],
-              "the web launcher must refuse and stop when a show is live, not "
-              "carry on and kill it")
-        import subprocess as _sp
-        r = bash_n(web)
-        check(r.returncode == 0,
-              f"the web launcher is not valid shell: {r.stderr.strip()}")
-
-    # Everything that invokes it must agree on the name, or the menu runs a
-    # command that does not exist.
-    if os.path.exists(menu):
-        mtext = open(menu).read()
-        calls = set(re.findall(r"\./([A-Za-z0-9_.-]+) (?:find|run|check|monitor|devices)",
-                               mtext))
-        check(calls and calls == {name},
-              f"the launcher is {name!r} but the menu calls {sorted(calls)}")
-    for doc in ("README.md", "OPERATOR.md"):
-        d = os.path.join(here, doc)
-        if not os.path.exists(d):
-            continue
-        stale = re.findall(r"\./ltcplay ", open(d).read())
-        check(not stale, f"{doc} still tells people to run ./ltcplay, which is "
-                         f"a directory, not a command")
     print("  ok")
 
 
@@ -8673,53 +7977,6 @@ def test_the_panel_tells_the_truth_about_backup_mode():
           "direct playback must not be described as backup mode")
 
 
-def test_a_shared_show_folder_cannot_be_moved_away_from_it():
-    section("moving the player away from a shared show folder must be refused")
-    # Inside the xLights package the player's show folder is a LINK to the one
-    # copy of the renders, so there is not a second 600MB of them and they
-    # cannot drift apart. The move helper would have broken that link and left
-    # an install with no sequences, reporting success.
-    import shutil, subprocess, tempfile
-    here = os.path.dirname(os.path.abspath(__file__))
-    src = launcher("Move somewhere macOS allows.command")
-    if not os.path.exists(src):
-        print("  (no move helper beside the test, skipped)")
-        return
-    if sys.platform == "win32":
-        # The helper is a macOS .command that moves an install out of the
-        # folders macOS protects, and what it guards is a POSIX symlink. There
-        # is no such move and no such link on Windows. Its text is still
-        # parsed above; running it is proven on macOS and Linux.
-        print("  (a macOS-only launcher run against a POSIX symlink; not run "
-              "on Windows, skipped)")
-        return
-    root = tempfile.mkdtemp()
-    try:
-        shows = os.path.join(root, "GPL26 Show")
-        inst = os.path.join(root, "LTC Player")
-        os.makedirs(shows)
-        os.makedirs(os.path.join(inst, ".venv"))
-        open(os.path.join(shows, "a.fseq"), "w").write("x")
-        os.symlink("../GPL26 Show", os.path.join(inst, "show"))
-        dst = os.path.join(inst, os.path.basename(src))
-        shutil.copy2(src, dst)
-        os.chmod(dst, 0o755)
-        r = subprocess.run(["/bin/bash", dst], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=30)
-        out = r.stdout + r.stderr
-        check("cannot be moved on its own" in out,
-              f"the helper must refuse and say why, said: {out[:300]!r}")
-        check(os.path.isdir(inst),
-              "the helper must not have moved the folder anyway")
-        check(os.path.islink(os.path.join(inst, "show")),
-              "the link must still be there")
-        check(os.path.basename(root) in out or root in out
-              or os.path.dirname(inst) in out,
-              "the helper must name the folder to move instead")
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
 # =====================================================================
 # LTC Player.app. Jeff, 2026-09-15: "its time for you to try building
 # this as an .app". Everything below is anchored to a way an app bundle
@@ -8738,275 +7995,6 @@ def _builder_text():
 def _between(text, start_marker, end_marker):
     i = text.index(start_marker) + len(start_marker)
     return text[i:text.index(end_marker, i)]
-
-
-def test_the_app_is_signed_last_and_nothing_touches_it_after():
-    section("a bundle written to after signing is refused by macOS")
-    # This is not hypothetical. The xLights bundle was broken exactly this
-    # way: Info.plist edited after codesign, seal invalid, and on Apple
-    # Silicon an invalid seal is "damaged, move to Trash" at launch.
-    t = _builder_text()
-    if t is None:
-        print("  (no app builder beside the test, skipped)")
-        return
-    sign_at = t.find('codesign --force --sign -')
-    check(sign_at > 0, "the builder does not sign the bundle at all")
-    if sign_at <= 0:
-        return
-    after = t[sign_at:]
-    # Anything that writes INTO the staged bundle after the signature.
-    for pat in ('> "$B/', '>> "$B/', 'cp "$B/', 'mkdir -p "$B/',
-                'cat > "$B', 'iconutil', 'chmod +x "$B'):
-        check(pat not in after,
-              f"the builder still does {pat!r} AFTER codesign, which breaks "
-              f"the seal and makes macOS call the app damaged")
-    # and the verify has to come after the signature, not before it
-    check(t.find("--verify --deep --strict", sign_at) > sign_at,
-          "the builder does not verify the signature after signing")
-
-
-def test_the_build_proves_macos_will_actually_launch_it():
-    section("signing is not launching: the builder has to open the app")
-    # An earlier bundle signed, verified, and was refused as damaged at the
-    # next reboot. codesign and LaunchServices do not apply the same rules,
-    # so the only honest check is to open it.
-    t = _builder_text()
-    if t is None:
-        print("  (no app builder beside the test, skipped)")
-        return
-    check("open -a" in t,
-          "the builder never actually launches the app, so a bundle macOS "
-          "refuses would be handed over as working")
-    check("--selfcheck" in t,
-          "the launch test has nothing to prove the app got as far as "
-          "loading the show code")
-    launch_at = t.find("open -a")
-    # Line-anchored on purpose. 'rm -rf ... appears somewhere after here' is
-    # satisfied by a line that has been commented out or prefixed with a
-    # no-op, which is exactly how this guarantee would quietly disappear.
-    import re as _re
-    removals = [m for m in _re.finditer(r'(?m)^[ \t]*rm -rf "\$HERE/\$APP"[ \t]*$', t)
-                if m.start() > launch_at]
-    check(len(removals) >= 2,
-          f"a bundle that fails the launch test must be REMOVED, in both the "
-          f"'never reported back' and the 'cannot load' branches; found "
-          f"{len(removals)} live removal(s) after the launch test")
-    check(".ltcplay_appcheck" in t and
-          '"$HERE/.ltcplay_appcheck"' in t,
-          "the launch result must be written OUTSIDE the bundle; writing it "
-          "inside would break the signature the test exists to check")
-    check('"$B/.ltcplay_appcheck"' not in t,
-          "the launch result is written inside the bundle")
-
-
-def test_the_app_declares_what_macos_needs_to_know():
-    section("Info.plist: the keys without which the app is a silent failure")
-    t = _builder_text()
-    if t is None:
-        print("  (no app builder beside the test, skipped)")
-        return
-    plist = _between(t, '<<PLIST\n', '\nPLIST\n')
-    for key, why in (
-            ("NSDesktopFolderUsageDescription",
-             "without it macOS can refuse this app the Desktop outright "
-             "instead of asking, and the app then reports the show folder "
-             "as missing"),
-            ("CFBundleExecutable", "macOS would not know what to run"),
-            ("CFBundleIdentifier", "the microphone grant would not survive "
-                                   "the next launch"),
-            ("NSMicrophoneUsageDescription",
-             "macOS refuses to ask for the microphone at all, and hands the "
-             "program silence instead of timecode"),
-            ("LSMinimumSystemVersion", "it would offer to run on macOS it "
-                                       "cannot run on"),
-            ("LSUIElement", "an app with a Dock icon and no event loop is "
-                            "reported as not responding within seconds"),
-    ):
-        check(f"<key>{key}</key>" in plist, f"Info.plist has no {key}: {why}")
-    # the declared executable must be the one that gets compiled
-    check("<key>CFBundleExecutable</key><string>$EXE</string>" in plist,
-          "Info.plist names an executable that is not the compiled one")
-    check('cc -O2 -Wall -o "$B/Contents/MacOS/$EXE"' in t,
-          "the compiled launcher does not land at the name Info.plist names")
-
-
-def test_the_app_launcher_finds_its_way_home():
-    section("the app's launcher, compiled and run")
-    # The bundle's main executable has to be a real signed program, so it is
-    # a small C launcher rather than a shell script: on Apple Silicon a
-    # script cannot carry a signature and the app is refused outright.
-    import shutil, subprocess, tempfile
-    t = _builder_text()
-    if t is None:
-        print("  (no app builder beside the test, skipped)")
-        return
-    c = _between(t, "<<'CSTUB'\n", "\nCSTUB\n")
-    check("execv(" in c, "the launcher must replace itself rather than start "
-                         "a second process, or macOS attaches the microphone "
-                         "permission to the wrong thing")
-    check('strncmp(argv[i], "-psn_", 5)' in c,
-          "LaunchServices passes -psn_0_nnnn on some versions of macOS and "
-          "python refuses to start with an unknown option")
-    # The runs below set LTCPLAY_NO_DIALOG so the missing-Python case does
-    # not put a dialog on the tester's screen. That switch must never be
-    # able to cost the real app its dialog, its message or its log.
-    fbody = _between(c, "static void fail(const char *msg) {", "\n}\n")
-    check('execl("/usr/bin/osascript"' in fbody
-          and "display dialog" in fbody,
-          "the launcher no longer puts a failure on the screen, so a "
-          "double-clicked app with no Python would just vanish")
-    gate = fbody.find('getenv("LTCPLAY_NO_DIALOG")')
-    check(gate >= 0 and 'strcmp(nodialog, "1") == 0' in fbody,
-          "only LTCPLAY_NO_DIALOG=1 exactly may skip the dialog")
-    check(0 <= fbody.find("logline(msg)") < gate
-          and 0 <= fbody.find("fprintf(stderr") < gate,
-          "LTCPLAY_NO_DIALOG must skip only the dialog; the message and the "
-          "log have to happen before it is checked")
-    check(gate < fbody.find('execl("/usr/bin/osascript"'),
-          "the dialog must come after the LTCPLAY_NO_DIALOG check, or the "
-          "check does nothing")
-    check(c.count('getenv("LTCPLAY_NO_DIALOG")') == 1,
-          "LTCPLAY_NO_DIALOG may only gate the dialog in fail()")
-    if sys.platform == "win32":
-        # Everything above reads the C source and runs everywhere. Below it
-        # is compiled and run, and it is a POSIX program (execv, readlink,
-        # a #!/bin/bash python shim) inside a macOS app bundle. Windows has
-        # none of those to run it with.
-        print("  (the app launcher is a POSIX C program for the macOS app "
-              "bundle; compiling and running it is not possible on Windows, "
-              "skipped)")
-        return
-    # The source checks above need no compiler, so they run first.
-    if not shutil.which("cc"):
-        print("  (no compiler here, skipped)")
-        return
-    root = tempfile.mkdtemp()
-    try:
-        # Off a Mac there is no _NSGetExecutablePath; swap in the same idea
-        # so the path arithmetic and argument handling can still be proven.
-        if sys.platform != "darwin":
-            c = c.replace(
-                "#include <mach-o/dyld.h>",
-                "#include <errno.h>\nstatic int _NSGetExecutablePath"
-                "(char *b, uint32_t *s){ ssize_t n=readlink(\"/proc/self/exe\""
-                ", b, *s-1); if(n<0) return -1; b[n]=0; return 0; }")
-        src = os.path.join(root, "stub.c")
-        open(src, "w").write(c)
-        exe = os.path.join(root, "stub")
-        r = subprocess.run(["cc", "-O2", "-Wall", "-Werror", "-o", exe, src],
-                           capture_output=True, text=True, timeout=60)
-        check(r.returncode == 0,
-              f"the launcher does not compile cleanly: {r.stderr[:300]}")
-        if r.returncode != 0:
-            return
-        inst = os.path.join(root, "inst")
-        macos = os.path.join(inst, "LTC Player.app", "Contents", "MacOS")
-        res = os.path.join(inst, "LTC Player.app", "Contents", "Resources")
-        os.makedirs(macos)
-        os.makedirs(res)
-        os.makedirs(os.path.join(inst, ".venv", "bin"))
-        shutil.copy2(exe, os.path.join(macos, "LTC Player"))
-        py = os.path.join(inst, ".venv", "bin", "python")
-        open(py, "w").write('#!/bin/bash\nexec %s "$@"\n' % sys.executable)
-        os.chmod(py, 0o755)
-        open(os.path.join(res, "boot.py"), "w").write(
-            "import os, sys\nprint(os.getcwd())\nprint(sys.argv[1:])\n")
-        run = os.path.join(macos, "LTC Player")
-        # A home of its own, so the start log it writes can be read back
-        # and the tester's real log is left alone.
-        home = os.path.join(root, "home")
-        os.makedirs(os.path.join(home, "Library", "Logs"))
-        env = dict(os.environ, HOME=home, LTCPLAY_NO_DIALOG="1")
-
-        r = subprocess.run([run], capture_output=True, text=True, timeout=30,
-                           env=env)
-        lines = r.stdout.strip().splitlines()
-        check(lines and os.path.realpath(lines[0]) == os.path.realpath(inst),
-              f"the app must run from the folder it sits in, got {lines[:1]}")
-
-        r = subprocess.run([run, "-psn_0_4242", "devices"],
-                           capture_output=True, text=True, timeout=30,
-                           env=env)
-        lines = r.stdout.strip().splitlines()
-        check(len(lines) > 1 and lines[1] == "['devices']",
-              f"-psn must be dropped and real arguments kept, got {lines[1:]}")
-
-        os.rename(py, py + ".gone")
-        r = subprocess.run([run], capture_output=True, text=True, timeout=30,
-                           env=env)
-        check("Install ltcplay.command" in (r.stdout + r.stderr),
-              "with no virtual environment the app must say what to do, not "
-              "die silently: a double-clicked app that does nothing at all is "
-              "the worst failure there is")
-        check(r.returncode == 70,
-              f"a launcher that cannot start must exit 70, got {r.returncode}")
-        log = os.path.join(home, "Library", "Logs", "LTCPlayer-start.log")
-        logged = open(log).read() if os.path.exists(log) else ""
-        check("Install ltcplay.command" in logged,
-              "with LTCPLAY_NO_DIALOG=1 the launcher must still write "
-              "~/Library/Logs/LTCPlayer-start.log; only the dialog is skipped")
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_the_app_starts_the_page_by_itself():
-    section("double-clicking the app has to land on the show page")
-    t = _builder_text()
-    if t is None:
-        print("  (no app builder beside the test, skipped)")
-        return
-    boot = _between(t, "<<'BOOT'\n", "\nBOOT\n")
-    check('"serve"' in boot and '"7878"' in boot,
-          "the app does not default to serving the page, so a double-click "
-          "would do nothing visible")
-    check('"--bind", "127.0.0.1"' in boot,
-          "the app must serve on loopback by default; anyone on the venue "
-          "network could otherwise black out the rig")
-    check('"0.0.0.0"' not in boot,
-          "the app binds every interface somewhere, which puts the rig's "
-          "stop button on the venue network")
-    check("--selfcheck" in boot, "the app has no self-check to launch into")
-    check("sys.path.insert(0, folder)" in boot,
-          "the app would not find the ltcplay package beside it")
-    check('os.path.join(folder, ".ltcplay_appcheck")' in boot,
-          "the self-check result must be written beside the app, not inside "
-          "it: a file written into the bundle breaks the very signature the "
-          "check exists to prove")
-    # An app has no terminal. Anything it prints, including the reason it
-    # could not start, goes nowhere. On 2026-09-15 that gave Jeff an icon
-    # that animated and then nothing at all, with no way to find out why.
-    check("sys.stdout = sys.stderr = fh" in boot,
-          "what the engine prints is thrown away, so a failure to start is "
-          "invisible")
-    check("Library/Logs/LTCPlayer-start.log" in boot,
-          "the app keeps no record of why it stopped")
-    check("osascript" in boot and "display dialog" in boot,
-          "nothing puts a failure on the screen, so the app just vanishes")
-    check("--no-browser" in boot and "/usr/bin/open" in boot,
-          "the engine opens its own browser and swallows the failure, so a "
-          "page that never appears is indistinguishable from an app that "
-          "never started")
-    check("def open_page" in boot and "connect((" in boot,
-          "the browser is opened without waiting for the port, so it lands "
-          "on a connection error and sits there")
-
-    # The app runs the engine through the bundle's boot.py. Nothing on that
-    # command line says "ltcplay.cli", so every "is one already running"
-    # check looked straight past it: a second engine would have been started
-    # on top of the first, and Restart could not stop the first at all.
-    here2 = os.path.dirname(os.path.abspath(__file__))
-    for name in ("Web ltcplay.command", "Restart ltcplay.command",
-                 "Apply this update.command"):
-        f = os.path.join(here2, name)
-        if not os.path.exists(f):
-            continue
-        t2 = open(f, encoding="utf-8").read()
-        for line in t2.splitlines():
-            if "pgrep -f" in line or "pkill -f" in line:
-                check("boot.py" in line,
-                      f"{name} looks for a running engine with a pattern "
-                      f"that cannot match one started by LTC Player.app: "
-                      f"{line.strip()[:90]}")
 
 
 def test_you_can_tell_which_version_is_installed():
@@ -9067,21 +8055,6 @@ def test_you_can_tell_which_version_is_installed():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
-    rep = launcher("What is installed here.command")
-    check(os.path.exists(rep),
-          "there is no way to ask a machine what it has installed")
-    if os.path.exists(rep):
-        r = bash_n(rep)
-        check(r.returncode == 0,
-              f"the report script is not valid bash: {r.stderr.strip()}")
-        t = open(rep, encoding="utf-8").read()
-        check('doc.get("cues")' in t,
-              "the report picks a show file without checking it is one; it "
-              "reported a superseded timeline as THE show once")
-        check("api/state" in t and "build_id" in t,
-              "the report cannot tell you that the RUNNING engine is older "
-              "than the files in the folder, which is the case that bites")
-
     page = open(os.path.join(here, "ltcplay", "web", "index.html"),
                 encoding="utf-8").read()
     check("buildline" in page and "s.build" in page,
@@ -9091,19 +8064,6 @@ def test_you_can_tell_which_version_is_installed():
           "the case that matters: two machines can both say the same release "
           "while one of them has a file changed at 11pm")
 
-    # A release number that sorts, on top of the hash that proves identity.
-    # Jeff, 2026-09-15: "We need to start versioning this so we dont get lost
-    # on who has what."
-    cut = launcher("Cut a release.command")
-    check(os.path.exists(cut), "there is no way to cut a numbered release")
-    if os.path.exists(cut):
-        r = bash_n(cut)
-        check(r.returncode == 0,
-              f"the release script is not valid bash: {r.stderr.strip()}")
-        ct = open(cut, encoding="utf-8").read()
-        check("XXXXXX" in ct,
-              "mktemp without XXXXXX fails on some systems and the script "
-              "then writes its worker into the show folder")
     check(ver.STAMP not in [os.path.basename(f) for f in ver._files()],
           "the VERSION stamp is part of what gets hashed, so writing it "
           "would change the very number it records")
@@ -9131,70 +8091,6 @@ def test_you_can_tell_which_version_is_installed():
         st = ver.status()
         check(rel["release"] in st,
               f"status must name the release, said {st!r}")
-
-
-def test_the_beta_window_app_stays_a_window():
-    section("BETA: the native window must not become part of the engine")
-    # Jeff asked for a native window, in beta. The one thing that must not
-    # change while it is beta, or after, is the separation: the output loop
-    # has a 25ms deadline and a window redraw inside that process freezes the
-    # rig on its last frame with the screen still looking alive.
-    import subprocess
-    here = os.path.dirname(os.path.abspath(__file__))
-    p = launcher("Build the window app (BETA).command")
-    if not os.path.exists(p):
-        print("  (no window-app builder beside the test, skipped)")
-        return
-    t = open(p, encoding="utf-8").read()
-    r = bash_n(p)
-    check(r.returncode == 0,
-          f"the window-app builder is not valid bash: {r.stderr.strip()}")
-
-    objc = t.split("<<'OBJC'\n", 1)[1].split("\nOBJC\n", 1)[0]
-
-    check("NSTask" in objc,
-          "the engine must be a separate process, not something this app "
-          "runs inside itself")
-    check("terminate]" not in objc and "[t terminate" not in objc,
-          "the window app kills the engine somewhere. Closing a window is "
-          "not a reason to black out a rig")
-    check("NSAllowsLocalNetworking" in t,
-          "without an App Transport Security exception WebKit refuses a "
-          "plain http page and the window opens completely blank, with no "
-          "error anywhere")
-    check("portIsUp" in objc and "loadWhenReady" in objc,
-          "the window must wait for the engine before loading, or it opens "
-          "on a connection error and sits there")
-    check("Library/Logs/LTCPlayer-start.log" in objc,
-          "the engine started by this app has no terminal, so its output "
-          "must go to the log or the reason it failed is lost")
-    check("alertAndQuit" in objc,
-          "a window app that cannot start has to say so, not sit blank")
-    check("[NSApp setActivationPolicy:" in objc,
-          "setActivationPolicy: returns BOOL, so dot-syntax assignment does "
-          "not compile everywhere")
-
-    # It is a SECOND app. The proven one must not be touched by this.
-    check('APP="LTC Player Beta.app"' in t,
-          "the beta must be its own bundle; overwriting LTC Player.app would "
-          "put an untested app on the show machine")
-    check("com.jeffholmespresents.ltcplayer.beta" in t,
-          "the beta must have its own bundle id, or macOS attaches the "
-          "microphone grant to whichever was signed last")
-    inst = open(launcher("Install ltcplay.command"),
-                encoding="utf-8").read()
-    check("Build the window app" not in inst,
-          "Install builds the beta, so a fresh machine would get it without "
-          "anybody choosing it")
-    auto = open(launcher("Autostart ltcplay.command"),
-                encoding="utf-8").read()
-    check("LTC Player Beta" not in auto,
-          "Autostart would start the beta at login")
-
-    for a, b in (("{", "}"), ("(", ")"), ("[", "]")):
-        check(objc.count(a) == objc.count(b),
-              f"unbalanced {a}{b} in the window app source: "
-              f"{objc.count(a)} vs {objc.count(b)}")
 
 
 def test_the_trigger_goes_out_on_the_protocol_the_boxes_listen_for():
@@ -11068,108 +9964,6 @@ def test_schedule_routes():
     finally:
         httpd.shutdown()
         httpd.server_close()
-    print("  ok")
-
-
-def test_the_gpl_path_never_loads_the_scheduler():
-    section("scheduler: the GPL path does not import it")
-    import ast
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    pkg = os.path.join(root, "ltcplay")
-    # 1. Run the GPL path in a clean interpreter: every module the show
-    # uses, the web server as the launchers start it, and a request at every
-    # schedule route. The scheduler must not be in sys.modules afterwards.
-    port = _free_port()
-    code = (
-        "import sys, json, threading, tempfile, urllib.request, "
-        "urllib.error\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "import importlib, pkgutil, ltcplay\n"
-        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
-        "        if not m.name.startswith('schedule')]\n"
-        "failed = []\n"
-        "for m in mods:\n"
-        "    try:\n"
-        "        importlib.import_module('ltcplay.' + m)\n"
-        "    except Exception as e:\n"
-        "        failed.append(m)\n"
-        "from ltcplay import web, cli\n"
-        "d = tempfile.mkdtemp()\n"
-        f"h = web.serve(d, port={port})\n"
-        "t = threading.Thread(target=h.serve_forever, "
-        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
-        "t.start()\n"
-        "codes = []\n"
-        "for r in ('/api/schedule', '/api/schedule/state', "
-        "'/api/schedule/tonight'):\n"
-        "    try:\n"
-        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
-        "timeout=5)\n"
-        "        codes.append(200)\n"
-        "    except urllib.error.HTTPError as e:\n"
-        "        codes.append(e.code)\n"
-        "h.shutdown(); h.server_close()\n"
-        "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
-        "    'none': h.schedule is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'schedule' in m)}))\n"
-        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    import json
-    try:
-        out = json.loads(rc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
-        return
-    check("web" in out["mods"] and "cli" in out["mods"]
-          and "session" in out["mods"], f"the GPL modules were all imported: "
-                                        f"{out['mods']}")
-    check(out["loaded"] == [], f"the GPL path loaded the scheduler: "
-                               f"{out['loaded']}")
-    check(out["codes"] == [404, 404, 404] and out["none"],
-          f"with no schedule configured every schedule route is 404, got "
-          f"{out['codes']}")
-
-    # 2. Nothing imports the scheduler at module level; only the code behind
-    # --schedule does, inside a function.
-    def top_level(node):
-        """Everything that runs at import time: not function bodies."""
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                  ast.Lambda)):
-                continue
-            yield child
-            yield from top_level(child)
-
-    for name in sorted(os.listdir(pkg)):
-        if not name.endswith(".py") or name.startswith("schedule"):
-            continue
-        tree = ast.parse(open(os.path.join(pkg, name), encoding="utf-8").read())
-        for sub in top_level(tree):
-            names = []
-            if isinstance(sub, ast.Import):
-                names = [a.name for a in sub.names]
-            elif isinstance(sub, ast.ImportFrom):
-                names = [sub.module or ""] + [a.name for a in sub.names]
-            check(not any("schedule" in n for n in names),
-                  f"ltcplay/{name} imports the scheduler at module level")
-
-    # 3. No launcher turns it on.
-    files = [os.path.join(root, n) for n in os.listdir(root)
-             if n.endswith(".command") or n == "ltc"]
-    tools = os.path.join(root, "Tools")
-    if os.path.isdir(tools):
-        files += [os.path.join(tools, n) for n in os.listdir(tools)]
-    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
-        files += [os.path.join(dirpath, n) for n in names]
-    for f in files:
-        try:
-            text = open(f, errors="replace", encoding="utf-8").read()
-        except OSError:
-            continue
-        check("--schedule" not in text,
-              f"{os.path.relpath(f, root)} turns the scheduler on")
     print("  ok")
 
 
@@ -14366,103 +13160,6 @@ def test_announce_routes():
     print("  ok")
 
 
-def test_the_gpl_path_never_loads_announcements():
-    section("announcements: the GPL path does not import them")
-    import ast
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    pkg = os.path.join(root, "ltcplay")
-    port = _free_port()
-    code = (
-        "import sys, json, threading, tempfile, urllib.request, "
-        "urllib.error\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "import importlib, pkgutil, ltcplay\n"
-        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
-        "        if not m.name.startswith('announce')]\n"
-        "failed = []\n"
-        "for m in mods:\n"
-        "    try:\n"
-        "        importlib.import_module('ltcplay.' + m)\n"
-        "    except Exception as e:\n"
-        "        failed.append(m)\n"
-        "from ltcplay import web, cli\n"
-        "d = tempfile.mkdtemp()\n"
-        f"h = web.serve(d, port={port})\n"
-        "t = threading.Thread(target=h.serve_forever, "
-        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
-        "t.start()\n"
-        "codes = []\n"
-        "for r in ('/api/announce/status',):\n"
-        "    try:\n"
-        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
-        "timeout=5)\n"
-        "        codes.append(200)\n"
-        "    except urllib.error.HTTPError as e:\n"
-        "        codes.append(e.code)\n"
-        "h.shutdown(); h.server_close()\n"
-        "print(json.dumps({'mods': mods, 'failed': failed, 'codes': codes,\n"
-        "    'none': h.announce is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'announce' in "
-        "m)}))\n"
-        "import shutil; shutil.rmtree(d, ignore_errors=True)\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    import json as _json
-    try:
-        out = _json.loads(rc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
-        return
-    check("web" in out["mods"] and "cli" in out["mods"]
-          and "session" in out["mods"], f"the GPL modules were all "
-                                       f"imported: {out['mods']}")
-    check(out["loaded"] == [], f"the GPL path loaded announcements: "
-                               f"{out['loaded']}")
-    check(out["codes"] == [404] and out["none"],
-          f"with no announcements configured the route is 404, got "
-          f"{out['codes']}")
-
-    def top_level(node):
-        """Everything that runs at import time: not function bodies."""
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                  ast.Lambda)):
-                continue
-            yield child
-            yield from top_level(child)
-
-    for name in sorted(os.listdir(pkg)):
-        if not name.endswith(".py") or name.startswith("announce"):
-            continue
-        tree = ast.parse(open(os.path.join(pkg, name),
-                              encoding="utf-8").read())
-        for sub in top_level(tree):
-            names = []
-            if isinstance(sub, ast.Import):
-                names = [a.name for a in sub.names]
-            elif isinstance(sub, ast.ImportFrom):
-                names = [sub.module or ""] + [a.name for a in sub.names]
-            check(not any("announce" in n for n in names),
-                  f"ltcplay/{name} imports announcements at module level")
-
-    files = [os.path.join(root, n) for n in os.listdir(root)
-             if n.endswith(".command") or n == "ltc"]
-    tools = os.path.join(root, "Tools")
-    if os.path.isdir(tools):
-        files += [os.path.join(tools, n) for n in os.listdir(tools)]
-    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
-        files += [os.path.join(dirpath, n) for n in names]
-    for f in files:
-        try:
-            text = open(f, errors="replace", encoding="utf-8").read()
-        except OSError:
-            continue
-        check("--announce" not in text,
-              f"{os.path.relpath(f, root)} turns announcements on")
-    print("  ok")
-
-
 def test_arttimecode_packet_byte_for_byte():
     section("Art-Net timecode: the packet, byte for byte")
     # Art-Net 4 Protocol Release V1.4, document revision 1.4dp 23/10/2025:
@@ -15374,96 +14071,6 @@ def test_clock_settings_fail_loudly():
                             "ltcplay", "clock.py"), encoding="utf-8").read()
     check("—" not in src and "–" not in src,
           "clock.py carries an em or en dash")
-    print("  ok")
-
-
-def test_the_gpl_path_never_loads_the_clock():
-    section("GPL: no clock block, no clock code")
-    # The GPL show at Dollywood runs this program on a Mac with no clock
-    # block in its show file. Nothing new may be reachable from that path.
-    # Proven in a fresh interpreter, because this one has already imported
-    # the clock for the tests above.
-    import json, subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    real = json.load(open(os.path.join(here, "gpl2026_timeline.json")))
-    check("clock" not in real,
-          "the GPL show file has grown a clock block")
-    # Every import of the clock is inside a function, never at the top of a
-    # module, so importing the program cannot load it.
-    top = []
-    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
-        if not name.endswith(".py") or name == "clock.py":
-            continue
-        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
-                                      encoding="utf-8"), 1):
-            if re.match(r"(from \.clock |from \. import .*\bclock\b|"
-                        r"import ltcplay\.clock|from ltcplay import .*"
-                        r"\bclock\b)", line):
-                top.append(f"{name}:{i}")
-    check(not top, f"the clock is imported at module scope: {top}")
-    script = r'''
-import json, os, sys, tempfile, time
-sys.path.insert(0, sys.argv[1])
-import selftest as T
-from ltcplay import settings as st_mod
-from ltcplay.session import Session
-import ltcplay.player as plmod
-import ltcplay.web, ltcplay.cli
-work = tempfile.mkdtemp()
-st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
-st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
-rows = "\n".join(f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
-                 f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(2))
-net = os.path.join(work, "net.xml")
-open(net, "w").write(f'<Networks>\n  <Controller Name="L" IP="127.0.0.1" '
-                     f'ActiveState="Active">\n{rows}\n  </Controller>\n'
-                     f'</Networks>\n')
-tlp = os.path.join(work, "gpl.json")
-doc = json.load(open(os.path.join(sys.argv[1], "gpl2026_timeline.json")))
-doc["show_dir"] = work
-doc["cues"] = doc["cues"][:1]
-doc["cues"][0]["fseq"] = "A.fseq"
-doc.pop("idle", None)
-doc["gaps"] = "blackout"
-json.dump(doc, open(tlp, "w"))
-open(os.path.join(work, "A.fseq"), "wb").write(b"x")
-def fake_prepare(self, cue):
-    cue.fseq = T.FakeFSEQ(frames=4000)
-    cue.duration = cue.fseq.duration_ms / 1000.0
-    cue._spans = [(0, 0, cue.fseq.channel_count)]
-    cue._gaps = None
-    return 0
-plmod.Player._prepare = fake_prepare
-s = Session(tlp, no_output=True, networks=net, no_log=True, sd=T.FakeSD(),
-            device="MOTU M4", channel=2)
-s.open(); s.start()
-end = time.time() + 5
-while time.time() < end and s.player.last_ltc_at is None:
-    time.sleep(0.05)
-snap = s.snapshot()
-s.stop()
-print(json.dumps({"loaded": "ltcplay.clock" in sys.modules,
-                  "tl_clock": s.tl.clock is None,
-                  "session_clock": s.clock is None,
-                  "snap": "clock" in snap,
-                  "ltc": s.player.last_ltc_at is not None,
-                  "opened": len(s._sd.opened)}))
-import shutil; shutil.rmtree(work, ignore_errors=True)
-'''
-    r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
-                text=True, timeout=120)
-    try:
-        res = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
-        check(False, f"the GPL path did not run: {r.stdout[-400:]} "
-                     f"{r.stderr[-800:]}")
-        return
-    check(res["ltc"], "the GPL path did not chase its timecode")
-    check(res["opened"] >= 1, "the GPL path did not open its timecode input")
-    check(not res["loaded"], "a GPL run imported ltcplay.clock")
-    check(res["tl_clock"] and res["session_clock"],
-          "a GPL run built a clock")
-    check(not res["snap"], "a GPL run put a clock on the page")
     print("  ok")
 
 
@@ -18937,55 +17544,6 @@ def test_madmapper_no_clock_is_ever_mixed_with_another():
     print("  ok")
 
 
-def test_the_gpl_path_never_loads_madmapper():
-    section("madmapper: the GPL path does not import it")
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    port = _free_port()
-    # Made here, not in the child, so this run's temp sweep removes it.
-    work = tempfile.mkdtemp()
-    code = (
-        "import sys, json, threading, tempfile, urllib.request, "
-        "urllib.error\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "import importlib, pkgutil, ltcplay\n"
-        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
-        "        if not m.name.startswith('madmapper')]\n"
-        "for m in mods:\n"
-        "    importlib.import_module('ltcplay.' + m)\n"
-        "from ltcplay import web\n"
-        f"h = web.serve({work!r}, port={port})\n"
-        "t = threading.Thread(target=h.serve_forever, "
-        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
-        "t.start()\n"
-        "codes = []\n"
-        "for r in ('/api/madmapper', '/api/madmapper/state'):\n"
-        "    try:\n"
-        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
-        "timeout=5)\n"
-        "        codes.append(200)\n"
-        "    except urllib.error.HTTPError as e:\n"
-        "        codes.append(e.code)\n"
-        "h.shutdown(); h.server_close()\n"
-        "print(json.dumps({'codes': codes, 'none': h.madmapper is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if 'madmapper' in "
-        "m)}))\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    import json as _json
-    try:
-        out = _json.loads(rc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
-        return
-    check(out["loaded"] == [], f"the GPL path loaded madmapper.py: "
-                               f"{out['loaded']}")
-    check(out["codes"] == [404, 404] and out["none"],
-         f"with no madmapper configured every route is 404, got "
-         f"{out['codes']}")
-    print("  ok")
-
-
 def test_madmapper_web_route_reports_health():
     section("madmapper: web.py's /api/madmapper/state answers the health "
             "panel's dot with no scheduler required")
@@ -19350,55 +17908,6 @@ def test_beyond_never_sends_blackout_or_masterpause():
          f"only the brightness address may ever be sent: {seen}")
     check(not (seen & B.FORBIDDEN_ADDRESSES),
          f"a forbidden address was sent: {seen & B.FORBIDDEN_ADDRESSES}")
-    print("  ok")
-
-
-def test_the_gpl_path_never_loads_beyond():
-    section("beyond: the GPL path does not import it")
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    port = _free_port()
-    # Made here, not in the child, so this run's temp sweep removes it.
-    work = tempfile.mkdtemp()
-    code = (
-        "import sys, json, threading, tempfile, urllib.request, "
-        "urllib.error\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "import importlib, pkgutil, ltcplay\n"
-        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
-        "        if not m.name.startswith('beyond')]\n"
-        "for m in mods:\n"
-        "    importlib.import_module('ltcplay.' + m)\n"
-        "from ltcplay import web\n"
-        f"h = web.serve({work!r}, port={port})\n"
-        "t = threading.Thread(target=h.serve_forever, "
-        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
-        "t.start()\n"
-        "codes = []\n"
-        "for r in ('/api/beyond', '/api/beyond/state'):\n"
-        "    try:\n"
-        f"        urllib.request.urlopen('http://127.0.0.1:{port}' + r, "
-        "timeout=5)\n"
-        "        codes.append(200)\n"
-        "    except urllib.error.HTTPError as e:\n"
-        "        codes.append(e.code)\n"
-        "h.shutdown(); h.server_close()\n"
-        "print(json.dumps({'codes': codes, 'none': h.beyond is None,\n"
-        "    'loaded': sorted(m for m in sys.modules if '.beyond' in m or "
-        "m == 'beyond')}))\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    import json as _json
-    try:
-        out = _json.loads(rc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
-        return
-    check(out["loaded"] == [], f"the GPL path loaded beyond.py: "
-                               f"{out['loaded']}")
-    check(out["codes"] == [404, 404] and out["none"],
-         f"with no beyond configured every route is 404, got "
-         f"{out['codes']}")
     print("  ok")
 
 
@@ -19798,31 +18307,6 @@ def test_devices_report_a_failed_blank_to_the_caller():
     print("  ok")
 
 
-def test_the_gpl_path_never_loads_devices():
-    section("devices: the real GPL path (web.serve() with nothing "
-            "configured) never imports it -- nothing in this codebase "
-            "wires it in yet; it exists only for a future conductor to "
-            "call")
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    # Made here, not in the child, so this run's temp sweep removes it.
-    work = tempfile.mkdtemp()
-    code = (
-        "import sys, tempfile\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "from ltcplay import web\n"
-        f"h = web.serve({work!r}, port=0)\n"
-        "h.server_close()\n"
-        "print(sorted(m for m in sys.modules if m.endswith('.devices') "
-        "or m == 'devices'))\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    loaded = (rc.stdout or "").strip().splitlines()[-1:] or ["<no output>"]
-    check(loaded == ["[]"], f"the GPL path loaded devices.py: {loaded}; "
-                            f"stderr: {rc.stderr[-800:]}")
-    print("  ok")
-
-
 def test_flamesafe_in_its_own_process():
     """The flame safety program's own suite (flamesafe/test_flamesafe.py),
     run in a SUBPROCESS so that the wall holds: that process never has
@@ -19831,17 +18315,24 @@ def test_flamesafe_in_its_own_process():
     mutation in flamesafe/."""
     section("flamesafe: the safety program's own suite, in its own process")
     import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    r = subprocess.run([sys.executable, "-u", "-m", "flamesafe.test_flamesafe"],
-                       cwd=root, capture_output=True, text=True, timeout=240)
-    out = (r.stdout or "") + (r.stderr or "")
+    # Started at the top of the run (__main__), so its 15 to 20 s of CPU
+    # ran alongside the tests above; read here, in the same place as before.
+    proc, lines, reader = _FLAMESAFE or _start_flamesafe_suite()
+    try:
+        rc = proc.wait(timeout=240)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        rc = proc.wait()
+        lines.append("  FAIL  the suite did not finish inside 240 s")
+    reader.join(5)
+    out = "\n".join(lines)
     fails = [l for l in out.splitlines() if l.startswith("  FAIL")]
     for l in fails[:30]:
         print("  FAIL  flamesafe> " + l[len("  FAIL"):].strip())
-    if r.returncode != 0 and not fails:
+    if rc != 0 and not fails:
         print(out[-3000:])
-    check(r.returncode == 0, f"flamesafe's own suite passed (exit "
-                             f"{r.returncode}, {len(fails)} FAIL line(s))")
+    check(rc == 0, f"flamesafe's own suite passed (exit "
+                   f"{rc}, {len(fails)} FAIL line(s))")
     lines = [l for l in out.strip().splitlines() if l.strip()]
     last = lines[-1] if lines else ""
     check(last.startswith("flamesafe: all checks passed"),
@@ -19849,6 +18340,34 @@ def test_flamesafe_in_its_own_process():
     check("random cases, seed" in out, "the property test ran")
     check("flamesafe" not in {m.split(".")[0] for m in sys.modules},
           "running flamesafe's suite loaded nothing of it into this process")
+
+
+def _start_flamesafe_suite():
+    """flamesafe's own suite in its own process (the wall holds: that
+    process never has ltcplay loaded, this one never loads flamesafe). The
+    __main__ block starts it first thing, so its 15 to 20 s of CPU overlap
+    the rest of this suite instead of following it; its output is read on a
+    thread so the pipe never fills. (process, lines, reader thread)."""
+    import subprocess
+    import threading
+    root = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.Popen([sys.executable, "-u", "-m",
+                             "flamesafe.test_flamesafe"], cwd=root,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace")
+    lines = []
+
+    def read():
+        for line in proc.stdout:
+            lines.append(line.rstrip("\r\n"))
+    reader = threading.Thread(target=read, daemon=True,
+                              name="selftest-flamesafe-output")
+    reader.start()
+    return proc, lines, reader
+
+
+# Set by the __main__ block; None when this file is imported.
+_FLAMESAFE = None
 
 
 def test_the_wall_between_ltcplay_and_flamesafe():
@@ -21487,107 +20006,6 @@ def test_journal_faults_write_sentences():
     check("madmapper reported a fault with no detail" in f["text"],
           f"even a fault with no detail is a sentence: {f['text']}")
     print("  ok")
-
-
-def test_the_gpl_path_never_loads_the_journal():
-    section("journal: the GPL path never loads it, and the show log is "
-            "unchanged")
-    import ast
-    import hashlib
-    import json
-    import subprocess
-    root = os.path.dirname(os.path.abspath(__file__))
-    pkg = os.path.join(root, "ltcplay")
-    port = _free_port()
-    code = (
-        "import sys, json, threading, tempfile, os, urllib.request, "
-        "urllib.error\n"
-        f"sys.path.insert(0, {root!r})\n"
-        "import importlib, pkgutil, ltcplay\n"
-        "mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)\n"
-        "        if not m.name.startswith('schedule') and m.name != "
-        "'journal']\n"
-        "for m in mods:\n"
-        "    try:\n"
-        "        importlib.import_module('ltcplay.' + m)\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "from ltcplay import web, cli, showlog\n"
-        "d = tempfile.mkdtemp()\n"
-        "log = showlog.ShowLog(os.path.join(d, 'ltcplay.log'))\n"
-        "log.event('state', 'a GPL line')\n"
-        f"h = web.serve(d, port={port})\n"
-        "t = threading.Thread(target=h.serve_forever, "
-        "kwargs={'poll_interval': 0.05}, daemon=True)\n"
-        "t.start()\n"
-        "codes = []\n"
-        "for r, body in (('/api/schedule/journal', None), "
-        "('/api/schedule/logging', None), ('/api/schedule/incident', "
-        "b'{\"who\": \"Andy\", \"screen\": \"rack screen\"}')):\n"
-        "    req = urllib.request.Request("
-        f"'http://127.0.0.1:{port}' + r, data=body, "
-        "method='POST' if body else 'GET')\n"
-        "    try:\n"
-        "        urllib.request.urlopen(req, timeout=5)\n"
-        "        codes.append(200)\n"
-        "    except urllib.error.HTTPError as e:\n"
-        "        codes.append(e.code)\n"
-        "h.shutdown(); h.server_close()\n"
-        "print(json.dumps({'codes': codes, 'files': sorted(os.listdir(d)),\n"
-        "    'loaded': sorted(m for m in sys.modules if 'journal' in m\n"
-        "                     or 'schedule' in m)}))\n"
-        "import logging, shutil; logging.shutdown(); shutil.rmtree(d, ignore_errors=True)\n")
-    rc = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                        text=True, timeout=60)
-    try:
-        out = json.loads(rc.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        check(False, f"the GPL journal check did not run: {rc.stderr[-800:]}")
-        return
-    check(out["loaded"] == [], f"the GPL path loaded {out['loaded']}")
-    check(out["codes"] == [404, 404, 404],
-          f"with no schedule the journal routes are 404: {out['codes']}")
-    check("ltcplay.log" in out["files"] and not [
-        f for f in out["files"] if f == "nights" or f.startswith("night_")
-        or f.endswith(".jsonl")],
-          f"the GPL show writes its own log and no night files: "
-          f"{out['files']}")
-    # Only the scheduler service imports the journal, anywhere in a file.
-    for name in sorted(os.listdir(pkg)):
-        if not name.endswith(".py") or name in ("schedule_service.py",
-                                                "journal.py"):
-            continue
-        tree = ast.parse(open(os.path.join(pkg, name),
-                              encoding="utf-8").read())
-        for node in ast.walk(tree):
-            names = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""] + [a.name for a in node.names]
-            check(not any(n == "journal" or n.endswith(".journal")
-                          for n in names),
-                  f"ltcplay/{name} imports the journal")
-    src = open(os.path.join(pkg, "journal.py"), encoding="utf-8").read()
-    tree = ast.parse(src, feature_version=(3, 12))
-    top = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            top |= {a.name for a in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            top |= {a.name for a in node.names} | {node.module or ""}
-    check(not top & {"logging", "showlog", "schedule", "schedule_service",
-                     "fcntl", "msvcrt"},
-          f"journal.py stays out of the show log's logger, the scheduler "
-          f"and OS-only modules at import time: {sorted(top)}")
-    # The GPL show log, byte for byte what the Dollywood show runs.
-    raw = open(os.path.join(pkg, "showlog.py"), "rb").read()
-    digest = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
-    check(digest == SHOWLOG_SHA256,
-          f"showlog.py changed ({digest}); the GPL show log must stay "
-          f"exactly as it is")
-    print("  ok")
-
 
 
 def test_journal_the_way_out_never_waits_on_the_disk():
@@ -23587,78 +22005,6 @@ def test_audio_master_runs_in_its_own_process():
     finally:
         eng.close()
     check(not eng.alive, "the audio process outlived close()")
-    print("  ok")
-
-
-def test_the_gpl_path_never_loads_the_show_audio():
-    section("GPL and artnet_master: the show audio code is never loaded")
-    import json, subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    top = []
-    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
-        if not name.endswith(".py") or name == "showaudio.py":
-            continue
-        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
-                                      encoding="utf-8"), 1):
-            if re.match(r"(from \.showaudio |from \. import .*\bshowaudio\b|"
-                        r"import ltcplay\.showaudio|from ltcplay import .*"
-                        r"\bshowaudio\b)", line):
-                top.append(f"{name}:{i}")
-    check(not top, f"the show audio is imported at module scope: {top}")
-    script = r'''
-import json, os, sys, tempfile, time
-sys.path.insert(0, sys.argv[1])
-import selftest as T
-from ltcplay import settings as st_mod
-from ltcplay.session import Session
-import ltcplay.player as plmod
-import ltcplay.web, ltcplay.cli
-work = tempfile.mkdtemp()
-st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
-st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
-def fake_prepare(self, cue):
-    cue.fseq = T.FakeFSEQ(frames=4000)
-    cue.duration = cue.fseq.duration_ms / 1000.0
-    cue._spans = [(0, 0, cue.fseq.channel_count)]
-    cue._gaps = None
-    return 0
-plmod.Player._prepare = fake_prepare
-res = {}
-for label, clock_doc in (("gpl", None),
-                         ("artnet", {"source": "artnet_master",
-                                     "artnet": {"nodes": {"M": "127.0.0.1"}}})):
-    d = tempfile.mkdtemp(dir=work)
-    tlp, net = T._clock_show(d, clock_doc, [("01:00:00:00", "S.fseq", "S")])
-    s = Session(tlp, no_output=True, networks=net, no_log=True,
-                sd=T.FakeSD(), device="MOTU M4", channel=2)
-    s.open(); s.start()
-    if label == "artnet":
-        s.clock.out = T._TcOut()
-        s.clock_play()
-        s.clock_pause(); s.clock_resume(); s.clock_halt()
-    time.sleep(0.3)
-    s.snapshot()
-    s.stop()
-    res[label] = sorted(m for m in sys.modules
-                        if m == "ltcplay.showaudio"
-                        or m.startswith("multiprocessing"))
-print(json.dumps(res))
-import shutil; shutil.rmtree(work, ignore_errors=True)
-'''
-    r = _sp.run([sys.executable, "-c", script, here], capture_output=True,
-                text=True, timeout=120)
-    try:
-        res = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
-        check(False, f"the GPL/artnet check did not run: {r.stdout[-400:]} "
-                     f"{r.stderr[-800:]}")
-        return
-    check("ltcplay.showaudio" not in res["gpl"],
-          "a GPL run imported the show audio")
-    check("ltcplay.showaudio" not in res["artnet"],
-          "an artnet_master run imported the show audio")
-    check(not res["gpl"] and not res["artnet"],
-          f"a run without audio_master loaded multiprocessing: {res}")
     print("  ok")
 
 
@@ -30796,31 +29142,6 @@ def _mm_values(socks):
     return out
 
 
-def test_the_gpl_path_never_loads_the_conductor():
-    section("GPL: the conductor is never imported by the program")
-    import subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    top = []
-    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
-        if not name.endswith(".py") or name == "conductor.py":
-            continue
-        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
-                                      encoding="utf-8"), 1):
-            if re.search(r"\bconductor\b", line) and \
-                    re.match(r"\s*(from|import)\s", line):
-                top.append(f"{name}:{i}")
-    check(not top, f"the conductor is imported by the program: {top}")
-    r = _sp.run([sys.executable, "-c",
-                 "import sys; sys.path.insert(0, sys.argv[1]); "
-                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
-                 "print('ltcplay.conductor' in sys.modules)", here],
-                capture_output=True, text=True, timeout=60)
-    check(r.stdout.strip() == "False",
-          f"loading the program loads no conductor: {r.stdout!r} "
-          f"{r.stderr[-300:]!r}")
-    print("  ok")
-
-
 # ------------------------------------------------ the flame link ----
 # ltcplay/flamelink.py: ltcplay's side of flamesafe/CONTRACT.md's flame
 # link. The unit tests drive it with fakes; the end-to-end test runs the
@@ -32445,36 +30766,475 @@ def test_mutate_reports_every_failure_it_can_have():
         "::error title=a%2C b%3A c::p%25q"),
           "the title's commas and colons are escaped, the body's percent too")
 
+    # The windows sweep's list names real mutations (a renamed one would
+    # otherwise quietly drop out of it), and every Windows-only one is in
+    # it; on this OS the Windows-only ones are skipped, not missed.
+    real = {m[0] for m in mutate.MUTATIONS}
+    check(mutate.WINDOWS_PROOF <= real,
+          f"WINDOWS_PROOF names mutations that are not in mutate.py: "
+          f"{sorted(mutate.WINDOWS_PROOF - real)}")
+    check(mutate.WINDOWS_ONLY <= mutate.WINDOWS_PROOF and mutate.WINDOWS_ONLY,
+          "every Windows-only mutation is in the windows sweep")
+    win_only = ("the Windows lock sits on byte 0, so the holder's note "
+                "cannot be read back")
+    code, lines, notes, summary = run(["--shard", "0/1"], [caught, (
+        win_only, "target.py", "GUARD", "NOTHING")])
+    if sys.platform == "win32":
+        check(code == 1 and "  NOT CAUGHT  " + win_only in lines,
+              f"on Windows a Windows-only mutation is run like any other: "
+              f"{code} {lines[-6:]}")
+    else:
+        check(code == 0 and not notes
+              and any(l.startswith("  windows only  " + win_only)
+                      for l in lines)
+              and "| shard 0/1 | 1 | 1 | 0 |" in summary,
+              f"off Windows a Windows-only mutation is skipped and said so, "
+              f"not missed: {code} {notes} {lines[-6:]}")
+    # --unfinished: a shard log with no result for one of its mutations.
+    partial = os.path.join(tree, "partial.log")
+    with open(partial, "w", encoding="utf-8") as fh:
+        fh.write("shard 0/1: 2 mutations to run\n"
+                 "  caught      the guard is gone\n")
+    code, lines, notes, summary = run(["--unfinished", partial, "--shard",
+                                       "0/1"], [caught, missed])
+    check(code == 1 and said(notes, "mutate shard timed out",
+                             "nothing notices this")
+          and "  did not run  nothing notices this" in lines
+          and "TIMED OUT" in summary,
+          f"a shard that ran out of time names what did not run: {code} "
+          f"{notes} {lines[-3:]}")
+    with open(partial, "w", encoding="utf-8") as fh:
+        fh.write("shard 0/1: 2 mutations to run\n"
+                 "  caught      the guard is gone\n"
+                 "  NOT CAUGHT  nothing notices this\n"
+                 "\ncaught 1, missed 1\n")
+    code, lines, notes, summary = run(["--unfinished", partial, "--shard",
+                                       "0/1"], [caught, missed])
+    check(code == 0 and not notes,
+          f"a shard that finished is not a timeout: {code} {notes}")
 
-def test_the_gpl_path_never_loads_the_flame_link():
-    section("GPL: the flame link is never imported by the program")
-    import subprocess as _sp
-    here = os.path.dirname(os.path.abspath(__file__))
-    top = []
-    for name in sorted(os.listdir(os.path.join(here, "ltcplay"))):
-        if not name.endswith(".py") or name == "flamelink.py":
+
+# ------------------------------------------------ the wall around GPL ----
+# The GPL show at Dollywood runs this program with none of the Fire & Ice
+# code loaded: not the scheduler, the announcements, the show clock,
+# MadMapper, BEYOND, the device layer, the night journal, the show audio, the
+# conductor or the flame link. One table and one test (it was ten, one per
+# module, each starting its own interpreters): every module below is proved
+# never to load on the GPL path, three ways, in two interpreters.
+_FIRE_AND_ICE = ("schedule", "announce", "clock", "madmapper", "beyond",
+                 "devices", "journal", "showaudio", "conductor", "flamelink")
+# The web routes that would reach them (each 404 with nothing configured; the
+# incident route is a POST) and the attributes web.serve() leaves None.
+_FIRE_AND_ICE_ROUTES = (
+    ("/api/schedule", None), ("/api/schedule/state", None),
+    ("/api/schedule/tonight", None), ("/api/schedule/journal", None),
+    ("/api/schedule/logging", None),
+    ("/api/schedule/incident", '{"who": "Andy", "screen": "rack screen"}'),
+    ("/api/announce/status", None),
+    ("/api/madmapper", None), ("/api/madmapper/state", None),
+    ("/api/beyond", None), ("/api/beyond/state", None))
+_FIRE_AND_ICE_HANDLES = ("schedule", "announce", "madmapper", "beyond")
+
+
+def _fire_and_ice_module(name):
+    """Is this ltcplay module (its name without the package) Fire & Ice?"""
+    return any(stem in name for stem in _FIRE_AND_ICE)
+
+
+def test_the_gpl_path_never_loads_fire_and_ice_code():
+    section("GPL: the scheduler, announcements, show clock, MadMapper, "
+            "BEYOND, devices, journal, show audio, conductor and flame link "
+            "are never loaded on the GPL path")
+    import ast
+    import hashlib
+    import json
+    import subprocess
+    root = os.path.dirname(os.path.abspath(__file__))
+    pkg = os.path.join(root, "ltcplay")
+
+    # 1. The program as the launchers start it, in a clean interpreter:
+    # every GPL module imported, the web server up with nothing configured,
+    # a request at every Fire & Ice route. None of the modules may be in
+    # sys.modules afterwards; every route is 404; every handle is None; the
+    # GPL show log is written and no night file is.
+    port = _free_port()
+    code = r'''
+import sys, json, threading, tempfile, os, urllib.request, urllib.error
+import importlib, pkgutil, logging, shutil
+root, port, stems, routes, handles = json.loads(sys.argv[1])
+sys.path.insert(0, root)
+import ltcplay
+def fire_and_ice(name):
+    return any(s in name for s in stems)
+mods = [m.name for m in pkgutil.iter_modules(ltcplay.__path__)
+        if not fire_and_ice(m.name)]
+failed = []
+for m in mods:
+    try:
+        importlib.import_module("ltcplay." + m)
+    except Exception as e:
+        failed.append(f"{m}: {type(e).__name__}: {e}")
+from ltcplay import web, cli, showlog
+d = tempfile.mkdtemp()
+log = showlog.ShowLog(os.path.join(d, "ltcplay.log"))
+log.event("state", "a GPL line")
+h = web.serve(d, port=port)
+t = threading.Thread(target=h.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True)
+t.start()
+codes = {}
+for route, body in routes:
+    data = body.encode() if body else None
+    req = urllib.request.Request(f"http://127.0.0.1:{port}" + route,
+                                 data=data, method="POST" if data else "GET")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        codes[route] = 200
+    except urllib.error.HTTPError as e:
+        codes[route] = e.code
+h.shutdown(); h.server_close()
+loaded = sorted(m for m in sys.modules if m.startswith("ltcplay.")
+                and fire_and_ice(m[len("ltcplay."):]))
+none = {a: getattr(h, a, "missing") is None for a in handles}
+files = sorted(os.listdir(d))
+print(json.dumps({"mods": mods, "failed": failed, "codes": codes,
+                  "loaded": loaded, "none": none, "files": files}))
+logging.shutdown(); shutil.rmtree(d, ignore_errors=True)
+'''
+    args = json.dumps([root, port, list(_FIRE_AND_ICE),
+                       list(_FIRE_AND_ICE_ROUTES), list(_FIRE_AND_ICE_HANDLES)])
+    rc = subprocess.run([sys.executable, "-c", code, args],
+                        capture_output=True, text=True, timeout=120)
+    try:
+        out = json.loads(rc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(False, f"the GPL path check did not run: {rc.stderr[-800:]}")
+        return
+    check({"web", "cli", "session", "player", "showlog"} <= set(out["mods"]),
+          f"the GPL modules were all imported: {out['mods']}")
+    check(out["failed"] == [], f"a GPL module failed to import: {out['failed']}")
+    check(out["loaded"] == [],
+          f"the GPL path loaded Fire & Ice code: {out['loaded']}")
+    bad = {r: c for r, c in out["codes"].items() if c != 404}
+    check(not bad and len(out["codes"]) == len(_FIRE_AND_ICE_ROUTES),
+          f"with nothing configured every Fire & Ice route is 404: {bad}")
+    check(all(out["none"].values()) and len(out["none"]) == 4,
+          f"with nothing configured every handle is None: {out['none']}")
+    check("ltcplay.log" in out["files"] and not [
+        f for f in out["files"] if f == "nights" or f.startswith("night_")
+        or f.endswith(".jsonl")],
+          f"the GPL show writes its own log and no night files: "
+          f"{out['files']}")
+
+    # 2. A real GPL session, from the Dollywood show file, chasing its
+    # timecode in a clean interpreter (and, after it, an artnet_master
+    # session with no show audio): neither loads the clock module where the
+    # show file has no clock block, the show audio, or multiprocessing.
+    script = r'''
+import json, os, sys, tempfile, time, shutil
+sys.path.insert(0, sys.argv[1])
+stems = json.loads(sys.argv[2])
+import selftest as T
+from ltcplay import settings as st_mod
+from ltcplay.session import Session
+import ltcplay.player as plmod
+import ltcplay.web, ltcplay.cli
+work = tempfile.mkdtemp()
+st_mod.path = lambda: os.path.join(work, st_mod.FILENAME)
+st_mod.prefs_path = lambda: os.path.join(work, st_mod.PREFS_FILE)
+def fake_prepare(self, cue):
+    cue.fseq = T.FakeFSEQ(frames=4000)
+    cue.duration = cue.fseq.duration_ms / 1000.0
+    cue._spans = [(0, 0, cue.fseq.channel_count)]
+    cue._gaps = None
+    return 0
+plmod.Player._prepare = fake_prepare
+def fire_and_ice():
+    return sorted(m for m in sys.modules
+                  if (m.startswith("ltcplay.")
+                      and any(s in m[len("ltcplay."):] for s in stems))
+                  or m.startswith("multiprocessing"))
+res = {}
+rows = "\n".join(f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+                 f'BaudRate="{u+1}" MaxChannels="510"/>' for u in range(2))
+net = os.path.join(work, "net.xml")
+open(net, "w").write(f'<Networks>\n  <Controller Name="L" IP="127.0.0.1" '
+                     f'ActiveState="Active">\n{rows}\n  </Controller>\n'
+                     f'</Networks>\n')
+tlp = os.path.join(work, "gpl.json")
+doc = json.load(open(os.path.join(sys.argv[1], "gpl2026_timeline.json")))
+doc["show_dir"] = work
+doc["cues"] = doc["cues"][:1]
+doc["cues"][0]["fseq"] = "A.fseq"
+doc.pop("idle", None)
+doc["gaps"] = "blackout"
+json.dump(doc, open(tlp, "w"))
+open(os.path.join(work, "A.fseq"), "wb").write(b"x")
+s = Session(tlp, no_output=True, networks=net, no_log=True, sd=T.FakeSD(),
+            device="MOTU M4", channel=2)
+s.open(); s.start()
+end = time.time() + 5
+while time.time() < end and s.player.last_ltc_at is None:
+    time.sleep(0.05)
+snap = s.snapshot()
+s.stop()
+res["gpl"] = {"loaded": fire_and_ice(),
+              "tl_clock": s.tl.clock is None,
+              "session_clock": s.clock is None,
+              "snap_clock": "clock" in snap,
+              "ltc": s.player.last_ltc_at is not None,
+              "opened": len(s._sd.opened)}
+d2 = tempfile.mkdtemp(dir=work)
+tlp2, net2 = T._clock_show(d2, {"source": "artnet_master",
+                                "artnet": {"nodes": {"M": "127.0.0.1"}}},
+                           [("01:00:00:00", "S.fseq", "S")])
+s2 = Session(tlp2, no_output=True, networks=net2, no_log=True, sd=T.FakeSD(),
+             device="MOTU M4", channel=2)
+s2.open(); s2.start()
+s2.clock.out = T._TcOut()
+s2.clock_play(); s2.clock_pause(); s2.clock_resume(); s2.clock_halt()
+time.sleep(0.3)
+s2.snapshot(); s2.stop()
+res["artnet"] = {"loaded": [m for m in fire_and_ice() if m != "ltcplay.clock"]}
+print(json.dumps(res))
+shutil.rmtree(work, ignore_errors=True)
+'''
+    r = subprocess.run([sys.executable, "-c", script, root,
+                        json.dumps(list(_FIRE_AND_ICE))],
+                       capture_output=True, text=True, timeout=120)
+    try:
+        res = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        check(False, f"the GPL session check did not run: {r.stdout[-400:]} "
+                     f"{r.stderr[-800:]}")
+        return
+    g = res["gpl"]
+    check(g["ltc"], "the GPL path did not chase its timecode")
+    check(g["opened"] >= 1, "the GPL path did not open its timecode input")
+    check(g["loaded"] == [],
+          f"a GPL run loaded Fire & Ice code: {g['loaded']}")
+    check(g["tl_clock"] and g["session_clock"], "a GPL run built a clock")
+    check(not g["snap_clock"], "a GPL run put a clock on the page")
+    check(res["artnet"]["loaded"] == [],
+          f"an artnet_master run loaded the show audio or multiprocessing: "
+          f"{res['artnet']['loaded']}")
+
+    # 3. In the source: no GPL module imports any of them at module level
+    # (every import of them is inside a function, behind --schedule, a
+    # clock block or a show file asking); the conductor and the flame link
+    # are imported nowhere in the program at all; the journal only by the
+    # scheduler service, and journal.py itself stays out of the show log's
+    # logger, the scheduler and OS-only modules at import time.
+    def top_level(node):
+        """Everything that runs at import time: not function bodies."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                continue
+            yield child
+            yield from top_level(child)
+
+    def imported(node):
+        """The modules an import statement names (`from .tc import
+        format_clock` names tc, not format_clock)."""
+        if isinstance(node, ast.Import):
+            return [a.name.split(".")[-1] for a in node.names]
+        if isinstance(node, ast.ImportFrom):
+            if node.module:
+                return [node.module.split(".")[-1]]
+            return [a.name for a in node.names]      # from . import x
+        return []
+
+    nowhere = ("conductor", "flamelink")
+    for name in sorted(os.listdir(pkg)):
+        if not name.endswith(".py"):
             continue
-        for i, line in enumerate(open(os.path.join(here, "ltcplay", name),
-                                      encoding="utf-8"), 1):
-            if re.search(r"\bflamelink\b", line) and \
-                    re.match(r"\s*(from|import)\s", line):
-                top.append(f"{name}:{i}")
-    check(not top, f"the flame link is imported by the program: {top}")
-    r = _sp.run([sys.executable, "-c",
-                 "import sys; sys.path.insert(0, sys.argv[1]); "
-                 "import ltcplay.session, ltcplay.web, ltcplay.cli; "
-                 "print('ltcplay.flamelink' in sys.modules)", here],
-                capture_output=True, text=True, timeout=60)
-    check(r.stdout.strip() == "False",
-          f"loading the program loads no flame link: {r.stdout!r} "
-          f"{r.stderr[-300:]!r}")
+        stem = name[:-3]
+        tree = ast.parse(open(os.path.join(pkg, name), encoding="utf-8").read())
+        if not _fire_and_ice_module(stem):
+            for sub in top_level(tree):
+                hit = [n for n in imported(sub) if _fire_and_ice_module(n)]
+                check(not hit, f"ltcplay/{name} imports Fire & Ice code at "
+                               f"module level: {hit}")
+        for sub in ast.walk(tree):
+            for last in imported(sub):
+                check(not (last in nowhere and last != stem),
+                      f"ltcplay/{name} imports the {last}: the program never "
+                      f"imports it")
+                check(not (last == "journal" and stem not in
+                           ("journal", "schedule_service")),
+                      f"ltcplay/{name} imports the journal: only the "
+                      f"scheduler service does")
+    jtree = ast.parse(open(os.path.join(pkg, "journal.py"),
+                           encoding="utf-8").read(), feature_version=(3, 12))
+    top = set()
+    for node in jtree.body:
+        top |= set(imported(node))
+    check(not top & {"logging", "showlog", "schedule", "schedule_service",
+                     "fcntl", "msvcrt"},
+          f"journal.py stays out of the show log's logger, the scheduler "
+          f"and OS-only modules at import time: {sorted(top)}")
+    # The GPL show log, byte for byte what the Dollywood show runs.
+    raw = open(os.path.join(pkg, "showlog.py"), "rb").read()
+    digest = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
+    check(digest == SHOWLOG_SHA256,
+          f"showlog.py changed ({digest}); the GPL show log must stay "
+          f"exactly as it is")
+    # The GPL show file has no clock block, and no launcher turns anything on.
+    real = json.load(open(os.path.join(root, "gpl2026_timeline.json")))
+    check("clock" not in real, "the GPL show file has grown a clock block")
+    files = [os.path.join(root, n) for n in os.listdir(root)
+             if n.endswith(".command") or n == "ltc"]
+    tools = os.path.join(root, "Tools")
+    if os.path.isdir(tools):
+        files += [os.path.join(tools, n) for n in os.listdir(tools)]
+    for dirpath, _d, names in os.walk(os.path.join(root, "packaging")):
+        files += [os.path.join(dirpath, n) for n in names]
+    for f in files:
+        try:
+            text = open(f, errors="replace", encoding="utf-8").read()
+        except OSError:
+            continue
+        for flag in ("--schedule", "--announce"):
+            check(flag not in text,
+                  f"{os.path.relpath(f, root)} turns {flag} on")
     print("  ok")
+
+
+def test_ltcplay_rejects_a_status_frame_with_the_wrong_key():
+    section("flame link: a status frame whose key is not ltcplay's own is "
+            "rejected by both of ltcplay's readers, however close the key "
+            "(CONTRACT.md: ltcplay MUST reject it)")
+    import json
+    import socket as _so
+    from ltcplay import flamelink as fl
+    from ltcplay import streamdeck as sd
+    key = _fl_key()
+    frame = {"v": 2, "k": key, "t": "status", "heartbeat": 7,
+             "tick_ms": 25.0, "universe": 1, "priority": 200, "arm_value": 78,
+             "confirmed": False, "fault": "", "fault_age_ms": None,
+             "arm_input": {"state": "live", "seq": 1, "age_ms": 1,
+                           "foreign_senders": 0, "flooded": False},
+             "frames": {"state": "fresh", "fire": "passing", "seq": 1,
+                        "timecode": None, "age_ms": 1, "accepted": 1,
+                        "rejected": 0, "last_reject": ""},
+             "disarm_all": {"accepted": 0, "last_id": None,
+                            "last_reason": "", "age_ms": None},
+             "groups": [{"name": "front row", "armed": "disarmed",
+                         "sent_safety": 0, "sent_fire": [0, 0],
+                         "commanded_fire": [0, 0], "reason": "",
+                         "amber": "off"}]}
+
+    def wire(**over):
+        d = dict(frame)
+        for k, v in over.items():
+            if v is _GONE:
+                d.pop(k, None)
+            else:
+                d[k] = v
+        return json.dumps(d).encode("utf-8")
+
+    other = key[:-1] + ("x" if key[-1] != "x" else "y")
+    wrong = {
+        "another key": wire(k="wrong-" + key),
+        "one character off": wire(k=other),
+        "the key with a space after it": wire(k=key + " "),
+        "the key with a space before it": wire(k=" " + key),
+        "the key in another case": wire(k=key.swapcase()),
+        "an empty key": wire(k=""),
+        "no key at all": wire(k=_GONE),
+        "a null key": wire(k=None),
+        "a number for a key": wire(k=12345),
+        "the key inside a list": wire(k=[key]),
+        "the key under another field": wire(k=_GONE, key=key),
+        "the repo's example key": wire(k=fl.EXAMPLE_KEY),
+    }
+    if fl.EXAMPLE_KEY == key:
+        del wrong["the repo's example key"]
+    check(key.swapcase() != key and fl.valid_key(other),
+          "set up: the near misses are real keys that differ from ours")
+    check(fl.decode_status(wire(), key) is not None
+          and sd.decode_status_frame(wire(), key) is not None,
+          "set up: the frame with our key decodes in both readers")
+    for what, data in wrong.items():
+        check(fl.decode_status(data, key) is None,
+              f"the flame link took a status frame with {what}")
+        check(sd.decode_status_frame(data, key) is None,
+              f"the deck took a status frame with {what}")
+
+    # Over a real socket, through the deck's reader: a wrong-key frame
+    # leaves it with nothing (and stale), and never refreshes the age of a
+    # frame it did take.
+    reader = sd.StatusSocket("127.0.0.1", 0, key)
+    reader.open()
+    port = reader._sock.getsockname()[1]
+    tx = _so.socket(_so.AF_INET, _so.SOCK_DGRAM)
+    t = [100.0]
+    try:
+        for data in wrong.values():
+            tx.sendto(data, ("127.0.0.1", port))
+        end = time.time() + 0.3
+        while time.time() < end:
+            reader.poll(lambda: t[0])
+            time.sleep(0.02)
+        check(reader.last is None and reader.last_at is None
+              and reader.stale(lambda: t[0]),
+              f"a dozen wrong-key status frames left the deck knowing "
+              f"nothing: {reader.last}")
+        tx.sendto(wire(heartbeat=8), ("127.0.0.1", port))
+        check(wait_for(lambda: (reader.poll(lambda: t[0]), reader.last)[1]
+                       is not None, timeout=2.0)
+              and reader.last["heartbeat"] == 8 and reader.last_at == 100.0,
+              f"our own status frame is taken: {reader.last}")
+        t[0] = 100.5
+        for data in wrong.values():
+            tx.sendto(data, ("127.0.0.1", port))
+        time.sleep(0.05)
+        reader.poll(lambda: t[0])
+        check(reader.last["heartbeat"] == 8 and reader.last_at == 100.0,
+              f"a wrong-key frame changed what the deck knows, or when: "
+              f"{reader.last['heartbeat']} at {reader.last_at}")
+        t[0] = 100.0 + sd.STATUS_STALE_S + 0.1
+        check(reader.stale(lambda: t[0]),
+              "and with only wrong-key frames arriving the deck goes stale")
+    finally:
+        tx.close()
+        reader.close()
+    print("  ok")
+
+
+_GONE = object()
 
 
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
+    # `--only test_a,test_b` runs just those (mutate.py's second look at a
+    # failure, and a quick way to run a few by hand); every other test
+    # function becomes a no-op for this run, so the call list below needs
+    # no change. Anything else on the command line is a show folder.
+    _argv = list(sys.argv[1:])
+    ONLY = None
+    if "--only" in _argv:
+        _i = _argv.index("--only")
+        ONLY = {n.strip() for n in _argv[_i + 1].split(",") if n.strip()}
+        del _argv[_i:_i + 2]
+        _unknown = sorted(n for n in ONLY
+                          if not callable(globals().get(n))
+                          or not n.startswith("test_"))
+        if _unknown:
+            print(f"--only: not test functions in this file: {_unknown}")
+            sys.exit(2)
+
+        def _not_asked_for(*_a, **_k):
+            return None
+        for _n, _v in list(globals().items()):
+            if _n.startswith("test_") and callable(_v) and _n not in ONLY:
+                globals()[_n] = _not_asked_for
+        print(f"--only: running {len(ONLY)} test(s): {', '.join(sorted(ONLY))}")
     _TEMPRUN = _TempRun()
+    if ONLY is None or "test_flamesafe_in_its_own_process" in ONLY:
+        _FLAMESAFE = _start_flamesafe_suite()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -32514,7 +31274,6 @@ if __name__ == "__main__":
     test_input_rebuilds_itself()
     test_level_meter()
     test_timeline_input_block()
-    test_installer_and_launcher_names()
     test_real_hardware_is_picked_out_of_the_noise()
     test_only_plausible_inputs_are_scanned()
     test_saved_input_setting()
@@ -32586,14 +31345,7 @@ if __name__ == "__main__":
     test_the_real_show_file_matches_the_trigger_reference()
     test_stopping_the_show_unmutes_before_the_blackout()
     test_the_panel_tells_the_truth_about_backup_mode()
-    test_a_shared_show_folder_cannot_be_moved_away_from_it()
-    test_the_app_is_signed_last_and_nothing_touches_it_after()
-    test_the_build_proves_macos_will_actually_launch_it()
-    test_the_app_declares_what_macos_needs_to_know()
-    test_the_app_launcher_finds_its_way_home()
-    test_the_app_starts_the_page_by_itself()
     test_you_can_tell_which_version_is_installed()
-    test_the_beta_window_app_stays_a_window()
     test_schedule_rule_is_validated()
     test_schedule_expands_the_season()
     test_schedule_late_rule()
@@ -32607,7 +31359,6 @@ if __name__ == "__main__":
     test_schedule_file_is_versioned_and_atomic()
     test_schedule_clock_check()
     test_schedule_routes()
-    test_the_gpl_path_never_loads_the_scheduler()
     test_the_scheduler_engine_is_pure()
     test_schedule_restart_keeps_tonight()
     test_schedule_clock_check_never_delays_a_show()
@@ -32640,7 +31391,6 @@ if __name__ == "__main__":
     test_journal_a_full_disk_stops_the_logging_not_the_show()
     test_journal_cold_read()
     test_journal_faults_write_sentences()
-    test_the_gpl_path_never_loads_the_journal()
     test_journal_the_way_out_never_waits_on_the_disk()
     test_journal_a_line_the_disk_cannot_take()
     test_journal_a_torn_last_line_after_a_power_cut()
@@ -32688,7 +31438,6 @@ if __name__ == "__main__":
     test_announce_progress_and_stop()
     test_announce_logging_fields()
     test_announce_routes()
-    test_the_gpl_path_never_loads_announcements()
     test_arttimecode_packet_byte_for_byte()
     test_artnet_timecode_holds_30fps_under_load()
     test_artnet_timecode_never_drifts_from_its_clock()
@@ -32696,7 +31445,6 @@ if __name__ == "__main__":
     test_clock_show_length_follows_the_music()
     test_scheduler_show_len_s_checked_against_the_show_media()
     test_clock_settings_fail_loudly()
-    test_the_gpl_path_never_loads_the_clock()
     test_a_master_clock_runs_the_show()
     test_a_slave_clock_forwards_the_show_zone()
     test_a_stopped_cue_hands_the_rig_back()
@@ -32720,7 +31468,6 @@ if __name__ == "__main__":
     test_audio_master_the_audio_ending_ends_the_cue()
     test_audio_master_session_hold_resume_abort()
     test_audio_master_runs_in_its_own_process()
-    test_the_gpl_path_never_loads_the_show_audio()
     test_audio_master_review_rules()
     test_audio_master_stop_during_a_respawn()
     test_audio_master_never_reruns_an_unguarded_main()
@@ -32753,7 +31500,6 @@ if __name__ == "__main__":
     test_madmapper_watchdog_skips_drift_right_after_recovery()
     test_madmapper_submit_has_a_timeout()
     test_madmapper_no_clock_is_ever_mixed_with_another()
-    test_the_gpl_path_never_loads_madmapper()
     test_madmapper_web_route_reports_health()
     test_web_does_not_close_a_ready_made_madmapper_link()
     test_web_closes_a_config_built_madmapper_link()
@@ -32765,7 +31511,6 @@ if __name__ == "__main__":
     test_beyond_health_reports_last_result_and_packets_sent()
     test_beyond_builds_blank_at_construction_and_close_blanks_again()
     test_beyond_never_sends_blackout_or_masterpause()
-    test_the_gpl_path_never_loads_beyond()
     test_beyond_web_route_reports_health()
     test_web_does_not_close_a_ready_made_beyond_link()
     test_web_closes_a_config_built_beyond_link()
@@ -32778,9 +31523,9 @@ if __name__ == "__main__":
     test_devices_skip_gracefully_with_no_madmapper_or_no_beyond()
     test_devices_in_show_must_be_a_real_bool()
     test_devices_report_a_failed_blank_to_the_caller()
-    test_the_gpl_path_never_loads_devices()
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
+    test_the_gpl_path_never_loads_fire_and_ice_code()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
     test_conductor_failed_start_disarms_without_latch()
     test_conductor_double_abort_is_idempotent()
@@ -32849,23 +31594,22 @@ if __name__ == "__main__":
     test_conductor_video_never_rises_after_abort_or_hold()
     test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit()
     test_conductor_announcement_after_abort_and_reset()
-    test_the_gpl_path_never_loads_the_conductor()
     test_flame_link_unit()
+    test_ltcplay_rejects_a_status_frame_with_the_wrong_key()
     test_flame_link_fix_round_1()
     test_flame_link_fix_round_2()
     test_the_deck_arm_hold_fits_inside_the_post_abort_window()
     test_flame_link_sends_at_its_rate_on_one_socket()
     test_flame_link_end_to_end_against_the_real_flamesafe()
-    test_the_gpl_path_never_loads_the_flame_link()
     test_mutate_reports_every_failure_it_can_have()
-    for arg in sys.argv[1:]:
+    for arg in _argv:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
     # the command line, so it is not expected in a default run.
     OPT_IN = {"test_real_show"}
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)} - OPT_IN
-    never = sorted(defined - RAN)
+    never = sorted(defined - RAN) if ONLY is None else []
     if never:
         FAILS.extend(f"{n} is defined but was never called" for n in never)
         print(f"\n{len(never)} test(s) defined but never run:")
@@ -32904,6 +31648,9 @@ if __name__ == "__main__":
         print(f"{len(FAILS)} FAILURES in {time.time()-t0:.1f}s")
         for f in FAILS:
             print(f"  - {f}")
+        if FAILED_IN:
+            # Read by mutate.py (reproduces()): the tests to run again.
+            print("failed tests: " + ", ".join(FAILED_IN))
         # One annotation per failure, each with its sentence. GitHub keeps
         # ten error annotations a step, so the tenth names the rest.
         for f in FAILS[:9]:
