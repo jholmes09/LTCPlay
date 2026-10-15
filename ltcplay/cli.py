@@ -1286,9 +1286,17 @@ def _cmd_serve(args):
             fire_ice = fire_ice_mod.FireIceConfig.load(
                 fire_ice_mod.config_path_for(schedule))
             fire_ice_mod.flame_link_config(fire_ice)
+            # The alert pulse's floor pixels (ltcplay_remote.json) must not
+            # be the flame controller's channels; a settings file that
+            # cannot be read is refused where it is used (web.serve).
+            try:
+                from . import remote as _remote_mod
+                _alert_pixels = _remote_mod.load_settings().get("alert_pixels")
+            except ValueError:
+                _alert_pixels = None
             fire_ice_mod.check_flame_controllers(
                 os.path.abspath(args.folder or settings_mod.folder()),
-                fire_ice)
+                fire_ice, alert_pixels=_alert_pixels)
             fire_ice_mod.check_flame_groups(
                 os.path.abspath(args.folder or settings_mod.folder()),
                 fire_ice)

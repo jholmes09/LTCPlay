@@ -995,7 +995,7 @@ class _Stepped:
 
     def tick(self):
         p = self.p
-        frame = p._tick()
+        frame = p._alert_mix(p._tick())
         p.sender.send_frame(frame if frame is not None else b"")
         p.frames_sent += 1
         p._service_trigger()
@@ -25612,33 +25612,40 @@ def test_conductor_abort_cuts_flames_at_once_and_fades_the_rest():
     print("  ok")
 
 
-def test_conductor_failed_start_disarms_without_latch():
-    section("conductor: a failed start goes dark and disarms every flame "
-            "group at once, like an Abort, but does not latch; nothing "
-            "needs to be playing (Jeff, 2026-10-03)")
+def test_conductor_failed_start_leaves_groups_as_they_are():
+    section("conductor: a failed start goes dark like a cut show and leaves "
+            "every flame group AS IT IS: no disarm, no latch, Start now at "
+            "once (Jeff's ruling 1, 2026-10-12, reversing 2026-10-03). This "
+            "test used to be test_conductor_failed_start_disarms_without_"
+            "latch and asserted the disarm.")
     C = _cond_mod()
     c, rig, T, lines = _cond()
-    rig.cue = False
+    _cond_live(c, rig)                  # flame cues live, so the zero shows
+    k = len(rig.calls)
     r = c.failed_start("the scheduler", "")
-    calls = [x for x in rig.calls if x[0] == "flames_disarm_all"]
-    check(r.ok and rig.names()[:2] == ["flames_zero", "flames_disarm_all"]
-          and calls and calls[0][1] == (C.Conductor.FAILED_START,),
-          f"the flame cues are zeroed and every group disarmed before the "
-          f"call returns, because the show failed to start: {r} "
-          f"{rig.names()} {calls}")
-    check("armed again by hand" in r.sentence and "failed to start" in
-          r.sentence, f"and its answer says why and what to do: {r.sentence}")
+    check(r.ok and "flames_disarm_all" not in rig.names(k),
+          f"NO disarm is sent on the calling thread: {r} {rig.names(k)}")
+    check("left as it was" in r.sentence and "failed to start" in r.sentence
+          and "disarm" not in r.sentence.lower(),
+          f"and its answer says the groups are left as they were: "
+          f"{r.sentence}")
     c.run_pending()
     a = c.snapshot()["applied"]
     check(not c.latched and c.snapshot()["look"] == C.STOPPED_DARK and
-          a["lasers"] == "black" and a["pixels"] == "black" and
-          a["music"] == "stopped" and rig.count("flames_disarm_all") == 1,
-          f"the rig is dark, the disarm sent once, nothing latched: "
-          f"latched={c.latched} {a}")
-    check(any("failed start" in t and "disarm" in t and "failed to start"
-              in t for t, f in lines),
-          f"its own line says the flames were disarmed because the show "
-          f"failed to start: {lines[-2:]}")
+          a["flames"] == "zero" and a["lasers"] == "black" and
+          a["pixels"] == "black" and a["music"] == "stopped" and
+          rig.names(k)[:1] == ["flames_zero"] and
+          rig.count("flames_disarm_all") == 0 and not a["disarmed"],
+          f"the rig is dark (cues zeroed first, like a cut show), nothing "
+          f"disarmed, nothing latched: latched={c.latched} {a} "
+          f"{rig.names(k)}")
+    rig.cue = False
+    check(any("Failed start" in t for t, f in lines)
+          and not any("disarm" in t.lower() for t, f in lines),
+          f"its own line records the failed start and never speaks of a "
+          f"disarm: {lines}")
+    check(not hasattr(C.Conductor, "FAILED_START"),
+          "the failed-start disarm reason is gone with the disarm")
     rig.cue = True
     check(c.show_starting("Andy", "rack screen").ok,
           "no Reset is needed: the next show start is accepted")
@@ -25652,6 +25659,14 @@ def test_conductor_failed_start_disarms_without_latch():
     check(r.ok and rig.names(k) == [] and c.latched,
           f"a failed start while aborted sends nothing and keeps the latch: "
           f"{rig.names(k)}")
+    # The Abort still disarms: ruling 1 touched failed_start only.
+    c, rig, T, lines = _cond()
+    _cond_live(c, rig)
+    c.abort("Andy", "rack screen")
+    check(rig.names()[-2:] == ["flames_zero", "flames_disarm_all"]
+          or "flames_disarm_all" in rig.names(),
+          f"Abort still zeroes the cues and disarms every group at once: "
+          f"{rig.names()}")
     print("  ok")
 
 
@@ -26297,14 +26312,24 @@ def test_conductor_output_failures_are_loud_and_never_crash_it():
         c.run_pending()
         check(rig.count("flames_zero") == 2,
               f"{mode}: Abort cuts the flames again")
-    # A failed start's inline disarm fails: the executor sends it again.
+    # A failed start sends no disarm at all (Jeff's ruling 1, 2026-10-12),
+    # failing rig or not, so there is nothing to send again; its dark still
+    # goes out past a failing output, which is journaled as a fault.
     c, rig, T, lines = _cond()
+    _cond_live(c, rig)
     rig.fail = {"flames_disarm_all"}
     c.failed_start("the scheduler", "")
     rig.fail = set()
     c.run_pending()
-    check(rig.count("flames_disarm_all") == 2,
-          "a failed start's failed disarm is sent again by its own effect")
+    check(rig.count("flames_disarm_all") == 0,
+          f"a failed start never sends a disarm, whatever the rig does: "
+          f"{rig.names()}")
+    check(rig.count("flames_zero") >= 1 and rig.count("music_halt") == 1
+          and rig.count("lasers_blank") >= 1 and not c.latched
+          and any("dark after a failed start" in t and "left as it was"
+                  in t and not f for t, f in lines),
+          f"its dark still goes out, its own line says the groups are left "
+          f"as they were, and nothing latches: {rig.names()} {lines[-2:]}")
     # Abort's inline disarm fails: the executor sends it again.
     c, rig, T, lines = _cond()
     _cond_live(c, rig)
@@ -28864,15 +28889,16 @@ class _RTSock:
         pass
 
 
-def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
-    section("Stream Deck: with NO deck plugged in (before the first "
-            "connect, and between a disconnect and the next one) this "
-            "process keeps sending every group OFF at ARM_SEND_HZ on the "
-            "SAME arm socket, and a reconnect restarts wanted/seq on that "
-            "socket instead of closing it (round 4 of the safety review, "
-            "item A: it used to go silent, flamesafe's sender lock lapsed, "
-            "and the round-4 review had another local process take the lock "
-            "and arm every group while the deck was unplugged)")
+def test_streamdeck_unplug_keeps_wanted_and_counter():
+    section("Stream Deck: with NO deck plugged in (before the first connect, "
+            "and between a disconnect and the next one) this process keeps "
+            "sending its CURRENT wanted vector at ARM_SEND_HZ on the SAME "
+            "arm socket, counter advancing, and a reconnect keeps both: an "
+            "unplug never disarms a group by itself (Jeff, 2026-10-07; "
+            "ruling 4, 2026-10-12). The sender lock still never changes "
+            "hands (round 4 of the safety review, item A). This test used "
+            "to be test_streamdeck_round4_unplugged_deck_keeps_the_link_"
+            "held_off and asserted the opposite: every group OFF.")
     from ltcplay import streamdeck as sd
 
     names = ["front row", "cat-walk", "wave flamer"]
@@ -28881,13 +28907,13 @@ def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
     c = sd.Controller(arm, _FakeStatusSocket(), names,
                       operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True, clock=lambda: t[0])
-    stamps = []          # (fake time, wanted) of every send on an OPEN socket
+    stamps = []          # (fake time, seq, wanted) of every send on an OPEN socket
     orig_send = arm.send
 
     def send(names_):
-        if arm.is_open:
-            stamps.append((t[0], list(arm.wanted)))
         orig_send(names_)
+        if arm.is_open:
+            stamps.append((t[0], arm.seq, list(arm.wanted)))
     arm.send = send
     seen = {}
 
@@ -28895,13 +28921,17 @@ def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
         if i == 1:
             seen["a_first"] = (arm.seq, list(arm.wanted))
             arm.set_group(0, True)     # the operator arms front row
+            arm.set_group(2, True)     # and wave flamer
         if i == 3:
-            seen["armed_sent"] = any(w[0] for _, w in stamps)
+            seen["armed_sent"] = any(w[0] and w[2] for _, _, w in stamps)
+            seen["unplug_at"] = t[0]
 
     def deck_b(i):
         if i == 1:
             seen["b_first"] = (arm.seq, list(arm.wanted))
+            seen["back_at"] = t[0]
 
+    # No deck for 2 s, a deck for 3 passes, no deck for 1 + 2 s, a deck.
     _round4_run_forever(c, [None, _Round4Deck(3, deck_a), None,
                             _Round4Deck(2, deck_b)], t)
     period = 1.0 / sd.ARM_SEND_HZ
@@ -28913,35 +28943,491 @@ def test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off():
           f"no gap between two arm frames is ever longer than one "
           f"ARM_SEND_HZ period, through no-deck, connect, unplug and "
           f"reconnect: longest {max(gaps) if gaps else None} s")
-    check(t[0] >= 4.0 and len(stamps) >= int(t[0] * sd.ARM_SEND_HZ) - 2,
-          f"frames went out the whole time: {len(stamps)} in {t[0]:.2f} s")
     check(seen.get("armed_sent") is True,
-          "set up: front row really was sent armed while the deck was in")
-    first_true = next(i for i, (_, w) in enumerate(stamps) if w[0])
-    last_true = max(i for i, (_, w) in enumerate(stamps) if w[0])
-    check(all(not any(w) for _, w in stamps[last_true + 1:]),
-          "from the unplug on, every frame says every group OFF")
-    check(all(not any(w) for _, w in stamps[:first_true]),
-          "and before the first deck, every frame said OFF too")
-    check(arm.opens == 1 and arm.closes == 0,
-          f"ONE socket the whole time, never closed (so flamesafe's sender "
-          f"lock never changes hands): opens={arm.opens} "
-          f"closes={arm.closes}")
-    check(arm.restarts == 2,
-          f"each connect restarts wanted/seq on that socket: "
-          f"{arm.restarts}")
-    check(seen.get("a_first") == (0, [False, False, False])
-          and seen.get("b_first") == (0, [False, False, False]),
-          f"after each connect the counter is back at 0 and every group "
-          f"OFF before anything is sent: {seen}")
+          "set up: front row and wave flamer really were sent armed while "
+          "the deck was in")
+    want = [True, False, True]
+    first_true = next(i for i, (_, _, w) in enumerate(stamps) if w == want)
+    outage = [x for x in stamps if seen["unplug_at"] <= x[0] <= seen["back_at"]]
+    check(len(outage) >= int(3.0 * sd.ARM_SEND_HZ) - 2
+          and all(w == want for _, _, w in outage),
+          f"every one of the {len(outage)} frames of the 3 s outage carries "
+          f"the same vector the deck last wanted, {want}: nothing was "
+          f"disarmed by the unplug")
+    seqs = [q for _, q, _ in stamps]
+    check(all(b == a + 1 for a, b in zip(seqs, seqs[1:])),
+          f"the counter advances by one on every frame, through the unplug "
+          f"and the reconnect, never restarting: {seqs[:3]} ... "
+          f"{seqs[-3:]}")
+    check(all(not any(w) for _, _, w in stamps[:first_true]),
+          "before the first deck, every frame said OFF (a process start)")
+    check(all(w == want for _, _, w in stamps[first_true:]),
+          "and from the arm on, every frame says exactly what was armed")
+    check(arm.opens == 1 and arm.closes == 0 and arm.restarts == 0,
+          f"ONE socket the whole time, never closed and never restarted "
+          f"(so flamesafe's sender lock never changes hands and the "
+          f"counter never drops): opens={arm.opens} closes={arm.closes} "
+          f"restarts={arm.restarts}")
+    check(seen.get("a_first") == (int(2.0 * sd.ARM_SEND_HZ),
+                                  [False, False, False]),
+          f"the first deck finds the process-start state, counter at the "
+          f"no-deck frames sent so far and every group OFF: {seen}")
+    check(seen.get("b_first", (0,))[0] > seen["a_first"][0] + 60
+          and seen.get("b_first", (0, None))[1] == want,
+          f"the replugged deck finds the counter still advancing and the "
+          f"groups still as they were: {seen.get('b_first')}")
+    check(arm.wanted == want, f"and they stay so after it: {arm.wanted}")
+
+
+def test_streamdeck_unplug_posts_one_deck_alert_and_one_update():
+    section("Stream Deck: the first failure of an outage raises ONE deck "
+            "alert on the engine (booth note, rack-screen banner, "
+            "Acknowledge or Disarm all, no timer), the retries add none, "
+            "and the replug updates the same alert to say the deck is back; "
+            "it still waits for an Acknowledge (Jeff, 2026-10-07: 'audible "
+            "booth note, then Andy confirms'; ruling 4, 2026-10-12)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    posted = []
+
+    class _Engine:
+        def snapshot(self):
+            return {"latched": False, "look": "PLAYING"}
+
+        def alert(self, body):
+            posted.append((t[0], dict(body)))
+            return sd.EngineResult(True, "alert sent")
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, conductor=_Engine(),
+                      clock=lambda: t[0])
+    events = []
+    # A deck for 3 passes, then 5 x 2 s with none, then a deck for 2 passes
+    # that runs clean, then unplugged again twice.
+    _round4_run_forever(c, [_Round4Deck(3), None, None, None, None, None,
+                            _Round4Deck(int(12 * sd.ARM_SEND_HZ)), None,
+                            None, _Round4Deck(2)], t,
+                        journal=lambda t_, **kw: events.append((t_, kw)))
+    raises = [b for _, b in posted if b.get("raise") == "deck"]
+    check(len(posted) == 5 and len(raises) == 5
+          and [b["text"] for b in raises] == [sd.DECK_LOST_TEXT,
+                                              sd.DECK_BACK_TEXT,
+                                              sd.DECK_LOST_TEXT,
+                                              sd.DECK_BACK_TEXT,
+                                              sd.DECK_LOST_TEXT],
+          f"a post whenever the sentence changes (lost, back, lost again at "
+          f"the end), nothing per 2 s retry: "
+          f"{[(at, b['text'][:24]) for at, b in posted]}")
+    check(raises[0]["text"] == sd.DECK_LOST_TEXT
+          and raises[0]["options"] == ["Acknowledge", "Disarm all"]
+          and "stays as it was" in sd.DECK_LOST_TEXT
+          and "Acknowledge" in sd.DECK_LOST_TEXT,
+          f"the alert says the groups stay as they were and what to press: "
+          f"{raises[0]}")
+    check(raises[1]["text"] == sd.DECK_BACK_TEXT and "is back" in
+          sd.DECK_BACK_TEXT and "Acknowledge" in sd.DECK_BACK_TEXT
+          and "clear" not in {k for _, b in posted for k in b},
+          f"the replug updates the alert (a re-raise of the same kind) "
+          f"rather than clearing it: the Acknowledge is still owed: "
+          f"{raises[1]}")
+    check(posted[0][0] <= 0.2 and posted[1][0] >= posted[0][0] + 10.0,
+          f"posted at the unplug and at the replug: {[at for at, _ in posted]}")
+    con = [t_ for t_, kw in events if "Stream Deck connected" in t_]
+    check(con and all("stays as it was" in t_ for t_ in con)
+          and not any("starts OFF" in t_ for t_ in con),
+          f"the connect line says the groups stay as they were: {con[:1]}")
+    for bad in ("\u2014", "\u2013"):
+        check(bad not in sd.DECK_LOST_TEXT + sd.DECK_BACK_TEXT,
+              "no em or en dashes in the alert sentences")
+
+
+def test_streamdeck_hardware_reconnect_keeps_counter():
+    section("Stream Deck: a hardware replug inside a living process keeps "
+            "the counter and the wanted vector (no seq 0 after it, nothing "
+            "sent that flamesafe was not already seeing) and drops only the "
+            "holds in progress and the key snapshot (ruling 4, 2026-10-12)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0])
+    c._arm_holds = [sd.AbortHold(hold_s=0.1) for _ in names]
+    stamps = _round5_stamped(arm, t)
+    seqs = []
+    orig = arm.send
+
+    def send(names_):
+        orig(names_)
+        seqs.append(arm.seq)
+    arm.send = send
+    press_group1 = [False] * 6
+    press_group1[sd.GROUP_KEYS[1]] = True
+
+    class _Deck1(_Round4Deck):
+        """Arms front row, then holds cat-walk's key down and unplugs
+        mid-hold."""
+
+        def keys_down(self):
+            self.i += 1
+            if self.i == 1:
+                arm.set_group(0, True)
+                return []
+            if self.i == 2:
+                return [press_group1]
+            raise sd.DeckDisconnected("probe: unplugged mid-hold")
+    # Four passes of the replugged deck, none reporting any key (real
+    # hardware reports a key only on change).
+    _round4_run_forever(c, [_Deck1(99), None, _Round4Deck(4)], t)
+    check(0 not in seqs[1:] and seqs == sorted(seqs)
+          and len(set(seqs)) == len(seqs),
+          f"the counter never goes back to 0 and never repeats after the "
+          f"process start: {seqs[:2]} ... {seqs[-2:]}")
+    check(arm.wanted == [True, False, False] and arm.restarts == 0,
+          f"front row stays armed through the unplug and the replug, and "
+          f"the hold on cat-walk that the unplug interrupted never fired, "
+          f"however long the gap: {arm.wanted} restarts={arm.restarts}")
+    check(c._prev_keys == [False] * 6
+          and all(h.fraction(t[0]) == 0.0 for h in c._arm_holds),
+          "every key reads released and every hold is dropped after it")
+    check(all(w in ([False] * 3, [True, False, False])
+              for _, w in stamps),
+          "no frame ever said anything but OFF or front row armed")
+
+
+def test_streamdeck_outage_loop_runs_screen_pass():
+    section("Stream Deck: while the hardware is away the outage loop still "
+            "runs the screen's holds and disarms, so a rack-screen hold "
+            "arms a group with no deck plugged in, under the same two-clock "
+            "rule, and a screen disarm still lands (the virtual deck, "
+            "Phase 1, depends on this)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    scr = _FakeScreen()
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0],
+                      screen=scr,
+                      journal=lambda t_, **kw: events.append((t_, kw)))
+    arm.open()
+    arm.set_group(1, True)
+    # The engine reports a fresh hold on front row, 1.2 s of heartbeats.
+    scr.h[0] = {"group": 0, "id": 1, "held_s": 1.2, "fresh": True,
+                "who": "Andy", "device": "Rack screen"}
+    sd._hold_link_steady(c, lambda s_: t.__setitem__(0, t[0] + s_), 2.0)
+    check(arm.wanted == [True, True, False],
+          f"a screen hold arms front row with no deck at all, after the "
+          f"deck's own ARM_HOLD_S: {arm.wanted}")
+    check(any("arm pressed" in t_ and "Rack screen" in t_ for t_, _ in events),
+          f"journaled as a press on the rack screen: {events[-1:]}")
+    scr.h.clear()
+    scr.d.append({"id": 1, "group": 1, "who": "Jeff", "device": "Rack screen"})
+    sd._hold_link_steady(c, lambda s_: t.__setitem__(0, t[0] + s_), 0.1)
+    check(arm.wanted == [True, False, False],
+          f"a screen disarm lands with no deck too: {arm.wanted}")
+    check(len(arm.sends) >= int(2.1 * sd.ARM_SEND_HZ),
+          f"and the arm frames kept going at ARM_SEND_HZ throughout (plus "
+          f"the arm's and the disarm's own sends): {len(arm.sends)}")
+
+
+def test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error():
+    section("Stream Deck: with the hardware away, a screen pass or tick that "
+            "raises on every cycle never stops the arm frames (the link "
+            "going silent would disarm every group within arm_stale_ms and "
+            "lapse the sender lock: round 4, item A); the error is journaled "
+            "once per outage (review of PR #59, P1)")
+    from ltcplay import streamdeck as sd
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    t = [0.0]
+    events = []
+
+    class _BadScreen:
+        def holds(self):
+            raise RuntimeError("probe: the deck-input answer is garbage")
+
+        def new_disarms(self):
+            raise RuntimeError("probe: the deck-input answer is garbage")
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0],
+                      screen=_BadScreen(),
+                      journal=lambda t_, **kw: events.append((t_, kw)))
+    arm.open()
+    arm.set_group(0, True)
+    outage = sd._DeckOutage(lambda t_, **kw: events.append((t_, kw)))
+    sleep = lambda s_: t.__setitem__(0, t[0] + s_)  # noqa: E731
+    sd._hold_link_steady(c, sleep, 3.0, outage)
+    check(len(arm.sends) == int(3.0 * sd.ARM_SEND_HZ)
+          and all(w == [True, False, False] for w in arm.sends),
+          f"every one of the 3 s of frames went out, unchanged, past a "
+          f"screen pass that raised on every cycle: {len(arm.sends)}")
+    lines = [t_ for t_, kw in events if "could not be read" in t_]
+    check(len(lines) == 1 and events[0][1].get("fault") is True
+          and "RuntimeError" in lines[0] and "carries on unchanged"
+          in lines[0], f"journaled once per outage, as a fault: {events}")
+    check(outage.active, "and the outage is open, so a later clean 10 s "
+                         "closes it as usual")
+    # Through the real loop too: a deck that never comes, with the screen
+    # raising, keeps sending for the whole wait.
+    arm2 = _FakeArmSocket(3)
+    c2 = sd.Controller(arm2, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t[0], screen=_BadScreen())
+    stamps = _round5_stamped(arm2, t)
+    _round4_run_forever(c2, [None, None, None], t)
+    period = 1.0 / sd.ARM_SEND_HZ
+    gaps = [b[0] - a[0] for a, b in zip(stamps, stamps[1:])]
+    check(len(stamps) >= int(6.0 * sd.ARM_SEND_HZ) - 1 and gaps
+          and max(gaps) <= period + 1e-9,
+          f"run_forever with no deck and a raising screen: {len(stamps)} "
+          f"frames, longest gap {max(gaps) if gaps else None} s")
+    print("  ok")
+
+
+def test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers():
+    section("Stream Deck: the deck alert is posted again on every retry "
+            "while the engine has not answered 200 to it (engine down, post "
+            "queue full), and not again once it has; the engine's answer is "
+            "recorded by the conductor's own post (review of PR #59, P2)")
+    from ltcplay import streamdeck as sd
+    posted = []
+    landed = [False]
+    outage = sd._DeckOutage(lambda t_, **kw: None,
+                            alert=lambda body: posted.append(dict(body)),
+                            delivered=lambda: landed[0])
+    e = sd.DeckDisconnected("probe")
+    for _ in range(3):
+        outage.failed(e, "tail")
+    check(len(posted) == 3 and all(b["text"] == sd.DECK_LOST_TEXT
+                                   for b in posted),
+          f"posted on every retry while the engine has not taken it: "
+          f"{len(posted)}")
+    landed[0] = True
+    outage.failed(e, "tail")
+    outage.failed(e, "tail")
+    check(len(posted) == 3, "and not again once the engine answered 200")
+    outage.connected()
+    check(len(posted) == 4 and posted[-1]["text"] == sd.DECK_BACK_TEXT,
+          f"the replug posts the update once: {posted[-1:]}")
+    outage.connected()
+    check(len(posted) == 4, "a second reconnect in the outage posts nothing")
+    # No way to know (a conductor without alert_delivered): one post.
+    posted2 = []
+    o2 = sd._DeckOutage(lambda t_, **kw: None,
+                        alert=lambda body: posted2.append(dict(body)))
+    for _ in range(3):
+        o2.failed(e, "tail")
+    check(len(posted2) == 1, "with no answer to read, one post per outage")
+    # The conductor records the engine's answer.
+    answers = [(False, "refused", {}), (True, "ok", {})]
+    eng = sd.EngineConductor("http://127.0.0.1:9",
+                             poster=lambda p, b: answers.pop(0),
+                             fetcher=lambda p: None)
+    check(eng.alert_delivered is None, "nothing posted yet: unknown")
+    eng.alert({"raise": "deck", "text": "x", "options": ["Acknowledge"]})
+    check(eng.alert_delivered is False, "queued: not delivered yet")
+    eng._post_one(*eng._q.get_nowait())
+    check(eng.alert_delivered is False, "the engine refused: still not")
+    eng.alert({"raise": "deck", "text": "x", "options": ["Acknowledge"]})
+    eng._post_one(*eng._q.get_nowait())
+    check(eng.alert_delivered is True, "the engine answered 200: delivered")
+    eng.acknowledge(who="Andy")
+    check(eng.alert_delivered is True,
+          "an Acknowledge post does not count as an alert raise")
+    # run_forever wires the conductor's answer in.
+    src = open(sd.__file__, encoding="utf-8").read()
+    check("delivered=(lambda: cond.alert_delivered)" in src,
+          "run_forever gives the outage the conductor's answer to read")
+    print("  ok")
+
+
+def test_streamdeck_ack_key_while_an_alert_is_open():
+    section("Stream Deck: while the engine has an alert open the Start key "
+            "reads ACK / ALERT in a look of its own (never Abort's red, an "
+            "armed green or a hold's amber); the first press of ANY key "
+            "acknowledges, and the key still does its own job; Start does "
+            "only the acknowledge; the key reads START NOW again once the "
+            "alert is cleared (Jeff's ruling 2, 2026-10-12)")
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    status = _FakeStatus()
+    status.set({"arm_input": {"state": "live", "seq": 1}, "fault": "",
+                "confirmed": True, "groups": [
+                    {"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": "", "amber": "", "dwell_s": 0}
+                    for n in names]})
+    lines, calls = [], []
+
+    class _Engine:
+        def snapshot(self):
+            return {"latched": False, "look": "BETWEEN"}
+
+        def acknowledge(self, who, screen):
+            calls.append(("acknowledge", who, screen))
+            return sd.EngineResult(True, "alert sent to the engine")
+
+        def hold(self, who, screen):
+            calls.append(("hold", who, screen))
+            return sd.EngineResult(True, "Hold: ok.")
+
+    class _Screen(_FakeScreen):
+        def __init__(self):
+            super().__init__()
+            self.a = []
+
+        def alerts(self):
+            return tuple(self.a)
+    scr = _Screen()
+    t = [10.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      conductor=_Engine(), clock=lambda: t[0], screen=scr,
+                      journal=lambda text, **kw: lines.append((text, kw)))
+    fonts, faces, restore = _deck_face_recorder(sd)
+    if fonts is None:
+        print("  note: Pillow is not installed here, so the ACK key's "
+              "words are not checked on this machine.")
+        return
+    try:
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.CHAMPAGNE, None),
+              f"no alert: START NOW as always: {faces[0]}")
+        scr.a = [{"id": 1, "kind": "deck", "text": sd.DECK_LOST_TEXT,
+                  "options": ["Acknowledge", "Disarm all"]}]
+        for on in (True, False):
+            c.draw(fonts, blink_on=on, chase=0)
+            bg, text = sd.ACK_ON if on else sd.ACK_OFF
+            check(faces[0] == (["ACK", "ALERT"], text, bg),
+                  f"alert open, flash phase {on}: the Start key reads ACK / "
+                  f"ALERT in the ACK look: {faces[0]}")
+            check(faces[1] == (["HOLD"], sd.CHAMPAGNE, None)
+                  and faces[2] == (["ABORT"], sd.DIM_TEXT, None),
+                  f"Hold and Abort keep their own faces: {faces[1]} "
+                  f"{faces[2]}")
+        # A fault face outranks ACK (review of PR #59): a refused press or
+        # zeroed cues is never hidden behind a waiting alert.
+        c.conductor.fault = "Hold: the engine did not take it"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["ENGINE", "FAULT"],
+              f"an engine fault shows over a waiting alert: {faces[0]}")
+        c.conductor.fault = ""
+        c.conductor.cues_fault = "the render does not fit"
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["CUES", "FAULT"],
+              f"a cues fault shows over a waiting alert: {faces[0]}")
+        c.conductor.cues_fault = ""
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0][0] == ["ACK", "ALERT"],
+              f"and ACK is back once the fault is gone: {faces[0]}")
+        for look in (sd.ACK_ON, sd.ACK_OFF):
+            bg = look[0]
+            check(bg[2] > bg[0] + 60 and bg[2] > bg[1] + 40,
+                  f"the ACK look is blue, nothing like Abort's red, an "
+                  f"armed green or a hold's amber: {bg}")
+            check(bg not in (sd.RED, sd.GREEN, sd.AMBER, sd.AMBER_DIM,
+                             sd.GOLD, sd.BRONZE, sd.PLAYING_ON[0],
+                             sd.PLAYING_OFF[0], sd.AUDIO_LOST_ON[0],
+                             sd.AUDIO_LOST_OFF[0], sd.LATCHED_GREY),
+                  f"and reuses no other key's background: {bg}")
+        # Start pressed: acknowledge only, no Start Now refusal.
+        c.run_once([True, False, False, False, False, False])
+        c.run_once([False] * 6)
+        check(calls == [("acknowledge", "Andy", "Stream Deck")],
+              f"the Start key acknowledges and does nothing else: {calls}")
+        check(any("Acknowledge" in t_ and kw.get("action") == "alert"
+                  and not kw.get("fault") for t_, kw in lines)
+              and not any("Nothing was started" in t_ for t_, _ in lines),
+              f"journaled as an acknowledge, not as a Start Now refusal: "
+              f"{lines}")
+        # Hold pressed with the alert still open: acknowledge AND hold.
+        del calls[:]
+        c.run_once([False, True, False, False, False, False])
+        c.run_once([False] * 6)
+        check(calls == [("acknowledge", "Andy", "Stream Deck"),
+                        ("hold", "Andy", "Stream Deck")],
+              f"any other key acknowledges first and then does its own "
+              f"job: {calls}")
+        # A group key: acknowledge, and the hold starts as always.
+        del calls[:]
+        down = [False] * 6
+        down[sd.GROUP_KEYS[0]] = True
+        c.run_once(down)
+        check(calls == [("acknowledge", "Andy", "Stream Deck")]
+              and c._arm_holds[0]._down_at == t[0],
+              f"a group key acknowledges and its hold starts: {calls} "
+              f"{c._arm_holds[0]._down_at}")
+        c.run_once([False] * 6)
+        # Cleared on the engine: back to normal, and Start starts again.
+        scr.a = []
+        del calls[:]
+        c.draw(fonts, blink_on=True, chase=0)
+        check(faces[0] == (["START", "NOW"], sd.CHAMPAGNE, None),
+              f"alert cleared: START NOW again: {faces[0]}")
+        n = len(lines)
+        c.run_once([True, False, False, False, False, False])
+        c.run_once([False] * 6)
+        check(not calls and any("Nothing was started" in t_
+                                for t_, _ in lines[n:]),
+              f"and Start is Start again: {calls} {lines[n:]}")
+    finally:
+        restore()
+    # The deck's own posts: Acknowledge and the deck alert both go to the
+    # engine's alert route, on the queue, from the show machine.
+    posts = []
+
+    def poster(path, body):
+        posts.append((path, dict(body)))
+        return True, "ok", {}
+    eng = sd.EngineConductor("http://127.0.0.1:9", poster=poster,
+                             fetcher=lambda p: None, clock=lambda: t[0],
+                             wall=lambda: 1_800_000_000.0)
+    r1 = eng.acknowledge(who="Andy", screen="Stream Deck")
+    r2 = eng.alert({"raise": "deck", "text": sd.DECK_LOST_TEXT,
+                    "options": ["Acknowledge", "Disarm all"]})
+    check(r1.ok and r2.ok, f"both are queued: {r1} {r2}")
+    eng._post_one(*eng._q.get_nowait())
+    eng._post_one(*eng._q.get_nowait())
+    check([p for p, _ in posts] == ["/api/remote/alert"] * 2
+          and posts[0][1].get("action") == "acknowledge"
+          and posts[0][1].get("who") == "Andy"
+          and posts[1][1].get("raise") == "deck"
+          and posts[1][1].get("text") == sd.DECK_LOST_TEXT,
+          f"both POST /api/remote/alert with what the engine needs: {posts}")
+    # ScreenKeys hands the alerts on only while the answer is fresh.
+    ans = {"enabled": False, "holds": [], "disarms": [],
+           "alerts": [{"id": 3, "kind": "audio", "text": "x"}]}
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda p: ans,
+                         clock=lambda: t[0])
+    keys.poll_once()
+    check(len(keys.alerts()) == 1 and keys.alerts()[0]["kind"] == "audio",
+          "a fresh answer's alerts are handed on")
+    t[0] += sd.SCREEN_STALE_S + 0.01
+    check(keys.alerts() == (),
+          "a stale answer hands on none: a key must not keep reading ACK, "
+          "or acknowledge something the engine no longer shows")
+    print("  ok")
 
 
 def test_streamdeck_round4_unplug_keeps_one_real_source_port():
     section("Stream Deck: the same, over a REAL ArmSocket and a real UDP "
             "receiver: every arm frame through no-deck, connect, unplug "
             "and reconnect comes from ONE source port (the one flamesafe's "
-            "sender lock holds), the no-deck frames all say OFF, and each "
-            "connect restarts the counter (round 4, item A)")
+            "sender lock holds), the counter never restarts after the "
+            "process start, and the no-deck frames carry the vector the "
+            "deck last wanted (round 4, item A; ruling 4, 2026-10-12)")
     import json as _json
     import socket as _socket
     from ltcplay import streamdeck as sd
@@ -28984,14 +29470,17 @@ def test_streamdeck_round4_unplug_keeps_one_real_source_port():
           f"{len(got)} arm frames, all from one source address: {ports}")
     seqs = [f["seq"] for _, f in got]
     restarts = sum(1 for a, b in zip(seqs, seqs[1:]) if b < a)
-    check(restarts == 2,
-          f"the counter restarts exactly at each of the 2 connects: "
-          f"{restarts}")
-    last_on = max(i for i, (_, f) in enumerate(got) if any(f["wanted"]))
-    check(all(not any(f["wanted"]) for _, f in got[last_on + 1:])
-          and len(got) - last_on > 40,
-          f"after the unplug, a steady run of all-OFF frames: "
-          f"{len(got) - last_on - 1}")
+    check(restarts == 0 and seqs == sorted(seqs) and len(set(seqs)) == len(seqs),
+          f"the counter never restarts after the process start, through "
+          f"connect, unplug and reconnect: {restarts} restarts")
+    first_on = min(i for i, (_, f) in enumerate(got) if any(f["wanted"]))
+    check(all(f["wanted"] == [False, True, False] for _, f in got[first_on:])
+          and len(got) - first_on > 60,
+          f"from the moment cat-walk was armed, every frame through the "
+          f"unplug and the reconnect still says cat-walk armed and nothing "
+          f"else: {len(got) - first_on} frames")
+    check(all(not any(f["wanted"]) for _, f in got[:first_on]),
+          "and before the process had a deck, every frame said OFF")
 
 
 def test_streamdeck_round4_reconnect_releases_every_hold():
@@ -29166,8 +29655,8 @@ def _round5_stamped(arm, t):
 
 
 def test_streamdeck_round5_a_long_unplug_never_goes_quiet():
-    section("Stream Deck: a deck unplugged for 120 s (fake clock) is held "
-            "OFF on the arm link the WHOLE time: no gap between two arm "
+    section("Stream Deck: a deck unplugged for 120 s (fake clock) keeps its "
+            "last wanted vector on the arm link the WHOLE time: no gap between two arm "
             "frames is ever longer than one ARM_SEND_HZ period, from the "
             "unplug to the reconnect (round 5 of the safety review, item 1: "
             "the round-4 test's no-deck time added up to exactly 6 s, so "
@@ -29203,9 +29692,9 @@ def test_streamdeck_round5_a_long_unplug_never_goes_quiet():
     check(back is not None, "set up: the deck came back at the end")
     if not armed or back is None:
         return
-    # From the last armed frame through the reconnect's own first frame,
+    # From the first armed frame through the reconnect's own first frame,
     # so a sender that went silent part way shows as one long gap.
-    off = [s for s in stamps[armed[-1]:] if s[0] <= back]
+    off = [s for s in stamps[armed[0]:] if s[0] <= back]
     off_span = off[-1][0] - off[0][0] if off else 0.0
     check(off_span >= 120.0,
           f"set up: the deck really was away for 120 s or more "
@@ -29217,17 +29706,18 @@ def test_streamdeck_round5_a_long_unplug_never_goes_quiet():
           f"through the whole 120 s unplug no gap between two arm frames "
           f"is longer than one {period:g} s send period: longest "
           f"{worst} s, starting at t={worst_at}")
-    check(all(not any(w) for _, w in off[1:]),
-          "every frame from the unplug to the reconnect says every group "
-          "OFF")
+    check(all(w == [True, False, False] for _, w in off),
+          "every frame from the arm, through the unplug, to the reconnect "
+          "says front row armed and nothing else (ruling 4, 2026-10-12: "
+          "an unplug disarms nothing)")
     check(len(off) >= int(120.0 * sd.ARM_SEND_HZ),
-          f"{len(off)} OFF frames went out in {off_span:.1f} s")
+          f"{len(off)} steady frames went out in {off_span:.1f} s")
 
 
 def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
     section("Stream Deck: ANY exception from opening the deck, or from one "
             "main-loop pass, is handled as an unplug: run_forever keeps "
-            "every group held OFF on the arm link and only a deliberate "
+            "every group kept as it was on the arm link and only a deliberate "
             "stop ends it, and each kind of failure is journaled once per "
             "outage (round 5 of the safety review, item 2: a plain OSError "
             "from hidapi's set_nonblocking or send_feature_report on a "
@@ -29362,13 +29852,15 @@ def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
           f"arm frames went out without a gap longer than one period the "
           f"whole {t[0]:.1f} s: longest {max(gaps) if gaps else None} s")
     armed = [i for i, (_, w) in enumerate(stamps) if w[0]]
-    check(bool(armed) and all(not any(w) for _, w in stamps[armed[-1] + 1:]),
+    check(bool(armed) and all(w == [True, False, False]
+                              for _, w in stamps[armed[0]:]),
           "front row was sent armed before the pass error, and every frame "
-          "after it says every group OFF")
-    check(bool(armed) and len(stamps) > armed[-1] + 1
-          and stamps[armed[-1] + 1][0] - stamps[armed[-1]][0]
-          <= period + 1e-9,
-          "the first all-OFF frame follows the error within one period")
+          "after it, through every error, still says front row armed and "
+          "nothing else (ruling 4, 2026-10-12)")
+    check(bool(armed) and len(stamps) > armed[0] + 1
+          and all(b[0] - a[0] <= period + 1e-9 for a, b in
+                  zip(stamps[armed[0]:], stamps[armed[0] + 1:])),
+          "no frame after the error is ever late by more than one period")
 
     def lines(sub):
         return [t_ for t_, kw in events if sub in t_]
@@ -30484,19 +30976,24 @@ def test_schedule_conductor_calls_after_the_save_and_off_the_lock():
     print("  ok")
 
 
-def test_schedule_failed_start_disarms_without_latch():
+def test_schedule_failed_start_leaves_groups_and_raises_an_alert():
     section("scheduler: a failed start (no timecode) goes dark, journals "
-            "loudly, and disarms every flame group like an Abort, but does "
-            "not latch: Start now works at once, and each group has to be "
-            "armed again by hand (Jeff, 2026-10-03)")
+            "loudly, leaves every flame group AS IT IS, latches nothing, and "
+            "raises a 'start' alert for the rack screen and the booth; Start "
+            "now works at once (Jeff's ruling 1, 2026-10-12). This test used "
+            "to be test_schedule_failed_start_disarms_without_latch and "
+            "asserted the disarm.")
     S = _sched()
     if S is None:
         return
     import tempfile
+    from ltcplay import alerts as AL
     c, rig, T, lines = _cond()
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 59)]
     svc = _svc(S, work, now, conductor=c)
+    alerts = AL.Alerts(journal=lambda text, **kw: None, booth=None)
+    svc.alert_sink = alerts.raise_
     svc.tick()
     now[0] = _den(S, 18, 0)
     svc.tick()
@@ -30505,22 +31002,16 @@ def test_schedule_failed_start_disarms_without_latch():
     now[0] = _den(S, 18, 0, 5)
     svc._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
     _settle(svc)
-    check(rig.names(k)[:2] == ["flames_zero", "flames_disarm_all"],
-          f"the flame cut and the disarm go out at once, as the conductor is "
-          f"asked, before its fade has even begun: {rig.names(k)}")
     c.run_pending()
     a = c.snapshot()["applied"]
-    disarms = [x for x in rig.calls[k:] if x[0] == "flames_disarm_all"]
-    check(len(disarms) == 1 and "failed to start" in str(disarms[0]) and
-          not c.latched and not svc._aborted() and
-          not svc.machine.abort_latched,
-          f"every flame group is disarmed once, because the show failed to "
-          f"start, and nothing latches: {disarms} latched={c.latched} "
-          f"{svc._aborted()} {svc.machine.abort_latched}")
-    check(rig.names(k).index("flames_disarm_all") <
-          rig.names(k).index("music_halt"),
-          f"the disarm goes out with the flame cut, before the fade: "
-          f"{rig.names(k)}")
+    check("flames_disarm_all" not in rig.names(k) and not a["disarmed"]
+          and a["flames"] == "zero",
+          f"the flame cues are zero (never lit: the show never confirmed) "
+          f"and NO group is disarmed: {rig.names(k)} {a}")
+    check(not c.latched and not svc._aborted()
+          and not svc.machine.abort_latched,
+          f"nothing latches: {c.latched} {svc._aborted()} "
+          f"{svc.machine.abort_latched}")
     check(a["flames"] == "zero" and a["lasers"] == "black" and
           a["video"] in ("black", "stopped") and a["pixels"] == "black" and
           a["music"] == "stopped" and "music_halt" in rig.names(k),
@@ -30530,12 +31021,22 @@ def test_schedule_failed_start_disarms_without_latch():
     sent = [r for r in svc.journal if r.get("action") == "conductor" and
             "Failed start" in r["text"]]
     check(rows and rows[-1].get("fault") and
-          "disarmed because the show failed to start" in rows[-1]["text"] and
-          S.FAILED_START_NOT_DISARMED not in rows[-1]["text"] and
-          "armed again by hand" in rows[-1]["text"] and sent and
-          "every flame group is disarmed" in sent[0]["text"],
-          f"the journal says it loudly, and says the flames were disarmed "
-          f"because the show failed to start: {rows[-1:]} {sent[:1]}")
+          S.FAILED_START_NOT_DISARMED in rows[-1]["text"] and
+          "stays as it was" in rows[-1]["text"] and sent and
+          "left as it was" in sent[0]["text"] and
+          "is disarmed" not in sent[0]["text"],
+          f"the journal says it loudly, as a fault, and says the groups stay "
+          f"as they were: {rows[-1:]} {sent[:1]}")
+    open_ = alerts.open()
+    check(len(open_) == 1 and open_[0].kind == "start"
+          and open_[0].text == svc.FAILED_START_ALERT
+          and "stays as it was" in open_[0].text
+          and "Acknowledge" in open_[0].text,
+          f"one 'start' alert is raised, saying the groups stay as they were "
+          f"and what to press: {[x.view() for x in open_]}")
+    al_rows = [r for r in svc.journal if r.get("action") == "alert"]
+    check(not al_rows, "the alert's own journal line is the alert service's "
+                       "(through the Remote), not a second scheduler line")
     rig_before = len(rig.calls)
     check(svc.machine.state == S.STANDBY and svc.machine.dark,
           "the scheduler waits dark, no intermission")
@@ -30547,21 +31048,40 @@ def test_schedule_failed_start_disarms_without_latch():
           f"Start now works straight away, with no Reset, and the rig comes "
           f"up: {out.refused} {c.snapshot()['look']}")
     check(not [x for x in rig.names(rig_before) if "arm" in x],
-          f"and nothing ltcplay sends arms a flame group again: that is a "
-          f"hand on the deck, off then on: {rig.names(rig_before)}")
-    # Without a show conductor nothing is disarmed, and the line says so.
+          f"and nothing ltcplay sends arms or disarms a flame group: "
+          f"{rig.names(rig_before)}")
+    check(len(alerts.open()) == 1,
+          "the alert waits for a person; the next start does not clear it")
+    # Without a show conductor: the same line, and the same alert.
     work = tempfile.mkdtemp()
     now = [_den(S, 17, 59)]
     bare = _svc(S, work, now)
+    raised = []
+    bare.alert_sink = lambda kind, text: raised.append((kind, text))
     bare.tick()
     now[0] = _den(S, 18, 0)
     bare.tick()
     now[0] = _den(S, 18, 0, 5)
     bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
     rows = [r for r in bare.journal if r.get("action") == S.SHOW_FAILED]
-    check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"],
-          f"with no conductor the line says nothing was disarmed: "
-          f"{rows[-1:]}")
+    check(rows and S.FAILED_START_NOT_DISARMED in rows[-1]["text"]
+          and raised == [("start", bare.FAILED_START_ALERT)],
+          f"with no conductor the line says the same and the alert is "
+          f"raised too: {rows[-1:]} {raised}")
+    # An alert sink that raises never stops the scheduler.
+    bare.alert_sink = lambda kind, text: 1 / 0
+    now[0] = _den(S, 18, 20)
+    bare.tick()
+    now[0] = _den(S, 18, 20, 5)
+    bare._apply(S.Event(S.SHOW_FAILED, "madmapper", detail="no timecode"))
+    bad = [r for r in bare.journal if r.get("action") == "alert"]
+    check(bad and bad[-1].get("fault") and "could not be raised" in
+          bad[-1]["text"], f"a broken sink is one fault line: {bad[-1:]}")
+    for name in ("schedule.py", "schedule_service.py", "conductor.py"):
+        src = open(os.path.join(os.path.dirname(S.__file__), name),
+                   encoding="utf-8").read()
+        check("\u2014" not in src and "\u2013" not in src,
+              f"{name} has no em or en dashes")
     # The LAST show fails to start: the night closes at once, and closing
     # must not cut the stop's fade short (video and pixels still go down).
     c, rig, T, lines = _cond()
@@ -40130,7 +40650,8 @@ def test_screen_arming_is_off_unless_switched_on():
     section("screen arming is OFF by default (review of PR #43, P0-4): with "
             "no ltcplay_remote.json every arm-hold is refused before "
             "anything else, a screen's per-group Disarm says it cannot go, "
-            "and ltc deck makes no ScreenKeys")
+            "and ltc deck still reads the engine's deck input (for the "
+            "alerts), whose holds are empty while it is off")
     S = _sched()
     if S is None:
         return
@@ -40174,21 +40695,35 @@ def test_screen_arming_is_off_unless_switched_on():
               "the page is told it is off")
     finally:
         R.close()
-    # The deck: on only for the JSON word true; anything else, off.
-    check(sd.screen_arming_switched_on(lambda: {"screen_arming": True}),
-          "true is on")
-    for v in (False, "true", 1, None):
-        check(not sd.screen_arming_switched_on(
-            lambda v=v: {"screen_arming": v}), f"{v!r} is off")
-
-    def broken():
-        raise ValueError("ltcplay_remote.json could not be read")
-    check(not sd.screen_arming_switched_on(broken), "a broken file is off")
-    # ltc deck itself: no ScreenKeys made while it is off.
+    # The deck has no switch of its own any more (review of PR #59: it was
+    # dead code once ScreenKeys was always made); the engine's load_settings
+    # is the one guard, on only for the JSON word true, and the deck takes
+    # holds only while the engine answers enabled true (ScreenKeys.holds).
+    check(not hasattr(sd, "screen_arming_switched_on"),
+          "the deck's own screen_arming switch is gone")
+    import json as _j2
+    folder = tempfile.mkdtemp()
+    for v, on in ((True, True), (False, False)):
+        with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j2.dump({"screen_arming": v}, fh)
+        check(RM.load_settings(folder)["screen_arming"] is on,
+              f"the engine reads {v!r} as {'on' if on else 'off'}")
+    for v in ("true", 1, None, "yes"):
+        with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j2.dump({"screen_arming": v}, fh)
+        try:
+            RM.load_settings(folder)
+            check(False, f"{v!r} must be refused, not read as on")
+        except ValueError as e:
+            check("true or false" in str(e), f"{v!r} is refused: {e}")
+    # ltc deck itself: ScreenKeys is always made (2026-10-12: the deck
+    # reads the open alerts on the same poll); with arming off the engine
+    # answers enabled false and ScreenKeys.holds() is empty.
     work = tempfile.mkdtemp()
     made = []
-    real = (sd.ScreenKeys, sd.run_forever, sd.screen_arming_switched_on,
-            sd.Controller)
+    real = (sd.ScreenKeys, sd.run_forever, sd.Controller)
     try:
         fs, _show, _doc = _fi_flame_files(work)
 
@@ -40213,19 +40748,22 @@ def test_screen_arming_is_off_unless_switched_on():
         sd.ScreenKeys, sd.run_forever, sd.Controller = Keys, stop_at_once, Ctl
         args = types.SimpleNamespace(flamesafe_config=fs,
                                      ltcplay_url="http://127.0.0.1:9")
-        for on in (False, True):
-            del made[:]
-            sd.screen_arming_switched_on = lambda on=on: on
-            sd._main(args)
-            check((made == ["ScreenKeys"]) == on and
-                  (got.get("screen") is None) == (not on),
-                  f"ltc deck with screen arming {'on' if on else 'off'}: "
-                  f"ScreenKeys made {made}, the controller's screen "
-                  f"{got.get('screen')!r}")
+        sd._main(args)
+        check(made == ["ScreenKeys"] and got.get("screen") is not None,
+              f"ltc deck always reads the engine's deck input: ScreenKeys "
+              f"made {made}, the controller's screen {got.get('screen')!r}")
     finally:
-        (sd.ScreenKeys, sd.run_forever, sd.screen_arming_switched_on,
-         sd.Controller) = real
+        (sd.ScreenKeys, sd.run_forever, sd.Controller) = real
         shutil.rmtree(work, ignore_errors=True)
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=lambda path: {
+        "enabled": False, "holds": [{"group": 0, "id": 1, "held_s": 2.0,
+                                     "fresh": True}], "disarms": [],
+        "alerts": [{"id": 1, "kind": "deck", "text": "x"}]},
+        clock=lambda: 5.0)
+    keys.poll_once()
+    check(keys.holds() == {} and len(keys.alerts()) == 1,
+          "with arming off the deck takes no hold from the engine but "
+          "still reads the alerts")
     print("  ok")
 
 
@@ -41106,6 +41644,531 @@ def test_flame_link_seek_guard():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# Degraded mode, Phase 0 (Jeff's rulings, 2026-10-07 and 2026-10-12): the
+# alert service, the booth note, the blue floor pulse.
+# ---------------------------------------------------------------------------
+def test_alerts_pure_logic():
+    section("alerts: one open alert per kind; a re-raise updates the sentence "
+            "and never re-sounds the booth within 60 s; every raise is a "
+            "fault line and every clear a plain line naming the action, the "
+            "surface and the address; Acknowledge changes nothing; the pulse "
+            "runs for an audio alert or a note that could not play, and "
+            "during a show only for audio")
+    from ltcplay import alerts as AL
+    lines, booth_calls, changes = [], [], []
+    t, w, live = [100.0], [1_800_000_000.0], [False]
+
+    class _Booth:
+        ok = True
+        device_name = "Booth"
+
+        def play(self, kind):
+            booth_calls.append((t[0], kind))
+            if self.ok:
+                return True, "played"
+            return False, "Booth speaker Booth is not attached."
+    booth = _Booth()
+    A = AL.Alerts(journal=lambda text, **kw: lines.append((text, kw)),
+                  booth=booth, clock=lambda: t[0], wall=lambda: w[0],
+                  show_running=lambda: live[0],
+                  on_change=lambda: changes.append(1))
+    a = A.raise_("deck", "The Stream Deck is unplugged.",
+                 ["Acknowledge", "Disarm all"])
+    check(a.id == 1 and a.kind == "deck" and a.severity == "fault"
+          and a.options == ("Acknowledge", "Disarm all"),
+          f"a deck alert is a fault with its options: {a.view()}")
+    check(booth_calls == [(100.0, "deck")] and a.booth_ok is True,
+          f"the booth note plays once on the raise: {booth_calls}")
+    check(lines[-1][1].get("fault") is True
+          and lines[-1][1].get("action") == "alert"
+          and lines[-1][1].get("outcome") == "raised"
+          and "unplugged" in lines[-1][0],
+          f"a raise is journaled as a fault: {lines[-1]}")
+    t[0] = 130.0
+    b = A.raise_("deck", "The Stream Deck is back.")
+    check(b is a and a.text == "The Stream Deck is back."
+          and len(A.open()) == 1,
+          f"one open alert per kind: a re-raise updates the sentence: "
+          f"{[x.view() for x in A.open()]}")
+    check(len(booth_calls) == 1,
+          f"and does not re-sound the booth within 60 s: {booth_calls}")
+    check(lines[-1][1]["outcome"] == "updated" and lines[-1][1]["fault"],
+          f"the update is a fault line too: {lines[-1]}")
+    t[0] = 161.0
+    A.raise_("deck", "Still unplugged.")
+    check(len(booth_calls) == 2, f"after 60 s a raise sounds again: "
+                                 f"{booth_calls}")
+    c = A.raise_("video", "A video feed is gone.", ["Stop"])
+    check(c.options == ("Acknowledge", "Stop"),
+          f"an alert that only offers a choice can still be acknowledged: "
+          f"{c.options}")
+    check(A.raise_("video", "A video feed is gone.",
+                   ["Continue", "Stop"]).options == ("Continue", "Stop"),
+          "Continue already clears, so nothing is added to it")
+    for args in (("nope", "x"), ("deck", ""), ("deck", "x", ["Shout"])):
+        try:
+            A.raise_(*args)
+            check(False, f"raise_{args} must be refused")
+        except ValueError as e:
+            check(str(e).endswith("."), f"a plain sentence: {e}")
+    # The pulse rule.
+    check(A.pulse_wanted() is False,
+          "a deck or video alert whose note played does not pulse")
+    booth.ok = False
+    t[0] = 300.0
+    A.raise_("flames", "The flame link is quiet.")
+    check(A.pulse_wanted() is True,
+          "an alert whose booth note could not play pulses")
+    v = [x for x in A.view() if x["kind"] == "flames"][0]
+    check(v["text"].endswith(AL.BOOTH_UNAVAILABLE + ".") and v["pulse"],
+          f"and its banner says the booth speaker is not available: {v}")
+    live[0] = True
+    check(A.pulse_wanted() is False,
+          "during a show an alert that is not about audio does not pulse")
+    A.raise_("audio", "The show audio is gone.")
+    check(A.pulse_wanted() is True, "during a show an audio alert pulses")
+    au = [x for x in A.view() if x["kind"] == "audio"][0]
+    check(au["pulse"] is True and not [x for x in A.view()
+                                       if x["kind"] == "flames"][0]["pulse"],
+          f"the view says which alert the pulse is for: {A.view()}")
+    live[0] = False
+    booth.ok = True
+    # Clearing.
+    ok, why = A.clear(action="Stop", who="Andy", screen="Rack screen")
+    check(not ok and "not built" in why and len(A.open()) == 4,
+          f"Stop chooses; it is refused here and clears nothing: {why}")
+    ok, why = A.clear(id=a.id, who="Andy", screen="Rack screen",
+                      address="10.20.0.44")
+    check(ok and [x.kind for x in A.open()] == ["video", "flames", "audio"],
+          f"Acknowledge by id clears that one alert: {why} "
+          f"{[x.kind for x in A.open()]}")
+    check(lines[-1][1]["fault"] is False
+          and lines[-1][1]["outcome"] == "cleared"
+          and "Acknowledge by Andy on the Rack screen at 10.20.0.44"
+          in lines[-1][0] and "not changed" in lines[-1][0],
+          f"the clear is a plain line naming the action, the surface and "
+          f"the address: {lines[-1]}")
+    ok, why = A.clear(action="acknowledge", who="", screen="Stream Deck")
+    check(ok and not A.open() and "3 alerts" in why,
+          f"a deck key acknowledges every open alert: {why}")
+    ok, why = A.clear()
+    check(not ok and "no open alert" in why, f"nothing to clear: {why}")
+    check(len(changes) >= 8, f"on_change ran for every raise and clear: "
+                             f"{len(changes)}")
+    # No booth speaker configured at all: the pulse and the banner cover it.
+    B = AL.Alerts(journal=lambda text, **kw: None, booth=None,
+                  clock=lambda: t[0], wall=lambda: w[0])
+    x = B.raise_("deck", "The Stream Deck is unplugged.")
+    check(x.booth_ok is False and B.pulse_wanted() is True
+          and "No booth speaker is configured" in x.booth,
+          f"no booth speaker: the pulse runs and the banner says so: "
+          f"{x.view()}")
+    check(AL.SEVERITY["gate"] == "warning"
+          and all(AL.SEVERITY[k] == "fault" for k in AL.KINDS
+                  if k != "gate"),
+          "the gate is a warning; everything else is a fault")
+    print("  ok")
+
+
+def test_alerts_route_status_and_acknowledge():
+    section("alerts on the engine: the Stream Deck process raises over "
+            "loopback, the page and the deck read the same list, Acknowledge "
+            "from a page clears it and sends nothing to the rig, raising "
+            "from the network is refused, and the page draws the strip")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    body = {"raise": "deck", "text": "The Stream Deck is unplugged.",
+            "options": ["Acknowledge", "Disarm all"]}
+    try:
+        st, _h, out = R.ask("POST", "/api/remote/alert", dict(body))
+        check(st == 403, f"raising from the network is refused: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/alert", dict(body),
+                           client=loop)
+        check(st == 200 and out.get("alert", {}).get("kind") == "deck",
+              f"the show machine raises: {st} {out}")
+        st, _h, status = R.ask("GET", "/api/remote/status")
+        al = status.get("alerts") or []
+        check(len(al) == 1 and al[0]["text"].startswith(
+                  "The Stream Deck is unplugged.")
+              and al[0]["severity"] == "fault"
+              and al[0]["options"] == ["Acknowledge", "Disarm all"]
+              and status.get("booth") == {"configured": False, "device": ""},
+              f"the status carries the alert and says no booth speaker is "
+              f"configured: {al} {status.get('booth')}")
+        check(al[0]["text"].endswith("Booth speaker not available."),
+              f"with no booth speaker the banner says so: {al[0]['text']}")
+        st, _h, din = _ask(R.httpd, "GET", "/api/remote/deck-input",
+                           client=loop)
+        check(st == 200 and (din.get("alerts") or [{}])[0].get("id")
+              == al[0]["id"],
+              f"the deck reads the same list on its own poll: {din}")
+        rows = R.lines_for("alert")
+        check(rows and rows[-1].get("fault") and "unplugged"
+              in rows[-1]["text"],
+              f"the raise is journaled as a fault: {rows[-1:]}")
+        k = len(R.rig.calls)
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": al[0]["id"], "action": "Stop",
+                            "seen": R.seen()})
+        check(st == 409 and "not built" in o2.get("error", ""),
+              f"Stop is refused with a sentence: {st} {o2}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": "1", "action": "acknowledge"})
+        check(st == 400, f"an id that is not a number is refused: {st} {o2}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"id": al[0]["id"], "action": "acknowledge",
+                            "seen": R.seen()})
+        check(st == 200 and "Nothing on the rig was changed" in o2["text"],
+              f"Acknowledge from the page clears it: {st} {o2}")
+        R.settle()
+        check(R.rig.names(k) == [],
+              f"and sent nothing to the rig: {R.rig.names(k)}")
+        st, _h, status = R.ask("GET", "/api/remote/status")
+        check(status.get("alerts") == [], "the strip is empty again")
+        rows = R.lines_for("alert")
+        check(rows and not rows[-1].get("fault")
+              and "10.20.0.44" in rows[-1]["text"]
+              and "Acknowledge" in rows[-1]["text"],
+              f"the clear names the action, the surface and the address, "
+              f"not as a fault: {rows[-1:]}")
+        st, _h, o2 = R.ask("POST", "/api/remote/alert",
+                           {"action": "acknowledge"})
+        check(st == 409, f"acknowledging nothing is refused: {st} {o2}")
+        st, _h, o2 = _ask(R.httpd, "POST", "/api/remote/alert",
+                          {"raise": "nope", "text": "x"}, client=loop)
+        check(st == 400 and "not an alert kind" in o2.get("error", ""),
+              f"an unknown kind is refused: {st} {o2}")
+        # A clear from the show machine (the deck's own route).
+        _ask(R.httpd, "POST", "/api/remote/alert", dict(body), client=loop)
+        st, _h, o2 = _ask(R.httpd, "POST", "/api/remote/alert",
+                          {"clear": "deck"}, client=loop)
+        check(st == 200 and not R.remote.alerts.open(),
+              f"the show machine clears by kind: {st} {o2}")
+    finally:
+        R.close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('id="al-list"' in page and "renderAlerts(s.alerts" in page
+          and '"/api/remote/alert"' in page and 'action:"acknowledge"' in page
+          and ">Acknowledge</button>" in page
+          and 'includes("Disarm all")' in page,
+          "the page draws every open alert with Acknowledge, and Disarm "
+          "all for the alerts that offer it")
+    for bad in ("—", "–"):
+        for name in ("alerts.py", "boothaudio.py"):
+            src = open(os.path.join(here, "ltcplay", name),
+                       encoding="utf-8").read()
+            check(bad not in src, f"{name} has no em or en dashes")
+    print("  ok")
+
+
+def _booth_wav(path, seconds=0.5, rate=48000, channels=2):
+    import wave
+    import numpy as np
+    n = int(rate * seconds)
+    tone = (np.sin(np.arange(n) * 2 * np.pi * 440 / rate) * 12000)
+    frames = np.repeat(tone.astype(np.int16), channels)
+    with wave.open(path, "wb") as fh:
+        fh.setnchannels(channels)
+        fh.setsampwidth(2)
+        fh.setframerate(rate)
+        fh.writeframes(frames.tobytes())
+    return path
+
+
+def test_boothaudio_never_holds_and_never_uses_the_pa():
+    section("booth audio: the note goes to the EXACT named device and the "
+            "named output pair only, zero on every other output; a missing "
+            "or partly matching device is silent with a sentence, never the "
+            "default and never the show output; off until configured; the "
+            "module never holds the show")
+    import tempfile
+    import numpy as np
+    from ltcplay import boothaudio as BA
+    from ltcplay import remote as RM
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "ltcplay", "boothaudio.py"),
+               encoding="utf-8").read()
+    for word in ("hold_requester", "default.device", "clock.audio",
+                 "AudioMaster", "showaudio", "interlock", "sd.default",
+                 "query_devices()[", "schedule", "default_output",
+                 "play_announcement", "Announcer("):
+        check(word not in src, f"boothaudio.py never names {word}")
+    check("from . import announce" in src and "resolve_output_device" in src
+          and "import announce" not in src.split("def _announce")[0],
+          "it finds the device with announce's exact-name resolver, imported "
+          "only when a note is checked or played (the GPL path never loads "
+          "announcements)")
+    work = tempfile.mkdtemp()
+    wav = _booth_wav(os.path.join(work, "booth_deck.wav"))
+
+    class _SD:
+        devices = [{"name": "Speakers (Realtek)", "max_output_channels": 2,
+                    "default_samplerate": 48000},
+                   {"name": "StudioLive 16R", "max_output_channels": 18,
+                    "default_samplerate": 48000}]
+
+        class default:
+            device = (0, 0)
+
+        def query_devices(self):
+            return self.devices
+
+        def OutputStream(self, **kw):
+            raise AssertionError(f"the real stream factory was used: {kw}")
+    opened = []
+
+    class _Stream:
+        def __init__(self, index, channels, rate):
+            self.spec = (index, channels, rate)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, block):
+            opened.append(self.spec + (block,))
+
+    def opener(sd, index, channels, rate):
+        return _Stream(index, channels, rate)
+
+    def wait(p):
+        for _ in range(200):
+            if p.playing == 0:
+                return
+            time.sleep(0.01)
+    cfg = {"device": "StudioLive 16R", "channels": [15, 16],
+           "files": {"deck": wav}}
+    p = BA.BoothPlayer(cfg, sd=_SD(), opener=opener)
+    check(p.enabled and p.check_files() == {}, f"configured and the file is "
+                                               f"sound: {p.check_files()}")
+    ok, why = p.play("deck")
+    wait(p)
+    check(ok and "outputs 15 and 16" in why and len(opened) == 1,
+          f"the note plays: {ok} {why} {len(opened)}")
+    index, channels, rate, block = opened[0]
+    check(index == 1 and channels == 16 and rate == 48000,
+          f"the exact device by name (index 1, not the default 0), a stream "
+          f"just wide enough for output 16: {opened[0][:3]}")
+    check(block.shape[1] == 16 and np.abs(block[:, 14]).max() > 0.1
+          and np.abs(block[:, 15]).max() > 0.1
+          and not np.any(block[:, :14]),
+          f"the note sits on outputs 15 and 16 only; outputs 1 to 14 are "
+          f"zero, so a pair on the show mixer never carries it: "
+          f"{np.abs(block).max(axis=0)}")
+    for name, word in (("StudioLive", "not attached"),
+                       ("Booth Monitor", "not attached"),
+                       ("studiolive 16r (2)", "not attached")):
+        q = BA.BoothPlayer(dict(cfg, device=name), sd=_SD(), opener=opener)
+        ok, why = q.play("deck")
+        wait(q)
+        check(not ok and word in why and name in why and len(opened) == 1,
+              f"{name!r}: silent, a sentence for the banner, nothing else "
+              f"used in its place: {ok} {why}")
+    q = BA.BoothPlayer(dict(cfg, device="Speakers (Realtek)"), sd=_SD(),
+                       opener=opener)
+    ok, why = q.play("deck")
+    check(not ok and "has 2 outputs" in why and len(opened) == 1,
+          f"a device without the pair is refused, not folded down: {why}")
+    ok, why = p.play("audio")
+    check(not ok and "No booth note file is set for audio" in why,
+          f"no file for a kind: silent with a sentence: {why}")
+    off = BA.BoothPlayer(None, sd=_SD(), opener=opener)
+    check(not off.enabled and off.play("deck") == (
+              False, "No booth speaker is configured, so the alert note was "
+                     "not played."), "off until configured: the safe default")
+    bad = os.path.join(work, "bad.wav")
+    open(bad, "wb").write(b"RIFF" + b"\0" * 40)
+    q = BA.BoothPlayer(dict(cfg, files={"deck": bad}), sd=_SD(),
+                       opener=opener)
+    pr = q.check_files()
+    ok, why = q.play("deck")
+    check("deck" in pr and not ok and len(opened) == 1,
+          f"a bad file is a load problem and a silent play: {pr} {why}")
+    long = _booth_wav(os.path.join(work, "long.wav"), seconds=9.0)
+    q = BA.BoothPlayer(dict(cfg, files={"deck": long}), sd=_SD(),
+                       opener=opener)
+    check("deck" in q.check_files() and not q.play("deck")[0],
+          "a 9 s file is too long for a booth note")
+    for doc, word in (({"device": "x", "channels": [1, 1]}, "two different"),
+                      ({"device": "x", "channels": [0, 1]}, "two different"),
+                      ({"device": "x", "files": {"siren": "a.wav"}},
+                       "not an alert kind"),
+                      ({"device": 3}, "exact name"),
+                      ([], "object"),
+                      ({"response_s": 0}, "response_s")):
+        try:
+            BA.parse_config(doc)
+            check(False, f"{doc} must be refused")
+        except ValueError as e:
+            check(word in str(e), f"{doc}: {e}")
+    # ltcplay_remote.json carries the block and the pulse pixels; a bad
+    # block is refused at load.
+    import json as _json
+    folder = tempfile.mkdtemp()
+    with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+              encoding="utf-8") as fh:
+        _json.dump({"booth_alert": cfg,
+                    "alert_pixels": {"start": 1, "count": 300,
+                                     "order": "GRB"}}, fh)
+    rs = RM.load_settings(folder)
+    check(rs["booth_alert"]["device"] == "StudioLive 16R"
+          and rs["booth_alert"]["channels"] == (15, 16)
+          and rs["alert_pixels"] == (0, 300, "GRB"),
+          f"the settings carry the booth block and the pulse pixels: {rs}")
+    check(RM.load_settings(tempfile.mkdtemp())["booth_alert"] is None,
+          "no file: no booth speaker")
+    for block in ({"booth_alert": {"device": "x", "channels": [2, 2]}},
+                  {"alert_pixels": {"start": 0, "count": 1}},
+                  {"alert_pixels": {"start": 1, "count": 1, "order": "RGW"}}):
+        with open(os.path.join(folder, RM.SETTINGS_FILE), "w",
+                  encoding="utf-8") as fh:
+            _json.dump(block, fh)
+        try:
+            RM.load_settings(folder)
+            check(False, f"{block} must be refused at load")
+        except ValueError as e:
+            check(RM.SETTINGS_FILE in str(e), f"refused at load: {e}")
+    print("  ok")
+
+
+def test_player_alert_look_pulse_shape():
+    section("the blue alert pulse: 0 to 255 and back over 1 s (0.5 s up, "
+            "0.5 s down), only the configured floor range, the rest of the "
+            "frame untouched, blue in the pixels' own order; blackout wins; "
+            "nothing without the flag")
+    import ltcplay.player as pl
+    for t_, want in ((0, 0), (0.25, 128), (0.5, 255), (0.75, 128), (1.0, 0),
+                     (1.25, 128), (2.5, 255)):
+        got = pl.pulse_level(t_)
+        check(abs(got - want) <= 2, f"level at {t_} s is {got}, want {want}")
+    fs = FakeFSEQ(frames=40, channels=64)
+    tl = _timeline([("01:00:00:00", "A", fs)])
+    snd = CountingSender()
+    p = Player(tl, FakeNetmap(total=64), snd)
+    base = bytes(range(1, 65))
+    check(p._alert_mix(base, now=10.25) == base and p._pulse_epoch is None,
+          "no flag: the frame goes out as it was")
+    p.alert_pulse = True
+    check(p._alert_mix(base, now=10.25) == base,
+          "the flag without a pixel range paints nothing")
+    p.alert_pixels = (9, 3, "RGB")       # channels 10 to 18, 1-based
+    out0 = p._alert_mix(base, now=10.0)
+    check(out0[:9] == base[:9] and out0[18:] == base[18:],
+          "the channels outside the range are untouched")
+    check(out0[9:18] == bytes(9),
+          f"at the start of the cycle the floor is dark: {list(out0[9:18])}")
+    out = p._alert_mix(base, now=10.5)
+    check(out[9:18] == bytes([0, 0, 255] * 3),
+          f"half way through, full blue on each pixel's blue channel, red "
+          f"and green zero: {list(out[9:18])}")
+    out = p._alert_mix(base, now=10.75)
+    check(all(abs(out[9 + 3 * i + 2] - 128) <= 2 for i in range(3))
+          and out[:9] == base[:9],
+          f"0.75 s in, half: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "GRB")
+    out = p._alert_mix(base, now=11.5)
+    check(out[9:18] == bytes([0, 0, 255] * 3),
+          f"blue is the third channel in GRB too: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "BGR")
+    out = p._alert_mix(base, now=11.5)
+    check(out[9:18] == bytes([255, 0, 0] * 3),
+          f"and the first in BGR: {list(out[9:18])}")
+    p.alert_pixels = (9, 3, "RGB")
+    empty = p._alert_mix(b"", now=11.5)
+    check(len(empty) == 64 and empty[9:18] == bytes([0, 0, 255] * 3)
+          and not any(empty[:9]) and not any(empty[18:]),
+          f"an empty frame (no preshow look) becomes a dark frame with "
+          f"only the pulse on it: {len(empty)} {list(empty[9:18])}")
+    p.override = "blackout"
+    check(p._alert_mix(b"", now=11.5) == b"" and
+          p._alert_mix(base, now=11.5) == base,
+          "blackout wins: a Hold's dark frame is never lit by the pulse")
+    p.override = None
+    p.alert_pulse = False
+    check(p._alert_mix(base, now=12.0) == base and p._pulse_epoch is None,
+          "the flag off: nothing painted and the cycle forgotten")
+    p.alert_pulse = True
+    p._alert_mix(base, now=20.0)
+    check(p._alert_mix(base, now=20.5)[9:18] == bytes([0, 0, 255] * 3),
+          "the cycle starts at the moment the pulse comes on")
+    # Through the real loop: the tick's frame is mixed before it is sent.
+    src = open(pl.__file__, encoding="utf-8").read()
+    check("frame = self._alert_mix(self._tick())" in src,
+          "the output loop mixes the pulse into every frame it sends")
+    print("  ok")
+
+
+def test_alert_pixels_never_the_flame_controllers():
+    section("the pulse's floor range must not be the flame controller's "
+            "channels: a pulse on a flame channel is a fire value sent "
+            "around flamesafe, so the show is refused")
+    import json as _json
+    import tempfile
+    from ltcplay import fire_ice as F
+    work = tempfile.mkdtemp()
+    _fs, show, _doc = _fi_flame_files(work, state="Inactive")
+    folder = os.path.join(work, "folder")
+    os.makedirs(folder)
+    tlp = os.path.join(folder, "fi_timeline.json")
+    with open(tlp, "w", encoding="utf-8") as fh:
+        _json.dump({"name": "fi", "fps": 30, "show_dir": show,
+                    "cues": [{"tc": "01:00:00:00", "fseq": "Show.fseq",
+                              "name": "Show"}]}, fh)
+
+    def refused(pixels):
+        try:
+            F.refuse_alert_pixels_on_flame_channels(tlp, "Flames", pixels)
+        except F.FlameControllerError as e:
+            return str(e)
+        return None
+    # The Flames controller sits at channels 511 to 1022.
+    check(refused((0, 170, "RGB")) is None, "channels 1 to 510: fine")
+    why = refused((0, 171, "RGB"))
+    check(why and "overlap" in why and "511 to 1022" in why
+          and "1 to 513" in why and "alert_pixels" in why,
+          f"channels 1 to 513 touch the flame controller: {why}")
+    check(refused((600, 1, "RGB")) and refused((1021, 1, "RGB")),
+          "a range inside or ending on the controller is refused")
+    check(refused((1022, 10, "RGB")) is None, "channels 1023 up: fine")
+    check(refused(None) is None, "no pulse pixels configured: nothing to "
+                                 "check")
+    # At ltc serve startup too (review of PR #59: the pulse runs before a
+    # show, so the overlap cannot wait for Run).
+    cfg = F.FireIceConfig(flame_controller="Flames")
+    F.check_flame_controllers(folder, cfg, alert_pixels=(0, 170, "RGB"))
+    try:
+        F.check_flame_controllers(folder, cfg, alert_pixels=(0, 171, "RGB"))
+        check(False, "startup must refuse a pulse range on the flame "
+                     "controller")
+    except F.FireIceConfigError as e:
+        check("fi_timeline.json" in str(e) and "overlap" in str(e),
+              f"startup refuses it, naming the show file: {e}")
+    cli_src = open(os.path.join(os.path.dirname(F.__file__), "cli.py"),
+                   encoding="utf-8").read()
+    check("alert_pixels=_alert_pixels" in cli_src
+          and 'load_settings().get("alert_pixels")' in cli_src,
+          "ltc serve hands the settings' pixel range to the startup check")
+    check(F.refuse_alert_pixels_on_flame_channels(
+              os.path.join(work, "nowhere.json"), "Flames", (0, 999, "RGB"))
+          is None, "no show file: the other checks say so")
+    src = open(F.__file__, encoding="utf-8").read()
+    check("refuse_alert_pixels_on_flame_channels(show_file, _name,"
+          in src and "alert_pixels=httpd.remote.alert_pixels" in
+          open(os.path.join(os.path.dirname(F.__file__), "web.py"),
+               encoding="utf-8").read(),
+          "the check runs where the show is checked for the flame "
+          "controller, with the engine's pixel range")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -41424,7 +42487,7 @@ if __name__ == "__main__":
     test_flamesafe_in_its_own_process()
     test_the_wall_between_ltcplay_and_flamesafe()
     test_conductor_abort_cuts_flames_at_once_and_fades_the_rest()
-    test_conductor_failed_start_disarms_without_latch()
+    test_conductor_failed_start_leaves_groups_as_they_are()
     test_conductor_double_abort_is_idempotent()
     test_conductor_abort_mid_hold_fade_wins()
     test_conductor_resume_before_the_hold_fade_finishes()
@@ -41450,7 +42513,13 @@ if __name__ == "__main__":
     test_streamdeck_builds_one_http_opener()
     test_streamdeck_spoof_alarm()
     test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
-    test_streamdeck_round4_unplugged_deck_keeps_the_link_held_off()
+    test_streamdeck_unplug_keeps_wanted_and_counter()
+    test_streamdeck_unplug_posts_one_deck_alert_and_one_update()
+    test_streamdeck_hardware_reconnect_keeps_counter()
+    test_streamdeck_outage_loop_runs_screen_pass()
+    test_streamdeck_ack_key_while_an_alert_is_open()
+    test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error()
+    test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers()
     test_streamdeck_round4_unplug_keeps_one_real_source_port()
     test_streamdeck_round4_reconnect_releases_every_hold()
     test_streamdeck_round4_foreign_alarm_logs_once_while_the_count_moves()
@@ -41481,7 +42550,7 @@ if __name__ == "__main__":
     test_conductor_announcement_after_abort_and_reset()
     test_schedule_drives_the_show_conductor()
     test_schedule_conductor_calls_after_the_save_and_off_the_lock()
-    test_schedule_failed_start_disarms_without_latch()
+    test_schedule_failed_start_leaves_groups_and_raises_an_alert()
     test_schedule_abort_latch_misses_the_next_show_until_reset()
     test_schedule_restart_after_a_stopped_show_stays_dark()
     test_schedule_preshow_lead_on_tick_and_resume()
@@ -41573,6 +42642,11 @@ if __name__ == "__main__":
     test_tracemalloc_diagnostic_is_opt_in()
     test_lasers_blanking_not_set_up_is_loud()
     test_mutate_reports_every_failure_it_can_have()
+    test_alerts_pure_logic()
+    test_alerts_route_status_and_acknowledge()
+    test_boothaudio_never_holds_and_never_uses_the_pa()
+    test_player_alert_look_pulse_shape()
+    test_alert_pixels_never_the_flame_controllers()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

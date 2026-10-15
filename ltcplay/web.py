@@ -1374,6 +1374,21 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                      folder=remote_folder,
                                      flame_status=fstatus,
                                      flame_disarm=flame_disarm)
+    # The booth speaker and the blue pulse's pixels (alerts.py,
+    # boothaudio.py), from ltcplay_remote.json. Off until configured; a
+    # bad block is said once here and the booth stays off.
+    try:
+        rs = remote_mod.load_settings(remote_folder)
+        if rs.get("booth_alert"):
+            from .boothaudio import BoothPlayer
+            booth = BoothPlayer(rs["booth_alert"], sd=sd)
+            problems = booth.check_files()
+            for kind, why in sorted(problems.items()):
+                print(f"Booth note for {kind}: {why}")
+            httpd.remote.alerts.booth = booth
+        httpd.remote.alert_pixels = rs.get("alert_pixels")
+    except ValueError as e:
+        print(f"The booth speaker is off: {e}")
     httpd.loopback = None
     if on_network:
         # The machine itself keeps its own door on loopback, trusted as
@@ -1460,7 +1475,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         wiring = fire_ice_mod.attach(
             httpd_schedule, control, fire_ice, madmapper=httpd.madmapper,
             beyond=httpd.beyond, announce=httpd.announce,
-            journal=_beyond_journal(httpd_schedule))
+            journal=_beyond_journal(httpd_schedule),
+            alert_pixels=httpd.remote.alert_pixels)
         httpd.conductor = wiring.conductor
         httpd.fire_ice = wiring
         # The rack screen shows a flame cue fault too (P1-3).

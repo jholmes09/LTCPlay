@@ -1752,16 +1752,16 @@ def _delay(m, ev, now, rest):
 NOTHING_DISARMED = ("Every flame group is to be disarmed at once as well; "
                     "the show conductor does that, and none is attached "
                     "here, so nothing was disarmed.")
-# Jeff, 2026-10-03: a show that fails to start also disarms every flame
-# group, the same disarm-all an Abort sends ("disarm the flame units while
-# we are troubleshooting"), but latches nothing: Start now stays allowed,
-# and each group is re-armed by hand (off, then on) before flames can fire.
-# As with NOTHING_DISARMED, schedule_service.py replaces this sentence when
-# a show conductor is attached.
+# Jeff's ruling 1, 2026-10-12: a show that fails to start leaves every
+# flame group AS IT IS (no disarm; this reverses 2026-10-03's "disarm the
+# flame units while we are troubleshooting"), and latches nothing: Start
+# now stays allowed. The engine raises an alert (alerts.py) so a person is
+# told. The same sentence with or without a show conductor: neither
+# disarms.
 FAILED_START_NOT_DISARMED = (
-    "Every flame group is to be disarmed as well, because the show failed "
-    "to start; the show conductor does that, and none is attached here, so "
-    "nothing was disarmed.")
+    "No flame group is disarmed: every group stays as it was (Jeff, "
+    "2026-10-12), and the alert on the rack screen waits for an "
+    "Acknowledge.")
 ABORT_CONFIRM_DISARM = ("Every flame cue goes to zero and every flame group "
                         "is disarmed at once.")
 
