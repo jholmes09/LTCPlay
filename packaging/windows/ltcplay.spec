@@ -104,6 +104,7 @@ a_soak = Analysis(
                                         "flamesafe.example.json"), ".")],
     hiddenimports=LTCPLAY_MODULES + ["ltcwin", "supervisor", "soak_apps",
                                      "soak_exercise", "contain", "bench_probe",
+                                     "housekeeping", "diagnostics", "updater",
                                      "soak_unattended",
                                      "test_show_fixtures", "psutil", "hid",
                                      "sounddevice", "_sounddevice",
@@ -113,7 +114,8 @@ a_soak = Analysis(
 a_sup = Analysis(
     [os.path.join(HERE, "supervisor.py")],
     datas=[],
-    hiddenimports=["ltcwin", "contain"],
+    hiddenimports=["ltcwin", "contain", "housekeeping", "diagnostics",
+                   "updater"],
     **dict(common, excludes=EXCLUDES + ["ltcplay", "flamesafe", "numpy",
                                         "sounddevice", "PIL", "hid",
                                         "zstandard"]))

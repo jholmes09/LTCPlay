@@ -64,6 +64,7 @@ h1{font:900 clamp(20px,3.6vh,44px)/1.02 var(--serif);margin:0;color:var(--champ)
 nav{display:flex;gap:8px;flex:0 0 auto;align-items:center}
 nav button{min-height:clamp(40px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:6px 14px}
 #where{font:700 clamp(11px,1.4vh,14px)/1.2 var(--sans);color:var(--muted);white-space:nowrap}
+#version{font:400 clamp(10px,1.2vh,12px)/1.2 var(--sans);color:var(--muted);white-space:nowrap}
 .dim{color:var(--muted)}
 button{font:700 clamp(15px,2.2vh,20px)/1.15 var(--sans);color:var(--btn-ink);
   background:linear-gradient(180deg,var(--btn-top),var(--btn-bot));
@@ -228,6 +229,7 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
   <div id="subs" aria-label="Subsystems"></div>
   <nav>
     <span id="where"></span>
+    <span id="version" title="Which LTC Player this is"></span>
     <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
@@ -624,6 +626,9 @@ function render(){
   setWarn("fl-warn", fmsg);
   renderAlerts(s.alerts || []);
   renderLamps(fl);
+  // Which LTC Player this is (its release and build id), so the version
+  // on the screen can be read off against the Releases page by phone.
+  $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
   $("subs").innerHTML = (s.subsystems || []).map(x =>
     `<span class="chip ${esc(x.state)}"><i></i>${esc(x.name)} <span>${esc(x.word)}</span></span>`).join("");
 

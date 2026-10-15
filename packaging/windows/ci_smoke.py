@@ -2,21 +2,32 @@
 on a clean windows-latest runner. Every failure is printed as a GitHub
 `::error::` annotation so it can be read without the job log.
 
-    python packaging/windows/ci_smoke.py "LTC Player Setup <version>.exe"
+    python packaging/windows/ci_smoke.py "LTC Player Setup <version>.exe" [<version>]
 
 What it proves, in order:
   1. Setup refuses while a show is running (a stand-in engine on port 7878
      says so) and installs nothing.
-  2. Setup installs silently: files, Start menu, the sign-in task.
-  3. Each program answers --self-check from where it was installed.
+  2. Setup installs silently: files, Start menu, the sign-in task. The
+     .sha256 file beside the installer (the workflow writes it) matches it.
+  3. Each program answers --self-check from where it was installed, and
+     says the version the build was stamped with.
   4. LTC Player starts all three; flamesafe puts zeros on the wire at
-     priority 200 and the engine's page answers.
+     priority 200, the engine's page answers, and the rack screen
+     (/remote and its /api/remote/status) answers and names the version.
   5. Running Setup again (an update) stops flamesafe the proper way: zeros,
-     then the stream-terminated flag. Then everything comes back.
+     then the stream-terminated flag. Then everything comes back, and the
+     settings (showpc.json) and the show folder's files are untouched.
+  5c. The engine is killed hard (the one program that may be: flamesafe is
+     left alone) and the supervisor starts it again by itself.
+  5d. --diagnostics writes a bundle on the Desktop with the logs, settings
+     and versions and nothing it must not carry; --update --check-only
+     answers with a sentence.
   6. "Stop LTC Player" stops it the same way and nothing is left running.
   7. "Stop LTC Player" refuses while a show is running.
   8. The uninstaller removes the app and the task, and keeps the settings.
 """
+import glob
+import hashlib
 import http.server
 import json
 import os
@@ -25,6 +36,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 PF = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -193,13 +205,22 @@ def dump(path, title):
 
 
 def tasklist():
+    return set(pids().keys())
+
+
+def pids():
+    """{exe name (lower case): [pid, ...]} of every process."""
     r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
                        text=True, errors="replace")
-    names = set()
+    out = {}
     for line in r.stdout.splitlines():
         if line.startswith('"'):
-            names.add(line.split('","')[0].strip('"').lower())
-    return names
+            cells = [c.strip('"') for c in line.split('","')]
+            try:
+                out.setdefault(cells[0].lower(), []).append(int(cells[1]))
+            except (IndexError, ValueError):
+                pass
+    return out
 
 
 OURS = {"ltc player.exe", "ltcplay.exe", "flamesafe.exe", "ltcplay-deck.exe"}
@@ -212,6 +233,34 @@ def engine_answers():
             return r.status == 200
     except Exception:
         return False
+
+
+def get(path, timeout=5):
+    """(status, body text) of a GET on the engine, or (0, error)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:7878{path}",
+                                    timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {e}"
+
+
+def sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_text(path):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
 
 
 def wait(pred, timeout, step=0.5):
@@ -316,7 +365,7 @@ def soak_check():
 
 
 # ---------------------------------------------------------------- main ---
-def main(installer):
+def main(installer, version=""):
     # Logs from Setup and the programs carry UTF-8 (and a BOM); the
     # runner's console code page cannot print them.
     for stream in (sys.stdout, sys.stderr):
@@ -330,6 +379,16 @@ def main(installer):
     listener = Listener()
 
     try:
+        say("0. the published checksum matches the installer")
+        sums = installer + ".sha256"
+        if check(os.path.isfile(sums), f"no checksum file beside the "
+                                       f"installer: {sums}"):
+            want = open(sums, encoding="utf-8").read().split()[0].lower()
+            got = sha256_of(installer)
+            if check(want == got, f"the .sha256 file says {want}, the "
+                                  f"installer is {got}"):
+                NOTES.append(f"SHA-256 {got} matches the published .sha256")
+
         say("1. Setup must refuse while a show is running")
         fake = FakeShow()
         rc = install(installer, os.path.join(tmp, "setup-refuse.log"))
@@ -369,8 +428,13 @@ def main(installer):
                   f"{out.strip().splitlines()[-1:] if out else 'no output'}")
             rc, out = run([os.path.join(APP, exe), "--version"])
             check(rc == 0 and out.strip(), f"{exe} --version failed")
+            if version:
+                check(version in out, f"{exe} --version does not say "
+                                      f"{version}: {out.strip()!r}")
         rc, _ = run([SUP, "--self-check"])
         check(rc == 0, f"LTC Player.exe --self-check failed (exit {rc})")
+        if version:
+            NOTES.append(f"every program says it is {version}")
 
         say("4. LTC Player starts all three, flamesafe sends zeros")
         mark = listener.mark()
@@ -387,7 +451,31 @@ def main(installer):
             sorted(OURS & tasklist())) + f"; {len(listener.since(mark))} "
             "zero packets at priority 200 so far")
 
-        say("5. an update stops flamesafe the proper way, then restarts")
+        say("4b. the rack screen answers")
+        st, body = get("/remote")
+        check(st == 200 and "<html" in body.lower() and "<title>" in body,
+              f"GET /remote (the rack screen page): {st} {body[:120]!r}")
+        st, body = get("/api/remote/status")
+        try:
+            status = json.loads(body) if st == 200 else {}
+        except ValueError:
+            status = {}
+        check(st == 200 and isinstance(status, dict) and "served_at" in status
+              and "schedule" in status,
+              f"GET /api/remote/status (what the rack screen draws): {st} "
+              f"{body[:200]!r}")
+        if version:
+            said = str(status.get("version") or "")
+            if check(version in said, f"the rack screen's status does not "
+                                      f"name {version}: {said!r}"):
+                NOTES.append(f"the rack screen's status says {said!r}")
+
+        say("5. an update stops flamesafe the proper way, then restarts, "
+            "and the settings and show files are untouched")
+        settings_before = read_text(os.path.join(LOCAL, "showpc.json"))
+        show_file = os.path.join(shows, "smoke show file.txt")
+        with open(show_file, "w", encoding="utf-8") as fh:
+            fh.write("a show file left here by the smoke test\n")
         mark = listener.mark()
         rc = install(installer, os.path.join(tmp, "setup-2.log"))
         check(rc == 0, f"the update install failed (exit {rc})")
@@ -399,14 +487,91 @@ def main(installer):
         mark2 = listener.mark()
         check(listener.wait_for(mark2, lambda p: not terminated(p), 30),
               "flamesafe is not sending again after the update")
+        check(read_text(os.path.join(LOCAL, "showpc.json")) ==
+              settings_before and settings_before is not None,
+              "the update changed showpc.json; an update must not touch "
+              "the settings")
+        check(read_text(show_file) is not None and
+              os.path.isfile(os.path.join(LOCAL, "flamesafe.json")),
+              "the update removed a show file or flamesafe.json")
+        check(wait(engine_answers, 60), "the engine's page never answered "
+                                        "after the update")
+        NOTES.append("update in place kept showpc.json, flamesafe.json and "
+                     "the show folder's files")
 
-        say("5b. the bench soak test, 3 minutes")
+        say("5b. the bench soak test, 7 minutes")
         listener.sock.close()      # the soak test listens on 5568 itself
         time.sleep(1)
         try:
             soak_check()
         finally:
             listener = Listener()
+
+        say("5c. a crashed engine is started again by the supervisor")
+        # Only the engine is ever killed here. flamesafe is never hard
+        # killed, not even in a test: End task sends no safe zeros.
+        check(wait(engine_answers, 60), "the engine is not answering before "
+                                        "the crash test")
+        before = pids()
+        fs_before = before.get("flamesafe.exe", [])
+        eng_before = before.get("ltcplay.exe", [])
+        if check(eng_before, "no ltcplay.exe to crash"):
+            run(["taskkill", "/F", "/PID", str(eng_before[0])])
+            gone = wait(lambda: eng_before[0] not in
+                        pids().get("ltcplay.exe", []), 30)
+            check(gone, "the engine did not end after taskkill")
+            back = wait(lambda: any(p not in eng_before for p in
+                                    pids().get("ltcplay.exe", [])), 60)
+            check(back, "the supervisor did not start the engine again "
+                        "within 60 s of its crash")
+            check(wait(engine_answers, 60), "the restarted engine's page "
+                                            "never answered")
+            check(pids().get("flamesafe.exe", []) == fs_before and fs_before,
+                  f"flamesafe was disturbed by the engine's crash: "
+                  f"{fs_before} -> {pids().get('flamesafe.exe')}")
+            sup_log = (read_text(os.path.join(logs, "supervisor.log"))
+                       or b"").decode("utf-8", "replace")
+            check("stopped by itself" in sup_log,
+                  "the supervisor's log does not say the engine stopped by "
+                  "itself and was started again")
+            if back:
+                NOTES.append("engine killed hard: started again by the "
+                             "supervisor, flamesafe untouched")
+
+        say("5d. the diagnostics bundle and the update check")
+        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        before_zips = set(glob.glob(os.path.join(desktop, "LTC Player "
+                                                 "diagnostics *.zip")))
+        rc, out = run([SUP, "--diagnostics", "--quiet"], timeout=180)
+        check(rc == 0, f"--diagnostics failed (exit {rc})")
+        zips = sorted(set(glob.glob(os.path.join(
+            desktop, "LTC Player diagnostics *.zip"))) - before_zips)
+        if check(zips, "no diagnostics bundle appeared on the Desktop"):
+            import zipfile
+            with zipfile.ZipFile(zips[-1]) as z:
+                names = z.namelist()
+            check("settings/showpc.json" in names and
+                  "logs/supervisor.log" in names and
+                  any(n.startswith("logs/engine.log") for n in names) and
+                  "app/versions.txt" in names,
+                  f"the bundle lacks the settings, logs or versions: "
+                  f"{names[:30]}")
+            check(not any(n.lower().endswith((".wav", ".fseq", ".lock",
+                                               ".exe")) or "pin" in
+                          os.path.basename(n).lower() for n in names),
+                  f"the bundle carries media, a lock, a program or a PIN "
+                  f"file: {names[:30]}")
+            mb = os.path.getsize(zips[-1]) / 1024 ** 2
+            NOTES.append(f"diagnostics bundle written, {len(names)} files, "
+                         f"{mb:.1f} MB")
+        rc, out = run([SUP, "--update", "--check-only", "--quiet"],
+                      timeout=120)
+        check(rc in (0, 10, 20, 21), f"--update --check-only exited {rc}")
+        sup_log = (read_text(os.path.join(logs, "supervisor.log"))
+                   or b"").decode("utf-8", "replace")
+        check("update check:" in sup_log, "the update check wrote no "
+                                          "sentence to the supervisor's log")
+        NOTES.append(f"update check answered with exit {rc}")
 
         say("6. Stop LTC Player")
         time.sleep(3)
@@ -453,11 +618,11 @@ def main(installer):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         print(__doc__)
         sys.exit(2)
     try:
-        main(sys.argv[1])
+        main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "")
     except Exception as e:
         error(f"the smoke test itself crashed: {type(e).__name__}: {e}")
         raise
