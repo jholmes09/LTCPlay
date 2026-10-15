@@ -37401,6 +37401,11 @@ def test_remote_no_sign_in_over_the_network():
               "current_operator" not in out["schedule"] and
               "signed_in" not in out["arming"],
               f"the status answers with no sign-in, and names nobody: {st}")
+        from ltcplay import version as _ver
+        check(out.get("version") == _ver.status() and
+              ("build" in out["version"] or "release" in out["version"]),
+              f"the status names which LTC Player this is (release and "
+              f"build id), as version.status() says it: {out.get('version')!r}")
         st, _h, out = R.ask("POST", "/api/remote/hold",
                             {"who": "Andy", "screen": "Rack screen"})
         held = [r for r in R.svc.journal
