@@ -18374,10 +18374,21 @@ def _start_flamesafe_suite():
     import subprocess
     import threading
     root = os.path.dirname(os.path.abspath(__file__))
+    # Below normal priority, and started after the pixel timing tests (see
+    # the call list in __main__): its 9 s property test is pure CPU, and a
+    # frame of the output thread landing 20 to 40 ms late beside it failed
+    # test_pixel_output_frame_jitter twice in 25 runs when it started at
+    # second zero. A rate test must win the scheduler; this suite can wait.
+    low = {}
+    if sys.platform == "win32":
+        low["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        low["preexec_fn"] = lambda: os.nice(10)
     proc = subprocess.Popen([sys.executable, "-u", "-m",
                              "flamesafe.test_flamesafe"], cwd=root,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, encoding="utf-8", errors="replace")
+                            text=True, encoding="utf-8", errors="replace",
+                            **low)
     lines = []
 
     def read():
@@ -31653,8 +31664,6 @@ if __name__ == "__main__":
                 globals()[_n] = _not_asked_for
         print(f"--only: running {len(ONLY)} test(s): {', '.join(sorted(ONLY))}")
     _TEMPRUN = _TempRun()
-    if ONLY is None or "test_flamesafe_in_its_own_process" in ONLY:
-        _FLAMESAFE = _start_flamesafe_suite()
     _show_root = real_show_dir()
     _show_before = (_show_snapshot(_show_root) if os.path.isdir(_show_root)
                     else None)
@@ -31683,6 +31692,11 @@ if __name__ == "__main__":
     test_windows_pixel_clock_choice()
     test_no_clock_is_ever_mixed_with_another()
     test_the_stepped_player_is_the_output_thread()
+    # flamesafe's own suite, in its own process, from here on alongside the
+    # rest of the run: after the pixel timing tests above, which measure
+    # the real scheduler, and well before it is read (its test, below).
+    if ONLY is None or "test_flamesafe_in_its_own_process" in ONLY:
+        _FLAMESAFE = _start_flamesafe_suite()
     test_socket_healing()
     test_display_survives()
     test_park_and_pause()
