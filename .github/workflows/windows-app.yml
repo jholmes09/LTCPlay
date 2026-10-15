@@ -174,13 +174,11 @@ jobs:
           tag="${{ steps.ver.outputs.version }}"
           sum="$(cut -d' ' -f1 "$FILE.sha256")"
           latest="$(git log -1 --format=%s "$GITHUB_SHA" | head -c 300)"
-          notes="Windows show PC installer built from bench-build at ${GITHUB_SHA::7} ($(date -u +%Y-%m-%d)). Pre-release: proven on a clean Windows runner by the installer smoke test (silent install, every program starts, the rack screen answers, flamesafe sends its safe zeros, an update in place keeps the settings and show files, the engine is restarted after a crash, Stop and uninstall are clean), not yet by a show night.
-
-What is in it: LTC Player (the supervisor), the show engine (ltc serve with the Fire & Ice scheduler, show conductor and flame link), flamesafe and the Stream Deck program, with every merge made to bench-build up to this commit. Latest change: ${latest}
-
-Install: download LTC Player Setup ${tag}.exe, check its SHA-256 (the .sha256 file beside it; in PowerShell: Get-FileHash 'LTC Player Setup ${tag}.exe' -Algorithm SHA256) and double-click it with no show running. It stops LTC Player the safe way, installs, and starts it again. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. The rack screen shows this version at the bottom of its header. To go back: Start menu, Roll back to the previous version.
-
-SHA-256 of the installer: ${sum}"
+          p1="Windows show PC installer built from bench-build at ${GITHUB_SHA::7} ($(date -u +%Y-%m-%d)). Pre-release: proven on a clean Windows runner by the installer smoke test (silent install, every program starts, the rack screen answers, flamesafe sends its safe zeros, an update in place keeps the settings and show files, the engine is restarted after a crash, Stop and uninstall are clean), not yet by a show night."
+          p2="What is in it: LTC Player (the supervisor), the show engine (ltc serve with the Fire & Ice scheduler, show conductor and flame link), flamesafe and the Stream Deck program, with every merge made to bench-build up to this commit. Latest change: ${latest}"
+          p3="Install: download LTC Player Setup ${tag}.exe, check its SHA-256 (the .sha256 file beside it; in PowerShell: Get-FileHash 'LTC Player Setup ${tag}.exe' -Algorithm SHA256) and double-click it with no show running. It stops LTC Player the safe way, installs, and starts it again. Unsigned: Windows will say 'Windows protected your PC'; click More info, then Run anyway. The rack screen shows this version at the bottom of its header. To go back: Start menu, Roll back to the previous version."
+          p4="SHA-256 of the installer: ${sum}"
+          notes="$p1"$'\n\n'"$p2"$'\n\n'"$p3"$'\n\n'"$p4"
           gh release create "$tag" "$FILE" "$FILE.sha256" --prerelease --target "$GITHUB_SHA" \
             --title "LTC Player ${tag} (Windows show PC, pre-release)" \
             --notes "$notes"
