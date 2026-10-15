@@ -77,6 +77,8 @@ from . import appdata
 from . import settings as settings_mod
 
 FIXED_PORT = 7878
+DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
+DISK_READ_S = 30.0
 SETTINGS_FILE = "ltcplay_remote.json"
 # How old the page's status may be for a press that acts on what it shows.
 FRESH_S = 2.0
@@ -501,6 +503,11 @@ class Remote:
         self._disarm_ids = 0
         self._deck_seen = None       # clock() of the deck's last read
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
+        # The Windows supervisor's word on the disk (housekeeping.py writes
+        # disk-low.txt in the settings folder while it is low or critical,
+        # and removes it when it is fine again). Read at most every 30 s.
+        self.disk_file = os.path.join(settings_folder(), DISK_FILE)
+        self._disk = (None, 0.0)
         # The alert service (alerts.py, 2026-10-12): the rack screen's
         # banners, the booth note and the blue pulse. web.serve gives it
         # the booth player and the pulse's pixel range from the settings;
@@ -1233,6 +1240,28 @@ class Remote:
         except Exception:
             return ""
 
+    def disk_view(self):
+        """{"state": "low" | "critical", "text"} while the supervisor says
+        the disk is low (its disk-low.txt), else None. Never raises."""
+        now = self.clock()
+        cached, at = self._disk
+        if at and now - at < DISK_READ_S:
+            return cached
+        view = None
+        try:
+            with open(self.disk_file, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+            state = (lines[0].strip().lower() if lines else "")
+            text = " ".join(l.strip() for l in lines[1:] if l.strip())
+            if state in ("low", "critical") and text:
+                view = {"state": state, "text": text}
+        except OSError:
+            view = None
+        except Exception:                        # noqa: BLE001
+            view = None
+        self._disk = (view, now)
+        return view
+
     def audio_interface_view(self):
         """audiowatch's view, or None without the watch. Never raises."""
         w = getattr(self, "audio_watch", None)
@@ -1282,6 +1311,10 @@ class Remote:
             add("Audio", "bad", "fault" if audio.get("fault") else "lost")
         else:
             add("Audio", "ok", "ok")
+        disk = self.disk_view()
+        if disk:
+            add("Disk", "bad" if disk["state"] == "critical" else "warn",
+                disk["state"])
         applied = {}
         cond = getattr(self.schedule, "conductor", None)
         try:
@@ -1352,6 +1385,7 @@ class Remote:
         out["countdown"] = countdown_view(out["schedule"], out["show"],
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()
+        out["disk"] = self.disk_view()
         try:
             out["transport"] = self._transport_view()
         except Exception as e:
