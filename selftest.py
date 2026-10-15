@@ -28512,6 +28512,7 @@ class _VClock:
         self.timers = []        # _VTimer, armed
         self.seq = 0
         self.stopped = False
+        self.stuck = False      # a settle() that failed: the rig is wedged
 
     # -- what the code under test is handed ---------------------------------
     def now(self):
@@ -28613,12 +28614,18 @@ class _VClock:
         """Wait (real time, bounded) until every worker has run whatever
         the clock's last move let it run: it is idle, asleep until later,
         or held by the test. True if it did."""
+        if self.stuck:
+            return False
         end = time.perf_counter() + self.SETTLE_S
         while True:
             left = self._unsettled()
             if not left:
                 return True
             if time.perf_counter() > end:
+                # Said once; after this every wait on this clock gives up at
+                # once, so a wedged rig (a mutation that blocks the
+                # executor) costs one SETTLE_S, not one per step.
+                self.stuck = True
                 check(False, f"the rig did not settle: {left} still running "
                              f"at t={self.t:.3f} (sleepers "
                              f"{[(th.name, d) for th, d in self.sleepers.items()]})")
@@ -28646,11 +28653,16 @@ class _VClock:
         timer's deadline on the way so each runs in order."""
         target = self.t + seconds
         while True:
-            self.settle()
+            if not self.settle():
+                return
             nxt = self._next_due()
             if nxt is None or nxt > target:
                 self._move_to(target)
                 self.settle()
+                return
+            if nxt <= self.t:
+                check(False, f"a thread is due at t={nxt:.3f} but never "
+                             f"woke: {self._unsettled()}")
                 return
             self._move_to(nxt)
 
@@ -28664,10 +28676,19 @@ class _VClock:
         end = self.t + limit
         patience = time.perf_counter() + self.SETTLE_S
         while True:
-            self.settle()
+            if not self.settle():
+                return bool(pred())
             if pred():
                 return True
             nxt = self._next_due()
+            if nxt is not None and nxt <= self.t:
+                # A sleeper whose time has come and that has not woken:
+                # settle() above already waited SETTLE_S real seconds for it
+                # and said so. Moving the clock would change nothing; stop
+                # here rather than spin (a mutation can wedge a thread).
+                check(False, f"a thread is due at t={nxt:.3f} but never "
+                             f"woke: {self._unsettled()}")
+                return False
             if nxt is not None and nxt <= end:
                 self._move_to(nxt)
                 patience = time.perf_counter() + self.SETTLE_S
@@ -28801,6 +28822,9 @@ def _rt_rig(beyond_stall=None, gate=None, announcer=None, mm_factory=None):
     # the old queue: one empty job there moves it over to the new one.
     old_q, link._q = link._q, _IdleQueue()
     old_q.put((lambda: None, None, None))
+    # The conductor never waits on a MadMapper job (the point of finding D);
+    # a mutation that makes it wait should cost a second here, not ten.
+    link._submit_timeout_s = 1.0
     bey = B.Beyond(B.BeyondConfig.parse({}),
                    socket_factory=lambda: _RTSock("beyond", log, V,
                                                   beyond_stall),
@@ -28822,6 +28846,13 @@ def _rt_close(c, link, V):
     V.shutdown()
     c.close()
     link.close()
+
+
+def _rt_done(c, V):
+    """Has the executor finished the latest request? Up to 5 real seconds
+    for a thread handoff, none once the rig is known to be wedged (a
+    mutation that blocks the executor would otherwise cost 5 s a call)."""
+    return c.wait_idle(0.0 if V.stuck else 5.0)
 
 
 def _rt_vals(log, kind, since=None, value=None):
@@ -29025,7 +29056,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               f"{[e[2] for e in log if e[0] == 'beyond']}")
         stuck_100.set()
         V.run_until_idle()
-        check(c.wait_idle(5), "the Abort finished")
+        check(_rt_done(c, V), "the Abort finished")
         check(not _rt_vals(log, "beyond", since=s0, value=100.0),
               "no unblank packet was started after the press")
         b = sorted(_rt_vals(log, "beyond"), key=lambda e: e[4])
@@ -29049,7 +29080,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         check(c.hold("Andy", "rack screen").ok, "Hold accepted")
         stuck_100.set()
         V.run_until_idle()
-        check(c.wait_idle(5), "the Hold finished")
+        check(_rt_done(c, V), "the Hold finished")
         check(not _rt_vals(log, "beyond", since=s0, value=100.0),
               f"no unblank packet was started after the Hold press: "
               f"{[e[2] for e in log if e[0] == 'beyond']}")
@@ -29074,10 +29105,10 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         check(in_gate.wait(2.0), "the show start asked the gate")
         gate_go.set()
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
         c.hold("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         in_gate.clear()
         gate_go.clear()
         c.resume("Andy", "rack screen")
@@ -29101,7 +29132,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               f"the executor's poll of the gate (t={V.t:.3f}, "
               f"{[c_[0] for c_ in rig.calls if c_[2] >= s0]})")
         V.run_until_idle()
-        check(c.wait_idle(5), "the Abort finished")
+        check(_rt_done(c, V), "the Abort finished")
         check(not gate_go.is_set(),
               "and the whole Abort finished before the gate ever answered")
         gate_go.set()                    # the gate's late yes
@@ -29122,10 +29153,10 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         check(in_gate.wait(2.0), "the show start asked the gate")
         gate_go.set()
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
         c.hold("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         in_gate.clear()
         gate_go.clear()
         s0 = V.stamp()
@@ -29133,7 +29164,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
         check(V.run_until(in_gate.is_set), "the Resume is in the gate")
         V.advance(C.GATE_TIMEOUT_S + 0.5)
         V.run_until_idle()
-        check(c.wait_idle(5), "the Resume finished without the gate")
+        check(_rt_done(c, V), "the Resume finished without the gate")
         check(any("did not answer within" in t for t, _f in lines),
               f"the journal says the gate did not answer: "
               f"{[t for t, _f in lines if 'gate' in t]}")
@@ -29160,7 +29191,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
     try:
         c.show_starting("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
         c.announce("welcome", "Andy", "rack screen")
         check(V.run_until(in_file.is_set), "the announcement is reading its "
                                            "file")
@@ -29172,7 +29203,7 @@ def test_conductor_abort_is_never_held_up_by_a_slow_device():
               "flame cut and blank at the press, during the announcement's "
               "file read")
         V.run_until_idle()
-        check(c.wait_idle(5), "the Abort finished")
+        check(_rt_done(c, V), "the Abort finished")
         mh = _rt_calls(rig, "music_halt", since=s0)
         check(mh and not file_go.is_set(),
               "and the Abort's fades did not wait for the file read")
@@ -29194,10 +29225,10 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     try:
         c.show_starting("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
         c.hold("Andy", "rack screen")
         V.run_until_idle()               # the Link's worker has run it
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         snap = c.snapshot()
         check(snap["applied"]["video"] == C.UNKNOWN,
               f"a video fade that never got out is UNKNOWN, never black: "
@@ -29211,7 +29242,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
                 in t)
         c.abort("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "the Abort finished")
+        check(_rt_done(c, V), "the Abort finished")
         check(sum(1 for t, f in lines if f and "Video fade to black over 1 s"
                   in t) > n,
               "a later Abort sends the video fade again (and says it "
@@ -29228,7 +29259,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     try:
         c.show_starting("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
 
         def held():
             with V.block():
@@ -29236,7 +29267,7 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
         link._submit(held, wait=False)
         c.hold("Andy", "rack screen")
         V.advance(C.HOLD_FADE_S + 0.1)   # the clock froze; the fade did not go
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         early = c.snapshot()["applied"]["video"]
         check(early == C.UNKNOWN,
               f"a fade MadMapper has not sent yet is not recorded black: "
@@ -29287,10 +29318,17 @@ def test_conductor_hears_about_madmapper_failures_and_stalls():
     try:
         c.show_starting("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
+        t_hold = V.t
         c.hold("Andy", "rack screen")
+        # The Hold is not done until the clock says it has frozen, which the
+        # rig says HOLD_FADE_S after music_hold: a Hold that returned at
+        # once (a real mutation) is done with the clock barely moved.
+        check(V.run_until(lambda: c._done_gen == c._gen), "hold done")
+        check(V.t >= t_hold + C.HOLD_FADE_S - 1e-9,
+              f"the Hold waited for the clock to freeze ({V.t - t_hold:.3f} "
+              f"s of a {C.HOLD_FADE_S:g} s fade)")
         V.run_until_idle()
-        check(c.wait_idle(5), "hold done")
         check(c.snapshot()["applied"]["video"] == C.BLACK,
               f"a fade the Link sent is recorded black: "
               f"{c.snapshot()['applied']}")
@@ -29381,17 +29419,17 @@ def test_conductor_video_never_rises_after_abort_or_hold():
             try:
                 c.show_starting("Andy", "rack screen")
                 V.run_until_idle()
-                check(c.wait_idle(5), "show start done")
+                check(_rt_done(c, V), "show start done")
                 c.hold("Andy", "rack screen")
                 V.run_until_idle()
-                check(c.wait_idle(5), "hold done")
+                check(_rt_done(c, V), "hold done")
                 V.advance(0.4)
                 c.resume("Andy", "rack screen")
                 V.advance(delay)         # this far into the fade-up
                 s0 = V.stamp()
                 getattr(c, press)("Andy", "rack screen")
                 V.run_until_idle()
-                check(c.wait_idle(5), f"{press} done")
+                check(_rt_done(c, V), f"{press} done")
                 q1 = [e for e in log if e[0] == "mm"
                       and e[1] == "/surfaces/Quad-1/opacity"]
                 before = [e[2] for e in q1 if e[3] < s0]
@@ -29424,17 +29462,17 @@ def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
     try:
         c.show_starting("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "show start done")
+        check(_rt_done(c, V), "show start done")
         c.hold("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         V.advance(0.5)
         c.resume("Andy", "rack screen")        # a production fade-up
         V.advance(0.06)                         # part way up
         c.set_mode(C.REHEARSAL)
         check(c.hold("Andy", "rack screen").ok, "rehearsal Hold accepted")
         V.run_until_idle()
-        check(c.wait_idle(5), "hold done")
+        check(_rt_done(c, V), "hold done")
         q1 = [e for e in log if e[0] == "mm"
               and e[1] == "/surfaces/Quad-1/opacity"]
         last = q1[-1][2] if q1 else None
@@ -29448,7 +29486,7 @@ def test_conductor_rehearsal_hold_mid_fade_never_records_the_video_lit():
         s1 = V.stamp()
         c.resume("Andy", "rack screen")
         V.run_until_idle()
-        check(c.wait_idle(5), "rehearsal Resume done")
+        check(_rt_done(c, V), "rehearsal Resume done")
         up = [e[2] for e in log if e[0] == "mm"
               and e[1] == "/surfaces/Quad-1/opacity" and e[3] >= s1]
         check(up and up[-1] == 1.0,
