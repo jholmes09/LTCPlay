@@ -4363,23 +4363,38 @@ def test_stop_always_works():
               f"{st}")
 
         check(ctl.stop() is not False or True, "stop should return")
+        ctl._state_cache = None          # the answer from before the Stop
         st = ctl.state()
         check(not st.get("starting"),
               f"after Stop, the control must not still think a start is in "
               f"progress -- that is what refused every later Start until the "
               f"window was closed: {st}")
 
-        # And a new start must be accepted rather than refused.
-        wedge.set()
+        # And a new Start, pressed WHILE the first one still hangs (the
+        # audio device has not answered; the operator wants the rig back
+        # now), must be accepted rather than refused. It hangs on the same
+        # wedge, so it runs on a thread too; only then is the wedge let go
+        # and both starts come back. Pressing it after the wedge let go
+        # proved nothing: the first start's own cleanup clears the flag on
+        # its way out, and the old form only caught a Stop that forgot the
+        # flag while the first start happened to be slow finishing.
+        second = []
+        t2 = threading.Thread(
+            target=lambda: second.append(_swallow(ctl.start, "w_timeline.json")),
+            daemon=True)
+        t2.start()
         time.sleep(0.3)
-        try:
-            s2 = ctl.start("w_timeline.json")
-            check(s2 is not None, "the second start returned nothing")
-            ctl.stop()
-        except SessionError as e:
-            check("already being started" not in str(e),
-                  f"a start after Stop was refused because of the start that "
-                  f"wedged: {e}")
+        refused = [e for e in second if isinstance(e, Exception)]
+        check(not refused,
+              f"a Start pressed after Stop, while the wedged start still "
+              f"hung, was refused: {refused}")
+        wedge.set()
+        t.join(5.0)
+        t2.join(5.0)
+        check(second and not isinstance(second[0], Exception),
+              f"the second start, once the audio answered, returned a show: "
+              f"{second}")
+        ctl.stop()
     finally:
         wedge.set()
         try: ctl.stop()
