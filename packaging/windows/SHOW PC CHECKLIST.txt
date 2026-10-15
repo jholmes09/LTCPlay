@@ -136,7 +136,16 @@ UPDATING AND GOING BACK
 - To update: download the new "LTC Player Setup" from GitHub Releases,
   with no show running, and double-click it. It stops LTC Player the safe
   way, installs, and starts it again. It refuses while a show is running.
+  Or: Start menu, "Check for an update", which finds the newest release,
+  downloads it, checks its SHA-256 and runs it for you.
+- The rack screen's header names the version that is running. It must
+  read the same as the release you installed.
 - To go back: Start menu, "Roll back to the previous version". It runs
   the installer for the version you had before.
 - Your settings, logs and show files are kept through updates, rollbacks
   and uninstalls. Settings and logs: Start menu, "Settings and logs".
+- Something wrong: Start menu, "Diagnostics bundle (send this to Jeff)"
+  writes one zip on the Desktop (logs, settings, journals, versions; no
+  show files, media or keys). Send that file.
+- The one page on all of this: Start menu, "How to install, update and
+  go back" (INSTALL.md in the program folder).

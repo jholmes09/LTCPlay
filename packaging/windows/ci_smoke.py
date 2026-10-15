@@ -19,10 +19,14 @@ What it proves, in order:
      settings (showpc.json) and the show folder's files are untouched.
   5c. The engine is killed hard (the one program that may be: flamesafe is
      left alone) and the supervisor starts it again by itself.
+  5d. --diagnostics writes a bundle on the Desktop with the logs, settings
+     and versions and nothing it must not carry; --update --check-only
+     answers with a sentence.
   6. "Stop LTC Player" stops it the same way and nothing is left running.
   7. "Stop LTC Player" refuses while a show is running.
   8. The uninstaller removes the app and the task, and keeps the settings.
 """
+import glob
 import hashlib
 import http.server
 import json
@@ -533,6 +537,41 @@ def main(installer, version=""):
             if back:
                 NOTES.append("engine killed hard: started again by the "
                              "supervisor, flamesafe untouched")
+
+        say("5d. the diagnostics bundle and the update check")
+        desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        before_zips = set(glob.glob(os.path.join(desktop, "LTC Player "
+                                                 "diagnostics *.zip")))
+        rc, out = run([SUP, "--diagnostics", "--quiet"], timeout=180)
+        check(rc == 0, f"--diagnostics failed (exit {rc})")
+        zips = sorted(set(glob.glob(os.path.join(
+            desktop, "LTC Player diagnostics *.zip"))) - before_zips)
+        if check(zips, "no diagnostics bundle appeared on the Desktop"):
+            import zipfile
+            with zipfile.ZipFile(zips[-1]) as z:
+                names = z.namelist()
+            check("settings/showpc.json" in names and
+                  "logs/supervisor.log" in names and
+                  any(n.startswith("logs/engine.log") for n in names) and
+                  "app/versions.txt" in names,
+                  f"the bundle lacks the settings, logs or versions: "
+                  f"{names[:30]}")
+            check(not any(n.lower().endswith((".wav", ".fseq", ".lock",
+                                               ".exe")) or "pin" in
+                          os.path.basename(n).lower() for n in names),
+                  f"the bundle carries media, a lock, a program or a PIN "
+                  f"file: {names[:30]}")
+            mb = os.path.getsize(zips[-1]) / 1024 ** 2
+            NOTES.append(f"diagnostics bundle written, {len(names)} files, "
+                         f"{mb:.1f} MB")
+        rc, out = run([SUP, "--update", "--check-only", "--quiet"],
+                      timeout=120)
+        check(rc in (0, 10, 20, 21), f"--update --check-only exited {rc}")
+        sup_log = (read_text(os.path.join(logs, "supervisor.log"))
+                   or b"").decode("utf-8", "replace")
+        check("update check:" in sup_log, "the update check wrote no "
+                                          "sentence to the supervisor's log")
+        NOTES.append(f"update check answered with exit {rc}")
 
         say("6. Stop LTC Player")
         time.sleep(3)

@@ -85,6 +85,8 @@ Name: "{commonappdata}\LTC Player"; Permissions: users-modify
 [Files]
 Source: "{#AppDist}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "SHOW PC CHECKLIST.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "INSTALL.md"; DestDir: "{app}"; DestName: "INSTALL (read me).txt"; Flags: ignoreversion
 Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#AppVersion}.exe"; Flags: external ignoreversion; Check: NotRunFromInstallers
@@ -93,12 +95,15 @@ Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#A
 Name: "{group}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--start"; Comment: "Start LTC Player if it is not running, and open the show page"
 Name: "{group}\Stop LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--stop"; Comment: "Stop everything the safe way (refused while a show is running)"
 Name: "{group}\Roll back to the previous version"; Filename: "{app}\LTC Player.exe"; Parameters: "--rollback"
+Name: "{group}\Check for an update"; Filename: "{app}\LTC Player.exe"; Parameters: "--update"; Comment: "Looks on GitHub Releases for a newer LTC Player; downloads it, checks its SHA-256 and runs its installer (refused while a show is running)"
+Name: "{group}\Diagnostics bundle (send this to Jeff)"; Filename: "{app}\LTC Player.exe"; Parameters: "--diagnostics"; Comment: "Writes one zip on the Desktop: logs, settings, journals and versions. No show files, media or keys."
 Name: "{group}\LTC Player bench soak test"; Filename: "{app}\ltcplay-soak.exe"; Comment: "PC-only stress test: a 7 min 24 s show every 15 minutes for 1, 8 or 24 hours, then a report on the Desktop"
 Name: "{group}\LTC Player bench soak A-B (priority on, then off)"; Filename: "{app}\ltcplay-soak.exe"; Parameters: "--ab 20"; Comment: "Two 20 minute soaks, each with one full 7 min 24 s show, scheduling protection on then off, MadMapper maximized and restored every 2 minutes; one report on the Desktop"
 Name: "{group}\LTC Player bench soak A-B (containment on, then off)"; Filename: "{app}\ltcplay-soak.exe"; Parameters: "--ab-contain 20"; Comment: "Two 20 minute soaks, scheduling protection on in both, MadMapper started fresh before each; the first with MadMapper and BEYOND at Below normal and MadMapper kept off two CPUs; one report on the Desktop"
 Name: "{group}\LTC Player bench soak, MadMapper settings (3 runs)"; Filename: "{app}\ltcplay-soak.exe"; Parameters: "--mm-settings 20"; Comment: "Three 20 minute soaks, scheduling protection on, containment off; before each it says what to set in MadMapper and waits for MadMapper started fresh; one report on the Desktop"
 Name: "{group}\Stop the unattended soak"; Filename: "{app}\ltcplay-soak.exe"; Parameters: "--unattended-off"; Comment: "The unattended soak stops after the block now running and does not start again at sign-in"
 Name: "{group}\Show PC checklist"; Filename: "{app}\SHOW PC CHECKLIST.txt"
+Name: "{group}\How to install, update and go back"; Filename: "{app}\INSTALL (read me).txt"
 Name: "{group}\Settings and logs"; Filename: "{app}\LTC Player.exe"; Parameters: "--open-settings"
 Name: "{group}\Uninstall LTC Player"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--start"; Tasks: desktopicon

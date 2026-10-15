@@ -27,6 +27,12 @@ Modes (one per run):
   --install-task    register the sign-in task for this Windows account
   --remove-task     remove it
   --rollback        run the previous version's installer
+  --update          check GitHub Releases for a newer LTC Player; download
+                    it, check its SHA-256 and run its installer
+                    (--check-only: say only; exit 0 same, 10 newer, 20 no
+                    network, 21 no release)
+  --diagnostics     write the diagnostics bundle (a zip of logs, settings,
+                    journals and versions, no media or keys) to the Desktop
   --open-settings   open the settings and logs folder
   --prune-installers  keep only the newest three saved installers
   --version, --self-check
@@ -57,7 +63,10 @@ import sys
 import time
 import urllib.request
 
+import diagnostics
+import housekeeping
 import ltcwin
+import updater
 
 # Global\, not the session's own namespace (locked decision 21): a second
 # supervisor started in another Windows session (a second sign-in, Remote
@@ -179,10 +188,27 @@ def log(msg):
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
     try:
         if _LOG is None:
-            _LOG = open(os.path.join(log_dir(), "supervisor.log"), "a",
-                        encoding="utf-8")
+            path = os.path.join(log_dir(), "supervisor.log")
+            housekeeping.rotate(path)
+            _LOG = open(path, "a", encoding="utf-8")
         _LOG.write(line + "\n")
         _LOG.flush()
+    except OSError:
+        pass
+
+
+def rotate_own_log():
+    """The supervisor's own log, rotated by generations while it runs
+    (it holds the handle, so only it can). Never raises."""
+    global _LOG
+    path = os.path.join(log_dir(), "supervisor.log")
+    try:
+        if os.path.getsize(path) <= housekeeping.LOG_LIMIT:
+            return
+        if _LOG is not None:
+            _LOG.close()
+            _LOG = None
+        housekeeping.rotate(path)
     except OSError:
         pass
     if sys.stdout is not None:
@@ -192,12 +218,11 @@ def log(msg):
             pass
 
 
-def rotate(path, limit=20 * 1024 * 1024):
-    try:
-        if os.path.getsize(path) > limit:
-            os.replace(path, path + ".old")
-    except OSError:
-        pass
+def rotate(path, limit=housekeeping.LOG_LIMIT):
+    """A program's log at its start: generations .1, .2, .3
+    (housekeeping.rotate), so the newest few are always there for the
+    diagnostics bundle and nothing grows without end."""
+    housekeeping.rotate(path, limit)
 
 
 QUIET = False
@@ -863,6 +888,7 @@ def run_loop(open_page=False):
     refused_said = [""]
     page_opened = not open_page
     ending = _watch_end_session(progs)
+    keeper = Housekeeper(settings)
     while True:
         if ENDING.is_set():
             # The clean stops go out on the end-session thread; this
@@ -915,6 +941,7 @@ def run_loop(open_page=False):
                     mm_failed = why
                     log(f"note: MadMapper priority check failed ({why}); "
                         f"carrying on")
+        keeper.tick(now)
         for n in PROGRAMS:
             p = progs[n]
             args, why_not = want[n]
@@ -945,6 +972,56 @@ def run_loop(open_page=False):
             page_opened = True
             open_page_now(port)
         time.sleep(POLL_S)
+
+
+HOUSEKEEP_EVERY_S = 300.0
+
+
+class Housekeeper:
+    """Every HOUSEKEEP_EVERY_S while the supervisor runs (and once at its
+    start): the supervisor's own log rotated, old soaks, journals and spare
+    log generations pruned, a live program log that has grown past
+    LIVE_LOG_WARN said once (it is rotated at that program's next start:
+    the program holds it open, and no program is ever restarted for a
+    log), and the free disk checked, said in the log on each change and
+    written to the settings folder for the rack screen. Never raises."""
+
+    def __init__(self, settings, every_s=HOUSEKEEP_EVERY_S):
+        self.every_s = every_s
+        self.next_at = 0.0
+        self.disk_state = "ok"
+        self.said_big = set()
+        self.show_folder = settings.get("show_folder") or appdata_dir()
+
+    def tick(self, now):
+        if now < self.next_at:
+            return
+        self.next_at = now + self.every_s
+        try:
+            self.run()
+        except Exception as e:                 # noqa: BLE001
+            log(f"housekeeping failed ({type(e).__name__}: {e}); carrying on")
+
+    def run(self):
+        rotate_own_log()
+        for line in housekeeping.prune(appdata_dir(), log_dir()):
+            log("housekeeping: " + line)
+        for name, size in housekeeping.oversize_logs(log_dir()):
+            if name not in self.said_big:
+                self.said_big.add(name)
+                log(f"note: {name} is {size / 1024 ** 2:.0f} MB; it is "
+                    f"rotated when its program next starts (no program is "
+                    f"restarted for a log)")
+        worst = ("ok", None, "")
+        for path in (appdata_dir(), self.show_folder):
+            st = housekeeping.disk_state(path)
+            if st[0] == "critical" or (st[0] == "low" and worst[0] == "ok"):
+                worst = st
+        if worst[0] != self.disk_state:
+            self.disk_state = worst[0]
+            log(("DISK LOW: " if worst[0] != "ok" else "disk: ") +
+                (worst[2] or "enough free space again"))
+        housekeeping.write_disk_file(appdata_dir(), worst[0], worst[2])
 
 
 def _write_refusal(why):
@@ -1305,6 +1382,64 @@ def _installer_key_for_version(ver):
         return ()
 
 
+def cmd_diagnostics():
+    """The diagnostics bundle on the Desktop, then shown in Explorer."""
+    settings = load_settings()
+    out_dir = diagnostics.desktop_dir()
+    programs = [os.path.join(ltcwin.app_dir(), EXE[n]) for n in PROGRAMS]
+    programs.append(supervisor_exe())
+    try:
+        path, noted = diagnostics.make_bundle(
+            out_dir, ltcwin.app_dir(), appdata_dir(), log_dir(),
+            control_dir(), settings.get("show_folder") or "", programs,
+            task_name=TASK_NAME)
+    except OSError as e:
+        tell(f"The diagnostics bundle could not be written to {out_dir}: "
+             f"{e}", error=True)
+        return 1
+    log(f"diagnostics bundle written: {path} ({'; '.join(noted)})")
+    if not QUIET and ltcwin.WINDOWS:
+        try:
+            subprocess.Popen(["explorer", "/select,", path], close_fds=True)
+        except OSError:
+            pass
+    tell(f"Saved {os.path.basename(path)} on the Desktop. Send that file "
+         f"to Jeff. It holds the logs, settings, journals and versions, and "
+         f"no show files, media or keys.")
+    return 0
+
+
+def cmd_update(check_only=False):
+    """Check GitHub Releases; with a newer release, ask, download, check
+    the SHA-256 and run the installer (which stops LTC Player the safe way
+    and refuses during a show). Exit codes as updater says."""
+    installed = ltcwin.release().get("release") or ""
+    code, text, rel = updater.check(installed)
+    log(f"update check: {text} (code {code})")
+    if check_only or code != updater.NEWER_AVAILABLE:
+        tell(text, error=code in (updater.NO_NETWORK, updater.NO_RELEASES))
+        return code
+    busy, why = show_running(load_settings()["port"])
+    if busy:
+        tell(f"{text} {why}", error=True)
+        return 3
+    if not ask(f"{text}\n\nDownload and install it now? The installer "
+               f"stops LTC Player the safe way first (it refuses while a "
+               f"show is running), installs, and starts it again. Your "
+               f"settings and show files are not touched. To go back later: "
+               f"Start menu, Roll back to the previous version."):
+        return code
+    downloads = os.path.join(appdata_dir(), "downloads")
+    try:
+        path = updater.fetch_installer(rel, downloads, log=log)
+    except OSError as e:
+        tell(str(e), error=True)
+        return 1
+    log(f"starting the installer {path}")
+    os.startfile(path)
+    return 0
+
+
 def cmd_prune_installers(keep=3):
     for p in saved_installers()[:-keep]:
         try:
@@ -1385,6 +1520,17 @@ def self_check():
         raise RuntimeError("the rack screen's fallbacks are wrong")
     yield ("the page opens as the rack screen (/remote), full screen on the "
            "show monitor")
+    for line in housekeeping.self_test():
+        yield line
+    for line in diagnostics.self_test():
+        yield line
+    for line in updater.self_test():
+        yield line
+    if not os.path.isdir(diagnostics.desktop_dir()):
+        raise RuntimeError("no Desktop or home folder for the diagnostics "
+                           "bundle")
+    yield "the diagnostics bundle goes on the Desktop; --update checks " \
+          "GitHub Releases and runs only an installer whose SHA-256 matches"
 
 
 def main(argv=None):
@@ -1396,15 +1542,20 @@ def main(argv=None):
     rc = ltcwin.common_flags(ltcwin.APP, argv, self_check, emit=log)
     if rc is not None:
         return rc
-    verb = argv[0] if argv else "--start"
     pkg = ltcwin.package_name()
     if pkg:
         tell(ltcwin.CONTAINER_REFUSAL.format(pkg=pkg), error=True)
         return 4
+    check_only = "--check-only" in argv
+    if check_only:
+        argv.remove("--check-only")
+    verb = argv[0] if argv else "--start"
     verbs = {"--start": cmd_start, "--stop": cmd_stop, "--task": cmd_task,
              "--run": run_loop, "--install-task": cmd_install_task,
              "--remove-task": cmd_remove_task, "--rollback": cmd_rollback,
              "--prune-installers": cmd_prune_installers,
+             "--diagnostics": cmd_diagnostics,
+             "--update": lambda: cmd_update(check_only),
              "--open-settings": lambda: os.startfile(appdata_dir()) or 0}
     fn = verbs.get(verb)
     if fn is None:
