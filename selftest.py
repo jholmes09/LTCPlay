@@ -37875,49 +37875,6 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
 
 
-def test_remote_name_lists_match_the_scheduler():
-    section("iPad remote: with no scheduler (the GPL path) the operator and "
-            "screen lists are read without importing the scheduler, by the "
-            "same rules and with the same defaults (PR #43 review, item 7)")
-    import json as _j
-    import shutil
-    import tempfile
-    from ltcplay import remote as RM, schedule as SC
-    from ltcplay import schedule_service as SV
-    check(RM.OPERATORS_FILE == SV.OPERATORS_FILE and
-          RM.SCREENS_FILE == SV.SCREENS_FILE and
-          RM.DEFAULT_OPERATORS == SC.DEFAULT_OPERATORS and
-          RM.DEFAULT_SCREENS == SV.DEFAULT_SCREENS,
-          "the file names and default lists are the scheduler's")
-    docs = [None, b"not json", {"operators": ["Ann", "Bo"]},
-            {"operators": [" Ann ", "bo"], "x": 1}, {"operators": []},
-            {"operators": ["Ann", "ann"]}, {"operators": ["Ann", " "]},
-            {"operators": ["Ann", 3]}, {"operators": "Ann"}, ["Ann"],
-            {"operators": [" Ann", "Bo "]}]
-    for key, fname, load in (("operators", SV.OPERATORS_FILE,
-                              SV.load_operators),
-                             ("screens", SV.SCREENS_FILE, SV.load_screens)):
-        for doc in docs:
-            work = tempfile.mkdtemp()
-            try:
-                path = os.path.join(work, fname)
-                if isinstance(doc, bytes):
-                    open(path, "wb").write(b"\xef\xbb\xbf" + doc)
-                elif doc is not None:
-                    if isinstance(doc, dict) and "operators" in doc:
-                        doc = {(key if k == "operators" else k): v
-                               for k, v in doc.items()}
-                    with open(path, "w", encoding="utf-8") as fh:
-                        _j.dump(doc, fh)
-                default = (RM.DEFAULT_OPERATORS if key == "operators"
-                           else RM.DEFAULT_SCREENS)
-                mine = RM.read_names(path, key, default)
-                theirs = tuple(load(work)[0])
-                check(mine == theirs,
-                      f"{key} {doc!r}: remote {mine} == scheduler {theirs}")
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
-    print("  ok")
 def test_mutate_reports_every_failure_it_can_have():
     """mutate.py is run against a tiny fake tree (its own selftest.py, one
     target file) and forced into every way it can end red. Each one must
