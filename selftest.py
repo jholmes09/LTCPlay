@@ -38044,6 +38044,29 @@ def test_audio_interface_watch():
               f"with the interface missing the status carries it and the "
               f"Audio chip reads not attached: {chip} "
               f"{out['audio_interface']}")
+        # The supervisor's disk file (packaging/windows/housekeeping.py):
+        # a Disk chip and the sentence for the banner while it is there.
+        check(out["disk"] is None and not any(
+            x["name"] == "Disk" for x in out["subsystems"]),
+              "with no disk file there is no Disk chip")
+        R.remote.disk_file = os.path.join(R.work, "disk-low.txt")
+        with open(R.remote.disk_file, "w", encoding="utf-8") as fh:
+            fh.write("critical\nThe disk holding C:\\x has only 0.6 GB "
+                     "free. Free some space now.\n")
+        R.remote._disk = (None, 0.0)
+        st, _h, out = R.ask("GET", "/api/remote/status",
+                            client=("127.0.0.1", 5000))
+        chip = [x for x in out["subsystems"] if x["name"] == "Disk"]
+        check(out["disk"] == {"state": "critical", "text": "The disk holding "
+              "C:\\x has only 0.6 GB free. Free some space now."} and chip ==
+              [{"name": "Disk", "state": "bad", "word": "critical"}],
+              f"the supervisor's disk-low.txt becomes the Disk chip and the "
+              f"banner's sentence: {out['disk']} {chip}")
+        R.mono[0] += 31
+        os.remove(R.remote.disk_file)
+        st, _h, out = R.ask("GET", "/api/remote/status",
+                            client=("127.0.0.1", 5000))
+        check(out["disk"] is None, "the file gone, the chip goes within 30 s")
     finally:
         R.close()
     print("  ok")
