@@ -1389,6 +1389,21 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.remote.alert_pixels = rs.get("alert_pixels")
     except ValueError as e:
         print(f"The booth speaker is off: {e}")
+    httpd.audio_watch = None
+    if fire_ice is not None and not os.environ.get("LTCPLAY_BENCH_FAKE_AUDIO"):
+        # Fire & Ice: is the show's audio interface attached, before anyone
+        # presses Run (audiowatch.py)? It lists the outputs from a process
+        # of its own, never while a session runs. Not under the soak's fake
+        # audio device, which no other process could see.
+        from . import audiowatch
+
+        def _busy():
+            st = control.state() or {}
+            return bool(st.get("running") or st.get("starting"))
+        httpd.audio_watch = audiowatch.AudioInterfaceWatch(
+            control.folder, alerts=httpd.remote.alerts, log=print,
+            busy=_busy).start()
+        httpd.remote.audio_watch = httpd.audio_watch
     httpd.loopback = None
     if on_network:
         # The machine itself keeps its own door on loopback, trusted as

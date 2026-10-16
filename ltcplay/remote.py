@@ -502,6 +502,7 @@ class Remote:
         self._disarm_ids = 0
         self._deck_seen = None       # clock() of the deck's last read
         self._version = None         # version_line(), once asked
+        self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
         # The alert service (alerts.py, 2026-10-12): the rack screen's
         # banners, the booth note and the blue pulse. web.serve gives it
         # the booth player and the pulse's pixel range from the settings;
@@ -1234,6 +1235,16 @@ class Remote:
         except Exception:
             return ""
 
+    def audio_interface_view(self):
+        """audiowatch's view, or None without the watch. Never raises."""
+        w = getattr(self, "audio_watch", None)
+        if w is None:
+            return None
+        try:
+            return w.view()
+        except Exception:                        # noqa: BLE001
+            return None
+
     def subsystems(self, cs):
         """The rack screen's compact strip: one word per subsystem, and
         "ok", "warn", "bad" or "off". Display only, read from what the
@@ -1262,7 +1273,12 @@ class Remote:
         else:
             add("Flamesafe", "ok", "linked")
         audio = ((cs or {}).get("clock") or {}).get("audio")
-        if not isinstance(audio, dict):
+        watch = self.audio_interface_view()
+        if watch and watch.get("missing"):
+            # Before Run: the interface the show file names is not on this
+            # PC at all (audiowatch.py). The banner says which.
+            add("Audio", "bad", "not attached")
+        elif not isinstance(audio, dict):
             add("Audio", "off", "none")
         elif audio.get("fault") or not audio.get("connected"):
             add("Audio", "bad", "fault" if audio.get("fault") else "lost")
@@ -1350,6 +1366,7 @@ class Remote:
             out["subsystems"] = self.subsystems({})
         out["countdown"] = countdown_view(out["schedule"], out["show"],
                                           cue_now)
+        out["audio_interface"] = self.audio_interface_view()
         try:
             out["transport"] = self._transport_view()
         except Exception as e:

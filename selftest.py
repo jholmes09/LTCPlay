@@ -37899,6 +37899,156 @@ def test_flame_link_end_to_end_against_the_real_flamesafe():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_audio_interface_watch():
+    section("audio interface watch (Fire & Ice, 2026-10-15): before Run, a "
+            "show file's audio device that is not on this PC raises the "
+            "audio alert once per outage, naming the device and the outputs "
+            "seen, the Audio chip reads not attached, nothing is listed while "
+            "a session runs, and a listing that fails is a log line, never a "
+            "false alarm")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import audiowatch as AW
+    from ltcplay.alerts import Alerts
+    folder = tempfile.mkdtemp()
+    try:
+        def put(name, doc):
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
+                _j.dump(doc, fh)
+        put("show.json", {"cues": [], "clock": {"source": "audio_master",
+                          "audio": {"device": "PreSonus Studio 1824c",
+                                    "channels": 8, "cues": {}}}})
+        put("ltc_show.json", {"cues": [], "clock": {"source": "ltc"}})
+        put("ltcplay_prefs.json", {"auto_reload": True})
+        put("second.json", {"cues": [], "clock": {"source": "audio_master",
+                            "audio": {"device": " PreSonus Studio 1824c "}}})
+        with open(os.path.join(folder, "broken.json"), "w") as fh:
+            fh.write("{not json")
+        want = AW.wanted_devices(folder)
+        check(want == {"PreSonus Studio 1824c": "second.json"},
+              f"the devices wanted are read from the audio_master show files "
+              f"only, trimmed, the first file (by name) named: {want}")
+        check(AW.missing(want, ["presonus studio 1824c", "Speakers"]) == []
+              and AW.missing(want, ["Speakers (Realtek)"]) ==
+              ["PreSonus Studio 1824c"]
+              and AW.missing(want, ["PreSonus Studio 1824"]) ==
+              ["PreSonus Studio 1824c"],
+              "a device is matched by its exact name, case aside, never by "
+              "a substring")
+        journal = []
+        alerts = Alerts(journal=lambda text, **kw: journal.append((text, kw)),
+                        clock=lambda: 0.0, wall=lambda: 0.0)
+        outs = [["Speakers (Realtek)", "Monitor HDMI"]]
+        calls = []
+        busy = [False]
+        log = []
+
+        def lister():
+            calls.append(1)
+            if isinstance(outs[0], Exception):
+                raise outs[0]
+            return outs[0]
+        w = AW.AudioInterfaceWatch(folder, alerts=alerts, log=log.append,
+                                   lister=lister, busy=lambda: busy[0],
+                                   clock=lambda: 100.0, interval_s=30)
+        st = w.check()
+        a = alerts.open()
+        check(st["missing"] == ["PreSonus Studio 1824c"] and len(a) == 1 and
+              a[0].kind == "audio" and "'PreSonus Studio 1824c'" in a[0].text
+              and "second.json" in a[0].text and
+              "Monitor HDMI, Speakers (Realtek)" in a[0].text and
+              "same USB port" in a[0].text and "every 30 seconds" in a[0].text,
+              f"the missing interface raises the audio alert, naming the "
+              f"device, its show file and the outputs seen: {st} "
+              f"{[x.text for x in a]}")
+        raised = [t for t, kw in journal if kw.get("outcome") == "raised"]
+        w.check()
+        w.check()
+        check(len(alerts.open()) == 1 and len(raised) == 1 and
+              len([t for t, kw in journal if kw.get("outcome") in
+                   ("raised", "updated")]) == 1,
+              f"a second and third check in the same outage raise nothing "
+              f"more: {journal}")
+        v = w.view()
+        check(v["missing"] == ["PreSonus Studio 1824c"] and
+              v["outputs"] == ["Speakers (Realtek)", "Monitor HDMI"] and
+              v["checked_ago_s"] == 0.0 and v["skipped"] == "" and
+              v["error"] == "", f"the view for the rack screen: {v}")
+        # Plugged in again: said in the log, the banner stays for a person.
+        outs[0] = ["Speakers (Realtek)", "PreSonus Studio 1824c"]
+        st = w.check()
+        check(st["missing"] == [] and len(alerts.open()) == 1 and
+              any("attached again" in l for l in log),
+              f"the device back is a log line; the alert waits for a person: "
+              f"{st['missing']} {log[-1:]}")
+        # Unplugged again: a new outage, one new raise (an update of the
+        # one open alert, since nobody acknowledged the first).
+        outs[0] = ["Speakers (Realtek)"]
+        w.check()
+        n_raise = len([t for t, kw in journal if kw.get("outcome") in
+                       ("raised", "updated")])
+        check(n_raise == 2 and len(alerts.open()) == 1,
+              f"a new outage is said once more: {n_raise} raises")
+        # A running session: nothing is listed, the last answer stands.
+        before = len(calls)
+        busy[0] = True
+        st = w.check()
+        check(len(calls) == before and "session is running" in st["skipped"]
+              and st["missing"] == ["PreSonus Studio 1824c"],
+              f"while a session runs nothing is listed: {st['skipped']!r}")
+        busy[0] = False
+        # A listing that fails: a log line, the state kept, no alert change.
+        outs[0] = OSError("the audio device list did not come back")
+        st = w.check()
+        check("did not come back" in st["error"] and
+              any("did not come back" in l for l in log) and n_raise ==
+              len([t for t, kw in journal if kw.get("outcome") in
+                   ("raised", "updated")]),
+              f"a failed listing is a log line, never an alert: {st['error']}")
+        # No show file asks for a device: nothing wanted, nothing listed.
+        for n in ("show.json", "second.json"):
+            os.remove(os.path.join(folder, n))
+        before = len(calls)
+        st = w.check()
+        check(st["wanted"] == {} and st["missing"] == [] and
+              len(calls) == before,
+              f"with no audio_master show file nothing is looked for: {st}")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    # The rack screen's chip and status carry it.
+    S = _sched()
+    if S is None:
+        print("  ok")
+        return
+    R = _RemoteRig(S)
+    try:
+        class W:
+            def view(self):
+                return {"missing": ["PreSonus Studio 1824c"],
+                        "outputs": ["Speakers"], "checked_ago_s": 1.0,
+                        "skipped": "", "error": "", "wanted": {}}
+        st, _h, out = R.ask("GET", "/api/remote/status",
+                            client=("127.0.0.1", 5000))
+        check(st == 200 and out["audio_interface"] is None and
+              not any(x["word"] == "not attached" for x in out["subsystems"]),
+              f"without the watch the status says None and the chip is as "
+              f"before: {out.get('audio_interface')}")
+        R.remote.audio_watch = W()
+        st, _h, out = R.ask("GET", "/api/remote/status",
+                            client=("127.0.0.1", 5000))
+        chip = [x for x in out["subsystems"] if x["name"] == "Audio"]
+        check(st == 200 and out["audio_interface"]["missing"] ==
+              ["PreSonus Studio 1824c"] and chip ==
+              [{"name": "Audio", "state": "bad", "word": "not attached"}],
+              f"with the interface missing the status carries it and the "
+              f"Audio chip reads not attached: {chip} "
+              f"{out['audio_interface']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_mutate_reports_every_failure_it_can_have():
     """mutate.py is run against a tiny fake tree (its own selftest.py, one
     target file) and forced into every way it can end red. Each one must
@@ -42633,6 +42783,7 @@ if __name__ == "__main__":
     test_boothaudio_never_holds_and_never_uses_the_pa()
     test_player_alert_look_pulse_shape()
     test_alert_pixels_never_the_flame_controllers()
+    test_audio_interface_watch()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
