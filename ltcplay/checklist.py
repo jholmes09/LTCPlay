@@ -426,9 +426,13 @@ class TallySender:
         return went
 
     def status(self):
+        # The host alone, never the whole URL: a path can carry a secret,
+        # and the page is read by anyone on the show network.
+        url = self.cfg.get("url") or ""
+        host = re.sub(r"^https?://", "", url).split("/", 1)[0]
         return {"enabled": self.enabled,
-                "configured": bool(self.cfg.get("url")),
-                "url": self.cfg.get("url") or "",
+                "configured": bool(url),
+                "host": host,
                 "token_file_set": bool(self.cfg.get("token_file")),
                 "queued": len(self.pending()), "sent": self.sent,
                 "failures": self.failures, "last_error": self.last_error,

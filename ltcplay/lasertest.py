@@ -346,7 +346,12 @@ class LaserTests:
         self.set(laser_id, False, who=f"the engine ({why})")
         if not laser.lock or laser.mechanism == "none":
             return True
-        return self._send_list(laser, laser.lock)
+        ok = self._send_list(laser, laser.lock)
+        self._note(f"{laser.name}: its lock messages were sent to BEYOND "
+                   f"({why}){'' if ok else ' but did NOT get out'}.",
+                   action="laser-test", outcome="lock" if ok else "failed",
+                   fault=not ok)
+        return ok
 
     def view(self):
         out = []

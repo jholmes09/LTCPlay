@@ -8151,6 +8151,11 @@ def build():
             if why:
                 self.lasers.all_off(why)'''),
 
+ ("morning: a locked laser's lock messages are not sent again at show start (T10)",
+  "ltcplay/morning.py",
+  '''        if live and not self._was_live:''',
+  '''        if False:'''),
+
  ("morning: a purge from the show network needs no screen_arming (T9)",
   "ltcplay/remote.py",
   '''        return bool(local) or rs["screen_arming"] is True''',

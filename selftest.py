@@ -42360,7 +42360,12 @@ _MO_CONFIG = {
                {"id": "laser-3", "name": "Laser 3", "mechanism": "osc",
                 "host": "127.0.0.2", "port": 8100,
                 "on": [["/beyond/general/startcue", 3]],
-                "off": [["/beyond/general/stopcue", 3]]}],
+                "off": [["/beyond/general/stopcue", 3]]},
+               {"id": "laser-4", "name": "Laser 4", "mechanism": "osc",
+                "host": "127.0.0.2", "port": 8100,
+                "on": [["/beyond/general/startcue", 4]],
+                "off": [["/beyond/general/stopcue", 4]],
+                "lock": [["/beyond/zones/4/enable", 0.0]]}],
     "checklists": {"morning": {"title": "Morning", "steps": [
         {"id": "gas", "text": "Gas on at the manifold"},
         {"id": "walk", "text": "Walk the field"}]},
@@ -42960,6 +42965,17 @@ def test_purge_rules_at_the_engine():
         st, _h, out = R.ask("POST", "/api/remote/laser-test",
                             {"laser": "laser-3", "on": True}, client=loop)
         check(st == 200 and "laser-3" in R.m.lasers.on, "test on again")
+        # Locking a configured laser sends its lock messages (a placeholder
+        # list until BEYOND's way to shut one laser is known) at the lock.
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-4", "on": True},
+                            client=loop)
+        check(st == 200 and R.m.lockout.is_locked("laser", "laser-4") and
+              R.osc[-1][1].startswith(b"/beyond/zones/4/enable"),
+              f"locking Laser 4 sends its lock messages: {st} {out}")
+        n_osc = len(R.osc)
+        R.m.tick()
+        check(len(R.osc) == n_osc, "and not again on an idle watcher pass")
         # A show live: refused, a selection is cleared and the laser tests
         # go off on the watcher's next pass.
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
@@ -42972,6 +42988,15 @@ def test_purge_rules_at_the_engine():
               "a show going live clears the purge selection")
         check(not R.m.lasers.on,
               "and turns every laser test off within one watcher pass")
+        check(any(p.startswith(b"/beyond/zones/4/enable")
+                  for _a, p in R.osc[n_osc:]),
+              "and a locked laser's lock messages go to BEYOND again as the "
+              "show goes live (MORNING.md: at every show start while locked)")
+        n_osc = len(R.osc)
+        R.m.tick()
+        check(not any(p.startswith(b"/beyond/zones/4/enable")
+                      for _a, p in R.osc[n_osc:]),
+              "once per show start, not every pass")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()}, client=loop)
         check(st == 409 and "live" in out["error"],

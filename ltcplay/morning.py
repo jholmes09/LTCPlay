@@ -953,6 +953,7 @@ class Morning:
             threaded=threaded)
         self._open_at = None         # clock() of the page's last open beat
         self._open_devices = {}      # device -> clock of its last beat
+        self._was_live = False       # the watcher's last word on live_check
         self._stop = threading.Event()
         self._thread = None
         self._lock_channels_to_link()
@@ -1019,6 +1020,15 @@ class Morning:
             why = self._live_or_broken()
             if why:
                 self.lasers.all_off(why)
+        live = bool(self._live_or_broken())
+        if live and not self._was_live:
+            # A show going live (or an Abort landing) while a laser is
+            # locked out: its lock messages go again (MORNING.md: "at every
+            # show start while locked"), so BEYOND hears the lock on the
+            # night it matters, not only on the morning it was set.
+            for lid in list(self.lockout.lasers):
+                self.lasers.send_lock(lid, "the show is going live")
+        self._was_live = live
         self._lock_channels_to_link()
         try:
             self.checklist.tick(now)
