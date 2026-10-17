@@ -57,6 +57,16 @@ def main(argv=None):
                                 "not set): every group stays disarmed and "
                                 "the flame universe is all zeros")
     svc = Service(cfg, arm_input, log=journal)
+    if cfg.lockout_file:
+        journal.event("config", f"lockout: fire slots named in "
+                                f"{cfg.lockout_file} (written by ltcplay's "
+                                f"engine) are held at zero on every packet, "
+                                f"and a group with every slot locked cannot "
+                                f"arm")
+    else:
+        journal.event("config", "no lockout_file is set: nothing can be "
+                                "locked out from the Morning and Shutdown "
+                                "page")
     stop = threading.Event()
 
     def _stop(*_a):
