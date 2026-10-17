@@ -184,6 +184,70 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 #v-prog{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
 .big{font:800 clamp(30px,5vh,56px)/1.05 var(--sans);font-variant-numeric:tabular-nums;color:var(--champ)}
 
+/* ---- Morning and Shutdown (Jeff, 2026-10-17): one screen, the field on
+   the left, lasers and the checklists on the right. The checklist card
+   may scroll inside itself; nothing else does. ---- */
+#v-morning{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:10px;min-height:0}
+#mo-left{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+#mo-right{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+.mo-groups{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) auto auto;gap:6px}
+.mo-groups button{min-height:clamp(38px,5.5vh,56px);font-size:clamp(12px,1.7vh,16px);padding:4px 6px}
+.mo-groups button.on{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+#mo-field{flex:1 1 auto;min-height:0;position:relative;border:1px solid var(--hair);border-radius:8px;
+  background:rgba(7,6,5,.6) linear-gradient(180deg,rgba(212,168,74,.05),rgba(212,168,74,0));overflow:hidden}
+#mo-field .edge{position:absolute;left:8px;right:8px;font:700 10px/1.2 var(--caps);letter-spacing:.2em;
+  text-transform:uppercase;color:var(--muted);pointer-events:none}
+#mo-field .edge.top{top:6px} #mo-field .edge.bot{bottom:6px;text-align:right}
+.mach{position:absolute;transform:translate(-50%,-50%);width:clamp(86px,9vw,124px);border-radius:8px;
+  border:2px solid #7A6032;background:var(--bronze);color:var(--champ);padding:4px 4px 3px;text-align:center;
+  cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none}
+.mach b{display:block;font:700 clamp(10px,1.4vh,13px)/1.15 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mach .w{display:block;font:800 clamp(11px,1.6vh,14px)/1.1 var(--sans);letter-spacing:.04em;text-transform:uppercase;margin-top:2px}
+.mach .k{display:block;font:400 9px/1.1 var(--sans);color:var(--muted);margin-top:1px}
+.mach.sel{border-color:var(--amber);background:#3A2606;color:var(--champ)}
+.mach.armed{border-color:#5FE08A;background:var(--green);color:var(--green-ink)}
+.mach.armed .k{color:var(--green-ink)}
+.mach.firing{border-color:var(--red);background:var(--red-deep);color:var(--champ);animation:firing .4s steps(1,end) infinite}
+@keyframes firing{50%{background:#5A0A0A}}
+.mach.locked{border-style:dashed;border-color:#9A8A6A;background:#1A1712;color:var(--muted)}
+.mach.locked .w{color:var(--amber)}
+.mach.drag{border-color:var(--champ);cursor:move}
+.mach .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
+  font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+.mach.locked .lk{background:var(--amber);color:var(--amber-ink)}
+#mo-firebar{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center}
+#mo-firebar .key{font:800 clamp(14px,2.2vh,20px)/1.1 var(--sans);letter-spacing:.08em;text-transform:uppercase;
+  border:2px solid var(--hair);border-radius:8px;padding:8px 14px;color:var(--muted);white-space:nowrap}
+#mo-firebar .key.ready{border-color:var(--red);color:var(--champ)}
+#mo-firebar .key.firing{background:var(--red-deep);border-color:var(--red);color:var(--champ);animation:firing .4s steps(1,end) infinite}
+.mo-lasers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.laser{position:relative;display:flex;flex-direction:column;gap:2px;border:2px solid #7A6032;border-radius:8px;
+  background:var(--bronze);color:var(--champ);padding:6px 8px;min-height:clamp(44px,6vh,64px);cursor:pointer;text-align:left}
+.laser b{font:700 clamp(12px,1.6vh,15px)/1.2 var(--sans)}
+.laser span{font:400 11px/1.2 var(--sans);color:var(--muted)}
+.laser.on{border-color:#5FE08A;background:var(--green);color:var(--green-ink)} .laser.on span{color:var(--green-ink)}
+.laser.locked{border-style:dashed;border-color:#9A8A6A;background:#1A1712;color:var(--muted)}
+.laser .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
+  font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+.laser.locked .lk{background:var(--amber);color:var(--amber-ink)}
+#mo-check{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#mo-check .tabs{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#mo-check .tabs button{min-height:36px;font-size:13px;padding:4px 10px}
+#mo-check .tabs button.on{background:var(--champ);color:var(--btn-ink)}
+#mo-check select{min-height:36px;width:auto;font-size:13px;padding:2px 8px}
+#mo-steps{flex:1 1 auto;min-height:0;overflow:auto;margin-top:6px}
+.step{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--hair-soft)}
+.step .box{width:30px;height:30px;border:2px solid var(--gold);border-radius:6px;background:transparent;color:var(--green-ink);
+  font:800 18px/1 var(--sans);min-height:0;padding:0}
+.step.done .box{background:var(--green);border-color:#5FE08A}
+.step .t{font:400 clamp(12px,1.6vh,15px)/1.3 var(--sans);color:var(--cream)}
+.step.done .t{color:var(--muted)}
+.step .m{font:400 11px/1.2 var(--sans);color:var(--muted)}
+.step .m .n{color:var(--champ)}
+.step button.note{min-height:30px;font-size:12px;padding:2px 8px}
+.mo-foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+.mo-foot button{min-height:34px;font-size:12px;padding:2px 10px}
+.mo-foot .tally{font:400 11px/1.2 var(--sans);color:var(--muted);flex:1 1 100%}
 #abortbar{padding:6px 0 calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--hair)}
 #abortbar button{width:100%;min-height:clamp(60px,9vh,108px);display:flex;align-items:center;
   justify-content:center;gap:.6em;flex-wrap:wrap;
@@ -232,11 +296,12 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     <span id="version" title="Which LTC Player this is"></span>
     <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
+    <button id="nav-morning" class="ghost" data-go="morning" hidden>Morning and Shutdown</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
   </nav>
 </header>
 
-<div id="alerts"><div id="al-list"></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
+<div id="alerts"><div id="al-list"></div><div class="warnbox open" id="lock-banner" hidden></div><div class="warnbox" id="st-trouble" hidden></div><div class="warnbox" id="fl-warn" hidden></div></div>
 
 <div id="main">
   <!-- The show screen: only what the operator needs during a show. -->
@@ -283,6 +348,35 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     <div class="tsum"><span id="tn-state"></span><span id="tn-next" class="dim"></span></div>
     <div id="tonight"></div>
     <div class="dim" style="font-size:13px">Tap a show to see all of its note.</div>
+  </section>
+
+  <!-- Morning and Shutdown (Jeff, 2026-10-17): laser tests, the purge, the
+       lockout and the checklists. MORNING.md says how each one works. -->
+  <section id="v-morning" class="view" hidden>
+    <div id="mo-left">
+      <div class="mo-groups" id="mo-groups"></div>
+      <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
+      <div id="mo-firebar"><div class="key" id="mo-key">Hold SPACE to fire</div><div class="toast" id="mo-msg"></div></div>
+    </div>
+    <div id="mo-right">
+      <section class="card">
+        <h2>Laser calibration tests</h2>
+        <div class="mo-lasers" id="mo-lasers"></div>
+        <div class="toast" id="mo-lmsg"></div>
+      </section>
+      <section class="card" id="mo-check">
+        <h2>Checklists</h2>
+        <div class="tabs" id="mo-tabs"></div>
+        <div id="mo-steps"></div>
+        <div class="mo-foot">
+          <button class="ghost" id="mo-verify">Verify records</button>
+          <button class="ghost" id="mo-pdf">Download today's PDF</button>
+          <button class="ghost" id="mo-export">Export all</button>
+          <div class="tally" id="mo-tally"></div>
+        </div>
+        <div class="toast" id="mo-cmsg"></div>
+      </section>
+    </div>
   </section>
 
   <!-- Programming: everything not needed during a show. -->
@@ -428,6 +522,20 @@ function countdownNow(c, nowMs, lastOkMs){
   const aged = c.running && lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;
   return {kind:c.kind, label:c.label, s:Math.max(0, c.s - aged)};
 }
+// Morning and Shutdown: what a machine tile reads, from the engine's view
+// of the page (MO), flamesafe's lamps (ST.flames) and the purge state.
+// Display only: the engine decides what fires.
+function machineLook(m, mo, flames, purge){
+  const locked = !!(mo && mo.lockout && mo.lockout.machines && mo.lockout.machines[m.id]);
+  if(locked) return {cls:"locked", word:"Locked out"};
+  const sel = !!(purge && (purge.selected || []).includes(m.id));
+  if(!sel) return {cls:"", word:"Off"};
+  const g = ((flames && flames.groups) || []).find(x => x.name === m.group);
+  const armed = !!(g && g.armed === "armed" && flames && !flames.stale);
+  if(purge.firing && armed) return {cls:"firing", word:"FIRING"};
+  if(armed) return {cls:"armed", word:"Purge armed"};
+  return {cls:"sel", word:(g && g.reason) ? "Held: " + g.reason : "Arming..."};
+}
 function clockText(sec){
   sec = Math.max(0, Math.floor(sec));
   const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
@@ -475,7 +583,7 @@ function fill(sel, names, keep){
 
 // Three screens, one page: the show (the default), Tonight and
 // Programming. The Abort bar is on every one of them.
-const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog"};
+const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning"};
 function showView(){
   let v = (location.hash || "").replace("#", "");
   if(!VIEWS[v]) v = "show";
@@ -485,6 +593,7 @@ function showView(){
   $("nav-back").hidden = v === "show";
   if(v === "show") lampColumns();
   if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
+  morningView(v === "morning");
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
   const v = b.dataset.go;
@@ -564,6 +673,7 @@ function renderStale(){
   // is not, and no Arm button can be pressed until it is again.
   if(HOLD && !armState(ST, Date.now(), LAST_OK, HOLD.group).ok)
     armStop(armState(ST, Date.now(), LAST_OK, HOLD.group).why);
+  if(stale) fireStop("no contact with the engine");
   document.querySelectorAll("[data-arm]").forEach(el => {
     const i = Number(el.dataset.arm);
     if(!(HOLD && HOLD.group === i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
@@ -626,6 +736,23 @@ function render(){
   setWarn("fl-warn", fmsg);
   renderAlerts(s.alerts || []);
   renderLamps(fl);
+  // The Morning and Shutdown page exists only with the Fire & Ice engine;
+  // its lock banner shows on every screen while anything is locked out.
+  const mo = s.morning;
+  $("nav-morning").hidden = !mo || (location.hash || "").replace("#", "") === "morning";
+  let lockText = "";
+  if(mo && ((mo.locked_machines || []).length || (mo.locked_lasers || []).length)){
+    const parts = [];
+    if((mo.locked_machines || []).length) parts.push("flame machines " + mo.locked_machines.join(", "));
+    if((mo.locked_lasers || []).length) parts.push("lasers " + mo.locked_lasers.join(", "));
+    lockText = "LOCKED OUT: " + parts.join("; ") + ". " +
+      (mo.flamesafe_confirmed === true ? "flamesafe is holding the locked flame slots at zero." :
+       mo.flamesafe_confirmed === false ? "flamesafe has NOT yet confirmed the flame lock: check its lockout_file setting." :
+       "flamesafe's word on the lock is not known right now.") +
+      " Unlock on the Morning and Shutdown page.";
+  }
+  if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Morning and Shutdown settings: " + mo.config_error;
+  setWarn("lock-banner", lockText);
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
   $("version").textContent = s.version ? ("LTC Player " + s.version) : "";
@@ -886,6 +1013,248 @@ $("net-save").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/network", {address:$("net-addr").value}); $("net-msg").textContent = j.note; }
   catch(e){ $("net-msg").textContent = e.message; }
 });
+
+// ---- Morning and Shutdown (Jeff, 2026-10-17) ------------------------
+// The engine owns every decision (morning.py): this view only shows its
+// state and sends clicks, the Space bar's heartbeats and the checklist
+// ticks. Nothing here arms or fires anything by itself.
+let MO = null, MO_OPEN = false, MO_TIMER = null, FIRE = null, ARRANGE = false, DRAG = null;
+let MO_TAB = null, MO_NAME = "", MO_KEY = "";
+function morningView(on){
+  if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
+  if(!on && MO_OPEN){ MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left"); }
+}
+async function morningPoll(){
+  if(!MO_OPEN) return;
+  try{
+    if(!document.hidden){
+      // Both every 500 ms while the view is open: the engine clears the
+      // purge selection and un-maps the deck 2 s after the last open beat.
+      await post("/api/remote/morning-open", actor({}));
+      MO = await getJSON("/api/remote/morning", 1500);
+      renderMorning();
+    }
+  }catch(e){ $("mo-msg").textContent = e.message; }
+  MO_TIMER = setTimeout(morningPoll, 500);
+}
+function moActor(extra){ return actor(extra); }
+function renderMorning(){
+  const mo = MO; if(!mo) return;
+  const fl = (ST && ST.flames) || {};
+  const purge = mo.purge_state || {};
+  // Group buttons: a fast multi-select of the machines in each (nothing saved).
+  const gb = $("mo-groups");
+  const key = JSON.stringify([Object.keys(mo.groups || {}), mo.config_error]);
+  if(gb.dataset.key !== key){
+    gb.dataset.key = key;
+    gb.innerHTML = Object.keys(mo.groups || {}).map(g => `<button data-grp="${esc(g)}">${esc(g)}</button>`).join("") +
+      `<button class="ghost" id="mo-clear">Clear</button><button class="ghost" id="mo-arrange">Arrange</button>`;
+    gb.querySelectorAll("[data-grp]").forEach(b => b.addEventListener("click", () => groupClick(b.dataset.grp)));
+    $("mo-clear").addEventListener("click", () => moPress("purge-clear", {}));
+    $("mo-arrange").addEventListener("click", arrangeToggle);
+  }
+  gb.querySelectorAll("[data-grp]").forEach(b => {
+    const ids = (mo.groups || {})[b.dataset.grp] || [];
+    const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
+    b.classList.toggle("on", !!all);
+    b.disabled = !ids.length || !mo.purge_enabled;
+    b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
+  });
+  // The field: every machine where the layout puts it.
+  const field = $("mo-field");
+  const mkey = (mo.machines || []).map(m => m.id).join("\n");
+  if(field.dataset.key !== mkey){
+    field.dataset.key = mkey;
+    field.querySelectorAll(".mach").forEach(el => el.remove());
+    (mo.machines || []).forEach(m => {
+      const el = document.createElement("div");
+      el.className = "mach"; el.dataset.id = m.id;
+      el.innerHTML = `<b>${esc(m.name)}</b><span class="w"></span><span class="k">${esc(m.kind)} ${esc(m.group)}</span><button class="lk" title="Lock out or unlock">L</button>`;
+      el.addEventListener("pointerdown", e => machDown(e, m));
+      el.querySelector(".lk").addEventListener("pointerdown", e => e.stopPropagation());
+      el.querySelector(".lk").addEventListener("click", e => { e.stopPropagation(); lockClick("machine", m.id, m.name); });
+      field.appendChild(el);
+    });
+  }
+  (mo.machines || []).forEach(m => {
+    const el = field.querySelector(`.mach[data-id="${m.id}"]`); if(!el) return;
+    const p = (mo.layout || {})[m.id] || {x:50, y:50};
+    if(!(DRAG && DRAG.id === m.id)){ el.style.left = p.x + "%"; el.style.top = p.y + "%"; }
+    const look = machineLook(m, mo, fl, purge);
+    el.className = "mach " + look.cls + (ARRANGE ? " drag" : "");
+    el.querySelector(".w").textContent = look.word;
+    el.querySelector(".lk").textContent = look.cls === "locked" ? "L" : "L";
+  });
+  // The fire key's state.
+  const k = $("mo-key");
+  const any = (purge.selected || []).length > 0;
+  k.className = "key" + (purge.firing ? " firing" : any ? " ready" : "");
+  k.textContent = purge.firing ? "FIRING" : any ? "Hold SPACE to fire" : "Click a machine or a group to arm it";
+  if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
+  if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
+  // Lasers.
+  const lb = $("mo-lasers");
+  const lkey = (mo.lasers || []).map(l => l.id).join("\n");
+  if(lb.dataset.key !== lkey){
+    lb.dataset.key = lkey;
+    lb.innerHTML = (mo.lasers || []).map(l => `<button class="laser" data-laser="${esc(l.id)}"><b>${esc(l.name)}</b><span></span><button class="lk" data-llock="${esc(l.id)}" title="Lock out or unlock">L</button></button>`).join("");
+    lb.querySelectorAll("[data-laser]").forEach(b => b.addEventListener("click", e => {
+      if(e.target.closest("[data-llock]")) return;
+      const l = (MO.lasers || []).find(x => x.id === b.dataset.laser);
+      moPress("laser-test", {laser:b.dataset.laser, on: !(l && l.on)}, "mo-lmsg");
+    }));
+    lb.querySelectorAll("[data-llock]").forEach(b => b.addEventListener("click", e => {
+      e.stopPropagation(); e.preventDefault();
+      const l = (MO.lasers || []).find(x => x.id === b.dataset.llock);
+      lockClick("laser", b.dataset.llock, l ? l.name : b.dataset.llock);
+    }));
+  }
+  (mo.lasers || []).forEach(l => {
+    const el = lb.querySelector(`[data-laser="${l.id}"]`); if(!el) return;
+    el.className = "laser" + (l.locked ? " locked" : l.on ? " on" : "");
+    el.querySelector("span").textContent = l.locked ? "Locked out" : l.on ? "TEST ON at low power" :
+      l.configured ? "Off. Click to put the grid up." : "Not set up yet (placeholder in ltcplay_morning.json)";
+  });
+  renderChecklists(mo.checklists || {});
+}
+function groupClick(g){
+  const ids = (MO.groups || {})[g] || [];
+  const purge = MO.purge_state || {};
+  const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
+  moPress("purge-select", {machines: ids, on: !all});
+}
+async function moPress(route, extra, msgEl){
+  const el = $(msgEl || "mo-msg");
+  try{
+    const j = await post("/api/remote/" + route, moActor(extra));
+    el.textContent = j.text || "Done.";
+    MO = await getJSON("/api/remote/morning", 1500); renderMorning();
+  }catch(e){ el.textContent = e.message; }
+}
+async function lockClick(kind, id, name){
+  const locked = kind === "machine" ? !!(MO.lockout.machines || {})[id] : !!(MO.lockout.lasers || {})[id];
+  if(!locked){
+    if(await confirmBox("Lock out " + name + "?", "It cannot be armed or fired from anywhere, show cues skip it, and it stays locked out across restarts until it is unlocked here.", "Lock out", ""))
+      moPress("lock", {kind:kind, id:id, on:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
+  } else {
+    if(await confirmBox("Unlock " + name + "?", "It can be armed and fired again from the next cue or purge.", "Yes, unlock", "start"))
+      moPress("lock", {kind:kind, id:id, on:false, confirmed:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
+  }
+}
+// A click on a machine arms it for the purge (Jeff's exception to
+// hold-to-arm, this page only); in Arrange mode a drag moves it.
+function machDown(e, m){
+  e.preventDefault();
+  if(ARRANGE){
+    const field = $("mo-field").getBoundingClientRect();
+    DRAG = {id:m.id, el:e.currentTarget, field};
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const move = ev => {
+      const x = Math.max(0, Math.min(100, 100 * (ev.clientX - field.left) / field.width));
+      const y = Math.max(0, Math.min(100, 100 * (ev.clientY - field.top) / field.height));
+      DRAG.el.style.left = x + "%"; DRAG.el.style.top = y + "%";
+      DRAG.pos = {x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10};
+    };
+    const up = () => {
+      e.currentTarget.removeEventListener("pointermove", move);
+      if(DRAG && DRAG.pos){ MO.layout = MO.layout || {}; MO.layout[m.id] = DRAG.pos; }
+      DRAG = null;
+    };
+    e.currentTarget.addEventListener("pointermove", move);
+    e.currentTarget.addEventListener("pointerup", up, {once:true});
+    e.currentTarget.addEventListener("pointercancel", up, {once:true});
+    return;
+  }
+  const sel = ((MO.purge_state || {}).selected || []).includes(m.id);
+  moPress("purge-select", {machine:m.id, on: !sel});
+}
+async function arrangeToggle(){
+  if(!ARRANGE){ ARRANGE = true; $("mo-arrange").textContent = "Save layout"; $("mo-msg").textContent = "Drag the machines where they stand, then Save layout."; renderMorning(); return; }
+  ARRANGE = false; $("mo-arrange").textContent = "Arrange";
+  moPress("layout", {positions: MO.layout || {}});
+}
+// The fire key: Space on this page. One keydown starts the heartbeats
+// (repeats are ignored); keyup, blur, the page hidden or closed, a
+// refused heartbeat or a stale page stops them. The engine and the flame
+// link also let go 0.25 s after the last heartbeat on their own.
+document.addEventListener("keydown", e => {
+  if(e.code !== "Space" || e.repeat) return;
+  if((location.hash || "").replace("#", "") !== "morning") return;
+  if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  e.preventDefault();
+  fireStart();
+});
+document.addEventListener("keyup", e => { if(e.code === "Space") fireStop("the key came up"); });
+window.addEventListener("blur", () => fireStop("the page lost focus"));
+document.addEventListener("visibilitychange", () => { if(document.hidden) fireStop("the page was hidden"); });
+window.addEventListener("pagehide", () => fireStop("the page closed"));
+function fireStart(){
+  if(FIRE) return;
+  if(!MO || !((MO.purge_state || {}).selected || []).length){ $("mo-msg").textContent = "Nothing is armed for a purge. Click a machine first."; return; }
+  FIRE = {id:null};
+  fireBeat(FIRE);
+}
+async function fireBeat(f){
+  if(FIRE !== f) return;
+  if(isStale(Date.now(), LAST_OK, 1.0)){ fireStop("the page's status is not live"); return; }
+  try{
+    const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id}));
+    if(FIRE !== f) return;
+    f.id = j.fire_id;
+    $("mo-msg").textContent = "FIRING " + (j.firing || []).join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "");
+    $("mo-key").className = "key firing"; $("mo-key").textContent = "FIRING";
+    f.timer = setTimeout(() => fireBeat(f), 100);
+  }catch(e){ if(FIRE === f) fireStop(e.message); }
+}
+function fireStop(why){
+  const f = FIRE; FIRE = null;
+  if(!f) return;
+  clearTimeout(f.timer);
+  $("mo-msg").textContent = "Fire stopped: " + why;
+  post("/api/remote/purge-stop", moActor({})).catch(() => {});
+}
+// The checklists: a name is picked once, every tick is recorded for audit.
+function renderChecklists(c){
+  const lists = c.checklists || [];
+  if(!MO_TAB && lists.length) MO_TAB = lists[0].id;
+  const tabs = $("mo-tabs");
+  const tkey = JSON.stringify([lists.map(l => l.id + ":" + l.done + "/" + l.total), c.names, MO_TAB, c.show_date]);
+  if(tkey !== MO_KEY){
+    MO_KEY = tkey;
+    tabs.innerHTML = lists.map(l => `<button class="${l.id === MO_TAB ? "on" : "ghost"}" data-tab="${esc(l.id)}">${esc(l.title)} ${l.done}/${l.total}</button>`).join("") +
+      `<select id="mo-name"><option value="">Who is ticking?</option>${(c.names || []).map(n => `<option${n === MO_NAME ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>` +
+      `<span class="dim" style="font-size:11px">Show date ${esc(c.show_date || "")}</span>`;
+    tabs.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => { MO_TAB = b.dataset.tab; MO_KEY = ""; renderChecklists(MO.checklists); }));
+    $("mo-name").addEventListener("change", () => { MO_NAME = $("mo-name").value; });
+  }
+  const cur = lists.find(l => l.id === MO_TAB);
+  const box = $("mo-steps");
+  const skey = cur ? JSON.stringify(cur) : "none";
+  if(box.dataset.key === skey) return;
+  box.dataset.key = skey;
+  if(!cur){ box.innerHTML = `<div class="dim">No checklists are set up (ltcplay_morning.json, checklists).</div>`; }
+  else if(!cur.steps.length){ box.innerHTML = `<div class="dim">${esc(cur.title)} has no steps yet. Andy's list goes in ltcplay_morning.json under checklists.</div>`; }
+  else box.innerHTML = cur.steps.map(s =>
+    `<div class="step${s.done ? " done" : ""}" data-step="${esc(s.id)}"><button class="box" data-tick="${esc(s.id)}">${s.done ? "x" : ""}</button>` +
+    `<div><div class="t">${esc(s.text)}</div><div class="m">${s.done ? `<span class="n">${esc(s.who)}</span> at ${esc(s.at)}` : ""}${s.note ? ` Note: ${esc(s.note)}` : ""}</div></div>` +
+    `<button class="ghost note" data-note="${esc(s.id)}">Note</button></div>`).join("");
+  box.querySelectorAll("[data-tick]").forEach(b => b.addEventListener("click", () => {
+    const s = cur.steps.find(x => x.id === b.dataset.tick);
+    if(!MO_NAME){ $("mo-cmsg").textContent = "Pick who is ticking first."; return; }
+    moPress("checklist-tick", {checklist:cur.id, step:s.id, done: !s.done, who:MO_NAME}, "mo-cmsg");
+  }));
+  box.querySelectorAll("[data-note]").forEach(b => b.addEventListener("click", () => {
+    if(!MO_NAME){ $("mo-cmsg").textContent = "Pick who is noting first."; return; }
+    const note = window.prompt("Note for this step (recorded for audit):", "");
+    if(note && note.trim()) moPress("checklist-note", {checklist:cur.id, step:b.dataset.note, who:MO_NAME, note:note.trim()}, "mo-cmsg");
+  }));
+  const v = c.verify || {}, t = c.tally || {};
+  $("mo-tally").textContent = (v.ok === false ? "RECORD CHAIN NOT INTACT: " + v.problem + ". " : "Records intact (" + (v.records || 0) + "). ") +
+    "Tally server: " + (t.enabled ? ("on, " + t.sent + " sent, " + t.queued + " waiting" + (t.last_error ? ", last error: " + t.last_error : "")) : "off (tally in ltcplay_morning.json)");
+}
+$("mo-verify").addEventListener("click", () => moPress("checklist-verify", {}, "mo-cmsg"));
+$("mo-pdf").addEventListener("click", () => { window.location.href = "/api/remote/checklist-pdf?date=" + encodeURIComponent((MO && MO.checklists && MO.checklists.show_date) || ""); });
+$("mo-export").addEventListener("click", () => { window.location.href = "/api/remote/checklist-export"; });
 
 // The show's name and where it plays come from the settings, so a new
 // show is a settings change. The page reads fine without them.

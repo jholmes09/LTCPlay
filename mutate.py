@@ -859,8 +859,8 @@ MUTATIONS = [
   "        holds = self.screen.holds()"),
 
  ("arm: a screen disarm does nothing", "ltcplay/streamdeck.py",
-  "            if self.arm.wanted[i]:\n                self._do_disarm(i, who=",
-  "            if False:\n                self._do_disarm(i, who="),
+  "            if self.arm.wanted[i]:\n                self._do_disarm(i, who=str(ev.get(\"who\") or \"\"),",
+  "            if False:\n                self._do_disarm(i, who=str(ev.get(\"who\") or \"\"),"),
 
  ("arm: the page arms on a stale status", "ltcplay/web/remote.html",
   "  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return",
@@ -2226,8 +2226,8 @@ MUTATIONS = [
 
  ("flamesafe: a disarmed group passes its fire values through",
   "flamesafe/composer.py",
-  "                if armed_now and not quiet:\n                    out = v",
-  "                if not quiet:\n                    out = v"),
+  "                elif armed_now and not quiet:\n                    out = v",
+  "                elif not quiet:\n                    out = v"),
 
  ("flamesafe: fire commanded on a disarmed group is not logged as a fault",
   "flamesafe/composer.py",
@@ -2452,8 +2452,8 @@ MUTATIONS = [
  # the audit's own entries, kept
  ("flamesafe: the quiet window is ignored on the fire pass",
   "flamesafe/composer.py",
-  "                if armed_now and not quiet:\n                    out = v",
-  "                if armed_now:\n                    out = v"),
+  "                elif armed_now and not quiet:\n                    out = v",
+  "                elif armed_now:\n                    out = v"),
 
  ("flamesafe: the arm input is live 30 ms longer than arm_stale_ms",
   "flamesafe/composer.py",
@@ -4972,10 +4972,12 @@ def build():
   "            self._do_acknowledge(pending)\n"),
 
  ("the Start key still starts while an alert is open", "ltcplay/streamdeck.py",
-  "                if not pending:\n"
-  "                    self._do_start_now()\n",
-  "                if True:\n"
-  "                    self._do_start_now()\n"),
+  "                if pending:\n"
+  "                    pass\n"
+  "                elif morning:\n",
+  "                if False:\n"
+  "                    pass\n"
+  "                elif morning:\n"),
 
  ("the ACK key never changes while an alert is open", "ltcplay/streamdeck.py",
   "        elif self.alert_pending():\n"
@@ -5399,13 +5401,15 @@ def build():
 
  ("flamelink: cues go out while the show is held or stopped",
   "ltcplay/flamelink.py",
-  "        if self.zeroed or live is not True or tc is None:",
-  "        if self.zeroed:"),
+  "        if live is not True:\n"
+  "            # No show cue playing",
+  "        if False:\n"
+  "            # No show cue playing"),
 
  ("flamelink: cues go out after the conductor zeroed them",
   "ltcplay/flamelink.py",
-  "        if self.zeroed or live is not True or tc is None:",
-  "        if live is not True or tc is None:"),
+  "        if self.zeroed or tc is None:",
+  "        if tc is None:"),
 
  ("flamelink: a provider's wrong-sized or out-of-range answer goes out",
   "ltcplay/flamelink.py",
@@ -5470,8 +5474,8 @@ def build():
 
  ("fix1: a frame read before a zero() goes out with its values",
   "ltcplay/flamelink.py",
-  "            if self.zeroed or gen != self._zero_gen:",
-  "            if self.zeroed:"),
+  "            if gen != self._zero_gen or (self.zeroed and self._purge is None):",
+  "            if self.zeroed and self._purge is None:"),
 
  ("fix1: an Abort is not repeated",
   "ltcplay/flamelink.py",
@@ -7433,8 +7437,8 @@ def build():
  # -- review of PR #43: P0-4, screen arming is off unless switched on --
  ('review43: screen arming is on with no settings file again',
   'ltcplay/remote.py',
-  '           "screen_arming": False, "booth_alert": None,',
-  '           "screen_arming": True, "booth_alert": None,'),
+  '           "screen_arming": False, "purge_arming": True, "booth_alert": None,',
+  '           "screen_arming": True, "purge_arming": True, "booth_alert": None,'),
 
  ('review43: arm-hold looks at the session before the switch',
   'ltcplay/remote.py',
@@ -8042,6 +8046,328 @@ def build():
   "packaging/windows/supervisor.py",
   '    if want == "leave":',
   '    if want == "never":'),
+
+ # -- the Morning and Shutdown page (Jeff, 2026-10-17; MORNING.md) --------
+ # The purge, the lockout and the laser tests: each one a way flames could
+ # fire unintentionally, or fail to stop (MORNING.md's threat table).
+ ("morning: a locked machine can be armed for a purge (T5)",
+  "ltcplay/morning.py",
+  '''        if self._lockout.is_locked("machine", machine_id):
+            return 409, {"error": f"{m.name} is locked out, so it cannot "''',
+  '''        if False:
+            return 409, {"error": f"{m.name} is locked out, so it cannot "'''),
+
+ ("morning: a purge is allowed while a show is live or aborted (T1)",
+  "ltcplay/morning.py",
+  '''        why = self._live()
+        if why:
+            return why
+        if not seen_ok:''',
+  '''        why = ""
+        if why:
+            return why
+        if not seen_ok:'''),
+
+ ("morning: a stale page can still arm and fire a purge (T3)",
+  "ltcplay/morning.py",
+  '''        if not seen_ok:
+            return ("The page's status is more than 1 s old. Wait for it "''',
+  '''        if False:
+            return ("The page's status is more than 1 s old. Wait for it "'''),
+
+ ("morning: a fire heartbeat gap never ends the press (T2)",
+  "ltcplay/morning.py",
+  '''            stale = f is not None and now - f["beat"] > BEAT_STALE_S''',
+  '''            stale = False'''),
+
+ ("morning: the purge selection outlives the page (T4)",
+  "ltcplay/morning.py",
+  '''            elif not page_open:
+                self.clear("the Morning and Shutdown page is no longer open")''',
+  '''            elif False:
+                self.clear("the Morning and Shutdown page is no longer open")'''),
+
+ ("morning: another device carries on the owner's fire press (T3)",
+  "ltcplay/morning.py",
+  '''                if f is not None and f["device"] != device:
+                    # Another device's heartbeat never carries this press''',
+  '''                if False:
+                    # Another device's heartbeat never carries this press'''),
+
+ ("morning: a machine fires before flamesafe reports its group armed (T13)",
+  "ltcplay/morning.py",
+  '''            if m.group not in armed:
+                waiting.append(f"{m.name}: group {m.group} is not armed")
+                continue''',
+  '''            if False:
+                waiting.append(f"{m.name}: group {m.group} is not armed")
+                continue'''),
+
+ ("morning: a Waver fires before its head is up (T12)",
+  "ltcplay/morning.py",
+  '''                if now - head_since < w["head_settle_s"]:''',
+  '''                if False:'''),
+
+ ("morning: unlocking a machine needs no confirm",
+  "ltcplay/morning.py",
+  '''                if confirmed is not True:
+                    return False, (f"Unlocking {label} needs a confirm on "''',
+  '''                if False:
+                    return False, (f"Unlocking {label} needs a confirm on "'''),
+
+ ("morning: a lock no longer reaches the flame link (T5)",
+  "ltcplay/morning.py",
+  '''    def _lock_channels_to_link(self):
+        link = self._link_get()''',
+  '''    def _lock_channels_to_link(self):
+        return
+        link = self._link_get()'''),
+
+ ("morning: Abort leaves a purge selection and the laser tests as they are (T7)",
+  "ltcplay/morning.py",
+  '''        self.purge.clear(f"Abort pressed by {who or screen or 'someone'}")
+        self.lasers.all_off("Abort pressed")''',
+  '''        return'''),
+
+ ("morning: a laser test turns on while a show is live (T10)",
+  "ltcplay/morning.py",
+  '''            if on:
+                why = self._live_or_broken()
+                if why:
+                    return 409, {"error": f"Laser tests are not allowed now: "''',
+  '''            if False:
+                why = self._live_or_broken()
+                if why:
+                    return 409, {"error": f"Laser tests are not allowed now: "'''),
+
+ ("morning: laser tests stay on when a show goes live (T10)",
+  "ltcplay/morning.py",
+  '''        if self.lasers.on:
+            why = self._live_or_broken()
+            if why:
+                self.lasers.all_off(why)''',
+  '''        if False:
+            why = self._live_or_broken()
+            if why:
+                self.lasers.all_off(why)'''),
+
+ ("morning: a purge from the show network needs no screen_arming (T9)",
+  "ltcplay/remote.py",
+  '''        return bool(local) or rs["screen_arming"] is True''',
+  '''        return True'''),
+
+ ("morning: purge_arming false still arms a purge (T9)",
+  "ltcplay/remote.py",
+  '''        if rs["purge_arming"] is not True:
+            return False''',
+  '''        if False:
+            return False'''),
+
+ ("morning: a purge click arms with no Stream Deck reading the engine",
+  "ltcplay/remote.py",
+  '''            if not deck_alive:
+                return 409, {"error": "The Stream Deck program has not read "''',
+  '''            if False:
+                return 409, {"error": "The Stream Deck program has not read "'''),
+
+ ("flamelink: a purge frame goes out while a show is live and its cues are zeroed (T1)",
+  "ltcplay/flamelink.py",
+  '''        if self.zeroed or tc is None:
+            self._cue_episode("", "")
+            return tc, zeros''',
+  '''        if self.zeroed or tc is None:
+            self._cue_episode("", "")
+            return tc, self._purge_values(now)'''),
+
+ ("flamelink: a stale purge frame keeps firing (T2)",
+  "ltcplay/flamelink.py",
+  '''        if now - p[1] > PURGE_HOLD_S or now < p[1]:
+            self._purge = None
+            return bytes(UNIVERSE_SIZE)''',
+  '''        if False:
+            self._purge = None
+            return bytes(UNIVERSE_SIZE)'''),
+
+ ("flamelink: zero() no longer clears a purge frame (T7)",
+  "ltcplay/flamelink.py",
+  '''        with self._lock:
+            self._purge = None
+            self.zeroed = True
+            self._zero_gen += 1
+            return self._send_zero_frame()''',
+  '''        with self._lock:
+            self.zeroed = True
+            self._zero_gen += 1
+            return self._send_zero_frame()'''),
+
+ ("flamelink: disarm_all no longer clears a purge frame (T7)",
+  "ltcplay/flamelink.py",
+  '''                self._purge = None
+                self.zeroed = True
+                self._zero_gen += 1
+                self._send_zero_frame()''',
+  '''                self.zeroed = True
+                self._zero_gen += 1
+                self._send_zero_frame()'''),
+
+ ("flamelink: a locked channel's value goes out in a frame (T5)",
+  "ltcplay/flamelink.py",
+  '''    def _unlocked(self, vals):
+        locked = self._locked
+        if not locked or not any(vals):
+            return vals''',
+  '''    def _unlocked(self, vals):
+        return vals
+        locked = self._locked
+        if not locked or not any(vals):
+            return vals'''),
+
+ ("flamesafe: a locked fire slot still fires (T5)",
+  "flamesafe/composer.py",
+  '''                if f in self._locked:
+                    out = 0
+                    if v != 0:
+                        self.stats["lockout_zeroed"] += 1
+                elif armed_now and not quiet:''',
+  '''                if False:
+                    out = 0
+                    if v != 0:
+                        self.stats["lockout_zeroed"] += 1
+                elif armed_now and not quiet:'''),
+
+ ("flamesafe: a group with every fire slot locked still arms",
+  "flamesafe/composer.py",
+  '''            if self._group_locked_out(g):''',
+  '''            if False:'''),
+
+ ("flamesafe: rubbish lock data locks nothing (T6)",
+  "flamesafe/composer.py",
+  '''            got = frozenset(range(1, rules.UNIVERSE_SIZE + 1))
+            state = "unreadable"''',
+  '''            got = frozenset()
+            state = "unreadable"'''),
+
+ ("flamesafe: an unreadable lockout file lifts every lock (T6)",
+  "flamesafe/service.py",
+  '''            self._state = "unreadable"
+            return self._slots, self._state
+        self._unreadable_said = False''',
+  '''            self._slots = frozenset()
+            self._state = "unreadable"
+            return self._slots, self._state
+        self._unreadable_said = False'''),
+
+ ("flamesafe: the lockout file is never read",
+  "flamesafe/service.py",
+  '''        self._poll_lockout()
+        out = self.composer.tick()''',
+  '''        out = self.composer.tick()'''),
+
+ ("deck: a purge group stays armed after the page stops asking for it (T4)",
+  "ltcplay/streamdeck.py",
+  '''            if self.arm.wanted[i]:
+                self._do_disarm(i, who="the purge ended",''',
+  '''            if False:
+                self._do_disarm(i, who="the purge ended",'''),
+
+ ("deck: a purge arm ignores the re-arm refractory window (T8)",
+  "ltcplay/streamdeck.py",
+  '''            left = self._in_rearm_refractory(i, now)
+            if left > 0:
+                self._log(f"Stream Deck: {self.names[i]} purge arm refused, "''',
+  '''            left = 0
+            if left > 0:
+                self._log(f"Stream Deck: {self.names[i]} purge arm refused, "'''),
+
+ ("deck: a purge arms while the rig is latched (T8)",
+  "ltcplay/streamdeck.py",
+  '''                m.get("purge_enabled") is not True or self._latched_now():''',
+  '''                m.get("purge_enabled") is not True:'''),
+
+ ("deck: the page closing leaves the purge groups armed (T4, T11)",
+  "ltcplay/streamdeck.py",
+  '''        if not m or m.get("open") is not True or \\
+                m.get("purge_enabled") is not True or self._latched_now():
+            return set()''',
+  '''        if not m or \\
+                m.get("purge_enabled") is not True or self._latched_now():
+            return set()'''),
+
+ ("deck: a stale engine keeps the deck re-mapped and its purge groups armed (T4, T11)",
+  "ltcplay/streamdeck.py",
+  '''        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        m = last[0].get("morning")''',
+  '''        if last is None:
+            return None
+        m = last[0].get("morning")'''),
+
+ ("deck: the FIRE key keeps firing after it is released (T2)",
+  "ltcplay/streamdeck.py",
+  '''                self._fire_release("the key came up")
+            elif k in GROUP_KEYS:
+                # Letting go before ARM_HOLD_S cancels the hold and sends''',
+  '''                pass
+            elif k in GROUP_KEYS:
+                # Letting go before ARM_HOLD_S cancels the hold and sends'''),
+
+ ("deck: the FIRE heartbeats carry on after the engine refuses one (T3)",
+  "ltcplay/streamdeck.py",
+  '''            if not ok:
+                # Any refusal ends the press: the operator lets go and''',
+  '''            if False:
+                # Any refusal ends the press: the operator lets go and'''),
+
+ ("lasertest: a locked laser's test turns on (T10)",
+  "ltcplay/lasertest.py",
+  '''            if self._locked(laser.id):
+                self.last_result[laser.id] = "refused"''',
+  '''            if False:
+                self.last_result[laser.id] = "refused"'''),
+
+ ("lasertest: BEYOND's BlackOut becomes an allowed address (T10)",
+  "ltcplay/lasertest.py",
+  '''    if address in FORBIDDEN_ADDRESSES:
+        return False
+    return all(0x21 <= ord(c) <= 0x7e for c in address)''',
+  '''    return all(0x21 <= ord(c) <= 0x7e for c in address)'''),
+
+ ("checklist: a tick needs no name",
+  "ltcplay/checklist.py",
+  '''        if who not in self.cfg.names:
+            if not self.cfg.names:''',
+  '''        if False:
+            if not self.cfg.names:'''),
+
+ ("checklist: the records no longer chain to the one before (T14)",
+  "ltcplay/checklist.py",
+  '''            rec["prev"] = prev
+            rec["hash"] = record_hash(rec)''',
+  '''            rec["prev"] = GENESIS
+            rec["hash"] = record_hash(rec)'''),
+
+ ("checklist: verify no longer checks a record's hash (T14)",
+  "ltcplay/checklist.py",
+  '''        if r.get("hash") != record_hash(r):
+            return False, i - 1, f"record {i} was changed after it was written"''',
+  '''        if False:
+            return False, i - 1, f"record {i} was changed after it was written"'''),
+
+ ("checklist: the tally queues records while it is switched off",
+  "ltcplay/checklist.py",
+  '''        if not self.enabled:
+            return False
+        doc = self.payload(kind, body)''',
+  '''        if False:
+            return False
+        doc = self.payload(kind, body)'''),
+
+ ("checklist: the tally accepts a plain http URL",
+  "ltcplay/checklist.py",
+  '''    if url and not url.lower().startswith("https://"):
+        raise ChecklistConfigError(f"{where}: tally.url has to start with "''',
+  '''    if False:
+        raise ChecklistConfigError(f"{where}: tally.url has to start with "'''),
 ]
 
 
@@ -8333,6 +8659,7 @@ def _load_expected(path):
 
 # A change to any of these re-runs every SAFETY_CORE mutation.
 SAFETY_TRIGGERS = ("flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
+                   "ltcplay/morning.py", "ltcplay/lasertest.py",
                    "ltcplay/streamdeck.py", "ltcplay/schedule_service.py",
                    "ltcplay/schedule.py", "ltcplay/beyond.py",
                    "ltcplay/madmapper.py", "ltcplay/devices.py",

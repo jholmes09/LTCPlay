@@ -69,6 +69,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import socket
 import threading
 import time
@@ -110,11 +111,21 @@ ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
-GET_ROUTES = ("whoami", "status", "network", "deck-input")
+# The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
+# None of these touches the arm link: the purge selection is published on
+# deck-input for the Stream Deck process to act on, the fire heartbeat sets
+# the flame link's purge frame, the lockout writes the file flamesafe reads.
+MORNING_GET_ROUTES = ("morning", "checklist-pdf", "checklist-export")
+MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
+                       "purge-stop", "purge-clear", "laser-test", "lock",
+                       "layout", "checklist-tick", "checklist-note",
+                       "checklist-verify", "checklist-tally-retry")
+GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
+    MORNING_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network", "alert")
+    "network", "alert") + MORNING_POST_ROUTES
 LOCAL_ONLY = frozenset(("network",))
 
 # Any of these on a request means something forwarded it. A browser on the
@@ -180,8 +191,12 @@ def load_settings(folder=None):
     # screen_arming is OFF unless the file says true (review of PR #43,
     # P0-4): arming from a screen came in from PR #41, whose own safety
     # review decides whether it is switched on.
+    # purge_arming (Jeff, 2026-10-17, the Morning and Shutdown page) is ON
+    # unless the file says false: a click on that page arms a machine for
+    # a purge, from the Rack screen itself; from a device on the show
+    # network it also needs screen_arming (MORNING.md).
     out = {"show_network_address": None, "flamesafe_config": None,
-           "screen_arming": False, "booth_alert": None,
+           "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "alert_pixels": None, "path": path}
     if not os.path.exists(path):
         return out
@@ -205,6 +220,11 @@ def load_settings(folder=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
+    if "purge_arming" in doc:
+        v = doc["purge_arming"]
+        if v is not True and v is not False:
+            raise ValueError(f"{path}: purge_arming must be true or false.")
+        out["purge_arming"] = v
     if doc.get("booth_alert") is not None:
         # Checked by boothaudio.parse_config, which owns the shape; a bad
         # block is refused here, at load, never at show time.
@@ -406,7 +426,8 @@ class FlameStatus:
                            "armed": str(g.get("armed", "")),
                            "wanted": bool(g.get("wanted")),
                            "reason": str(g.get("reason", "")),
-                           "dwell_s": g.get("dwell_s", 0)})
+                           "dwell_s": g.get("dwell_s", 0),
+                           "locked_fire": list(g.get("locked_fire") or [])})
         if not groups:
             groups = [{"name": n, "armed": "unknown", "wanted": False,
                        "reason": "", "dwell_s": 0} for n in self.names]
@@ -414,10 +435,18 @@ class FlameStatus:
             # Never show a lamp from an old frame as if it were now.
             for g in groups:
                 g["armed"] = "unknown"
+        lk = last.get("lockout") if isinstance(last.get("lockout"), dict) \
+            else None
         return {"connected": True, "stale": stale,
                 "age_ms": None if age is None else int(age * 1000),
                 "fault": str(last.get("fault", "")) if not stale else "",
-                "groups": groups}
+                "groups": groups,
+                # What flamesafe says it is holding at zero (the lockout
+                # file as it read it), for the page to compare with its own.
+                "lockout": ({"slots": [int(s) for s in lk.get("slots") or []
+                                       if isinstance(s, int)],
+                             "state": str(lk.get("state", ""))}
+                            if lk is not None and not stale else None)}
 
 
 # ------------------------------------------------------- the remote --
@@ -490,6 +519,7 @@ class Remote:
         self.flame_status = flame_status
         self._flame_disarm = flame_disarm
         self.flame_cues = None       # fire_ice.FlameCues, set by web.serve
+        self.morning = None          # morning.Morning, set by web.serve
         self.clock = clock
         self.wall = wall
         self._log = log
@@ -593,7 +623,7 @@ class Remote:
             pass
 
     # -- the routes --------------------------------------------------------
-    def get(self, route, ctx):
+    def get(self, route, ctx, query=""):
         name = route[len("/api/remote/"):]
         if name == "whoami":
             return 200, self.whoami(ctx)
@@ -609,6 +639,8 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return 200, self.network_view()
+        if name in MORNING_GET_ROUTES:
+            return self.morning_get(name, query, ctx)
         return 404, {"error": "no such thing here"}
 
     def post(self, route, body, ctx):
@@ -620,6 +652,8 @@ class Remote:
                                   "machine itself, not from here."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
+        if name in MORNING_POST_ROUTES:
+            return (*self.morning_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             return (*self.press(name, body, ctx),) + ({},)
         if name == "arm-hold":
@@ -756,6 +790,14 @@ class Remote:
             # it and whether or not it goes on to be accepted.
             self.cancel_holds(f"{who or 'someone'} pressed {name} on the "
                               f"{screen}")
+            # Nor a purge or a laser test (the Morning and Shutdown page):
+            # Abort wins over everything, before the scheduler is asked.
+            m = self.morning
+            if m is not None:
+                try:
+                    m.on_abort(who, screen)
+                except Exception:
+                    pass
         if name == "disarm-all":
             return self.disarm_all(who, screen)
         if name == "abort":
@@ -1115,8 +1157,128 @@ class Remote:
         self._apply_pulse()
         # The open alerts too: the deck relights a key as ACK while one is
         # open, and any key press acknowledges (alerts.py).
-        return {"enabled": enabled, "holds": holds if enabled else [],
-                "disarms": disarms, "alerts": self.alerts.view()}
+        out = {"enabled": enabled, "holds": holds if enabled else [],
+               "disarms": disarms, "alerts": self.alerts.view()}
+        # The Morning and Shutdown page (morning.py): whether it is open
+        # (the deck re-maps itself while it is), the groups the purge
+        # selection needs armed, and the locks. The deck arms a purge
+        # group only while the engine says purge arming is on.
+        m = self.morning
+        if m is not None:
+            try:
+                mv = m.deck_view()
+            except Exception as e:                   # noqa: BLE001
+                mv = {"open": False, "purge": {"wanted_groups": [],
+                                               "selected": 0, "firing": False},
+                      "locks": {}, "error": f"{type(e).__name__}: {e}"}
+            mv["purge_enabled"] = self.purge_enabled(local=True)
+            out["morning"] = mv
+        return out
+
+    # -- the Morning and Shutdown page (morning.py) --------------------------
+    def purge_enabled(self, local):
+        """May a purge be armed from here? purge_arming (default on) for
+        the machine itself; a device on the show network also needs
+        screen_arming, the switch every other arming from the network has
+        (MORNING.md, T9). A broken settings file: off."""
+        try:
+            rs = load_settings(self.folder)
+        except (ValueError, OSError):
+            return False
+        if rs["purge_arming"] is not True:
+            return False
+        return bool(local) or rs["screen_arming"] is True
+
+    def _morning_journal(self, text, action="morning", outcome="done",
+                         who="", screen="", fault=False, **_kw):
+        self._journal(who or "system", screen or "engine", action, outcome,
+                      text, fault=fault)
+
+    def show_live_refusal(self):
+        """Why nothing may fire from the Morning page right now: a show
+        live (SHOW or PAUSED), an Abort standing, or the show clock playing
+        a cue. "" when a purge may go (between shows, nothing playing)."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        state = getattr(m, "state", None)
+        if state in ("SHOW", "PAUSED"):
+            return (f"a scheduled show is live ({state}); nothing fires from "
+                    f"this page until it has ended")
+        cond = getattr(svc, "conductor", None)
+        if getattr(m, "abort_latched", False) or \
+                getattr(cond, "latched", False):
+            return "the show is aborted; press Reset first"
+        s = getattr(self.control, "session", None)
+        clk = getattr(s, "clock", None) if s is not None else None
+        if clk is not None and getattr(clk, "playing", False):
+            return "the show clock is playing a cue; nothing fires from this page meanwhile"
+        return ""
+
+    def morning_get(self, name, query, ctx):
+        m = self.morning
+        if m is None:
+            return 404, {"error": "The Morning and Shutdown page is not "
+                                  "set up in this engine (it needs the Fire "
+                                  "& Ice scheduler)."}
+        if name == "morning":
+            v = m.full_view(ctx.device)
+            v["purge_enabled"] = self.purge_enabled(ctx.local)
+            v["served_at"] = int(self.wall() * 1000)
+            return 200, v
+        import urllib.parse
+        q = urllib.parse.parse_qs(query or "")
+        if name == "checklist-pdf":
+            date = (q.get("date") or [m.checklist.show_date()])[0]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                return 400, {"error": "date has to be YYYY-MM-DD."}
+            data = m.checklist.pdf_for_date(date)
+            return (200, data, "application/pdf",
+                    {"Content-Disposition":
+                     f'attachment; filename="checklist_{date}.pdf"'})
+        if name == "checklist-export":
+            frm = (q.get("from") or [None])[0]
+            to = (q.get("to") or [None])[0]
+            for d in (frm, to):
+                if d is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+                    return 400, {"error": "from and to have to be "
+                                          "YYYY-MM-DD."}
+            fname, data = m.checklist.export_zip(frm, to)
+            return (200, data, "application/zip",
+                    {"Content-Disposition": f'attachment; filename="{fname}"'})
+        return 404, {"error": "no such thing here"}
+
+    def morning_post(self, name, body, ctx):
+        m = self.morning
+        if m is None:
+            return 404, {"error": "The Morning and Shutdown page is not "
+                                  "set up in this engine."}
+        who, screen, _surface = self._actor(ctx, body)
+        device = ctx.device
+        try:
+            seen = float(body.get("seen"))
+            seen_ok = abs(self.wall() - seen / 1000.0) <= 1.0
+        except (TypeError, ValueError):
+            seen_ok = False
+        if name in ("purge-select", "purge-fire") and \
+                body.get("on") is not False:
+            if not self.purge_enabled(ctx.local):
+                return 403, {"error": "Arming a purge from here is switched "
+                                      "off (purge_arming, and from the show "
+                                      "network screen_arming, in "
+                                      "ltcplay_remote.json).",
+                             "let_go": True}
+        if name == "purge-select" and body.get("on") is not False:
+            try:
+                deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
+                    self.DECK_QUIET_S
+            except Exception:
+                deck_alive = False
+            if not deck_alive:
+                return 409, {"error": "The Stream Deck program has not read "
+                                      "this engine in the last 2 s, and it "
+                                      "is what arms a group for the purge. "
+                                      "Nothing was armed."}
+        return m.post(name, body, device, who, seen_ok, ctx.local)
 
     def _disarm_fn(self):
         if self._flame_disarm is not None:
@@ -1435,4 +1597,12 @@ class Remote:
         out["alerts"] = self.alerts.view()
         booth = getattr(self.alerts.booth, "device_name", "") or ""
         out["booth"] = {"configured": bool(booth), "device": booth}
+        # The lock banner and the purge, on every screen (morning.py).
+        m = self.morning
+        if m is not None:
+            try:
+                out["morning"] = m.status_view()
+            except Exception as e:                   # noqa: BLE001
+                out["morning"] = {"error": f"{type(e).__name__}: {e}"}
+            out["morning"]["purge_enabled"] = self.purge_enabled(ctx.local)
         return out

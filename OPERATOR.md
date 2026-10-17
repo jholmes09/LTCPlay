@@ -92,6 +92,24 @@ blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
+**Morning and Shutdown (Fire & Ice).** The rack screen has a Morning and
+Shutdown page (the button in the header). On it: one calibration test
+button per laser (ON keeps the grid up at low power until pressed again;
+how BEYOND is told is not set yet, so each button says so until Jeff fills
+in `lasers` in ltcplay_morning.json); the purge (click a machine or a group
+to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
+let go and it stops; nothing fires while a show is live or an Abort
+stands); lock out of any one machine or laser (the L button on it; a lock
+stays across restarts until unlocked here, with a confirm; a locked unit
+cannot be armed or fired from anywhere and show cues skip it; a banner on
+every screen says what is locked); and the Morning and Shutdown
+checklists (pick your name, tick each step; every tick is recorded for
+audit and the day's record is a PDF you can download, or Export all).
+While the page is open the Stream Deck's Start key is FIRE and reads
+PURGE ARMED on an armed group's key; it goes back to normal when you
+leave the page. MORNING.md says how it all works and where every setting
+lives.
+
 **Stream Deck unplugged.** Unplugging or replugging the deck changes nothing
 on the flame groups: whatever was armed stays armed, whatever was off stays
 off, and the deck process keeps telling the flame safety program so. A
