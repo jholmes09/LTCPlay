@@ -4759,6 +4759,203 @@ def test_the_wall_from_this_side():
               f"{name} names no ltcplay module by dotted path")
 
 
+def test_lockout_zeroes_locked_slots_and_blocks_a_locked_group():
+    section("lockout (Jeff, 2026-10-17): a locked fire slot is zero on "
+            "every packet, armed and commanded or not; a group with every "
+            "slot locked cannot arm and an armed one comes down; the "
+            "status frame says which slots; a lock set that cannot be read "
+            "locks everything")
+    r = armed_rig()
+    r.step(n=rules.EDGE_QUIET_FRAMES + 1)
+    r.run(2, {411: 200, 412: 200})
+    check(r.fire(0)[:2] == [200, 200], "setup: group 0 armed and firing")
+    # Lock one slot of an armed, firing group: that slot alone goes to
+    # zero on the very next packet; the group stays armed.
+    r.c.note_locked_slots({411})
+    r.step()
+    check(r.fire(0)[:2] == [0, 200] and r.safety(0) == ARM,
+          f"slot 411 locked: zero at once, 412 still fires, group armed: "
+          f"{r.fire(0)} safety {r.safety(0)}")
+    check(r.group(0)["locked_fire"] == [True, False, False, False, False],
+          f"the status frame marks the locked slot: "
+          f"{r.group(0)['locked_fire']}")
+    check(r.out.status["lockout"] == {"slots": [411], "state": "read"},
+          f"the status frame names the locked slots: "
+          f"{r.out.status['lockout']}")
+    check(r.c.stats["lockout_zeroed"] >= 1, "the zeroing is counted")
+    check(("lockout", "locked out fire slots: [411] (in front row). A locked "
+           "slot is zero on every packet; a group with every fire slot "
+           "locked cannot arm.") in r.log.events,
+          f"the lock is journaled once: "
+          f"{[m for k, m in r.log.events if k == 'lockout']}")
+    n_lines = len([k for k in r.log.kinds() if k == "lockout"])
+    r.step(n=5)
+    check(len([k for k in r.log.kinds() if k == "lockout"]) == n_lines,
+          "and not again on every tick")
+    # Lock every slot of the armed group: the arm value comes off the wire
+    # on this tick, the lamp says why, steady amber.
+    r.c.note_locked_slots(set(FRONT_FIRE))
+    r.step()
+    check(r.safety(0) == 0 and r.fire(0) == [0] * 5,
+          f"every slot locked: the group comes down: safety {r.safety(0)} "
+          f"fire {r.fire(0)}")
+    g = r.group(0)
+    check(g["armed"] == "held" and g["reason"] == composer.LOCKED_OUT
+          and g["amber"] == "steady",
+          f"held, steady amber, with the lockout sentence: {g}")
+    check(r.c.stats["lockout_blocks"] >= 1, "the block is counted")
+    # Unlock: the group does not come back by itself (its latch is still
+    # set, so it rises again on the next clean tick, like any held group
+    # whose hold ends) and the fire values follow.
+    r.c.note_locked_slots(set())
+    r.run(2, {})                 # rule 2: the rise needs the cue quiet
+    r.run(rules.EDGE_QUIET_FRAMES + 2, {411: 200, 412: 200})
+    check(r.safety(0) == ARM and r.fire(0)[:2] == [200, 200],
+          f"unlocked: armed and firing again: {r.safety(0)} {r.fire(0)}")
+    check(r.out.status["lockout"] == {"slots": [], "state": "read"},
+          "the status frame says nothing is locked")
+    # A fresh rig: a group every slot of which is locked never arms from
+    # a genuine cycle, and the fire values commanded for it never go out.
+    r2 = Rig()
+    r2.c.note_locked_slots(set(FRONT_FIRE))
+    r2.prove_alive()
+    r2.inp.set(0)
+    r2.run(rules.EDGE_QUIET_FRAMES + 3, {411: 255})
+    check(r2.safety(0) == 0 and r2.fire(0) == [0] * 5
+          and r2.group(0)["reason"] == composer.LOCKED_OUT,
+          f"a fully locked group never arms: {r2.group(0)}")
+    r2.inp.set(1)
+    r2.run(2, {})
+    r2.run(rules.EDGE_QUIET_FRAMES + 3, {421: 255})
+    check(r2.safety(1) == ARM and r2.fire(1)[0] == 255,
+          f"another group is untouched by it: {r2.safety(1)} {r2.fire(1)}")
+    # Rubbish handed to the composer locks the whole universe (the safe
+    # side) and says so.
+    r2.c.note_locked_slots(None)
+    r2.step()
+    check(r2.safety(1) == 0 and r2.fire(1) == [0] * 6
+          and r2.out.status["lockout"]["state"] == "unreadable"
+          and len(r2.out.status["lockout"]["slots"]) == 512,
+          f"an unreadable lock set locks everything: "
+          f"{r2.out.status['lockout']['state']}, {r2.safety(1)}")
+    # The file reader: the format, a missing file, an unreadable one.
+    import flamesafe.service as service_mod
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "ltcplay_lockout.json")
+        log = Log()
+        t = [0.0]
+        rd = service_mod.LockoutFile(path, log=log, clock=lambda: t[0])
+        check(rd.poll() == (frozenset(), "missing"),
+              "no file: nothing locked")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [411, 431],
+                       "machines": {"m1": {"since": "x"}}}, fh)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({411, 431}), "read"),
+              f"the file's channels are read: {rd.poll()}")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        os.utime(path, (1, 1))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({411, 431}), "unreadable"),
+              f"an unreadable file keeps the last set: {rd.poll()}")
+        check(any(k == "lockout" and "could not be read" in m
+                  for k, m in log.events), "and says so once")
+        n = len(log.events)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        rd.poll()
+        check(len(log.events) == n, "not every poll")
+        for bad in ({"lockout_format": 2, "flame_channels": [1]},
+                    {"lockout_format": 1, "flame_channels": [0]},
+                    {"lockout_format": 1, "flame_channels": [513]},
+                    {"lockout_format": 1, "flame_channels": [True]},
+                    {"lockout_format": 1, "flame_channels": "411"},
+                    [411]):
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(bad, fh)
+            os.utime(path, (2 + len(str(bad)), 2))
+            t[0] += service_mod.LOCKOUT_POLL_S
+            check(rd.poll()[1] == "unreadable",
+                  f"{bad!r} is refused as a lock file, last set kept")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": []}, fh)
+        os.utime(path, (999, 999))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "read"), "an empty list unlocks")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [412]}, fh)
+        os.utime(path, (1000, 1000))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll()[0] == frozenset({412}), "a new set is read")
+        os.remove(path)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "missing") and
+              any("is gone" in m for k, m in log.events if k == "lockout"),
+              "a file that goes away unlocks and is journaled")
+        # The service reads it before composing: a lock written by the
+        # engine reaches the wire on the next tick after the poll.
+        cfg = make_config(lockout_file=path)
+        check(cfg.lockout_file == path, "the config carries the path")
+        rel = config.from_dict(dict(example_dict(),
+                                    lockout_file="ltcplay_lockout.json"),
+                               source=os.path.join(d, "flamesafe.json"))
+        check(rel.lockout_file == os.path.join(
+            os.path.realpath(d), "ltcplay_lockout.json"),
+            f"a relative path is beside the config file: {rel.lockout_file}")
+        try:
+            make_config(lockout_file="")
+            check(False, "an empty lockout_file was accepted")
+        except config.ConfigError:
+            check(True, "an empty lockout_file is refused")
+        tt = [0.0]
+        svc = Service(cfg, arminput.ScriptedArmInput(cfg.n, names=NAMES),
+                      clock=lambda: tt[0], log=Log(), sleep=lambda s: None)
+        svc.lockout = service_mod.LockoutFile(path, log=svc._log,
+                                              clock=lambda: tt[0])
+        svc._send_universe = lambda *a, **k: None    # no sockets opened
+        svc._send_status = lambda *a, **k: None
+        inp = svc.arm_input
+        for _ in range(3):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes(512)), sender=SENDER)
+            svc.run_once()
+        inp.set(0)
+        for _ in range(2):           # the rise, on a quiet cue (rule 2)
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes(512)), sender=SENDER)
+            svc.run_once()
+        for _ in range(rules.EDGE_QUIET_FRAMES + 3):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes([0] * 410 + [200] + [0] * 101)), sender=SENDER)
+            out = svc.run_once()
+        check(out.universe[410] == 200, "setup: slot 411 fires")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": [411]}, fh)
+        for _ in range(int(service_mod.LOCKOUT_POLL_S / cfg.tick_period_s)
+                       + 2):
+            tt[0] += cfg.tick_period_s
+            svc.composer.ingest_frame(link.FlameFrame(
+                int(tt[0] * 1000), None, tt[0], cfg.universe,
+                bytes([0] * 410 + [200] + [0] * 101)), sender=SENDER)
+            out = svc.run_once()
+        check(out.universe[410] == 0 and out.universe[400] == ARM,
+              f"the service reads the lock and zeroes the slot within "
+              f"{service_mod.LOCKOUT_POLL_S} s, group still armed: "
+              f"{out.universe[410]} {out.universe[400]}")
+        check(out.status["lockout"]["slots"] == [411],
+              "and the status frame says so")
+    finally:
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     t0 = time.perf_counter()
     test_rule1_arm_value_is_derived()
@@ -4838,6 +5035,7 @@ if __name__ == "__main__":
     test_second_copy_armed_in_a_restart_gap_disarms_when_ltcplay_returns()
     test_second_copy_restart_gap_takeover_over_loopback()
     test_status_mirror_port()
+    test_lockout_zeroes_locked_slots_and_blocks_a_locked_group()
     test_the_wall_from_this_side()
     defined = {n for n, v in list(globals().items())
                if n.startswith("test_") and callable(v)}

@@ -1800,6 +1800,36 @@ def cmd_retime(args):
     return 0
 
 
+def cmd_checklist_verify(args):
+    """`ltc checklist-verify`: walk the Morning and Shutdown checklist
+    record chain (checklist.py) and say whether it is intact. Exit 0 when
+    it is, 1 when it is not or cannot be read."""
+    from . import checklist as checklist_mod
+    from . import remote as remote_mod
+    folder = args.folder or os.path.join(remote_mod.settings_folder(), "logs",
+                                         "checklists")
+    path = os.path.join(folder, checklist_mod.RECORDS_FILE)
+    chain = checklist_mod.Chain(path)
+    ok, n, why = chain.verify()
+    if not os.path.exists(path):
+        print(f"No checklist records yet ({path}).")
+        return 0
+    if ok:
+        print(f"The checklist record chain is intact: {n} record(s) in "
+              f"{path}.")
+        if chain.records:
+            print(f"Last record: #{chain.records[-1]['seq']} "
+                  f"{chain.records[-1]['local']} "
+                  f"{chain.records[-1].get('checklist_title')} "
+                  f"{chain.records[-1].get('state')} by "
+                  f"{chain.records[-1].get('who')}, hash "
+                  f"{chain.records[-1]['hash']}")
+        return 0
+    print(f"The checklist record chain is NOT intact: {why}. {n} record(s) "
+          f"before the break are sound ({path}).")
+    return 1
+
+
 def cmd_deck(args):
     from . import streamdeck
     return streamdeck.main(["--flamesafe-config", args.flamesafe_config,
@@ -2087,6 +2117,13 @@ def main(argv=None):
                     help="ltcplay's own local web server, for the chosen "
                     "operator and the show's state")
     dk.set_defaults(func=cmd_deck)
+    cv = sub.add_parser("checklist-verify",
+                        help="check the Morning and Shutdown checklist "
+                             "record chain (every tick is hash chained)")
+    cv.add_argument("--folder", default=None,
+                    help="the checklists folder (default: this machine's "
+                         "logs/checklists)")
+    cv.set_defaults(func=cmd_checklist_verify)
 
     args = ap.parse_args(argv)
     try:
