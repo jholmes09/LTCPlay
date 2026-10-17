@@ -373,7 +373,7 @@ class ConductorDevices(DeviceOutputs):
     fade's direction, so the picture never jumps the wrong way."""
 
     def __init__(self, madmapper=None, beyond=None, *, show=None,
-                 journal=None, clock=None):
+                 journal=None, clock=None, timer=None):
         self.mm = madmapper
         self.beyond = beyond
         self.show = show
@@ -382,6 +382,9 @@ class ConductorDevices(DeviceOutputs):
         # as the ramps it estimates.
         self._clock = clock or getattr(madmapper, "_clock", None) or \
             time.perf_counter
+        # The stall timer's factory: threading.Timer, or the selftest's on
+        # its fake clock, with the same start()/cancel().
+        self._timer = timer or threading.Timer
         self.async_outputs = (frozenset(("video",)) if madmapper is not None
                               else frozenset())
         self._vlock = threading.RLock()
@@ -464,9 +467,9 @@ class ConductorDevices(DeviceOutputs):
             self.video_seq += 1
             seq = self.video_seq
             self._open.add(seq)
-        timer = threading.Timer(max(seconds, 0.0) + self._behind() +
-                                VIDEO_STALL_S,
-                                self._video_stalled, (seq, what))
+        timer = self._timer(max(seconds, 0.0) + self._behind() +
+                            VIDEO_STALL_S,
+                            self._video_stalled, (seq, what))
         timer.daemon = True
         timer.start()
 

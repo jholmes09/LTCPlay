@@ -1,0 +1,231 @@
+name: weekly mutate
+
+# The whole mutation list, once a week, on main: ubuntu for every mutation,
+# and a windows runner for the Windows-only code (the one-copy lock's msvcrt
+# path) and the Windows clock and audio choices (mutate.py --windows), which
+# the show PC runs and no ubuntu runner can see break. The per-PR gate
+# (selftest.yml) runs only the mutations a diff can have changed the result
+# of; this is the sweep that proves the rest is still caught, and it writes
+# the catchers file (which test caught each mutation) the per-PR gate uses
+# to re-run exactly what a changed test guarded. A release tag runs the
+# whole list on both OSes as well (selftest.yml).
+#
+# Run it by hand from the Actions tab (Run workflow) before a tech build or
+# whenever a full proof is wanted, choosing the OS. Each shard takes 1 to 2
+# hours; the account runs about 20 jobs at once, so a sweep takes 2 to 4
+# hours of wall time. A red sweep is never silent: the report job opens an
+# issue labelled `mutate-sweep` (or adds to the open one) naming the red
+# shards with links, and closes it when a later sweep is green. A failure is
+# a NOT CAUGHT mutation (the suite stayed green with that line broken:
+# strengthen the test), an UNEXPECTED MISS or NOW CAUGHT against
+# mutate_expected_misses.txt, a SETUP FAIL (the mutation's text no longer
+# matches the code: refresh it), or a shard that ran out of time (re-run
+# it). TESTING.md has the longer version.
+on:
+  schedule:
+    # Sundays 07:12 UTC, 03:12 Eastern: after the week's merges, before the
+    # week's work.
+    - cron: "12 7 * * 0"
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Where to run the whole list (the Windows-only subset runs on windows either way)"
+        type: choice
+        default: ubuntu-latest
+        options: [ubuntu-latest, windows-latest, both]
+
+permissions:
+  contents: read
+
+jobs:
+  # The shard matrix: 32 ubuntu shards of everything (or 32 windows ones,
+  # or both, on demand), plus one windows shard of the Windows-only subset
+  # unless windows is already running everything.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          CHOICE: ${{ inputs.os || 'ubuntu-latest' }}
+        run: |
+          python3 - "$CHOICE" <<'PY'
+          import json, os, sys
+
+          choice = sys.argv[1]
+          rows = []
+          full = {"ubuntu-latest": ["ubuntu-latest"],
+                  "windows-latest": ["windows-latest"],
+                  "both": ["ubuntu-latest", "windows-latest"]}[choice]
+          for os_ in full:
+              rows += [{"os": os_, "shard": i, "n": 32, "args": "",
+                        "label": f"{os_} {i}/32"} for i in range(32)]
+          if "windows-latest" not in full:
+              rows.append({"os": "windows-latest", "shard": 0, "n": 1,
+                           "args": "--windows", "label": "windows-only code"})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("matrix=" + json.dumps({"include": rows}) + "\n")
+          print(f"{len(rows)} shards: {choice}, plus the Windows-only subset "
+                f"on windows" if "windows-latest" not in full else
+                f"{len(rows)} shards: {choice}")
+          PY
+
+  sweep:
+    needs: plan
+    name: sweep (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # pillow too, the same list as the selftest job: without it the
+      # Stream Deck pixel tests skip themselves and the deck mutations in
+      # streamdeck.py read NOT CAUGHT in every sweep here while any box
+      # with Pillow catches them (PR #43, #46 and #49, shards 14 and 15).
+      - run: python -m pip install numpy zstandard tzdata pillow
+      - id: sweep
+        shell: bash
+        timeout-minutes: 285
+        run: python -u mutate.py --shard ${{ matrix.shard }}/${{ matrix.n }} --expected mutate_expected_misses.txt ${{ matrix.args }} --catchers-out "$RUNNER_TEMP/catchers-shard.json" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+      - name: Report a shard that ran out of time
+        if: always() && steps.sweep.outcome != 'success'
+        shell: bash
+        run: python mutate.py --unfinished "$RUNNER_TEMP/mutate.log" --shard ${{ matrix.shard }}/${{ matrix.n }} ${{ matrix.args }}
+      # The whole shard log, kept a week, on the run page under Artifacts.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}${{ matrix.args && '-windows-only' || '' }}
+          path: ${{ runner.temp }}/mutate.log
+          retention-days: 7
+          if-no-files-found: ignore
+      # Which test caught each mutation in this shard: merged by the report
+      # job into the catchers file the per-PR gate reads.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catchers-shard-${{ matrix.os }}-${{ matrix.shard }}${{ matrix.args && '-windows-only' || '' }}
+          path: ${{ runner.temp }}/catchers-shard.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Which shards are red, with a link to each, in the run's summary and in
+  # an issue (opened, or added to) so a red sweep is never silent; a green
+  # sweep closes the issue. Also merges the shards' catchers into one file.
+  report:
+    needs: sweep
+    if: always() && needs.sweep.result != 'skipped' && needs.sweep.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: catchers-shard-*
+          path: ${{ runner.temp }}/catchers
+          merge-multiple: false
+      - name: Merge the catchers
+        shell: bash
+        run: |
+          python3 - "$RUNNER_TEMP/catchers" "$RUNNER_TEMP/catchers.json" <<'PY'
+          import glob, json, os, sys
+
+          merged = {}
+          for p in sorted(glob.glob(os.path.join(sys.argv[1], "*", "catchers-shard.json"))):
+              # ubuntu first (sorted), windows after: a mutation caught on
+              # both keeps the ubuntu catcher; one caught only on windows
+              # keeps that one.
+              with open(p, encoding="utf-8") as fh:
+                  for k, v in json.load(fh).items():
+                      merged.setdefault(k, v)
+          with open(sys.argv[2], "w", encoding="utf-8") as fh:
+              json.dump(merged, fh, indent=1, sort_keys=True)
+          print(f"{len(merged)} catchers merged")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: catchers
+          path: ${{ runner.temp }}/catchers.json
+          retention-days: 90
+      - name: Say which shards are red, in the summary and in an issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_PREFIX: "sweep ("
+          LABEL: mutate-sweep
+        run: |
+          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | [.name, (.conclusion // .status), .html_url] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          python3 - "$RUNNER_TEMP/jobs.tsv" "$RUNNER_TEMP/report.md" <<'PY'
+          import os, sys
+
+          prefix = os.environ["JOB_PREFIX"]
+          shards = []
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              for line in fh:
+                  parts = line.rstrip("\n").split("\t")
+                  if len(parts) == 3 and parts[0].startswith(prefix):
+                      shards.append(parts)
+          red = [s for s in shards if s[1] not in ("success", "skipped")]
+          out = []
+          if not shards:
+              out.append("### weekly mutate: no shard jobs were found in this run")
+              red = [("(no shards)", "missing", os.environ["RUN_URL"])]
+          elif not red:
+              out.append(f"### weekly mutate: all {len(shards)} shards green")
+          else:
+              out += [f"### weekly mutate: {len(red)} of {len(shards)} shards red", "",
+                      "| shard | result | job |", "|---|---|---|"]
+              out += [f"| {n} | {c} | [open]({u}) |" for n, c, u in red]
+              out += ["",
+                      "Each red shard's own summary (under its job) says "
+                      "why: the kind of failure and the mutation or test. Its "
+                      "annotations say the same, and its full log is the "
+                      "artifact named `mutate-log-<os>-shard-<n>`, kept 7 days. "
+                      "TESTING.md says what each kind of failure means and what "
+                      "to do about it."]
+          text = "\n".join(out) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          with open(sys.argv[2], "w", encoding="utf-8") as fh:
+              fh.write(text)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"red={len(red)}\n")
+          PY
+          red=$(grep -c '| \[open\]' "$RUNNER_TEMP/report.md" || true)
+          gh label create "$LABEL" --repo "$REPO" --color B60205 \
+            --description "the weekly mutation sweep is red" --force 2>/dev/null || true
+          open_issue=$(gh issue list --repo "$REPO" --label "$LABEL" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if (( red > 0 )); then
+            body="The weekly mutation sweep on main is red: [run $RUN_ID]($RUN_URL).
+
+          $(cat "$RUNNER_TEMP/report.md")
+
+          Nothing should be tagged while this is open. Fix the test (or refresh the mutation), merge, and the next sweep closes this issue when it is green. Re-run the red shards from the run page for a timed-out shard."
+            if [[ -n "$open_issue" ]]; then
+              gh issue comment "$open_issue" --repo "$REPO" --body "$body"
+              echo "::error::the weekly mutation sweep is red; added to issue #$open_issue"
+            else
+              num=$(gh issue create --repo "$REPO" --title "Weekly mutation sweep is red" --label "$LABEL" --body "$body")
+              echo "::error::the weekly mutation sweep is red; opened $num"
+            fi
+          elif [[ -n "$open_issue" ]]; then
+            gh issue comment "$open_issue" --repo "$REPO" --body "The weekly mutation sweep is green again: [run $RUN_ID]($RUN_URL). Closing."
+            gh issue close "$open_issue" --repo "$REPO"
+            echo "the sweep is green; closed issue #$open_issue"
+          else
+            echo "the sweep is green"
+          fi
