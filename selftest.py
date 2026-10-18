@@ -44146,8 +44146,11 @@ def test_morning_lockout_trust_link_and_close():
                            journal=lambda t, **f: lines.append((t, f)),
                            threaded=False, socket_factory=_Sock)
             m.close()
+            # The paths are named as realpath() gives them (on Windows the
+            # temp folder's 8.3 short name becomes the long one).
             check(any(f.get("outcome") == "unconfirmed" and "never seen there"
-                      in t and d2 in t and d in t for t, f in lines),
+                      in t and os.path.realpath(d2) in t and
+                      os.path.realpath(d) in t for t, f in lines),
                   f"flamesafe.json in another folder: both paths named: "
                   f"{[t[:80] for t, f in lines]}")
             with open(fs2, "w", encoding="utf-8") as fh:
