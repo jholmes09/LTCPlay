@@ -536,6 +536,16 @@ function machineLook(m, mo, flames, purge){
   if(armed) return {cls:"armed", word:"Purge armed"};
   return {cls:"sel", word:(g && g.reason) ? "Held: " + g.reason : "Arming..."};
 }
+// The fire key's own rule (review of PR #68, P1-4): the heartbeats are not
+// the key; the browser's key repeat events are. A press older than graceMs
+// whose last repeat event (or its start) is more than gapMs ago has lost
+// its key: a lost keyup, a browser that stopped delivering events, or an
+// OS with key repeat off. true ends the press. A physically stuck key
+// still repeats, so this is not a dead-man switch; the Stream Deck's FIRE
+// key is.
+function fireKeyLapsed(nowMs, startAt, repeatAt, graceMs, gapMs){
+  return nowMs - startAt > graceMs && nowMs - Math.max(repeatAt || 0, startAt) > gapMs;
+}
 function clockText(sec){
   sec = Math.max(0, Math.floor(sec));
   const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, x = sec % 60;
@@ -1091,7 +1101,7 @@ function renderMorning(){
     const look = machineLook(m, mo, fl, purge);
     el.className = "mach " + look.cls + (ARRANGE ? " drag" : "");
     el.querySelector(".w").textContent = look.word;
-    el.querySelector(".lk").textContent = look.cls === "locked" ? "L" : "L";
+    el.querySelector(".lk").textContent = "L";
   });
   // The fire key's state.
   const k = $("mo-key");
@@ -1229,7 +1239,7 @@ async function fireBeat(f){
   if(FIRE !== f) return;
   if(isStale(Date.now(), LAST_OK, 1.0)){ fireStop("the page's status is not live"); return; }
   const now = Date.now();
-  if(now - f.startAt > KEY_REPEAT_GRACE_MS && now - Math.max(f.repeatAt, f.startAt) > KEY_REPEAT_GAP_MS){
+  if(fireKeyLapsed(now, f.startAt, f.repeatAt, KEY_REPEAT_GRACE_MS, KEY_REPEAT_GAP_MS)){
     fireStop("no key repeat seen for 1 s: keep the Space bar down, and the OS key repeat must be on (or use the Stream Deck's FIRE key)"); return;
   }
   try{

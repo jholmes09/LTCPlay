@@ -426,6 +426,14 @@ def main(installer, version=""):
             check(rc == 0 and "self-check passed" in out,
                   f"{exe} --self-check failed (exit {rc}): "
                   f"{out.strip().splitlines()[-1:] if out else 'no output'}")
+            if exe == "ltcplay.exe":
+                # The Morning and Shutdown page's modules and its PDF
+                # writer (pdfmini, standard library only) are in the
+                # installed engine: the self-check imports them and writes
+                # a one page PDF (MORNING.md).
+                check("checklist PDF writer (pdfmini" in out,
+                      "ltcplay.exe --self-check did not write a checklist "
+                      "PDF: the Morning page's modules are not bundled")
             rc, out = run([os.path.join(APP, exe), "--version"])
             check(rc == 0 and out.strip(), f"{exe} --version failed")
             if version:

@@ -166,7 +166,7 @@ the page shows queued, sent and the last error.
 |---|---|---|
 | T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, while an Abort is latched, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
 | T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
-| T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 1.5 s with no repeat event for 1 s ends (so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
+| T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 2.5 s with no repeat event for 1 s ends (`fireKeyLapsed`; so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
 | T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
 | T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
 | T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared both ways on the page and in the journal: slots flamesafe holds that this engine cannot account for (the file deleted and kept by flamesafe, an engine restarted without it), a config edited under a lock, flamesafe with no lockout file, or one reading a different path than the engine writes (said at start, both paths named) all refuse every lock, unlock, purge and laser test; the one way out is a confirmed "Rewrite the lockout file" on the show machine itself, journaled as a fault, which writes exactly this engine's table |
@@ -200,6 +200,39 @@ still hold.
   #43). The purge's arming from the Rack screen itself is on by default
   (`purge_arming`, this page's purpose); from a network device it also
   needs `screen_arming`.
+
+## How it is tested, and what the tests do not prove
+
+- **The engine's rules** (purge, lockout, laser tests, checklists) are
+  tested end to end over the real HTTP routes in `selftest.py`
+  (`test_purge_rules_at_the_engine`, `test_morning_lockout_trust_link_and_close`
+  and the other Morning tests), flamesafe's lockout in its own suite
+  (`flamesafe/test_flamesafe.py`), and one mutation per threat in the table
+  above in `mutate.py`. `morning.py` and `lasertest.py` are safety trigger
+  files: every flamesafe, conductor and flame link mutation runs when they
+  change.
+- **The page's JavaScript.** Its pure helpers (`machineLook`,
+  `fireKeyLapsed`, between the page's LOGIC markers) run under node in the
+  selftest, so their decisions are tested as code. The event wiring (one
+  keydown starts the heartbeats; keyup, blur, visibilitychange, pagehide and
+  leaving the page stop them; `purge-clear` goes when the page is left) is
+  checked by STRING PRESENCE in `remote.html` only: the selftest has no
+  browser, so that wiring is proven present, not proven to behave. The
+  engine and the flame link do not rely on it: both let go 0.25 s after the
+  last heartbeat on their own clocks, and flamesafe's `fire_hold_ms` stands
+  behind them.
+- **A physically stuck Space bar** keeps repeating, so the page cannot tell
+  it from a held one. The page is NOT a dead-man switch; the Stream Deck's
+  FIRE key is (its heartbeats stop the instant the key reads up), and the
+  deck's purge arming is tested on the arm link's wire.
+- **The Windows installer.** `pdfmini` (the checklist PDF writer),
+  `checklist`, `morning` and `lasertest` are plain modules of the `ltcplay`
+  package with no library beyond the standard one, so PyInstaller's
+  `collect_submodules("ltcplay")` in `packaging/windows/ltcplay.spec`
+  bundles them with everything else. `ltcplay.exe --self-check` imports
+  them and writes a one page PDF, and the installer smoke test
+  (`packaging/windows/ci_smoke.py`, run on every bench-build push) checks
+  that line from the installed program.
 
 ## What Jeff still has to decide or supply
 

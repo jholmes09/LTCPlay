@@ -40506,6 +40506,69 @@ console.log(JSON.stringify(out));
           f"the page's stale logic, in node: {r.stdout!r} {r.stderr[-400:]!r}")
 
 
+def _morning_page_logic_in_node():
+    """The Morning page's pure helpers (MORNING.md, "How it is tested"), run
+    in node when this machine has it: fireKeyLapsed, the rule that ends a
+    Space press whose key repeat events have stopped (review of PR #68,
+    P1-4), and machineLook, what a machine tile reads."""
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// LOGIC BEGIN")
+    b = page.find("// LOGIC END")
+    logic = page[a:b]
+    check("function fireKeyLapsed(" in logic and
+          "function machineLook(" in logic,
+          "fireKeyLapsed and machineLook sit in the page's LOGIC block")
+    node = shutil.which("node")
+    if not node:
+        print("  note: node is not on this machine, so the Morning page's "
+              "helpers were checked by reading only (CI runs them)")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const G = 2500, P = 1000;
+// A fresh press: within the grace time nothing can end it, repeat or not.
+t(!fireKeyLapsed(1000, 0, 0, G, P), "1 s in, no repeat yet: holds");
+t(!fireKeyLapsed(2500, 0, 0, G, P), "at the grace edge: holds");
+// Past the grace time the key repeat events are the evidence.
+t(fireKeyLapsed(2501, 0, 0, G, P), "2.5 s in, never a repeat event: ends (OS key repeat off, or a lost keyup)");
+t(!fireKeyLapsed(5000, 0, 4500, G, P), "a repeat 0.5 s ago: holds");
+t(!fireKeyLapsed(5000, 0, 4000, G, P), "a repeat exactly 1 s ago: holds");
+t(fireKeyLapsed(5001, 0, 4000, G, P), "a repeat 1.001 s ago: ends");
+t(fireKeyLapsed(60000, 0, 58000, G, P), "a long press whose repeats stopped 2 s ago: ends");
+t(!fireKeyLapsed(60000, 0, 59900, G, P), "a long press still repeating: holds (a physically stuck key looks the same: the page is not a dead-man switch)");
+t(fireKeyLapsed(3000, 0, undefined, G, P), "no repeatAt at all counts as none (undefined)");
+t(fireKeyLapsed(3000, 0, null, G, P), "no repeatAt at all counts as none (null)");
+t(!fireKeyLapsed(3000, 2000, 0, G, P), "a press that started 1 s ago holds whatever the old repeatAt says");
+// machineLook: locked beats everything; nothing reads FIRING unless the
+// engine says firing AND flamesafe reports the group armed on a fresh frame.
+const m = {id:"g1", name:"G1", group:"front row"};
+const mo = {lockout:{machines:{}}};
+const fl = {stale:false, groups:[{name:"front row", armed:"armed", wanted:true, reason:""}]};
+t(machineLook(m, {lockout:{machines:{g1:{}}}}, fl, {selected:["g1"], firing:true}).cls === "locked", "locked out reads locked even if selected and firing");
+t(machineLook(m, mo, fl, {selected:[], firing:false}).word === "Off", "not selected: Off");
+t(machineLook(m, mo, fl, {selected:["g1"], firing:false}).cls === "armed", "selected and armed: Purge armed");
+t(machineLook(m, mo, fl, {selected:["g1"], firing:true}).cls === "firing", "selected, armed, firing: FIRING");
+t(machineLook(m, mo, Object.assign({}, fl, {stale:true}), {selected:["g1"], firing:true}).cls === "sel", "flamesafe stale: never FIRING, never armed");
+t(machineLook(m, mo, {stale:false, groups:[{name:"front row", armed:"held", reason:"latched"}]}, {selected:["g1"], firing:true}).word === "Held: latched", "a held group says why");
+t(machineLook(m, mo, null, {selected:["g1"], firing:true}).cls === "sel", "no flamesafe at all: Arming..., never FIRING");
+t(machineLook(m, null, fl, null).word === "Off", "no engine view, no purge: Off");
+console.log(JSON.stringify(out));
+"""
+    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"the Morning page's helpers, in node: {r.stdout!r} "
+          f"{r.stderr[-400:]!r}")
+
+
 def test_remote_has_no_arm_route():
     section("iPad remote: no route arms anything by itself; the only arm "
             "routes are the screen hold and its release, which the Stream "
@@ -43308,12 +43371,18 @@ def test_purge_rules_at_the_engine():
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
         for want in ('if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }',
-                     "KEY_REPEAT_GAP_MS", 'addEventListener("keyup"',
+                     "const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;",
+                     "if(fireKeyLapsed(now, f.startAt, f.repeatAt, "
+                     "KEY_REPEAT_GRACE_MS, KEY_REPEAT_GAP_MS)){",
+                     'addEventListener("keyup"',
                      'addEventListener("blur"', '"visibilitychange"',
                      '"pagehide"', '/api/remote/purge-clear'):
             check(want in html, f"the page's script carries {want!r} (wording "
                                 f"only: the script has no test harness here, "
-                                f"so this proves presence, not behaviour)")
+                                f"so this proves presence, not behaviour; "
+                                f"the rule itself, fireKeyLapsed, runs in "
+                                f"node in the remote page logic test)")
+        _morning_page_logic_in_node()
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
                             {"seen": R.seen()}, client=loop,
