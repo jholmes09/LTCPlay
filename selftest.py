@@ -29894,15 +29894,31 @@ def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
           f"{len(lines('Stream Deck connected'))}")
 
     # Part 3: a socket that cannot be opened (no file descriptors left)
-    # is retried on the next frame, never the end of run_forever.
+    # is retried on the next frame, never the end of run_forever. A send
+    # on the socket while it is not open raises OSError, as a real
+    # socket's does: the hold-off's catch-all around the send is what
+    # keeps that from ending run_forever. (_FakeArmSocket's send never
+    # raised, so that except was never reached and the suite stayed green
+    # with it narrowed to DeckDisconnected: mutate.py, "the hold-off dies
+    # on an arm socket that will not open", found by PR #70's CI.)
     class _StubbornArm(_FakeArmSocket):
         fails = 3
+
+        def __init__(self, n):
+            super().__init__(n)
+            self.attempts = 0        # every send asked for, open or not
 
         def open(self):
             if self.fails:
                 self.fails -= 1
                 raise OSError("probe: too many open files")
             super().open()
+
+        def send(self, names):
+            self.attempts += 1
+            if not self.is_open:
+                raise OSError("probe: sendto on a socket that is not open")
+            super().send(names)
 
     arm2 = _StubbornArm(3)
     t2 = [0.0]
@@ -29922,6 +29938,39 @@ def test_streamdeck_round5_any_deck_error_is_an_unplug_not_an_exit():
           f"frame and sends from then on (died: {died!r}, opens "
           f"{arm2.opens}, first frame at "
           f"{stamps2[0][0] if stamps2 else None})")
+    frames = 2 * int(round(2.0 * sd.ARM_SEND_HZ))     # two 2 s hold-offs
+    check(arm2.attempts == frames and len(stamps2) == frames - 3,
+          f"every frame of both hold-offs was attempted, the 3 that raised "
+          f"on the unopened socket included, and run_forever reached its "
+          f"deliberate stop: {arm2.attempts} attempts, {len(stamps2)} "
+          f"sent, expected {frames} and {frames - 3}")
+
+    # And the hold-off on its own, with a send that raises on EVERY frame
+    # and not an OSError either (nothing but the catch-all can take it):
+    # it runs its full count of frames and returns, raising nothing.
+    class _WedgedArm(_FakeArmSocket):
+        def send(self, names):
+            self.seq += 1
+            raise RuntimeError("probe: the arm socket is wedged")
+
+    arm3 = _WedgedArm(3)
+    arm3.open()
+    t3 = [0.0]
+    c3 = sd.Controller(arm3, _FakeStatusSocket(), names,
+                       operator_provider=lambda: "Andy",
+                       show_running_provider=lambda: True,
+                       clock=lambda: t3[0])
+    died = None
+    try:
+        sd._hold_link_steady(c3, lambda s_: t3.__setitem__(0, t3[0] + s_),
+                             1.5, sd._DeckOutage(lambda t_, **kw: None))
+    except Exception as e:                    # noqa: BLE001
+        died = e
+    want = int(round(1.5 * sd.ARM_SEND_HZ))
+    check(died is None and arm3.seq == want and abs(t3[0] - 1.5) < 1e-9,
+          f"the hold-off ran all {want} frames past a send that raised on "
+          f"each one and returned (died: {died!r}, frames {arm3.seq}, "
+          f"{t3[0]:.2f} s)")
 
 
 def test_streamdeck_never_imports_flamesafe():
