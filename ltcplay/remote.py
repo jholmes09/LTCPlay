@@ -1198,9 +1198,10 @@ class Remote:
         if local:
             return True
         try:
-            return load_settings(self.folder)["screen_arming"] is True
+            rs = load_settings(self.folder)
         except (ValueError, OSError):
             return False
+        return rs["screen_arming"] is True
 
     def _morning_journal(self, text, action="morning", outcome="done",
                          who="", screen="", fault=False, **_kw):

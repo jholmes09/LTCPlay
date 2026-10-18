@@ -8121,9 +8121,9 @@ def build():
 
  ("morning: a lock no longer reaches the flame link (T5)",
   "ltcplay/morning.py",
-  '''    def _lock_channels_to_link(self):
+  '''        knows is still zeroed here while the problem stands)."""
         link = self._link_get()''',
-  '''    def _lock_channels_to_link(self):
+  '''        knows is still zeroed here while the problem stands)."""
         return
         link = self._link_get()'''),
 
@@ -8385,12 +8385,12 @@ def build():
 
  ("deck: a purge arm ignores the re-arm refractory window (T8)",
   "ltcplay/streamdeck.py",
-  '''            left = self._in_rearm_refractory(i, now)
-            if left > 0:
-                self._log(f"Stream Deck: {self.names[i]} purge arm refused, "''',
-  '''            left = 0
-            if left > 0:
-                self._log(f"Stream Deck: {self.names[i]} purge arm refused, "'''),
+  '''        left = self._in_rearm_refractory(i, now)
+        if left > 0:
+            self._log(f"Stream Deck: {self.names[i]} arm-hold completed "''',
+  '''        left = 0
+        if left > 0:
+            self._log(f"Stream Deck: {self.names[i]} arm-hold completed "'''),
 
  ("deck: the page closing leaves the purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",
