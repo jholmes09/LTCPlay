@@ -123,7 +123,7 @@ $rule = @{ timezone = $tz
            season = @{ first_date = $local.Date.AddDays(-1).ToString("yyyy-MM-dd"); last_date = $local.Date.AddDays(2).ToString("yyyy-MM-dd") }
            weekly = @{ mon = $night; tue = $night; wed = $night; thu = $night; fri = $night; sat = $night; sun = $night }
            exceptions = @{}; show_len_s = $ShowLenS; guard_s = 30; late_grace_s = 15 }
-$rule | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $SCHED
+$rule | ConvertTo-Json -Depth 5 | ForEach-Object { [IO.File]::WriteAllText($SCHED, $_, (New-Object Text.UTF8Encoding($false))) }   # no BOM
 Say "Wrote a rehearsal schedule: $Shows shows, the first at $($night.first_start) ($tz), every $EveryMin min, show_len_s $ShowLenS, until $($night.last_end)."
 Restart-LTCPlayer
 Say "PRESS RUN ON THE PAGE NOW. The scheduler starts nothing before Run is pressed. Random Aborts: chance $AbortChance per show."

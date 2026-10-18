@@ -470,8 +470,9 @@ $port = $Port
 if ($port -le 0) { $port = $cfg.dest_port }
 @{ version = $WITNESS_VERSION; started = (Now-Text); config = $cfgPath; config_how = $how; universe = $cfg.universe; port = $port; bind = $Bind
    arm_value = $cfg.arm_value; groups = $cfg.groups; gap_ms = $GapMs; stall_s = $StallS; companion = [bool]$Companion } |
-    ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $outDir "witness.json")
-try { Set-Content -Encoding UTF8 (Join-Path $root "witness-current.txt") $outDir } catch { }
+    ConvertTo-Json -Depth 5 | ForEach-Object { [IO.File]::WriteAllText((Join-Path $outDir "witness.json"), $_, (New-Object Text.UTF8Encoding($false))) }
+# No BOM: the .cmd launchers read this path with set /p, and a BOM would be part of it.
+try { [IO.File]::WriteAllText((Join-Path $root "witness-current.txt"), $outDir + "`r`n", (New-Object Text.UTF8Encoding($false))) } catch { }
 
 $w = [Witness]::new($cfg, $files, $GapMs, $StallS)
 $companion = [bool]$Companion
