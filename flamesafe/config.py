@@ -344,14 +344,29 @@ def from_dict(d, source="config"):
     # packet whatever is armed or commanded (composer.note_locked_slots).
     # Optional; a relative path is beside this config file. Absent, nothing
     # is ever locked out from here.
+    # Left out: ltcplay_lockout.json BESIDE this config file, which is where
+    # the show PC keeps both (review of PR #68, P2-2: the lock is enforced
+    # here with nothing to set up; a missing file locks nothing). false
+    # switches it off on purpose. A relative path is beside the config
+    # file; with no file to sit beside it is refused rather than guessed.
     lockout = d.get("lockout_file")
+    if lockout is None:
+        lockout = "ltcplay_lockout.json" if source != "config" else None
+    elif lockout is False:
+        lockout = None
     if lockout is not None:
         if not isinstance(lockout, str) or not lockout.strip():
             raise ConfigError("lockout_file is the path of the lockout file "
-                              "ltcplay writes (ltcplay_lockout.json), or "
-                              "leave it out.")
+                              "ltcplay writes (ltcplay_lockout.json), false "
+                              "to switch the lockout off, or left out (the "
+                              "file beside this one).")
         lockout = lockout.strip()
-        if not Path(lockout).is_absolute() and source != "config":
+        if not Path(lockout).is_absolute():
+            if source == "config":
+                raise ConfigError("lockout_file has to be an absolute path "
+                                  "when the config does not come from a file "
+                                  "(there is nothing for a relative path to "
+                                  "sit beside).")
             lockout = str(Path(source).resolve().parent / lockout)
     c.lockout_file = lockout
 

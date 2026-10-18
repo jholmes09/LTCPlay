@@ -62,7 +62,7 @@ rule written there.
 | Lock state | `ltcplay_lockout.json` | (the engine writes it; flamesafe reads it) |
 | Purge arming from a network device | `ltcplay_remote.json` | `screen_arming` (the existing switch) |
 | Purge arming at all | `ltcplay_remote.json` | `purge_arming` (default true) |
-| flamesafe's lockout file | `flamesafe.json` | `lockout_file` |
+| flamesafe's lockout file | `flamesafe.json` | `lockout_file` (left out: `ltcplay_lockout.json` beside flamesafe.json, which on the show PC is the engine's file; `false` switches it off) |
 
 All of these live in the machine's settings folder (`%LOCALAPPDATA%\ltcplay`
 on the show PC). `ltcplay/ltcplay_morning.example.json` is the annotated
@@ -97,10 +97,17 @@ locked slots, and zeros everything `fire_hold_ms` after the last frame.
 The engine's `purge-fire` heartbeat (every 100 ms from the page while Space
 is down, or from the deck while FIRE is held) re-asserts the frame: the
 page's status must be under 1 s old, flamesafe's status under 1 s old, the
-heartbeat must belong to the device that made the selection, and a gap of
-more than 0.25 s ends that press (the next heartbeat is refused: release
-and press again). Only machines whose group flamesafe reports ARMED get a
-value; locked machines never do.
+heartbeat must belong to the device that made the selection (or to the
+Stream Deck process, which names itself in `screen` over loopback and may
+fire any device's selection), and a gap of more than 0.25 s ends that
+press (the next heartbeat is refused: release and press again). Only
+machines whose group flamesafe reports ARMED get a value; locked machines
+never do; a Waver's head-up time counts from the first beat on which it is
+both selected and armed, so a group that arms late in a press waits its
+full settle time; a machine cannot be added to a press that is firing.
+While this engine has any machine locked out, no purge goes until
+flamesafe's status reports exactly the slots asked for. A stop that lands
+while a beat's frame is being worked out wins: that beat sets nothing.
 
 ### Lockout: one writer, enforced where the wire is written
 
@@ -159,15 +166,15 @@ the page shows queued, sent and the last error.
 |---|---|---|
 | T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, while an Abort is latched, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
 | T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
-| T3 | Key repeat, a stuck key, a second tab | the page sends heartbeats on its own 100 ms timer from one keydown, ignores repeats, stops on keyup, blur, visibilitychange and pagehide; the engine binds a fire press to a `fire_id` and the selection's device; a heartbeat from another device, or for an old `fire_id`, is refused |
-| T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the page's `morning-open` heartbeat is under 2 s old; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
-| T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection |
-| T6 | The lockout file is deleted, corrupted or half-written | atomic replace by one writer; flamesafe keeps the last set on an unreadable file and journals it; the engine's view and flamesafe's `lockout` field are compared on the page (a banner says "not yet confirmed by flamesafe") |
+| T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 1.5 s with no repeat event for 1 s ends (so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
+| T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
+| T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
+| T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared on the page and in the journal (a fault line when flamesafe has no lockout file at all) |
 | T7 | Abort during a purge | the engine's Abort clears the purge and sends `disarm_all` before anything else, as today; `disarm_all()` and `zero()` clear the purge frame; the deck's own Abort sends every group false on the arm link; the laser tests are turned off |
-| T8 | The deck arms a purge group while latched or in its refractory window | the deck's purge pass re-uses `_do_arm_fire`'s guards: latched and refractory are re-checked at the moment of arming |
-| T9 | A network device purges without anyone meaning it to | purge from the network needs `screen_arming` true (the existing switch, off by default); every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
+| T8 | The deck arms a purge group while latched, in its refractory window, or with no operator chosen | the deck's purge pass arms through `_do_arm_fire` itself, the code a completed hold goes through: the latch, the re-arm refractory window and the operator gate are checked at the moment of arming; only the hold is waived (Jeff). A latched rig also reads as no groups wanted at all (`purge_wanted`). The test holds that no arm value goes out on the arm link even for one pass |
+| T9 | A network device purges, unlocks or lights a laser without anyone meaning it to | purge from the network, an unlock and a laser test ON all need `screen_arming` true (the existing switch, off by default); a lock, which only lowers risk, is open to every device; every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
 | T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live or latched; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
-| T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page heartbeat; a stale `deck-input` (0.3 s) also ends it |
+| T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
 | T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` of continuous heartbeats; the head values go in the same frame as the fire value thereafter |
 | T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
 | T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |

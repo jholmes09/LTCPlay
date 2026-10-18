@@ -42411,6 +42411,17 @@ def _morning_rig(S, config=None, link=None):
     names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
     R.lines = []
     R.osc = []
+    # flamesafe's word on the lockout file, fed with its status: None for a
+    # flamesafe that says nothing about it, else {"slots", "state"}.
+    R.fs_lockout = None
+
+    def feed():
+        doc = {"t": "status", "k": "k" * 20, "fault": "", "groups": R.groups}
+        if R.fs_lockout is not None:
+            doc["lockout"] = R.fs_lockout
+        R.remote.flame_status.note(_j.dumps(doc).encode())
+    R.feed = feed
+    feed()
 
     class _Sock:
         def sendto(self, pkt, addr):
@@ -42804,6 +42815,34 @@ def test_purge_rules_at_the_engine():
         check(st == 200 and R.m.lockout.is_locked("machine", "g2") and
               link.locked == {412},
               f"a lock writes the file and tells the flame link: {st} {out}")
+        # flamesafe has not confirmed the lock (it says nothing about a
+        # lockout file, or has none): no purge at all until it does, and
+        # the journal says so once (review of PR #68, P2-2).
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "not confirmed" in out["error"] and
+              "Ground 2" in out["error"],
+              f"flamesafe silent on the lock: no purge of anything: {st} {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check(out["morning"]["locked_machines"] == ["Ground 2"] and
+              out["morning"]["flamesafe_confirmed"] is None,
+              f"the status carries the lock banner, unconfirmed: "
+              f"{out['morning']}")
+        R.fs_lockout = {"slots": [], "state": "none"}
+        R.feed()
+        R.m.tick()
+        check(any(r.get("action") == "lockout" and r.get("outcome") ==
+                  "unconfirmed" for r in R.svc.journal),
+              "flamesafe with no lockout_file: a fault line in the journal")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "asked for [412]" in out["error"],
+              f"flamesafe holding other slots than asked: no purge: {out}")
+        R.fs_lockout = {"slots": [412], "state": "read"}
+        R.feed()
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check(out["morning"]["flamesafe_confirmed"] is True,
+              "and says when flamesafe reports the same slots locked")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g2", "seen": R.seen()}, client=loop)
         check(st == 409 and "locked out" in out["error"],
@@ -42853,6 +42892,15 @@ def test_purge_rules_at_the_engine():
                             {"seen": R.seen(), "fire_id": fid}, client=ipad)
         check(st == 409 and out.get("let_go"),
               f"another device cannot carry the fire on: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid,
+                             "who": "Stream Deck", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 409 and "only that device" in out["error"] and
+              out.get("let_go") and R.m.purge.fire is not None,
+              f"nor can the deck process carry on the page's press with its "
+              f"id; the page's own press is not ended by the refusal: {st} "
+              f"{out}")
         # A gap of more than 0.25 s ends the press.
         before = link.cleared
         R.mono[0] += 0.3
@@ -42865,8 +42913,12 @@ def test_purge_rules_at_the_engine():
                             {"seen": R.seen(), "fire_id": fid}, client=loop)
         check(st == 409 and "interrupted" in out["error"],
               f"and the old press cannot carry on: {out}")
-        # A Waver: head up first, fire only after head_settle_s of beats.
-        R.groups[2]["armed"] = "armed"
+        # A Waver: head up first, fire only after head_settle_s of beats
+        # counted from the first beat on which it is selected AND its group
+        # is armed, never from the press's start (review of PR #68, P1-1):
+        # here the group arms 0.5 s into the press.
+        R.groups[2]["armed"] = "disarmed"
+        R.groups[2]["wanted"] = False
         R.feed()
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "w1", "seen": R.seen()}, client=loop)
@@ -42874,11 +42926,35 @@ def test_purge_rules_at_the_engine():
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
                             {"seen": R.seen()}, client=loop)
         f = link.frames[-1]
+        check(st == 200 and f[431] == 0 and f[432] == 0 and f[430] == 0 and
+              f[410] == 240 and "not armed" in out["waiting"][0],
+              f"first beat: the Waver's group is not armed, so not even its "
+              f"head moves; Ground 1 fires: {out}")
+        fid = out["fire_id"]
+        for _ in range(5):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"seen": R.seen(), "fire_id": fid},
+                                client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "s1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "firing right now" in out["error"] and
+              R.m.purge.selected == ["g1", "w1"],
+              f"a machine never joins a live fire press: {st} {out}")
+        R.groups[2]["armed"] = "armed"
+        R.groups[2]["wanted"] = True
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
         check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
               and f[410] == 240 and "head going up" in out["waiting"][0],
-              f"first beat: pan 100 and tilt 200 at once, no fire on the "
-              f"Waver yet, Ground 1 fires: {out}")
-        fid = out["fire_id"]
+              f"0.6 s into the press the group arms: pan 100 and tilt 200 at "
+              f"once, no fire on the Waver yet, Ground 1 fires: {out}")
         for _ in range(9):
             R.mono[0] += 0.1
             R.wall[0] += 0.1
@@ -42910,6 +42986,8 @@ def test_purge_rules_at_the_engine():
               link.locked == {412, 431, 432, 433},
               f"a lock drops the machine from the purge and tells the link: "
               f"{R.m.purge.selected} {link.locked}")
+        R.fs_lockout = {"slots": [412, 431, 432, 433], "state": "read"}
+        R.feed()
         st, _h, out = R.ask("POST", "/api/remote/lock",
                             {"kind": "machine", "id": "w1", "on": False},
                             client=loop)
@@ -42920,16 +42998,13 @@ def test_purge_rules_at_the_engine():
                              "confirmed": True}, client=loop)
         check(st == 200 and not R.m.lockout.is_locked("machine", "w1"),
               "and with it unlocks")
+        R.fs_lockout = {"slots": [412], "state": "read"}
+        R.feed()
         st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
         check(out["morning"]["locked_machines"] == ["Ground 2"] and
-              out["morning"]["flamesafe_confirmed"] is None,
+              out["morning"]["flamesafe_confirmed"] is True and
+              out["morning"]["lock_error"] == "",
               f"the status carries the lock banner: {out['morning']}")
-        R.remote.flame_status.note(_j.dumps({
-            "t": "status", "k": "k" * 20, "fault": "", "groups": R.groups,
-            "lockout": {"slots": [412], "state": "read"}}).encode())
-        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
-        check(out["morning"]["flamesafe_confirmed"] is True,
-              "and says when flamesafe reports the same slots locked")
         # The page goes away: 2 s later the selection is gone.
         for _ in range(4):
             _mo_advance(R, 0.5, beat=True)
@@ -42941,6 +43016,52 @@ def test_purge_rules_at_the_engine():
               and R.remote.deck_input()["morning"]["open"] is False,
               "2 s without the page: the selection is cleared and the deck "
               "is told the page is closed")
+        # The deck process fires a selection an iPad owns (review of PR
+        # #68, P1-2): it names itself in `screen`, over loopback, whatever
+        # operator name it carries; the owner check is for pages.
+        st, _h, out = R.ask("POST", "/api/remote/morning-open", {},
+                            client=ipad)
+        check(st == 200 and out.get("open") is True, "the iPad's page is open")
+        R.m.open_beat("Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=ipad)
+        check(st == 200 and R.m.purge.owner == "iPad at 10.20.0.44",
+              f"the iPad arms Ground 1: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "who": "Andy",
+                             "screen": "Stream Deck"}, client=loop)
+        check(st == 200 and out["firing"] == ["Ground 1"] and
+              R.m.purge.fire["device"] == "Stream Deck",
+              f"the deck's FIRE key fires the iPad's selection: {st} {out}")
+        deck_fid = out["fire_id"]
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=ipad)
+        check(st == 409 and "Stream Deck is already firing" in out["error"],
+              f"the owner's own press waits for the deck to let go: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop)
+        check(st == 409 and "has the purge selection" in out["error"] and
+              R.m.purge.fire is not None and
+              R.m.purge.fire["device"] == "Stream Deck",
+              f"the Rack screen is neither the owner nor the deck: refused, "
+              f"and the deck's press is not ended by it: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": deck_fid,
+                             "who": "Andy", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 200 and out["fire_id"] == deck_fid,
+              "the deck carries its own press on")
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop",
+                            {"who": "Andy", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 200 and R.m.purge.fire is None, "and lets go")
+        # The selection lives only while ITS OWNER's page is open (review
+        # of PR #68, P2-1): the Rack screen keeps beating, the iPad stops.
+        for _ in range(5):
+            _mo_advance(R, 0.5, beat=True)
+        check(R.m.purge.selected == [] and R.m.page_open(),
+              "2 s without the iPad's own beat: its selection is cleared, "
+              "though the Rack screen's page is open")
         # A configured laser's test goes on between shows, and over the
         # laser's own socket, never the flame link.
         st, _h, out = R.ask("POST", "/api/remote/laser-test",
@@ -43048,6 +43169,69 @@ def test_purge_rules_at_the_engine():
                             {"positions": {"g1": {"x": 500, "y": 95}}},
                             client=loop)
         check(st == 400, "a bad position is refused")
+        # From the show network, unlocking and turning a laser test ON need
+        # screen_arming (review of PR #68, P2-4, P2-5); locking does not. A
+        # device that may not purge does not hold the page open (P2-8).
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": True},
+                            client=ipad)
+        check(st == 200 and R.m.lockout.is_locked("laser", "laser-1"),
+              f"an iPad may lock: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": False,
+                             "confirmed": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              R.m.lockout.is_locked("laser", "laser-1"),
+              f"but not unlock without screen_arming: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not R.m.lasers.on,
+              f"nor turn a laser test on: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/morning-open", {},
+                            client=ipad)
+        check(st == 200 and out.get("open") is False and
+              "iPad at 10.20.0.44" not in R.m._open_devices,
+              f"a device that may not purge does not hold the page open: "
+              f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": False,
+                             "confirmed": True}, client=loop)
+        check(st == 200 and not R.m.lockout.is_locked("laser", "laser-1"),
+              "the show machine itself unlocks")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=ipad)
+        check(st == 200 and "laser-3" in R.m.lasers.on,
+              f"with screen_arming the iPad may turn a test on: {st} {out}")
+        R.ask("POST", "/api/remote/laser-test",
+              {"laser": "laser-3", "on": False}, client=ipad)
+        # A broken ltcplay_remote.json: no purge from anywhere.
+        rpath = os.path.join(R.work, "ltcplay_remote.json")
+        with open(rpath, encoding="utf-8") as fh:
+            saved_settings = fh.read()
+        with open(rpath, "w", encoding="utf-8") as fh:
+            fh.write("{ broken")
+        st, _h, out = R.ask("GET", "/api/remote/morning", client=loop)
+        check(st == 200 and out["purge_enabled"] is False,
+              "a broken ltcplay_remote.json: purge arming reads as off")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 403, "and a purge click is refused")
+        with open(rpath, "w", encoding="utf-8") as fh:
+            fh.write(saved_settings)
+        # The page's own fire key: one keydown starts it, the browser's key
+        # repeat events are the evidence the key is still down, and every
+        # way of losing the key stops it (review of PR #68, P1-4).
+        html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        for want in ('if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }',
+                     "KEY_REPEAT_GAP_MS", 'addEventListener("keyup"',
+                     'addEventListener("blur"', '"visibilitychange"',
+                     '"pagehide"', '/api/remote/purge-clear'):
+            check(want in html, f"the page carries {want!r}")
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
                             {"seen": R.seen()}, client=loop,
@@ -43206,12 +43390,32 @@ def test_morning_deck_remap_and_purge_arming():
     step()
     check(arm.wanted == [False, False, False],
           "purge_enabled false at the engine: nothing arms")
+    t[0] += sd.REARM_REFRACTORY_S     # past the window of the last disarm
     mo(True, [1])
     cond._latched = True
+    n_sends = len(arm.sends)
     step()
-    check(arm.wanted == [False, False, False],
-          "latched: nothing arms for a purge")
+    check(arm.wanted == [False, False, False] and
+          not any(any(s) for s in arm.sends[n_sends:]),
+          f"latched: nothing arms for a purge, and no arm value went out "
+          f"on the arm link even for one pass: {arm.sends[n_sends:]}")
     cond._latched = False
+    # No operator chosen on the deck: a purge arm is refused like any arm
+    # (review of PR #68, P2-6: the same guards as a completed hold).
+    mo(True, [])
+    step()
+    c.operator_provider = lambda: ""
+    mo(True, [1])
+    n_sends = len(arm.sends)
+    step()
+    check(arm.wanted == [False, False, False] and
+          not any(any(s) for s in arm.sends[n_sends:]) and
+          any("operator" in e[0].lower() for e in events[-3:]),
+          f"no operator: nothing arms for a purge, and it is said: "
+          f"{[e[0][:70] for e in events[-3:]]}")
+    c.operator_provider = lambda: "Andy"
+    mo(True, [])
+    step()
     # A group the OPERATOR armed is not touched by the purge list.
     t[0] += sd.REARM_REFRACTORY_S
     arm.set_group(1, True)
@@ -43668,6 +43872,145 @@ def test_checklist_audit_chain_pdf_export_and_tally():
                            "Rack screen", True)
         check(st == 409 and "not switched on" in out["error"],
               "and with the tally off it says so")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_morning_lockout_trust_link_and_close():
+    section("Morning and Shutdown, the lock table when it cannot be trusted: "
+            "an unreadable lockout file, or one naming a machine the config "
+            "no longer has, is never written over, shows on every screen, "
+            "and stops the purge and the laser tests until it is fixed; the "
+            "flame link learns the locks when it appears later; closing the "
+            "engine turns every laser test off (review of PR #68, P1-3, P2-9)")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(d, "flamesafe.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_FLAMESAFE, fh)
+        cfg_path = os.path.join(d, MO.CONFIG_FILE)
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_CONFIG, fh)
+        names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+        fsview = {"slots": [], "state": "read"}
+
+        def flames():
+            return {"connected": True, "stale": False, "age_ms": 10,
+                    "fault": "", "lockout": dict(fsview),
+                    "groups": [{"name": n, "armed": "armed", "wanted": True,
+                                "reason": "", "dwell_s": 0} for n in names]}
+        lines = []
+        holder = [None]
+        osc = []
+
+        class _Sock:
+            def sendto(self, pkt, addr):
+                osc.append((addr, pkt))
+
+            def close(self):
+                pass
+
+        def build():
+            return MO.Morning(d, flamesafe_config=fs,
+                              link_get=lambda: holder[0], flames_get=flames,
+                              live_check=lambda: "",
+                              group_names=lambda: names,
+                              journal=lambda t, **f: lines.append((t, f)),
+                              clock=lambda: 100.0,
+                              wall=lambda: 1_800_000_000.0, threaded=False,
+                              socket_factory=_Sock)
+        rack = ("Rack screen", "", "Rack screen", True, True)
+        lk = os.path.join(d, MO.LOCKOUT_FILE)
+        # (a) The lockout file cannot be read: what is locked is unknown.
+        with open(lk, "w", encoding="utf-8") as fh:
+            fh.write("{ broken")
+        m = build()
+        sv = m.status_view()
+        check("could not be read" in sv["lock_error"],
+              f"an unreadable lockout file is said on every screen: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 409 and "not touched" in out["error"] and
+              open(lk, encoding="utf-8").read() == "{ broken",
+              f"a lock is refused and the file is not written over: {out}")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and "lockout file" in out["error"] and
+              m.purge.selected == [], f"no purge: {out}")
+        st, out = m.post("laser-test", {"laser": "laser-3", "on": True},
+                         *rack)
+        check(st == 409 and not m.lasers.on and not osc,
+              f"no laser test: {out}")
+        m.close()
+        # (b), (c) The file names a machine the config does not (renamed,
+        # or ltcplay_morning.json fell back to the defaults): its slots are
+        # unknown, so the file keeps what flamesafe is enforcing.
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "flame_channels": [412, 999],
+                     "machines": {"g2": {"since": "x"}, "ghost": {}},
+                     "lasers": {}}, fh)
+        before = open(lk, encoding="utf-8").read()
+        m = build()
+        sv = m.status_view()
+        check("ghost" in sv["lock_error"] and
+              "ghost (not in ltcplay_morning.json)" in sv["locked_machines"]
+              and "Ground 2" in sv["locked_machines"],
+              f"a locked id the config lacks is named, as unknown: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g2", "on": False,
+                                  "confirmed": True}, *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before and
+              m.lockout.is_locked("machine", "g2"),
+              f"an unlock is refused and the file keeps flamesafe's slots "
+              f"412 and 999: {out}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before,
+              "and so is a lock")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and m.purge.selected == [], "no purge")
+        m.close()
+        # The config fixed (the machine back under its id): everything
+        # resolves and the file is written again from a trusted table.
+        cfg2 = _j.loads(_j.dumps(_MO_CONFIG))
+        cfg2["machines"].append({"id": "ghost", "name": "Ghost",
+                                 "kind": "gflame", "group": "front row",
+                                 "fire": [413]})
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            _j.dump(cfg2, fh)
+        m = build()
+        sv = m.status_view()
+        check(sv["lock_error"] == "" and
+              set(sv["locked_machines"]) == {"Ground 2", "Ghost"},
+              f"resolved: both locks read back: {sv}")
+        fsview["slots"] = [412, 413]
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [412],
+              f"an unlock writes the file again: {out}")
+        # The flame link appears after the engine started (fire_ice built
+        # later): the next watcher pass hands it the locks.
+        check(holder[0] is None and m.lockout.channels(m.cfg) == {412},
+              "no link yet")
+        link = _FakePurgeLink()
+        holder[0] = link
+        m.tick()
+        check(link.locked == {412},
+              "the link learns the locked slots on the next watcher pass")
+        # Closing the engine turns every laser test off.
+        fsview["slots"] = [412]
+        st, out = m.post("laser-test", {"laser": "laser-3", "on": True},
+                         *rack)
+        check(st == 200 and "laser-3" in m.lasers.on, f"a test on: {out}")
+        n = len(osc)
+        m.close()
+        check(not m.lasers.on and len(osc) > n and
+              osc[-1][1].startswith(b"/beyond/general/stopcue"),
+              "close turns it off with the laser's off list")
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print("  ok")
@@ -44163,6 +44506,7 @@ if __name__ == "__main__":
     test_morning_deck_remap_and_purge_arming()
     test_laser_tests_placeholders_lockout_and_allow_list()
     test_checklist_audit_chain_pdf_export_and_tally()
+    test_morning_lockout_trust_link_and_close()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

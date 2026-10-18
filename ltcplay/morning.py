@@ -43,7 +43,7 @@ FRESH_S = 1.0
 # A fire press with no heartbeat for this long is over; the flame link
 # drops the frame on its own clock after the same time (PURGE_HOLD_S).
 BEAT_STALE_S = 0.25
-# The page says it is open every 250 ms; this long without it and the purge
+# The page says it is open every 500 ms; this long without it and the purge
 # selection is cleared and the deck is told the page is closed.
 OPEN_STALE_S = 2.0
 NAME_MAX = 48
@@ -553,10 +553,40 @@ class Lockout:
     def is_locked(self, kind, uid):
         return uid in (self.machines if kind == "machine" else self.lasers)
 
+    def unknown(self, cfg):
+        """Locked ids the config no longer names (a renamed machine, a
+        config that could not be read and fell back to the defaults): their
+        slots cannot be worked out, so the file must not be rewritten from
+        this table until they are resolved (review of PR #68, P1-3)."""
+        lasers = {l.id for l in cfg.lasers}
+        return (sorted(m for m in self.machines if m not in cfg.by_id),
+                sorted(l for l in self.lasers if l not in lasers))
+
+    def problem(self, cfg):
+        """Why the lock table cannot be trusted or written right now, or ""."""
+        if self.load_error:
+            return (f"the lockout file could not be read ({self.load_error}), "
+                    f"so what is locked out is not known; fix or remove the "
+                    f"file, then restart the engine")
+        um, ul = self.unknown(cfg)
+        if um or ul:
+            return (f"the lockout file names "
+                    f"{', '.join(um + ul)}, which ltcplay_morning.json does "
+                    f"not (renamed, or the file could not be read); fix the "
+                    f"config, then restart the engine")
+        return ""
+
     def set(self, cfg, kind, uid, on, who, device, reason="",
             confirmed=False):
         """Lock or unlock one unit. (ok, sentence). Unlocking needs
-        confirmed True: one deliberate confirm (Jeff). A lock never does."""
+        confirmed True: one deliberate confirm (Jeff). A lock never does.
+        Nothing is written while the table cannot be trusted (problem):
+        a write from a half known table would lift flamesafe's locks."""
+        why = self.problem(cfg)
+        if why:
+            return False, (f"Nothing was locked or unlocked: {why}. The "
+                           f"lockout file was not touched, so flamesafe keeps "
+                           f"enforcing what it holds.")
         table = self.machines if kind == "machine" else self.lasers
         if kind == "machine":
             unit = cfg.by_id.get(uid)
@@ -600,10 +630,13 @@ class Lockout:
                       f"{label} is unlocked.{saved}")
 
     def view(self, cfg):
+        um, ul = self.unknown(cfg)
         return {"machines": {k: dict(v) for k, v in self.machines.items()},
                 "lasers": {k: dict(v) for k, v in self.lasers.items()},
                 "flame_channels": sorted(self.channels(cfg)),
-                "file": self.path, "load_error": self.load_error}
+                "file": self.path, "load_error": self.load_error,
+                "unknown_machines": um, "unknown_lasers": ul,
+                "problem": self.problem(cfg)}
 
 
 # -------------------------------------------------------------- the purge --
@@ -613,20 +646,25 @@ class Purge:
     providers it is built with; the Morning facade owns the clock."""
 
     def __init__(self, cfg_get, lockout, link_get, flames_get, live_check,
-                 group_names, journal=None, clock=time.monotonic):
+                 group_names, journal=None, clock=time.monotonic,
+                 locks_ok=lambda: ""):
         self._cfg = cfg_get              # () -> MorningConfig
         self._lockout = lockout
         self._link = link_get            # () -> FlameLink or None
         self._flames = flames_get        # () -> flame status view or None
         self._live = live_check          # () -> refusal sentence or ""
         self._names = group_names        # () -> flamesafe group names
+        self._locks_ok = locks_ok        # () -> refusal while flamesafe has
+        #                                  not confirmed the engine's locks
         self._journal = journal
         self._clock = clock
         self._lock = threading.Lock()
         self.selected = []               # machine ids, in click order
         self.owner = None                # device that owns the selection
         self.fire = None                 # {"id", "device", "start", "beat",
-        #                                  "head_since"} while a key is held
+        #                                  "heads": {waver id: clock when its
+        #                                  head started up}} while a key is
+        #                                  held
         self._fire_ids = 0
         self.fires = 0
         self.last_text = ""
@@ -658,7 +696,21 @@ class Purge:
         if self._link() is None:
             return ("No flame link is connected in this engine, so a purge "
                     "could reach nothing.")
+        try:
+            why = self._locks_ok() or ""
+        except Exception as e:                           # noqa: BLE001
+            why = f"the lock state could not be read ({type(e).__name__})."
+        if why:
+            return why
         return ""
+
+    def press_live(self, now=None):
+        """True while a fire press is going (a heartbeat within
+        BEAT_STALE_S)."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            f = self.fire
+            return f is not None and now - f["beat"] <= BEAT_STALE_S
 
     def select(self, machine_id, on, device, seen_ok):
         """A click on a machine (or a group button's click on each). (code,
@@ -686,6 +738,14 @@ class Purge:
         if self._lockout.is_locked("machine", machine_id):
             return 409, {"error": f"{m.name} is locked out, so it cannot "
                                   f"be armed for a purge. Unlock it first."}
+        if self.press_live():
+            # A machine never joins a press that is already firing (review
+            # of PR #68, P1-1): a Waver's head-up time is counted from the
+            # moment it is selected AND armed, and a G-Flame joining a live
+            # press would fire on the next beat with nobody having pressed
+            # for it. Let go, click, press again.
+            return 409, {"error": f"A purge is firing right now. Let go of "
+                                  f"the key, then click {m.name}."}
         with self._lock:
             if self.owner is not None and self.owner != device and \
                     self.selected:
@@ -730,7 +790,10 @@ class Purge:
         """The 512 channel purge frame for this heartbeat: fire values for
         selected, unlocked machines whose group flamesafe reports ARMED; a
         Waver's head up first (pan and tilt at once, fire only after
-        head_settle_s of continuous heartbeats). Also the machines left out
+        head_settle_s of continuous heartbeats counted PER WAVER from the
+        first beat on which it is both selected and armed, never from the
+        press's start: a group that arms late in a press waits its full
+        settle time, review of PR #68, P1-1). Also the machines left out
         and why, for the page."""
         cfg = self._cfg()
         vals = bytearray(UNIVERSE_SIZE)
@@ -738,34 +801,36 @@ class Purge:
         firing, waiting = [], []
         with self._lock:
             sel = list(self.selected)
-            head_since = self.fire["head_since"] if self.fire else now
-        for mid in sel:
-            m = cfg.by_id.get(mid)
-            if m is None:
-                continue
-            if self._lockout.is_locked("machine", mid):
-                waiting.append(f"{m.name}: locked out")
-                continue
-            if m.group not in armed:
-                waiting.append(f"{m.name}: group {m.group} is not armed")
-                continue
-            p = cfg.purge
-            if m.kind == "waver":
-                w = p["waver"]
-                vals[m.pan - 1] = w["pan_up"]
-                vals[m.tilt - 1] = w["tilt_up"]
-                if now - head_since < w["head_settle_s"]:
-                    waiting.append(f"{m.name}: head going up "
-                                   f"({w['head_settle_s']:g} s)")
+            f = self.fire
+            heads = f["heads"] if f is not None else {}
+            for mid in sel:
+                m = cfg.by_id.get(mid)
+                if m is None:
                     continue
-                fire = w["fire"]
-            elif m.kind == "fireball":
-                fire = p["fireball"]["fire"]
-            else:
-                fire = p["gflame_fire"]
-            for f in m.fire:
-                vals[f - 1] = fire
-            firing.append(m.name)
+                if self._lockout.is_locked("machine", mid):
+                    waiting.append(f"{m.name}: locked out")
+                    continue
+                if m.group not in armed:
+                    waiting.append(f"{m.name}: group {m.group} is not armed")
+                    continue
+                p = cfg.purge
+                if m.kind == "waver":
+                    w = p["waver"]
+                    vals[m.pan - 1] = w["pan_up"]
+                    vals[m.tilt - 1] = w["tilt_up"]
+                    since = heads.setdefault(m.id, now)
+                    if now - since < w["head_settle_s"]:
+                        waiting.append(f"{m.name}: head going up "
+                                       f"({w['head_settle_s']:g} s)")
+                        continue
+                    fire = w["fire"]
+                elif m.kind == "fireball":
+                    fire = p["fireball"]["fire"]
+                else:
+                    fire = p["gflame_fire"]
+                for slot in m.fire:
+                    vals[slot - 1] = fire
+                firing.append(m.name)
         return bytes(vals), firing, waiting
 
     def fire_beat(self, body, device, seen_ok, deck=False):
@@ -819,14 +884,22 @@ class Purge:
                                  "let_go": True}
                 self._fire_ids += 1
                 f = self.fire = {"id": self._fire_ids, "device": device,
-                                 "start": now, "beat": now,
-                                 "head_since": now}
+                                 "start": now, "beat": now, "heads": {}}
                 self.fires += 1
         vals, firing, waiting = self.frame(now)
-        if any(vals):
-            link.purge_set(vals)
-        else:
-            link.purge_clear()
+        with self._lock:
+            if self.fire is not f:
+                # A stop (the key came up, a watcher pass, an Abort) landed
+                # while the frame was being worked out: it wins, and this
+                # beat sets nothing (review of PR #68, P2-7).
+                link.purge_clear()
+                return 409, {"error": "The fire press ended. Release the "
+                                      "key and press again.",
+                             "let_go": True}
+            if any(vals):
+                link.purge_set(vals)
+            else:
+                link.purge_clear()
         if fid is None:
             self._note(f"{device} started a purge fire press: "
                        f"{', '.join(firing) or 'nothing firing yet'}"
@@ -941,7 +1014,9 @@ class Morning:
         self._live_check = live_check
         self.purge = Purge(lambda: self.cfg, self.lockout, link_get,
                            flames_get, self._live_or_broken, self._group_names,
-                           journal=journal, clock=clock)
+                           journal=journal, clock=clock,
+                           locks_ok=self._locks_confirmed)
+        self._fs_lock_said = False   # the "flamesafe has no lockout_file" line
         self.lasers = lasertest.LaserTests(
             self.cfg.lasers, locked=lambda lid: self.lockout.is_locked(
                 "laser", lid), journal=journal, socket_factory=socket_factory,
@@ -976,10 +1051,48 @@ class Morning:
             return (f"ltcplay_morning.json could not be read "
                     f"({self.config_error}), so nothing fires from this page "
                     f"until it is fixed.")
+        lock_problem = self.lockout.problem(self.cfg)
+        if lock_problem:
+            # What is locked out is not known for certain (review of PR
+            # #68, P1-3): nothing fires and no laser test lights until it is.
+            return f"{lock_problem}; nothing fires from this page until then."
         try:
             return self._live_check() or ""
         except Exception as e:
             return f"the show state could not be read ({type(e).__name__})."
+
+    def _locks_confirmed(self):
+        """"" while flamesafe reports the very slots this engine has locked
+        (or this engine has locked no machine); else why a purge must wait.
+        flamesafe is the enforcement; a purge never goes while it has not
+        taken the lock (review of PR #68, P2-2)."""
+        want = sorted(self.lockout.channels(self.cfg))
+        if not want:
+            return ""
+        fl = self._flames_get() or {}
+        lk = fl.get("lockout") if isinstance(fl.get("lockout"), dict) else None
+        if lk is None or fl.get("stale"):
+            names = [self.cfg.by_id[m].name for m in self.lockout.machines
+                     if m in self.cfg.by_id]
+            return ("flamesafe has not said which flame slots it holds "
+                    "locked (no lockout_file in its config, an old flamesafe, "
+                    "or its status is stale), so the lock on "
+                    f"{', '.join(names)} is not confirmed; nothing fires from "
+                    "this page until it is.")
+        if sorted(lk.get("slots") or []) != want:
+            return (f"flamesafe holds slots {sorted(lk.get('slots') or [])} "
+                    f"locked but this engine asked for {want}; nothing fires "
+                    f"from this page until they agree.")
+        return ""
+
+    def device_open(self, device):
+        """True while THAT device's page has beaten within OPEN_STALE_S (the
+        purge selection lives only while its owner's page is open, review of
+        PR #68, P2-1). No device named: any open page."""
+        if device is None:
+            return self.page_open()
+        at = self._open_devices.get(device)
+        return at is not None and self._clock() - at <= OPEN_STALE_S
 
     def _lock_channels_to_link(self):
         link = self._link_get()
@@ -994,7 +1107,7 @@ class Morning:
         return at is not None and self._clock() - at <= OPEN_STALE_S
 
     def open_beat(self, device):
-        """The page says it is open (every 250 ms while it is)."""
+        """The page says it is open (every 500 ms while it is)."""
         now = self._clock()
         self._open_at = now
         self._open_devices[device] = now
@@ -1007,7 +1120,7 @@ class Morning:
         when a show goes live or an Abort stands, the link's lock set."""
         now = self._clock() if now is None else now
         try:
-            self.purge.tick(now, self.page_open())
+            self.purge.tick(now, self.device_open(self.purge.owner))
         except Exception as e:
             self._note(f"The purge watcher raised {type(e).__name__}: {e}; "
                        f"the purge was cleared.", fault=True, action="purge",
@@ -1030,10 +1143,31 @@ class Morning:
                 self.lasers.send_lock(lid, "the show is going live")
         self._was_live = live
         self._lock_channels_to_link()
+        self._check_flamesafe_lockout()
         try:
             self.checklist.tick(now)
         except Exception:
             pass
+
+    def _check_flamesafe_lockout(self):
+        """Said once (a fault line in the journal): this engine has a machine
+        locked out but flamesafe reports no lockout file at all, so the lock
+        is not enforced where the wire is written (review of PR #68, P2-2).
+        The purge is refused meanwhile (_locks_confirmed)."""
+        if self._fs_lock_said or not self.lockout.machines:
+            return
+        fl = self._flames_get() or {}
+        lk = fl.get("lockout") if isinstance(fl.get("lockout"), dict) else None
+        if lk is not None and lk.get("state") == "none" and not fl.get("stale"):
+            self._fs_lock_said = True
+            self._note("flamesafe has NO lockout_file in its config, so the "
+                       "machines locked out here are not held at zero by "
+                       "flamesafe. Set lockout_file in flamesafe.json to this "
+                       f"engine's {self.lockout.path} (the default when both "
+                       "files sit in the same folder) and restart flamesafe. "
+                       "Nothing fires from the Morning page until it "
+                       "confirms the lock.", fault=True, action="lockout",
+                       outcome="unconfirmed")
 
     def _watch(self):
         while not self._stop.wait(0.1):
@@ -1080,15 +1214,19 @@ class Morning:
     def status_view(self):
         """The compact part every screen shows: the lock banner and whether
         a purge or a laser test is going."""
+        um, ul = self.lockout.unknown(self.cfg)
         lm = [self.cfg.by_id[m].name for m in self.lockout.machines
-              if m in self.cfg.by_id]
-        ll = [l.name for l in self.cfg.lasers if l.id in self.lockout.lasers]
+              if m in self.cfg.by_id] + [f"{m} (not in ltcplay_morning.json)"
+                                        for m in um]
+        ll = [l.name for l in self.cfg.lasers if l.id in self.lockout.lasers] \
+            + [f"{l} (not in ltcplay_morning.json)" for l in ul]
         fl = self._flames_get() or {}
         fs_slots = (fl.get("lockout") or {}).get("slots")
         want = sorted(self.lockout.channels(self.cfg))
         confirmed = (fs_slots == want) if isinstance(fs_slots, list) else None
         return {"locked_machines": lm, "locked_lasers": ll,
                 "flamesafe_confirmed": confirmed,
+                "lock_error": self.lockout.problem(self.cfg),
                 "purge": self.purge.view()["firing"] or bool(
                     self.purge.selected),
                 "laser_tests_on": sorted(self.lasers.on),
@@ -1111,8 +1249,11 @@ class Morning:
         v["me"] = ctx_device
         return v
 
-    def post(self, name, body, device, who, seen_ok, local):
-        """(code, body) for the page's POST routes."""
+    def post(self, name, body, device, who, screen, seen_ok, local):
+        """(code, body) for the page's POST routes. `screen` is the surface
+        the engine gave the press (Rack screen, iPad at ..., or "Stream
+        Deck" for the deck process over loopback, which the purge fire
+        trusts as the deck whatever operator name it carries)."""
         body = body if isinstance(body, dict) else {}
         if name == "morning-open":
             self.open_beat(device)
@@ -1131,7 +1272,10 @@ class Morning:
             return self.purge.select(str(body.get("machine")), on, device,
                                      seen_ok)
         if name == "purge-fire":
-            deck = local and who == "Stream Deck"
+            # The deck process names itself in `screen` (streamdeck.PurgeFire
+            # sends screen "Stream Deck" and the operator's name in `who`),
+            # and only over loopback (review of PR #68, P1-2).
+            deck = local and screen == "Stream Deck"
             return self.purge.fire_beat(body, device if not deck else
                                         "Stream Deck", seen_ok or deck,
                                         deck=deck)
@@ -1158,6 +1302,14 @@ class Morning:
                 return 400, {"error": "kind has to be machine or laser."}
             uid = str(body.get("id") or "")
             on = body.get("on") is not False
+            if self.config_error:
+                # The machine list on this page is the default one, not
+                # Andy's: a lock written against it could name the wrong
+                # slots (review of PR #68, P1-3).
+                return 409, {"error": f"Nothing was locked or unlocked: "
+                                      f"ltcplay_morning.json could not be "
+                                      f"read ({self.config_error}). Fix it "
+                                      f"and restart the engine."}
             ok, text = self.lockout.set(self.cfg, kind, uid, on, who, device,
                                         reason=body.get("reason", ""),
                                         confirmed=body.get("confirmed"))
@@ -1178,5 +1330,5 @@ class Morning:
                        outcome="saved", screen=device)
             return 200, {"ok": True, "text": "Layout saved.", "layout": pos}
         if name.startswith("checklist-"):
-            return self.checklist.post(name, body, device, who, local)
+            return self.checklist.post(name, body, device, screen, local)
         return 404, {"error": "no such thing here"}

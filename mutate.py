@@ -8156,6 +8156,74 @@ def build():
   '''        if live and not self._was_live:''',
   '''        if False:'''),
 
+ ("morning: a Waver whose group arms late fires with its head still down (T12)",
+  "ltcplay/morning.py",
+  '''                    since = heads.setdefault(m.id, now)''',
+  '''                    since = f["start"] if f is not None else now'''),
+
+ ("morning: a machine joins a live fire press (T12)",
+  "ltcplay/morning.py",
+  '''        if self.press_live():''',
+  '''        if False:'''),
+
+ ("morning: the deck's heartbeat is taken for a page's (T3)",
+  "ltcplay/morning.py",
+  '''            deck = local and screen == "Stream Deck"''',
+  '''            deck = False'''),
+
+ ("morning: a lock table that cannot be trusted is written over (T5, T6)",
+  "ltcplay/morning.py",
+  '''        why = self.problem(cfg)
+        if why:
+            return False, (f"Nothing was locked or unlocked: {why}. The "''',
+  '''        why = self.problem(cfg)
+        if False:
+            return False, (f"Nothing was locked or unlocked: {why}. The "'''),
+
+ ("morning: another device's open page keeps the owner's purge selection alive (T4)",
+  "ltcplay/morning.py",
+  '''            self.purge.tick(now, self.device_open(self.purge.owner))''',
+  '''            self.purge.tick(now, self.page_open())'''),
+
+ ("morning: a purge goes while flamesafe has not confirmed the lock (T5)",
+  "ltcplay/morning.py",
+  '''        want = sorted(self.lockout.channels(self.cfg))
+        if not want:
+            return ""''',
+  '''        want = sorted(self.lockout.channels(self.cfg))
+        if True:
+            return ""'''),
+
+ ("remote: an iPad unlocks a machine or lights a laser test without screen_arming (T9, T10)",
+  "ltcplay/remote.py",
+  '''                not self.may_act_from(ctx.local):''',
+  '''                False:'''),
+
+ ("remote: a device that may not purge keeps the page open and the deck re-mapped (T11)",
+  "ltcplay/remote.py",
+  '''        if name == "morning-open" and not self.purge_enabled(ctx.local):''',
+  '''        if False:'''),
+
+ ("flamesafe: a deleted lockout file lifts every lock (T6)",
+  "flamesafe/service.py",
+  '''            if self._slots:
+                # A file that held locks and is gone (review of PR #68,''',
+  '''            if False:
+                # A file that held locks and is gone (review of PR #68,'''),
+
+ ("flamesafe: a lockout_file left out of the config locks nothing",
+  "flamesafe/config.py",
+  '''        lockout = "ltcplay_lockout.json" if source != "config" else None''',
+  '''        lockout = None'''),
+
+ ("deck: a purge arm skips the hold's own guards (T8)",
+  "ltcplay/streamdeck.py",
+  '''            self._do_arm_fire(i, now, who=who, screen="Morning page")
+            if not self.arm.wanted[i]:
+                continue             # refused; _do_arm_fire said why''',
+  '''            self.arm.set_group(i, True)
+            self.arm.send(self.names)'''),
+
  ("morning: a purge from the show network needs no screen_arming (T9)",
   "ltcplay/remote.py",
   '''        return bool(local) or rs["screen_arming"] is True''',
@@ -8283,11 +8351,6 @@ def build():
   '''            left = 0
             if left > 0:
                 self._log(f"Stream Deck: {self.names[i]} purge arm refused, "'''),
-
- ("deck: a purge arms while the rig is latched (T8)",
-  "ltcplay/streamdeck.py",
-  '''                m.get("purge_enabled") is not True or self._latched_now():''',
-  '''                m.get("purge_enabled") is not True:'''),
 
  ("deck: the page closing leaves the purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",

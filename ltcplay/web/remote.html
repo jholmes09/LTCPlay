@@ -752,6 +752,7 @@ function render(){
       " Unlock on the Morning and Shutdown page.";
   }
   if(mo && mo.config_error) lockText += (lockText ? " " : "") + "Morning and Shutdown settings: " + mo.config_error;
+  if(mo && mo.lock_error) lockText += (lockText ? " " : "") + "LOCKOUT NOT TRUSTED: " + mo.lock_error + ". Nothing fires from the Morning page.";
   setWarn("lock-banner", lockText);
   // Which LTC Player this is (its release and build id), so the version
   // on the screen can be read off against the Releases page by phone.
@@ -1022,7 +1023,12 @@ let MO = null, MO_OPEN = false, MO_TIMER = null, FIRE = null, ARRANGE = false, D
 let MO_TAB = null, MO_NAME = "", MO_KEY = "";
 function morningView(on){
   if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
-  if(!on && MO_OPEN){ MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left"); }
+  if(!on && MO_OPEN){
+    MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
+    // Leaving the page drops the purge selection now, not 2 s later when
+    // the open beats stop (the engine does that too, as the backstop).
+    post("/api/remote/purge-clear", moActor({})).catch(() => {});
+  }
 }
 async function morningPoll(){
   if(!MO_OPEN) return;
@@ -1173,15 +1179,22 @@ async function arrangeToggle(){
   ARRANGE = false; $("mo-arrange").textContent = "Arrange";
   moPress("layout", {positions: MO.layout || {}});
 }
-// The fire key: Space on this page. One keydown starts the heartbeats
-// (repeats are ignored); keyup, blur, the page hidden or closed, a
-// refused heartbeat or a stale page stops them. The engine and the flame
-// link also let go 0.25 s after the last heartbeat on their own.
+// The fire key: Space on this page. One keydown starts the heartbeats;
+// keyup, blur, the page hidden or closed, a refused heartbeat or a stale
+// page stops them. The heartbeats are NOT the key: the browser's key
+// repeat events are the evidence the key is still down (review of PR #68,
+// P1-4). A press older than KEY_REPEAT_GRACE_MS with no repeat event for
+// KEY_REPEAT_GAP_MS ends (a lost keyup, a browser that stopped delivering
+// events), and the page says the OS key repeat has to be on. The engine
+// and the flame link also let go 0.25 s after the last heartbeat on their
+// own; the Stream Deck's FIRE key is the true dead-man switch.
+const KEY_REPEAT_GRACE_MS = 1500, KEY_REPEAT_GAP_MS = 1000;
 document.addEventListener("keydown", e => {
-  if(e.code !== "Space" || e.repeat) return;
+  if(e.code !== "Space") return;
   if((location.hash || "").replace("#", "") !== "morning") return;
   if(e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   e.preventDefault();
+  if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }
   fireStart();
 });
 document.addEventListener("keyup", e => { if(e.code === "Space") fireStop("the key came up"); });
@@ -1191,12 +1204,16 @@ window.addEventListener("pagehide", () => fireStop("the page closed"));
 function fireStart(){
   if(FIRE) return;
   if(!MO || !((MO.purge_state || {}).selected || []).length){ $("mo-msg").textContent = "Nothing is armed for a purge. Click a machine first."; return; }
-  FIRE = {id:null};
+  FIRE = {id:null, startAt:Date.now(), repeatAt:0};
   fireBeat(FIRE);
 }
 async function fireBeat(f){
   if(FIRE !== f) return;
   if(isStale(Date.now(), LAST_OK, 1.0)){ fireStop("the page's status is not live"); return; }
+  const now = Date.now();
+  if(now - f.startAt > KEY_REPEAT_GRACE_MS && now - Math.max(f.repeatAt, f.startAt) > KEY_REPEAT_GAP_MS){
+    fireStop("no key repeat seen for 1 s: keep the Space bar down, and the OS key repeat must be on (or use the Stream Deck's FIRE key)"); return;
+  }
   try{
     const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id}));
     if(FIRE !== f) return;

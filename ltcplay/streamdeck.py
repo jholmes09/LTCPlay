@@ -2297,23 +2297,21 @@ class Controller:
         for i in sorted(entered):
             if self.arm.wanted[i]:
                 continue             # already armed by the operator
-            left = self._in_rearm_refractory(i, now)
-            if left > 0:
-                self._log(f"Stream Deck: {self.names[i]} purge arm refused, "
-                          f"{left:.1f} s left in the re-arm refractory "
-                          f"window after its last disarm. Click it again "
-                          f"on the page in a moment.", action="arm-refused",
-                          screen="Morning page")
-                continue
-            self.arm.set_group(i, True)
-            self.arm.send(self.names)
+            # The same guards as a completed hold, in the same code
+            # (_do_arm_fire, review of PR #68, P2-6): the latch and the
+            # refractory window re-checked at the moment of arming, and the
+            # operator gate (a purge needs a chosen operator on the deck,
+            # like any arm). Only the hold itself is waived (Jeff).
+            who = self.operator_provider() or ""
+            self._do_arm_fire(i, now, who=who, screen="Morning page")
+            if not self.arm.wanted[i]:
+                continue             # refused; _do_arm_fire said why
             self._purge_armed.add(i)
             self._log(f"Stream Deck: {self.names[i]} armed for a PURGE from "
                       f"the Morning and Shutdown page (a click, Jeff's "
                       f"exception to hold-to-arm). It is disarmed the "
                       f"moment the page stops asking for it.", action="arm",
-                      who=self.operator_provider() or "",
-                      screen="Morning page")
+                      who=who, screen="Morning page")
         for i in sorted(self._purge_armed - wanted):
             self._purge_armed.discard(i)
             if self.arm.wanted[i]:
@@ -2420,6 +2418,8 @@ class Controller:
         self.arm.set_group(i, True)
         self.arm.send(self.names)
         held = (f"held {ARM_HOLD_S:g} s" if screen == "Stream Deck" else
+                "a click on the Morning page, for a purge" if
+                screen == "Morning page" else
                 f"held {SCREEN_HOLD_S:g} s on the {screen}")
         self._log(f"Stream Deck: {self.names[i]} arm pressed ({held}) by "
                   f"{who or 'an operator the deck could not name'}.",

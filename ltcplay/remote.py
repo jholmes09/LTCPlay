@@ -1189,6 +1189,19 @@ class Remote:
             return False
         return bool(local) or rs["screen_arming"] is True
 
+    def may_act_from(self, local):
+        """May a device UNLOCK a machine or turn a laser test ON from here?
+        The show machine itself always; a device on the show network only
+        with screen_arming (review of PR #68, P2-4 and P2-5: the two things
+        on this page that raise risk from the network are gated like
+        arming). Locking stays open to every device: it only lowers risk."""
+        if local:
+            return True
+        try:
+            return load_settings(self.folder)["screen_arming"] is True
+        except (ValueError, OSError):
+            return False
+
     def _morning_journal(self, text, action="morning", outcome="done",
                          who="", screen="", fault=False, **_kw):
         self._journal(who or "system", screen or "engine", action, outcome,
@@ -1259,6 +1272,12 @@ class Remote:
             seen_ok = abs(self.wall() - seen / 1000.0) <= 1.0
         except (TypeError, ValueError):
             seen_ok = False
+        if name == "morning-open" and not self.purge_enabled(ctx.local):
+            # A device that may not purge from here reads the page but does
+            # not hold it "open": the deck re-maps itself and the purge
+            # selection lives only for devices that may arm one (review of
+            # PR #68, P2-8).
+            return 200, {"ok": True, "open": False, "view_only": True}
         if name in ("purge-select", "purge-fire") and \
                 body.get("on") is not False:
             if not self.purge_enabled(ctx.local):
@@ -1267,6 +1286,14 @@ class Remote:
                                       "network screen_arming, in "
                                       "ltcplay_remote.json).",
                              "let_go": True}
+        if ((name == "lock" and body.get("on") is False) or
+                (name == "laser-test" and body.get("on") is True)) and \
+                not self.may_act_from(ctx.local):
+            return 403, {"error": ("Unlocking" if name == "lock" else
+                                   "Turning a laser test on") +
+                         " from a device on the show network needs "
+                         "screen_arming true in ltcplay_remote.json. Do it on "
+                         "the show machine itself."}
         if name == "purge-select" and body.get("on") is not False:
             try:
                 deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
@@ -1278,7 +1305,7 @@ class Remote:
                                       "this engine in the last 2 s, and it "
                                       "is what arms a group for the purge. "
                                       "Nothing was armed."}
-        return m.post(name, body, device, who, seen_ok, ctx.local)
+        return m.post(name, body, device, who, screen, seen_ok, ctx.local)
 
     def _disarm_fn(self):
         if self._flame_disarm is not None:

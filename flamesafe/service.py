@@ -74,18 +74,27 @@ class LockoutFile:
         self._next_at = t + LOCKOUT_POLL_S
         try:
             st = os.stat(self.path)
-            stamp = (st.st_mtime_ns, st.st_size)
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
         except OSError:
             stamp = None
-        if stamp == self._stamp and self._state in ("read", "missing"):
+        if stamp == self._stamp and self._state in ("read", "missing",
+                                                     "missing_kept"):
             return self._slots, self._state
         self._stamp = stamp
         if stamp is None:
             if self._slots:
-                self._event("lockout", f"the lockout file {self.path} is "
-                                       f"gone: nothing is locked out any "
-                                       f"more")
-            self._slots = frozenset()
+                # A file that held locks and is gone (review of PR #68,
+                # P2-3): ltcplay's engine never deletes it, it only rewrites
+                # it, so this is a deletion by hand or a disk fault. The
+                # last set is KEPT until the engine writes the file again.
+                if self._state != "missing_kept":
+                    self._event("lockout", f"the lockout file {self.path} is "
+                                           f"gone: keeping the last lock set, "
+                                           f"{sorted(self._slots)}, until "
+                                           f"ltcplay writes the file again")
+                self._state = "missing_kept"
+                self._unreadable_said = False
+                return self._slots, self._state
             self._state = "missing"
             self._unreadable_said = False
             return self._slots, self._state

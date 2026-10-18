@@ -4890,9 +4890,26 @@ def test_lockout_zeroes_locked_slots_and_blocks_a_locked_group():
         check(rd.poll()[0] == frozenset({412}), "a new set is read")
         os.remove(path)
         t[0] += service_mod.LOCKOUT_POLL_S
-        check(rd.poll() == (frozenset(), "missing") and
-              any("is gone" in m for k, m in log.events if k == "lockout"),
-              "a file that goes away unlocks and is journaled")
+        check(rd.poll() == (frozenset({412}), "missing_kept") and
+              any("is gone" in m and "keeping the last lock set" in m
+                  for k, m in log.events if k == "lockout"),
+              "a file that held locks and goes away KEEPS the last set "
+              "(review of PR #68, P2-3: the engine never deletes it) and is "
+              "journaled")
+        n = len(log.events)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset({412}), "missing_kept") and
+              len(log.events) == n, "and not on every poll")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"lockout_format": 1, "flame_channels": []}, fh)
+        os.utime(path, (2000, 2000))
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "read"),
+              "the engine writing the file again (empty) unlocks")
+        os.remove(path)
+        t[0] += service_mod.LOCKOUT_POLL_S
+        check(rd.poll() == (frozenset(), "missing"),
+              "a file that held no locks and goes away reads as missing")
         # The service reads it before composing: a lock written by the
         # engine reaches the wire on the next tick after the poll.
         cfg = make_config(lockout_file=path)
@@ -4903,11 +4920,28 @@ def test_lockout_zeroes_locked_slots_and_blocks_a_locked_group():
         check(rel.lockout_file == os.path.join(
             os.path.realpath(d), "ltcplay_lockout.json"),
             f"a relative path is beside the config file: {rel.lockout_file}")
-        try:
-            make_config(lockout_file="")
-            check(False, "an empty lockout_file was accepted")
-        except config.ConfigError:
-            check(True, "an empty lockout_file is refused")
+        dflt = config.from_dict(example_dict(),
+                                source=os.path.join(d, "flamesafe.json"))
+        check(dflt.lockout_file == os.path.join(
+            os.path.realpath(d), "ltcplay_lockout.json"),
+            f"left out, the lockout file is ltcplay_lockout.json beside the "
+            f"config (review of PR #68, P2-2): {dflt.lockout_file}")
+        check(config.load(os.path.join(HERE, "flamesafe.example.json"))
+              .lockout_file == os.path.join(os.path.realpath(HERE),
+                                            "ltcplay_lockout.json"),
+              "the shipped example reads the file beside it")
+        check(make_config().lockout_file is None,
+              "a config with no file to sit beside has no default")
+        check(make_config(lockout_file=False).lockout_file is None,
+              "false switches the lockout off on purpose")
+        for bad_path in ("", "ltcplay_lockout.json", 7):
+            try:
+                make_config(lockout_file=bad_path)
+                check(False, f"lockout_file {bad_path!r} was accepted with no "
+                             f"config file to sit beside")
+            except config.ConfigError:
+                check(True, f"lockout_file {bad_path!r} is refused with no "
+                            f"config file to sit beside")
         tt = [0.0]
         svc = Service(cfg, arminput.ScriptedArmInput(cfg.n, names=NAMES),
                       clock=lambda: tt[0], log=Log(), sleep=lambda s: None)
