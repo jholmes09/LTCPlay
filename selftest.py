@@ -44242,8 +44242,43 @@ def test_morning_lockout_trust_link_and_close():
         m = build()
         st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
                          *rack)
-        check(st == 200 and m.lockout.is_locked("machine", "w1"),
+        check(st == 200 and m.lockout.is_locked("machine", "w1") and
+              m.lockout.wrote,
               "and locks work again")
+        # The settle time belongs to a REAL write only (second review,
+        # P3-1): flamesafe starts holding a slot this engine does not know
+        # right after the write; a no-op lock ("already locked", nothing
+        # written) every second must not keep hiding it past LOCK_SETTLE_S.
+        fsview.update(slots=[431, 432, 433, 999], state="read")
+        check(m.lock_problem() == "", "inside the settle time: not yet said")
+        for _ in range(4):
+            clk[0] += 1.0
+            st, out = m.post("lock", {"kind": "machine", "id": "w1",
+                                      "on": True}, *rack)
+            if st != 200:
+                break
+            check("already locked" in out["text"] and not m.lockout.wrote,
+                  f"a no-op lock answers without writing: {out}")
+        check(st == 409 and "does not know about" in out["error"],
+              f"4 s of no-op locks later the extra slot is said and the "
+              f"lock refused; the no-ops did not restart the settle time: "
+              f"{st} {out}")
+        # An unlock does earn it (P3-12's own case, the lock route): right
+        # after, flamesafe's old report of w1's slots is not a problem.
+        fsview.update(slots=[431, 432, 433], state="read")
+        check(m.lock_problem() == "", "flamesafe agrees again")
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": False,
+                                  "confirmed": True}, *rack)
+        check(st == 200 and m.lockout.wrote and
+              m.lockout.channels(m.cfg) == set() and
+              m.lock_problem() == "" and m.status_view()["lock_error"] == "",
+              f"an unlock is written and flamesafe's old report (431 to 433) "
+              f"is not a problem for the settle time: {out} "
+              f"{m.lock_problem()!r}")
+        clk[0] += MO.LOCK_SETTLE_S + 0.5
+        check("does not know about" in m.lock_problem(),
+              "but after the settle time it is")
+        fsview.update(slots=[], state="read")
         m.close()
         # (e) flamesafe reading another lockout file than this engine writes
         # is said at start (review of PR #68, P2-12).

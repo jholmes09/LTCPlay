@@ -509,6 +509,10 @@ class Lockout:
         # apart from what the config resolves them to, so a config edited
         # under a lock is noticed (review of PR #68, P3-10). None: no file.
         self.file_channels = None
+        # True when the last set() or rewrite() actually wrote the file (an
+        # "already locked" answer, or a save that failed, did not): only a
+        # real write earns flamesafe's settle time (second review, P3-1).
+        self.wrote = False
         self._load()
 
     def _load(self):
@@ -612,6 +616,7 @@ class Lockout:
         can account for. Local, confirmed, and journaled as a fault. (ok,
         sentence)."""
         um, ul = self.unknown(cfg)
+        self.wrote = False
         with self._lock:
             for m in um:
                 self.machines.pop(m, None)
@@ -622,6 +627,7 @@ class Lockout:
             except OSError as e:
                 return False, (f"The lockout file could NOT be written ({e}). "
                                f"Nothing changed.")
+            self.wrote = True
             self.load_error = ""
         self._note(f"{who or device} REWROTE the lockout file from this "
                    f"engine's table: flame slots {self.file_channels}"
@@ -638,6 +644,7 @@ class Lockout:
         confirmed True: one deliberate confirm (Jeff). A lock never does.
         Nothing is written while the table cannot be trusted (problem):
         a write from a half known table would lift flamesafe's locks."""
+        self.wrote = False
         why = self.problem(cfg)
         if why:
             return False, (f"Nothing was locked or unlocked: {why}. The "
@@ -670,6 +677,7 @@ class Lockout:
             try:
                 self.save(cfg)
                 saved = ""
+                self.wrote = True
             except OSError as e:
                 saved = (f" The lockout file could NOT be written ({e}): "
                          f"flamesafe will not see this change. The lock is "
@@ -1512,7 +1520,7 @@ class Morning:
                                           f"cannot be read "
                                           f"({self.config_error})."}
                 ok, text = self.lockout.rewrite(self.cfg, who, device)
-                if ok:
+                if ok and self.lockout.wrote:
                     self._lock_written_at = self._clock()
                 self._lock_channels_to_link()
                 return (200 if ok else 409), ({"ok": True, "text": text} if ok
@@ -1537,7 +1545,11 @@ class Morning:
             ok, text = self.lockout.set(self.cfg, kind, uid, on, who, device,
                                         reason=body.get("reason", ""),
                                         confirmed=body.get("confirmed"))
-            if ok:
+            if ok and self.lockout.wrote:
+                # Only a real write of the file earns flamesafe's settle time
+                # (LOCK_SETTLE_S): an "already locked" answer, or a save that
+                # failed, must not keep hiding slots flamesafe holds beyond
+                # this table (second review, P3-1).
                 self._lock_written_at = self._clock()
             if ok and on:
                 if kind == "machine" and uid in self.purge.selected:

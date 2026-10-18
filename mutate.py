@@ -8107,6 +8107,21 @@ def build():
   '''        if False:
             # This engine just wrote the file'''),
 
+ ("morning: a no-op lock (nothing written) restarts flamesafe's settle time",
+  "ltcplay/morning.py",
+  '''            if ok and self.lockout.wrote:
+                # Only a real write of the file earns flamesafe's settle time''',
+  '''            if ok:
+                # Only a real write of the file earns flamesafe's settle time'''),
+
+ ("morning: a lock or unlock earns no settle time, so flamesafe's old report "
+  "reads as a lock problem",
+  "ltcplay/morning.py",
+  '''                self._lock_written_at = self._clock()
+            if ok and on:''',
+  '''                pass
+            if ok and on:'''),
+
  ("morning: a Waver fires before its head is up (T12)",
   "ltcplay/morning.py",
   '''                    if now - since < w["head_settle_s"]:''',
