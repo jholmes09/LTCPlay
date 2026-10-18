@@ -1025,9 +1025,11 @@ function morningView(on){
   if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
   if(!on && MO_OPEN){
     MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
-    // Leaving the page drops the purge selection now, not 2 s later when
+    // Leaving the page drops OUR purge selection now, not 2 s later when
     // the open beats stop (the engine does that too, as the backstop).
-    post("/api/remote/purge-clear", moActor({})).catch(() => {});
+    // Another device's selection is not ours to clear.
+    if(MO && MO.purge_state && MO.purge_state.owner && MO.purge_state.owner === MO.me)
+      post("/api/remote/purge-clear", moActor({})).catch(() => {});
   }
 }
 async function morningPoll(){
@@ -1098,6 +1100,21 @@ function renderMorning(){
   k.textContent = purge.firing ? "FIRING" : any ? "Hold SPACE to fire" : "Click a machine or a group to arm it";
   if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
   if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
+  // A lock problem (the file and the config, or flamesafe, disagree): the
+  // one way out is a confirmed rewrite on the show machine itself.
+  let rw = $("mo-rewrite");
+  const problem = (mo.lockout && mo.lockout.problem) || (mo.flamesafe_extra && mo.flamesafe_extra.length ? "flamesafe holds slots " + mo.flamesafe_extra.join(", ") + " this engine does not know about" : "");
+  if(problem && ME && ME.local){
+    if(!rw){
+      rw = document.createElement("button"); rw.id = "mo-rewrite"; rw.className = "ghost";
+      rw.textContent = "Rewrite the lockout file";
+      rw.addEventListener("click", async () => {
+        if(await confirmBox("Rewrite the lockout file?", "flamesafe will then hold at zero exactly the machines this page shows as locked out, and nothing else: " + problem + ".", "Rewrite", "start"))
+          moPress("lock", {kind:"rewrite", confirmed:true});
+      });
+      $("mo-groups").appendChild(rw);
+    }
+  } else if(rw) rw.remove();
   // Lasers.
   const lb = $("mo-lasers");
   const lkey = (mo.lasers || []).map(l => l.id).join("\n");
@@ -1188,7 +1205,7 @@ async function arrangeToggle(){
 // events), and the page says the OS key repeat has to be on. The engine
 // and the flame link also let go 0.25 s after the last heartbeat on their
 // own; the Stream Deck's FIRE key is the true dead-man switch.
-const KEY_REPEAT_GRACE_MS = 1500, KEY_REPEAT_GAP_MS = 1000;
+const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;
 document.addEventListener("keydown", e => {
   if(e.code !== "Space") return;
   if((location.hash || "").replace("#", "") !== "morning") return;

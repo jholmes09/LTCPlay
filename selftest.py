@@ -42557,6 +42557,8 @@ def test_morning_config_layout_and_lockout_file():
     bad("a purge key nobody has", with_(purge={"gflame": 1}))
     bad("a head settle time of a minute",
         with_(purge={"waver": {"head_settle_s": 60}}))
+    bad("a head settle time of 0 (the head always goes up first)",
+        with_(purge={"waver": {"head_settle_s": 0}}))
     bad("a laser mechanism nobody has",
         with_(lasers=[{"id": "l1", "mechanism": "magic"}]))
     bad("an osc laser with no messages",
@@ -42901,6 +42903,15 @@ def test_purge_rules_at_the_engine():
               f"nor can the deck process carry on the page's press with its "
               f"id; the page's own press is not ended by the refusal: {st} "
               f"{out}")
+        # Nor can another device end the owner's press or selection
+        # (review of PR #68, P2-11); Abort is the path everyone has.
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop", {}, client=ipad)
+        check(st == 409 and R.m.purge.fire is not None,
+              f"another device cannot stop the owner's press: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-clear", {},
+                            client=ipad)
+        check(st == 409 and R.m.purge.selected == ["g1"],
+              f"nor clear the owner's selection: {st} {out}")
         # A gap of more than 0.25 s ends the press.
         before = link.cleared
         R.mono[0] += 0.3
@@ -42973,6 +42984,31 @@ def test_purge_rules_at_the_engine():
         check(f[430] == 230 and f[431] == 100 and f[432] == 200 and
               out["firing"] == ["Ground 1", "Waver 1"],
               f"past head_settle_s: the Waver fires with its head up: {out}")
+        # The group drops out of ARMED mid press (a deck tap, flamesafe
+        # holding it): the head falls, and the next arm waits the full
+        # settle time over again (review of PR #68, P2-10).
+        R.groups[2]["armed"] = "disarmed"
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[430] == 0 and f[431] == 0 and f[432] == 0 and
+              any("not armed" in w for w in out["waiting"]),
+              f"disarmed mid press: nothing on the Waver, not even its head: "
+              f"{out}")
+        R.groups[2]["armed"] = "armed"
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
+              and any("head going up" in w for w in out["waiting"]),
+              f"armed again: the head goes up first, no fire, the settle "
+              f"time starts over: {out}")
         # The key comes up: cleared at once.
         before = link.cleared
         st, _h, out = R.ask("POST", "/api/remote/purge-stop", {}, client=loop)
@@ -43231,7 +43267,9 @@ def test_purge_rules_at_the_engine():
                      "KEY_REPEAT_GAP_MS", 'addEventListener("keyup"',
                      'addEventListener("blur"', '"visibilitychange"',
                      '"pagehide"', '/api/remote/purge-clear'):
-            check(want in html, f"the page carries {want!r}")
+            check(want in html, f"the page's script carries {want!r} (wording "
+                                f"only: the script has no test harness here, "
+                                f"so this proves presence, not behaviour)")
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
                             {"seen": R.seen()}, client=loop,
@@ -43935,9 +43973,13 @@ def test_morning_lockout_trust_link_and_close():
               f"an unreadable lockout file is said on every screen: {sv}")
         st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
                          *rack)
-        check(st == 409 and "not touched" in out["error"] and
+        check(st == 409 and "could not be read" in out["error"] and
               open(lk, encoding="utf-8").read() == "{ broken",
               f"a lock is refused and the file is not written over: {out}")
+        ok, text = m.lockout.set(m.cfg, "machine", "g1", True, "", "Rack")
+        check(not ok and "not touched" in text and
+              open(lk, encoding="utf-8").read() == "{ broken",
+              f"and the table itself refuses too (the belt): {text}")
         st, out = m.post("purge-select", {"machine": "g1"}, *rack)
         check(st == 409 and "lockout file" in out["error"] and
               m.purge.selected == [], f"no purge: {out}")
@@ -43983,9 +44025,28 @@ def test_morning_lockout_trust_link_and_close():
             _j.dump(cfg2, fh)
         m = build()
         sv = m.status_view()
-        check(sv["lock_error"] == "" and
+        check("config changed under a lock" in sv["lock_error"] and
               set(sv["locked_machines"]) == {"Ground 2", "Ghost"},
-              f"resolved: both locks read back: {sv}")
+              f"both ids resolve now, but the file's slots (412, 999) and "
+              f"the config's (412, 413) differ: said, not guessed: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before,
+              "still nothing is written until it is rewritten on purpose")
+        # The one way out: a confirmed rewrite on the show machine itself.
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True},
+                         "iPad at 10.20.0.44", "", "iPad", True, False)
+        check(st == 403 and open(lk, encoding="utf-8").read() == before,
+              f"a rewrite from the network is refused: {out}")
+        st, out = m.post("lock", {"kind": "rewrite"}, *rack)
+        check(st == 409 and "confirm" in out["error"], "and needs a confirm")
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [412, 413] and
+              m.status_view()["lock_error"] == "",
+              f"rewritten from the table: 412 and 413, resolved: {out}")
+        check(any(f.get("outcome") == "rewritten" and f.get("fault")
+                  for t, f in lines), "and journaled as a fault")
         fsview["slots"] = [412, 413]
         st, out = m.post("lock", {"kind": "machine", "id": "ghost",
                                   "on": False, "confirmed": True}, *rack)
@@ -44011,6 +44072,79 @@ def test_morning_lockout_trust_link_and_close():
         check(not m.lasers.on and len(osc) > n and
               osc[-1][1].startswith(b"/beyond/general/stopcue"),
               "close turns it off with the laser's off list")
+        # (d) The engine starts with NO lockout file while flamesafe still
+        # holds a set (the file was deleted; flamesafe kept it, missing_kept):
+        # nothing is written and nothing fires until it is resolved on
+        # purpose, or writing the table would lift flamesafe's lock
+        # silently (review of PR #68, P1-5).
+        os.remove(lk)
+        fsview.clear()
+        fsview.update(slots=[412], state="missing_kept")
+        del lines[:]
+        m = build()
+        sv = m.status_view()
+        check("does not know about" in sv["lock_error"] and
+              sv["flamesafe_extra"] == [412] and sv["locked_machines"] == [],
+              f"flamesafe holds 412, this engine knows nothing: said: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
+                         *rack)
+        check(st == 409 and not os.path.exists(lk),
+              f"a lock is refused and no file is written, so flamesafe keeps "
+              f"412: {out}")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and "does not know about" in out["error"],
+              f"no purge: {out}")
+        m.tick()
+        check(any(f.get("outcome") == "unconfirmed" and "disappeared" in t
+                  for t, f in lines), "journaled as a fault")
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [], "the deliberate way out writes an "
+                                          "empty file (flamesafe then lifts "
+                                          "412)")
+        fsview.update(slots=[], state="read")
+        check(m.status_view()["lock_error"] == "", "resolved")
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
+                         *rack)
+        check(st == 200 and m.lockout.is_locked("machine", "w1"),
+              "and locks work again")
+        m.close()
+        # (e) flamesafe reading another lockout file than this engine writes
+        # is said at start (review of PR #68, P2-12).
+        d2 = tempfile.mkdtemp()
+        try:
+            fs2 = os.path.join(d2, "flamesafe.json")
+            with open(fs2, "w", encoding="utf-8") as fh:
+                _j.dump(_MO_FLAMESAFE, fh)
+            del lines[:]
+            m = MO.Morning(d, flamesafe_config=fs2, link_get=lambda: None,
+                           flames_get=flames, live_check=lambda: "",
+                           group_names=lambda: names,
+                           journal=lambda t, **f: lines.append((t, f)),
+                           threaded=False, socket_factory=_Sock)
+            m.close()
+            check(any(f.get("outcome") == "unconfirmed" and "never seen there"
+                      in t and d2 in t and d in t for t, f in lines),
+                  f"flamesafe.json in another folder: both paths named: "
+                  f"{[t[:80] for t, f in lines]}")
+            with open(fs2, "w", encoding="utf-8") as fh:
+                _j.dump(dict(_MO_FLAMESAFE, lockout_file=False), fh)
+            del lines[:]
+            m = MO.Morning(d, flamesafe_config=fs2, link_get=lambda: None,
+                           flames_get=flames, live_check=lambda: "",
+                           group_names=lambda: names,
+                           journal=lambda t, **f: lines.append((t, f)),
+                           threaded=False, socket_factory=_Sock)
+            m.close()
+            check(any(f.get("outcome") == "unconfirmed" and "false" in t
+                      for t, f in lines), "lockout_file false: said")
+            del lines[:]
+            m = build()
+            m.close()
+            check(not any(f.get("outcome") == "unconfirmed" for t, f in lines),
+                  "the same folder: nothing to say")
+        finally:
+            shutil.rmtree(d2, ignore_errors=True)
     finally:
         shutil.rmtree(d, ignore_errors=True)
     print("  ok")

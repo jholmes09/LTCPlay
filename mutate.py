@@ -8096,17 +8096,17 @@ def build():
 
  ("morning: a machine fires before flamesafe reports its group armed (T13)",
   "ltcplay/morning.py",
-  '''            if m.group not in armed:
-                waiting.append(f"{m.name}: group {m.group} is not armed")
-                continue''',
-  '''            if False:
-                waiting.append(f"{m.name}: group {m.group} is not armed")
-                continue'''),
+  '''                if m.group not in armed:
+                    waiting.append(f"{m.name}: group {m.group} is not armed")
+                    continue''',
+  '''                if False:
+                    waiting.append(f"{m.name}: group {m.group} is not armed")
+                    continue'''),
 
  ("morning: a Waver fires before its head is up (T12)",
   "ltcplay/morning.py",
-  '''                if now - head_since < w["head_settle_s"]:''',
-  '''                if False:'''),
+  '''                    if now - since < w["head_settle_s"]:''',
+  '''                    if False:'''),
 
  ("morning: unlocking a machine needs no confirm",
   "ltcplay/morning.py",
@@ -8184,6 +8184,42 @@ def build():
   "ltcplay/morning.py",
   '''            self.purge.tick(now, self.device_open(self.purge.owner))''',
   '''            self.purge.tick(now, self.page_open())'''),
+
+ ("morning: locks flamesafe still holds and this engine does not know are written over (T6)",
+  "ltcplay/morning.py",
+  '''        extra = self._flamesafe_extra()
+        if extra:
+            return (f"flamesafe holds flame slots {extra} locked that this "''',
+  '''        extra = self._flamesafe_extra()
+        if False:
+            return (f"flamesafe holds flame slots {extra} locked that this "'''),
+
+ ("morning: a config changed under a lock is written over (T5)",
+  "ltcplay/morning.py",
+  '''        if self.file_channels is not None and \\
+                set(self.file_channels) != self.channels(cfg):''',
+  '''        if False:'''),
+
+ ("morning: a Waver's head clock survives its group dropping out of ARMED (T12)",
+  "ltcplay/morning.py",
+  '''                    heads.pop(mid, None)
+                    waiting.append(f"{m.name}: group {m.group} is not armed")''',
+  '''                    waiting.append(f"{m.name}: group {m.group} is not armed")'''),
+
+ ("morning: any device stops or clears the owner's purge (T3)",
+  "ltcplay/morning.py",
+  '''            if not mine and (pv["selected"] or pv["firing"]):''',
+  '''            if False:'''),
+
+ ("morning: flamesafe reading another lockout file than this engine writes goes unsaid (T6)",
+  "ltcplay/morning.py",
+  '''        elif os.path.realpath(p) != mine:''',
+  '''        elif False:'''),
+
+ ("morning: a Waver may be given no head-up time at all (T12)",
+  "ltcplay/morning.py",
+  '''HEAD_SETTLE_MIN_S = 0.5''',
+  '''HEAD_SETTLE_MIN_S = 0.0'''),
 
  ("morning: a purge goes while flamesafe has not confirmed the lock (T5)",
   "ltcplay/morning.py",

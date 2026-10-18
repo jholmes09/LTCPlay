@@ -64,6 +64,9 @@ PURGE_DEFAULTS = {"gflame_fire": 255,
                             "head_settle_s": 1.5, "fire": 255},
                   "fireball": {"fire": 255}}
 HEAD_SETTLE_MAX_S = 10.0
+# Never 0: a Waver's head always goes up BEFORE it fires (review of PR #68,
+# P3-11); the shortest wait a config may ask for.
+HEAD_SETTLE_MIN_S = 0.5
 
 
 class MorningConfigError(ValueError):
@@ -215,10 +218,11 @@ def parse_purge(doc, where):
     if "head_settle_s" in w:
         s = w["head_settle_s"]
         if isinstance(s, bool) or not isinstance(s, (int, float)) or \
-                not 0 <= s <= HEAD_SETTLE_MAX_S:
+                not HEAD_SETTLE_MIN_S <= s <= HEAD_SETTLE_MAX_S:
             raise MorningConfigError(f"{where}: purge.waver.head_settle_s "
-                                     f"has to be 0 to {HEAD_SETTLE_MAX_S:g} "
-                                     f"seconds.")
+                                     f"has to be {HEAD_SETTLE_MIN_S:g} to "
+                                     f"{HEAD_SETTLE_MAX_S:g} seconds (the head "
+                                     f"always goes up first).")
         out["waver"]["head_settle_s"] = float(s)
     fb = doc.get("fireball", {})
     if not isinstance(fb, dict):
@@ -497,6 +501,10 @@ class Lockout:
         self.machines = {}      # id -> {"since", "who", "device", "reason"}
         self.lasers = {}
         self.load_error = ""
+        # The flame_channels the FILE names (what flamesafe enforces), kept
+        # apart from what the config resolves them to, so a config edited
+        # under a lock is noticed (review of PR #68, P3-10). None: no file.
+        self.file_channels = None
         self._load()
 
     def _load(self):
@@ -512,6 +520,10 @@ class Lockout:
                 doc.get("lockout_format") != LOCKOUT_FORMAT:
             self.load_error = f"{self.path} is not a lockout file."
             return
+        chans = doc.get("flame_channels")
+        self.file_channels = sorted(c for c in chans if isinstance(c, int)
+                                    and not isinstance(c, bool)) \
+            if isinstance(chans, list) else []
         for kind in ("machines", "lasers"):
             got = doc.get(kind)
             if isinstance(got, dict):
@@ -549,6 +561,7 @@ class Lockout:
                "flame_channels": sorted(self.channels(cfg)),
                "machines": self.machines, "lasers": self.lasers}
         _write_json(self.path, doc)
+        self.file_channels = doc["flame_channels"]
 
     def is_locked(self, kind, uid):
         return uid in (self.machines if kind == "machine" else self.lasers)
@@ -574,7 +587,41 @@ class Lockout:
                     f"{', '.join(um + ul)}, which ltcplay_morning.json does "
                     f"not (renamed, or the file could not be read); fix the "
                     f"config, then restart the engine")
+        if self.file_channels is not None and \
+                set(self.file_channels) != self.channels(cfg):
+            return (f"the lockout file holds flame slots "
+                    f"{self.file_channels} but ltcplay_morning.json now gives "
+                    f"the locked machines {sorted(self.channels(cfg))}: the "
+                    f"config changed under a lock; check it, then use "
+                    f"'Rewrite the lockout file' on the show machine")
         return ""
+
+    def rewrite(self, cfg, who, device):
+        """The one deliberate way out of a problem() (review of PR #68,
+        P1-5, P3-10): write the file again from THIS table, dropping ids
+        the config does not know, so flamesafe follows what this engine
+        can account for. Local, confirmed, and journaled as a fault. (ok,
+        sentence)."""
+        um, ul = self.unknown(cfg)
+        with self._lock:
+            for m in um:
+                self.machines.pop(m, None)
+            for l in ul:
+                self.lasers.pop(l, None)
+            try:
+                self.save(cfg)
+            except OSError as e:
+                return False, (f"The lockout file could NOT be written ({e}). "
+                               f"Nothing changed.")
+            self.load_error = ""
+        self._note(f"{who or device} REWROTE the lockout file from this "
+                   f"engine's table: flame slots {self.file_channels}"
+                   f"{', dropping ' + ', '.join(um + ul) if um or ul else ''}"
+                   f". Whatever flamesafe held beyond that is lifted.",
+                   action="lockout", outcome="rewritten", fault=True,
+                   who=who, screen=device)
+        return True, (f"The lockout file was written again: flame slots "
+                      f"{self.file_channels} are locked out, nothing else.")
 
     def set(self, cfg, kind, uid, on, who, device, reason="",
             confirmed=False):
@@ -635,6 +682,7 @@ class Lockout:
                 "lasers": {k: dict(v) for k, v in self.lasers.items()},
                 "flame_channels": sorted(self.channels(cfg)),
                 "file": self.path, "load_error": self.load_error,
+                "file_channels": self.file_channels,
                 "unknown_machines": um, "unknown_lasers": ul,
                 "problem": self.problem(cfg)}
 
@@ -808,9 +856,15 @@ class Purge:
                 if m is None:
                     continue
                 if self._lockout.is_locked("machine", mid):
+                    heads.pop(mid, None)
                     waiting.append(f"{m.name}: locked out")
                     continue
                 if m.group not in armed:
+                    # Its head clock starts over: a group that drops out of
+                    # ARMED mid press (a deck tap, flamesafe holding it)
+                    # lets the head fall, so the next arm waits the full
+                    # settle time again (review of PR #68, P2-10).
+                    heads.pop(mid, None)
                     waiting.append(f"{m.name}: group {m.group} is not armed")
                     continue
                 p = cfg.purge
@@ -1031,7 +1085,9 @@ class Morning:
         self._was_live = False       # the watcher's last word on live_check
         self._stop = threading.Event()
         self._thread = None
+        self._fs_lockout_path = None
         self._lock_channels_to_link()
+        self._check_lockout_paths()
         if threaded:
             self._thread = threading.Thread(target=self._watch, daemon=True,
                                             name="ltcplay-morning-watch")
@@ -1051,15 +1107,55 @@ class Morning:
             return (f"ltcplay_morning.json could not be read "
                     f"({self.config_error}), so nothing fires from this page "
                     f"until it is fixed.")
-        lock_problem = self.lockout.problem(self.cfg)
+        lock_problem = self.lock_problem()
         if lock_problem:
             # What is locked out is not known for certain (review of PR
-            # #68, P1-3): nothing fires and no laser test lights until it is.
+            # #68, P1-3, P1-5): nothing fires and no laser test lights
+            # until it is.
             return f"{lock_problem}; nothing fires from this page until then."
+        return self._live_sentence()
+
+    def _live_sentence(self):
+        """live_check alone: a show live or an Abort standing, or ""."""
         try:
             return self._live_check() or ""
         except Exception as e:
             return f"the show state could not be read ({type(e).__name__})."
+
+    def _flamesafe_extra(self):
+        """Flame slots flamesafe reports locked that this engine cannot
+        account for (review of PR #68, P1-5): the lockout file was deleted
+        or replaced and flamesafe kept the last set (missing_kept), or this
+        engine started with no file while flamesafe still holds one.
+        Writing the file from this table would lift them silently, so
+        until it is resolved nothing is written and nothing fires."""
+        fl = self._flames_get() or {}
+        lk = fl.get("lockout") if isinstance(fl.get("lockout"), dict) else None
+        if lk is None or fl.get("stale"):
+            return []
+        try:
+            slots = {int(s) for s in lk.get("slots") or []}
+        except (TypeError, ValueError):
+            return []
+        return sorted(slots - self.lockout.channels(self.cfg))
+
+    def lock_problem(self):
+        """Why the lock state cannot be trusted right now, or "": the
+        table's own problems (an unreadable file, ids the config lacks, a
+        config changed under a lock) and flamesafe holding slots this engine
+        does not know about."""
+        why = self.lockout.problem(self.cfg)
+        if why:
+            return why
+        extra = self._flamesafe_extra()
+        if extra:
+            return (f"flamesafe holds flame slots {extra} locked that this "
+                    f"engine does not know about (its lockout file was "
+                    f"deleted or replaced, or the engine was restarted "
+                    f"without it); restore the file, or on the show machine "
+                    f"use 'Rewrite the lockout file' to lift them "
+                    f"deliberately")
+        return ""
 
     def _locks_confirmed(self):
         """"" while flamesafe reports the very slots this engine has locked
@@ -1095,10 +1191,15 @@ class Morning:
         return at is not None and self._clock() - at <= OPEN_STALE_S
 
     def _lock_channels_to_link(self):
+        """The flame link's belt: every slot the table resolves to, AND
+        every slot the file itself names (so a machine the config no longer
+        knows is still zeroed here while the problem stands)."""
         link = self._link_get()
         if link is not None and hasattr(link, "set_locked_channels"):
             try:
-                link.set_locked_channels(self.lockout.channels(self.cfg))
+                link.set_locked_channels(
+                    self.lockout.channels(self.cfg)
+                    | set(self.lockout.file_channels or ()))
             except Exception:
                 pass
 
@@ -1133,7 +1234,7 @@ class Morning:
             why = self._live_or_broken()
             if why:
                 self.lasers.all_off(why)
-        live = bool(self._live_or_broken())
+        live = bool(self._live_sentence())
         if live and not self._was_live:
             # A show going live (or an Abort landing) while a laser is
             # locked out: its lock messages go again (MORNING.md: "at every
@@ -1154,11 +1255,14 @@ class Morning:
         locked out but flamesafe reports no lockout file at all, so the lock
         is not enforced where the wire is written (review of PR #68, P2-2).
         The purge is refused meanwhile (_locks_confirmed)."""
-        if self._fs_lock_said or not self.lockout.machines:
+        if self._fs_lock_said:
             return
         fl = self._flames_get() or {}
         lk = fl.get("lockout") if isinstance(fl.get("lockout"), dict) else None
-        if lk is not None and lk.get("state") == "none" and not fl.get("stale"):
+        if lk is None or fl.get("stale"):
+            return
+        state = lk.get("state")
+        if state == "none" and self.lockout.machines:
             self._fs_lock_said = True
             self._note("flamesafe has NO lockout_file in its config, so the "
                        "machines locked out here are not held at zero by "
@@ -1168,6 +1272,72 @@ class Morning:
                        "Nothing fires from the Morning page until it "
                        "confirms the lock.", fault=True, action="lockout",
                        outcome="unconfirmed")
+        elif state == "missing" and self.lockout.machines:
+            self._fs_lock_said = True
+            self._note("flamesafe reads a lockout file that does not exist, "
+                       f"while this engine writes {self.lockout.path}: its "
+                       f"lockout_file points elsewhere"
+                       f"{' (' + self._fs_lockout_path + ')' if self._fs_lockout_path else ''}"
+                       ". The machines locked out here are not held at zero "
+                       "by flamesafe. Nothing fires from the Morning page "
+                       "until it confirms the lock.", fault=True,
+                       action="lockout", outcome="unconfirmed")
+        elif state == "missing_kept":
+            self._fs_lock_said = True
+            self._note(f"flamesafe is holding flame slots "
+                       f"{sorted(lk.get('slots') or [])} locked from a lockout "
+                       f"file that has disappeared; this engine's table knows "
+                       f"{sorted(self.lockout.channels(self.cfg))}. Restore "
+                       f"the file, or rewrite it deliberately on the show "
+                       f"machine.", fault=True, action="lockout",
+                       outcome="unconfirmed")
+
+    def _flamesafe_lockout_path(self):
+        """The lockout file flamesafe will read, worked out from its config
+        by the same rule flamesafe uses (left out: beside the config; false:
+        none), or None when it cannot be told. Read as plain JSON; ltcplay
+        never imports flamesafe."""
+        if not self.flamesafe_config:
+            return None
+        try:
+            with open(self.flamesafe_config, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        got = doc.get("lockout_file") if isinstance(doc, dict) else None
+        if got is False:
+            return ""
+        if got is None:
+            got = LOCKOUT_FILE
+        if not isinstance(got, str) or not got.strip():
+            return None
+        got = got.strip()
+        if not os.path.isabs(got):
+            got = os.path.join(os.path.dirname(os.path.realpath(
+                self.flamesafe_config)), got)
+        return got
+
+    def _check_lockout_paths(self):
+        """Said once at start (review of PR #68, P2-12): flamesafe will read
+        another file than the one this engine writes, so no lock set here
+        can ever be confirmed there."""
+        self._fs_lockout_path = self._flamesafe_lockout_path()
+        p = self._fs_lockout_path
+        if p is None:
+            return
+        mine = os.path.realpath(self.lockout.path)
+        if p == "":
+            self._note("flamesafe's config switches its lockout_file off "
+                       "(false): nothing locked out on the Morning page is "
+                       "held at zero by flamesafe, and no purge can go while "
+                       "anything is locked.", fault=True, action="lockout",
+                       outcome="unconfirmed")
+        elif os.path.realpath(p) != mine:
+            self._note(f"flamesafe reads its lockout file at {p} but this "
+                       f"engine writes {mine}: a lock set here is never seen "
+                       f"there. Set lockout_file in flamesafe.json to the "
+                       f"engine's path (or keep both files in one folder).",
+                       fault=True, action="lockout", outcome="unconfirmed")
 
     def _watch(self):
         while not self._stop.wait(0.1):
@@ -1226,7 +1396,8 @@ class Morning:
         confirmed = (fs_slots == want) if isinstance(fs_slots, list) else None
         return {"locked_machines": lm, "locked_lasers": ll,
                 "flamesafe_confirmed": confirmed,
-                "lock_error": self.lockout.problem(self.cfg),
+                "lock_error": self.lock_problem(),
+                "flamesafe_extra": self._flamesafe_extra(),
                 "purge": self.purge.view()["firing"] or bool(
                     self.purge.selected),
                 "laser_tests_on": sorted(self.lasers.on),
@@ -1277,12 +1448,24 @@ class Morning:
             # and only over loopback (review of PR #68, P1-2).
             deck = local and screen == "Stream Deck"
             return self.purge.fire_beat(body, device if not deck else
-                                        "Stream Deck", seen_ok or deck,
-                                        deck=deck)
-        if name == "purge-stop":
-            self.purge.stop(f"{device} let go", device=device)
-            return 200, {"ok": True}
-        if name == "purge-clear":
+                                        "Stream Deck", seen_ok, deck=deck)
+        if name in ("purge-stop", "purge-clear"):
+            # Only the owner's device, or the show machine itself, ends the
+            # owner's purge (review of PR #68, P2-11): another device's page
+            # leaving the view must not read as a fault at the rack. Abort
+            # stays the one path everyone has.
+            pv = self.purge.view()
+            mine = local or device == pv["owner"] or \
+                (name == "purge-stop" and device == pv["fire_device"])
+            if not mine and (pv["selected"] or pv["firing"]):
+                return 409, {"error": f"{pv['owner']} has the purge "
+                                      f"selection; only that device or the "
+                                      f"show machine itself can "
+                                      f"{'stop' if name == 'purge-stop' else 'clear'} "
+                                      f"it (or Abort)."}
+            if name == "purge-stop":
+                self.purge.stop(f"{device} let go", device=device)
+                return 200, {"ok": True}
             self.purge.clear(f"{device} cleared the selection")
             return 200, {"ok": True, "text": "Purge selection cleared."}
         if name == "laser-test":
@@ -1298,10 +1481,32 @@ class Morning:
                                           else {"error": text})
         if name == "lock":
             kind = body.get("kind")
+            if kind == "rewrite":
+                # The one deliberate way out of a lock problem (review of
+                # PR #68, P1-5): the show machine itself, confirmed.
+                if not local:
+                    return 403, {"error": "Rewriting the lockout file is "
+                                          "done on the show machine itself."}
+                if body.get("confirmed") is not True:
+                    return 409, {"error": "Rewriting the lockout file needs a "
+                                          "confirm. Nothing was changed."}
+                if self.config_error:
+                    return 409, {"error": f"Not while ltcplay_morning.json "
+                                          f"cannot be read "
+                                          f"({self.config_error})."}
+                ok, text = self.lockout.rewrite(self.cfg, who, device)
+                self._lock_channels_to_link()
+                return (200 if ok else 409), ({"ok": True, "text": text} if ok
+                                              else {"error": text})
             if kind not in ("machine", "laser"):
-                return 400, {"error": "kind has to be machine or laser."}
+                return 400, {"error": "kind has to be machine, laser or "
+                                      "rewrite."}
             uid = str(body.get("id") or "")
             on = body.get("on") is not False
+            why = self.lock_problem()
+            if why:
+                return 409, {"error": f"Nothing was locked or unlocked: "
+                                      f"{why}."}
             if self.config_error:
                 # The machine list on this page is the default one, not
                 # Andy's: a lock written against it could name the wrong
