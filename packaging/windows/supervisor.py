@@ -21,6 +21,9 @@ A stop is refused while the engine says a show is running or starting.
 
 Modes (one per run):
   (none), --start   start everything if it is not running, open the page
+                    full screen (Edge kiosk on the show monitor; Alt+F4
+                    closes that window, or the page's i button)
+  --page            the same page in an ordinary browser window
   --stop            stop everything, unless a show is running
   --task            what the scheduled task runs at sign-in, every minute
   --run             the supervisor loop itself (started by --start)
@@ -41,6 +44,18 @@ Modes (one per run):
 Files:
   %LOCALAPPDATA%\\ltcplay\\showpc.json   show folder, flamesafe config, port,
                                        show mode and the schedule file
+
+FIRST RUN (Jeff, 2026-10-17): a fresh install had none of flamesafe.json,
+ltcplay_schedule.json or ltcplay_fire_ice.json, so flamesafe and the
+Stream Deck program were never started and the rack screen was a shell.
+In fire_ice mode each missing one is written once from the shipped
+examples in its safe form (first_run_defaults): flamesafe sends to this PC
+only, the scheduler is a dry run, the show times are the example's. The
+rack screen's Getting started card says so and where to change them.
+  %LOCALAPPDATA%\\ltcplay\\first-run.json  what was written, and when
+  %LOCALAPPDATA%\\ltcplay\\programs.json   each program: running, or why not
+  %LOCALAPPDATA%\\ltcplay\\close-rack-screen, restart-engine
+                                       requests from the page (Requests)
 
 SHOW MODE (showpc.json "show_mode")
   "fire_ice" (the default, the Fire & Ice show PC): the engine runs as
@@ -700,6 +715,205 @@ def wanted_args(settings):
 SHOW_MODES = ("fire_ice", "plain")
 
 
+FIRST_RUN_FILE = "first-run.json"     # what this wrote, for the rack screen
+PROGRAMS_FILE = "programs.json"       # each program: running, or why not
+SCREEN_CLOSE_FILE = "close-rack-screen"   # the engine asks: close Edge
+RESTART_ENGINE_FILE = "restart-engine"    # the engine asks: restart it
+FLAME_GROUPS_FOR_DECK = 3             # the Stream Deck Mini's arm keys
+STATUS_MIRROR_PORT = 5574             # flamesafe's status copy for the engine
+
+
+def example_flamesafe_path():
+    """flamesafe.example.json as the installer leaves it beside the
+    programs (the repo's flamesafe/ folder from source)."""
+    beside = os.path.join(ltcwin.app_dir(), "flamesafe.example.json")
+    if os.path.isfile(beside):
+        return beside
+    root = os.path.dirname(os.path.dirname(ltcwin.app_dir()))
+    return os.path.join(root, "flamesafe", "flamesafe.example.json")
+
+
+def example_schedule_path():
+    beside = os.path.join(ltcwin.app_dir(), "ltcplay_schedule.example.json")
+    if os.path.isfile(beside):
+        return beside
+    root = os.path.dirname(os.path.dirname(ltcwin.app_dir()))
+    return os.path.join(root, "ltcplay", "ltcplay_schedule.example.json")
+
+
+def safe_flamesafe_config(example_doc):
+    """The first-run flamesafe config: the shipped example, sending to
+    this PC only (127.0.0.1, which the example already does), trimmed to
+    the groups the Stream Deck Mini has keys for, with the status copy the
+    engine's flame lamps read. Unconfirmed, so flamesafe runs it as the
+    bench fixture it is; nothing here can reach a flame controller."""
+    doc = dict(example_doc)
+    doc["confirmed"] = False
+    doc["destination"] = {"ip": "127.0.0.1",
+                          "port": int((example_doc.get("destination") or {})
+                                      .get("port", 5568))}
+    link = dict(doc.get("link") or {})
+    link.setdefault("status_mirror_port", STATUS_MIRROR_PORT)
+    doc["link"] = link
+    doc["groups"] = list(doc.get("groups") or [])[:FLAME_GROUPS_FOR_DECK]
+    doc["note"] = ("FIRST-RUN DEFAULT, written by LTC Player so flamesafe "
+                   "and the Stream Deck start on a fresh PC. It sends to "
+                   "this PC only (destination 127.0.0.1), never to a flame "
+                   "controller. Before any flame hardware is connected: set "
+                   "the real destination, universe, groups and link.key, "
+                   "and set confirmed to true. " + str(doc.get("note") or ""))
+    return doc
+
+
+def first_run_defaults(settings, write=True):
+    """A fresh install has no flamesafe.json, no schedule and no Fire & Ice
+    settings, so flamesafe and the Stream Deck were never started and the
+    rack screen was a shell (Jeff, 2026-10-17). Each missing file is
+    written once, from the shipped examples, in its safe form: flamesafe
+    to loopback, the scheduler a dry run (scheduler_performs false), the
+    example's show times. What was written is recorded in first-run.json,
+    which the rack screen reads to say "the EXAMPLE times". A file that is
+    already there is never touched. Returns the names written."""
+    written = {}
+    fs = os.path.abspath(settings["flamesafe_config"])
+    sched = os.path.abspath(settings["schedule"])
+    fi = os.path.join(os.path.dirname(sched), "ltcplay_fire_ice.json")
+    if not os.path.isfile(fs):
+        try:
+            with open(example_flamesafe_path(), encoding="utf-8-sig") as fh:
+                example = json.load(fh)
+            doc = safe_flamesafe_config(example)
+            if write:
+                _write_json(fs, doc)
+            written["flamesafe"] = fs
+        except (OSError, ValueError) as e:
+            log(f"first run: flamesafe.json could not be written from the "
+                f"example ({e}); flamesafe and the Stream Deck stay off")
+    if not os.path.isfile(sched):
+        try:
+            with open(example_schedule_path(), encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            if write:
+                _write_json(sched, doc)
+            written["schedule"] = sched
+        except (OSError, ValueError) as e:
+            log(f"first run: the example schedule could not be written "
+                f"({e}); no show is scheduled")
+    if not os.path.isfile(fi) and (os.path.isfile(fs) or
+                                   "flamesafe" in written):
+        doc = {"scheduler_performs": False,
+               "flamesafe_config": fs,
+               "notes": "FIRST-RUN DEFAULT, written by LTC Player. "
+                        "scheduler_performs false: the scheduler decides "
+                        "but starts nothing. Set it to true, and add the "
+                        "madmapper and beyond blocks, when the rig is "
+                        "connected (INSTALL.md)."}
+        try:
+            if write:
+                _write_json(fi, doc)
+            written["fire_ice"] = fi
+        except OSError as e:
+            log(f"first run: ltcplay_fire_ice.json could not be written "
+                f"({e})")
+    if written and write:
+        for name, path in written.items():
+            log(f"first run: wrote a safe default {name} file: {path}")
+        try:
+            _write_json(os.path.join(appdata_dir(), FIRST_RUN_FILE),
+                        {"at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                         "written": written})
+        except OSError:
+            pass
+    return written
+
+
+def _write_json(path, doc):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+class ProgramsFile:
+    """programs.json in the settings folder: for each program, whether it
+    is running and, when it is not started, the sentence saying why
+    (wanted_args). Written only when something changed, so the rack screen
+    can say "the Stream Deck program is not running: it needs flamesafe's
+    config" instead of "not heard". Never raises."""
+
+    def __init__(self, path):
+        self.path = path
+        self.last = None
+
+    def update(self, progs, want):
+        doc = {}
+        for n in PROGRAMS:
+            args, why = want.get(n, (None, ""))
+            doc[n] = {"running": bool(progs[n].alive()),
+                      "why": "" if args is not None else why}
+        if doc == self.last:
+            return
+        self.last = doc
+        try:
+            _write_json(self.path, doc)
+        except OSError:
+            pass
+
+
+class Requests:
+    """The engine's two requests, as files in the settings folder (the
+    engine serves the rack screen; this process owns the windows and the
+    programs): close-rack-screen closes the Edge window this process
+    opened, restart-engine restarts ltcplay.exe between shows (a new show
+    folder). A request older than this process is ignored."""
+
+    def __init__(self, folder, since):
+        self.folder = folder
+        self.handled = {SCREEN_CLOSE_FILE: since, RESTART_ENGINE_FILE: since}
+
+    def pending(self, name):
+        path = os.path.join(self.folder, name)
+        try:
+            m = os.path.getmtime(path)
+        except OSError:
+            return False
+        if m <= self.handled[name]:
+            return False
+        self.handled[name] = m
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return True
+
+
+RACK_WINDOW = [None]          # the Popen of the Edge window this started
+
+
+def close_rack_window():
+    """The Edge window this process opened, closed. Edge is a view, not a
+    show program, so ending it is safe; the engine and the show carry on.
+    Returns a sentence for the log."""
+    p = RACK_WINDOW[0]
+    if p is None:
+        return "no rack screen window was opened by this LTC Player"
+    try:
+        if p.poll() is not None:
+            RACK_WINDOW[0] = None
+            return "the rack screen window had already closed"
+        p.terminate()
+        try:
+            p.wait(5)
+        except Exception:
+            pass
+    except OSError as e:
+        return f"the rack screen window could not be closed: {e}"
+    RACK_WINDOW[0] = None
+    return "closed the rack screen window at the page's request"
+
+
 def fire_ice_files(settings):
     """Sentences about what fire_ice mode needs and does not have yet, for
     the log (the engine still starts: its page says the same)."""
@@ -861,6 +1075,8 @@ def run_loop(open_page=False):
     log(f"supervisor starting: {ltcwin.version_line(ltcwin.APP)}, "
         f"settings {settings_path()}, show mode "
         f"{settings.get('show_mode') or 'fire_ice'}")
+    if (settings.get("show_mode") or "fire_ice") == "fire_ice":
+        first_run_defaults(settings)
     for why in fire_ice_files(settings):
         log(why)
     log(ltcwin.settings_folder_line())
@@ -889,6 +1105,8 @@ def run_loop(open_page=False):
     page_opened = not open_page
     ending = _watch_end_session(progs)
     keeper = Housekeeper(settings)
+    programs_file = ProgramsFile(os.path.join(appdata_dir(), PROGRAMS_FILE))
+    requests = Requests(appdata_dir(), me_started)
     while True:
         if ENDING.is_set():
             # The clean stops go out on the end-session thread; this
@@ -923,6 +1141,22 @@ def run_loop(open_page=False):
                     except Exception as e:
                         log(f"containment not ended cleanly: {e}")
                 return 1 if failures else 0
+        if requests.pending(SCREEN_CLOSE_FILE):
+            log(close_rack_window())
+        if requests.pending(RESTART_ENGINE_FILE):
+            # A new show folder from the Programming screen: the engine
+            # alone is restarted, between shows only, with the settings
+            # read again. flamesafe and the deck are not touched.
+            busy, why = show_running(port)
+            if busy:
+                log(f"the page asked for an engine restart; refused: {why}")
+            else:
+                settings = load_settings()
+                why = progs["engine"].stop()
+                said = why or ("the engine stopped cleanly and is started "
+                               "again with " + str(settings["show_folder"]))
+                log(f"the page asked for an engine restart (a new show "
+                    f"folder): {said}")
         want = wanted_args(settings)
         now = time.monotonic()
         if contained is not None and now >= next_contain:
@@ -968,6 +1202,7 @@ def run_loop(open_page=False):
                     log(f"could not start {EXE[n]}: {e}")
                     p.next_try = now + p.backoff
                     p.backoff = min(p.backoff * 2, 60.0)
+        programs_file.update(progs, want)
         if not page_opened and engine_answers(port):
             page_opened = True
             open_page_now(port)
@@ -1118,11 +1353,12 @@ def open_page_now(port):
                 port, load_settings().get("page_monitor", 1), monitors(),
                 edge_exe(), os.path.join(appdata_dir(), "rack-screen"))
             if cmd:
-                subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, close_fds=True)
+                RACK_WINDOW[0] = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, close_fds=True)
                 log(f"opened the rack screen full screen: {cmd[2]} "
-                    f"({cmd[-1]})")
+                    f"({cmd[-1]}). Alt+F4 closes it, or the page's i "
+                    f"button, Close this window; the show keeps running.")
                 return
             os.startfile(url)
         else:
@@ -1159,6 +1395,39 @@ def cmd_start():
          "30 seconds. Try 'LTC Player' again in a minute. The logs are in "
          + log_dir(), error=True)
     return 1
+
+
+def cmd_page():
+    """Start menu, "Rack screen in a normal window": the same page in the
+    default browser's ordinary window (no kiosk), for a person who wants
+    the taskbar and the close button. Starts LTC Player if it is not
+    running."""
+    settings = load_settings()
+    try:
+        os.remove(stop_file())
+    except OSError:
+        pass
+    if not supervisor_running():
+        args = [supervisor_exe()] if ltcwin.frozen() else [
+            sys.executable, os.path.abspath(__file__)]
+        subprocess.Popen(args + ["--run"], cwd=appdata_dir(),
+                         stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+        log("started the supervisor (for the normal window)")
+    url = f"http://127.0.0.1:{settings['port']}{RACK_PAGE}"
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if engine_answers(settings["port"]):
+            break
+        time.sleep(0.5)
+    if ltcwin.WINDOWS:
+        os.startfile(url)
+    else:
+        import webbrowser
+        webbrowser.open(url)
+    log(f"opened the rack screen in a normal browser window: {url}")
+    return 0
 
 
 def cmd_stop():
@@ -1440,7 +1709,10 @@ def cmd_update(check_only=False):
     return 0
 
 
-def cmd_prune_installers(keep=3):
+def cmd_prune_installers(keep=2):
+    """The saved installers: this version's and the one before it (what
+    "Roll back to the previous version" runs). Older ones were clutter on
+    the show PC (2026-10-18: three setup exes in Installers)."""
     for p in saved_installers()[:-keep]:
         try:
             os.remove(p)
@@ -1551,6 +1823,7 @@ def main(argv=None):
         argv.remove("--check-only")
     verb = argv[0] if argv else "--start"
     verbs = {"--start": cmd_start, "--stop": cmd_stop, "--task": cmd_task,
+             "--page": cmd_page,
              "--run": run_loop, "--install-task": cmd_install_task,
              "--remove-task": cmd_remove_task, "--rollback": cmd_rollback,
              "--prune-installers": cmd_prune_installers,

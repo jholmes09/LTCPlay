@@ -29210,10 +29210,16 @@ def test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers():
     e = sd.DeckDisconnected("probe")
     for _ in range(3):
         outage.failed(e, "tail")
-    check(len(posted) == 3 and all(b["text"] == sd.DECK_LOST_TEXT
-                                   for b in posted),
-          f"posted on every retry while the engine has not taken it: "
-          f"{len(posted)}")
+    # Never connected in this process (Jeff, 2026-10-17): the sentence
+    # says what the first failure said, once per outage, the same on
+    # every retry, so the retries are posts of ONE sentence.
+    never = sd.DECK_NEVER_TEXT.format(why="probe")
+    check(len(posted) == 3 and all(b["text"] == never for b in posted)
+          and "No Stream Deck has answered" in never
+          and "probe" in never,
+          f"posted on every retry while the engine has not taken it, the "
+          f"never-connected sentence with the failure's words: "
+          f"{len(posted)} {[b['text'][:40] for b in posted]}")
     landed[0] = True
     outage.failed(e, "tail")
     outage.failed(e, "tail")
@@ -40513,6 +40519,409 @@ def test_remote_has_no_arm_route():
     print("  ok")
 
 
+def _css_rules(page):
+    """The page's top-level style rules as [(selector, {prop: value})],
+    with @media and @font-face blocks left out (their rules are read
+    separately by _css_media). A small parser, enough for this page."""
+    import re as _re
+    a = page.find("<style>")
+    b = page.find("</style>", a)
+    css = _re.sub(r"/\*.*?\*/", "", page[a + 7:b], flags=_re.S)
+    out, i, n = [], 0, len(css)
+    while i < n:
+        j = css.find("{", i)
+        if j == -1:
+            break
+        head = css[i:j].strip()
+        if head.startswith("@"):
+            depth, k = 1, j + 1
+            while k < n and depth:
+                depth += {"{": 1, "}": -1}.get(css[k], 0)
+                k += 1
+            i = k
+            continue
+        k = css.find("}", j)
+        decl = {}
+        for part in css[j + 1:k].split(";"):
+            if ":" in part:
+                p, _, v = part.partition(":")
+                decl[p.strip().lower()] = v.strip().lower()
+        out.append((head, decl))
+        i = k + 1
+    return out
+
+
+def _css_rule(rules, selector):
+    for sel, decl in rules:
+        if sel.replace(" ", "") == selector.replace(" ", ""):
+            return decl
+    return None
+
+
+def test_rack_screen_width_guard_css_contract():
+    section("rack screen (Jeff, 2026-10-17): after Abort the page was wider "
+            "than the screen and the word ABORT was off it; the page's one "
+            "grid column is pinned to the screen, #main clips, every row "
+            "may shrink below its text, the toasts clip; the version is in "
+            "the info panel, not the header; the MODE pill and the truthful "
+            "Abort plan come from the engine's state (CSS contract and the "
+            "page's own logic in node)")
+    import re as _re
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    rules = _css_rules(page)
+    app = _css_rule(rules, "#app") or {}
+    check(app.get("grid-template-columns", "").startswith("minmax(0,"),
+          f"#app's one column track is minmax(0, ...), so no unbreakable "
+          f"text can widen it: {app.get('grid-template-columns')!r}")
+    check((_css_rule(rules, "#app > *") or {}).get("min-width") == "0",
+          "every row of the page may shrink below its content")
+    main = _css_rule(rules, "#main") or {}
+    check(main.get("overflow") == "hidden" and main.get("min-width") == "0",
+          f"#main clips and may shrink: {main}")
+    check((_css_rule(rules, ".view") or {}).get("min-width") == "0",
+          "a view may shrink below its content")
+    check((_css_rule(rules, "#v-show > *") or {}).get("min-width") == "0",
+          "every row of the show screen may shrink below its text")
+    toast = _css_rule(rules, ".toast") or {}
+    check(toast.get("overflow") == "hidden" and
+          toast.get("white-space") == "nowrap" and
+          toast.get("min-width") == "0",
+          f"a toast clips its one line and never widens anything: {toast}")
+    check((_css_rule(rules, "html,body") or {}).get("overflow") == "hidden",
+          "the document never scrolls")
+    bar = _css_rule(rules, "#abortbar button") or {}
+    check(bar.get("width") == "100%" and
+          bar.get("justify-content") == "center",
+          f"the Abort bar is the track's width with its word centred, so "
+          f"the track guard is what keeps the word on screen: {bar}")
+    check("flex-wrap:wrap" in (_css_rule(rules, "header") or {}).__repr__()
+          .replace("'", "").replace(": ", ":"),
+          "the header wraps instead of overlapping on a narrow window")
+    # The version left the header (Jeff: prime screen room) for the info
+    # panel; the status JSON still carries it for the smoke test and the
+    # diagnostics bundle.
+    check('<span id="version" hidden' in page and 'id="info-version"' in page
+          and 'id="nav-info"' in page and '$("info-version").textContent' in page,
+          "the header's version span is hidden; the info button and panel "
+          "show the version")
+    check('id="mode"' in page and "renderMode(stale);" in page and
+          "function renderMode" in page,
+          "the MODE pill is drawn every 250 ms from the last status")
+    rm_src = open(os.path.join(here, "ltcplay", "remote.py"),
+                  encoding="utf-8").read()
+    check('"version": self.version_line()' in rm_src,
+          "/api/remote/status still names the version")
+    check("modeLook(ST)" in page and '$("mode").className = mo.cls' in page,
+          "the MODE pill is in the header and drawn from modeLook")
+    check("abortPlan(ST)" in page and "confirmBox(\"Abort the show?\"" in page
+          and "Every flame group disarms at once" not in page,
+          "the Abort confirm lists abortPlan's items; the old promise is gone")
+    check('id="abort-said"' in page and "saidAbort(" in page and
+          "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
+          "the Abort's answer is a banner that says what was not done")
+    for bad in ("—", "–"):
+        check(bad not in page, "no em or en dashes on the page")
+        check(bad not in rm_src, "no em or en dashes in remote.py")
+    a = page.find("// LOGIC BEGIN")
+    b = page.find("// LOGIC END")
+    logic = page[a:b]
+    check("function modeLook" in logic and "function abortPlan" in logic,
+          "modeLook and abortPlan are in the page's pure logic block")
+    node = shutil.which("node")
+    if not node:
+        print("  note: node is not on this machine, so modeLook and "
+              "abortPlan were checked by reading only (CI runs them)")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+let m = modeLook({show:{running:true}, transport:{programming:false}});
+t(m.word === "Show" && m.cls === "show", "a real show file running is SHOW");
+m = modeLook({show:{running:true}, transport:{programming:true}});
+t(m.word === "Programming" && m.cls === "prog", "a rehearsal is PROGRAMMING");
+m = modeLook({show:{running:false}, transport:{programming:false}});
+t(m.word === "Not running" && m.cls === "", "nothing running is NOT RUNNING");
+t(modeLook(null).word === "...", "no status yet: waiting");
+let p = abortPlan({disarm_connected:false, flames:{connected:false}, laser_fault:"no OSC address", schedule:{state:"SHOW", conductor:true}});
+t(p[0].ok === false && /NOT disarmed/.test(p[0].text), "no flame link: the flames line is a NOT");
+t(p.some(i => i.ok === false && /Lasers: NOT blanked/.test(i.text)), "no OSC address: the lasers line is a NOT");
+t(p.some(i => /The show stops/.test(i.text)), "a live show: it stops");
+p = abortPlan({disarm_connected:true, flames:{connected:true}, laser_fault:"", schedule:{state:"PRESHOW", conductor:true}});
+t(p[0].ok === true && /every group is sent a disarm/.test(p[0].text), "a flame link: the disarm is promised, as sent");
+t(p.some(i => /Lasers: blanked/.test(i.text)), "a conductor with an address: lasers blanked");
+t(p.some(i => /No show is live/.test(i.text)), "no show: says so");
+console.log(JSON.stringify(out));
+"""
+    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"modeLook and abortPlan, in node: {r.stdout!r} {r.stderr[-400:]!r}")
+    print("  ok")
+
+
+def test_remote_setup_routes_this_machine_only():
+    section("rack screen, first run (Jeff, 2026-10-17): the getting-started "
+            "view, the schedule editor, the folder opener, the show folder "
+            "and the close-window request answer the show machine only; "
+            "the schedule is checked by the scheduler's own parser, written "
+            "and reloaded, and refused while a show is live; the Stream "
+            "Deck's state is a sentence")
+    import shutil
+    import tempfile
+    from ltcplay import remote as RM
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    old_folder = RM.settings_folder
+    RM.settings_folder = lambda: R.work
+    opened = []
+    R.remote._opener = opened.append
+    try:
+        st, _h, out = R.ask("GET", "/api/remote/setup")
+        check(st == 403, f"the setup view is not for the network: {st}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/setup", client=loop)
+        check(st == 200 and out["show_folder"] == R.folder and
+              out["show_files"] == 0 and out["schedule_ok"] is True and
+              out["ready"] is False and out["settings_folder"] == R.work,
+              f"the setup view names the folder, its files and the "
+              f"schedule: {out}")
+        st, _h, s_loop = _ask(R.httpd, "GET", "/api/remote/status",
+                              client=loop)
+        st2, _h, s_net = R.ask("GET", "/api/remote/status")
+        check("setup" in s_loop and "setup" not in s_net and
+              "deck" in s_loop and "deck" in s_net and
+              s_net.get("version") == R.remote.version_line(),
+              "status carries setup for the machine only, deck for all, "
+              "and still the version")
+        d = R.remote.deck_view()
+        check(d["heard"] is False and "Stream Deck program" in d["text"],
+              f"before any deck read: not heard, in a sentence: {d}")
+        R.remote.deck_input()
+        d = R.remote.deck_view()
+        check(d["heard"] is True and d["text"] == "",
+              f"after a deck read: heard: {d}")
+        # programs.json from the supervisor becomes the why.
+        R.remote._json_cache = {}
+        R.mono[0] += 100
+        with open(os.path.join(R.work, RM.PROGRAMS_FILE), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"deck": {"running": False, "why": "it needs "
+                                "flamesafe's config"}}, fh)
+        R.remote._deck_seen = None
+        d = R.remote.deck_view()
+        check("it needs flamesafe's config" in d["text"],
+              f"the supervisor's reason is the sentence: {d}")
+        # The schedule editor.
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/schedule-file",
+                           client=loop)
+        check(st == 200 and out["exists"] and
+              isinstance(out["doc"].get("weekly"), dict),
+              f"the schedule file is read back: {st} {out.get('path')}")
+        doc = dict(out["doc"])
+        st, _h, bad = _ask(R.httpd, "POST", "/api/remote/schedule-file",
+                           {"doc": dict(doc, weekly={"sat": {
+                               "first_start": "25:99", "interval_min": 20,
+                               "last_end": "22:00"}})}, client=loop)
+        check(st == 400 and bad["error"].startswith("Not saved"),
+              f"a bad time is refused by the parser, nothing written: "
+              f"{st} {bad}")
+        before = R.svc.rule
+        doc["weekly"] = {"sat": {"first_start": "18:30", "interval_min": 25,
+                                 "last_end": "22:00"}}
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
+                           {"doc": doc}, client=loop)
+        check(st == 200 and "Saved" in out["text"] and
+              "loaded" in out["text"],
+              f"a good schedule is written and loaded: {st} {out}")
+        with open(R.svc.path, encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        check(on_disk["weekly"]["sat"]["interval_min"] == 25 and
+              R.svc.rule is not before and R.svc.error == "",
+              "the file holds the new times and the scheduler reloaded it")
+        st, _h, out = R.ask("POST", "/api/remote/schedule-file",
+                            {"doc": doc})
+        check(st == 403, f"not from the network: {st}")
+        # The folder opener and the show folder.
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/open-folder",
+                           {"which": "show"}, client=loop)
+        check(st == 200 and opened == [R.folder],
+              f"open-folder opens the show folder on this machine: {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/open-folder",
+                           {"which": "desktop"}, client=loop)
+        check(st == 400, "only the show and settings folders open")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/show-folder",
+                           {"path": "shows"}, client=loop)
+        check(st == 400 and "full path" in out["error"],
+              f"a relative show folder is refused: {out}")
+        other = tempfile.mkdtemp()
+        try:
+            st, _h, out = _ask(R.httpd, "POST", "/api/remote/show-folder",
+                               {"path": other}, client=loop)
+            check(st == 409 and "--folder" in out["error"],
+                  f"with no showpc.json (a Mac) it says how instead: {out}")
+            with open(os.path.join(R.work, RM.SHOWPC_FILE), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"show_folder": R.folder, "port": 7878}, fh)
+            st, _h, out = _ask(R.httpd, "POST", "/api/remote/show-folder",
+                               {"path": other}, client=loop)
+            with open(os.path.join(R.work, RM.SHOWPC_FILE),
+                      encoding="utf-8") as fh:
+                saved = json.load(fh)
+            check(st == 200 and saved["show_folder"] == other and
+                  saved["port"] == 7878 and os.path.isfile(
+                      os.path.join(R.work, RM.RESTART_ENGINE_FILE)),
+                  f"the show PC's showpc.json is updated and the engine "
+                  f"restart is asked for: {st} {out} {saved}")
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+        # The close-window request.
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/screen",
+                           {"action": "close"}, client=loop)
+        check(st == 200 and os.path.isfile(
+            os.path.join(R.work, RM.SCREEN_CLOSE_FILE)) and
+            "Alt+F4" in out["text"],
+            f"the close request is written and the key named: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/screen", {"action": "close"})
+        check(st == 403, "the window is not closed from the network")
+        # A live show: the schedule and the folder are refused.
+        _live_show(R)
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
+                           {"doc": doc}, client=loop)
+        check(st == 409 and "live" in out["error"],
+              f"the schedule is not rewritten under a live show: {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/show-folder",
+                           {"path": R.folder}, client=loop)
+        check(st == 409 and "live" in out["error"],
+              f"the show folder is not changed under a live show: {out}")
+    finally:
+        RM.settings_folder = old_folder
+        R.close()
+    print("  ok")
+
+
+def test_windows_supervisor_first_run_defaults():
+    section("Windows app, first run (Jeff, 2026-10-17: a fresh install was "
+            "a shell: no flamesafe.json, so flamesafe and the Stream Deck "
+            "were never started): the supervisor writes the three missing "
+            "files once, in their safe form (flamesafe to this PC only, "
+            "three groups, unconfirmed, with the status copy; the example "
+            "schedule; a dry-run Fire & Ice file), each one parsed by its "
+            "own program's loader; a file that exists is never touched; "
+            "programs.json says why a program is off; the page's requests "
+            "are files newer than the supervisor")
+    import shutil
+    import tempfile
+    W, SUP, gone = _winpkg()
+    work = tempfile.mkdtemp()
+    old_local = os.environ.get("LOCALAPPDATA")
+    os.environ["LOCALAPPDATA"] = work
+    try:
+        settings = SUP.load_settings()
+        settings["flamesafe_config"] = os.path.join(work, "fs", "flamesafe.json")
+        settings["schedule"] = os.path.join(work, "sc", "ltcplay_schedule.json")
+        written = SUP.first_run_defaults(settings)
+        check(set(written) == {"flamesafe", "schedule", "fire_ice"},
+              f"all three were written: {written}")
+        from flamesafe import config as FC
+        fs = FC.load(settings["flamesafe_config"])
+        check(fs.destination_ip == "127.0.0.1" and fs.confirmed is False and
+              len(fs.groups) == 3 and fs.link_status_mirror_port == 5574,
+              f"flamesafe loads it: loopback, unconfirmed, three groups, "
+              f"a status copy for the engine")
+        from ltcplay import schedule as SCH
+        with open(settings["schedule"], encoding="utf-8") as fh:
+            rule = SCH.parse_rule(json.load(fh))
+        check(rule is not None, "the scheduler parses the example schedule")
+        from ltcplay import fire_ice as FI
+        fi_path = os.path.join(work, "sc", "ltcplay_fire_ice.json")
+        fi = FI.FireIceConfig.load(fi_path)
+        check(fi.scheduler_performs is False and
+              os.path.normcase(fi.flamesafe_config) ==
+              os.path.normcase(settings["flamesafe_config"]),
+              f"the Fire & Ice file is a dry run naming that flamesafe "
+              f"config: {fi.summary()}")
+        FI.flame_link_config(fi)
+        FI.check_flame_groups("", fi)
+        with open(os.path.join(work, "ltcplay", SUP.FIRST_RUN_FILE),
+                  encoding="utf-8") as fh:
+            rec = json.load(fh)
+        check(set(rec["written"]) == set(written) and rec["at"],
+              f"first-run.json records what was written: {rec}")
+        # A second run touches nothing.
+        stamps = {p: os.path.getmtime(p) for p in written.values()}
+        with open(settings["schedule"], "a", encoding="utf-8") as fh:
+            fh.write("\n")
+        check(SUP.first_run_defaults(settings) == {} and all(
+            os.path.getmtime(p) >= stamps[p] for p in written.values()),
+            "a second run writes nothing and rewrites nothing")
+        # With the files there, the supervisor would start all three.
+        want = SUP.wanted_args(settings)
+        check(want["flamesafe"][0] is not None and
+              want["deck"][0] is not None and want["engine"][0] is not None,
+              f"with the defaults every program is started: {want}")
+        # programs.json: running, or why not, written on change only.
+        pf = SUP.ProgramsFile(os.path.join(work, "p.json"))
+
+        class _P:
+            def __init__(self, alive):
+                self._a = alive
+
+            def alive(self):
+                return self._a
+        progs = {"flamesafe": _P(False), "engine": _P(True), "deck": _P(False)}
+        pf.update(progs, {"flamesafe": (["x"], ""), "engine": (["s"], ""),
+                          "deck": (None, "the Stream Deck program is not "
+                                   "started: it needs flamesafe's config")})
+        doc = json.load(open(os.path.join(work, "p.json"), encoding="utf-8"))
+        check(doc["deck"] == {"running": False, "why": "the Stream Deck "
+                              "program is not started: it needs flamesafe's "
+                              "config"} and doc["engine"]["running"] is True
+              and doc["flamesafe"]["why"] == "",
+              f"programs.json says which is running and why one is not: {doc}")
+        m1 = os.path.getmtime(os.path.join(work, "p.json"))
+        pf.update(progs, {"flamesafe": (["x"], ""), "engine": (["s"], ""),
+                          "deck": (None, "the Stream Deck program is not "
+                                   "started: it needs flamesafe's config")})
+        check(os.path.getmtime(os.path.join(work, "p.json")) == m1,
+              "unchanged: not rewritten")
+        # The page's requests: only ones newer than this supervisor count,
+        # each once, and the file is removed.
+        rq = SUP.Requests(work, since=time.time() + 5)
+        with open(os.path.join(work, SUP.SCREEN_CLOSE_FILE), "w") as fh:
+            fh.write("close\n")
+        check(rq.pending(SUP.SCREEN_CLOSE_FILE) is False,
+              "a request older than the supervisor is ignored")
+        rq = SUP.Requests(work, since=time.time() - 5)
+        check(rq.pending(SUP.SCREEN_CLOSE_FILE) is True and
+              not os.path.exists(os.path.join(work, SUP.SCREEN_CLOSE_FILE)) and
+              rq.pending(SUP.SCREEN_CLOSE_FILE) is False,
+              "a newer request counts once and is removed")
+        check(SUP.close_rack_window().startswith("no rack screen window"),
+              "closing with no window opened is said, not raised")
+        check(SUP.cmd_prune_installers.__defaults__ == (2,),
+              "two saved installers are kept: this one and the rollback")
+        src = open(SUP.__file__, encoding="utf-8").read()
+        for bad in ("—", "–"):
+            check(bad not in src, "no em or en dashes in supervisor.py")
+    finally:
+        if old_local is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = old_local
+        gone()
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_remote_page_loss_changes_nothing():
     section("iPad remote: an iPad that drops mid-show (half a request, a "
             "closed connection, hours with no more polls) changes "
@@ -42789,6 +43198,9 @@ if __name__ == "__main__":
     test_deck_reads_reset_after_an_engine_restart()
     test_remote_stale_state_refused_and_banner()
     test_remote_has_no_arm_route()
+    test_rack_screen_width_guard_css_contract()
+    test_remote_setup_routes_this_machine_only()
+    test_windows_supervisor_first_run_defaults()
     test_remote_page_loss_changes_nothing()
     test_remote_scrubbing_only_in_a_programming_session()
     test_player_free_run_pause_and_loop()
