@@ -46,6 +46,10 @@ BEAT_STALE_S = 0.25
 # The page says it is open every 500 ms; this long without it and the purge
 # selection is cleared and the deck is told the page is closed.
 OPEN_STALE_S = 2.0
+# After this engine writes the lockout file, flamesafe's report is given
+# this long to catch up (it polls the file every 0.5 s) before a difference
+# counts as a problem.
+LOCK_SETTLE_S = 1.5
 NAME_MAX = 48
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")
 
@@ -521,9 +525,14 @@ class Lockout:
             self.load_error = f"{self.path} is not a lockout file."
             return
         chans = doc.get("flame_channels")
+        if not isinstance(chans, list):
+            # flamesafe refuses such a file too (not the format): say so
+            # rather than read it as "no slots" (review of PR #68, P3-13).
+            self.load_error = (f"{self.path} has no flame_channels list, so "
+                               f"it is not a lockout file flamesafe can read")
+            return
         self.file_channels = sorted(c for c in chans if isinstance(c, int)
-                                    and not isinstance(c, bool)) \
-            if isinstance(chans, list) else []
+                                    and not isinstance(c, bool))
         for kind in ("machines", "lasers"):
             got = doc.get(kind)
             if isinstance(got, dict):
@@ -1086,6 +1095,7 @@ class Morning:
         self._stop = threading.Event()
         self._thread = None
         self._fs_lockout_path = None
+        self._lock_written_at = None   # clock() of this engine's last write
         self._lock_channels_to_link()
         self._check_lockout_paths()
         if threaded:
@@ -1129,6 +1139,13 @@ class Morning:
         engine started with no file while flamesafe still holds one.
         Writing the file from this table would lift them silently, so
         until it is resolved nothing is written and nothing fires."""
+        if self._lock_written_at is not None and \
+                self._clock() - self._lock_written_at < LOCK_SETTLE_S:
+            # This engine just wrote the file: flamesafe reads it within
+            # LOCKOUT_POLL_S, and until then it still reports the old set.
+            # Not a problem for that long (review of PR #68, P3-12), or
+            # every unlock would clear a selection and end a laser test.
+            return []
         fl = self._flames_get() or {}
         lk = fl.get("lockout") if isinstance(fl.get("lockout"), dict) else None
         if lk is None or fl.get("stale"):
@@ -1495,6 +1512,8 @@ class Morning:
                                           f"cannot be read "
                                           f"({self.config_error})."}
                 ok, text = self.lockout.rewrite(self.cfg, who, device)
+                if ok:
+                    self._lock_written_at = self._clock()
                 self._lock_channels_to_link()
                 return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                               else {"error": text})
@@ -1518,6 +1537,8 @@ class Morning:
             ok, text = self.lockout.set(self.cfg, kind, uid, on, who, device,
                                         reason=body.get("reason", ""),
                                         confirmed=body.get("confirmed"))
+            if ok:
+                self._lock_written_at = self._clock()
             if ok and on:
                 if kind == "machine" and uid in self.purge.selected:
                     self.purge.select(uid, False, device, True)

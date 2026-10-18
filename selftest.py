@@ -43945,6 +43945,7 @@ def test_morning_lockout_trust_link_and_close():
         lines = []
         holder = [None]
         osc = []
+        clk = [100.0]
 
         class _Sock:
             def sendto(self, pkt, addr):
@@ -43959,7 +43960,7 @@ def test_morning_lockout_trust_link_and_close():
                               live_check=lambda: "",
                               group_names=lambda: names,
                               journal=lambda t, **f: lines.append((t, f)),
-                              clock=lambda: 100.0,
+                              clock=lambda: clk[0],
                               wall=lambda: 1_800_000_000.0, threaded=False,
                               socket_factory=_Sock)
         rack = ("Rack screen", "", "Rack screen", True, True)
@@ -44102,8 +44103,30 @@ def test_morning_lockout_trust_link_and_close():
               ["flame_channels"] == [], "the deliberate way out writes an "
                                           "empty file (flamesafe then lifts "
                                           "412)")
+        # flamesafe takes up to its poll time to read the new file: for
+        # LOCK_SETTLE_S after this engine's own write its old report is not
+        # a problem (review of PR #68, P3-12), after that it is again.
+        check(m.status_view()["lock_error"] == "" and
+              m.lock_problem() == "",
+              "just after the write flamesafe's old report is not a problem")
+        clk[0] += MO.LOCK_SETTLE_S + 0.5
+        check("does not know about" in m.lock_problem(),
+              "flamesafe still holding 412 after the settle time is")
         fsview.update(slots=[], state="read")
         check(m.status_view()["lock_error"] == "", "resolved")
+        # A file with machines but no flame_channels list is not a lockout
+        # file flamesafe can read: said as such (P3-13), not as a change.
+        m.close()
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "machines": {"g2": {}}}, fh)
+        m = build()
+        check("no flame_channels" in m.status_view()["lock_error"],
+              f"a file with no flame_channels list: {m.status_view()['lock_error']}")
+        m.close()
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "flame_channels": [],
+                     "machines": {}, "lasers": {}}, fh)
+        m = build()
         st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
                          *rack)
         check(st == 200 and m.lockout.is_locked("machine", "w1"),

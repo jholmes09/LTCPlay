@@ -8096,12 +8096,16 @@ def build():
 
  ("morning: a machine fires before flamesafe reports its group armed (T13)",
   "ltcplay/morning.py",
-  '''                if m.group not in armed:
-                    waiting.append(f"{m.name}: group {m.group} is not armed")
-                    continue''',
-  '''                if False:
-                    waiting.append(f"{m.name}: group {m.group} is not armed")
-                    continue'''),
+  '''                if m.group not in armed:''',
+  '''                if False:'''),
+
+ ("morning: an unlock reads as a lock problem for flamesafe's poll time",
+  "ltcplay/morning.py",
+  '''        if self._lock_written_at is not None and \\
+                self._clock() - self._lock_written_at < LOCK_SETTLE_S:
+            # This engine just wrote the file''',
+  '''        if False:
+            # This engine just wrote the file'''),
 
  ("morning: a Waver fires before its head is up (T12)",
   "ltcplay/morning.py",

@@ -1109,7 +1109,8 @@ function renderMorning(){
       rw = document.createElement("button"); rw.id = "mo-rewrite"; rw.className = "ghost";
       rw.textContent = "Rewrite the lockout file";
       rw.addEventListener("click", async () => {
-        if(await confirmBox("Rewrite the lockout file?", "flamesafe will then hold at zero exactly the machines this page shows as locked out, and nothing else: " + problem + ".", "Rewrite", "start"))
+        const lifted = (mo.flamesafe_extra && mo.flamesafe_extra.length) ? " flamesafe holds flame slots " + mo.flamesafe_extra.join(", ") + " locked that will be LIFTED by this." : "";
+        if(await confirmBox("Rewrite the lockout file?", "flamesafe will then hold at zero exactly the machines this page shows as locked out (" + ((mo.lockout && Object.keys(mo.lockout.machines || {}).length) || 0) + "), and nothing else." + lifted + " Why: " + problem + ".", "Rewrite", "start"))
           moPress("lock", {kind:"rewrite", confirmed:true});
       });
       $("mo-groups").appendChild(rw);
