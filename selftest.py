@@ -39654,8 +39654,10 @@ def test_remote_abort_disarms_with_no_show_live():
         page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "ltcplay", "web", "remote.html"),
                     encoding="utf-8").read()
-        check("Every flame group disarms at once, show or no show" in page,
-              "the page's Abort confirm says what an Abort with no show does")
+        check("No show is live, so nothing else changes" in page and
+              "abortPlan(ST)" in page,
+              "the page's Abort confirm says what an Abort with no show does, "
+              "from the engine's state (abortPlan)")
     finally:
         R.close()
     print("  ok")
@@ -40831,12 +40833,24 @@ def test_windows_supervisor_first_run_defaults():
         written = SUP.first_run_defaults(settings)
         check(set(written) == {"flamesafe", "schedule", "fire_ice"},
               f"all three were written: {written}")
-        from flamesafe import config as FC
-        fs = FC.load(settings["flamesafe_config"])
-        check(fs.destination_ip == "127.0.0.1" and fs.confirmed is False and
-              len(fs.groups) == 3 and fs.link_status_mirror_port == 5574,
+        # flamesafe's own loader, in its own interpreter: selftest.py never
+        # imports flamesafe (the wall, handoff section 15).
+        import subprocess as _sp
+        code = ("import importlib, json, sys; sys.path.insert(0, sys.argv[1]); "
+                "FC = importlib.import_module('flamesafe.config'); "
+                "c = FC.load(sys.argv[2]); print(json.dumps([c.destination_ip, "
+                "c.confirmed, len(c.groups), c.link_status_mirror_port]))")
+        r = _sp.run([sys.executable, "-c", code,
+                     os.path.dirname(os.path.abspath(__file__)),
+                     settings["flamesafe_config"]],
+                    capture_output=True, text=True, timeout=60)
+        try:
+            got = json.loads(r.stdout.strip() or "null")
+        except ValueError:
+            got = None
+        check(got == ["127.0.0.1", False, 3, 5574],
               f"flamesafe loads it: loopback, unconfirmed, three groups, "
-              f"a status copy for the engine")
+              f"a status copy for the engine: {got} {r.stderr[-300:]!r}")
         from ltcplay import schedule as SCH
         with open(settings["schedule"], encoding="utf-8") as fh:
             rule = SCH.parse_rule(json.load(fh))

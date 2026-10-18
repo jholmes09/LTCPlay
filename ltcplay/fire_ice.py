@@ -258,9 +258,10 @@ NO_DISARM = (
     "A screen-initiated Abort cannot disarm the flame groups from this "
     "engine: it has no flame link to flamesafe (ltcplay_fire_ice.json names "
     "no flamesafe_config, or there is no such file beside the schedule). "
-    "Flame cues from ltcplay are zero. The link does carry a disarm once it "
-    "is configured; until then disarm with the Stream Deck's own Abort or "
-    "its arm keys, or the hardware e-stop.")
+    "Flame cues from ltcplay are zero. The link (flamesafe/CONTRACT.md, "
+    "disarm_all) does carry a disarm once it is configured; until then "
+    "disarm with the Stream Deck's own Abort or its arm keys, or the "
+    "hardware e-stop.")
 
 
 class FireIceShow(C.ShowOutputs):

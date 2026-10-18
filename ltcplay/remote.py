@@ -1378,15 +1378,14 @@ class Remote:
         return len([t for t in tls if not t.get("error")])
 
     def _schedule_path(self):
+        """The scheduler's own file, or where one would go (the same name
+        schedule_service.RULE_FILE has, spelled here so a GPL engine, which
+        never loads the scheduler, does not load it for this)."""
         svc = self.schedule
         p = getattr(svc, "path", None)
         if p:
             return str(p)
-        try:
-            from . import schedule_service
-            return schedule_service.default_rule_path()
-        except Exception:                        # noqa: BLE001
-            return os.path.join(settings_folder(), "ltcplay_schedule.json")
+        return os.path.join(settings_folder(), "ltcplay_schedule.json")
 
     def _show_live(self):
         return self._show_live_state() in self.LIVE_STATES
@@ -1483,6 +1482,11 @@ class Remote:
         doc = body.get("doc")
         if not isinstance(doc, dict):
             return 400, {"error": "Send the schedule as an object."}
+        if self.schedule is None:
+            # A GPL engine never loads the scheduler, not even to check a
+            # file for it.
+            return 409, {"error": "There is no scheduler in this engine, so "
+                                  "there is no schedule to edit here."}
         if self._show_live():
             return 409, {"error": "A show is live. Save the schedule between "
                                   "shows. Nothing was changed."}
