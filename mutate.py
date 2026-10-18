@@ -8107,6 +8107,12 @@ def build():
   '''        if False:
             # This engine just wrote the file'''),
 
+ ("morning page: a Space press whose key repeat events have stopped never "
+  "ends (T3)",
+  "ltcplay/web/remote.html",
+  '''  return nowMs - startAt > graceMs && nowMs - Math.max(repeatAt || 0, startAt) > gapMs;''',
+  '''  return false;'''),
+
  ("morning: a no-op lock (nothing written) restarts flamesafe's settle time",
   "ltcplay/morning.py",
   '''            if ok and self.lockout.wrote:

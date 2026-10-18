@@ -213,7 +213,9 @@ still hold.
   change.
 - **The page's JavaScript.** Its pure helpers (`machineLook`,
   `fireKeyLapsed`, between the page's LOGIC markers) run under node in the
-  selftest, so their decisions are tested as code. The event wiring (one
+  selftest, so their decisions are tested as code; a CI runner without
+  node fails that check rather than passing by reading, and `mutate.py`
+  has an entry that makes `fireKeyLapsed` never end a press (T3). The event wiring (one
   keydown starts the heartbeats; keyup, blur, visibilitychange, pagehide and
   leaving the page stop them; `purge-clear` goes when the page is left) is
   checked by STRING PRESENCE in `remote.html` only: the selftest has no

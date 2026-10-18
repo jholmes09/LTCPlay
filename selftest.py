@@ -40442,6 +40442,11 @@ def _remote_page_logic_in_node():
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
+        # On CI the page's logic MUST run: a runner without node would pass
+        # this check by reading only, and nothing would say so (second
+        # review of PR #68, P3-3). A Mac without node is told, not failed.
+        check(not IN_CI, "node is missing on this CI runner, so the page's "
+                         "logic cannot be run; install node in the workflow")
         print("  note: node is not on this machine, so the page's logic was "
               "checked by reading only (CI runs it)")
         return
@@ -40524,6 +40529,9 @@ def _morning_page_logic_in_node():
           "fireKeyLapsed and machineLook sit in the page's LOGIC block")
     node = shutil.which("node")
     if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the Morning "
+                         "page's helpers cannot be run; install node in the "
+                         "workflow")
         print("  note: node is not on this machine, so the Morning page's "
               "helpers were checked by reading only (CI runs them)")
         return
