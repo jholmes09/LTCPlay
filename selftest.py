@@ -29139,6 +29139,50 @@ def test_streamdeck_outage_loop_runs_screen_pass():
           f"the arm's and the disarm's own sends): {len(arm.sends)}")
 
 
+def test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send():
+    section("Stream Deck: with the hardware away, an arm socket whose send "
+            "raises a plain OSError on every cycle (the port in use, the "
+            "interface down) never ends the hold-off loop: it keeps trying "
+            "at ARM_SEND_HZ for the whole wait and returns to the reconnect "
+            "attempt (round 5 of the safety review, item 2: only "
+            "DeckDisconnected used to be caught there)")
+    from ltcplay import streamdeck as sd
+
+    class _DeafArm(_FakeArmSocket):
+        def __init__(self, n):
+            super().__init__(n)
+            self.tries = 0
+
+        def send(self, names):
+            self.tries += 1
+            raise OSError("probe: the arm socket will not send")
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _DeafArm(3)
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0],
+                      screen=_FakeScreen(),
+                      journal=lambda t_, **kw: events.append((t_, kw)))
+    arm.open()
+    outage = sd._DeckOutage(lambda t_, **kw: events.append((t_, kw)))
+    sleep = lambda s_: t.__setitem__(0, t[0] + s_)  # noqa: E731
+    try:
+        sd._hold_link_steady(c, sleep, 2.0, outage)
+        ended = "returned"
+    except Exception as e:                           # noqa: BLE001
+        ended = f"raised {type(e).__name__}: {e}"
+    check(ended == "returned",
+          f"the hold-off loop ran its 2 s out past a send that raised on "
+          f"every cycle, and returned to the reconnect attempt: {ended}")
+    check(arm.tries == int(2.0 * sd.ARM_SEND_HZ) and t[0] >= 2.0,
+          f"and it kept trying to send at ARM_SEND_HZ for the whole wait: "
+          f"{arm.tries} tries over {t[0]:.1f} s")
+    print("  ok")
+
+
 def test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error():
     section("Stream Deck: with the hardware away, a screen pass or tick that "
             "raises on every cycle never stops the arm frames (the link "
@@ -44530,6 +44574,7 @@ if __name__ == "__main__":
     test_streamdeck_hardware_reconnect_keeps_counter()
     test_streamdeck_outage_loop_runs_screen_pass()
     test_streamdeck_ack_key_while_an_alert_is_open()
+    test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send()
     test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error()
     test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers()
     test_streamdeck_round4_unplug_keeps_one_real_source_port()
