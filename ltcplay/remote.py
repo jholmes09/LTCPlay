@@ -748,8 +748,10 @@ class Remote:
             # pressed on the deck could never be found in the journal
             # afterwards (the Pico, 2026-10-18). Who, when and what, every
             # time.
+            label = ("Acknowledge" if (action or "").lower() == "acknowledge"
+                     else action or "Acknowledge")
             self._journal(who, screen, "alert", "refused",
-                          f"{action or 'Acknowledge'} pressed by "
+                          f"{label} pressed by "
                           f"{who or 'someone'} on the {screen or 'unknown screen'}"
                           f"{' for alert ' + str(aid) if aid is not None else ''}"
                           f" cleared nothing: {text}")
