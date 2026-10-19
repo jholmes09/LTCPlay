@@ -42605,6 +42605,16 @@ def test_alerts_route_status_and_acknowledge():
         st, _h, o2 = R.ask("POST", "/api/remote/alert",
                            {"action": "acknowledge"})
         check(st == 409, f"acknowledging nothing is refused: {st} {o2}")
+        # An ACK that clears nothing still leaves who, when and what in the
+        # journal (the Pico, 2026-10-18: a deck ACK pressed while a banner
+        # flashed could not be found afterwards).
+        rows = R.lines_for("alert")
+        check(rows and "cleared nothing" in rows[-1]["text"]
+              and "Acknowledge" in rows[-1]["text"]
+              and "no open alert" in rows[-1]["text"]
+              and not rows[-1].get("fault"),
+              f"an Acknowledge that clears nothing is journaled, with the "
+              f"reason, not as a fault: {rows[-1:]}")
         st, _h, o2 = _ask(R.httpd, "POST", "/api/remote/alert",
                           {"raise": "nope", "text": "x"}, client=loop)
         check(st == 400 and "not an alert kind" in o2.get("error", ""),

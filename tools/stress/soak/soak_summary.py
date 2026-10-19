@@ -76,7 +76,8 @@ def read_block(n, folder):
          "fails": [], "items": [], "violations": 0, "memory": {},
          "stalls": 0, "worst_stall_ms": None, "contain": None,
          "fs_overruns": 0, "fs_faults": 0, "fs_disarm_all": 0,
-         "fs_link_lost": 0, "crashed": False, "report": None}
+         "fs_link_lost": 0, "crashed": False, "report": None,
+         "audio": None, "fake_audio": False, "no_audio": False}
     reps = glob.glob(os.path.join(folder, "block * report.txt"))
     if reps:
         b["report"] = reps[0]
@@ -86,6 +87,10 @@ def read_block(n, folder):
         for ln in lines:
             if ln.startswith("Result: "):
                 b["verdict"] = ln[8:].strip()
+            if ln.strip().startswith("Show audio: "):
+                b["audio"] = ln.strip()[len("Show audio: "):]
+                b["fake_audio"] = "FAKE" in b["audio"]
+                b["no_audio"] = "NO interface" in b["audio"]
             m = re.match(r"^Run: .*?, ([\d.]+) of", ln)
             if m:
                 b["hours"] = float(m.group(1))
@@ -244,19 +249,52 @@ def summarize(soak, hours_wanted=48.0, now=None):
           f"free disk never under {MIN_DISK_GB:g} GB",
           f"{hours:.1f} h in {len(blocks)} block(s); free disk now "
           f"{free} GB; run phase: {status.get('phase')}")
+    fake = [b["n"] for b in blocks if b["fake_audio"]]
+    no_audio = [b["n"] for b in blocks if b["no_audio"]]
+    real = sorted({b["audio"] for b in blocks
+                   if b["audio"] and not b["fake_audio"] and not b["no_audio"]})
+    # Never a PASS/FAIL of its own (the blocks already fail with no
+    # interface); a fact that must stand beside the verdict, so a fake run
+    # is never mistaken for a real one.
+    check(not no_audio, "7. Show audio: a real interface in every block"
+          + (" (AUDIO WAS FAKE)" if fake else ""),
+          (f"AUDIO WAS FAKE in block(s) {fake}: the engine's stand-in device "
+           f"played the shows, so this run proves the engine, the scheduler, "
+           f"the flame link, the timecode, the Art-Net outputs and the "
+           f"witness, NOT the real audio path. Not a show-night soak. "
+           if fake else "")
+          + (f"NO interface found in block(s) {no_audio}: those blocks played "
+             f"no show. " if no_audio else "")
+          + (f"real interface: {', '.join(real)}" if real else
+             ("" if fake or no_audio else "no Show audio line found")))
     verdict = "FAIL" if any(v == "FAIL" for v, _t, _d in checks) else "PASS"
     if running and hours < hours_wanted - block_h:
         verdict = "STILL RUNNING"
+    if fake:
+        verdict += " (AUDIO WAS FAKE)"
     return {"verdict": verdict, "checks": checks, "blocks": blocks,
             "daily": daily, "status": status, "cfg": cfg, "hours": hours,
-            "running": running, "state": state}
+            "running": running, "state": state, "fake_audio": fake,
+            "no_audio": no_audio, "audio": real}
 
 
 def render(s, soak):
     st = s["status"]
     lines = [f"# LTC Player 48 hour soak summary ({s['verdict']})", "",
              "BENCH ONLY: no lasers, flames or lights connected; flamesafe's "
-             "output went to this PC only.", "",
+             "output went to this PC only.", ""]
+    if s.get("fake_audio"):
+        lines += ["AUDIO WAS FAKE in block(s) " + ", ".join(map(str, s["fake_audio"]))
+                  + ": the engine played the shows on a stand-in device "
+                  "(--fake-audio, or fake_audio in unattended.json). This run "
+                  "proves the engine, the scheduler, the flame link, the "
+                  "timecode, the Art-Net outputs and the witness, NOT the "
+                  "real audio path. It is not a show-night soak.", ""]
+    if s.get("no_audio"):
+        lines += ["NO AUDIO INTERFACE in block(s) " + ", ".join(map(str, s["no_audio"]))
+                  + ": no show played in them. Attach the interface, or run "
+                  "with -FakeAudio on purpose.", ""]
+    lines += [
              f"Soak folder: {soak}",
              f"Hours soaked: {s['hours']:.1f} in {len(s['blocks'])} block(s) "
              f"of {s['cfg'].get('block_minutes', 110)} min",
@@ -266,20 +304,21 @@ def render(s, soak):
              f"Last block: {st.get('last_block')} {st.get('last_verdict')}"
              + (f"; failures: {st.get('last_failures')}" if st.get("last_failures") else ""),
              f"Free disk: {st.get('free_disk_gb')} GB; last error: {st.get('last_error') or 'none'}",
+             f"Audio (status.json): {st.get('audio') or 'not stated (an older soak build)'}",
              "", "## Pass criteria", ""]
     for v, t, d in s["checks"]:
         lines.append(f"- [{v}] {t}")
         lines.append(f"      {d}")
     lines += ["", "## Blocks", "",
-              "| block | hours | verdict | flame violations | engine stalls | "
+              "| block | hours | verdict | show audio | flame violations | engine stalls | "
               "flamesafe overruns / faults / disarm-all / link lost | memory slopes (MB/h) |",
-              "|---|---|---|---|---|---|---|"]
+              "|---|---|---|---|---|---|---|---|"]
     for b in s["blocks"]:
         mem = ", ".join(f"{n} {m['slope_mb_h']:+.1f}" for n, m in
                         sorted(b["memory"].items())
                         if m["slope_mb_h"] is not None) or "-"
         lines.append(f"| {b['n']} | {b['hours'] if b['hours'] is not None else '?'} | "
-                     f"{b['verdict'] or 'no report'} | {b['violations']} | "
+                     f"{b['verdict'] or 'no report'} | {b['audio'] or '?'} | {b['violations']} | "
                      f"{b['stalls']} | {b['fs_overruns']} / {b['fs_faults']} / "
                      f"{b['fs_disarm_all']} / {b['fs_link_lost']} | {mem} |")
     fails = [(b["n"], f) for b in s["blocks"] for f in b["fails"]]
@@ -295,7 +334,9 @@ def render(s, soak):
               "stack for the hours above with shows every 15 minutes, arming "
               "and firing through the real paths, and the soak's listener on "
               "this PC saw flamesafe's output obey its rules; memory, timing "
-              "and faults are as judged above.",
+              "and faults are as judged above."
+              + (" With FAKE audio the show audio path itself is NOT among "
+                 "them." if s.get("fake_audio") else ""),
               "- Does not prove: anything about real flame hardware, the real "
               "network to the flame node, the Stream Deck hardware (a virtual "
               "deck unless one was plugged in), or operator mistakes. Those "

@@ -25,7 +25,9 @@ Options for steps that need a name:
 Logs: %LOCALAPPDATA%\ltcplay\witness\breakit.log (every line) and
 breakit-results.csv (one row per step). The expected results are in
 BREAK-IT TABLE.md beside this script. Run the wire witness at the same time:
-the table says what it must show.
+the table says what it must show. Run the laser listener too (Start laser
+listener.cmd): every snapshot carries the tail of its laser.log, and step
+13 needs it.
 #>
 param(
     [int[]]$Steps,
@@ -90,14 +92,28 @@ function Snapshot() {
     $night = ""
     $n = Get-ChildItem (Join-Path $ad "nights") -Filter "night_*.journal.txt" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
     if ($n) { $night = (Get-Content $n.FullName -Tail 3 -ErrorAction SilentlyContinue) -join " | " }
+    $laser = "no laser listener"
+    $ll = Laser-Log
+    if ($ll) { $laser = (Get-Content $ll -Tail 3 -ErrorAction SilentlyContinue) -join " | " }
     @{ engine = ($st.code -eq 200); running = [bool]($st.body -and ($st.body.running -or $st.body.starting))
        flamesafe = (Alive "flamesafe"); deck = (Alive "ltcplay-deck"); supervisor = (Alive "LTC Player")
-       alerts = $alerts; fs = $fs; night = $night; served_at = $(if ($rs.body) { $rs.body.served_at } else { $null }) }
+       alerts = $alerts; fs = $fs; night = $night; laser = $laser; served_at = $(if ($rs.body) { $rs.body.served_at } else { $null }) }
+}
+
+function Laser-Log() {
+    # The running laser listener's laser.log (it shares the witness run folder).
+    foreach ($cur in @((Join-Path $wdir "laser-current.txt"), (Join-Path $wdir "witness-current.txt"))) {
+        if (-not (Test-Path $cur)) { continue }
+        try { $run = (Get-Content -Raw $cur).Trim() } catch { continue }
+        $p = Join-Path $run "laser.log"
+        if ($run -and (Test-Path $p)) { return $p }
+    }
+    $null
 }
 
 function Describe($s) {
     "engine answers=$($s.engine) show running=$($s.running) flamesafe=$($s.flamesafe) deck=$($s.deck) supervisor=$($s.supervisor); banners: " +
-    $(if ($s.alerts.Count) { $s.alerts -join " || " } else { "none" }) + "; flamesafe tail: $($s.fs); journal tail: $($s.night)"
+    $(if ($s.alerts.Count) { $s.alerts -join " || " } else { "none" }) + "; flamesafe tail: $($s.fs); journal tail: $($s.night); laser.log tail: $($s.laser)"
 }
 
 function Wait-Until([scriptblock]$cond, [int]$maxS) {
@@ -238,12 +254,30 @@ $STEP_LIST = @(
            $t = (Get-Date).ToString("HH:mm:ss.fff")
            $r = Http "POST" "/api/remote/start-now" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
            "POST start-now at ${t}: HTTP $($r.code) $($r.body | ConvertTo-Json -Compress)" }
+       recover = { $true } },
+    @{ id = 13; name = "Laser test ON, then Start now, then Abort (the laser listener judges the lasers)"; needs = "morning,operator,laser"
+       expect = "laser.log: TEST ON <laser> when you switch the test on (its configured address and low value, nothing else); within 2 s of Start now its TEST OFF (or a BLANK) and journal 'Laser tests turned off: the show is going live'; within 2 s of the Abort a BLANK (brightness 0) when ltcplay_fire_ice.json has a beyond block, and NO TEST ON or UNBLANK afterwards while the Abort stands; with no beyond block the blank is absent and the journal says 'Lasers: blanking not set up' (EXPECTED while BEYOND is absent); checker: no LASER TEST OFF MISSING, no LASER BLANK MISSING, no LASER LIT WHILE ABORT LATCHED"
+       do = {
+           Read-Host "On the Morning page turn ONE laser's calibration test ON (a laser with mechanism osc; a placeholder laser refuses and sends nothing). When laser.log shows its TEST ON line, press Enter here: this presses Start now, waits for SHOW, then presses Abort 10 s later. Press Reset yourself afterwards"
+           $rs = Http "GET" "/api/remote/status"
+           $seen = $(if ($rs.body) { $rs.body.served_at } else { 0 })
+           $t1 = (Get-Date).ToString("HH:mm:ss.fff")
+           $r1 = Http "POST" "/api/remote/start-now" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
+           $inShow = Wait-Until { $s = Http "GET" "/api/schedule/state"; $s.body -and ($s.body.state -eq "SHOW") } 90
+           if ($inShow -lt 0) { return "POST start-now at ${t1}: HTTP $($r1.code); the scheduler did not reach SHOW within 90 s, so no Abort was pressed. Compare laser.log with the journal's start lines." }
+           Start-Sleep -Seconds 10
+           $rs = Http "GET" "/api/remote/status"
+           $seen = $(if ($rs.body) { $rs.body.served_at } else { 0 })
+           $t2 = (Get-Date).ToString("HH:mm:ss.fff")
+           $r2 = Http "POST" "/api/remote/abort" @{ confirmed = $true; seen = $seen; who = "Break-it"; screen = "Rack screen" }
+           "POST start-now at ${t1} (HTTP $($r1.code), SHOW after $inShow s); POST abort at ${t2} (HTTP $($r2.code) $($r2.body | ConvertTo-Json -Compress)); compare both times with laser.log's TEST OFF and BLANK lines" }
        recover = { $true } }
 )
 
 if ($List) {
     foreach ($s in $STEP_LIST) {
         $can = switch -Regex ($s.needs) {
+            "laser" { if (-not $morning) { "SKIP: needs the Morning page build (ltcplay_morning.json not found)" } elseif (Laser-Log) { "yes" } else { "SKIP: the laser listener is not running (Start laser listener.cmd)" } }
             "morning" { if ($morning) { "yes" } else { "SKIP: needs the Morning page build (ltcplay_morning.json not found)" } }
             "deck-hardware" { if (Find-StreamDeck) { "yes" } else { "SKIP: no Stream Deck Mini plugged in" } }
             "audio-device" { if (Find-Audio $AudioDevice) { "yes" } else { "needs -AudioDevice 'name'" } }
@@ -285,6 +319,7 @@ Say "Break-it started. Flame hardware stated DISCONNECTED. Steps: $(($chosen | F
 foreach ($s in $chosen) {
     $skip = ""
     if ($s.needs -match "morning" -and -not $morning) { $skip = "needs the Morning page build (no ltcplay_morning.json yet)" }
+    elseif ($s.needs -match "laser" -and -not (Laser-Log)) { $skip = "the laser listener is not running (Start laser listener.cmd); nothing would judge the lasers" }
     elseif ($s.needs -match "deck-hardware" -and -not (Find-StreamDeck)) { $skip = "no Stream Deck Mini plugged in" }
     elseif ($s.needs -match "adapter" -and -not $Adapter) { $skip = "needs -Adapter" }
     elseif ($s.needs -match "audio-device" -and -not (Find-Audio $AudioDevice)) { $skip = "no audio interface found; give -AudioDevice" }

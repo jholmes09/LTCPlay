@@ -16,7 +16,19 @@ from datetime import datetime, timedelta
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import check_witness as cw  # noqa: E402
+import laser_listener as ll  # noqa: E402
 import witness as wt  # noqa: E402
+
+BRIGHT = ll.BRIGHTNESS_ADDR
+LASERS = [{"id": "laser-1", "name": "Laser 1", "mechanism": "osc",
+           "host": "127.0.0.1", "port": 8100,
+           "on": [["/beyond/zone/1/brightness", 10.0]],
+           "off": [["/beyond/zone/1/brightness", 0.0]],
+           "lock": [["/beyond/zone/1/enable", 0]]},
+          {"id": "laser-2", "name": "Laser 2", "mechanism": "osc",
+           "host": "127.0.0.1", "port": 8100,
+           "on": [["/beyond/zone/2/brightness", 10.0]],
+           "off": [], "lock": []}]
 
 GROUPS = [{"name": "front row", "safety": 401, "fire": [411, 412],
            "arm_value": 78},
@@ -79,6 +91,33 @@ class WitnessRun:
     def close(self):
         for fh in (self.nz, self.gp, self.st, self.log):
             fh.close()
+
+
+class LaserRun:
+    """The laser listener's files inside a witness folder."""
+
+    def __init__(self, folder, lasers=LASERS, blank_value=0.0):
+        with open(os.path.join(folder, "laser.json"), "w") as fh:
+            json.dump({"host": "127.0.0.1", "port": 8100,
+                       "brightness_addr": BRIGHT, "blank_value": blank_value,
+                       "lasers": lasers}, fh)
+        self.fh = open(os.path.join(folder, "laser.csv"), "w", newline="")
+        self.w = csv.writer(self.fh)
+        self.w.writerow(["time", "mono_ms", "source", "port", "address",
+                         "types", "args", "kind"])
+
+    def osc(self, dt, address, types, args, kind="?"):
+        self.w.writerow([stamp(dt), 0, "127.0.0.1:50000", 8100, address,
+                         types, args, kind])
+
+    def blank(self, dt):
+        self.osc(dt, BRIGHT, "f", "0.0", "BLANK")
+
+    def unblank(self, dt):
+        self.osc(dt, BRIGHT, "f", "100.0", "UNBLANK")
+
+    def close(self):
+        self.fh.close()
 
 
 class Journals:
@@ -386,8 +425,526 @@ class TestChecker(unittest.TestCase):
         self.assertEqual(cw.load_lockout_slots(p), {411, 412})
 
 
+class TestLaserListener(unittest.TestCase):
+    def test_osc_decode(self):
+        m = ll.decode_osc(ll.encode_osc(BRIGHT, 0.0))
+        self.assertEqual(m, [(BRIGHT, "f", [0.0])])
+        m = ll.decode_osc(ll.encode_osc("/a/b", 7))
+        self.assertEqual(m, [("/a/b", "i", [7])])
+        m = ll.decode_osc(ll.encode_osc("/s", "hello"))
+        self.assertEqual(m, [("/s", "s", ["hello"])])
+        m = ll.decode_osc(ll.encode_osc("/t", True))
+        self.assertEqual(m, [("/t", "T", [True])])
+        b = ll.encode_bundle(ll.encode_osc("/x", 1), ll.encode_osc("/y", 2.5))
+        self.assertEqual(ll.decode_osc(b), [("/x", "i", [1]),
+                                            ("/y", "f", [2.5])])
+        with self.assertRaises(ValueError):
+            ll.decode_osc(b"hello world")
+        with self.assertRaises(ValueError):
+            ll.decode_osc(b"/a\x00\x00,z\x00\x00")
+        self.assertEqual(ll.args_text([0.0, 100.0, 10.5, 3, "a;b", True,
+                                       None]), "0.0;100.0;10.5;3;a,b;true;nil")
+
+    def test_classify_is_exact_on_address_and_value(self):
+        c = ll.classify
+        self.assertEqual(c(BRIGHT, [0.0], LASERS), ("BLANK", None))
+        self.assertEqual(c(BRIGHT, [0.0004], LASERS), ("BLANK", None))
+        self.assertEqual(c(BRIGHT, [100.0], LASERS), ("UNBLANK", None))
+        self.assertEqual(c(BRIGHT, [1.0], LASERS), ("UNBLANK", None))
+        self.assertEqual(c("/beyond/zone/1/brightness", [10.0], LASERS),
+                         ("TEST ON", "Laser 1"))
+        # the documented low value only: anything else is a stranger
+        self.assertEqual(c("/beyond/zone/1/brightness", [50.0], LASERS),
+                         ("OTHER", None))
+        self.assertEqual(c("/beyond/zone/1/brightness", [0.0], LASERS),
+                         ("TEST OFF", "Laser 1"))
+        self.assertEqual(c("/beyond/zone/1/enable", [0], LASERS),
+                         ("LOCK", "Laser 1"))
+        self.assertEqual(c("/beyond/general/BlackOut", [], LASERS),
+                         ("FORBIDDEN", None))
+        self.assertEqual(c("/beyond/general/MasterPause", [1], LASERS),
+                         ("FORBIDDEN", None))
+        self.assertEqual(c("/madmapper/x", ["hi"], LASERS), ("OTHER", None))
+        self.assertEqual(c(BRIGHT, [0.0, 1.0], LASERS), ("OTHER", None))
+        self.assertEqual(c(BRIGHT, ["0"], LASERS), ("OTHER", None))
+        # a different blank value
+        self.assertEqual(c(BRIGHT, [0.0], [], blank_value=5.0),
+                         ("UNBLANK", None))
+        self.assertEqual(c(BRIGHT, [5.0], [], blank_value=5.0),
+                         ("BLANK", None))
+        self.assertTrue(ll.is_blank(BRIGHT, [0.0]))
+        self.assertFalse(ll.is_blank(BRIGHT, [100.0]))
+        self.assertFalse(ll.is_blank("/beyond/zone/1/brightness", [0.0]))
+
+    def test_listener_on_a_real_socket(self):
+        d = tempfile.mkdtemp()
+        try:
+            self.assertEqual(ll.self_test(d), 0)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_refuses_a_port_already_in_use_and_writes_nothing(self):
+        import socket
+        import threading
+        d = tempfile.mkdtemp()
+        held = None
+        try:
+            held = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            held.bind(("127.0.0.1", 0))
+            port = held.getsockname()[1]
+            out = os.path.join(d, "run")
+            got = []
+            th = threading.Thread(target=lambda: got.append(ll.main(
+                ["--port", str(port), "--host", "127.0.0.1", "--out", out,
+                 "--fire-ice", os.path.join(d, "no.json"),
+                 "--morning", os.path.join(d, "no.json")])), daemon=True)
+            th.start()
+            th.join(5)
+            if th.is_alive():
+                # a listener that did not refuse is running: stop it, fail
+                os.makedirs(out, exist_ok=True)
+                open(os.path.join(out, "STOP"), "w").close()
+                th.join(5)
+                self.fail("the listener did not refuse a port in use")
+            self.assertEqual(got, [ll.REFUSED])
+            self.assertFalse(os.path.exists(out))
+            self.assertIn("already in use", ll.refusal("127.0.0.1", port, ""))
+            self.assertIn("real BEYOND is running",
+                          ll.refusal("127.0.0.1", 8100, "BEYOND.exe (pid 4)"))
+            self.assertIn("judges the laser commands itself",
+                          ll.refusal("127.0.0.1", 8100,
+                                     "ltcplay-soak.exe (pid 9)"))
+        finally:
+            if held is not None:
+                held.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_refuses_while_a_beyond_process_runs(self):
+        import socket
+        import threading
+        d = tempfile.mkdtemp()
+        old = ll.beyond_running
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+            s.close()
+            ll.beyond_running = lambda: "BEYOND.exe (pid 4242)"
+            out = os.path.join(d, "run")
+            got = []
+            th = threading.Thread(target=lambda: got.append(ll.main(
+                ["--port", str(port), "--out", out,
+                 "--fire-ice", os.path.join(d, "no.json"),
+                 "--morning", os.path.join(d, "no.json")])), daemon=True)
+            th.start()
+            th.join(5)
+            if th.is_alive():
+                os.makedirs(out, exist_ok=True)
+                open(os.path.join(out, "STOP"), "w").close()
+                th.join(5)
+                self.fail("the listener ran beside a BEYOND process")
+            self.assertEqual(got, [ll.REFUSED])
+            self.assertFalse(os.path.exists(out))
+        finally:
+            ll.beyond_running = old
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_listener_reads_the_configs_and_records_a_run(self):
+        import socket
+        import threading
+        d = tempfile.mkdtemp()
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+            s.close()
+            fi = os.path.join(d, "ltcplay_fire_ice.json")
+            with open(fi, "w") as fh:
+                json.dump({"beyond_blank": "osc",
+                           "beyond": {"host": "127.0.0.1", "port": port}}, fh)
+            mo = os.path.join(d, "ltcplay_morning.json")
+            with open(mo, "w") as fh:
+                json.dump({"lasers": [{"id": "laser-1", "name": "Laser 1",
+                                       "mechanism": "osc",
+                                       "on": [["/beyond/zone/1/brightness",
+                                               10.0]],
+                                       "off": []}]}, fh)
+            out = os.path.join(d, "run")
+            th = threading.Thread(target=ll.main, args=(
+                ["--fire-ice", fi, "--morning", mo, "--out", out],),
+                daemon=True)
+            th.start()
+            deadline = time.time() + 5
+            while time.time() < deadline and \
+                    not os.path.exists(os.path.join(out, "laser.json")):
+                time.sleep(0.05)
+            tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tx.sendto(ll.encode_osc(BRIGHT, 0.0), ("127.0.0.1", port))
+            tx.sendto(ll.encode_osc("/beyond/zone/1/brightness", 10.0),
+                      ("127.0.0.1", port))
+            tx.close()
+            deadline = time.time() + 5
+            p = os.path.join(out, "laser.csv")
+            while time.time() < deadline:
+                if os.path.exists(p) and len(open(p).read().splitlines()) >= 3:
+                    break
+                time.sleep(0.05)
+            open(os.path.join(out, "STOP"), "w").close()
+            th.join(5)
+            self.assertFalse(th.is_alive())
+            meta = json.load(open(os.path.join(out, "laser.json")))
+            self.assertEqual(meta["port"], port)
+            self.assertEqual(meta["lasers"][0]["name"], "Laser 1")
+            self.assertEqual(meta["lasers"][0]["port"], port)
+            rows = list(csv.DictReader(open(p)))
+            self.assertEqual([r["kind"] for r in rows],
+                             ["BLANK", "TEST ON Laser 1"])
+            log = open(os.path.join(out, "laser.log")).read()
+            self.assertIn(f"OSC on 127.0.0.1:{port}", log)
+            self.assertIn("STOP file found", log)
+            # and the checker reads the same run
+            w = cw.load_witness(out)
+            self.assertTrue(w["has_laser"])
+            self.assertEqual(len(w["laser"]), 2)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_read_beyond_says_when_blanking_is_not_set_up(self):
+        d = tempfile.mkdtemp()
+        try:
+            fi = os.path.join(d, "fi.json")
+            with open(fi, "w") as fh:
+                json.dump({"beyond_blank": "osc"}, fh)
+            host, port, how = ll.read_beyond(fi)
+            self.assertEqual((host, port), ("127.0.0.1", 8100))
+            self.assertIn("blanking not set up", how)
+            with open(fi, "w") as fh:
+                json.dump({"beyond": {"host": "127.0.0.2", "port": 9000}}, fh)
+            self.assertEqual(ll.read_beyond(fi)[:2], ("127.0.0.2", 9000))
+            self.assertEqual(ll.read_beyond(os.path.join(d, "none"))[:2],
+                             ("127.0.0.1", 8100))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestLaserChecker(unittest.TestCase):
+    """The laser rules, each with a case that passes and one that fails."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.w = WitnessRun(os.path.join(self.d, "w"))
+        self.l = LaserRun(self.w.dir)
+        self.j = Journals(self.d)
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def base_show(self, blank_at_abort=True, claim=True):
+        """A show: IDLE, a laser test on and off before it, SHOW with the
+        restore, an accepted Abort with its blank, Reset."""
+        j, w, l = self.j, self.w, self.l
+        j.fs_line(T0 - timedelta(minutes=5), "start", "flame universe 1")
+        j.rec(T0 - timedelta(minutes=4), "program start", "ltcplay started",
+              to_state="IDLE", actor="system")
+        j.rec(T0 - timedelta(minutes=4), "lasers",
+              "Lasers are blanked by OSC: BEYOND's brightness 0 or 100 "
+              "(beyond_blank \"osc\").", outcome="blank_mode", actor="system")
+        j.rec(T0 - timedelta(seconds=60), "laser-test",
+              "Andy turned the Laser 1 calibration test ON.", outcome="on")
+        l.osc(T0 - timedelta(seconds=60), "/beyond/zone/1/brightness", "f",
+              "10.0")
+        j.rec(T0 - timedelta(seconds=50), "laser-test",
+              "Andy turned the Laser 1 calibration test OFF.", outcome="off")
+        l.osc(T0 - timedelta(seconds=50), "/beyond/zone/1/brightness", "f",
+              "0.0")
+        j.rec(T0, "start", "The show started", to_state="SHOW")
+        l.unblank(T0 + timedelta(seconds=1))
+        j.rec(T0 + timedelta(seconds=2), "arm",
+              "Stream Deck: front row arm pressed (held 3.0 s) by Andy.")
+        w.armed_fire(T0 + timedelta(seconds=3), 2.0)
+        t_ab = T0 + timedelta(seconds=10)
+        if blank_at_abort:
+            l.blank(t_ab + timedelta(milliseconds=30))
+        j.rec(t_ab + timedelta(milliseconds=60), "abort",
+              "Abort, asked for by Andy on the Rack screen.", to_state="IDLE")
+        if claim:
+            j.rec(t_ab + timedelta(milliseconds=70), "lasers",
+                  "Lasers blanked (osc): OSC brightness 0.", outcome="blanked",
+                  actor="system")
+        j.fs_line(t_ab, "disarm-all", "the show program's Abort disarmed "
+                  "every group")
+        j.rec(T0 + timedelta(seconds=30), "reset", "Andy pressed Reset.")
+
+    def run_laser(self, **kw):
+        self.w.close()
+        self.l.close()
+        return run_check(self.d, **kw)
+
+    def fresh(self):
+        self.tearDown()
+        self.setUp()
+
+    def test_a_clean_laser_show_passes(self):
+        self.base_show()
+        res = self.run_laser()
+        self.assertEqual(res["episodes"], [], res["episodes"])
+        lz = res["laser"]
+        self.assertTrue(lz["set_up"])
+        self.assertEqual(lz["aborts"], 1)
+        self.assertEqual(lz["blank_claims"], 1)
+        self.assertEqual(lz["counts"]["blanks"], 1)
+        self.assertEqual(lz["tests"], 1)
+        _v, text = cw.report(res, cw.journal_counts(cw.load_nights(self.j.dir),
+                                                    []),
+                             cw.load_witness(self.w.dir), "x", (T0, T0))
+        self.assertIn("Verdict: PASS", text)
+        self.assertIn("LASER LISTENER: 4 OSC message(s)", text)
+        self.assertNotIn("UNVERIFIED", text)
+
+    def test_blank_missing_after_abort(self):
+        self.base_show(blank_at_abort=False)
+        r = rules(self.run_laser())
+        self.assertIn("LASER BLANK MISSING", r)
+        self.assertIn("LASER BLANK NOT HEARD", r)
+
+    def test_a_late_blank_is_missing_too(self):
+        self.base_show(blank_at_abort=False)
+        self.l.blank(T0 + timedelta(seconds=14))       # 4 s after the Abort
+        res = self.run_laser()
+        self.assertIn("LASER BLANK MISSING", rules(res))
+        # the same run judged with a 5 s window passes
+        self.fresh()
+        self.base_show(blank_at_abort=False)
+        self.l.blank(T0 + timedelta(seconds=14))
+        self.assertNotIn("LASER BLANK MISSING",
+                         rules(self.run_laser(blank_within_s=5.0)))
+
+    def test_blank_after_hold_that_paused_a_show(self):
+        self.base_show()
+        # a Hold in IDLE (schedule on hold, nothing playing): no blank due
+        self.j.rec(T0 - timedelta(seconds=120), "HOLD",
+                   "Andy pressed Hold: the schedule is on hold.",
+                   to_state="IDLE")
+        self.assertNotIn("LASER BLANK MISSING", rules(self.run_laser()))
+        # a Hold that paused the show: a blank is due
+        self.fresh()
+        self.base_show()
+        self.j.rec(T0 + timedelta(seconds=6), "hold",
+                   "Hold, asked for by Andy on the Rack screen.",
+                   to_state="PAUSED")
+        self.assertIn("LASER BLANK MISSING", rules(self.run_laser()))
+        self.fresh()
+        self.base_show()
+        self.j.rec(T0 + timedelta(seconds=6), "hold",
+                   "Hold, asked for by Andy on the Rack screen.",
+                   to_state="PAUSED")
+        self.l.blank(T0 + timedelta(seconds=6, milliseconds=100))
+        self.assertNotIn("LASER BLANK MISSING", rules(self.run_laser()))
+
+    def test_restore_outside_show_and_while_latched(self):
+        self.base_show()
+        self.l.unblank(T0 - timedelta(seconds=30))     # IDLE
+        self.l.unblank(T0 + timedelta(seconds=20))     # latched
+        r = rules(self.run_laser())
+        self.assertIn("LASER LIT OUTSIDE SHOW", r)
+        self.assertIn("LASER LIT WHILE ABORT LATCHED", r)
+        # the restore inside SHOW in base_show raised neither
+        self.fresh()
+        self.base_show()
+        r = rules(self.run_laser())
+        self.assertNotIn("LASER LIT OUTSIDE SHOW", r)
+        self.assertNotIn("LASER LIT WHILE ABORT LATCHED", r)
+
+    def test_laser_test_messages(self):
+        self.base_show()
+        # ON with no record (long before the recorded one)
+        self.l.osc(T0 - timedelta(seconds=200), "/beyond/zone/1/brightness",
+                   "f", "10.0")
+        # ON at the wrong value
+        self.l.osc(T0 - timedelta(seconds=58), "/beyond/zone/1/brightness",
+                   "f", "60.0")
+        # ON while latched (and no record)
+        self.l.osc(T0 + timedelta(seconds=20), "/beyond/zone/2/brightness",
+                   "f", "10.0")
+        # a forbidden address and a stranger
+        self.l.osc(T0 + timedelta(seconds=21), "/beyond/general/BlackOut",
+                   "", "")
+        self.l.osc(T0 + timedelta(seconds=22), "/madmapper/surfaces/1", "f",
+                   "1.0")
+        res = self.run_laser()
+        r = rules(res)
+        self.assertIn("LASER TEST WITHOUT RECORD", r)
+        self.assertIn("UNKNOWN LASER MESSAGE", r)
+        self.assertIn("LASER LIT WHILE ABORT LATCHED", r)
+        self.assertIn("FORBIDDEN LASER ADDRESS", r)
+        unknown = [e for e in res["episodes"] if e["rule"] == "UNKNOWN LASER MESSAGE"]
+        self.assertEqual(len(unknown), 2)       # wrong value, stranger
+
+    def test_laser_test_while_live_and_on_a_locked_laser(self):
+        self.base_show()
+        # the journal says Laser 2's test went on during SHOW: live
+        self.j.rec(T0 + timedelta(seconds=4), "laser-test",
+                   "Andy turned the Laser 2 calibration test ON.", outcome="on",
+                   to_state="SHOW")
+        self.l.osc(T0 + timedelta(seconds=4), "/beyond/zone/2/brightness", "f",
+                   "10.0")
+        # Laser 1 locked out before its test
+        self.j.rec(T0 - timedelta(seconds=70), "lockout",
+                   "Laser 1 (laser) LOCKED OUT by Andy on the Rack screen.",
+                   outcome="locked")
+        r = rules(self.run_laser())
+        self.assertIn("LASER TEST WHILE SHOW LIVE", r)
+        self.assertIn("LASER TEST ON LOCKED LASER", r)
+        # unlocked again before the test: no episode
+        self.fresh()
+        self.base_show()
+        self.j.rec(T0 - timedelta(seconds=70), "lockout",
+                   "Laser 1 (laser) LOCKED OUT by Andy on the Rack screen.",
+                   outcome="locked")
+        self.j.rec(T0 - timedelta(seconds=65), "lockout",
+                   "Laser 1 (laser) UNLOCKED by Andy on the Rack screen.",
+                   outcome="unlocked")
+        self.assertNotIn("LASER TEST ON LOCKED LASER", rules(self.run_laser()))
+
+    def test_test_not_heard_and_off_missing(self):
+        # the journal says Laser 2 went on and the show start turned it off;
+        # the wire has neither
+        self.base_show()
+        self.j.rec(T0 - timedelta(seconds=20), "laser-test",
+                   "Andy turned the Laser 2 calibration test ON.", outcome="on")
+        self.j.rec(T0, "laser-test", "Laser tests turned off: the show is "
+                   "going live.", outcome="all_off", actor="system")
+        res = self.run_laser()
+        r = rules(res)
+        self.assertIn("LASER TEST NOT HEARD", r)
+        self.assertIn("LASER TEST OFF MISSING", r)
+        offs = [e for e in res["episodes"] if e["rule"] == "LASER TEST OFF MISSING"]
+        self.assertTrue(any("show start" in e["detail"] or "its OFF" in
+                            e["detail"] for e in offs))
+        # Laser 2 has no off list; a brightness blank at the show start
+        # counts as dark, and the ON heard clears NOT HEARD
+        self.fresh()
+        self.base_show()
+        self.j.rec(T0 - timedelta(seconds=20), "laser-test",
+                   "Andy turned the Laser 2 calibration test ON.", outcome="on")
+        self.l.osc(T0 - timedelta(seconds=20), "/beyond/zone/2/brightness", "f",
+                   "10.0")
+        self.j.rec(T0, "laser-test", "Laser tests turned off: the show is "
+                   "going live.", outcome="all_off", actor="system")
+        self.l.blank(T0 + timedelta(milliseconds=200))
+        r = rules(self.run_laser())
+        self.assertNotIn("LASER TEST NOT HEARD", r)
+        self.assertNotIn("LASER TEST OFF MISSING", r)
+
+    def test_test_still_on_at_abort_must_go_dark(self):
+        """A test the journal says was on when the Abort came (the engine
+        turns tests off at a show start, so this is the belt behind that)
+        must be darkened by the Abort: its off message or the blank."""
+        def on_in_show():
+            self.j.rec(T0 + timedelta(seconds=5), "laser-test",
+                       "Andy turned the Laser 1 calibration test ON.",
+                       outcome="on", to_state="SHOW")
+            self.l.osc(T0 + timedelta(seconds=5), "/beyond/zone/1/brightness",
+                       "f", "10.0")
+        self.base_show()
+        on_in_show()
+        # the brightness blank at the Abort (base_show) is dark for it too
+        self.assertNotIn("LASER TEST OFF MISSING", rules(self.run_laser()))
+        self.fresh()
+        self.base_show(blank_at_abort=False, claim=False)
+        on_in_show()
+        self.assertIn("LASER TEST OFF MISSING", rules(self.run_laser()))
+        # its own off message is dark enough
+        self.fresh()
+        self.base_show(blank_at_abort=False, claim=False)
+        on_in_show()
+        self.l.osc(T0 + timedelta(seconds=10, milliseconds=100),
+                   "/beyond/zone/1/brightness", "f", "0.0")
+        self.assertNotIn("LASER TEST OFF MISSING", rules(self.run_laser()))
+
+    def test_blanking_not_set_up_is_expected_not_failed(self):
+        self.base_show(blank_at_abort=False, claim=False)
+        self.j.rec(T0 - timedelta(minutes=4), "lasers",
+                   "Lasers: blanking not set up (at startup): beyond_blank is "
+                   "\"osc\" but no BEYOND OSC address is set.",
+                   outcome="not_set_up", actor="system", fault=True)
+        self.j.rec(T0 - timedelta(minutes=3), "output",
+                   "The pixel output to 10.0.0.9 failed: unreachable.",
+                   outcome="failed", actor="system", fault=True)
+        res = self.run_laser()
+        r = rules(res)
+        self.assertNotIn("LASER BLANK MISSING", r)
+        self.assertNotIn("LASER SILENCE", r)
+        self.assertFalse(res["laser"]["set_up"])
+        counts = cw.journal_counts(cw.load_nights(self.j.dir), [])
+        self.assertEqual(counts["faults (engine), 'Lasers: blanking not set up'"
+                                " (EXPECTED while BEYOND is absent)"], 1)
+        self.assertEqual(counts["faults (engine), other than the standing "
+                                "laser fault"], 1)
+        _v, text = cw.report(res, counts, cw.load_witness(self.w.dir), "x",
+                             (T0, T0))
+        self.assertIn("EXPECTED while BEYOND is absent", text)
+        self.assertIn("Verdict: PASS", text)
+
+    def test_timecode_mode_is_unverified_not_failed(self):
+        self.base_show(blank_at_abort=False, claim=False)
+        self.j.rec(T0 - timedelta(minutes=3), "lasers",
+                   "Lasers are blanked by timecode (beyond_blank "
+                   "\"timecode\").", outcome="blank_mode", actor="system")
+        res = self.run_laser()
+        self.assertNotIn("LASER BLANK MISSING", rules(res))
+        self.assertTrue(any("timecode" in u for u in res["laser"]["unverified"]))
+
+    def test_silence(self):
+        self.base_show(blank_at_abort=False)
+        # drop every laser row: the journal claims, the wire has nothing
+        self.l.close()
+        self.l = LaserRun(self.w.dir)
+        res = self.run_laser()
+        r = rules(res)
+        self.assertIn("LASER SILENCE", r)
+        self.assertNotIn("LASER BLANK MISSING", r)   # the one rule says it
+
+    def test_no_laser_files_is_unverified(self):
+        self.base_show()
+        self.l.close()
+        os.remove(os.path.join(self.w.dir, "laser.csv"))
+        os.remove(os.path.join(self.w.dir, "laser.json"))
+        self.w.close()
+        res = run_check(self.d)
+        self.assertIsNone(res["laser"])
+        _v, text = cw.report(res, cw.journal_counts([], []),
+                             cw.load_witness(self.w.dir), "x", (T0, T0))
+        self.assertIn("no laser listener files", text)
+
+    def test_main_with_a_morning_file(self):
+        self.base_show()
+        self.w.close()
+        self.l.close()
+        mo = os.path.join(self.d, "ltcplay_morning.json")
+        with open(mo, "w") as fh:
+            # a different low value: the heard 10.0 becomes a stranger
+            json.dump({"lasers": [{"id": "laser-1", "name": "Laser 1",
+                                   "mechanism": "osc",
+                                   "on": [["/beyond/zone/1/brightness", 5.0]],
+                                   "off": [["/beyond/zone/1/brightness", 0.0]]}]},
+                      fh)
+        rc = cw.main(["--witness", self.w.dir, "--nights", self.j.dir,
+                      "--flamesafe-log", self.j.fs, "--morning", mo])
+        self.assertEqual(rc, 1)
+        text = open(os.path.join(self.w.dir, "check_report.txt")).read()
+        self.assertIn("UNKNOWN LASER MESSAGE", text)
+        self.assertIn("LASER TEST NOT HEARD", text)
+        self.assertNotIn(chr(0x2014), text)
+        rc = cw.main(["--witness", self.w.dir, "--nights", self.j.dir,
+                      "--flamesafe-log", self.j.fs])
+        self.assertEqual(rc, 0)
+
+
 def no_dashes_in_sources():
-    for name in ("witness.py", "witness.ps1", "check_witness.py"):
+    for name in ("witness.py", "witness.ps1", "check_witness.py",
+                 "laser_listener.py", "laser_listener.ps1",
+                 "Start laser listener.cmd"):
         text = open(os.path.join(HERE, name), encoding="utf-8").read()
         for ch in (chr(0x2014), chr(0x2013)):
             if ch in text:
