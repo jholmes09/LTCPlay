@@ -21,8 +21,9 @@ A stop is refused while the engine says a show is running or starting.
 
 Modes (one per run):
   (none), --start   start everything if it is not running, open the page
-                    full screen (Edge kiosk on the show monitor; Alt+F4
-                    closes that window, or the page's i button)
+                    as an Edge app window maximized on the show monitor
+                    (Minimize, Maximize and Close in its title bar, or the
+                    page's i button closes it)
   --page            the same page in an ordinary browser window
   --stop            stop everything, unless a show is running
   --task            what the scheduled task runs at sign-in, every minute
@@ -161,7 +162,7 @@ def load_settings():
         # puts it back to Normal whenever it is found at High or above;
         # "leave" leaves MadMapper's priority alone.
         "madmapper_priority": "normal",
-        # The rack screen page (/remote), full screen on this monitor:
+        # The rack screen page (/remote), maximized on this monitor:
         # 1 is the main display, 2 the next one Windows lists, and so on.
         "page_monitor": 1,
         "show_mode": "fire_ice",
@@ -1049,15 +1050,15 @@ def say_engine_refused(text, said, show=None):
 
 
 def show_refusal_page(page):
-    """The refusal page full screen on the rack monitor (Edge kiosk), or in
-    the default browser."""
+    """The refusal page as an app window on the rack monitor, or in the
+    default browser."""
     if not ltcwin.WINDOWS:
         return
     cmd = rack_page_command(0, load_settings().get("page_monitor", 1),
                             monitors(), edge_exe(),
-                            os.path.join(appdata_dir(), "rack-screen"))
+                            os.path.join(appdata_dir(), "rack-screen"),
+                            url="file:///" + page.replace("\\", "/"))
     if cmd:
-        cmd[2] = "file:///" + page.replace("\\", "/")
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, close_fds=True)
@@ -1325,27 +1326,33 @@ def edge_exe(env=None, isfile=os.path.isfile):
     return None
 
 
-def rack_page_command(port, monitor, screens, edge, profile):
-    """The command that opens the rack screen page full screen (Edge kiosk
-    mode, its own profile so it never asks first-run questions) on display
-    number `monitor` (1 = main) of `screens`, or None without Edge. An
-    unknown display number means the main one."""
+def rack_page_command(port, monitor, screens, edge, profile, url=None):
+    """The command that opens the rack screen page as an ordinary Edge app
+    window (its own profile, so it never asks first-run questions): a title
+    bar with Minimize, Maximize and Close, maximized on display number
+    `monitor` (1 = main) of `screens`, or None without Edge. An unknown
+    display number means the main one. NOT a kiosk (Jeff, 2026-10-19: the
+    kiosk window could not be minimized, and the Explorer windows the page
+    opened came up behind it with no taskbar to find them on)."""
     if not edge:
         return None
-    url = f"http://127.0.0.1:{port}{RACK_PAGE}"
-    cmd = [edge, "--kiosk", url, "--edge-kiosk-type=fullscreen",
-           "--no-first-run", f"--user-data-dir={profile}"]
+    url = url or f"http://127.0.0.1:{port}{RACK_PAGE}"
+    cmd = [edge, f"--app={url}", "--start-maximized", "--no-first-run",
+           f"--user-data-dir={profile}"]
     if screens:
         i = monitor - 1 if isinstance(monitor, int) and \
             1 <= monitor <= len(screens) else 0
-        left, top = screens[i][0], screens[i][1]
+        left, top, right, bottom = screens[i][:4]
+        if right > left and bottom > top:
+            cmd.append(f"--window-size={right - left},{bottom - top}")
         cmd.append(f"--window-position={left},{top}")
     return cmd
 
 
 def open_page_now(port):
-    """The rack screen page (/remote), full screen on the show monitor
-    (showpc.json "page_monitor"); without Edge, in the default browser."""
+    """The rack screen page (/remote), an app window maximized on the show
+    monitor (showpc.json "page_monitor"); without Edge, in the default
+    browser."""
     url = f"http://127.0.0.1:{port}{RACK_PAGE}"
     try:
         if ltcwin.WINDOWS:
@@ -1356,9 +1363,10 @@ def open_page_now(port):
                 RACK_WINDOW[0] = subprocess.Popen(
                     cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, close_fds=True)
-                log(f"opened the rack screen full screen: {cmd[2]} "
-                    f"({cmd[-1]}). Alt+F4 closes it, or the page's i "
-                    f"button, Close this window; the show keeps running.")
+                log(f"opened the rack screen as an app window, maximized "
+                    f"on the show monitor: {cmd[1]} ({cmd[-1]}). Its title "
+                    f"bar has Minimize, Maximize and Close; the page's i "
+                    f"button also closes it; the show keeps running.")
                 return
             os.startfile(url)
         else:
@@ -1783,15 +1791,23 @@ def self_check():
     cmd = rack_page_command(7878, 2, [(0, 0, 1920, 1080),
                                       (1920, 0, 3840, 1080)],
                             r"C:\Edge\msedge.exe", r"C:\p")
-    if not (cmd and cmd[1:3] == ["--kiosk", "http://127.0.0.1:7878/remote"]
-            and cmd[-1] == "--window-position=1920,0"):
-        raise RuntimeError(f"the rack screen command is wrong: {cmd}")
+    if not (cmd and cmd[1] == "--app=http://127.0.0.1:7878/remote"
+            and "--start-maximized" in cmd
+            and "--window-size=1920,1080" in cmd
+            and cmd[-1] == "--window-position=1920,0"
+            and not any(a.startswith("--kiosk") or "kiosk" in a
+                        or a == "--start-fullscreen" for a in cmd)):
+        raise RuntimeError(f"the rack screen command is wrong (it must be "
+                           f"an ordinary app window with Minimize, Maximize "
+                           f"and Close, never a kiosk): {cmd}")
     if rack_page_command(7878, 9, [(0, 0, 1, 1)], "e", "p")[-1] != \
             "--window-position=0,0" or \
-            rack_page_command(7878, 1, [], None, "p") is not None:
+            rack_page_command(7878, 1, [], None, "p") is not None or \
+            rack_page_command(0, 1, [], "e", "p", url="file:///C:/r.html")[1] \
+            != "--app=file:///C:/r.html":
         raise RuntimeError("the rack screen's fallbacks are wrong")
-    yield ("the page opens as the rack screen (/remote), full screen on the "
-           "show monitor")
+    yield ("the page opens as the rack screen (/remote), an ordinary app "
+           "window maximized on the show monitor, never a kiosk")
     for line in housekeeping.self_test():
         yield line
     for line in diagnostics.self_test():

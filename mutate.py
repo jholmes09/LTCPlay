@@ -8340,6 +8340,226 @@ def build():
         if True:
             return ""'''),
 
+ # -- Arrange mode (Jeff, 2026-10-19, bench 2026.10.19-6a32ff9: a picked-up
+ # machine followed the mouse for ever, and the next click ARMED it). Each
+ # of these takes one guard away; the selftest's node DOM test and the
+ # engine's route test must notice every one.
+ ("morning page: in Arrange mode a press on a machine still arms it",
+  "ltcplay/web/remote.html",
+  '''  if(ARRANGE){ dragStart(e, m); return; }''',
+  '''  if(ARRANGE){ dragStart(e, m); }'''),
+
+ ("morning page: letting go never ends the drag, so the machine keeps "
+  "following the pointer",
+  "ltcplay/web/remote.html",
+  '''window.addEventListener("pointerup", () => dragEnd("let go"));''',
+  ''''''),
+
+ ("morning page: Save layout leaves the machine on the pointer",
+  "ltcplay/web/remote.html",
+  '''  dragEnd(how === "save" ? "Save layout" : how === "cancel" ? "Cancel" : how === "reset" ? "Reset layout" : "the page was left");''',
+  ''''''),
+
+ ("morning page: Escape does not drop a held machine",
+  "ltcplay/web/remote.html",
+  '''document.addEventListener("keydown", e => { if(e.key === "Escape" && DRAG) dragEnd("Escape", true); });''',
+  ''''''),
+
+ ("morning page: the window losing focus leaves the machine on the pointer",
+  "ltcplay/web/remote.html",
+  '''window.addEventListener("blur", () => dragEnd("the window lost focus"));''',
+  ''''''),
+
+ ("morning page: the Space bar fires while arranging",
+  "ltcplay/web/remote.html",
+  '''  if(arrangeBlocked("purge-fire", {})) return;        // the Space bar, while arranging''',
+  ''''''),
+
+ ("morning page: a group button, a lock or a laser test goes while arranging "
+  "(the gate every press meets is gone)",
+  "ltcplay/web/remote.html",
+  '''  if(arrangeBlocked(route, extra)) return;
+  try{''',
+  '''  try{'''),
+
+ ("morning page: Arrange mode holds nothing back",
+  "ltcplay/web/remote.html",
+  '''  if(!ARRANGE) return false;
+  const off = extra && extra.on === false;''',
+  '''  if(true) return false;
+  const off = extra && extra.on === false;'''),
+
+ ("windows: the rack screen opens as a kiosk again (no Minimize, and "
+  "Explorer opens behind it)",
+  "packaging/windows/supervisor.py",
+  '''    cmd = [edge, f"--app={url}", "--start-maximized", "--no-first-run",''',
+  '''    cmd = [edge, "--kiosk", url, "--edge-kiosk-type=fullscreen", "--no-first-run",'''),
+
+ ("remote: the Explorer window opened for the show folder is never picked "
+  "out by its title",
+  "ltcplay/remote.py",
+  '''    if titled:
+        return titled[0][0]
+    if len(new) == 1:''',
+  '''    if len(new) == 1:'''),
+
+ ("remote: an Explorer window already open on the folder (reused) is left "
+  "behind the rack screen",
+  "ltcplay/remote.py",
+  '''    if reuse and not new:''',
+  '''    if False:'''),
+
+ ("morning page: the open beat never tells the engine the screen is arranging",
+  "ltcplay/web/remote.html",
+  '''Object.assign({arranging: ARRANGE, inst: BEAT_INST''',
+  '''Object.assign({arranging: false, inst: BEAT_INST'''),
+
+ ("morning page: Save layout does not leave Arrange mode, so arming stays off "
+  "and the banner stays",
+  "ltcplay/web/remote.html",
+  '''  ARRANGE = false; ARRANGE_POS = {};
+  // The page and the engine hear''',
+  '''  ARRANGE_POS = {};
+  // The page and the engine hear'''),
+
+ ("morning page: pointercancel no longer ends a drag",
+  "ltcplay/web/remote.html",
+  '''window.addEventListener("pointercancel", () => dragEnd("the pointer was cancelled"));''',
+  '''window.addEventListener("pointercancel", () => {});'''),
+
+ ("morning page: pagehide no longer ends a drag",
+  "ltcplay/web/remote.html",
+  '''window.addEventListener("pagehide", () => dragEnd("the page closed"));''',
+  '''window.addEventListener("pagehide", () => {});'''),
+
+ ("morning page: the page going hidden no longer ends a drag",
+  "ltcplay/web/remote.html",
+  '''document.addEventListener("visibilitychange", () => { if(document.hidden) dragEnd("the page was hidden"); });''',
+  '''document.addEventListener("visibilitychange", () => {});'''),
+
+ ("morning page: leaving the Morning page stays in Arrange mode",
+  "ltcplay/web/remote.html",
+  '''    arrangeExit("left");''',
+  '''    void 0;'''),
+
+ ("morning page: entering Arrange does not stop a fire press",
+  "ltcplay/web/remote.html",
+  '''  fireStop("Arrange mode");''',
+  '''  void 0;'''),
+
+ ("morning page: entering Arrange keeps this screen's purge selection armed",
+  "ltcplay/web/remote.html",
+  '''    post("/api/remote/purge-clear", actor({})).catch(() => {});
+  $("mo-msg").textContent = "Press a machine and move it''',
+  '''    void 0;
+  $("mo-msg").textContent = "Press a machine and move it'''),
+
+ ("morning page: an L lock button locks or unlocks while arranging",
+  "ltcplay/web/remote.html",
+  '''  if(arrangeBlocked("lock", {})) return;        // before the confirm, not after''',
+  '''  // gate gone'''),
+
+ ("morning page: the group buttons stay live while arranging",
+  "ltcplay/web/remote.html",
+  '''    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;''',
+  '''    b.disabled = !ids.length || !mo.purge_enabled;'''),
+
+ ("morning page: a bare mouse (no button down) still drags the machine",
+  "ltcplay/web/remote.html",
+  '''  if(ev.pointerType === "mouse" && ev.buttons === 0){ dragEnd("the button was already up"); return; }''',
+  '''  if(false){ dragEnd("the button was already up"); return; }'''),
+
+ ("morning page: losing pointer capture does not end the drag",
+  "ltcplay/web/remote.html",
+  '''    if(DRAG && DRAG.el === el && !(el.hasPointerCapture && el.hasPointerCapture(DRAG.pointerId))) dragEnd("the pointer was released");''',
+  '''    void 0;'''),
+
+ ("morning page: the banner still says arranging while Save is in flight",
+  "ltcplay/web/remote.html",
+  '''  post("/api/remote/morning-open", openBeatBody(how === "left")).catch(() => {});
+  renderMorning();
+  if(how === "save") await moPress''',
+  '''  if(how === "save") await moPress'''),
+
+ ("morning: one window's ordinary beat clears another window's Arrange mode",
+  "ltcplay/morning.py",
+  '''                mine.pop(inst, None)
+                if not mine:''',
+  '''                mine.clear()
+                if not mine:'''),
+
+ ("morning: an overtaken (older) beat still changes Arrange mode",
+  "ltcplay/morning.py",
+  '''            if last is not None and seq <= last[0]:
+                return                   # an older beat, overtaken''',
+  '''            if False:
+                return                   # an older beat, overtaken'''),
+
+ ("remote: a device that may not purge is never held back while it arranges",
+  "ltcplay/remote.py",
+  '''            m.open_beat(device, arranging=body.get("arranging") is True,
+                        inst=body.get("inst"), seq=body.get("seq"),
+                        mark_open=False)''',
+  '''            pass'''),
+
+ ("morning: a view-only device's Arrange beat marks the page open",
+  "ltcplay/morning.py",
+  '''        if mark_open:
+            self._open_at = now''',
+  '''        if True:
+            self._open_at = now'''),
+
+ ("morning: the engine ignores which window a beat came from",
+  "ltcplay/morning.py",
+  '''                           inst=body.get("inst"), seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)''',
+  '''                           seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)'''),
+
+ ("remote: a view-only device's beat ignores which window it came from",
+  "ltcplay/remote.py",
+  '''                        inst=body.get("inst"), seq=body.get("seq"),
+                        mark_open=False)''',
+  '''                        seq=body.get("seq"),
+                        mark_open=False)'''),
+
+ ("morning: the beat sent on leaving the page holds the page open 2 s more",
+  "ltcplay/morning.py",
+  '''                           mark_open=body.get("leaving") is not True)''',
+  '''                           mark_open=True)'''),
+
+ ("morning page: the beat sent on leaving the page does not say so",
+  "ltcplay/web/remote.html",
+  '''openBeatBody(how === "left")''',
+  '''openBeatBody(false)'''),
+
+ ("morning: a screen in Arrange mode can still arm, fire or lock at the engine",
+  "ltcplay/morning.py",
+  '''        if not gated or not self.device_arranging(device):
+            return ""''',
+  '''        if True:
+            return ""'''),
+
+ ("morning: a screen going into Arrange mode keeps its purge selection armed",
+  "ltcplay/morning.py",
+  '''            if self.purge.owner == device and (self.purge.selected or
+                                               self.purge.fire is not None):
+                self.purge.clear(f"{device} went into Arrange mode")''',
+  '''            pass'''),
+
+ ("morning: the engine's Arrange gate is never consulted by the routes",
+  "ltcplay/morning.py",
+  '''        why = "" if deck_fire else self.arrange_refusal(name, body, device)
+        if why:
+            return 409, {"error": why, "let_go": True}''',
+  ''''''),
+
+ ("morning: every FIRE heartbeat over loopback reads as the deck's, so the "
+  "rack screen's own Space bar is not held back by its Arrange mode",
+  "ltcplay/morning.py",
+  '''        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"''',
+  '''        deck_fire = name == "purge-fire" and local'''),
+
  ("remote: an iPad unlocks a machine or lights a laser test without screen_arming (T9, T10)",
   "ltcplay/remote.py",
   '''                not self.may_act_from(ctx.local):''',

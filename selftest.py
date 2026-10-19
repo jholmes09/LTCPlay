@@ -45008,6 +45008,584 @@ def test_morning_lockout_trust_link_and_close():
     print("  ok")
 
 
+def test_morning_arrange_mode_arms_nothing():
+    section("Morning page, Arrange mode (Jeff, 2026-10-19, bench "
+            "2026.10.19-6a32ff9: a picked-up machine followed the mouse for "
+            "ever and the next click ARMED it): Arrange is a distinct mode "
+            "in which no click, key, touch or drag arms, fires, locks or "
+            "lights anything; a drag is pointer-down to pointer-up and "
+            "pointerup, pointercancel, Escape, Save, Cancel, Reset, leaving "
+            "the page, blur and the page hidden all end it; Save layout "
+            "leaves the mode and only then does a press arm again; the "
+            "engine refuses the same routes for a screen whose open beat "
+            "says it is arranging (page logic in node on a small DOM, and "
+            "the engine's routes)")
+    import json as _j
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// ARRANGE BEGIN")
+    b = page.find("// ARRANGE END")
+    check(0 < a < b, "the page has its ARRANGE block")
+    block = page[a:b]
+    # The wiring outside the block: every press goes through moPress and
+    # its gate first, the Space bar and the lock button ask the gate, the
+    # open beat carries the mode, leaving the page leaves the mode, the
+    # group buttons are off, and the banner with its three exits exists.
+    mp = page.find("async function moPress(route, extra, msgEl){")
+    gate = page.find("if(arrangeBlocked(route, extra)) return;", mp)
+    check(mp > 0 and gate > mp and gate < page.find("try{", mp),
+          "moPress asks arrangeBlocked before anything leaves the page")
+    for need in ('if(arrangeBlocked("purge-fire", {})) return;',
+                 'if(arrangeBlocked("lock", {})) return;',
+                 'await post("/api/remote/morning-open", openBeatBody());',
+                 'arrangeExit("left");',
+                 'b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;',
+                 'wireMachine(el, m);',
+                 'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
+                 'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
+                 'id="mo-arr-cancel">Cancel<',
+                 'k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"'):
+        check(need in page, f"the page wires {need!r}")
+    for need in ("function arrangeBlocked(", "function openBeatBody(",
+                 "function wireMachine(", "function dragStart(",
+                 "function dragEnd(", "function arrangeEnter(",
+                 "async function arrangeExit(", "function renderArrange(",
+                 'window.addEventListener("pointerup"',
+                 'window.addEventListener("pointercancel"',
+                 'window.addEventListener("blur"',
+                 'window.addEventListener("pagehide"',
+                 'document.addEventListener("visibilitychange"',
+                 'e.key === "Escape" && DRAG'):
+        check(need in block, f"the ARRANGE block has {need!r}")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the Morning "
+                         "page's Arrange mode cannot be run; install node in "
+                         "the workflow")
+        print("  note: node is not on this machine, so the Arrange mode was "
+              "checked by reading only (CI runs it)")
+    else:
+        prelude = r"""
+"use strict";
+// A small DOM: nodes with listeners that bubble to document and window,
+// pointer capture, a style, a class list and a rect for the field.
+class Node {
+  constructor(id, parent){
+    this.id = id; this.parent = parent || null; this.listeners = {}; this.style = {};
+    this.dataset = {}; this.hidden = false; this.textContent = ""; this.disabled = false; this.captured = null;
+    const cls = new Set();
+    this.classList = {add:c => cls.add(c), remove:c => cls.delete(c), contains:c => cls.has(c),
+      toggle:(c, on) => { if(on) cls.add(c); else cls.delete(c); }};
+  }
+  addEventListener(t, f){ (this.listeners[t] = this.listeners[t] || []).push(f); }
+  removeEventListener(t, f){ this.listeners[t] = (this.listeners[t] || []).filter(x => x !== f); }
+  dispatchEvent(e){
+    e.target = e.target || this; let n = this;
+    while(n && !e.stopped){ e.currentTarget = n; for(const f of (n.listeners[e.type] || []).slice()) f(e); n = n.parent; }
+    e.currentTarget = null;         // as a real event is after dispatch
+    return true;
+  }
+  setPointerCapture(id){ this.captured = id; }
+  releasePointerCapture(id){ if(this.captured === id) this.captured = null; }
+  hasPointerCapture(id){ return this.captured === id; }
+  getBoundingClientRect(){ return this.rect || {left:0, top:0, width:1000, height:500}; }
+}
+const window = new Node("window");
+const document = new Node("document", window); document.hidden = false;
+const body = new Node("body", document);
+const byId = {};
+const mk = (id, parent) => (byId[id] = new Node(id, parent || body));
+for(const id of ["mo-msg", "mo-key", "mo-arrange-bar", "mo-arr-save", "mo-arr-cancel", "mo-arr-reset", "mo-arrange"]) mk(id);
+mk("mo-field").rect = {left:100, top:100, width:1000, height:500};
+const $ = id => byId[id];
+const ev = (type, props) => Object.assign({type, stopped:false, preventDefault(){ this.prevented = true; }, stopPropagation(){ this.stopped = true; }}, props || {});
+const posts = [], stops = []; let renders = 0;
+async function moPress(route, extra){ posts.push([route, extra]); }
+function post(p, body){ posts.push([p.replace("/api/remote/", ""), body]); return Promise.resolve({}); }
+function actor(extra){ return Object.assign({seen: 123}, extra || {}); }
+function fireStop(why){ stops.push(why); }
+async function confirmBox(){ return true; }
+function renderMorning(){ renders++; renderArrange(); }
+let MO = {layout:{g1:{x:50, y:50}, g2:{x:10, y:10}}, purge_state:{selected:[], owner:"Rack screen"}, me:"Rack screen"};
+"""
+        body = r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+(async () => {
+const g1 = mk("mach-g1", byId["mo-field"]); wireMachine(g1, {id:"g1", name:"Ground 1"});
+const g2 = mk("mach-g2", byId["mo-field"]); wireMachine(g2, {id:"g2", name:"Ground 2"});
+// Normal mode: a press asks the engine to arm.
+g1.dispatchEvent(ev("pointerdown", {pointerId:1, clientX:600, clientY:350}));
+t(posts.length === 1 && posts[0][0] === "purge-select" && posts[0][1].machine === "g1" && posts[0][1].on === true,
+  "normal mode: a press on a machine asks the engine to arm it: " + JSON.stringify(posts));
+window.dispatchEvent(ev("pointerup", {pointerId:1}));
+t(openBeatBody().arranging === false, "the open beat says not arranging");
+posts.length = 0;
+// Arrange mode.
+arrangeEnter();
+t(ARRANGE === true, "Arrange is on");
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === true), "entering Arrange tells the engine at once: " + JSON.stringify(posts));
+t(openBeatBody().arranging === true, "every open beat now says arranging");
+t(!$("mo-arrange-bar").hidden, "the ARRANGING banner shows");
+t($("mo-arrange").disabled === true, "the Arrange button is off while arranging");
+t(stops.length === 1, "a fire press is stopped on entry");
+posts.length = 0;
+// Press, move, let go: the machine follows while held and not after.
+g1.dispatchEvent(ev("pointerdown", {pointerId:2, clientX:600, clientY:350}));
+t(DRAG !== null && DRAG.id === "g1" && g1.captured === 2, "a press picks the machine up and captures the pointer");
+t(posts.length === 0, "and asks the engine for nothing");
+window.dispatchEvent(ev("pointermove", {pointerId:2, clientX:700, clientY:400}));
+t(g1.style.left === "60%" && g1.style.top === "60%", "it follows while held: " + g1.style.left + " " + g1.style.top);
+window.dispatchEvent(ev("pointermove", {pointerId:9, clientX:100, clientY:100}));
+t(g1.style.left === "60%", "another pointer's move does not move it");
+window.dispatchEvent(ev("pointerup", {pointerId:2, clientX:700, clientY:400}));
+t(DRAG === null && g1.captured === null, "letting go ends the drag and releases the machine");
+window.dispatchEvent(ev("pointermove", {pointerId:2, clientX:900, clientY:450}));
+t(g1.style.left === "60%" && g1.style.top === "60%", "nothing follows the pointer after that: " + g1.style.left);
+t(ARRANGE_POS.g1 && ARRANGE_POS.g1.x === 60 && ARRANGE_POS.g1.y === 60, "the drop is remembered for Save");
+t(posts.length === 0, "a drag asks the engine for nothing");
+// A plain click (down, up, click) in Arrange mode arms nothing.
+g1.dispatchEvent(ev("pointerdown", {pointerId:3, clientX:700, clientY:400}));
+window.dispatchEvent(ev("pointerup", {pointerId:3}));
+g1.dispatchEvent(ev("click", {}));
+t(posts.length === 0 && DRAG === null, "a click on a machine in Arrange mode asks the engine for nothing: " + JSON.stringify(posts));
+// The gate every other press meets.
+t(arrangeBlocked("purge-select", {machines:["g1", "g2"], on:true}) === true, "a group button is held back");
+t(arrangeBlocked("purge-select", {machine:"g1", on:true}) === true, "a select is held back");
+t(arrangeBlocked("purge-fire", {}) === true, "the fire key is held back");
+t(arrangeBlocked("lock", {kind:"machine", id:"g1", on:true}) === true && arrangeBlocked("lock", {on:false}) === true, "lock and unlock are held back");
+t(arrangeBlocked("laser-test", {laser:"l1", on:true}) === true, "a laser test ON is held back");
+t($("mo-msg").textContent.indexOf("ARRANGING: arming disabled") === 0, "and the refusal says so on the page: " + $("mo-msg").textContent);
+t(arrangeBlocked("laser-test", {on:false}) === false && arrangeBlocked("purge-select", {machine:"g1", on:false}) === false &&
+  arrangeBlocked("purge-clear", {}) === false && arrangeBlocked("purge-stop", {}) === false && arrangeBlocked("layout", {}) === false &&
+  arrangeBlocked("checklist-tick", {}) === false, "what only takes risk away, the layout and the checklists still go");
+// Escape puts a held machine back where it was picked up.
+g2.dispatchEvent(ev("pointerdown", {pointerId:4, clientX:150, clientY:150}));
+window.dispatchEvent(ev("pointermove", {pointerId:4, clientX:600, clientY:350}));
+t(g2.style.left === "50%" && g2.style.top === "50%", "g2 follows while held");
+document.dispatchEvent(ev("keydown", {key:"Escape"}));
+t(DRAG === null && g2.captured === null && g2.style.left === "10%" && g2.style.top === "10%", "Escape drops it where it was picked up: " + g2.style.left);
+// Blur, the page hidden, pagehide and pointercancel each end a drag.
+for(const [what, fire] of [["blur", () => window.dispatchEvent(ev("blur"))],
+    ["the page hidden", () => { document.hidden = true; document.dispatchEvent(ev("visibilitychange")); document.hidden = false; }],
+    ["pagehide", () => window.dispatchEvent(ev("pagehide"))],
+    ["pointercancel", () => window.dispatchEvent(ev("pointercancel", {pointerId:5}))]]){
+  g1.dispatchEvent(ev("pointerdown", {pointerId:5, clientX:700, clientY:400}));
+  t(DRAG !== null, what + ": picked up");
+  fire();
+  t(DRAG === null && g1.captured === null, what + " ends the drag and releases the machine");
+}
+// Save layout: drops the machine, leaves the mode, sends every place as dropped.
+g1.dispatchEvent(ev("pointerdown", {pointerId:6, clientX:700, clientY:400}));
+window.dispatchEvent(ev("pointermove", {pointerId:6, clientX:800, clientY:450}));
+posts.length = 0;
+await arrangeExit("save");
+t(DRAG === null && ARRANGE === false && g1.captured === null, "Save layout drops the machine and leaves Arrange mode");
+const lay = posts.find(p => p[0] === "layout");
+t(lay && lay[1].positions && lay[1].positions.g1.x === 70 && lay[1].positions.g1.y === 70 && lay[1].positions.g2.x === 10,
+  "Save sends every place as dropped: " + JSON.stringify(lay));
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === false), "and the engine hears Arrange is over");
+t($("mo-arrange-bar").hidden && $("mo-arrange").disabled === false, "the banner goes and Arrange may be pressed again");
+window.dispatchEvent(ev("pointermove", {pointerId:6, clientX:900, clientY:480}));
+t(g1.style.left === "70%", "nothing follows after Save: " + g1.style.left);
+posts.length = 0;
+g1.dispatchEvent(ev("pointerdown", {pointerId:7, clientX:800, clientY:450}));
+t(posts.length === 1 && posts[0][0] === "purge-select" && posts[0][1].on === true, "after the explicit exit a press arms again: " + JSON.stringify(posts));
+window.dispatchEvent(ev("pointerup", {pointerId:7}));
+// Cancel: drops, saves nothing, forgets the moves.
+arrangeEnter(); posts.length = 0;
+g1.dispatchEvent(ev("pointerdown", {pointerId:8, clientX:800, clientY:450}));
+window.dispatchEvent(ev("pointermove", {pointerId:8, clientX:200, clientY:200}));
+await arrangeExit("cancel");
+t(ARRANGE === false && DRAG === null && !posts.some(p => p[0] === "layout") && Object.keys(ARRANGE_POS).length === 0,
+  "Cancel drops the machine, saves nothing and forgets the moves: " + JSON.stringify(posts));
+// Reset layout: the default, from the engine.
+arrangeEnter(); posts.length = 0;
+await arrangeReset();
+t(ARRANGE === false && posts.some(p => p[0] === "layout" && p[1].reset === true), "Reset layout asks the engine for the default and leaves Arrange mode: " + JSON.stringify(posts));
+// Review of PR #73. Entering Arrange with this screen's selection armed
+// clears it at the engine at once.
+MO.purge_state = {selected:["g1"], owner:"Rack screen"}; posts.length = 0;
+arrangeEnter();
+t(posts.some(p => p[0] === "purge-clear"), "entering Arrange clears this screen's armed selection: " + JSON.stringify(posts));
+MO.purge_state = {selected:[], owner:"Rack screen"}; posts.length = 0;
+// The L lock buttons: refused before the confirm, nothing sent.
+MO.lockout = {machines:{}, lasers:{}};
+await lockClick("machine", "g1", "Ground 1");
+MO.lockout = {machines:{g1:true}, lasers:{}};
+await lockClick("machine", "g1", "Ground 1");
+t(!posts.some(p => p[0] === "lock"), "an L button neither locks nor unlocks while arranging: " + JSON.stringify(posts));
+// A mouse that moves with no button down was let go where the page never
+// heard it: the drag ends and nothing follows the bare mouse.
+g1.dispatchEvent(ev("pointerdown", {pointerId:11, clientX:800, clientY:450}));
+window.dispatchEvent(ev("pointermove", {pointerId:11, pointerType:"mouse", buttons:0, clientX:200, clientY:200}));
+t(DRAG === null && g1.style.left !== "10%" && g1.style.top !== "20%", "a bare mouse move ends the drag and the machine does not follow it: " + g1.style.left + " " + g1.style.top);
+window.dispatchEvent(ev("pointermove", {pointerId:11, pointerType:"mouse", buttons:1, clientX:300, clientY:300}));
+t(g1.style.left !== "20%", "nor any move after that");
+// Pointer capture lost by a route the window never saw ends the drag.
+g1.dispatchEvent(ev("pointerdown", {pointerId:12, clientX:800, clientY:450}));
+g1.captured = null; g1.dispatchEvent(ev("lostpointercapture", {pointerId:12}));
+t(DRAG === null, "losing pointer capture ends the drag");
+// While Save is in flight the banner is already gone: it never says
+// arranging while a press would arm.
+const realPress = moPress; let release;
+moPress = (route, extra) => { posts.push([route, extra]); return new Promise(r => { release = r; }); };
+const saving = arrangeExit("save");
+t(ARRANGE === false && $("mo-arrange-bar").hidden, "the banner goes before the save answers");
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === false), "and the engine hears the exit before the save answers");
+release(); await saving; moPress = realPress;
+// Every beat carries this page load's instance and a rising sequence.
+const b1 = openBeatBody(), b2 = openBeatBody();
+t(typeof b1.inst === "string" && b1.inst.length > 4 && b1.inst === b2.inst && b2.seq === b1.seq + 1,
+  "the open beat carries this page load and a rising number: " + JSON.stringify([b1, b2]));
+// Leaving the page: drops, leaves the mode, saves nothing.
+arrangeEnter();
+g1.dispatchEvent(ev("pointerdown", {pointerId:10, clientX:800, clientY:450}));
+posts.length = 0;
+await arrangeExit("left");
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === false && p[1].leaving === true),
+  "the exit beat on leaving says so, so the engine does not hold the page open: " + JSON.stringify(posts));
+t(!openBeatBody().leaving, "an ordinary beat is not a leaving one");
+t(ARRANGE === false && DRAG === null && g1.captured === null && !posts.some(p => p[0] === "layout"),
+  "leaving the page drops the machine and leaves Arrange mode without saving");
+t(renders > 0, "the page was redrawn");
+})().then(() => console.log(JSON.stringify(out)), e => { console.log(JSON.stringify(["threw: " + (e && e.stack || e)])); });
+"""
+        # lockClick (the L buttons) runs too: its gate comes before the
+        # confirm, so nothing is asked and nothing is sent.
+        lc = page[page.find("async function lockClick("):a]
+        check(lc.startswith("async function lockClick("),
+              "the page has lockClick before the ARRANGE block")
+        r = _sp.run([node, "-e", prelude + lc + block + body], capture_output=True,
+                    text=True, timeout=60)
+        try:
+            bad = _j.loads(r.stdout.strip() or "null")
+        except ValueError:
+            bad = None
+        check(r.returncode == 0 and bad == [],
+              f"the Arrange mode, in node: {r.stdout!r} {r.stderr[-600:]!r}")
+    # The engine's side: a screen whose open beat says it is arranging.
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import morning as MO
+    R = _morning_rig(S, _MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    try:
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"seen": R.seen()}, client=loop)
+        check(st == 200 and out["arranging"] is False,
+              f"a plain open beat: not arranging: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"setup: a click arms Ground 1: {st} {out}")
+        dev = R.m.purge.owner
+        check(dev == "Rack screen", f"the rack screen owns it: {dev}")
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": True, "seen": R.seen()},
+                            client=loop)
+        check(st == 200 and out["arranging"] is True and
+              R.m.purge.view()["selected"] == [] and
+              R.m.purge.view()["owner"] is None,
+              f"the beat that says arranging clears that screen's purge "
+              f"selection: {st} {out} {R.m.purge.view()}")
+        check(any(r.get("action") == "layout" and r.get("outcome") ==
+                  "arranging" for r in R.svc.journal),
+              "and the journal says the screen is arranging")
+        for route, body_, what in (
+                ("purge-select", {"machine": "g1"}, "a click on a machine"),
+                ("purge-select", {"machines": ["g1", "g2"], "on": True},
+                 "a group button"),
+                ("purge-fire", {"fire_id": None}, "a fire heartbeat"),
+                ("laser-test", {"laser": "l1", "on": True}, "a laser test ON"),
+                ("lock", {"kind": "machine", "id": "g2", "on": True},
+                 "a lock"),
+                ("lock", {"kind": "machine", "id": "g2", "on": False,
+                          "confirmed": True}, "an unlock")):
+            body_["seen"] = R.seen()
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=loop)
+            check(st == 409 and "Arrange mode" in out.get("error", "") and
+                  out.get("let_go") is True,
+                  f"{what} from the arranging screen is refused by the "
+                  f"engine: {st} {out}")
+        check(R.m.purge.view()["selected"] == [] and
+              not R.m.lockout.is_locked("machine", "g2") and
+              R.m.purge.fires == 0,
+              "nothing was armed, fired or locked")
+        for route, body_, what in (
+                ("purge-select", {"machine": "g1", "on": False},
+                 "a select OFF"),
+                ("laser-test", {"laser": "l1", "on": False}, "a laser test OFF"),
+                ("purge-clear", {}, "a clear"), ("purge-stop", {}, "a stop"),
+                ("layout", {"positions": {"g1": {"x": 20, "y": 90}}},
+                 "the layout itself")):
+            body_["seen"] = R.seen()
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=loop)
+            check("Arrange mode" not in str(out.get("error", "")),
+                  f"{what} is not held back by Arrange mode: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=ipad)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"another screen is not held back by this one's arranging: "
+              f"{st} {out}")
+        # The deck's FIRE heartbeat (loopback, screen "Stream Deck", under
+        # the rack screen's device name) fires the iPad's selection even
+        # while the rack screen arranges: the refusal it meets, if any, is
+        # never Arrange mode's.
+        st_, out_ = R.m.post("purge-fire", {"fire_id": None}, "Rack screen",
+                             "Andy", "Stream Deck", True, True)
+        check("Arrange mode" not in str(out_.get("error", "")),
+              f"the deck's FIRE is not held back by the rack screen "
+              f"arranging: {st_} {out_}")
+        R.m.purge.clear("test")
+        check(R.m.arrange_refusal("purge-fire", {}, "Stream Deck") == "",
+              "the Stream Deck process is never arranging")
+        # Reset layout: the saved file goes, the default comes back.
+        lay_path = os.path.join(R.work, MO.LAYOUT_FILE)
+        check(os.path.isfile(lay_path), "setup: a layout was saved above")
+        st, _h, out = R.ask("POST", "/api/remote/layout",
+                            {"reset": True, "seen": R.seen()}, client=loop)
+        default = MO.default_layout(R.m.cfg)
+        check(st == 200 and "default" in out["text"] and
+              out["layout"] == default and not os.path.exists(lay_path),
+              f"Reset layout removes the file and answers the default: "
+              f"{st} {out}")
+        check(any(r.get("action") == "layout" and r.get("outcome") ==
+                  "reset" for r in R.svc.journal), "and the journal says so")
+        # Leaving Arrange mode: the next beat says so, and a press arms.
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": False, "seen": R.seen()},
+                            client=loop)
+        check(st == 200 and out["arranging"] is False, "the exit beat")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"after the exit a click arms again: {st} {out}")
+        R.m.purge.clear("test")
+        # A screen whose arranging beats stop is no longer arranging after
+        # OPEN_STALE_S (its page is gone; its selection went with it).
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is True, "arranging again")
+        R.mono[0] += MO.OPEN_STALE_S + 0.1
+        check(R.m.device_arranging("Rack screen") is False and
+              R.m.arrange_refusal("purge-select", {"machine": "g1"},
+                                  "Rack screen") == "",
+              "with no beat for 2 s the screen is not arranging any more")
+
+        def fresh():
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
+        # Two windows on the show PC are both "Rack screen" (adversarial
+        # review of PR #73, finding 1): window B's ordinary beat must not
+        # clear window A's Arrange mode at the engine.
+        fresh()
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "A", "seq": 1, "seen": R.seen()},
+              client=loop)
+        # B's number is far above A's: windows' numbers interleave on a
+        # real show PC, so only the instance tells them apart.
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "B", "seq": 50, "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              R.m.purge.view()["selected"] == [],
+              f"another window's ordinary beat does not clear this "
+              f"window's Arrange mode: {st} {out}")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "A", "seq": 2, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "window A's own beat ends its Arrange mode")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"once window A itself leaves Arrange mode a click arms: "
+              f"{st} {out}")
+        R.m.purge.clear("test")
+        # An older beat that arrives after a later one says nothing about
+        # Arrange mode (finding 6).
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "C", "seq": 5, "seen": R.seen()},
+              client=loop)
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": False, "inst": "C", "seq": 4,
+               "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is True,
+              "an overtaken beat does not end Arrange mode")
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": False, "inst": "C", "seq": 6,
+               "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "the next beat in order does")
+        # A device that may not purge reads the page without holding it
+        # open, but its Arrange mode still holds back a lock, an unlock
+        # and a laser test (finding 2).
+        from ltcplay import remote as RM
+        R.mono[0] += MO.OPEN_STALE_S + 0.1
+        fresh()
+        check(R.m.page_open() is False, "setup: the page is not open")
+        # Leaving the page: the exit beat ends Arrange mode without
+        # holding the page open another 2 s (re-review of PR #73).
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "L", "seq": 1, "leaving": True,
+               "seen": R.seen()}, client=loop)
+        check(R.m.page_open() is False and
+              R.m.device_arranging("Rack screen") is True,
+              "a leaving beat is read for Arrange mode and does not hold "
+              "the page open")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "L", "seq": 2, "leaving": True, "seen": R.seen()},
+              client=loop)
+        check(R.m.page_open() is False and
+              R.m.device_arranging("Rack screen") is False,
+              "and the leaving exit beat ends it")
+        RM.save_settings(R.work, purge_arming=False)
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": True, "inst": "V", "seq": 1,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and out.get("view_only") is True and
+              out.get("arranging") is True and R.m.page_open() is False,
+              f"a view-only device's Arrange beat is recorded and does not "
+              f"hold the page open: {st} {out}")
+        for route, body_, what in (
+                ("lock", {"kind": "machine", "id": "g1", "on": True},
+                 "a lock"),
+                ("lock", {"kind": "machine", "id": "g1", "on": False,
+                          "confirmed": True}, "an unlock"),
+                ("laser-test", {"laser": "laser-3", "on": True},
+                 "a laser test ON")):
+            body_ = dict(body_, seen=R.seen())
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=loop)
+            check(st == 409 and "Arrange mode" in out.get("error", ""),
+                  f"{what} from a view-only device in Arrange mode is "
+                  f"refused: {st} {out}")
+        check(not R.m.lockout.is_locked("machine", "g1"),
+              "and nothing was locked")
+        RM.save_settings(R.work, purge_arming=True)
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_windows_rack_window_and_explorer_front():
+    section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
+            "the page as an ordinary Edge app window, Minimize, Maximize "
+            "and Close in its title bar, maximized on the show monitor, "
+            "never a kiosk or full screen; a folder the page opens is "
+            "found by its new Explorer window and brought to the front; "
+            "the page says how to minimize and where the folder is")
+    W, SUP, gone = _winpkg()
+    try:
+        cmd = SUP.rack_page_command(7878, 2, [(0, 0, 1920, 1080),
+                                              (1920, 0, 3840, 1080)],
+                                    r"C:\Edge\msedge.exe", r"C:\p")
+        check(cmd[0] == r"C:\Edge\msedge.exe" and
+              cmd[1] == "--app=http://127.0.0.1:7878/remote",
+              f"Edge opens the page as an app window: {cmd}")
+        check(not any("kiosk" in a or "fullscreen" in a or "always-on-top"
+                      in a for a in cmd),
+              f"never a kiosk, full screen or always on top: {cmd}")
+        check("--start-maximized" in cmd and "--window-size=1920,1080" in cmd
+              and cmd[-1] == "--window-position=1920,0",
+              f"maximized on the show monitor, sized to it as the fallback: "
+              f"{cmd}")
+        check("--no-first-run" in cmd and f"--user-data-dir=C:\\p" in cmd,
+              f"its own profile, no first-run questions: {cmd}")
+        check(SUP.rack_page_command(7878, 9, [(0, 0, 1, 1)], "e", "p")[-1]
+              == "--window-position=0,0" and
+              SUP.rack_page_command(7878, 1, [], None, "p") is None,
+              "an unknown monitor is the main one; no Edge, no command")
+        ref = SUP.rack_page_command(0, 1, [], "e", "p",
+                                    url="file:///C:/r.html")
+        check(ref[1] == "--app=file:///C:/r.html" and "--kiosk" not in ref,
+              f"the refusal page uses the same window: {ref}")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "packaging", "windows", "supervisor.py"),
+                   encoding="utf-8").read()
+        check("--kiosk" not in src.replace('a.startswith("--kiosk")', "") and
+              "--edge-kiosk-type" not in src,
+              "no kiosk flag is left anywhere in the supervisor")
+    finally:
+        gone()
+    from ltcplay import remote as RM
+    path = r"C:\Users\show\AppData\Local\ltcplay"
+    before = [(1, "CabinetWClass", "Documents"),
+              (2, "Chrome_WidgetWin_1", "Ignite the Night remote")]
+    pick = RM.pick_explorer_window
+    check(pick(path, before, before) is None, "no new window yet: nothing")
+    check(pick(path, before, before + [(3, "CabinetWClass", "ltcplay")]) == 3,
+          "the new Explorer window titled with the folder's name")
+    check(pick(path, before, before + [(3, "CabinetWClass", path)]) == 3,
+          "or with its full path (Explorer's other title setting)")
+    check(pick(path, before, before + [(3, "CabinetWClass", "Pictures")])
+          == 3, "the one new Explorer window, whatever its title")
+    check(pick(path, before, before + [(3, "CabinetWClass", "Pictures"),
+                                       (4, "CabinetWClass", "Music")])
+          is None, "two new ones and neither is this folder: neither is "
+                   "pulled forward")
+    check(pick(path, before, before + [(3, "CabinetWClass", "Pictures"),
+                                       (4, "CabinetWClass", "ltcplay")])
+          == 4, "two new ones and one is this folder: that one")
+    check(pick(path, before, before + [(3, "Notepad", "ltcplay")]) is None,
+          "a new window that is not Explorer's is never touched")
+    check(pick(path, before, before + [(1, "CabinetWClass", "ltcplay")])
+          is None, "a window that was already there is not new")
+    check(pick(path, before, before + [(1, "CabinetWClass", "ltcplay")],
+               reuse=True) == 1,
+          "but once the wait is over with nothing new, the Explorer window "
+          "already open on this folder (Explorer reused it) is brought "
+          "forward")
+    check(pick(path, before, before, reuse=True) is None and
+          pick(path, before, before + [(5, "Notepad", "ltcplay")],
+               reuse=True) is None,
+          "reuse never pulls forward a window that is not Explorer's on "
+          "this folder")
+    check(pick(path, before, before + [(3, "CabinetWClass", "Pictures"),
+                                       (4, "CabinetWClass", "Music"),
+                                       (1, "CabinetWClass", "ltcplay")],
+               reuse=True) is None,
+          "reuse only when nothing new came")
+    check("reuse=True)" in open(os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "ltcplay", "remote.py"),
+        encoding="utf-8").read(),
+          "the front-bringer falls back to a reused Explorer window")
+    check(RM._explorer_to_front(path, before, wait_s=0) is False,
+          "with no window to find (or off Windows) it says so and does "
+          "nothing")
+    check(RM.EXPLORER_FRONT_WAIT_S >= 2.0,
+          "Explorer gets at least 2 s to open its window")
+    rm_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "ltcplay", "remote.py"), encoding="utf-8").read()
+    check('threading.Thread(target=_explorer_to_front' in rm_src and
+          'before = _explorer_windows()' in rm_src and
+          "os.startfile(path)" in rm_src,
+          "on Windows the opener snapshots the windows, opens the folder "
+          "and brings its new window forward on a thread")
+    check('brought it to the front. If you do not' in rm_src and
+          'see it, it is on the taskbar.' in rm_src,
+          "the route's answer says where the folder is")
+    page = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    info = page[page.find('<div id="info"'):page.find('<script id="remote-logic">')]
+    check("Minimize, Maximize and Close buttons" in info and
+          "<kbd>Windows</kbd> key + <kbd>Down arrow</kbd>" in info and
+          "it is on the taskbar" in info,
+          "the info panel says how to minimize and where an opened folder is")
+    for bad in ("—", "–"):
+        check(bad not in info and bad not in rm_src, "no em or en dashes")
+    print("  ok")
+
+
 def _re_findall(pattern, text):
     import re as _re
     return _re.findall(pattern, text)
@@ -45504,6 +46082,8 @@ if __name__ == "__main__":
     test_laser_tests_placeholders_lockout_and_allow_list()
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
+    test_morning_arrange_mode_arms_nothing()
+    test_windows_rack_window_and_explorer_front()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

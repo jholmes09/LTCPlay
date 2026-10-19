@@ -93,7 +93,7 @@ is already there is never touched. The rack screen's "Getting started"
 card lists what is still missing (a show folder with a show file in it,
 the schedule) and where to click; it goes away once both exist.
 
-## Which mode am I in, and how do I get out of the full screen window
+## Which mode am I in, and how do I minimize or close the window
 
 - The header's MODE pill says it on every screen: SHOW (a show file is
   running for real; the scheduler starts each show at its time),
@@ -101,16 +101,19 @@ the schedule) and where to click; it goes away once both exist.
   scheduler starts nothing) or NOT RUNNING (nothing reaches the rig until
   Run is pressed on the Programming screen). The small "i" button next to
   it explains, and shows this LTC Player's version.
-- Start menu, LTC Player opens the rack screen full screen (an Edge kiosk
-  window with no close button). Alt+F4 closes that window, or press the
-  "i" button, "Close this window". Closing the window never stops the
-  show: the engine runs on its own. Start menu, "Rack screen in a normal
-  window" opens the same page with a close button and the taskbar.
+- Start menu, LTC Player opens the rack screen as an ordinary Edge app
+  window, maximized on the show monitor, with Minimize, Maximize and
+  Close in its title bar (no address bar or tabs). Alt+F4 also closes it,
+  or press the "i" button, "Close this window". Closing the window never
+  stops the show: the engine runs on its own. A folder opened from the
+  page (Open the show folder, Open the settings folder) is brought to the
+  front; if it is not showing, it is on the taskbar. Start menu, "Rack
+  screen in a normal window" opens the same page in the default browser.
 
 ## Every day
 
 - LTC Player starts by itself when the PC signs in and opens the rack
-  screen full screen. If one of its programs stops, it is started again
+  screen maximized on the show monitor. If one of its programs stops, it is started again
   within seconds; if LTC Player itself stops, within a minute.
 - Start menu, LTC Player: starts it if needed and opens the rack screen.
 - Start menu, Stop LTC Player: stops everything the safe way. Refused

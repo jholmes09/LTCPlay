@@ -489,6 +489,14 @@ class Layout:
                                 "positions": out})
         return out
 
+    def reset(self):
+        """Back to the default (the page's Reset layout): the file is
+        removed, so load() lays the groups out by row again."""
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
 
 # ------------------------------------------------------------ the lockout --
 
@@ -1099,6 +1107,10 @@ class Morning:
             threaded=threaded)
         self._open_at = None         # clock() of the page's last open beat
         self._open_devices = {}      # device -> clock of its last beat
+        self._arranging = {}         # device -> {page instance: clock of
+        #                              its last beat saying Arrange mode}
+        self._beat_seq = {}          # (device, instance) -> (last beat
+        #                              seq, clock it came)
         self._was_live = False       # the watcher's last word on live_check
         self._stop = threading.Event()
         self._thread = None
@@ -1232,14 +1244,85 @@ class Morning:
         at = self._open_at
         return at is not None and self._clock() - at <= OPEN_STALE_S
 
-    def open_beat(self, device):
-        """The page says it is open (every 500 ms while it is)."""
+    def open_beat(self, device, arranging=False, inst="", seq=None,
+                  mark_open=True):
+        """The page says it is open (every 500 ms while it is), and whether
+        it is in Arrange mode (Jeff, 2026-10-19). A screen that is
+        arranging has nothing armed: its purge selection is cleared here,
+        and arrange_refusal() holds its arming routes back until a beat
+        says it has left Arrange mode (or its beats stop).
+
+        Every page load is its own instance (`inst`, made once by the page):
+        the show PC's windows are all "Rack screen", so one window's
+        ordinary beat must never clear another window's Arrange mode
+        (adversarial review of PR #73, finding 1). The device is held back
+        while ANY of its instances is arranging. `seq` numbers an
+        instance's beats: one that arrives after a later one (separate
+        connections) says nothing about Arrange mode (finding 6).
+        `mark_open` False: a device that may not purge reads the page but
+        does not hold it open; its Arrange mode still counts (finding 2)."""
         now = self._clock()
-        self._open_at = now
-        self._open_devices[device] = now
-        for d in [d for d, t in self._open_devices.items()
-                  if now - t > OPEN_STALE_S]:
-            del self._open_devices[d]
+        if mark_open:
+            self._open_at = now
+            self._open_devices[device] = now
+            for d in [d for d, t in self._open_devices.items()
+                      if now - t > OPEN_STALE_S]:
+                del self._open_devices[d]
+        for d in list(self._arranging):
+            live = {i: t for i, t in self._arranging[d].items()
+                    if now - t <= OPEN_STALE_S}
+            if live:
+                self._arranging[d] = live
+            else:
+                del self._arranging[d]
+        for k in [k for k, (_q, t) in self._beat_seq.items()
+                  if now - t > 60.0]:
+            del self._beat_seq[k]        # page loads long gone
+        inst = str(inst or "")[:64]
+        key = (device, inst)
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            last = self._beat_seq.get(key)
+            if last is not None and seq <= last[0]:
+                return                   # an older beat, overtaken
+            self._beat_seq[key] = (seq, now)
+        if arranging:
+            first = device not in self._arranging
+            self._arranging.setdefault(device, {})[inst] = now
+            if self.purge.owner == device and (self.purge.selected or
+                                               self.purge.fire is not None):
+                self.purge.clear(f"{device} went into Arrange mode")
+            if first:
+                self._note(f"{device} is arranging the machine layout: "
+                           f"nothing arms, fires, locks or unlocks from it "
+                           f"until it saves or cancels.", action="layout",
+                           outcome="arranging", screen=device)
+        else:
+            mine = self._arranging.get(device)
+            if mine is not None:
+                mine.pop(inst, None)
+                if not mine:
+                    del self._arranging[device]
+
+    def device_arranging(self, device):
+        """True while ANY instance of THAT device said, in its last open
+        beat within OPEN_STALE_S, that the page is in Arrange mode."""
+        now = self._clock()
+        return any(now - t <= OPEN_STALE_S
+                   for t in (self._arranging.get(device) or {}).values())
+
+    def arrange_refusal(self, name, body, device):
+        """The sentence that refuses `name` from a device in Arrange mode,
+        or "". Arming a machine, every fire heartbeat, a laser test going
+        ON and every lock or unlock are held back; a select or laser test
+        going OFF, a stop and a clear only take risk away and go."""
+        off = body.get("on") is False
+        gated = name in ("purge-fire", "lock") or \
+            (name in ("purge-select", "laser-test") and not off)
+        if not gated or not self.device_arranging(device):
+            return ""
+        return (f"{device} is in Arrange mode on the Morning and Shutdown "
+                f"page: nothing can be armed, fired, locked or unlocked "
+                f"from it until Save layout or Cancel. Nothing was done.")
 
     def tick(self, now=None):
         """The watcher's pass, 10 a second: purge expiry, laser tests off
@@ -1452,8 +1535,20 @@ class Morning:
         trusts as the deck whatever operator name it carries)."""
         body = body if isinstance(body, dict) else {}
         if name == "morning-open":
-            self.open_beat(device)
-            return 200, {"ok": True, "open": True}
+            self.open_beat(device, arranging=body.get("arranging") is True,
+                           inst=body.get("inst"), seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)
+            return 200, {"ok": True, "open": True,
+                         "arranging": self.device_arranging(device)}
+        # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
+        # refusal, whatever the page let through. The deck process's FIRE
+        # heartbeats come over loopback under the rack screen's device
+        # name; they fire whichever screen's selection stands (an arranging
+        # screen has none), so the rack screen arranging never refuses them.
+        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"
+        why = "" if deck_fire else self.arrange_refusal(name, body, device)
+        if why:
+            return 409, {"error": why, "let_go": True}
         if name == "purge-select":
             on = body.get("on") is not False
             if isinstance(body.get("machines"), list):
@@ -1560,6 +1655,19 @@ class Morning:
             return (200 if ok else 409), ({"ok": True, "text": text} if ok
                                           else {"error": text})
         if name == "layout":
+            if body.get("reset") is True:
+                # The page's Reset layout: the file goes, the default
+                # (each group on its own row) comes back.
+                try:
+                    self.layout.reset()
+                except OSError as e:
+                    return 400, {"error": f"Could not reset the layout: {e}"}
+                pos, _saved = self.layout.load(self.cfg)
+                self._note(f"{device} reset the machine layout to the "
+                           f"default.", action="layout", outcome="reset",
+                           screen=device)
+                return 200, {"ok": True, "text": "Layout reset to the "
+                             "default.", "layout": pos}
             try:
                 pos = self.layout.save(self.cfg, body.get("positions"))
             except (ValueError, OSError) as e:

@@ -344,16 +344,119 @@ def host_ok(host_header, client_is_loopback, bind, port):
 
 
 def _open_in_file_manager(path):
-    """The folder in Explorer (Windows) or the Finder (Mac)."""
+    """The folder in Explorer (Windows) or the Finder (Mac). On Windows the
+    new Explorer window is then brought to the front: opened by the engine
+    (a background process) it has no right to the foreground and appeared
+    BEHIND the rack screen, so Jeff saw nothing (2026-10-19)."""
     import subprocess
     import sys
     if os.name == "nt":
+        import threading
+        before = _explorer_windows()
         os.startfile(path)                       # noqa: S606
+        threading.Thread(target=_explorer_to_front, args=(path, before),
+                         daemon=True, name="ltcplay-explorer-front").start()
     else:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open",
                           path], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          close_fds=True)
+
+
+EXPLORER_CLASSES = ("CabinetWClass", "ExploreWClass")
+EXPLORER_FRONT_WAIT_S = 4.0
+
+
+def pick_explorer_window(path, before, now, reuse=False):
+    """The window handle of the Explorer window just opened for `path`, from
+    the top-level windows `before` and `now` as [(hwnd, class, title)]: a
+    new Explorer window whose title is the folder's name or its full path
+    (Explorer shows one or the other), else the one new Explorer window.
+    None while there is none yet, or two new ones and neither is titled
+    for this folder (nothing else's window is ever pulled forward). With
+    `reuse` (the wait is over and nothing new came), an Explorer window
+    that was already open on this folder: Explorer reuses it instead of
+    opening a second one, and it is still behind the rack screen."""
+    seen = {w[0] for w in before}
+    new = [w for w in now if w[0] not in seen and w[1] in EXPLORER_CLASSES]
+    full = os.path.normpath(path).rstrip("\\/").lower()
+    name = full.replace("\\", "/").rsplit("/", 1)[-1] or full
+    titled = [w for w in new if (w[2] or "").strip().lower() in (name, full)]
+    if titled:
+        return titled[0][0]
+    if len(new) == 1:
+        return new[0][0]
+    if reuse and not new:
+        again = [w for w in now if w[1] in EXPLORER_CLASSES and
+                 (w[2] or "").strip().lower() in (name, full)]
+        if again:
+            return again[0][0]
+    return None
+
+
+def _explorer_windows():
+    """Every visible top-level window as (hwnd, class, title). Windows
+    only; [] anywhere else or on any error."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        out = []
+        proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                   wintypes.LPARAM)
+
+        def each(hwnd, _lp):
+            if u.IsWindowVisible(hwnd):
+                cls = ctypes.create_unicode_buffer(64)
+                u.GetClassNameW(hwnd, cls, 64)
+                title = ctypes.create_unicode_buffer(512)
+                u.GetWindowTextW(hwnd, title, 512)
+                out.append((int(hwnd), cls.value, title.value))
+            return True
+        u.EnumWindows(proto(each), 0)
+        return out
+    except Exception:                            # noqa: BLE001
+        return []
+
+
+def _explorer_to_front(path, before, wait_s=EXPLORER_FRONT_WAIT_S):
+    """Wait for the Explorer window opened for `path` (up to wait_s) and
+    put it in front, restored if it was minimized. Best effort: a window
+    that cannot be found or moved is left to the taskbar, which the page
+    says. Windows only."""
+    if os.name != "nt":
+        return False
+    import time as _t
+    deadline = _t.monotonic() + wait_s
+    hwnd = None
+    while hwnd is None and _t.monotonic() < deadline:
+        hwnd = pick_explorer_window(path, before, _explorer_windows())
+        if hwnd is None:
+            _t.sleep(0.1)
+    if hwnd is None:
+        hwnd = pick_explorer_window(path, before, _explorer_windows(),
+                                    reuse=True)
+    if hwnd is None:
+        return False
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        SW_RESTORE, VK_MENU, KEYEVENTF_KEYUP = 9, 0x12, 0x0002
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, SW_RESTORE)
+        # A background process may not take the foreground; a tap of the
+        # Alt key releases Windows' foreground lock for the next call, the
+        # usual way round it. SwitchToThisWindow is the belt behind that.
+        u.keybd_event(VK_MENU, 0, 0, 0)
+        u.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        u.SetForegroundWindow(hwnd)
+        u.SwitchToThisWindow(hwnd, True)
+        u.BringWindowToTop(hwnd)
+        return True
+    except Exception:                            # noqa: BLE001
+        return False
 
 
 # ------------------------------------------------ flamesafe's status --
@@ -1338,8 +1441,14 @@ class Remote:
             # A device that may not purge from here reads the page but does
             # not hold it "open": the deck re-maps itself and the purge
             # selection lives only for devices that may arm one (review of
-            # PR #68, P2-8).
-            return 200, {"ok": True, "open": False, "view_only": True}
+            # PR #68, P2-8). Its Arrange mode still counts: a lock, an
+            # unlock or a laser test from it is held back while it arranges
+            # (adversarial review of PR #73, finding 2).
+            m.open_beat(device, arranging=body.get("arranging") is True,
+                        inst=body.get("inst"), seq=body.get("seq"),
+                        mark_open=False)
+            return 200, {"ok": True, "open": False, "view_only": True,
+                         "arranging": m.device_arranging(device)}
         if name in ("purge-select", "purge-fire") and \
                 body.get("on") is not False:
             if not self.purge_enabled(ctx.local):
@@ -1747,7 +1856,9 @@ class Remote:
             opener(path)
         except Exception as e:                   # noqa: BLE001
             return 500, {"error": f"Could not open {path}: {e}"}
-        return 200, {"ok": True, "text": f"Opened {path}."}
+        front = (" in Explorer and brought it to the front. If you do not "
+                 "see it, it is on the taskbar." if os.name == "nt" else ".")
+        return 200, {"ok": True, "text": f"Opened {path}{front}"}
 
     def set_show_folder(self, body):
         """POST show-folder {"path": ...}: the show PC's showpc.json
@@ -1792,7 +1903,7 @@ class Remote:
 
     def screen(self, body):
         """POST screen {"action": "close"}: a request the Windows
-        supervisor acts on, closing the full screen window it opened. The
+        supervisor acts on, closing the rack screen window it opened. The
         engine, the show and the rig are not touched."""
         if str(body.get("action") or "") != "close":
             return 400, {"error": "action has to be close."}
