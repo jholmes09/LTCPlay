@@ -313,7 +313,10 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
    show screen itself never scrolls. */
 #setup{flex:1 1 auto;min-height:0;overflow:auto}
 #v-show.setup-on .flames{display:none}
-#setup .steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+/* The three steps stay side by side down to about 800 px (the 950 px Edge
+   app window at 1070 high showed two of them and hid the third below the
+   card's own scroll); narrower than that they stack. */
+#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 #setup .step{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px 10px;border:1px solid var(--hair-soft);border-radius:6px}
 #setup .step b{font:700 clamp(13px,1.7vh,16px)/1.25 var(--sans);color:var(--champ)}
 #setup .step b::before{content:"\25CB  ";color:var(--amber)}
@@ -360,7 +363,6 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 @media (max-width:1180px){
   #subs{order:5;flex-basis:100%;justify-content:flex-start}
   .now{grid-template-columns:repeat(2,minmax(0,1fr))}
-  #setup .steps{grid-template-columns:1fr}
 }
 
 /* iPad portrait and narrower: two by two on top, controls two by two */
@@ -1172,8 +1174,9 @@ function saidAbort(text, ok){
   b.className = ok ? "ok" : "";
   b.hidden = false;
   b.dataset.aborted = "1";
+  delete b.dataset.latched;
 }
-$("abort-said-ok").addEventListener("click", () => { $("abort-said").hidden = true; });
+$("abort-said-ok").addEventListener("click", () => { const b = $("abort-said"); b.hidden = true; delete b.dataset.aborted; delete b.dataset.latched; });
 $("b-abort").addEventListener("click", async () => {
   armStop("Abort");
   const plan = abortPlan(ST);
@@ -1202,7 +1205,13 @@ function renderMode(stale){
   }
   renderSetup(s.setup, s.programs);
   const sch = s.schedule || {};
-  if(sch.aborted === false && $("abort-said").dataset.aborted){ $("abort-said").hidden = true; delete $("abort-said").dataset.aborted; }
+  // The banner goes by itself only when the Abort it reported is Reset:
+  // the latch read true after the press, then false. An Abort with no show
+  // live never latches (the scheduler had nothing to stop), and its answer
+  // must not vanish on the next status poll, leaving the one-line toast.
+  const b = $("abort-said");
+  if(sch.aborted === true && b.dataset.aborted) b.dataset.latched = "1";
+  if(sch.aborted === false && b.dataset.latched){ b.hidden = true; delete b.dataset.aborted; delete b.dataset.latched; }
 }
 // The Programming screen's folder and schedule cards load when it opens.
 function loadSetupCards(){

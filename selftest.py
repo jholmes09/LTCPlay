@@ -40499,6 +40499,11 @@ def _remote_page_logic_in_node():
         check(need in page, f"the page wires {need!r}")
     node = shutil.which("node")
     if not node:
+        # On CI the page's logic MUST run: a runner without node would pass
+        # this check by reading only, and nothing would say so (second
+        # review of PR #68, P3-3). A Mac without node is told, not failed.
+        check(not IN_CI, "node is missing on this CI runner, so the page's "
+                         "logic cannot be run; install node in the workflow")
         print("  note: node is not on this machine, so the page's logic was "
               "checked by reading only (CI runs it)")
         return
@@ -40581,6 +40586,9 @@ def _morning_page_logic_in_node():
           "fireKeyLapsed and machineLook sit in the page's LOGIC block")
     node = shutil.which("node")
     if not node:
+        check(not IN_CI, "node is missing on this CI runner, so the Morning "
+                         "page's helpers cannot be run; install node in the "
+                         "workflow")
         print("  note: node is not on this machine, so the Morning page's "
               "helpers were checked by reading only (CI runs them)")
         return
@@ -40781,6 +40789,27 @@ def test_rack_screen_width_guard_css_contract():
     check('id="abort-said"' in page and "saidAbort(" in page and
           "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
           "the Abort's answer is a banner that says what was not done")
+    # The banner goes by itself only when the Abort it reported is Reset:
+    # the latch read true, then false. An Abort with no show live never
+    # latches, so the status poll right after it says aborted false; the
+    # banner hid on that within 250 ms and only the one-line toast was
+    # left (found rendering bench-build after #68 and #70 merged).
+    check('if(sch.aborted === true && b.dataset.aborted) b.dataset.latched '
+          '= "1";' in page and
+          'if(sch.aborted === false && b.dataset.latched){ b.hidden = true;'
+          in page and
+          'if(sch.aborted === false && $("abort-said").dataset.aborted)'
+          not in page,
+          "the Abort banner hides by itself only after the latch read true "
+          "and then false (a Reset), never on the first poll after an "
+          "Abort that had no show to stop")
+    # The getting-started steps stay side by side at the 950 px Edge app
+    # window (1070 high showed two of three, the third below the card's
+    # own scroll) and stack only narrower than that.
+    check("#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,"
+          "minmax(260px,1fr))" in page and
+          "#setup .steps{grid-template-columns:1fr}" not in page,
+          "the three getting-started steps fit side by side at 950 px wide")
     for bad in ("—", "–"):
         check(bad not in page, "no em or en dashes on the page")
         check(bad not in rm_src, "no em or en dashes in remote.py")
@@ -43854,6 +43883,25 @@ def test_purge_rules_at_the_engine():
                                 f"so this proves presence, not behaviour; "
                                 f"the rule itself, fireKeyLapsed, runs in "
                                 f"node in the remote page logic test)")
+        # The rewrite dialog (second review of PR #68, P3-4) says exactly
+        # which ids the rewrite KEEPS (machines and lasers) and which it
+        # DROPS, and its LIFTED clause does not rest on flamesafe_extra,
+        # which is empty while flamesafe's report is stale or inside the
+        # settle time: a stale flamesafe may still hold slots this lifts.
+        for want in ('const keptM = Object.keys(lo.machines || {}).filter(id => '
+                     '!(lo.unknown_machines || []).includes(id));',
+                     'const keptL = Object.keys(lo.lasers || {}).filter(id => '
+                     '!(lo.unknown_lasers || []).includes(id));',
+                     'const dropped = (lo.unknown_machines || []).concat('
+                     'lo.unknown_lasers || []);',
+                     '"; locked lasers: " + (keptL.length ? keptL.join(", ") '
+                     ': "none")',
+                     '", dropping " + dropped.join(", ") + " which the settings '
+                     'no longer name"',
+                     '" Any flame slot flamesafe holds locked beyond these is '
+                     'LIFTED by this."'):
+            check(want in html, f"the rewrite dialog carries {want!r} (wording "
+                                f"only, as above)")
         _morning_page_logic_in_node()
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
