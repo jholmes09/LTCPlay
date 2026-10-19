@@ -8411,8 +8411,8 @@ def build():
 
  ("morning page: the open beat never tells the engine the screen is arranging",
   "ltcplay/web/remote.html",
-  '''function openBeatBody(){ return actor({arranging: ARRANGE, inst: BEAT_INST, seq: ++BEAT_SEQ}); }''',
-  '''function openBeatBody(){ return actor({arranging: false, inst: BEAT_INST, seq: ++BEAT_SEQ}); }'''),
+  '''Object.assign({arranging: ARRANGE, inst: BEAT_INST''',
+  '''Object.assign({arranging: false, inst: BEAT_INST'''),
 
  ("morning page: Save layout does not leave Arrange mode, so arming stays off "
   "and the banner stays",
@@ -8476,7 +8476,7 @@ def build():
 
  ("morning page: the banner still says arranging while Save is in flight",
   "ltcplay/web/remote.html",
-  '''  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
+  '''  post("/api/remote/morning-open", openBeatBody(how === "left")).catch(() => {});
   renderMorning();
   if(how === "save") await moPress''',
   '''  if(how === "save") await moPress'''),
@@ -8508,6 +8508,30 @@ def build():
             self._open_at = now''',
   '''        if True:
             self._open_at = now'''),
+
+ ("morning: the engine ignores which window a beat came from",
+  "ltcplay/morning.py",
+  '''                           inst=body.get("inst"), seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)''',
+  '''                           seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)'''),
+
+ ("remote: a view-only device's beat ignores which window it came from",
+  "ltcplay/remote.py",
+  '''                        inst=body.get("inst"), seq=body.get("seq"),
+                        mark_open=False)''',
+  '''                        seq=body.get("seq"),
+                        mark_open=False)'''),
+
+ ("morning: the beat sent on leaving the page holds the page open 2 s more",
+  "ltcplay/morning.py",
+  '''                           mark_open=body.get("leaving") is not True)''',
+  '''                           mark_open=True)'''),
+
+ ("morning page: the beat sent on leaving the page does not say so",
+  "ltcplay/web/remote.html",
+  '''openBeatBody(how === "left")''',
+  '''openBeatBody(false)'''),
 
  ("morning: a screen in Arrange mode can still arm, fire or lock at the engine",
   "ltcplay/morning.py",

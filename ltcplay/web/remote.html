@@ -1628,7 +1628,7 @@ function arrangeBlocked(route, extra){
 // after a later one (adversarial review of PR #73, findings 1 and 6).
 const BEAT_INST = Math.random().toString(36).slice(2) + Date.now().toString(36);
 let BEAT_SEQ = 0;
-function openBeatBody(){ return actor({arranging: ARRANGE, inst: BEAT_INST, seq: ++BEAT_SEQ}); }
+function openBeatBody(leaving){ return actor(Object.assign({arranging: ARRANGE, inst: BEAT_INST, seq: ++BEAT_SEQ}, leaving ? {leaving: true} : {})); }
 // A machine tile: a press arms it for the purge (Jeff's exception to
 // hold-to-arm, this page only); in Arrange mode a press picks it up.
 function wireMachine(el, m){
@@ -1708,7 +1708,9 @@ async function arrangeExit(how){
   // the banner never says arranging while a press would arm (review of
   // PR #73, finding 4). The dropped places show until the engine answers.
   if(how === "save" && MO) MO.layout = positions;
-  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
+  // Leaving the page: the beat ends Arrange mode but does not hold the
+  // page open for another 2 s (re-review of PR #73).
+  post("/api/remote/morning-open", openBeatBody(how === "left")).catch(() => {});
   renderMorning();
   if(how === "save") await moPress("layout", {positions: positions});
   else if(how === "reset") await moPress("layout", {reset: true});

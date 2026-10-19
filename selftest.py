@@ -45246,6 +45246,9 @@ arrangeEnter();
 g1.dispatchEvent(ev("pointerdown", {pointerId:10, clientX:800, clientY:450}));
 posts.length = 0;
 await arrangeExit("left");
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === false && p[1].leaving === true),
+  "the exit beat on leaving says so, so the engine does not hold the page open: " + JSON.stringify(posts));
+t(!openBeatBody().leaving, "an ordinary beat is not a leaving one");
 t(ARRANGE === false && DRAG === null && g1.captured === null && !posts.some(p => p[0] === "layout"),
   "leaving the page drops the machine and leaves Arrange mode without saving");
 t(renders > 0, "the page was redrawn");
@@ -45387,8 +45390,10 @@ t(renders > 0, "the page was redrawn");
         R.ask("POST", "/api/remote/morning-open",
               {"arranging": True, "inst": "A", "seq": 1, "seen": R.seen()},
               client=loop)
+        # B's number is far above A's: windows' numbers interleave on a
+        # real show PC, so only the instance tells them apart.
         R.ask("POST", "/api/remote/morning-open",
-              {"inst": "B", "seq": 1, "seen": R.seen()}, client=loop)
+              {"inst": "B", "seq": 50, "seen": R.seen()}, client=loop)
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()}, client=loop)
         check(st == 409 and "Arrange mode" in out.get("error", "") and
@@ -45397,6 +45402,8 @@ t(renders > 0, "the page was redrawn");
               f"window's Arrange mode: {st} {out}")
         R.ask("POST", "/api/remote/morning-open",
               {"inst": "A", "seq": 2, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "window A's own beat ends its Arrange mode")
         st, _h, out = R.ask("POST", "/api/remote/purge-select",
                             {"machine": "g1", "seen": R.seen()}, client=loop)
         check(st == 200 and out["selected"] == ["g1"],
@@ -45424,8 +45431,23 @@ t(renders > 0, "the page was redrawn");
         from ltcplay import remote as RM
         R.mono[0] += MO.OPEN_STALE_S + 0.1
         fresh()
-        RM.save_settings(R.work, purge_arming=False)
         check(R.m.page_open() is False, "setup: the page is not open")
+        # Leaving the page: the exit beat ends Arrange mode without
+        # holding the page open another 2 s (re-review of PR #73).
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "L", "seq": 1, "leaving": True,
+               "seen": R.seen()}, client=loop)
+        check(R.m.page_open() is False and
+              R.m.device_arranging("Rack screen") is True,
+              "a leaving beat is read for Arrange mode and does not hold "
+              "the page open")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "L", "seq": 2, "leaving": True, "seen": R.seen()},
+              client=loop)
+        check(R.m.page_open() is False and
+              R.m.device_arranging("Rack screen") is False,
+              "and the leaving exit beat ends it")
+        RM.save_settings(R.work, purge_arming=False)
         st, _h, out = R.ask("POST", "/api/remote/morning-open",
                             {"arranging": True, "inst": "V", "seq": 1,
                              "seen": R.seen()}, client=loop)

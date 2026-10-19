@@ -1536,7 +1536,8 @@ class Morning:
         body = body if isinstance(body, dict) else {}
         if name == "morning-open":
             self.open_beat(device, arranging=body.get("arranging") is True,
-                           inst=body.get("inst"), seq=body.get("seq"))
+                           inst=body.get("inst"), seq=body.get("seq"),
+                           mark_open=body.get("leaving") is not True)
             return 200, {"ok": True, "open": True,
                          "arranging": self.device_arranging(device)}
         # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
