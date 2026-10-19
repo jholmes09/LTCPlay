@@ -561,6 +561,14 @@ class FlameStatus:
         return {"connected": True, "stale": stale,
                 "age_ms": None if age is None else int(age * 1000),
                 "fault": str(last.get("fault", "")) if not stale else "",
+                # flamesafe's own top-level `confirmed` (CONTRACT.md: false
+                # until Andy confirms the config's numbers). The rack
+                # screen's Info popup says it; the Stream Deck's keys no
+                # longer carry a mark for it (2026-10-19). None while no
+                # fresh frame says either way.
+                "confirmed": (bool(last.get("confirmed", True))
+                              if self.last is not None and not stale
+                              else None),
                 "groups": groups,
                 # What flamesafe says it is holding at zero (the lockout
                 # file as it read it), for the page to compare with its own.
