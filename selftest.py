@@ -45470,6 +45470,31 @@ t(renders > 0, "the page was redrawn");
                   f"refused: {st} {out}")
         check(not R.m.lockout.is_locked("machine", "g1"),
               "and nothing was locked")
+        # A view-only device's beat carries its window too: window W's
+        # ordinary beat must not clear window V's Arrange mode (findings 1
+        # and 2 together). W's number is far above V's, as windows'
+        # numbers interleave, so only the instance tells them apart.
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"inst": "W", "seq": 50, "seen": R.seen()},
+                            client=loop)
+        check(st == 200 and out.get("view_only") is True and
+              out.get("arranging") is True and
+              R.m.device_arranging("Rack screen") is True,
+              f"another view-only window's ordinary beat does not clear "
+              f"this window's Arrange mode: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "g1", "on": True,
+                             "seen": R.seen()}, client=loop)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              not R.m.lockout.is_locked("machine", "g1"),
+              f"so a lock from it is still refused: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"inst": "V", "seq": 2, "seen": R.seen()},
+                            client=loop)
+        check(st == 200 and out.get("arranging") is False and
+              R.m.device_arranging("Rack screen") is False,
+              f"window V's own view-only beat ends its Arrange mode: "
+              f"{st} {out}")
         RM.save_settings(R.work, purge_arming=True)
     finally:
         R.close()
