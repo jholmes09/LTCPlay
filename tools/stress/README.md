@@ -30,6 +30,34 @@ listener's refusals, every checker rule with a case that passes and one
 that fails) and `python soak/test_soak_summary.py` (7 tests). Both
 standard library only.
 
+## Pre-flight, before any stage
+
+Four lines, each printed and true, before the soak or any stage starts
+(the 2026-10-18 soak ran 48 hours with no audio interface, played 0 shows
+and tested almost nothing):
+
+1. **Audio**: the show audio interface (Scarlett or PreSonus) attached and
+   listed by Windows. `Start 48h soak.ps1` REFUSES without it; `-FakeAudio`
+   (only when Jeff says so) runs the engine's stand-in device instead,
+   which proves the engine, the scheduler, the flame link, the timecode,
+   the Art-Net outputs and the witness, NOT the real audio path, and the
+   status, the daily lines and `soak_summary.py` all say AUDIO IS FAKE.
+2. **MadMapper 6.1.8** (licensed) set up once with the six video files. A
+   restart wrapper for an older MadMapper Demo in `unattended.json` is
+   stale: the starter detects a restart_cmd whose target is missing or
+   older than the installed MadMapper, warns and blanks it (keep it with
+   `-KeepRestartCmd`, replace it with `-RestartCmd`).
+3. **BEYOND**: present (leave it alone, judge the lasers there) or absent
+   (the laser listener stands in; "Lasers: blanking not set up" is then
+   EXPECTED, not a FAIL).
+4. **Flame hardware DISCONNECTED**, typed by Jeff as the bare word; every
+   script that arms or fires refuses without it.
+
+The starter also refuses an elevated PowerShell that is not the signed-in
+user's (the task and the settings folder would be another account's) and
+a stale `STOP_UNATTENDED` it could not remove; `Start 48h soak.ps1
+-SelfTest` proves those checks on a temp folder.
+
 ## The five stages, in one paragraph each
 
 1. **Soak, 48 h** (`SOAK PLAN.md`): the installed `ltcplay-soak.exe

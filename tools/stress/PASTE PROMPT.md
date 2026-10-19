@@ -22,6 +22,22 @@ stress soak started now. Follow this exactly, in order, and stop at the
 first step that fails. Never use Task Manager's End task on flamesafe,
 ltcplay or LTC Player. Nothing you do may arm or fire real hardware.
 
+PRE-FLIGHT, before anything else (the 2026-10-18 soak ran 48 hours with
+no audio interface and played 0 shows; never again). Print one line each:
+  1. Audio: the show audio interface (Scarlett or PreSonus) is attached
+     and Windows lists it. If it is NOT, stop and ask Jeff. The soak
+     starter REFUSES without it. Only if Jeff answers that the run may
+     use FAKE audio do you add -FakeAudio, and then every line you report
+     says AUDIO IS FAKE (it proves the engine, scheduler, flame link,
+     timecode, Art-Net and the witness, NOT the real audio path).
+  2. MadMapper 6.1.8 (licensed) set up once with the six video files; any
+     restart wrapper for an older MadMapper Demo is stale and the starter
+     blanks it (say so when it does).
+  3. BEYOND: absent (then the laser listener stands in; the fault "Lasers:
+     blanking not set up" is EXPECTED) or present (then leave it alone).
+  4. Flame hardware DISCONNECTED, typed by Jeff in this chat as the bare
+     word (STEP 0 below). No other wording counts.
+
 STEP 0: THE GATE. Ask Jeff this one question and wait for his answer:
 "Is the flame hardware DISCONNECTED from this PC: data cable to the flame
 node unplugged, and gas off? Answer with the word DISCONNECTED."
@@ -51,7 +67,14 @@ auto_start when_run_pressed. Print flamesafe.json's destination (it is
 127.0.0.1 unless Andy has confirmed the node; either is fine for the soak,
 which forces its own copy to 127.0.0.1) and whether confirmed is true.
 Print which audio output devices Windows sees (the Scarlett or PreSonus
-must be attached, or every soak show fails to start). Print whether
+must be attached, or every soak show fails to start: the starter REFUSES
+without one, and only -FakeAudio, given because Jeff said so in this chat,
+lets it run with the engine's stand-in device; such a run is reported as
+AUDIO IS FAKE in every line and is not a show-night soak). Print
+unattended.json's restart_cmd if the file exists: a wrapper for MadMapper
+Demo 6.1.5 is stale now that 6.1.8 licensed is installed; the starter
+blanks a stale one and says so (keep it only with -KeepRestartCmd, or give
+a new one with -RestartCmd). Print whether
 ltcplay_fire_ice.json has a "beyond" block (its host and port) and its
 beyond_blank value (the default is "osc"). This PC has NO BEYOND: with no
 beyond block the rack screen shows "Lasers: blanking not set up" and the
@@ -68,12 +91,18 @@ STEP 5: Start the soak and the companion witness. In an ELEVATED
 PowerShell, from the kit folder:
   powershell -NoProfile -ExecutionPolicy Bypass -File ".\soak\Start 48h soak.ps1" -FlameHardwareDisconnected -Confirmation DISCONNECTED
 Only pass -Confirmation DISCONNECTED because Jeff typed that word in STEP
-0. If MadMapper and BEYOND are installed on this PC and there is a restart
-wrapper for them, add -RestartCmd "<that command>"; otherwise leave it
-out. The script writes unattended.json (contain true), registers the task
-"LTC Player unattended soak" for 2 days, starts it, starts the witness in
-companion mode, and prints status.json when the first block is up. Paste
-its output. If it REFUSED, paste why and stop.
+0. Add -FakeAudio ONLY if Jeff said so in this chat (pre-flight 1); add
+-AudioDevice "part of the name" if the interface is attached but the
+starter does not find it by itself. If MadMapper and BEYOND are both
+installed on this PC and there is a CURRENT restart wrapper for them, add
+-RestartCmd "<that command>"; otherwise leave it out and let the starter
+blank a stale one. The script checks the signed-in user, the audio
+interface and the restart command, writes unattended.json (contain true,
+fake_audio, audio_device, restart_cmd), removes a stale STOP_UNATTENDED
+and CHECKS it is gone, registers the task "LTC Player unattended soak" for
+2 days, starts it, starts the witness in companion mode, and prints
+status.json when the first block is up. Paste its output. If it REFUSED,
+paste why and stop: do not work around a refusal.
 
 STEP 5b: Try the laser listener once, in the foreground, from the kit
 folder:
@@ -90,9 +119,12 @@ laser.csv into the witness run folder.
 
 STEP 6: Verify after 10 minutes. Run
   powershell -NoProfile -ExecutionPolicy Bypass -File ".\soak\Start 48h soak.ps1" -Status
-and confirm: phase "block running", block 1, and that
-%LOCALAPPDATA%\ltcplay\soak\<stamp> block 1\block 1 report.txt exists and
-its "Show audio" line names a real interface (not "NO interface found").
+and confirm: phase "block running", block 1, its audio line (a real
+interface, or AUDIO IS FAKE when and only when -FakeAudio was given), and
+that %LOCALAPPDATA%\ltcplay\soak\<stamp> block 1\block 1 report.txt exists
+and its "Show audio" line names a real interface (not "NO interface
+found"; "FAKE stand-in device" only on a -FakeAudio run). "NO interface
+found" means the run is worthless: stop it (-Stop) and say so.
 Open flame-violations.txt in that folder if it exists: it must be empty.
 Check Task Scheduler shows the task Running. Check the witness window is
 up (a minimized PowerShell titled witness) and %LOCALAPPDATA%\ltcplay\
@@ -102,8 +134,10 @@ STEP 7: Report back in this chat, in this form:
   Build installed: <release and build string from the header>
   Gate: Jeff typed DISCONNECTED at <time>
   Witness self-test: passed / failed
-  Soak: block 1 running since <time>, audio interface <name>, contain
-        true, task registered for 2 days, runs until <date time>
+  Soak: block 1 running since <time>, audio interface <name> / AUDIO IS
+        FAKE (Jeff said so at <time>), contain true, restart_cmd <kept /
+        blanked as stale / none>, task registered for 2 days, runs until
+        <date time>
   Witness: companion mode, folder <path>
   Laser listener: REFUSED by ltcplay-soak.exe (expected) / listening on
         127.0.0.1:8100 / REFUSED by BEYOND.exe (real BEYOND is here)

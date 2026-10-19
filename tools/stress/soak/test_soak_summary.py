@@ -16,13 +16,14 @@ import soak_summary as ss  # noqa: E402
 
 
 def make_block(soak, n, hours=1.83, verdict="PASSED", violations=0,
-               leak=False, tc_fail=False, contain=True):
+               leak=False, tc_fail=False, contain=True,
+               audio="Focusrite USB ASIO"):
     d = os.path.join(soak, f"2026-10-19_{18 + n:02d}00 block {n}")
     os.makedirs(os.path.join(d, "flamesafe-journal"), exist_ok=True)
     lines = [f"Block {n} of an unattended run", "BENCH ONLY", "",
              f"Result: {verdict}",
              f"Run: finished. Started 2026-10-19 18:00:00, {hours:.2f} of "
-             f"1.83 hour(s).", "",
+             f"1.83 hour(s).", f"Show audio: {audio}", "",
              "[PASS] flamesafe output (sACN, sent to this PC)",
              "    0 violations",
              "[PASS] Art-Net timecode (from the show audio, to MadMapper's address)"
@@ -126,6 +127,33 @@ class TestSummary(unittest.TestCase):
             json.dump({"phase": "block running", "block": 6}, fh)
         s = ss.summarize(soak, 48.0)
         self.assertEqual(s["verdict"], "STILL RUNNING")
+
+    def test_fake_audio_is_said_everywhere_and_is_not_a_pass_alone(self):
+        soak = make_soak(self.d, audio="FAKE stand-in device (CI run)")
+        s = ss.summarize(soak, 48.0)
+        self.assertEqual(s["verdict"], "PASS (AUDIO WAS FAKE)")
+        self.assertEqual(len(s["fake_audio"]), 27)
+        text = ss.render(s, soak)
+        self.assertIn("(PASS (AUDIO WAS FAKE))", text)
+        self.assertIn("AUDIO WAS FAKE in block(s) 1, 2", text)
+        self.assertIn("NOT the real audio path", text)
+        self.assertIn("| FAKE stand-in device (CI run) |", text)
+        # a real run says which interface and never the word FAKE
+        soak2 = make_soak(os.path.join(self.d, "b"))
+        s2 = ss.summarize(soak2, 48.0)
+        self.assertEqual(s2["verdict"], "PASS")
+        text2 = ss.render(s2, soak2)
+        self.assertNotIn("FAKE", text2)
+        self.assertIn("real interface: Focusrite USB ASIO", text2)
+
+    def test_no_interface_fails_the_audio_criterion(self):
+        soak = make_soak(self.d, audio="NO interface found")
+        s = ss.summarize(soak, 48.0)
+        self.assertEqual(self.verdicts(s)["7."], "FAIL")
+        self.assertTrue(s["verdict"].startswith("FAIL"))
+        text = ss.render(s, soak)
+        self.assertIn("NO AUDIO INTERFACE in block(s)", text)
+        self.assertIn("no show played", text)
 
     def test_main_writes_the_summary(self):
         soak = make_soak(self.d)

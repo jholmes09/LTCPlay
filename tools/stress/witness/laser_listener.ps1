@@ -139,7 +139,10 @@ function Decode-Osc([byte[]]$b) {
             if ($size -lt 0 -or $i + $size -gt $b.Length) { throw "a bundle element runs past the datagram" }
             $el = New-Object byte[] $size
             [Array]::Copy($b, $i, $el, 0, $size)
-            $out += @(Decode-Osc $el)
+            # One element's messages, one by one: Decode-Osc hands back one
+            # array object, and @(...) around a command would nest it.
+            $sub = Decode-Osc $el
+            foreach ($x in @($sub)) { if ($null -ne $x) { $out += $x } }
             $i += $size
         }
         return ,$out

@@ -742,6 +742,17 @@ class Remote:
         ok, text = self.alerts.clear(id=aid, action=action or "Acknowledge",
                                      who=who, screen=screen, address=ctx.ip)
         if not ok:
+            # A cleared alert journals itself (alerts.py). A press that
+            # clears nothing (the alert already gone, a wrong id, an
+            # option that chooses) used to leave no line at all, so an ACK
+            # pressed on the deck could never be found in the journal
+            # afterwards (the Pico, 2026-10-18). Who, when and what, every
+            # time.
+            self._journal(who, screen, "alert", "refused",
+                          f"{action or 'Acknowledge'} pressed by "
+                          f"{who or 'someone'} on the {screen or 'unknown screen'}"
+                          f"{' for alert ' + str(aid) if aid is not None else ''}"
+                          f" cleared nothing: {text}")
             return 409, {"error": text}
         return 200, {"text": text}
 
