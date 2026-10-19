@@ -300,7 +300,7 @@ Top level:
 | `heartbeat` | flamesafe's tick counter. The corner flame and the deck marquee step on this |
 | `tick_ms` | the tick period |
 | `universe`, `priority`, `arm_value` | what flamesafe is configured to send. `priority` is always 200 |
-| `confirmed` | false until the config's numbers are confirmed by Andy. Show it |
+| `confirmed` | false until the config's numbers are confirmed by Andy. Show it, quietly: ltcplay journals it (the Stream Deck once, when it first sees it) and carries it in the engine's status for the rack screen's Info popup. It is never drawn on a Stream Deck key (the amber corner mark went 2026-10-19) and never changes what any key reads |
 | `fault` | empty, or one sentence: an overrun, a compose fault, a failed sACN send, a failed status send. `fault_age_ms` says how long ago. **A non-empty fault is red for ltcplay**: an armed group is not "fine" while the wire is not being written. A fault clears itself after 5 s of clean ticks and clean sends (the journal records both the fault and its clearing), so one failed send is not red all night; the cumulative counts (`sacn.errors`, `sacn.status_errors`, `stats.overruns`, `stats.compose_faults`, `stats.faults_noted`, `stats.faults_cleared`, `stats.journal_dropped`) never reset, and ltcplay shows them in health |
 | `arm_input.state` | `never`, `live` or `stale`. Stale means every group is disarmed |
 | `arm_input.foreign_senders` | how many OTHER senders are currently sending on the arm link besides the locked one (added round 3 of the safety review, 2026-10-02). Zero almost always. A non-zero count means a second local process is talking to this port right now. Its `wanted` bits can only ever CLEAR a group's bit, never set one, while it is not the locked sender. It CAN become the locked sender: the lock goes to whoever sends next once the locked sender has been quiet for `arm_stale_ms`, and a flood that crowds the real deck's frames out of the receive buffer makes the real deck look quiet (the round-4 review did this). Once that has happened the real deck, still sending, is the one counted here. That is why, as of round 4, no consent edge counts while this is non-zero (see the arm link section): whoever holds the lock, nobody can arm a group while anyone else is on the link. ltcplay must alarm on this alone; the clearing can leave `wanted` looking exactly like what the deck itself expects, with nothing else to notice |
@@ -912,8 +912,9 @@ to clear it (streamdeck.py only, no wire change); a latched Stream Deck
 screen no longer paints a flat OFF over a group flamesafe is still
 actually reporting armed, nor hides the spoof/divergence alarm, while
 latched; a `confirmed: false` config now shows the real per-group state
-with an added caveat instead of blanking it (CONTRACT.md's own "show it"
-was always about an overlay, never a replacement).
+instead of blanking it (CONTRACT.md's own "show it" was never "show it
+instead of the real state"). The small amber corner mark this round added
+to each key for it was removed again on 2026-10-19 (below).
 
 Version 2, 2026-10-02 (round-4 independent review of PR #31): the
 status frame gains `arm_input.flooded` and one new `reason` sentence
@@ -984,3 +985,14 @@ field's name, type or meaning changed. ltcplay's side also sends a PURGE frame o
 while no show cue is playing and for 0.25 s after the page's last
 heartbeat, which flamesafe treats exactly like any cue frame (fire values
 pass only for an armed group). Nothing on this link's wire changed for it.
+
+Version 2, 2026-10-19 (Jeff: "Kill the little orange dot"): the Stream Deck
+no longer draws the amber corner mark on its group keys for `confirmed:
+false`; a key reads the group's real state and nothing else, exactly as it
+does for a confirmed config. The unconfirmed config is still said, where it
+can be read at leisure and never in the way: flamesafe's own journal at
+startup (unchanged), one line in the Stream Deck's journal the first time a
+fresh status frame says `confirmed: false` (and one more if it later says
+true), `flames.confirmed` in the engine's `/api/remote/status`, and one line
+in the rack screen's Info popup. Display only: `confirmed` never changed
+what the deck sends, and no field on any wire changed.

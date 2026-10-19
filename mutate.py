@@ -7957,10 +7957,49 @@ def build():
 
  ("deck states: the latched deck reads NO / NO / NO",
   "ltcplay/streamdeck.py",
-  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
-  "                                  slot=i)\n",
-  "                look = group_look(st, fault=fault, confirmed=confirmed,\n"
-  "                                  slot=0)\n"),
+  "                look = group_look(st, fault=fault, slot=i)\n",
+  "                look = group_look(st, fault=fault, slot=0)\n"),
+
+ # The orange dot (Jeff, 2026-10-19): an unconfirmed config draws nothing
+ # on a key; it is journaled once by the deck and carried in the engine's
+ # status for the rack screen's Info popup instead.
+ ("deck: the amber corner mark comes back on an unconfirmed config",
+  "ltcplay/streamdeck.py",
+  "                    look = (\"PURGE\", \"ARMED\") + tuple(look[2:])\n"
+  "            arm_key_image(fonts, d, box, name, look, group_blink)\n",
+  "                    look = (\"PURGE\", \"ARMED\") + tuple(look[2:])\n"
+  "            arm_key_image(fonts, d, box, name, look, group_blink)\n"
+  "            if not _confirmed:\n"
+  "                d.rectangle((box[2] - 9, box[3] - 9, box[2] - 2,\n"
+  "                             box[3] - 2), fill=AMBER)\n"),
+
+ ("deck: an unconfirmed config is never journaled",
+  "ltcplay/streamdeck.py",
+  "        self._confirmed_noted = confirmed\n        if not confirmed:\n",
+  "        self._confirmed_noted = confirmed\n        if False:\n"),
+
+ ("deck: the unconfirmed config is journaled on every pass",
+  "ltcplay/streamdeck.py",
+  "        if confirmed == self._confirmed_noted:\n            return\n"
+  "        self._confirmed_noted = confirmed\n",
+  "        self._confirmed_noted = confirmed\n"),
+
+ ("deck: a stale status still journals the config",
+  "ltcplay/streamdeck.py",
+  "        if self.status.last is None or self.status.stale(self._clock):\n"
+  "            return\n        confirmed = bool(",
+  "        if self.status.last is None:\n"
+  "            return\n        confirmed = bool("),
+
+ ("remote: the status never says flamesafe's config is unconfirmed",
+  "ltcplay/remote.py",
+  "                \"confirmed\": (bool(last.get(\"confirmed\", True))\n",
+  "                \"confirmed\": (True\n"),
+
+ ("remote: a stale status keeps the old confirmed answer",
+  "ltcplay/remote.py",
+  "                              if self.last is not None and not stale\n",
+  "                              if self.last is not None\n"),
 
  ("audio field: /api/conductor never says the show audio is lost",
   "ltcplay/web.py",

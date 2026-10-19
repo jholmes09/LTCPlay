@@ -613,6 +613,7 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     <h2>This LTC Player</h2>
     <div class="vers" id="info-version"></div>
     <div class="kv">Screen: <b id="info-device"></b>. Settings and logs: <span class="vers" id="info-settings"></span></div>
+    <div class="kv" id="info-flames" hidden></div>
     <h2>Mode</h2>
     <div class="kv" id="info-mode"></div>
     <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen.</div>
@@ -1203,6 +1204,13 @@ function renderMode(stale){
     // header (Jeff, 2026-10-17); the hidden #version span keeps the text.
     $("info-version").textContent = s.version ? ("LTC Player " + s.version) : "LTC Player, version not known yet";
   }
+  // flamesafe's config not yet confirmed by Andy: one quiet line here, in
+  // the Info popup, and in the journals. Not on the Stream Deck's keys and
+  // not a banner (Jeff, 2026-10-19). Hidden while the config is confirmed
+  // or flamesafe is not reporting.
+  const unconf = !!(s.flames && s.flames.confirmed === false);
+  $("info-flames").hidden = !unconf;
+  $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false in it): the flame universe, group map and arm value it sends are the config's own numbers. The lamps and the Stream Deck keys show each group's real state as usual." : "";
   renderSetup(s.setup, s.programs);
   const sch = s.schedule || {};
   // The banner goes by itself only when the Abort it reported is Reset:

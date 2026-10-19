@@ -553,39 +553,38 @@ class StatusSocket:
 # Pure logic: visual state from real data. No socket, no hid, fully
 # unit-testable (see selftest.py).
 # --------------------------------------------------------------------------
-def group_look(group_status, fault="", confirmed=True, slot=0):
+def group_look(group_status, fault="", slot=0):
     """(line1, line2_or_None, bg, text, flashing) for one bottom-row key
     from the status frame's own per-group dict (CONTRACT.md section on the
     status frame), or from None (no status ever received / stale): drawn
     red, as its word of NO / FLAME / LINK (`slot` is which of the three
     keys this is), matching CONTRACT.md's "ltcplay shows red for the safety
     program" rule -- the deck never claims a group is armed, disarmed or
-    anything else when it cannot actually see flamesafe's answer. A 6th
-    element, `caveat`, is appended only when `confirmed` is False (see
-    below); every existing caller that reads just the first five elements
-    sees no change.
+    anything else when it cannot actually see flamesafe's answer.
 
-    `fault` and `confirmed` are flamesafe's own TOP-LEVEL status fields
-    (CONTRACT.md), never per-group; the caller reads them off the same
-    status frame `group_status` came from (see Controller.draw). Before
-    this fix (safety review of PR #31, item 4) this function read neither,
-    so a group flamesafe itself was NOT actually honouring -- a fault
-    means the wire is not being written at all -- could still draw ARMED
-    in green. A non-empty `fault` now wins over every other look,
-    including a group flamesafe still reports as armed, matching
-    CONTRACT.md's own rule: "a non-empty fault is red for ltcplay: an
-    armed group is not fine while the wire is not being written."
+    `fault` is flamesafe's own TOP-LEVEL status field (CONTRACT.md), never
+    per-group; the caller reads it off the same status frame
+    `group_status` came from (see Controller.draw). Before this fix
+    (safety review of PR #31, item 4) this function did not read it, so a
+    group flamesafe itself was NOT actually honouring -- a fault means the
+    wire is not being written at all -- could still draw ARMED in green.
+    A non-empty `fault` now wins over every other look, including a group
+    flamesafe still reports as armed, matching CONTRACT.md's own rule: "a
+    non-empty fault is red for ltcplay: an armed group is not fine while
+    the wire is not being written."
 
-    `confirmed=False` (the config's own numbers never confirmed by Andy;
-    flamesafe.example.json SHIPS this way) used to blank every group's
-    real state to "NOT CONFIRMED" here, which means the deck as shipped
-    showed nothing useful about what was actually armed (item 5, round 2
-    of the safety review -- CONTRACT.md only ever said "show it", never
-    "show it INSTEAD of the real state"). The REAL state -- ARMED, OFF, a
-    dwell countdown, a held reason -- is now computed exactly as it would
-    be with confirmed=True, and `caveat=True` is appended as a 6th tuple
-    element: an overlay on top of the real state (arm_key_image draws a
-    small corner mark when it is set), never a replacement of it.
+    flamesafe's top-level `confirmed` (false while the config's own
+    numbers are not confirmed by Andy; flamesafe.example.json SHIPS this
+    way) is NOT read here and changes nothing on a key. It used to blank
+    every group to "NOT CONFIRMED" (item 5, round 2 of the safety review
+    put the real state back, under a small amber corner mark), and the
+    corner mark went too (Jeff, 2026-10-19: pointless on a key). The keys
+    show the real state, nothing else; the unconfirmed config is still
+    said where it can be read at leisure: this deck's journal, once, when
+    it first sees it (Controller._note_config_confirmed), the engine's
+    status (flames.confirmed, remote.py) and the rack screen's Info
+    popup. Display only, then and now: `confirmed` never changed what the
+    deck sends.
 
     TODO (item F, safety review of PR #31): if a show conductor's own
     Abort-latch state is ever wired in here (PR #29/#30 are heading that
@@ -622,8 +621,6 @@ def group_look(group_status, fault="", confirmed=True, slot=0):
                 look = (line1, line2, BRONZE, CHAMPAGNE, flashing)
             else:
                 look = (line1, line2, AMBER, (40, 20, 0), flashing)
-    if not confirmed:
-        return (*look, True)
     return look
 
 
@@ -1762,13 +1759,12 @@ def _body_size(lines):
 
 def arm_key_image(fonts, d, box, name, look, blink_on):
     """One bottom-row key: the real group name on top, the real status
-    below it (group_look's output), flashing when told to. `look` is
-    group_look's 5-tuple, or its 6-tuple form with a trailing `caveat`
-    (item 5: confirmed=False); a caller that builds its own 5-tuple (the
-    ALARM look, for instance) gets caveat=False for free. A look on
+    below it (group_look's 5-tuple, or a caller's own, the ALARM look for
+    instance), flashing when told to. Nothing else is ever drawn on a
+    group key: the amber corner mark an unconfirmed config used to add
+    here is gone (Jeff, 2026-10-19; see group_look). A look on
     LATCHED_GREY is a key greyed by the Abort latch: its name greys too."""
     line1, line2, bg, text, flashing = look[:5]
-    caveat = look[5] if len(look) > 5 else False
     x0, y0, x1, y1 = box
     bar = y0 + 17
     fonts.text_block(d, (x0, y0 - 1, x1, bar), [_fit_name(name)], "sans",
@@ -1783,12 +1779,6 @@ def arm_key_image(fonts, d, box, name, look, blink_on):
     else:
         d.rounded_rectangle(body, radius=4, fill=bg)
     fonts.text_block(d, body, lines, "sans", text, _body_size(lines))
-    if caveat:
-        # Item 5 (round 2 of the safety review): a config not yet confirmed
-        # by Andy is a standing caveat on every group's numbers, never a
-        # reason to hide what is actually armed -- a small amber corner
-        # mark overlays the REAL state drawn above; it never replaces it.
-        d.rectangle((x1 - 9, y1 - 9, x1 - 2, y1 - 2), fill=AMBER)
 
 
 def _fit_name(name):
@@ -1997,6 +1987,10 @@ class Controller:
         self._spoof_alarm = ""
         self._spoof_category = ""  # round 3, item 5: the STABLE dedup key
         self._spoof_since = None
+        # flamesafe's top-level `confirmed` as this deck last journaled it.
+        # Starts True: a confirmed config is nothing to say; the first
+        # fresh frame saying false earns one line. See _note_config_confirmed.
+        self._confirmed_noted = True
         # None until the first check: a deck PROCESS that just started is
         # a reconnect too (round 4, item E). A restart quicker than
         # flamesafe's arm_stale_ms finds the old process's lock still
@@ -2608,12 +2602,42 @@ class Controller:
         """Called once per MAIN-LOOP pass (after status.poll()), never
         once per key snapshot: updates the spoof alarm (item 1's second
         line of defence) independent of how many key transitions this
-        pass processed."""
+        pass processed, and journals an unconfirmed config the first time
+        flamesafe's status says so."""
         category, reason = self._spoof_reason()
         if reason:
             self._raise_spoof_alarm(category, reason)
         else:
             self._clear_spoof_alarm()
+        self._note_config_confirmed()
+
+    def _note_config_confirmed(self):
+        """One journal line when flamesafe's fresh status first says its
+        config is not confirmed by Andy (`confirmed: false`, CONTRACT.md),
+        and one more if it later says it is (nothing at all for a config
+        that was confirmed all along). The keys no longer carry a
+        mark for this (Jeff, 2026-10-19), so the journal is where the
+        deck says it; the engine's status and the rack screen's Info
+        popup say it too. Never repeats while the answer stands, never
+        says anything while there is no fresh status, and never changes
+        what the deck sends: this is a note about the config's numbers,
+        not about any group's state."""
+        if self.status.last is None or self.status.stale(self._clock):
+            return
+        confirmed = bool(self.status.last.get("confirmed", True))
+        if confirmed == self._confirmed_noted:
+            return
+        self._confirmed_noted = confirmed
+        if not confirmed:
+            self._log("Stream Deck: flamesafe's config is not confirmed by "
+                      "Andy (its status says confirmed false): the universe, "
+                      "group map and arm value it sends are the config's own "
+                      "numbers. The keys show each group's real state as "
+                      "usual; this line will not repeat.",
+                      action="config", outcome="unconfirmed")
+        else:
+            self._log("Stream Deck: flamesafe's config is confirmed.",
+                      action="config", outcome="confirmed")
 
     def _spoof_reason(self):
         """(category, sentence): ("", "") normally; once flamesafe's
@@ -2747,7 +2771,8 @@ class Controller:
         (item 4), or ("", True) while there is no fresh status at all --
         status_for already draws NO / FLAME / LINK in that case, which takes
         priority over fault/confirmed entirely, so the default here never
-        has to mean anything on its own."""
+        has to mean anything on its own. Only `fault` reaches a key;
+        `confirmed` is journaled (_note_config_confirmed), never drawn."""
         if self.status.stale(self._clock) or self.status.last is None:
             return "", True
         st = self.status.last
@@ -2910,7 +2935,7 @@ class Controller:
                            bg=RED if blink_on else None)
         else:
             fonts.show_key(d, b2, ["ABORT"], RED if live else DIM_TEXT)
-        fault, confirmed = self._top_fault_confirmed()
+        fault, _confirmed = self._top_fault_confirmed()
         for i, name in enumerate(self.names):
             box = face_box(GROUP_KEYS[i])
             if self._spoof_alarm and group_blink:
@@ -2944,8 +2969,7 @@ class Controller:
                 # link keeps its real look. Only a group that is really off
                 # (disarmed or held) greys out.
                 st = self.status_for(name)
-                look = group_look(st, fault=fault, confirmed=confirmed,
-                                  slot=i)
+                look = group_look(st, fault=fault, slot=i)
                 if st is not None and not fault and \
                         st.get("armed") != "armed":
                     look = (look[0], look[1], LATCHED_GREY, DIM_TEXT, False)
@@ -2955,8 +2979,7 @@ class Controller:
             if hold_frac > 0:
                 draw_group_hold(fonts, d, box, name, hold_frac)
                 continue
-            look = group_look(self.status_for(name), fault=fault,
-                              confirmed=confirmed, slot=i)
+            look = group_look(self.status_for(name), fault=fault, slot=i)
             mv = self.morning_view()
             if mv and mv.get("open") is True:
                 # The Morning page's re-map: a group every machine of which
