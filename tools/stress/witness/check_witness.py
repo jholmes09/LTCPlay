@@ -31,6 +31,44 @@ how many packets):
                         running (its start and stop lines)
   LEFT ON THE WIRE      the stream stopped and its last packet was nonzero
 
+With the laser listener's files in the run folder (laser.csv, laser.json,
+from laser_listener.ps1 or .py standing where BEYOND would), the engine's
+journal is the oracle for the lasers too:
+
+  LASER BLANK MISSING   an Abort the conductor accepted, or a Hold that
+                        paused a show, with no brightness blank (0, or
+                        --blank-value) heard within --blank-within-s (2 s)
+  LASER BLANK NOT HEARD the journal says a blank was sent (Lasers blanked,
+                        BEYOND blanked) and the listener heard none
+  LASER SILENCE         the journal says laser commands were sent and the
+                        listener heard nothing at all
+  LASER LIT OUTSIDE SHOW  a brightness restore (anything but the blank
+                        value) while the scheduler was not in SHOW, PAUSED
+                        or REHEARSAL
+  LASER LIT WHILE ABORT LATCHED  a restore or a laser test ON between an
+                        accepted Abort and its Reset
+  LASER TEST WITHOUT RECORD  a laser's test ON message (the exact address
+                        AND value ltcplay_morning.json gives) with no
+                        Morning page test on record for that laser
+  LASER TEST WHILE SHOW LIVE  a test ON message while the scheduler was in
+                        SHOW or PAUSED
+  LASER TEST ON LOCKED LASER  a test ON message for a laser locked out on
+                        record
+  LASER TEST NOT HEARD  a test ON on record with no ON message heard
+  LASER TEST OFF MISSING  a test on record with no off (its off or lock
+                        message, or a blank) within --blank-within-s of its
+                        OFF, a show start or an Abort
+  UNKNOWN LASER MESSAGE any OSC that is neither the brightness blank or
+                        restore nor a configured laser message, a test ON
+                        at the wrong value included
+  FORBIDDEN LASER ADDRESS  BEYOND's BlackOut or MasterPause
+
+The standing fault "Lasers: blanking not set up" (beyond_blank "osc" with
+no "beyond" block, the show PC's state while BEYOND is absent) is EXPECTED:
+then the conductor sends the lasers nothing, the blank rules are reported
+UNVERIFIED rather than failed, and the fault is counted apart from every
+other fault, which still counts.
+
 Without --nights the state rules cannot be judged and the report says
 "UNVERIFIED" for them rather than PASS. The witness run is the only source
 for the wire; the journals are the only source for what was allowed.
@@ -43,9 +81,18 @@ import re
 import sys
 from datetime import datetime, timedelta
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import laser_listener as ll  # noqa: E402  (the same table the listener used)
+
 GRACE_S = 1.5
 PURGE_MAX_S = 30.0
 SHOW_STATES = ("SHOW",)
+LASER_STATES = ("SHOW", "PAUSED", "REHEARSAL")   # conductor.LASER_STATES
+LIVE_STATES = ("SHOW", "PAUSED")                 # no laser test while live
+BLANK_WITHIN_S = 2.0        # beyond.py's 3 packets go out in about 40 ms
+BLANK_BEFORE_S = 1.0        # the Abort's journal line is written AFTER the blank
+MERGE_S = 1.5               # one press makes several journal records
+NOT_SET_UP = "blanking not set up"               # beyondtc.NOT_SET_UP
 TIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?\s\s([^:]+): (.*)$")
 
 
@@ -73,16 +120,25 @@ def parse_time(s):
 def load_witness(folder):
     """The run's files, as plain rows."""
     out = {"folder": folder, "meta": {}, "nonzero": [], "gaps": [],
-           "stream": [], "log": [], "companion": False}
+           "stream": [], "log": [], "companion": False, "laser": [],
+           "laser_meta": {}, "has_laser": False}
     try:
         with open(os.path.join(folder, "witness.json"), encoding="utf-8-sig") as fh:
             out["meta"] = json.load(fh)
             out["companion"] = bool(out["meta"].get("companion"))
     except (OSError, ValueError):
         pass
-    for name in ("nonzero", "gaps", "stream"):
+    try:
+        with open(os.path.join(folder, "laser.json"), encoding="utf-8-sig") as fh:
+            out["laser_meta"] = json.load(fh)
+            out["has_laser"] = True
+    except (OSError, ValueError):
+        pass
+    for name in ("nonzero", "gaps", "stream", "laser"):
         p = os.path.join(folder, f"{name}.csv")
         if os.path.exists(p):
+            if name == "laser":
+                out["has_laser"] = True
             with open(p, encoding="utf-8-sig", newline="") as fh:
                 for r in csv.DictReader(fh):
                     r["_t"] = parse_time(r.get("time", ""))
@@ -304,9 +360,310 @@ class Episodes:
         return out
 
 
+# --------------------------------------------------------------- lasers ---
+def laser_table(meta, morning_path=None, blank_value=None):
+    """What a laser message may look like: {"brightness_addr",
+    "blank_value", "lasers": [{"name", "on", "off", "lock", ...}]}, from the
+    listener's laser.json (what it knew when it listened), overridden by
+    --morning (ltcplay_morning.json) and --blank-value."""
+    lasers = list(meta.get("lasers") or [])
+    if morning_path:
+        lasers, _how = ll.read_lasers(morning_path, str(meta.get("host") or
+                                                       ll.DEFAULT_HOST),
+                                      int(meta.get("port") or ll.DEFAULT_PORT))
+    if blank_value is None:
+        try:
+            blank_value = float(meta.get("blank_value", ll.BLANK_VALUE))
+        except (TypeError, ValueError):
+            blank_value = ll.BLANK_VALUE
+    return {"brightness_addr": str(meta.get("brightness_addr") or
+                                   ll.BRIGHTNESS_ADDR),
+            "blank_value": blank_value, "lasers": lasers}
+
+
+def parse_laser_args(types, text):
+    """The listener's args field back into values, by type tag."""
+    parts = text.split(";") if text != "" else []
+    out = []
+    for i, tag in enumerate(types or ""):
+        if tag in "[]":
+            continue
+        s = parts[i] if i < len(parts) else ""
+        if tag in "ifhd":
+            try:
+                out.append(float(s) if tag in "fd" else int(float(s)))
+            except ValueError:
+                out.append(s)
+        elif tag == "T":
+            out.append(True)
+        elif tag == "F":
+            out.append(False)
+        elif tag == "N":
+            out.append(None)
+        else:
+            out.append(s)
+    if not types and parts:
+        out = parts
+    return out
+
+
+def _merge(times, within=MERGE_S):
+    """Times within `within` s of the previous kept one are the same press."""
+    out = []
+    for t in sorted(times):
+        if not out or (t - out[-1]).total_seconds() > within:
+            out.append(t)
+    return out
+
+
+def laser_journal(recs, table):
+    """What the engine said about the lasers, from the machine log:
+    accepted Aborts, Holds that paused a show, show starts, every blank it
+    says it sent, laser test on and off per laser, laser lockouts, and
+    whether OSC blanking was set up at all."""
+    names = [l.get("name") or l.get("id") for l in table["lasers"]]
+    ev = {"aborts": [], "holds": [], "show_starts": [], "blank_claims": [],
+          "tests": [], "locks": [], "not_set_up": [], "osc_mode": None}
+    open_tests = {}          # name -> t_on
+    prev_state = None
+    for r in recs:
+        t = r["_t"]
+        action = str(r.get("action", "")).lower()
+        outcome = str(r.get("outcome", "")).lower()
+        text = str(r.get("text", ""))
+        low = text.lower()
+        st = str(r.get("to_state") or r.get("state") or "").upper()
+        refused = "refused" in outcome or "refused" in low
+        if st == "SHOW" and prev_state is not None and prev_state != "SHOW":
+            ev["show_starts"].append(t)
+        if action == "show start" and not refused:
+            ev["show_starts"].append(t)
+        if action == "abort" and not refused and (
+                low.startswith("abort, asked for by") or
+                prev_state in LIVE_STATES):
+            ev["aborts"].append(t)
+        if action == "hold" and not refused and (
+                low.startswith("hold, asked for by") or st == "PAUSED"):
+            ev["holds"].append(t)
+        if action == "lasers":
+            if outcome in ("blanked", "reblanked"):
+                ev["blank_claims"].append(t)
+            if outcome == "not_set_up" or NOT_SET_UP in low:
+                ev["not_set_up"].append(t)
+            m = re.search(r'beyond_blank "(\w+)"', text)
+            if outcome == "blank_mode" and m:
+                ev["osc_mode"] = m.group(1)
+        if action == "blank" and "failed" not in outcome and \
+                "beyond blanked" in low:
+            ev["blank_claims"].append(t)
+        if action == "laser-test":
+            m = re.search(r"turned the (.+?) calibration test (ON|OFF)", text)
+            if m and outcome in ("on", "off"):
+                name = m.group(1)
+                if outcome == "on":
+                    open_tests[name] = t
+                else:
+                    ev["tests"].append((name, open_tests.pop(name, t), t))
+            elif outcome == "all_off":
+                for name, t_on in list(open_tests.items()):
+                    ev["tests"].append((name, t_on, t))
+                open_tests.clear()
+        if action == "lockout":
+            m = re.match(r"(.+?) \(laser\) (LOCKED OUT|UNLOCKED)", text)
+            if m:
+                ev["locks"].append((m.group(1), t, m.group(2) == "LOCKED OUT"))
+        if st:
+            prev_state = st
+    for name, t_on in open_tests.items():
+        ev["tests"].append((name, t_on, None))
+    for k in ("aborts", "holds", "show_starts", "blank_claims"):
+        ev[k] = _merge(ev[k])
+    ev["names"] = names
+    return ev
+
+
+def _locked_at(locks, name, t):
+    state = False
+    for n, lt, on in locks:
+        if n == name and lt <= t:
+            state = on
+    return state
+
+
+def _test_on_at(tests, name, t, grace):
+    for n, t_on, t_off in tests:
+        if n != name:
+            continue
+        if t_on - grace <= t and (t_off is None or t <= t_off + grace):
+            return True
+    return False
+
+
+def laser_check(w, recs, tl, ep, table, within_s=BLANK_WITHIN_S,
+                grace_s=GRACE_S, before_s=BLANK_BEFORE_S):
+    """The laser rules. Adds episodes to `ep`; returns the summary the
+    report prints."""
+    within = timedelta(seconds=within_s)
+    before = timedelta(seconds=before_s)
+    grace = timedelta(seconds=grace_s)
+    ev = laser_journal(recs, table)
+    rows = []
+    for r in w["laser"]:
+        args = parse_laser_args(r.get("types", ""), r.get("args", ""))
+        kind, who = ll.classify(r.get("address", ""), args, table["lasers"],
+                                table["blank_value"], table["brightness_addr"])
+        rows.append((r["_t"], r.get("address", ""), r.get("types", ""),
+                     r.get("args", ""), args, kind, who))
+    counts = {"messages": len(rows), "blanks": 0, "unblanks": 0, "tests": 0,
+              "other": 0, "forbidden": 0}
+    blank_times = []
+    dark_for = {}            # laser name -> [t] of TEST OFF / LOCK
+    on_for = {}              # laser name -> [t] of TEST ON
+    for t, address, types, text, args, kind, who in rows:
+        if ll.is_blank(address, args, table["blank_value"],
+                       table["brightness_addr"]):
+            blank_times.append(t)
+        if kind == "BLANK":
+            counts["blanks"] += 1
+        elif kind == "UNBLANK":
+            counts["unblanks"] += 1
+        elif kind in ("TEST ON", "TEST OFF", "LOCK"):
+            counts["tests"] += 1
+        elif kind == "FORBIDDEN":
+            counts["forbidden"] += 1
+        else:
+            counts["other"] += 1
+        if kind == "TEST ON":
+            on_for.setdefault(who, []).append(t)
+        elif kind in ("TEST OFF", "LOCK"):
+            dark_for.setdefault(who, []).append(t)
+        st = tl.at(t)
+        st_g = tl.at(t - grace)
+        latched = st["latched"] and st_g["latched"]
+        shown = f"{address} ,{types} {text}"
+        if kind == "FORBIDDEN":
+            ep.add("FORBIDDEN LASER ADDRESS", 0, t,
+                   f"{shown}: BEYOND's BlackOut or MasterPause must never be "
+                   f"sent")
+        elif kind == "OTHER":
+            ep.add("UNKNOWN LASER MESSAGE", 0, t,
+                   f"{shown}: not the brightness blank or restore, and not a "
+                   f"configured laser test message (address AND value)")
+        elif kind == "UNBLANK":
+            if latched:
+                ep.add("LASER LIT WHILE ABORT LATCHED", 0, t,
+                       f"{shown} while an Abort stands")
+            elif tl.has_state and st["state"] not in LASER_STATES and \
+                    st_g["state"] not in LASER_STATES:
+                ep.add("LASER LIT OUTSIDE SHOW", 0, t,
+                       f"{shown} in state {st['state'] or 'unknown'}")
+        elif kind == "TEST ON":
+            if tl.has_state and not _test_on_at(ev["tests"], who, t, grace):
+                ep.add("LASER TEST WITHOUT RECORD", 0, t,
+                       f"{who}: {shown} with no Morning page test on record")
+            if latched:
+                ep.add("LASER LIT WHILE ABORT LATCHED", 0, t,
+                       f"{who}: {shown} while an Abort stands")
+            if _locked_at(ev["locks"], who, t):
+                ep.add("LASER TEST ON LOCKED LASER", 0, t,
+                       f"{who}: {shown} while locked out on record")
+            if tl.has_state and st["state"] in LIVE_STATES and \
+                    st_g["state"] in LIVE_STATES:
+                ep.add("LASER TEST WHILE SHOW LIVE", 0, t,
+                       f"{who}: {shown} in state {st['state']}")
+
+    def heard(times, t0):
+        return any(t0 - before <= x <= t0 + within for x in times)
+
+    osc_used = ev["osc_mode"] in (None, "osc", "both")
+    set_up = osc_used and not ev["not_set_up"]
+    by_name = {(l.get("name") or l.get("id")): l for l in table["lasers"]}
+    unverified = []
+    claims = len(ev["blank_claims"]) + sum(
+        1 for n, _a, _b in ev["tests"] if (by_name.get(n) or {}).get("on"))
+    if tl.has_state:
+        if claims and not rows:
+            ep.add("LASER SILENCE", 0, ev["blank_claims"][0] if
+                   ev["blank_claims"] else ev["tests"][0][1],
+                   f"the journal says {claims} laser command(s) were sent "
+                   f"(blanks and test ONs) and the listener heard nothing at "
+                   f"all: check the beyond block's host and port against the "
+                   f"listener's, and that it was running")
+        elif set_up:
+            for t in ev["aborts"]:
+                if not heard(blank_times, t):
+                    ep.add("LASER BLANK MISSING", 0, t,
+                           f"no brightness {table['blank_value']:g} within "
+                           f"{within_s:g} s of the Abort at {t:%H:%M:%S}")
+            for t in ev["holds"]:
+                if not heard(blank_times, t):
+                    ep.add("LASER BLANK MISSING", 0, t,
+                           f"no brightness {table['blank_value']:g} within "
+                           f"{within_s:g} s of the Hold at {t:%H:%M:%S}")
+            for t in ev["blank_claims"]:
+                if not heard(blank_times, t):
+                    ep.add("LASER BLANK NOT HEARD", 0, t,
+                           f"the journal says a blank was sent at "
+                           f"{t:%H:%M:%S.%f}; the listener heard none within "
+                           f"{within_s:g} s")
+        elif not osc_used:
+            unverified.append(
+                f"beyond_blank is \"{ev['osc_mode']}\": the lasers are blanked "
+                f"by Art-Net timecode, which the laser listener does not "
+                f"hear, so blank-after-Abort was not judged from the wire.")
+        else:
+            unverified.append(
+                f"EXPECTED while BEYOND is absent: the journal says 'Lasers: "
+                f"{NOT_SET_UP}' {len(ev['not_set_up'])} time(s) (beyond_blank "
+                f"osc with no beyond block), so the conductor sent the lasers "
+                f"nothing and blank-after-Abort and blank-after-Hold could not "
+                f"be judged from the wire. Every other fault still counts.")
+        if rows or claims:
+            for name, t_on, t_off in ev["tests"]:
+                laser = by_name.get(name)
+                if laser is None:
+                    unverified.append(f"{name}: a test on record, but no such "
+                                      f"laser in the listener's table, so its "
+                                      f"messages could not be judged.")
+                    continue
+                if laser.get("on") and not heard(on_for.get(name, []), t_on):
+                    ep.add("LASER TEST NOT HEARD", 0, t_on,
+                           f"{name}: test ON on record at {t_on:%H:%M:%S}; no "
+                           f"ON message heard within {within_s:g} s")
+                ends = [("its OFF", t_off)] if t_off is not None else []
+                for t in ev["show_starts"]:
+                    if t_on <= t and (t_off is None or t <= t_off + grace):
+                        ends.append(("the show start", t))
+                for t in ev["aborts"]:
+                    if t_on <= t and (t_off is None or t <= t_off + grace):
+                        ends.append(("the Abort", t))
+                dark = sorted(dark_for.get(name, []) + blank_times)
+                for why, t in ends:
+                    if not laser.get("off") and not laser.get("lock") and \
+                            not set_up:
+                        unverified.append(
+                            f"{name}: its off list is empty and OSC blanking "
+                            f"is not set up, so nothing can show its test "
+                            f"went dark at {why} ({t:%H:%M:%S}).")
+                        continue
+                    if not heard(dark, t):
+                        ep.add("LASER TEST OFF MISSING", 0, t,
+                               f"{name}: no off or lock message and no blank "
+                               f"within {within_s:g} s of {why} at "
+                               f"{t:%H:%M:%S}")
+    return {"counts": counts, "aborts": len(ev["aborts"]),
+            "holds": len(ev["holds"]), "show_starts": len(ev["show_starts"]),
+            "blank_claims": len(ev["blank_claims"]), "tests": len(ev["tests"]),
+            "set_up": set_up, "osc_mode": ev["osc_mode"],
+            "not_set_up": len(ev["not_set_up"]), "unverified": unverified,
+            "lasers_known": [l.get("name") or l.get("id")
+                             for l in table["lasers"]]}
+
+
 # ---------------------------------------------------------------- check ---
 def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
-          grace_s=GRACE_S, locked_slots=(), purge_max_s=PURGE_MAX_S):
+          grace_s=GRACE_S, locked_slots=(), purge_max_s=PURGE_MAX_S,
+          laser_table_=None, blank_within_s=BLANK_WITHIN_S):
     tl = Timeline(recs, fs_lines, groups, purge_max_s)
     ep = Episodes()
     notes = []
@@ -407,23 +764,35 @@ def check(w, recs, fs_lines, groups, arm_value, gap_ms=250.0, stall_s=2.0,
             notes.append(f"{t}  the witness could not bind the port: {msg}")
         elif kind == "COMPANION":
             notes.append(f"{t}  companion mode: {msg}")
+    laser = None
+    if w.get("has_laser"):
+        table = laser_table_ or laser_table(w.get("laser_meta") or {})
+        laser = laser_check(w, recs, tl, ep, table, blank_within_s, grace_s)
     packets = sum(int(r.get("packets") or 0) for r in w["stream"])
     nonzero = len(w["nonzero"])
     return {"episodes": ep.all(), "notes": notes, "packets": packets,
             "nonzero_packets": nonzero, "fire_packets": fire_packets,
             "armed_packets": armed_packets, "has_state": tl.has_state,
             "has_arms": tl.has_arms, "has_fs": tl.has_fs,
-            "events": len(tl.events), "companion": w["companion"]}
+            "events": len(tl.events), "companion": w["companion"],
+            "laser": laser}
 
 
 def journal_counts(recs, fs_lines):
     c = {"arm presses": 0, "disarm presses": 0, "aborts": 0, "resets": 0,
-         "faults (engine)": 0, "flamesafe disarm-all": 0,
+         "faults (engine), other than the standing laser fault": 0,
+         "faults (engine), 'Lasers: blanking not set up' (EXPECTED while "
+         "BEYOND is absent)": 0,
+         "laser blanks the journal says were sent": 0,
+         "laser tests turned on": 0,
+         "flamesafe disarm-all": 0,
          "flamesafe link lost": 0, "flamesafe faults": 0,
          "flamesafe overruns": 0, "flamesafe starts": 0,
          "flamesafe stops": 0}
     for r in recs:
         a = str(r.get("action", "")).lower()
+        o = str(r.get("outcome", "")).lower()
+        low = str(r.get("text", "")).lower()
         if a == "arm" and "arm pressed" in str(r.get("text", "")):
             c["arm presses"] += 1
         elif a == "disarm":
@@ -432,8 +801,16 @@ def journal_counts(recs, fs_lines):
             c["aborts"] += 1
         elif a == "reset":
             c["resets"] += 1
+        if a == "lasers" and o in ("blanked", "reblanked"):
+            c["laser blanks the journal says were sent"] += 1
+        if a == "laser-test" and o == "on":
+            c["laser tests turned on"] += 1
         if r.get("fault"):
-            c["faults (engine)"] += 1
+            if NOT_SET_UP in low:
+                c["faults (engine), 'Lasers: blanking not set up' (EXPECTED "
+                  "while BEYOND is absent)"] += 1
+            else:
+                c["faults (engine), other than the standing laser fault"] += 1
     for _t, kind, msg in fs_lines:
         if kind == "disarm-all":
             c["flamesafe disarm-all"] += 1
@@ -491,6 +868,32 @@ def report(res, counts, w, args_text, span):
                      "the witness could not bind the port (see notes).")
         verdict = "FAIL"
         lines[3] = "Verdict: FAIL"
+    lz = res.get("laser")
+    if lz is None:
+        lines.append("UNVERIFIED: no laser listener files (laser.csv, "
+                     "laser.json) in this run, so the laser rules were not "
+                     "judged. Start the laser listener with the witness.")
+    else:
+        c = lz["counts"]
+        known = ", ".join(lz["lasers_known"]) or \
+            "none (no ltcplay_morning.json lasers)"
+        lines.append(f"LASER LISTENER: {c['messages']} OSC message(s) heard: "
+                     f"{c['blanks']} blank, {c['unblanks']} restore, "
+                     f"{c['tests']} laser test (on, off or lock), "
+                     f"{c['other']} unknown, {c['forbidden']} forbidden. "
+                     f"Journal: {lz['aborts']} accepted Abort(s), "
+                     f"{lz['holds']} Hold(s) that paused a show, "
+                     f"{lz['show_starts']} show start(s), "
+                     f"{lz['blank_claims']} blank(s) said sent, "
+                     f"{lz['tests']} laser test(s) on record; lasers known "
+                     f"to the listener: {known}.")
+        if not res["has_state"]:
+            lines.append("UNVERIFIED: without the machine log the laser "
+                         "rules that need the journal (blank after Abort "
+                         "and Hold, test on record, latched) were not "
+                         "judged; only unknown and forbidden messages were.")
+        for u in lz["unverified"]:
+            lines.append(f"UNVERIFIED: {u}")
     lines.append("")
     lines.append(f"Violation episodes: {len(hard)}"
                  + (f" (and {len(eps) - len(hard)} gap episodes)"
@@ -512,9 +915,20 @@ def report(res, counts, w, args_text, span):
               "witness heard was armed by a press on record, fired only in "
               "SHOW (or under a purge on record), never while an Abort "
               "stood, never on a locked slot, and the stream never stalled "
-              "or stopped with values on the wire. What it cannot mean: "
-              "anything about packets the witness could not hear (a "
-              "destination that is not this PC, a port it could not bind)."]
+              "or stopped with values on the wire. With the laser listener: "
+              "every accepted Abort and every Hold that paused a show was "
+              "followed by BEYOND's brightness blank on the wire, every "
+              "blank the journal says it sent was heard, the lasers were "
+              "never restored outside SHOW or while an Abort stood, a laser "
+              "test's ON message appeared only while the Morning page had "
+              "that test on, at its configured value, never while live, "
+              "latched or locked out, and went dark at its OFF, at a show "
+              "start and at an Abort; nothing else was sent to the lasers. "
+              "What it cannot mean: anything about packets the witness or "
+              "the listener could not hear (a destination that is not this "
+              "PC, a port it could not bind), or what real BEYOND would do "
+              "with a command (no BEYOND ran: the listener only proves the "
+              "command left this program at the right moment)."]
     return verdict, "\n".join(lines) + "\n"
 
 
@@ -534,10 +948,31 @@ def main(argv=None):
     ap.add_argument("--stall-s", type=float, default=2.0)
     ap.add_argument("--grace-s", type=float, default=GRACE_S)
     ap.add_argument("--purge-max-s", type=float, default=PURGE_MAX_S)
+    ap.add_argument("--morning", help="ltcplay_morning.json: the laser test "
+                                      "messages (default: what laser.json "
+                                      "recorded)")
+    ap.add_argument("--laser-csv", help="a laser.csv outside the witness "
+                                        "folder")
+    ap.add_argument("--blank-within-s", type=float, default=BLANK_WITHIN_S,
+                    help="how soon after an Abort or Hold the blank must be "
+                         "heard (2 s)")
+    ap.add_argument("--blank-value", type=float,
+                    help="the brightness value that is a blank (default: "
+                         "laser.json's, else 0)")
     ap.add_argument("--out", help="report path (default: check_report.txt in "
                                   "the witness folder)")
     a = ap.parse_args(argv)
     w = load_witness(a.witness)
+    if a.laser_csv:
+        w["has_laser"] = True
+        w["laser"] = []
+        with open(a.laser_csv, encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                r["_t"] = parse_time(r.get("time", ""))
+                if r["_t"] is not None:
+                    w["laser"].append(r)
+    table = laser_table(w.get("laser_meta") or {}, a.morning, a.blank_value) \
+        if w.get("has_laser") else None
     groups = w["meta"].get("groups") or []
     arm_value = int(w["meta"].get("arm_value") or 0)
     if (not groups) and a.config:
@@ -556,15 +991,18 @@ def main(argv=None):
     elif a.lockout:
         locked = load_lockout_slots(a.lockout)
     res = check(w, recs, fs, groups, arm_value, a.gap_ms, a.stall_s,
-                a.grace_s, locked, a.purge_max_s)
+                a.grace_s, locked, a.purge_max_s, table, a.blank_within_s)
     counts = journal_counts(recs, fs)
-    times = [r["_t"] for r in w["stream"]] + [r["_t"] for r in w["nonzero"]]
+    times = [r["_t"] for r in w["stream"]] + [r["_t"] for r in w["nonzero"]] \
+        + [r["_t"] for r in w["laser"]]
     span = (min(times), max(times)) if times else (None, None)
     verdict, text = report(res, counts, w,
                            f"nights={a.nights or 'none'}; flamesafe-log="
                            f"{a.flamesafe_log or 'none'}; gap {a.gap_ms:g} "
                            f"ms; stall {a.stall_s:g} s; locked slots "
-                           f"{sorted(locked) or 'none'}", span)
+                           f"{sorted(locked) or 'none'}; laser blank within "
+                           f"{a.blank_within_s:g} s; morning="
+                           f"{a.morning or 'laser.json'}", span)
     out = a.out or os.path.join(a.witness, "check_report.txt")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(text)

@@ -153,6 +153,7 @@ if (-not $NoWitness) {
         Start-Process powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$w`"", "-Companion") -WindowStyle Minimized
         Say "Started the witness in companion mode (processes and disk every 10 s; the soak owns the flame port during stage 1)."
     } else { Say "witness.ps1 not found beside this kit; start it by hand with -Companion." }
+    Say "The laser listener (witness\laser_listener.ps1) is not started here: with no BEYOND installed the soak holds BEYOND's OSC port 127.0.0.1:8100 itself and judges the laser commands in its block report, so the listener would refuse. Start it with the witness for stages 2 to 4 (Start laser listener.cmd)."
 }
 
 # ------------------------------------------------------------------- wait ---

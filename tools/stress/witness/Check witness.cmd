@@ -1,6 +1,8 @@
 @echo off
 rem Runs the checker on the current witness run, with the engine's machine
-rem log and flamesafe's journal from Settings and logs. Needs Python on this
+rem log and flamesafe's journal from Settings and logs, and the laser
+rem listener's files when they are in the run folder (the laser rules read
+rem ltcplay_morning.json for the test messages). Needs Python on this
 rem PC; without it, use "Collect witness evidence.cmd" and run the checker
 rem where Python is (Jeff's Mac, the cloud session).
 setlocal
@@ -23,7 +25,9 @@ if not defined PY (
     pause
     exit /b 2
 )
-%PY% "%HERE%check_witness.py" --witness "%RUN%" --nights "%AD%\nights" --flamesafe-log "%AD%\logs\flamesafe.log" %*
+set MORNING=
+if exist "%AD%\ltcplay_morning.json" set MORNING=--morning "%AD%\ltcplay_morning.json"
+%PY% "%HERE%check_witness.py" --witness "%RUN%" --nights "%AD%\nights" --flamesafe-log "%AD%\logs\flamesafe.log" %MORNING% %*
 echo.
 echo Exit code %ERRORLEVEL% ^(0 PASS, 1 FAIL^). The report is check_report.txt in %RUN%
 pause
