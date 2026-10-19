@@ -236,7 +236,15 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 @keyframes firing{50%{background:#5A0A0A}}
 .mach.locked{border-style:dashed;border-color:#9A8A6A;background:#1A1712;color:var(--muted)}
 .mach.locked .w{color:var(--amber)}
-.mach.drag{border-color:var(--champ);cursor:move}
+.mach.drag{border-color:var(--champ);cursor:grab}
+.mach.lift{cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--champ),0 10px 28px rgba(0,0,0,.7)}
+/* Arrange mode (Jeff, 2026-10-19): a banner that cannot be missed, with
+   the only three ways out. While it shows, nothing on this page arms. */
+#mo-arrange-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:2px solid var(--amber);
+  background:rgba(245,160,30,.16);color:var(--champ);border-radius:8px;padding:6px 10px;min-width:0}
+#mo-arrange-bar b{flex:1 1 auto;font:800 clamp(13px,1.8vh,17px)/1.2 var(--caps);letter-spacing:.08em;color:var(--amber)}
+#mo-arrange-bar .dim{flex:1 1 100%;font-size:12px}
+#mo-arrange-bar button{min-height:clamp(34px,4.5vh,44px);padding:4px 12px}
 .mach .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
   font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 .mach.locked .lk{background:var(--amber);color:var(--amber-ink)}
@@ -472,6 +480,9 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
   <section id="v-morning" class="view" hidden>
     <div id="mo-left">
       <div class="mo-groups" id="mo-groups"></div>
+      <div id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>
+        <button id="mo-arr-save">Save layout</button><button class="ghost" id="mo-arr-reset">Reset layout</button><button class="ghost" id="mo-arr-cancel">Cancel</button>
+        <span class="dim">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
       <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
       <div id="mo-firebar"><div class="key" id="mo-key">Hold SPACE to fire</div><div class="toast" id="mo-msg"></div></div>
     </div>
@@ -617,7 +628,7 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     <div class="kv" id="info-mode"></div>
     <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen.</div>
     <h2>Leaving this window</h2>
-    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. Press <kbd>Alt</kbd>+<kbd>F4</kbd> to close a full screen window, or use the button below. To open the rack screen in an ordinary window: Start menu, LTC Player, Rack screen in a normal window.</div>
+    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
     <div class="row">
       <button id="info-exit" class="ghost" hidden>Close this window</button>
       <button id="info-close">Back</button>
@@ -1408,12 +1419,16 @@ $("net-save").addEventListener("click", async () => {
 // The engine owns every decision (morning.py): this view only shows its
 // state and sends clicks, the Space bar's heartbeats and the checklist
 // ticks. Nothing here arms or fires anything by itself.
-let MO = null, MO_OPEN = false, MO_TIMER = null, FIRE = null, ARRANGE = false, DRAG = null;
+let MO = null, MO_OPEN = false, MO_TIMER = null, FIRE = null;
 let MO_TAB = null, MO_NAME = "", MO_KEY = "";
 function morningView(on){
   if(on && !MO_OPEN){ MO_OPEN = true; morningPoll(); }
   if(!on && MO_OPEN){
     MO_OPEN = false; clearTimeout(MO_TIMER); fireStop("the page was left");
+    // Leaving the page drops a picked-up machine and leaves Arrange mode
+    // (unsaved moves are forgotten): the page comes back in its normal
+    // state, never with a machine still on the pointer.
+    arrangeExit("left");
     // Leaving the page drops OUR purge selection now, not 2 s later when
     // the open beats stop (the engine does that too, as the backstop).
     // Another device's selection is not ours to clear.
@@ -1427,7 +1442,9 @@ async function morningPoll(){
     if(!document.hidden){
       // Both every 500 ms while the view is open: the engine clears the
       // purge selection and un-maps the deck 2 s after the last open beat.
-      await post("/api/remote/morning-open", actor({}));
+      // The beat says whether this screen is arranging: the engine then
+      // refuses to arm, fire, lock or unlock for it (Jeff, 2026-10-19).
+      await post("/api/remote/morning-open", openBeatBody());
       MO = await getJSON("/api/remote/morning", 1500);
       renderMorning();
     }
@@ -1448,13 +1465,16 @@ function renderMorning(){
       `<button class="ghost" id="mo-clear">Clear</button><button class="ghost" id="mo-arrange">Arrange</button>`;
     gb.querySelectorAll("[data-grp]").forEach(b => b.addEventListener("click", () => groupClick(b.dataset.grp)));
     $("mo-clear").addEventListener("click", () => moPress("purge-clear", {}));
-    $("mo-arrange").addEventListener("click", arrangeToggle);
+    $("mo-arrange").addEventListener("click", arrangeEnter);
   }
+  // Arrange mode: the banner with its three ways out shows, the Arrange
+  // button and every group button are off (Jeff, 2026-10-19).
+  renderArrange();
   gb.querySelectorAll("[data-grp]").forEach(b => {
     const ids = (mo.groups || {})[b.dataset.grp] || [];
     const all = ids.length && ids.every(id => (purge.selected || []).includes(id));
     b.classList.toggle("on", !!all);
-    b.disabled = !ids.length || !mo.purge_enabled;
+    b.disabled = !ids.length || !mo.purge_enabled || ARRANGE;
     b.title = ids.length ? ids.join(", ") : "No machines in this group yet (ltcplay_morning.json, groups)";
   });
   // The field: every machine where the layout puts it.
@@ -1467,7 +1487,7 @@ function renderMorning(){
       const el = document.createElement("div");
       el.className = "mach"; el.dataset.id = m.id;
       el.innerHTML = `<b>${esc(m.name)}</b><span class="w"></span><span class="k">${esc(m.kind)} ${esc(m.group)}</span><button class="lk" title="Lock out or unlock">L</button>`;
-      el.addEventListener("pointerdown", e => machDown(e, m));
+      wireMachine(el, m);
       el.querySelector(".lk").addEventListener("pointerdown", e => e.stopPropagation());
       el.querySelector(".lk").addEventListener("click", e => { e.stopPropagation(); lockClick("machine", m.id, m.name); });
       field.appendChild(el);
@@ -1475,10 +1495,13 @@ function renderMorning(){
   }
   (mo.machines || []).forEach(m => {
     const el = field.querySelector(`.mach[data-id="${m.id}"]`); if(!el) return;
-    const p = (mo.layout || {})[m.id] || {x:50, y:50};
+    // While arranging, a machine that was moved shows where it was dropped
+    // (ARRANGE_POS) until Save sends it or Cancel forgets it; the engine's
+    // view, read every 500 ms, does not pull it back.
+    const p = (ARRANGE && ARRANGE_POS[m.id]) || (mo.layout || {})[m.id] || {x:50, y:50};
     if(!(DRAG && DRAG.id === m.id)){ el.style.left = p.x + "%"; el.style.top = p.y + "%"; }
     const look = machineLook(m, mo, fl, purge);
-    el.className = "mach " + look.cls + (ARRANGE ? " drag" : "");
+    el.className = "mach " + look.cls + (ARRANGE ? " drag" : "") + (DRAG && DRAG.id === m.id ? " lift" : "");
     el.querySelector(".w").textContent = look.word;
     el.querySelector(".lk").textContent = "L";
   });
@@ -1489,6 +1512,7 @@ function renderMorning(){
   k.textContent = purge.firing ? "FIRING" : any ? "Hold SPACE to fire" : "Click a machine or a group to arm it";
   if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
   if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
+  if(ARRANGE){ k.className = "key"; k.textContent = ARRANGE_BANNER + ": Save layout or Cancel first"; }
   // A lock problem (the file and the config, or flamesafe, disagree): the
   // one way out is a confirmed rewrite on the show machine itself.
   let rw = $("mo-rewrite");
@@ -1544,6 +1568,9 @@ function groupClick(g){
 }
 async function moPress(route, extra, msgEl){
   const el = $(msgEl || "mo-msg");
+  // Every press on this page goes through here: in Arrange mode the ones
+  // that arm, fire, lock or unlock never leave the page (Jeff, 2026-10-19).
+  if(arrangeBlocked(route, extra)) return;
   try{
     const j = await post("/api/remote/" + route, moActor(extra));
     el.textContent = j.text || "Done.";
@@ -1551,6 +1578,7 @@ async function moPress(route, extra, msgEl){
   }catch(e){ el.textContent = e.message; }
 }
 async function lockClick(kind, id, name){
+  if(arrangeBlocked("lock", {})) return;        // before the confirm, not after
   const locked = kind === "machine" ? !!(MO.lockout.machines || {})[id] : !!(MO.lockout.lasers || {})[id];
   if(!locked){
     if(await confirmBox("Lock out " + name + "?", "It cannot be armed or fired from anywhere, show cues skip it, and it stays locked out across restarts until it is unlocked here.", "Lock out", ""))
@@ -1560,38 +1588,122 @@ async function lockClick(kind, id, name){
       moPress("lock", {kind:kind, id:id, on:false, confirmed:true}, kind === "machine" ? "mo-msg" : "mo-lmsg");
   }
 }
-// A click on a machine arms it for the purge (Jeff's exception to
-// hold-to-arm, this page only); in Arrange mode a drag moves it.
+// ARRANGE BEGIN. Arrange mode on the Morning page (Jeff, 2026-10-19, after
+// bench-2026.10.19-6a32ff9: a picked-up machine followed the mouse for
+// ever, and the next click armed it). Arrange is a distinct mode: while it
+// is on, NO click, key, touch or drag arms, fires, locks, unlocks or lights
+// anything; the only ways out are Save layout, Cancel, Reset layout and
+// leaving the page. A drag is pointer-down to pointer-up on the machine;
+// pointerup, pointercancel, Escape, Save, Cancel, Reset, leaving the page,
+// the window losing focus and the page being hidden ALL end it. The engine
+// is told on every open beat (arranging: true) and refuses the same
+// routes for this screen on its side. The selftest runs this block in
+// node on a small DOM and takes each guard away in mutate.py.
+let ARRANGE = false, DRAG = null, ARRANGE_POS = {};
+const ARRANGE_BANNER = "ARRANGING: arming disabled";
+// The routes Arrange mode holds back. A select that only takes a machine
+// OFF, a laser test going OFF, a stop and a clear only take risk away and
+// are never held back; everything that arms, fires, locks or unlocks is.
+function arrangeBlocked(route, extra){
+  if(!ARRANGE) return false;
+  const off = extra && extra.on === false;
+  const gated = route === "purge-fire" || route === "lock" ||
+    ((route === "purge-select" || route === "laser-test") && !off);
+  if(!gated) return false;
+  $("mo-msg").textContent = ARRANGE_BANNER + ". Save layout or Cancel first; nothing was armed.";
+  return true;
+}
+// The open beat's body: the engine hears whether this screen is arranging.
+function openBeatBody(){ return actor({arranging: ARRANGE}); }
+// A machine tile: a press arms it for the purge (Jeff's exception to
+// hold-to-arm, this page only); in Arrange mode a press picks it up.
+function wireMachine(el, m){
+  el.addEventListener("pointerdown", e => machDown(e, m));
+}
 function machDown(e, m){
   e.preventDefault();
-  if(ARRANGE){
-    const field = $("mo-field").getBoundingClientRect();
-    DRAG = {id:m.id, el:e.currentTarget, field};
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const move = ev => {
-      const x = Math.max(0, Math.min(100, 100 * (ev.clientX - field.left) / field.width));
-      const y = Math.max(0, Math.min(100, 100 * (ev.clientY - field.top) / field.height));
-      DRAG.el.style.left = x + "%"; DRAG.el.style.top = y + "%";
-      DRAG.pos = {x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10};
-    };
-    const up = () => {
-      e.currentTarget.removeEventListener("pointermove", move);
-      if(DRAG && DRAG.pos){ MO.layout = MO.layout || {}; MO.layout[m.id] = DRAG.pos; }
-      DRAG = null;
-    };
-    e.currentTarget.addEventListener("pointermove", move);
-    e.currentTarget.addEventListener("pointerup", up, {once:true});
-    e.currentTarget.addEventListener("pointercancel", up, {once:true});
-    return;
-  }
+  if(ARRANGE){ dragStart(e, m); return; }
   const sel = ((MO.purge_state || {}).selected || []).includes(m.id);
   moPress("purge-select", {machine:m.id, on: !sel});
 }
-async function arrangeToggle(){
-  if(!ARRANGE){ ARRANGE = true; $("mo-arrange").textContent = "Save layout"; $("mo-msg").textContent = "Drag the machines where they stand, then Save layout."; renderMorning(); return; }
-  ARRANGE = false; $("mo-arrange").textContent = "Arrange";
-  moPress("layout", {positions: MO.layout || {}});
+function dragStart(e, m){
+  if(DRAG) dragEnd("another machine was pressed");
+  const el = e.currentTarget;
+  const was = ARRANGE_POS[m.id] || ((MO && MO.layout) || {})[m.id] || {x:50, y:50};
+  DRAG = {id:m.id, el:el, field:$("mo-field").getBoundingClientRect(), pointerId:e.pointerId, pos:null, was:was};
+  try{ el.setPointerCapture(e.pointerId); }catch(_){ /* a browser without capture: the window listeners still end it */ }
+  el.classList.add("lift");
+  $("mo-msg").textContent = m.name + " picked up. Move it where it stands and let go; Escape puts it back.";
 }
+function dragMove(ev){
+  if(!DRAG) return;
+  if(DRAG.pointerId != null && ev.pointerId != null && ev.pointerId !== DRAG.pointerId) return;
+  const f = DRAG.field;
+  const x = Math.max(0, Math.min(100, 100 * (ev.clientX - f.left) / f.width));
+  const y = Math.max(0, Math.min(100, 100 * (ev.clientY - f.top) / f.height));
+  DRAG.el.style.left = x + "%"; DRAG.el.style.top = y + "%";
+  DRAG.pos = {x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10};
+}
+// The one way a drag ends, whatever ended it. `back` puts the machine
+// where it was picked up (Escape); otherwise it is dropped where it is.
+function dragEnd(why, back){
+  const d = DRAG; DRAG = null;
+  if(!d) return;
+  try{ d.el.releasePointerCapture(d.pointerId); }catch(_){ /* already released */ }
+  d.el.classList.remove("lift");
+  const p = (!back && d.pos) ? d.pos : d.was;
+  ARRANGE_POS[d.id] = p;
+  d.el.style.left = p.x + "%"; d.el.style.top = p.y + "%";
+  if(ARRANGE) $("mo-msg").textContent = (back ? "Put back (" : "Dropped (") + why + "). Save layout keeps the new places; Cancel forgets them.";
+}
+window.addEventListener("pointerup", () => dragEnd("let go"));
+window.addEventListener("pointercancel", () => dragEnd("the pointer was cancelled"));
+window.addEventListener("pointermove", dragMove);
+window.addEventListener("blur", () => dragEnd("the window lost focus"));
+window.addEventListener("pagehide", () => dragEnd("the page closed"));
+document.addEventListener("visibilitychange", () => { if(document.hidden) dragEnd("the page was hidden"); });
+document.addEventListener("keydown", e => { if(e.key === "Escape" && DRAG) dragEnd("Escape", true); });
+function arrangeEnter(){
+  if(ARRANGE) return;
+  ARRANGE = true; ARRANGE_POS = {};
+  fireStop("Arrange mode");
+  // Nothing stays armed while arranging: our selection is cleared, and
+  // the engine hears at once that this screen is arranging.
+  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
+  if(MO && MO.purge_state && (MO.purge_state.selected || []).length)
+    post("/api/remote/purge-clear", actor({})).catch(() => {});
+  $("mo-msg").textContent = "Press a machine and move it where it stands, then Save layout.";
+  renderMorning();
+}
+// The explicit exits. `how` is "save", "cancel", "reset" or "left".
+async function arrangeExit(how){
+  dragEnd(how === "save" ? "Save layout" : how === "cancel" ? "Cancel" : how === "reset" ? "Reset layout" : "the page was left");
+  if(!ARRANGE) return;
+  const moved = ARRANGE_POS;
+  ARRANGE = false; ARRANGE_POS = {};
+  if(how === "save") await moPress("layout", {positions: Object.assign({}, (MO && MO.layout) || {}, moved)});
+  else if(how === "reset") await moPress("layout", {reset: true});
+  else if(how === "cancel") $("mo-msg").textContent = "Arrange cancelled: the machines are where they were saved.";
+  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
+  renderMorning();
+}
+async function arrangeReset(){
+  if(!(await confirmBox("Reset the layout?", "Every machine goes back to the default place for its group: the Fireball at the back, the Scaffold rows, the Ground row along the front. The saved layout file is removed.", "Reset layout", ""))) return;
+  arrangeExit("reset");
+}
+function renderArrange(){
+  const bar = $("mo-arrange-bar");
+  bar.hidden = !ARRANGE;
+  if(!bar.dataset.wired){
+    bar.dataset.wired = "1";
+    $("mo-arr-save").addEventListener("click", () => arrangeExit("save"));
+    $("mo-arr-cancel").addEventListener("click", () => arrangeExit("cancel"));
+    $("mo-arr-reset").addEventListener("click", arrangeReset);
+  }
+  const ab = $("mo-arrange");
+  if(ab){ ab.disabled = ARRANGE; ab.textContent = "Arrange"; }
+}
+// ARRANGE END
 // The fire key: Space on this page. One keydown starts the heartbeats;
 // keyup, blur, the page hidden or closed, a refused heartbeat or a stale
 // page stops them. The heartbeats are NOT the key: the browser's key
@@ -1616,6 +1728,7 @@ document.addEventListener("visibilitychange", () => { if(document.hidden) fireSt
 window.addEventListener("pagehide", () => fireStop("the page closed"));
 function fireStart(){
   if(FIRE) return;
+  if(arrangeBlocked("purge-fire", {})) return;        // the Space bar, while arranging
   if(!MO || !((MO.purge_state || {}).selected || []).length){ $("mo-msg").textContent = "Nothing is armed for a purge. Click a machine first."; return; }
   FIRE = {id:null, startAt:Date.now(), repeatAt:0};
   fireBeat(FIRE);
