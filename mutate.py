@@ -724,6 +724,22 @@ MUTATIONS = [
   "  if(s.disarm_connected && fl.connected)\n",
   "  if(true)\n"),
 
+ # An Abort with no show live never latches, so the first status poll after
+ # it says aborted false; a banner that hides on that is gone in 250 ms and
+ # only the one-line toast is left (found rendering bench-build after #68
+ # and #70 merged).
+ ("remote: the Abort banner goes on the first status poll after an Abort "
+  "with no show to stop",
+  "ltcplay/web/remote.html",
+  "  if(sch.aborted === false && b.dataset.latched){ b.hidden = true;",
+  "  if(sch.aborted === false && b.dataset.aborted){ b.hidden = true;"),
+
+ ("remote: the getting-started steps stack at the 950 px window, the third "
+  "below the card's own scroll",
+  "ltcplay/web/remote.html",
+  "#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}",
+  "#setup .steps{display:grid;grid-template-columns:1fr;gap:10px}"),
+
  ("remote: a stale flame lamp still reads armed", "ltcplay/remote.py",
   "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
   "            pass"),

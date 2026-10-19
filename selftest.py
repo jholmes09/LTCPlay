@@ -40789,6 +40789,27 @@ def test_rack_screen_width_guard_css_contract():
     check('id="abort-said"' in page and "saidAbort(" in page and
           "FLAMES WERE NOT DISARMED FROM THIS SCREEN" in page,
           "the Abort's answer is a banner that says what was not done")
+    # The banner goes by itself only when the Abort it reported is Reset:
+    # the latch read true, then false. An Abort with no show live never
+    # latches, so the status poll right after it says aborted false; the
+    # banner hid on that within 250 ms and only the one-line toast was
+    # left (found rendering bench-build after #68 and #70 merged).
+    check('if(sch.aborted === true && b.dataset.aborted) b.dataset.latched '
+          '= "1";' in page and
+          'if(sch.aborted === false && b.dataset.latched){ b.hidden = true;'
+          in page and
+          'if(sch.aborted === false && $("abort-said").dataset.aborted)'
+          not in page,
+          "the Abort banner hides by itself only after the latch read true "
+          "and then false (a Reset), never on the first poll after an "
+          "Abort that had no show to stop")
+    # The getting-started steps stay side by side at the 950 px Edge app
+    # window (1070 high showed two of three, the third below the card's
+    # own scroll) and stack only narrower than that.
+    check("#setup .steps{display:grid;grid-template-columns:repeat(auto-fit,"
+          "minmax(260px,1fr))" in page and
+          "#setup .steps{grid-template-columns:1fr}" not in page,
+          "the three getting-started steps fit side by side at 950 px wide")
     for bad in ("—", "–"):
         check(bad not in page, "no em or en dashes on the page")
         check(bad not in rm_src, "no em or en dashes in remote.py")
