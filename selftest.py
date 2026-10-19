@@ -26507,33 +26507,26 @@ def test_streamdeck_pure_logic():
     faulted = sd.group_look({"armed": "armed"}, fault="sACN send failed")
     check(faulted[0] == "FAULT" and faulted[2] == sd.RED,
           f"a fault overrides even a reported ARMED: {faulted}")
-    # Item 5 (round 2 of the safety review): confirmed=False used to blank
-    # every group's real state to "NOT CONFIRMED" -- flamesafe.example.json
-    # SHIPS confirmed:false, so the shipped deck showed nothing useful.
-    # Now the real state is shown exactly as with confirmed=True, plus a
-    # 6th tuple element (`caveat`) a caller can draw an overlay from; it is
-    # never a replacement.
-    unconfirmed = sd.group_look({"armed": "armed"}, confirmed=False)
-    check(unconfirmed[:5] == sd.group_look({"armed": "armed"})
-          and len(unconfirmed) == 6 and unconfirmed[5] is True,
-          f"confirmed=False shows the REAL state (ARMED) with a caveat "
-          f"flag appended, never blanking it: {unconfirmed}")
-    unconfirmed_held = sd.group_look(
-        {"armed": "held", "reason": "cycle the arm", "amber": "flashing",
-         "dwell_s": 0}, confirmed=False)
-    check(unconfirmed_held[:2] == ("CYCLE", "ARM")
-          and unconfirmed_held[5] is True,
-          f"the caveat is additive on a two-line held reason too, never "
-          f"overwriting either line: {unconfirmed_held}")
-    both = sd.group_look({"armed": "armed"}, fault="overrun",
-                         confirmed=False)
-    check(both[0] == "FAULT" and len(both) == 5,
-          f"a real fault wins over an unconfirmed config too, and carries "
-          f"no caveat element of its own (a fault already means 'do not "
-          f"trust this key'): {both}")
+    # flamesafe's top-level `confirmed` never reaches a key any more (Jeff,
+    # 2026-10-19: the amber corner mark item 5 of the safety review's round
+    # 2 added for confirmed:false was pointless). group_look does not take
+    # it, and every look is the plain 5-tuple whatever the config says; the
+    # unconfirmed config is journaled and in the engine's status instead
+    # (test_streamdeck_unconfirmed_config_never_marks_a_key).
+    import inspect as _insp
+    check("confirmed" not in _insp.signature(sd.group_look).parameters,
+          "group_look no longer takes `confirmed`: a key's look comes from "
+          "the group's real state and flamesafe's fault alone")
+    plain = sd.group_look({"armed": "armed"})
+    check(len(plain) == 5 and plain[0] == "ARMED",
+          f"every look is the plain 5-tuple, no caveat element: {plain}")
+    held = sd.group_look({"armed": "held", "reason": "cycle the arm",
+                          "amber": "flashing", "dwell_s": 0})
+    check(held[:2] == ("CYCLE", "ARM") and len(held) == 5,
+          f"a two-line held reason is a plain 5-tuple too: {held}")
     check(sd.group_look({"armed": "armed"})[0] == "ARMED",
-          "fault='' and confirmed=True (the defaults) change nothing: "
-          "every existing caller keeps working")
+          "fault='' (the default) changes nothing: every existing caller "
+          "keeps working")
 
     # Item 2: Abort's own gate takes (any_group_active, show_running); the
     # old single-arg meaning ("is the show running") is GONE -- the first
@@ -27930,6 +27923,157 @@ def test_streamdeck_draw_latched_shows_real_state_not_flat_off():
     check(any(p == sd.RED for p in body_pixels2),
           f"the spoof alarm (RED) stays visible on the key even while "
           f"latched: {set(body_pixels2)}")
+
+
+def test_streamdeck_unconfirmed_config_never_marks_a_key():
+    section("Stream Deck: flamesafe's `confirmed: false` draws NOTHING on "
+            "the group keys (Jeff, 2026-10-19: the amber corner mark is "
+            "gone); the keys show the real state pixel for pixel as a "
+            "confirmed config does. The unconfirmed config is still said, "
+            "quietly: one journal line from the deck when it first sees "
+            "it, and the engine's status (flames.confirmed) for the rack "
+            "screen's Info popup")
+    from ltcplay import streamdeck as sd
+    from ltcplay import remote as RM
+    import json as _j
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _FakeArmSocket(3)
+    arm.open()
+    status = _FakeStatus()
+    events = []
+    t = [0.0]
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0])
+
+    def doc(confirmed):
+        return {"arm_input": {"state": "live", "seq": arm.seq}, "fault": "",
+                "confirmed": confirmed,
+                "groups": [{"name": "front row", "armed": "armed",
+                            "wanted": True, "reason": "", "amber": "",
+                            "dwell_s": 0},
+                           {"name": "cat-walk", "armed": "disarmed",
+                            "wanted": False, "reason": "", "amber": "",
+                            "dwell_s": 0},
+                           {"name": "wave flamer", "armed": "held",
+                            "wanted": False, "reason": "cycle the arm",
+                            "amber": "flashing", "dwell_s": 0}]}
+    arm.set_group(0, True)
+    arm.send(names)
+
+    # The journal: nothing for a confirmed config, one line the first time
+    # a fresh frame says false, no repeat while it stands, one line when it
+    # is confirmed later, and nothing while the status is stale.
+    def noted(outcome):
+        return [e for e in events if e[1].get("outcome") == outcome
+                and e[1].get("action") == "config"]
+    status.set(doc(True))
+    c.check_links()
+    c.check_links()
+    check(not noted("unconfirmed") and not noted("confirmed"),
+          f"a confirmed config is nothing to journal: {events}")
+    status.set(doc(False))
+    for _ in range(5):
+        c.check_links()
+    check(len(noted("unconfirmed")) == 1
+          and "not confirmed by Andy" in noted("unconfirmed")[0][0]
+          and noted("unconfirmed")[0][0].startswith("Stream Deck: "),
+          f"the first fresh frame saying confirmed false earns exactly one "
+          f"journal line, however many passes follow: {events}")
+    check(not any(ch in e[0] for e in events
+                  for ch in (chr(0x2014), chr(0x2013))),
+          "the deck's line carries no em or en dash")
+    status.last = doc(True)
+    status._stale = True
+    c.check_links()
+    check(not noted("confirmed"),
+          f"a STALE frame says nothing, whatever it holds: {events}")
+    status._stale = False
+    c.check_links()
+    c.check_links()
+    check(len(noted("confirmed")) == 1 and len(noted("unconfirmed")) == 1,
+          f"confirmed later, and fresh: one line says so, once: {events}")
+    status.set(doc(False))
+    c.check_links()
+    check(len(noted("unconfirmed")) == 2,
+          "back to unconfirmed is a new episode, journaled again")
+    check(arm.wanted == [True, False, False] and all(
+        s == [True, False, False] for s in arm.sends[-1:]),
+          "none of it touched the arm link: display and journal only")
+
+    # The keys: pixels need Pillow (a CI runner without it FAILS here, a
+    # developer's box is told).
+    if _pillow_missing("the group keys with an unconfirmed config"):
+        print("  ok")
+        return
+    fonts = sd.Fonts()
+    fonts.text_block = lambda *a, **kw: None    # no system fonts on CI
+
+    def corner(cv, key):
+        """The 8 by 8 px block in the key face's bottom-right corner where
+        the mark used to be drawn."""
+        x0, y0, x1, y1 = sd.face_box(key)
+        return {cv.getpixel((x, y)) for x in range(x1 - 9, x1 - 1)
+                for y in range(y1 - 9, y1 - 1)}
+    status.set(doc(False))
+    off = c.draw(fonts, blink_on=True, chase=0)
+    for k, word in zip(sd.GROUP_KEYS[:2], ("ARMED", "OFF")):
+        px = corner(off, k)
+        check(sd.AMBER not in px,
+              f"confirmed false: no amber corner mark on the {word} key "
+              f"({px})")
+    status.set(doc(True))
+    on = c.draw(fonts, blink_on=True, chase=0)
+    check(list(off.getdata()) == list(on.getdata()),
+          "confirmed false and confirmed true draw the SAME deck, pixel "
+          "for pixel: the keys carry nothing for it")
+    body = sd.face_box(sd.GROUP_KEYS[0])
+    greens = [off.getpixel((x, y)) for x in range(body[0], body[2], 3)
+              for y in range(body[1] + 18, body[3], 3)]
+    check(any(p == sd.GREEN for p in greens),
+          "and the real state (front row ARMED, green) is still what the "
+          "key shows: the mark went, the state did not")
+
+    # The engine's status for the rack screen: FlameStatus.view carries
+    # flamesafe's own `confirmed`, None while nothing fresh says either way.
+    mono = [0.0]
+    fs = RM.FlameStatus("127.0.0.1", 0, "k" * 20, names,
+                        clock=lambda: mono[0])
+    check(fs.view()["confirmed"] is None,
+          "no frame yet: the status does not claim either way")
+    frame = {"t": "status", "k": "k" * 20, "fault": "", "confirmed": False,
+             "groups": [{"name": "front row", "armed": "armed",
+                         "wanted": True, "reason": ""}]}
+    fs.note(_j.dumps(frame).encode())
+    v = fs.view()
+    check(v["confirmed"] is False and v["groups"][0]["armed"] == "armed",
+          f"a fresh frame with confirmed false says so, beside the real "
+          f"armed state: {v}")
+    fs.note(_j.dumps(dict(frame, confirmed=True)).encode())
+    check(fs.view()["confirmed"] is True, "confirmed true reads true")
+    fs.note(_j.dumps({k: x for k, x in frame.items()
+                      if k != "confirmed"}).encode())
+    check(fs.view()["confirmed"] is True,
+          "a frame that leaves the field out counts as confirmed, as the "
+          "deck has always read it")
+    fs.note(_j.dumps(frame).encode())
+    mono[0] += RM.FLAME_STALE_S + 0.5
+    check(fs.view()["confirmed"] is None and fs.view()["stale"],
+          "stale: None again, never an old answer shown as now")
+    # The rack screen says it in the Info popup only (not a banner, not
+    # the keys): the page wires flames.confirmed to #info-flames.
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    check('id="info-flames" hidden' in page
+          and "s.flames.confirmed === false" in page
+          and '$("info-flames").hidden = !unconf;' in page
+          and "not yet confirmed by Andy" in page,
+          "the rack screen's Info popup carries the unconfirmed config, "
+          "hidden otherwise")
+    print("  ok")
 
 
 def test_streamdeck_spoof_alarm():
@@ -40450,13 +40594,23 @@ def test_remote_stale_state_refused_and_banner():
         check(not out["flames"]["stale"] and
               out["flames"]["groups"][0]["armed"] == "armed",
               f"a fresh frame shows the real armed state: {out['flames']}")
+        check(out["flames"]["confirmed"] is True,
+              f"a frame with no `confirmed` reads confirmed: {out['flames']}")
+        fs.note(_j.dumps(dict(frame, confirmed=False)).encode())
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["flames"]["confirmed"] is False and
+              out["flames"]["groups"][0]["armed"] == "armed",
+              f"flamesafe's confirmed false reaches the status beside the "
+              f"real state, for the Info popup (2026-10-19): {out['flames']}")
         fs.note(_j.dumps(dict(frame, k="x" * 20)).encode())
         R.mono[0] += 1.2
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(out["flames"]["stale"] and
-              out["flames"]["groups"][0]["armed"] == "unknown",
+              out["flames"]["groups"][0]["armed"] == "unknown" and
+              out["flames"]["confirmed"] is None,
               f"1.2 s later (and a wrongly keyed frame ignored) the lamp is "
-              f"unknown, never the old armed: {out['flames']}")
+              f"unknown, never the old armed, and confirmed is not claimed "
+              f"either way: {out['flames']}")
         _remote_page_logic_in_node()
     finally:
         R.close()
@@ -45200,6 +45354,7 @@ if __name__ == "__main__":
     test_streamdeck_arm_fire_refuses_latched_and_refractory()
     test_streamdeck_refractory_also_starts_at_reset()
     test_streamdeck_draw_latched_shows_real_state_not_flat_off()
+    test_streamdeck_unconfirmed_config_never_marks_a_key()
     test_streamdeck_builds_one_http_opener()
     test_streamdeck_spoof_alarm()
     test_streamdeck_spoof_alarm_on_foreign_sender_flag_alone()
