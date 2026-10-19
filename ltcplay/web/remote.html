@@ -1516,11 +1516,11 @@ function renderMorning(){
   // The fire key's state.
   const k = $("mo-key");
   const any = (purge.selected || []).length > 0;
-  k.className = "key" + (purge.firing ? " firing" : any ? " ready" : "");
+  k.className = "key" + (purge.firing ? " firing" : any ? " ready" : ""); k.title = "";
   k.textContent = purge.firing ? "FIRING" : any ? "Hold SPACE to fire" : "Click a machine or a group to arm it";
   if(!mo.purge_enabled) k.textContent = "Purge arming is switched off for this device";
   if(mo.live_refusal) k.textContent = "Purge not allowed now: " + mo.live_refusal;
-  if(ARRANGE){ k.className = "key"; k.textContent = ARRANGE_BANNER + ": Save layout or Cancel first"; }
+  if(ARRANGE){ k.className = "key"; k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"; }
   // A lock problem (the file and the config, or flamesafe, disagree): the
   // one way out is a confirmed rewrite on the show machine itself.
   let rw = $("mo-rewrite");

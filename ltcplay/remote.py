@@ -367,13 +367,16 @@ EXPLORER_CLASSES = ("CabinetWClass", "ExploreWClass")
 EXPLORER_FRONT_WAIT_S = 4.0
 
 
-def pick_explorer_window(path, before, now):
+def pick_explorer_window(path, before, now, reuse=False):
     """The window handle of the Explorer window just opened for `path`, from
     the top-level windows `before` and `now` as [(hwnd, class, title)]: a
     new Explorer window whose title is the folder's name or its full path
     (Explorer shows one or the other), else the one new Explorer window.
     None while there is none yet, or two new ones and neither is titled
-    for this folder (nothing else's window is ever pulled forward)."""
+    for this folder (nothing else's window is ever pulled forward). With
+    `reuse` (the wait is over and nothing new came), an Explorer window
+    that was already open on this folder: Explorer reuses it instead of
+    opening a second one, and it is still behind the rack screen."""
     seen = {w[0] for w in before}
     new = [w for w in now if w[0] not in seen and w[1] in EXPLORER_CLASSES]
     full = os.path.normpath(path).rstrip("\\/").lower()
@@ -383,6 +386,11 @@ def pick_explorer_window(path, before, now):
         return titled[0][0]
     if len(new) == 1:
         return new[0][0]
+    if reuse and not new:
+        again = [w for w in now if w[1] in EXPLORER_CLASSES and
+                 (w[2] or "").strip().lower() in (name, full)]
+        if again:
+            return again[0][0]
     return None
 
 
@@ -427,6 +435,9 @@ def _explorer_to_front(path, before, wait_s=EXPLORER_FRONT_WAIT_S):
         hwnd = pick_explorer_window(path, before, _explorer_windows())
         if hwnd is None:
             _t.sleep(0.1)
+    if hwnd is None:
+        hwnd = pick_explorer_window(path, before, _explorer_windows(),
+                                    reuse=True)
     if hwnd is None:
         return False
     try:

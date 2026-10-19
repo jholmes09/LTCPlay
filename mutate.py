@@ -8389,6 +8389,26 @@ def build():
   '''  if(true) return false;
   const off = extra && extra.on === false;'''),
 
+ ("windows: the rack screen opens as a kiosk again (no Minimize, and "
+  "Explorer opens behind it)",
+  "packaging/windows/supervisor.py",
+  '''    cmd = [edge, f"--app={url}", "--start-maximized", "--no-first-run",''',
+  '''    cmd = [edge, "--kiosk", url, "--edge-kiosk-type=fullscreen", "--no-first-run",'''),
+
+ ("remote: the Explorer window opened for the show folder is never picked "
+  "out by its title",
+  "ltcplay/remote.py",
+  '''    if titled:
+        return titled[0][0]
+    if len(new) == 1:''',
+  '''    if len(new) == 1:'''),
+
+ ("remote: an Explorer window already open on the folder (reused) is left "
+  "behind the rack screen",
+  "ltcplay/remote.py",
+  '''    if reuse and not new:''',
+  '''    if False:'''),
+
  ("morning page: the open beat never tells the engine the screen is arranging",
   "ltcplay/web/remote.html",
   '''function openBeatBody(){ return actor({arranging: ARRANGE}); }''',

@@ -45047,7 +45047,7 @@ def test_morning_arrange_mode_arms_nothing():
                  'id="mo-arrange-bar" hidden><b>ARRANGING: arming disabled</b>',
                  'id="mo-arr-save">Save layout<', 'id="mo-arr-reset">Reset layout<',
                  'id="mo-arr-cancel">Cancel<',
-                 'k.textContent = ARRANGE_BANNER + ": Save layout or Cancel first"'):
+                 'k.textContent = ARRANGE_BANNER; k.title = "Save layout or Cancel first"'):
         check(need in page, f"the page wires {need!r}")
     for need in ("function arrangeBlocked(", "function openBeatBody(",
                  "function wireMachine(", "function dragStart(",
@@ -45403,6 +45403,25 @@ def test_windows_rack_window_and_explorer_front():
           "a new window that is not Explorer's is never touched")
     check(pick(path, before, before + [(1, "CabinetWClass", "ltcplay")])
           is None, "a window that was already there is not new")
+    check(pick(path, before, before + [(1, "CabinetWClass", "ltcplay")],
+               reuse=True) == 1,
+          "but once the wait is over with nothing new, the Explorer window "
+          "already open on this folder (Explorer reused it) is brought "
+          "forward")
+    check(pick(path, before, before, reuse=True) is None and
+          pick(path, before, before + [(5, "Notepad", "ltcplay")],
+               reuse=True) is None,
+          "reuse never pulls forward a window that is not Explorer's on "
+          "this folder")
+    check(pick(path, before, before + [(3, "CabinetWClass", "Pictures"),
+                                       (4, "CabinetWClass", "Music"),
+                                       (1, "CabinetWClass", "ltcplay")],
+               reuse=True) is None,
+          "reuse only when nothing new came")
+    check("reuse=True)" in open(os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "ltcplay", "remote.py"),
+        encoding="utf-8").read(),
+          "the front-bringer falls back to a reused Explorer window")
     check(RM._explorer_to_front(path, before, wait_s=0) is False,
           "with no window to find (or off Windows) it says so and does "
           "nothing")
