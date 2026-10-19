@@ -255,11 +255,13 @@ DISARM_SENT = (
     "The journal says when flamesafe confirms it, or that it has not after "
     "1 s, and the Stream Deck shows whether each group disarmed.")
 NO_DISARM = (
-    "A screen-initiated Abort cannot disarm the flame groups: flamesafe's "
-    "link contract (flamesafe/CONTRACT.md, version 2) has no disarm message "
-    "yet. Flame cues from ltcplay are zero. The Stream Deck's own Abort "
-    "disarms through its own link; until the contract has a disarm message, "
-    "disarm with the Stream Deck or the arm keys.")
+    "A screen-initiated Abort cannot disarm the flame groups from this "
+    "engine: it has no flame link to flamesafe (ltcplay_fire_ice.json names "
+    "no flamesafe_config, or there is no such file beside the schedule). "
+    "Flame cues from ltcplay are zero. The link (flamesafe/CONTRACT.md, "
+    "disarm_all) does carry a disarm once it is configured; until then "
+    "disarm with the Stream Deck's own Abort or its arm keys, or the "
+    "hardware e-stop.")
 
 
 class FireIceShow(C.ShowOutputs):

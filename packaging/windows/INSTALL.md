@@ -71,6 +71,42 @@ version of every program. It holds NO show files, no audio or video, no
 renders and no PIN or key files. Take the bundle before you restart or
 reinstall, so the logs that show the fault are still in it.
 
+## The first time it runs (a fresh PC)
+
+LTC Player writes three files the first time it starts on a PC that has
+none of them, so flamesafe, the Stream Deck program and the rack screen
+all come up instead of a bare page (before 2026-10-18 a fresh install
+started the engine alone and the Stream Deck "never connected"):
+
+- `flamesafe.json`: the shipped example, sending to this PC only
+  (127.0.0.1), three groups, unconfirmed. Nothing can reach a flame
+  controller from it. Before any flame hardware is connected, set the
+  real destination, universe, groups and link key, and set confirmed to
+  true.
+- `ltcplay_schedule.json`: the example's show times. Set the real ones on
+  the rack screen: Programming, "Schedule: the show times".
+- `ltcplay_fire_ice.json`: `scheduler_performs` false (the scheduler
+  decides but starts nothing) and the flamesafe config above.
+
+All three live in Start menu, LTC Player, "Settings and logs". A file that
+is already there is never touched. The rack screen's "Getting started"
+card lists what is still missing (a show folder with a show file in it,
+the schedule) and where to click; it goes away once both exist.
+
+## Which mode am I in, and how do I get out of the full screen window
+
+- The header's MODE pill says it on every screen: SHOW (a show file is
+  running for real; the scheduler starts each show at its time),
+  PROGRAMMING (a rehearsal is running; the scrubbing controls work and the
+  scheduler starts nothing) or NOT RUNNING (nothing reaches the rig until
+  Run is pressed on the Programming screen). The small "i" button next to
+  it explains, and shows this LTC Player's version.
+- Start menu, LTC Player opens the rack screen full screen (an Edge kiosk
+  window with no close button). Alt+F4 closes that window, or press the
+  "i" button, "Close this window". Closing the window never stops the
+  show: the engine runs on its own. Start menu, "Rack screen in a normal
+  window" opens the same page with a close button and the taskbar.
+
 ## Every day
 
 - LTC Player starts by itself when the PC signs in and opens the rack

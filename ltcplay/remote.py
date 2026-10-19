@@ -130,6 +130,22 @@ PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host",
 
 LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 
+# First run and setup (Jeff, 2026-10-17: a fresh install was "just a
+# shell", with no screen to make a schedule or choose the show folder).
+# This machine only, never the network: they read and write files beside
+# the settings. None of them touches the rig: the show folder change asks
+# the Windows supervisor to restart the engine, which it refuses during a
+# show; the schedule is refused while a show is live.
+SETUP_GET_ROUTES = ("setup", "schedule-file")
+SETUP_POST_ROUTES = ("schedule-file", "open-folder", "show-folder", "screen")
+PROGRAMS_FILE = "programs.json"      # packaging/windows/supervisor.py writes
+FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
+SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
+SCREEN_CLOSE_FILE = "close-rack-screen"   # the supervisor closes its Edge
+RESTART_ENGINE_FILE = "restart-engine"    # the supervisor restarts ltcplay
+PROGRAMS_READ_S = 3.0
+FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"     # cli.py and ltcwin.py agree
+
 
 def settings_folder():
     """The same place as this machine's other settings."""
@@ -305,6 +321,19 @@ def host_ok(host_header, client_is_loopback, bind, port):
         return name in LOOPBACK_NAMES
     want = bind.lower()
     return name == want or name == f"[{want}]"
+
+
+def _open_in_file_manager(path):
+    """The folder in Explorer (Windows) or the Finder (Mac)."""
+    import subprocess
+    import sys
+    if os.name == "nt":
+        os.startfile(path)                       # noqa: S606
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open",
+                          path], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True)
 
 
 # ------------------------------------------------ flamesafe's status --
@@ -595,6 +624,11 @@ class Remote:
     # -- the routes --------------------------------------------------------
     def get(self, route, ctx):
         name = route[len("/api/remote/"):]
+        if name in SETUP_GET_ROUTES:
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return 200, (self.setup_view() if name == "setup"
+                         else self.schedule_file_view())
         if name == "whoami":
             return 200, self.whoami(ctx)
         if name == "deck-input":
@@ -615,6 +649,12 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
+        if name in SETUP_POST_ROUTES:
+            if not ctx.local:
+                return 403, {"error": "The show folder, the schedule file "
+                                      "and this window are set on the show "
+                                      "machine itself, not from here."}, {}
+            return (*self.setup_post(name, body),) + ({},)
         if name in LOCAL_ONLY and not ctx.local:
             return 403, {"error": "The show network is set on the show "
                                   "machine itself, not from here."}, {}
@@ -1264,6 +1304,306 @@ class Remote:
         self._disk = (view, now)
         return view
 
+    # -- first run and setup (this machine only) -----------------------------
+    def _settings_json(self, name, cache_key, every_s=PROGRAMS_READ_S):
+        """A JSON object file in the settings folder, read at most every
+        `every_s` seconds; {} when it is not there or not an object. Never
+        raises."""
+        now = self.clock()
+        cache = getattr(self, "_json_cache", None)
+        if cache is None:
+            cache = self._json_cache = {}
+        doc, at = cache.get(cache_key, ({}, 0.0))
+        if at and now - at < every_s:
+            return doc
+        try:
+            with open(os.path.join(settings_folder(), name),
+                      encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            if not isinstance(doc, dict):
+                doc = {}
+        except Exception:                        # noqa: BLE001
+            doc = {}
+        cache[cache_key] = (doc, now)
+        return doc
+
+    def programs_view(self):
+        """The Windows supervisor's word on its three programs
+        (programs.json: {"flamesafe": {"running": bool, "why": ""}, ...},
+        written on every change), or {} off the show PC. Never raises."""
+        return self._settings_json(PROGRAMS_FILE, "programs")
+
+    def deck_view(self):
+        """The Stream Deck program, as this engine sees it, in a sentence
+        a person can act on: whether it has been heard (its deck-input
+        reads), and if not, why not, from the supervisor's word when there
+        is one (Jeff, 2026-10-17: "the Stream Deck never connected")."""
+        seen = self._deck_seen
+        if seen is not None:
+            age = self.clock() - seen
+            if age <= self.DECK_QUIET_S:
+                return {"heard": True, "age_s": round(age, 1), "text": ""}
+            return {"heard": False, "age_s": round(age, 1),
+                    "text": (f"The Stream Deck program was last heard "
+                             f"{age:.0f} s ago; LTC Player starts it again "
+                             f"within seconds if it stopped. Its log is "
+                             f"deck.log in the settings folder.")}
+        pr = (self.programs_view().get("deck") or {})
+        why = str(pr.get("why") or "").strip()
+        if why:
+            text = (f"The Stream Deck program is not running: {why} So "
+                    f"nothing has looked for the Stream Deck hardware yet.")
+        elif pr.get("running"):
+            text = ("The Stream Deck program is running but has not reached "
+                    "this engine yet. If this stays, its log (deck.log in "
+                    "the settings folder) says what it found.")
+        else:
+            text = ("The Stream Deck program has never reached this engine. "
+                    "On the show PC, LTC Player starts it only when "
+                    "flamesafe's config file exists (showpc.json, "
+                    "flamesafe_config) and show_mode is fire_ice; its "
+                    "supervisor.log says which. The Stream Deck hardware "
+                    "itself is looked for by that program, not by this one.")
+        return {"heard": False, "age_s": None, "text": text}
+
+    def _show_folder(self):
+        return str(getattr(self.control, "folder", "") or "")
+
+    def _show_files(self):
+        """The show files the Programming screen's Run picker would offer."""
+        try:
+            tls = self.control.timelines()
+        except Exception:                        # noqa: BLE001
+            return 0
+        return len([t for t in tls if not t.get("error")])
+
+    def _schedule_path(self):
+        """The scheduler's own file, or where one would go (the same name
+        schedule_service.RULE_FILE has, spelled here so a GPL engine, which
+        never loads the scheduler, does not load it for this)."""
+        svc = self.schedule
+        p = getattr(svc, "path", None)
+        if p:
+            return str(p)
+        return os.path.join(settings_folder(), "ltcplay_schedule.json")
+
+    def _show_live(self):
+        return self._show_live_state() in self.LIVE_STATES
+
+    def _show_live_state(self):
+        try:
+            return self.schedule.state_view().get("state")
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def setup_view(self):
+        """What a fresh install has and lacks, for the getting-started card
+        and the Programming screen: the show folder and its show files,
+        the schedule file and whether the scheduler loaded it, flamesafe
+        and the Stream Deck as this engine sees them, and which files the
+        supervisor wrote as examples at first run. Display only."""
+        folder = self._show_folder()
+        files = self._show_files()
+        svc = self.schedule
+        sched_path = self._schedule_path()
+        sched_ok = svc is not None and getattr(svc, "rule", None) is not None
+        first = self._settings_json(FIRST_RUN_FILE, "first_run", 30.0)
+        written = first.get("written") or {}
+        try:
+            fl = self.flame_status.view() if self.flame_status else None
+        except Exception:                        # noqa: BLE001
+            fl = None
+        fs_connected = bool(fl and fl.get("connected") and not fl.get("stale"))
+        return {"show_folder": folder,
+                "show_folder_exists": bool(folder) and os.path.isdir(folder),
+                "show_files": files,
+                "schedule_path": sched_path,
+                "schedule_exists": os.path.isfile(sched_path),
+                "schedule_ok": bool(sched_ok),
+                "schedule_error": str(getattr(svc, "error", "") or ""),
+                "schedule_attached": svc is not None,
+                "example_schedule": bool(written.get("schedule")),
+                "example_flamesafe": bool(written.get("flamesafe")),
+                "flamesafe_config": os.environ.get(FLAMESAFE_ENV, ""),
+                "flamesafe_connected": fs_connected,
+                "deck_heard": self.deck_view()["heard"],
+                "settings_folder": settings_folder(),
+                "kiosk_closable": bool(appdata.WINDOWS),
+                "ready": files > 0 and bool(sched_ok)}
+
+    def schedule_file_view(self):
+        """GET schedule-file: the file as it is (or the example's times to
+        start from), its path, and the scheduler's word on it."""
+        path = self._schedule_path()
+        exists = os.path.isfile(path)
+        doc, err = None, ""
+        if exists:
+            try:
+                with open(path, encoding="utf-8-sig") as fh:
+                    doc = json.load(fh)
+                if not isinstance(doc, dict):
+                    doc, err = None, "the file is not a schedule object"
+            except (OSError, ValueError) as e:
+                doc, err = None, str(e)
+        if doc is None:
+            doc = self.example_schedule()
+        svc_err = str(getattr(self.schedule, "error", "") or "")
+        return {"path": path, "exists": exists, "doc": doc,
+                "error": err or svc_err}
+
+    @staticmethod
+    def example_schedule():
+        """ltcplay_schedule.example.json's times, the starting point for a
+        new file; a built-in copy if the example is not shipped."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        try:
+            with open(os.path.join(here, "ltcplay_schedule.example.json"),
+                      encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            if isinstance(doc, dict):
+                return doc
+        except (OSError, ValueError):
+            pass
+        return {"timezone": "America/Denver",
+                "season": {"first_date": "2026-11-14",
+                           "last_date": "2027-01-02"},
+                "weekly": {"fri": {"first_start": "17:30",
+                                   "interval_min": 20, "last_end": "22:00"},
+                           "sat": {"first_start": "17:00",
+                                   "interval_min": 20, "last_end": "22:00"}},
+                "exceptions": {}, "show_len_s": 440, "guard_s": 120,
+                "late_grace_s": 15}
+
+    def save_schedule_file(self, body):
+        """POST schedule-file {"doc": {...}}: checked by the scheduler's
+        own parser first (every refusal is its sentence), written whole,
+        then loaded by the running scheduler. Refused while a show is live:
+        the night's list is not rebuilt under a running show."""
+        doc = body.get("doc")
+        if not isinstance(doc, dict):
+            return 400, {"error": "Send the schedule as an object."}
+        if self.schedule is None:
+            # A GPL engine never loads the scheduler, not even to check a
+            # file for it.
+            return 409, {"error": "There is no scheduler in this engine, so "
+                                  "there is no schedule to edit here."}
+        if self._show_live():
+            return 409, {"error": "A show is live. Save the schedule between "
+                                  "shows. Nothing was changed."}
+        try:
+            from . import schedule as sch
+            sch.parse_rule(doc)
+        except Exception as e:                   # RuleError and kin
+            problems = getattr(e, "problems", None)
+            why = "; ".join(str(p) for p in problems) if problems else str(e)
+            return 400, {"error": f"Not saved: {why}"}
+        path = self._schedule_path()
+        try:
+            _write_json(path, doc)
+        except OSError as e:
+            return 500, {"error": f"Could not write {path}: {e}"}
+        svc = self.schedule
+        loaded = ""
+        if svc is not None and hasattr(svc, "reload"):
+            try:
+                svc.reload()
+                err = str(getattr(svc, "error", "") or "")
+                loaded = (f" The scheduler could not load it: {err}" if err
+                          else " The scheduler has loaded it.")
+            except Exception as e:               # noqa: BLE001
+                loaded = f" The scheduler could not reload it: {e}"
+        self._journal("", "Rack screen", "schedule file", "saved",
+                      f"The schedule file {path} was saved from the "
+                      f"Programming screen.{loaded}")
+        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}",
+                     "doc": doc, "path": path}
+
+    def open_folder(self, body):
+        """POST open-folder {"which": "show" | "settings"}: the folder
+        opened in the file manager of this machine."""
+        which = str(body.get("which") or "")
+        if which == "show":
+            path = self._show_folder()
+        elif which == "settings":
+            path = settings_folder()
+        else:
+            return 400, {"error": "which has to be show or settings."}
+        if not path or not os.path.isdir(path):
+            return 404, {"error": f"{path or 'that folder'} does not exist "
+                                  f"on this machine yet."}
+        opener = getattr(self, "_opener", None) or _open_in_file_manager
+        try:
+            opener(path)
+        except Exception as e:                   # noqa: BLE001
+            return 500, {"error": f"Could not open {path}: {e}"}
+        return 200, {"ok": True, "text": f"Opened {path}."}
+
+    def set_show_folder(self, body):
+        """POST show-folder {"path": ...}: the show PC's showpc.json
+        show_folder, then a restart request the supervisor acts on (and
+        refuses during a show). Off the show PC the folder is the engine's
+        --folder, so this says how instead of pretending."""
+        path = str(body.get("path") or "").strip().strip('"')
+        if not path or not os.path.isabs(path):
+            return 400, {"error": "Type the folder's full path, like "
+                                  "C:\\Users\\show\\Documents\\LTC Shows."}
+        if not os.path.isdir(path):
+            return 400, {"error": f"{path} is not a folder on this machine. "
+                                  f"Make it first, then try again."}
+        if self._show_live():
+            return 409, {"error": "A show is live. Change the show folder "
+                                  "between shows. Nothing was changed."}
+        showpc = os.path.join(settings_folder(), SHOWPC_FILE)
+        if not os.path.isfile(showpc):
+            return 409, {"error": f"On this machine the show folder is given "
+                                  f"when ltcplay is started (its --folder), "
+                                  f"not here. The engine is using "
+                                  f"{self._show_folder()}."}
+        try:
+            with open(showpc, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            if not isinstance(doc, dict):
+                raise ValueError("not a settings object")
+            doc["show_folder"] = path
+            _write_json(showpc, doc)
+            with open(os.path.join(settings_folder(), RESTART_ENGINE_FILE),
+                      "w", encoding="utf-8") as fh:
+                fh.write(f"show folder {time.time():.3f}\n")
+        except (OSError, ValueError) as e:
+            return 500, {"error": f"Could not save the show folder: {e}"}
+        self._journal("", "Rack screen", "show folder", "saved",
+                      f"The show folder was set to {path} from the "
+                      f"Programming screen; LTC Player restarts the engine "
+                      f"to use it.")
+        return 200, {"ok": True, "text": f"Saved. LTC Player restarts the "
+                     f"show engine now to use {path} (it refuses while a "
+                     f"show is running). This page reconnects by itself."}
+
+    def screen(self, body):
+        """POST screen {"action": "close"}: a request the Windows
+        supervisor acts on, closing the full screen window it opened. The
+        engine, the show and the rig are not touched."""
+        if str(body.get("action") or "") != "close":
+            return 400, {"error": "action has to be close."}
+        try:
+            with open(os.path.join(settings_folder(), SCREEN_CLOSE_FILE),
+                      "w", encoding="utf-8") as fh:
+                fh.write(f"close {time.time():.3f}\n")
+        except OSError as e:
+            return 500, {"error": f"Could not ask: {e}. Press Alt+F4."}
+        return 200, {"ok": True, "text": "Asked LTC Player to close this "
+                     "window. The show engine keeps running. If the window "
+                     "stays, press Alt+F4."}
+
+    def setup_post(self, name, body):
+        if name == "schedule-file":
+            return self.save_schedule_file(body)
+        if name == "open-folder":
+            return self.open_folder(body)
+        if name == "show-folder":
+            return self.set_show_folder(body)
+        return self.screen(body)
+
     def audio_interface_view(self):
         """audiowatch's view, or None without the watch. Never raises."""
         w = getattr(self, "audio_watch", None)
@@ -1401,6 +1741,11 @@ class Remote:
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()
         out["disk"] = self.disk_view()
+        out["deck"] = self.deck_view()
+        out["programs"] = self.programs_view()
+        if ctx.local:
+            # The getting-started card: the rack screen's, not the iPad's.
+            out["setup"] = self.setup_view()
         try:
             out["transport"] = self._transport_view()
         except Exception as e:

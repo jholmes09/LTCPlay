@@ -334,6 +334,40 @@ class DeckDisconnected(Exception):
     docstring, failure mode 1."""
 
 
+# Elgato's USB product ids, for the sentence that says what IS plugged in
+# when the Mini (VID:PID above) cannot be opened (Jeff, 2026-10-17: "the
+# Stream Deck never connected", and nothing said what was looked for).
+ELGATO_PRODUCTS = {0x0060: "Stream Deck (original)", 0x006D: "Stream Deck V2",
+                   0x0063: "Stream Deck Mini", 0x0090: "Stream Deck Mini MK.2",
+                   0x006C: "Stream Deck XL", 0x008F: "Stream Deck XL V2",
+                   0x0080: "Stream Deck MK.2", 0x0084: "Stream Deck Plus",
+                   0x009A: "Stream Deck Neo", 0x0086: "Stream Deck Pedal"}
+
+
+def describe_hid(hid):
+    """One sentence: what this program looks for, and which Elgato USB
+    devices the machine can see right now. Never raises (it is only ever
+    said while something already failed)."""
+    looked = (f"looked for USB vendor {VID:04X} product {PID:04X} "
+              f"({ELGATO_PRODUCTS.get(PID, 'Stream Deck')})")
+    try:
+        found = []
+        for d in hid.enumerate(VID, 0):
+            pid = int(d.get("product_id", 0))
+            name = ELGATO_PRODUCTS.get(pid) or str(d.get("product_string")
+                                                 or "unknown Elgato device")
+            item = f"product {pid:04X} ({name})"
+            if item not in found:
+                found.append(item)
+    except Exception as e:                       # noqa: BLE001
+        return (f"{looked}; the USB HID list could not be read "
+                f"({type(e).__name__}: {e})")
+    if not found:
+        return (f"{looked}; no Elgato USB device is plugged into this "
+                f"machine")
+    return f"{looked}; Elgato USB devices present: {', '.join(found)}"
+
+
 # --------------------------------------------------------------------------
 # Pure protocol: the arm frame this module sends, and the status frame it
 # reads. Hand-written from flamesafe/CONTRACT.md, exactly as ltcplay's own
@@ -1710,7 +1744,8 @@ class Deck:
                 except Exception:  # device busy for the next attempt
                     pass
             raise DeckDisconnected(
-                f"could not open the Stream Deck: {e}") from e
+                f"could not open the Stream Deck: {e} "
+                f"({describe_hid(hid)})") from e
         self.h = h
         self.last = {}
 
@@ -2898,6 +2933,12 @@ DECK_LOST_TEXT = ("The Stream Deck is unplugged or not answering. Every "
 DECK_BACK_TEXT = ("The Stream Deck is back. Every flame group stayed as it "
                   "was while it was away. Press Acknowledge once you have "
                   "seen it.")
+# Before the FIRST connect of this process (Jeff, 2026-10-17: a deck that
+# never connected has to say what it looked for and what it found): the
+# first failure's own words, once per outage, never per 2 s retry.
+DECK_NEVER_TEXT = ("No Stream Deck has answered since the Stream Deck "
+                   "program started: {why}. Every flame group stays OFF. "
+                   "Plug in the Stream Deck Mini, then press Acknowledge.")
 
 
 class _DeckOutage:
@@ -2922,6 +2963,8 @@ class _DeckOutage:
         self._unlogged = 0
         self._reconnect_logged = False
         self._alert_text = None      # the sentence last posted
+        self._ever_connected = False
+        self._never_text = None      # the never-connected sentence, once
 
     def _alert_landed(self):
         if self._delivered is None:
@@ -2976,7 +3019,13 @@ class _DeckOutage:
             self._kinds = set()
             self._unlogged = 0
             self._reconnect_logged = False
-        self._post_alert(DECK_LOST_TEXT)
+        if self._ever_connected:
+            self._post_alert(DECK_LOST_TEXT)
+        else:
+            if self._never_text is None:
+                why = " ".join(str(e).split()) or type(e).__name__
+                self._never_text = DECK_NEVER_TEXT.format(why=why[:400])
+            self._post_alert(self._never_text)
         kind = ("unplugged" if isinstance(e, DeckDisconnected)
                 else type(e).__name__)
         if kind in self._kinds:
@@ -2994,6 +3043,7 @@ class _DeckOutage:
                          fault=True, action="deck")
 
     def connected(self):
+        self._ever_connected = True
         if self.active:
             if self._reconnect_logged:
                 self._unlogged += 1

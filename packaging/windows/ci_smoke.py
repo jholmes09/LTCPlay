@@ -469,6 +469,28 @@ def main(installer, version=""):
             if check(version in said, f"the rack screen's status does not "
                                       f"name {version}: {said!r}"):
                 NOTES.append(f"the rack screen's status says {said!r}")
+        # First run (2026-10-18): the supervisor wrote the example schedule
+        # and the dry-run Fire & Ice file (flamesafe.json was seeded above,
+        # so it is left alone), recorded them, and says per program whether
+        # it runs; the rack screen's status carries the setup card's view.
+        for n in ("ltcplay_schedule.json", "ltcplay_fire_ice.json",
+                  "first-run.json", "programs.json"):
+            check(os.path.isfile(os.path.join(LOCAL, n)),
+                  f"first run: {n} was not written in {LOCAL}")
+        try:
+            with open(os.path.join(LOCAL, "first-run.json"),
+                      encoding="utf-8") as fh:
+                first = json.load(fh)
+        except (OSError, ValueError):
+            first = {}
+        check(set((first.get("written") or {})) == {"schedule", "fire_ice"},
+              f"first run wrote the schedule and the Fire & Ice file and "
+              f"left the seeded flamesafe.json alone: {first}")
+        check(isinstance(status.get("setup"), dict) and
+              status["setup"].get("schedule_ok") is True and
+              isinstance(status.get("deck"), dict),
+              f"the status carries the setup view with the schedule loaded, "
+              f"and the deck's sentence: {str(status.get('setup'))[:200]}")
 
         say("5. an update stops flamesafe the proper way, then restarts, "
             "and the settings and show files are untouched")

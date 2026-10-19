@@ -302,3 +302,34 @@ version of this program that removes it. What there is:
   interval are black. Check it before a season.
 
 Read the honest risk list at the end of README.md before a season.
+
+## The rack screen's header: mode, version, getting started
+
+The MODE pill in the header says which mode the engine is in, on every
+screen, from the engine's own state and never from which screen is open:
+SHOW (a show file is running for real; the scheduler starts each show at
+its time; scrubbing is off), PROGRAMMING (a rehearsal is running; the
+scrubbing controls work and the scheduler starts nothing) or NOT RUNNING
+(no show file is running; nothing reaches the rig until Run is pressed on
+the Programming screen). The small "i" button beside it opens a panel with
+this LTC Player's release and build id (also in `/api/remote/status` as
+`version`), the device, the mode sentence, and how to leave a full screen
+window (Alt+F4, or its Close this window button on the show PC).
+
+On a fresh machine the show screen carries a "Getting started" card with
+the three things to set up and a button for each: the show folder (open
+it, or choose another on the Programming screen; the show's music is the
+stems the show file names under that folder, there is no separate music
+folder), the schedule (Programming, "Schedule: the show times": the show
+nights, the first show, the minutes between shows and when the last one
+ends, saved to the schedule file and loaded at once, refused while a show
+is live), and flamesafe with the Stream Deck (what the show PC's LTC
+Player says about each program, and why one is not running). The card
+goes away once a show file and a schedule exist.
+
+The Abort confirm lists what the press will do from this screen and, in
+red, what it cannot: with no flame link in the engine, the flames are NOT
+disarmed from the screen (the Stream Deck's Abort and the hardware e-stop
+are), and with no BEYOND OSC address the lasers are not blanked from here.
+After the press, the engine's answer stays on the screen as a banner until
+it is seen, never only as a one-line note.

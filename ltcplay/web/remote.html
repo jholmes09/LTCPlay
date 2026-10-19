@@ -44,9 +44,19 @@ body{color:var(--cream);font:16px/1.35 var(--sans);-webkit-font-smoothing:antial
   -webkit-user-select:none;user-select:none;
   background-image:radial-gradient(rgba(212,168,74,.11) 1px,transparent 1.3px);
   background-size:22px 22px}
-#app{height:100vh;height:100dvh;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;
+/* THE WIDTH GUARD (Jeff, 2026-10-17: after Abort the page was "scaled wider
+   than the screen" and the word ABORT was gone). The page is one grid
+   column. A column track that is plain `auto` grows to the widest
+   unbreakable text inside it (a one-line toast carrying the Abort's whole
+   answer), so the header, the state cards and the Abort bar all became
+   2700 px wide and slid off the screen. minmax(0,1fr) pins the track to
+   the screen, #main clips, and every row of the show screen may shrink
+   below its text. selftest.py's CSS contract fails if any of these go. */
+#app{height:100vh;height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto auto minmax(0,1fr) auto;
   gap:clamp(6px,1vh,12px);padding:clamp(6px,1vh,12px) clamp(10px,1.2vw,24px) 0}
-header{display:flex;align-items:center;gap:clamp(8px,1vw,20px);min-width:0;
+#app > *{min-width:0}
+header{display:flex;align-items:center;flex-wrap:wrap;gap:clamp(8px,1vw,20px);min-width:0;
   padding-bottom:clamp(4px,.8vh,10px);border-bottom:1px solid var(--hair)}
 header img{height:clamp(34px,5vh,64px);width:auto;flex:0 0 auto}
 .titles{display:flex;flex-direction:column;min-width:0;flex:0 1 auto}
@@ -61,10 +71,23 @@ h1{font:900 clamp(20px,3.6vh,44px)/1.02 var(--serif);margin:0;color:var(--champ)
 .chip.ok i{background:var(--green)} .chip.warn i{background:var(--amber)}
 .chip.bad i{background:var(--red)} .chip.bad{border-color:var(--red)}
 .chip span{color:var(--muted);font-weight:400}
-nav{display:flex;gap:8px;flex:0 0 auto;align-items:center}
+nav{display:flex;gap:8px;flex:0 0 auto;align-items:center;margin-left:auto}
 nav button{min-height:clamp(40px,5.5vh,56px);font-size:clamp(14px,1.8vh,18px);padding:6px 14px}
 #where{font:700 clamp(11px,1.4vh,14px)/1.2 var(--sans);color:var(--muted);white-space:nowrap}
-#version{font:400 clamp(10px,1.2vh,12px)/1.2 var(--sans);color:var(--muted);white-space:nowrap}
+/* The MODE pill (Jeff, 2026-10-17: "unclear which mode I was in"): one fixed
+   place, every screen, in words. SHOW green, PROGRAMMING amber, NOT RUNNING
+   plain. The sentence under it is the info panel's and the title's. */
+#mode{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  min-height:clamp(40px,5.5vh,56px);padding:4px 12px;border:2px solid var(--hair);border-radius:8px;
+  font:800 clamp(13px,1.8vh,18px)/1.1 var(--sans);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--champ);white-space:nowrap;cursor:help}
+#mode small{font:400 clamp(10px,1.3vh,12px)/1.1 var(--sans);letter-spacing:0;text-transform:none;color:var(--muted)}
+#mode.show{border-color:#5FE08A;background:var(--green);color:var(--green-ink)} #mode.show small{color:var(--green-ink)}
+#mode.prog{border-color:#FFC266;background:var(--amber);color:var(--amber-ink)} #mode.prog small{color:var(--amber-ink)}
+/* The small "i": the version, the device, how to leave this window. One
+   click away, and no longer a line of text across the header (Jeff). */
+button.infob{min-height:0;width:clamp(30px,4vh,40px);height:clamp(30px,4vh,40px);padding:0;border-radius:50%;
+  background:transparent;border:1px solid var(--hair);color:var(--champ);font:700 clamp(14px,2vh,20px)/1 var(--serif)}
 .dim{color:var(--muted)}
 button{font:700 clamp(15px,2.2vh,20px)/1.15 var(--sans);color:var(--btn-ink);
   background:linear-gradient(180deg,var(--btn-top),var(--btn-bot));
@@ -86,7 +109,7 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .card{background:var(--wash);border:1px solid var(--hair);border-radius:6px;padding:10px 14px;min-width:0}
 .card h2{font:700 clamp(11px,1.4vh,13px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;
   color:var(--champ);margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--hair-soft)}
-.toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;
+.toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;min-width:0;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #alerts{display:flex;flex-direction:column;gap:4px;min-width:0}
 #alerts:empty{display:none}
@@ -107,16 +130,17 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 #stale{position:fixed;left:clamp(10px,1.2vw,24px);right:clamp(10px,1.2vw,24px);top:8px;z-index:20;
   background:var(--red-deep);color:var(--champ);border:3px solid var(--red);border-radius:8px;
   padding:10px 14px;font:800 clamp(17px,2.4vh,26px)/1.25 var(--sans);text-align:center}
-#main{min-height:0;position:relative}
-.view{height:100%;min-height:0}
+#main{min-height:0;min-width:0;position:relative;overflow:hidden}
+.view{height:100%;min-height:0;min-width:0}
 [hidden]{display:none !important}
 
 /* ---- the show screen ---- */
 #v-show{display:flex;flex-direction:column;gap:clamp(6px,1vh,12px)}
+#v-show > *{min-width:0}
 .now{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.45fr) minmax(0,1.1fr) minmax(0,.9fr);
   gap:clamp(8px,1vw,20px);align-items:stretch}
 .now > div{min-width:0;display:flex;flex-direction:column;justify-content:center}
-.stateword{font:800 clamp(24px,min(6vh,3.6vw),76px)/1 var(--sans);letter-spacing:.03em;
+.stateword{font:800 clamp(22px,min(6vh,3vw),76px)/1 var(--sans);letter-spacing:.03em;
   text-transform:uppercase;text-align:center;border-radius:8px;padding:.12em .2em .14em;
   background:var(--bronze);color:var(--champ);border:2px solid var(--gold);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -124,7 +148,8 @@ label{display:block;font:700 12px/1.2 var(--caps);letter-spacing:.2em;text-trans
 .stateword.warn{background:var(--amber);color:var(--amber-ink);border-color:#FFC266}
 .stateword.bad{background:var(--red-deep);color:var(--champ);border-color:var(--red)}
 .state{font:700 clamp(13px,1.8vh,20px)/1.25 var(--sans);color:var(--cream);margin-top:4px;
-  text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  text-align:center;overflow:hidden;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 #st-tc{font:800 clamp(26px,min(7.2vh,3.5vw),96px)/1 var(--sans);font-variant-numeric:tabular-nums;
   color:var(--champ);white-space:nowrap;text-shadow:0 0 28px rgba(246,227,174,.18)}
 .showname{font:900 clamp(18px,min(3.6vh,2.4vw),46px)/1.1 var(--serif);font-variant-numeric:lining-nums;color:var(--champ);
@@ -203,6 +228,76 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 #modal .row{margin-top:18px}
 #modal button.yes{background:var(--red-deep);border:3px solid var(--red);color:var(--champ);font-size:22px}
 #modal button.yes.start{background:var(--green);border-color:#5FE08A;color:var(--green-ink)}
+#modal .q.bad{color:#FF8A80}
+#modal ul{margin:6px 0 0 18px;padding:0} #modal li{margin:3px 0}
+#modal li.no{color:#FF8A80;font-weight:700}
+
+/* ---- the info panel: version, device, mode, how to leave this window ---- */
+#info{position:fixed;inset:0;z-index:30;background:rgba(7,6,5,.82);display:flex;align-items:center;justify-content:center;padding:16px}
+#info .box{background:var(--bg);border:1px solid var(--gold);border-radius:8px;max-width:640px;width:100%;padding:18px 20px;
+  box-shadow:0 0 40px rgba(212,168,74,.18);font-size:clamp(14px,1.8vh,17px);line-height:1.4}
+#info h2{font:700 clamp(12px,1.5vh,14px)/1.2 var(--caps);letter-spacing:.24em;text-transform:uppercase;color:var(--champ);margin:12px 0 4px}
+#info h2:first-child{margin-top:0}
+#info .kv{color:var(--cream)} #info .kv b{color:var(--champ)}
+#info .vers{font:400 clamp(11px,1.4vh,13px)/1.3 var(--sans);color:var(--muted);-webkit-user-select:text;user-select:text;word-break:break-all}
+#info .row{margin-top:14px}
+#info kbd{font:700 .95em var(--sans);border:1px solid var(--hair);border-radius:4px;padding:1px 6px;color:var(--champ)}
+
+/* ---- Getting started (a fresh install): the three steps, where to click ---- */
+/* The card takes the lamps' room while it is up (there are no lamps before
+   flamesafe is set up) and scrolls inside itself on a short window; the
+   show screen itself never scrolls. */
+#setup{flex:1 1 auto;min-height:0;overflow:auto}
+#v-show.setup-on .flames{display:none}
+#setup .steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+#setup .step{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px 10px;border:1px solid var(--hair-soft);border-radius:6px}
+#setup .step b{font:700 clamp(13px,1.7vh,16px)/1.25 var(--sans);color:var(--champ)}
+#setup .step b::before{content:"\25CB  ";color:var(--amber)}
+#setup .step.done b::before{content:"\2713  ";color:var(--green)}
+#setup .step .t{font-size:clamp(12px,1.5vh,14px);line-height:1.35;color:var(--cream);overflow-wrap:anywhere}
+#setup .step .t code{font:inherit;color:var(--champ);overflow-wrap:anywhere}
+#setup .step .row{margin-top:auto}
+#setup .step .row > button{min-height:clamp(36px,4.5vh,44px);font-size:clamp(13px,1.6vh,15px);padding:4px 8px;min-width:0}
+#setup .foot{margin-top:8px;font-size:clamp(12px,1.5vh,14px);color:var(--muted);line-height:1.35}
+
+/* ---- what the Abort did, and did NOT do: a banner, never a one-line toast ---- */
+#abort-said{display:flex;align-items:flex-start;gap:10px;border:2px solid var(--red);background:rgba(230,30,24,.16);
+  color:var(--champ);border-radius:6px;padding:6px 10px;font-size:clamp(14px,1.8vh,17px);line-height:1.35}
+#abort-said.ok{border-color:var(--amber);background:rgba(245,160,30,.14)}
+#abort-said .altext{flex:1 1 auto;min-width:0;max-height:4.1em;overflow:auto}
+#abort-said button{flex:0 0 auto;min-height:40px;padding:6px 14px;font-size:clamp(14px,1.8vh,17px)}
+
+/* ---- Programming: the schedule editor and the show folder ---- */
+.sched{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:4px 8px;align-items:center;font-size:14px}
+.sched .h{font:700 11px/1.2 var(--caps);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);overflow-wrap:anywhere}
+.sched input{min-height:38px;padding:4px 8px;font-size:15px}
+.sched label{margin:0;display:flex;align-items:center;gap:6px;font:700 13px/1.2 var(--sans);letter-spacing:0;text-transform:none;color:var(--cream)}
+.sched input[type=checkbox]{width:22px;height:22px;min-height:0;padding:0}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.path{font-size:13px;color:var(--cream);overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
+
+/* A short window (a 1366x768 laptop at Windows' 125 percent is 614 px
+   high): the rows that may give, give; the Abort bar never moves. */
+@media (max-height:660px){
+  #arm-note{display:none}
+  .ctl button{min-height:44px}
+  .lamp .word{min-height:28px}
+  #abort-said .altext{max-height:2.8em}
+}
+@media (max-height:600px){
+  .ctl button{min-height:40px;font-size:18px}
+  #abort-said .altext{max-height:1.4em}
+  .card{padding:6px 10px}
+  button.disarm{min-height:40px}
+}
+/* A narrow window (the tester's 950 px Edge app window): the chips drop to
+   their own row and the title keeps its space. Nothing overlaps. */
+@media (max-width:1180px){
+  #subs{order:5;flex-basis:100%;justify-content:flex-start}
+  .now{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #setup .steps{grid-template-columns:1fr}
+}
 
 /* iPad portrait and narrower: two by two on top, controls two by two */
 @media (max-aspect-ratio: 4/5){
@@ -228,8 +323,12 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
   </div>
   <div id="subs" aria-label="Subsystems"></div>
   <nav>
+    <div id="mode" title="Which mode LTC Player is in. The i button explains.">...</div>
     <span id="where"></span>
-    <span id="version" title="Which LTC Player this is"></span>
+    <!-- The version text is kept but hidden (Jeff, 2026-10-17: it took prime
+         screen room); the info panel shows it, one click away. -->
+    <span id="version" hidden aria-hidden="true"></span>
+    <button id="nav-info" class="infob" title="About this LTC Player: version, mode, how to leave this window" aria-label="Information">i</button>
     <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
     <button id="nav-back" class="go" data-go="show" hidden>Back to the show</button>
@@ -269,6 +368,22 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
       <button id="b-reset">Reset</button>
     </div>
     <div class="toast" id="ctl-msg"></div>
+    <div id="abort-said" hidden><div class="altext"></div><button class="ghost" id="abort-said-ok">Seen</button></div>
+    <!-- Getting started (Jeff, 2026-10-17): on a fresh install nothing is
+         set up, and this says the three steps and where to click. It goes
+         away by itself once a show file and a schedule exist. -->
+    <section class="card" id="setup" hidden>
+      <h2>Getting started: three things to set up</h2>
+      <div class="steps">
+        <div class="step" id="su-folder"><b>1. The show folder</b><div class="t"></div>
+          <div class="row"><button class="ghost" data-open="show">Open the show folder</button><button class="ghost" data-go="programming">Change it</button></div></div>
+        <div class="step" id="su-sched"><b>2. The schedule</b><div class="t"></div>
+          <div class="row"><button data-go="programming" id="su-sched-go">Set the show times</button></div></div>
+        <div class="step" id="su-flames"><b>3. flamesafe and the Stream Deck</b><div class="t"></div>
+          <div class="row"><button class="ghost" data-open="settings">Open the settings folder</button></div></div>
+      </div>
+      <div class="foot" id="su-foot"></div>
+    </section>
     <div class="flames">
       <div class="lamps" id="fl-lamps"></div>
       <div class="flamefoot">
@@ -347,6 +462,37 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
       <div class="toast" id="net-msg"></div>
       <div class="dim" style="font-size:14px;margin-top:6px">Any device on that network can use this page. Never put remote access software, a tunnel or a port forward on this machine.</div>
     </section>
+    <section class="card" id="folders" hidden>
+      <h2>Show folder, on this machine</h2>
+      <div class="dim" style="font-size:14px">The show folder holds the show file (a .json), the renders it names and the show's music, as stems under the folder the show file names. There is no separate music folder.</div>
+      <div class="path" id="fo-now" style="margin-top:6px"></div>
+      <label for="fo-path">Use another folder (its full path)</label>
+      <div class="row">
+        <input id="fo-path" placeholder="C:\Users\show\Documents\LTC Shows" style="flex:2 1 0">
+        <button id="fo-save" style="flex:1 1 0">Use this folder</button>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="ghost" data-open="show">Open the show folder</button><button class="ghost" data-open="settings">Open the settings folder</button></div>
+      <div class="toast" id="fo-msg"></div>
+    </section>
+    <section class="card" id="sched-edit" hidden>
+      <h2>Schedule: the show times</h2>
+      <div class="dim" style="font-size:14px">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Edits here are written to the schedule file and loaded at once.</div>
+      <div class="three" style="margin-top:8px">
+        <div><label for="se-tz">Time zone</label><input id="se-tz" placeholder="America/Denver"></div>
+        <div><label for="se-first">Season starts</label><input id="se-first" type="date"></div>
+        <div><label for="se-last">Season ends</label><input id="se-last" type="date"></div>
+      </div>
+      <label>Show nights</label>
+      <div class="sched" id="se-days"></div>
+      <div class="three" style="margin-top:8px">
+        <div><label for="se-len">Show length, seconds</label><input id="se-len" type="number" min="1"></div>
+        <div><label for="se-guard">Gap before a show, seconds</label><input id="se-guard" type="number" min="0"></div>
+        <div><label for="se-grace">Late start allowed, seconds</label><input id="se-grace" type="number" min="0"></div>
+      </div>
+      <div class="row" style="margin-top:10px"><button id="se-save" class="go">Save the schedule</button><button id="se-reload" class="ghost">Reload from the file</button></div>
+      <div class="toast" id="se-msg"></div>
+      <div class="dim" style="font-size:13px;margin-top:6px" id="se-note"></div>
+    </section>
   </section>
 </div>
 
@@ -363,6 +509,24 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
       <button id="m-no" class="ghost">Cancel</button>
       <button id="m-yes" class="yes"></button>
     </div>
+  </div>
+</div>
+
+<div id="info" hidden>
+  <div class="box">
+    <h2>This LTC Player</h2>
+    <div class="vers" id="info-version"></div>
+    <div class="kv">Screen: <b id="info-device"></b>. Settings and logs: <span class="vers" id="info-settings"></span></div>
+    <h2>Mode</h2>
+    <div class="kv" id="info-mode"></div>
+    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen.</div>
+    <h2>Leaving this window</h2>
+    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. Press <kbd>Alt</kbd>+<kbd>F4</kbd> to close a full screen window, or use the button below. To open the rack screen in an ordinary window: Start menu, LTC Player, Rack screen in a normal window.</div>
+    <div class="row">
+      <button id="info-exit" class="ghost" hidden>Close this window</button>
+      <button id="info-close">Back</button>
+    </div>
+    <div class="toast" id="info-msg"></div>
   </div>
 </div>
 
@@ -434,6 +598,37 @@ function clockText(sec){
   const two = (n) => String(n).padStart(2, "0");
   return (h ? h + ":" + two(m) : String(m)) + ":" + two(x);
 }
+// Which MODE LTC Player is in, in one word and one sentence, from the
+// engine's own state: SHOW while a show file runs for real, PROGRAMMING
+// while a rehearsal runs (the engine's transport.programming), NOT RUNNING
+// otherwise. Never guessed from the screen that is open.
+function modeLook(st){
+  const show = (st && st.show) || {};
+  const tr = (st && st.transport) || {};
+  if(!st) return {cls:"", word:"...", text:"Waiting for the engine."};
+  if(show.running && tr.programming)
+    return {cls:"prog", word:"Programming", text:"A rehearsal is running: the scrubbing controls work, and the scheduler starts no show. Press Stop, then Run, for a show."};
+  if(show.running)
+    return {cls:"show", word:"Show", text:"Show mode: a show file is running and the scheduler starts each show at its time. Scrubbing is off."};
+  return {cls:"", word:"Not running", text:"No show file is running. Nothing reaches the rig until Run is pressed on the Programming screen."};
+}
+// What the Abort confirm must say, from the engine's state: what it WILL do
+// and what it CANNOT do from this screen (Jeff, 2026-10-17: the old text
+// promised a disarm the engine had no link for).
+function abortPlan(st){
+  const s = st || {}, fl = s.flames || {}, sch = s.schedule || {};
+  const live = sch.state === "SHOW" || sch.state === "PAUSED";
+  const out = [];
+  if(s.disarm_connected && fl.connected)
+    out.push({ok:true, text:"Flames: every group is sent a disarm through the flame link. flamesafe confirms it; the lamps show each group off."});
+  else
+    out.push({ok:false, text:"Flames: NOT disarmed from this screen. No flame link is connected in this engine. Use the Stream Deck's Abort or the hardware e-stop."});
+  if(s.laser_fault) out.push({ok:false, text:"Lasers: NOT blanked from here (" + s.laser_fault + "). Blank them at BEYOND."});
+  else if(sch.conductor) out.push({ok:true, text:"Lasers: blanked at the press."});
+  if(live) out.push({ok:true, text:"The show stops: music, video and pixels fade to black and stay dark until Reset."});
+  else out.push({ok:true, text:"No show is live, so nothing else changes. The answer below says exactly what was done."});
+  return out;
+}
 // LOGIC END
 </script>
 <script>
@@ -501,7 +696,12 @@ async function whoami(){
   $("admin").hidden = !ME.local;
   $("local-run").hidden = !ME.local;
   $("deck-op").hidden = !ME.local;
+  $("folders").hidden = !ME.local;
+  $("sched-edit").hidden = !ME.local;
+  $("info-device").textContent = ME.device || "";
+  if(ME.local) loadFolders();
   showView();
+  loadSetupCards();
   startPolling();
 }
 
@@ -568,6 +768,7 @@ function renderStale(){
     const i = Number(el.dataset.arm);
     if(!(HOLD && HOLD.group === i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
   });
+  renderMode(stale);
   return stale;
 }
 setInterval(renderStale, 250);
@@ -623,6 +824,10 @@ function render(){
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
   if(fl.cues_fault) fmsg += (fmsg ? " " : "") + "Flame cues are zero, a fault: " + fl.cues_fault + ".";
+  // The Stream Deck, in words (Jeff, 2026-10-17: "it never connected"):
+  // what this engine looked for, what it found, what to do.
+  const dk = s.deck || {};
+  if(dk.text && !dk.heard) fmsg += (fmsg ? " " : "") + dk.text;
   setWarn("fl-warn", fmsg);
   renderAlerts(s.alerts || []);
   renderLamps(fl);
@@ -794,9 +999,15 @@ document.addEventListener("visibilitychange", () => { if(document.hidden) armSto
 window.addEventListener("pagehide", () => armStop("the page closed"));
 window.addEventListener("blur", () => armStop("the page lost focus"));
 
-function confirmBox(q, detail, yes, cls){
+function confirmBox(q, detail, yes, cls, items){
   return new Promise(res => {
-    $("m-q").textContent = q; $("m-detail").textContent = detail || "";
+    $("m-q").textContent = q; $("m-q").className = "q" + (items && items.some(i => !i.ok) ? " bad" : "");
+    $("m-detail").textContent = detail || "";
+    if(items && items.length){
+      const ul = document.createElement("ul");
+      ul.innerHTML = items.map(i => `<li class="${i.ok ? "" : "no"}">${esc(i.text)}</li>`).join("");
+      $("m-detail").appendChild(ul);
+    }
     $("m-yes").textContent = yes; $("m-yes").className = "yes " + (cls || "");
     $("modal").hidden = false;
     const done = (v) => { $("modal").hidden = true; $("m-yes").onclick = $("m-no").onclick = null; res(v); };
@@ -806,17 +1017,176 @@ function confirmBox(q, detail, yes, cls){
 }
 async function press(route, extra, msgEl){
   const el = $(msgEl || "ctl-msg");
+  let j = null;
   try{
-    const j = await post("/api/remote/" + route, actor(extra));
+    j = await post("/api/remote/" + route, actor(extra));
     el.textContent = j.text || "Done.";
   }catch(e){ el.textContent = e.message; }
   el.title = el.textContent;
+  return j;          // the engine's answer, or null when it refused
 }
 
+// What the Abort did and did NOT do stays on the screen as a banner until
+// it is seen or the Abort is Reset: never only a one-line toast.
+function saidAbort(text, ok){
+  const b = $("abort-said");
+  b.querySelector(".altext").textContent = text;
+  b.className = ok ? "ok" : "";
+  b.hidden = false;
+  b.dataset.aborted = "1";
+}
+$("abort-said-ok").addEventListener("click", () => { $("abort-said").hidden = true; });
 $("b-abort").addEventListener("click", async () => {
   armStop("Abort");
-  if(await confirmBox("Abort the show?", "Every flame group disarms at once, show or no show. If a show is live it also stops: flames zero, everything fades to black, and it stays dark until Reset. The answer below says what was done.", "Yes, ABORT", ""))
-    press("abort", {confirmed:true});
+  const plan = abortPlan(ST);
+  if(!(await confirmBox("Abort the show?", "What this press does, from this screen, right now:", "Yes, ABORT", "", plan))) return;
+  const j = await press("abort", {confirmed:true});
+  if(j) saidAbort("ABORT pressed. " + (j.text || "Done.") + (j.disarmed === true ? "" : " FLAMES WERE NOT DISARMED FROM THIS SCREEN: use the Stream Deck's Abort or the hardware e-stop."), j.disarmed === true && !!j.ok);
+  else saidAbort("ABORT pressed, and the engine answered: " + $("ctl-msg").textContent, false);
+});
+
+// ---- the MODE pill, the info panel's words and the getting-started card,
+// every 250 ms from the last status (renderStale), stale or not ----
+let MODE_KEY = "";
+function renderMode(stale){
+  const s = ST || {};
+  const mo = stale && ST ? {cls:"", word:"Not known", text:"No contact with the engine: the mode is not known."} : modeLook(ST);
+  const key = mo.cls + mo.word + mo.text + (s.version || "");
+  if(key !== MODE_KEY){
+    MODE_KEY = key;
+    $("mode").className = mo.cls;
+    $("mode").innerHTML = esc(mo.word) + "<small>mode</small>";
+    $("mode").title = mo.text;
+    $("info-mode").textContent = mo.word.toUpperCase() + ". " + mo.text;
+    // The release and build id live here, one click away, not across the
+    // header (Jeff, 2026-10-17); the hidden #version span keeps the text.
+    $("info-version").textContent = s.version ? ("LTC Player " + s.version) : "LTC Player, version not known yet";
+  }
+  renderSetup(s.setup, s.programs);
+  const sch = s.schedule || {};
+  if(sch.aborted === false && $("abort-said").dataset.aborted){ $("abort-said").hidden = true; delete $("abort-said").dataset.aborted; }
+}
+// The Programming screen's folder and schedule cards load when it opens.
+function loadSetupCards(){
+  if((location.hash || "").replace("#", "") === "programming" && ME && ME.local){ loadFolders(); loadSchedule(); }
+}
+window.addEventListener("hashchange", loadSetupCards);
+document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => setTimeout(loadSetupCards, 0)));
+
+// ---- the info panel (version, device, mode, leaving the window) ----
+$("nav-info").addEventListener("click", () => { $("info").hidden = false; $("info-msg").textContent = ""; });
+$("info-close").addEventListener("click", () => { $("info").hidden = true; });
+$("info").addEventListener("click", e => { if(e.target === $("info")) $("info").hidden = true; });
+document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("info").hidden = true; } });
+$("info-exit").addEventListener("click", async () => {
+  try{ const j = await post("/api/remote/screen", {action:"close"}); $("info-msg").textContent = j.text || "Asked."; }
+  catch(e){ $("info-msg").textContent = e.message; }
+});
+
+// ---- Getting started, and the show folder and schedule tools ----
+document.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", async () => {
+  const el = b.closest("#setup") ? $("su-foot") : $("fo-msg");
+  try{ const j = await post("/api/remote/open-folder", {which:b.dataset.open}); el.textContent = j.text || "Opened."; }
+  catch(e){ el.textContent = e.message; }
+}));
+let SETUP_KEY = "";
+function renderSetup(su, pr){
+  const card = $("setup");
+  if(!su){ card.hidden = true; return; }
+  const key = JSON.stringify([su, pr]);
+  if(key === SETUP_KEY) return;
+  SETUP_KEY = key;
+  card.hidden = !!su.ready;
+  $("v-show").classList.toggle("setup-on", !su.ready);
+  const fo = $("su-folder"), sc = $("su-sched"), fl = $("su-flames");
+  fo.classList.toggle("done", su.show_files > 0);
+  fo.querySelector(".t").innerHTML = su.show_files > 0
+    ? `${su.show_files} show file(s) in <code>${esc(su.show_folder)}</code>.`
+    : `<code>${esc(su.show_folder)}</code> ${su.show_folder_exists ? "is empty" : "does not exist yet"}. Put the show file (.json), its renders and its music stems there, or choose another folder on the Programming screen.`;
+  sc.classList.toggle("done", !!su.schedule_ok);
+  sc.querySelector(".t").innerHTML = su.schedule_ok
+    ? `Loaded from <code>${esc(su.schedule_path)}</code>${su.example_schedule ? " (the EXAMPLE times, written at first run: set the real ones)" : ""}.`
+    : (su.schedule_exists ? `<code>${esc(su.schedule_path)}</code> could not be loaded: ${esc(su.schedule_error || "")}` : `No schedule yet. Set the show nights and times on the Programming screen; it is saved to <code>${esc(su.schedule_path)}</code>.`);
+  const p = pr || {};
+  const fsP = p.flamesafe || {}, dkP = p.deck || {};
+  const fsOk = su.flamesafe_connected, dkOk = su.deck_heard;
+  fl.classList.toggle("done", !!(fsOk && dkOk));
+  let t = fsOk ? "flamesafe is linked" : ("flamesafe is not connected" + (fsP.why ? ": " + fsP.why : (su.flamesafe_config ? " (its config: <code>" + esc(su.flamesafe_config) + "</code>)" : "")));
+  t += ". " + (dkOk ? "The Stream Deck program is talking to this engine." : ("The Stream Deck program has not reached this engine" + (dkP.why ? ": " + esc(dkP.why) : "") + "."));
+  if(su.example_flamesafe) t += " The flamesafe config was written at first run as a SAFE EXAMPLE: it sends to this PC only (127.0.0.1), never to a flame controller, until it is edited and confirmed.";
+  fl.querySelector(".t").innerHTML = t;
+  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Programming screen, and the scheduler only performs once the Fire & Ice settings say so.";
+}
+// The show folder card (Programming, this machine only).
+async function loadFolders(){
+  try{
+    const j = await getJSON("/api/remote/setup", 3000);
+    $("fo-now").innerHTML = `Now: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).`;
+    if(!$("fo-path").value) $("fo-path").placeholder = j.show_folder || "";
+    $("info-settings").textContent = j.settings_folder || "";
+    $("info-exit").hidden = !(ME && ME.local && j.kiosk_closable);
+  }catch(e){ $("fo-now").textContent = e.message; }
+}
+$("fo-save").addEventListener("click", async () => {
+  const p = $("fo-path").value.trim();
+  if(!p){ $("fo-msg").textContent = "Type the folder's full path first."; return; }
+  if(!(await confirmBox("Use this show folder?", p + ". LTC Player restarts the show engine to use it (refused while a show is running); the Stream Deck and flamesafe stay as they are.", "Yes, use it", "start"))) return;
+  try{ const j = await post("/api/remote/show-folder", {path:p}); $("fo-msg").textContent = j.text; loadFolders(); }
+  catch(e){ $("fo-msg").textContent = e.message; }
+});
+// The schedule editor (Programming, this machine only): the weekly times,
+// the season and the three lengths. Exceptions stay as the file has them.
+const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_NAMES = {mon:"Monday", tue:"Tuesday", wed:"Wednesday", thu:"Thursday", fri:"Friday", sat:"Saturday", sun:"Sunday"};
+let SCHED_DOC = null;
+function drawSchedule(doc){
+  SCHED_DOC = doc;
+  $("se-tz").value = doc.timezone || "";
+  $("se-first").value = (doc.season || {}).first_date || "";
+  $("se-last").value = (doc.season || {}).last_date || "";
+  $("se-len").value = doc.show_len_s == null ? "" : doc.show_len_s;
+  $("se-guard").value = doc.guard_s == null ? "" : doc.guard_s;
+  $("se-grace").value = doc.late_grace_s == null ? "" : doc.late_grace_s;
+  const w = doc.weekly || {};
+  $("se-days").innerHTML = `<span class="h">Night</span><span class="h">First show</span><span class="h">Minutes apart</span><span class="h">Last show ends</span>` +
+    DAYS.map(d => { const n = w[d] || {}; const on = !!w[d];
+      return `<label><input type="checkbox" data-day="${d}" ${on ? "checked" : ""}> ${DAY_NAMES[d]}</label>` +
+        `<input data-d="${d}" data-k="first_start" placeholder="17:30" value="${esc(n.first_start || "")}" ${on ? "" : "disabled"}>` +
+        `<input data-d="${d}" data-k="interval_min" type="number" min="1" placeholder="20" value="${esc(n.interval_min == null ? "" : n.interval_min)}" ${on ? "" : "disabled"}>` +
+        `<input data-d="${d}" data-k="last_end" placeholder="21:30" value="${esc(n.last_end || "")}" ${on ? "" : "disabled"}>`; }).join("");
+  $("se-days").querySelectorAll("[data-day]").forEach(c => c.addEventListener("change", () => {
+    $("se-days").querySelectorAll(`[data-d="${c.dataset.day}"]`).forEach(i => { i.disabled = !c.checked; });
+  }));
+  const ex = Object.keys(doc.exceptions || {}).length;
+  $("se-note").textContent = ex ? (ex + " date exception(s) in the file are kept as they are; edit those in the file.") : "";
+}
+function readSchedule(){
+  const doc = Object.assign({}, SCHED_DOC || {});
+  doc.timezone = $("se-tz").value.trim();
+  doc.season = {first_date: $("se-first").value, last_date: $("se-last").value};
+  const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+  doc.show_len_s = num("se-len"); doc.guard_s = num("se-guard"); doc.late_grace_s = num("se-grace");
+  for(const k of ["show_len_s", "guard_s", "late_grace_s"]) if(doc[k] === null) delete doc[k];
+  const w = {};
+  $("se-days").querySelectorAll("[data-day]").forEach(c => {
+    if(!c.checked) return;
+    const d = c.dataset.day, get = (k) => $("se-days").querySelector(`[data-d="${d}"][data-k="${k}"]`).value.trim();
+    w[d] = {first_start:get("first_start"), interval_min:Number(get("interval_min")), last_end:get("last_end")};
+  });
+  doc.weekly = w;
+  return doc;
+}
+async function loadSchedule(){
+  try{
+    const j = await getJSON("/api/remote/schedule-file", 3000);
+    drawSchedule(j.doc || {});
+    $("se-msg").textContent = j.exists ? ("From " + j.path + (j.error ? ". Not loaded by the scheduler: " + j.error : "")) : ("No file at " + j.path + " yet: these are the example's times. Save to write it.");
+  }catch(e){ $("se-msg").textContent = e.message; }
+}
+$("se-reload").addEventListener("click", loadSchedule);
+$("se-save").addEventListener("click", async () => {
+  try{ const j = await post("/api/remote/schedule-file", {doc:readSchedule()}); $("se-msg").textContent = j.text; if(j.doc) drawSchedule(j.doc); }
+  catch(e){ $("se-msg").textContent = e.message; }
 });
 $("b-start").addEventListener("click", async () => {
   if(await confirmBox("Start a show now?", "The next show starts now, or an extra show if none is waiting.", "Yes, start now", "start"))

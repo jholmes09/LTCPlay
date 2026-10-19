@@ -89,10 +89,12 @@ Source: "INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "INSTALL.md"; DestDir: "{app}"; DestName: "INSTALL (read me).txt"; Flags: ignoreversion
 Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\ltcplay\ltcplay_schedule.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#AppVersion}.exe"; Flags: external ignoreversion; Check: NotRunFromInstallers
 
 [Icons]
-Name: "{group}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--start"; Comment: "Start LTC Player if it is not running, and open the show page"
+Name: "{group}\LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--start"; Comment: "Start LTC Player if it is not running, and open the rack screen full screen (Alt+F4 closes that window; the show keeps running)"
+Name: "{group}\Rack screen in a normal window"; Filename: "{app}\LTC Player.exe"; Parameters: "--page"; Comment: "The same rack screen in an ordinary browser window, with a close button"
 Name: "{group}\Stop LTC Player"; Filename: "{app}\LTC Player.exe"; Parameters: "--stop"; Comment: "Stop everything the safe way (refused while a show is running)"
 Name: "{group}\Roll back to the previous version"; Filename: "{app}\LTC Player.exe"; Parameters: "--rollback"
 Name: "{group}\Check for an update"; Filename: "{app}\LTC Player.exe"; Parameters: "--update"; Comment: "Looks on GitHub Releases for a newer LTC Player; downloads it, checks its SHA-256 and runs its installer (refused while a show is running)"

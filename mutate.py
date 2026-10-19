@@ -698,6 +698,32 @@ MUTATIONS = [
   "  return (nowMs - lastOkMs) > freshS * 1000;",
   "  return (nowMs - lastOkMs) > freshS * 2000;"),
 
+ # The width guard (Jeff, 2026-10-17): without it the Abort's answer
+ # widened the page past the screen and the word ABORT slid off it.
+ ("remote: the page's column track may grow past the screen again",
+  "ltcplay/web/remote.html",
+  "display:grid;grid-template-columns:minmax(0,1fr);\n",
+  "display:grid;\n"),
+
+ ("remote: #main no longer clips what is wider than the screen",
+  "ltcplay/web/remote.html",
+  "#main{min-height:0;min-width:0;position:relative;overflow:hidden}",
+  "#main{min-height:0;position:relative}"),
+
+ ("remote: a toast may widen the page again", "ltcplay/web/remote.html",
+  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;min-width:0;\n  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+  ".toast{font-size:clamp(13px,1.6vh,16px);color:var(--cream);min-height:1.3em;\n  white-space:nowrap}"),
+
+ ("remote: the MODE pill is drawn from the screen that is open, not the engine",
+  "ltcplay/web/remote.html",
+  "  if(show.running && tr.programming)\n",
+  "  if(location.hash === \"#programming\")\n"),
+
+ ("remote: the Abort confirm promises a disarm with no flame link",
+  "ltcplay/web/remote.html",
+  "  if(s.disarm_connected && fl.connected)\n",
+  "  if(true)\n"),
+
  ("remote: a stale flame lamp still reads armed", "ltcplay/remote.py",
   "            for g in groups:\n                g[\"armed\"] = \"unknown\"",
   "            pass"),
@@ -4956,8 +4982,12 @@ def build():
 
  ("the deck raises no alert when the hardware is lost",
   "ltcplay/streamdeck.py",
-  "        self._post_alert(DECK_LOST_TEXT)\n",
-  "        pass\n"),
+  "            self._post_alert(DECK_LOST_TEXT)\n",
+  "            pass\n"),
+
+ ("a deck that never connected raises no alert", "ltcplay/streamdeck.py",
+  "            self._post_alert(self._never_text)\n",
+  "            pass\n"),
 
  ("a replug clears the deck alert without an Acknowledge",
   "ltcplay/streamdeck.py",
