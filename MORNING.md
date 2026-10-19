@@ -1,0 +1,247 @@
+# Morning and Shutdown: design note and threat analysis
+
+Jeff's rulings of 2026-10-17 (RULINGS 2026-10-17 in the decisions file), built
+as one page in the rack screen web interface. Written before the code, and
+kept with it. Read this with flamesafe/CONTRACT.md: nothing here loosens a
+rule written there.
+
+## What the page does
+
+1. **Laser calibration test**, one toggle per laser (4). ON keeps the
+   alignment grid on at low power until toggled off. The mechanism (direct
+   BEYOND OSC or a timeline cue), each laser's address or cue and the low
+   power level are PLACEHOLDERS in `ltcplay_morning.json` (`lasers`). A
+   laser whose mechanism is `"none"` (the shipped default) refuses the
+   test in words and sends nothing. A test turns off when a show starts,
+   when Abort is pressed, when the laser is locked out, and when the
+   engine stops. A locked-out laser's test is refused.
+2. **Purge**, momentary. Click a machine to arm it; it fires ONLY while the
+   Space bar (the page) or the Stream Deck's FIRE key is held. Release, tab
+   blur, window focus loss, the page hidden, a heartbeat gap, a connection
+   drop or any error stops the fire within 0.25 s; flamesafe's own
+   `fire_hold_ms` and `frame_stale_ms` cutoffs stand behind that. No time
+   limit on a purge (Jeff). Fire is the same fire value a G-Flame cue
+   carries; a Waver's head goes straight up first (placeholder pan and
+   tilt values, a placeholder settle time); the Fireball has placeholder
+   values. Every value is in `ltcplay_morning.json` (`purge`).
+3. **Groups**, with Jeff's exact names: Ground G-Flames, Scaffold G-Flames,
+   Scaffold Wavers, Fireball. A group button is a fast multi-select
+   (nothing saved); every machine can also be clicked on its own; any
+   collection can be armed.
+4. **Layout**: the machines drawn labelled in a top-down positional view.
+   The machine list comes from `ltcplay_morning.json` (or, when it names
+   none, one machine per fire slot of flamesafe's own config), positions
+   from `ltcplay_morning_layout.json`, editable in the page (Arrange, drag,
+   Save). A sensible default is laid out when there is no layout file.
+5. **Lockout**: any single flame machine or laser can be locked out until
+   it is unlocked, across restarts. A locked unit cannot be armed or fired
+   from any surface: this page, the deck, show cues, the remote. Enforced
+   at flamesafe for flames (it is the only writer of the flame universe)
+   and in the laser output path for lasers. A lock icon on the machine, a
+   banner on every screen, a journal line on lock and unlock; unlock needs
+   one deliberate confirm.
+6. **Stream Deck**: while this page is open the deck re-maps itself (the
+   group keys show PURGE ARMED / OFF / LOCKED, the Start key becomes the
+   FIRE key) and restores when the page is left or the engine stops saying
+   it is open.
+7. **Checklists**: a Morning and a Shutdown list, steps editable in
+   `ltcplay_morning.json` (`checklists`), ticks reset each night, every tick
+   recorded for audit (below).
+
+## Where each value lives
+
+| Thing | File | Key |
+|---|---|---|
+| Machines, kinds, channels, groups | `ltcplay_morning.json` | `machines`, `groups` |
+| Purge values (G-Flame fire, Waver pan/tilt up and settle, Fireball) | `ltcplay_morning.json` | `purge` |
+| Lasers (mechanism, on, off and lock messages, low power) | `ltcplay_morning.json` | `lasers` |
+| Checklist steps | `ltcplay_morning.json` | `checklists` |
+| Names allowed to tick | `ltcplay_morning.json` | `names` |
+| Tally server (off by default) | `ltcplay_morning.json` | `tally` |
+| Machine positions | `ltcplay_morning_layout.json` | (the page writes it) |
+| Lock state | `ltcplay_lockout.json` | (the engine writes it; flamesafe reads it) |
+| Purge arming from a network device | `ltcplay_remote.json` | `screen_arming` (the existing switch) |
+| Purge arming at all | `ltcplay_remote.json` | `purge_arming` (default true) |
+| flamesafe's lockout file | `flamesafe.json` | `lockout_file` (left out: `ltcplay_lockout.json` beside flamesafe.json, which on the show PC is the engine's file; `false` switches it off) |
+
+All of these live in the machine's settings folder (`%LOCALAPPDATA%\ltcplay`
+on the show PC). `ltcplay/ltcplay_morning.example.json` is the annotated
+example. Nothing here is in the show file.
+
+## How it works
+
+### Arming for a purge: the deck still owns the arm link
+
+flamesafe has one arm sender, the Stream Deck process, and that does not
+change. A click on a machine asks the ENGINE (`/api/remote/purge-select`)
+to add it to the purge selection. The engine publishes the selection's
+groups on `deck-input` (`purge.wanted_groups`), and the deck process sets
+those groups' `wanted` bits on its own arm socket, exactly as it would for
+a completed hold, with its own refractory window and latched refusal still
+applied. flamesafe then runs every consent rule it has. This is the
+Jeff-approved exception: no hold-to-arm for a purge, a click instead. The
+deck disarms a group the moment the engine stops listing it: the machine is
+deselected, the page stops saying it is open (2 s), the engine is
+unreachable (0.3 s), a show goes live, an Abort lands.
+
+### Firing: the flame link carries a purge frame, the same way it carries cues
+
+`FlameLink.purge_set(values)` holds a 512 channel frame for at most
+`PURGE_HOLD_S` (0.25 s) on the link's own clock. `values_now()` sends it
+only while the show is NOT live (no show cue playing); while a show is live
+the cue path is the only source of values and the purge frame is ignored.
+`zero()` and `disarm_all()` clear it. Every frame the link sends still
+passes flamesafe, which sends fire values only for armed groups, zero for
+locked slots, and zeros everything `fire_hold_ms` after the last frame.
+
+The engine's `purge-fire` heartbeat (every 100 ms from the page while Space
+is down, or from the deck while FIRE is held) re-asserts the frame: the
+page's status must be under 1 s old, flamesafe's status under 1 s old, the
+heartbeat must belong to the device that made the selection (or to the
+Stream Deck process, which names itself in `screen` over loopback and may
+fire any device's selection), and a gap of more than 0.25 s ends that
+press (the next heartbeat is refused: release and press again). Only
+machines whose group flamesafe reports ARMED get a value; locked machines
+never do; a Waver's head-up time counts from the first beat on which it is
+both selected and armed, so a group that arms late in a press waits its
+full settle time; a machine cannot be added to a press that is firing.
+While this engine has any machine locked out, no purge goes until
+flamesafe's status reports exactly the slots asked for. A stop that lands
+while a beat's frame is being worked out wins: that beat sets nothing.
+
+### Lockout: one writer, enforced where the wire is written
+
+The engine (`ltc serve`) is the only writer of `ltcplay_lockout.json`,
+atomically (write, fsync, replace). flamesafe reads it (its config's
+`lockout_file`), polls its mtime twice a second, and:
+
+- forces every locked fire slot to zero on every packet, armed or not;
+- refuses to arm a group every one of whose fire slots is locked (held,
+  reason "every machine in this group is locked out");
+- keeps the LAST lock set when the file cannot be read or parsed, and
+  journals it once; a file that is missing reads as no locks (a lock set
+  that disappears is journaled).
+
+The status frame gains `lockout` (the slots flamesafe is enforcing), so
+the rack screen shows whether flamesafe has taken the lock. ltcplay's flame
+link also zeroes locked channels in every frame it sends (belt), so show
+cues never command fire on a locked machine; flamesafe is the braces.
+
+Lasers: ltcplay never writes a laser's output; BEYOND does. The only per
+laser path ltcplay has is the calibration test. A locked laser's test is
+refused at the engine and again at the sender (`lasertest.LaserTests`
+refuses an ON for a locked id, and sends the laser's `lock` messages, a
+placeholder, when it is locked and at every show start while locked). A
+per laser show lockout inside BEYOND needs Jeff and Andy to say what BEYOND
+accepts; until then the `lock` list is empty and the lock is visible on
+every screen and in the journal.
+
+### Checklists: append-only, hash-chained, exported
+
+Every tick, untick and note is one record in
+`<logs>/checklists/records.jsonl`: UTC and local time, show date, checklist
+id, step id, the step's text at the time, state, who (a name from the
+configured list, required), the device and address the engine saw, seq,
+`prev` (the previous record's hash) and `hash` (SHA-256 over `prev` plus
+the record's canonical JSON). Nothing is edited in place; a correction is
+a new record. `ltc checklist-verify` and the page's Verify both walk the
+chain. A completed routine writes a per-day record (`records/<date>/
+checklist_<id>_<date>.json` and `.pdf`, pure Python PDF, page numbers,
+the verification result), kept out of log pruning (`journal.prune` only
+touches `nights/`) and out of the diagnostics bundle except as a count.
+Export all: one zip of every day's PDF, a combined PDF with a table of
+contents, and `VERIFY.txt` for the whole chain; a date range is a query.
+
+The tally forwarder is OFF until `tally.enabled` is true and `tally.url`
+is an https URL; the bearer token is read from `tally.token_file` at send
+time and never shown or logged. Each record and each completed routine is
+one POST (`{"v": 1, "kind": "checklist_record" | "checklist_routine",
+"sent_at": ..., "record"|"routine": {...}}`, JSON). Undelivered payloads
+wait on disk (`<logs>/checklists/outbox/`) and are retried with backoff;
+the page shows queued, sent and the last error.
+
+## Threat analysis: what could fire flames unintentionally, or fail to stop
+
+| # | Threat | Where it is stopped |
+|---|---|---|
+| T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, while an Abort is latched, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
+| T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
+| T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 2.5 s with no repeat event for 1 s ends (`fireKeyLapsed`; so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
+| T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
+| T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
+| T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared both ways on the page and in the journal: slots flamesafe holds that this engine cannot account for (the file deleted and kept by flamesafe, an engine restarted without it), a config edited under a lock, flamesafe with no lockout file, or one reading a different path than the engine writes (said at start, both paths named) all refuse every lock, unlock, purge and laser test; the one way out is a confirmed "Rewrite the lockout file" on the show machine itself, journaled as a fault, which writes exactly this engine's table |
+| T7 | Abort during a purge | the engine's Abort clears the purge and sends `disarm_all` before anything else, as today; `disarm_all()` and `zero()` clear the purge frame; the deck's own Abort sends every group false on the arm link; the laser tests are turned off |
+| T8 | The deck arms a purge group while latched, in its refractory window, or with no operator chosen | the deck's purge pass arms through `_do_arm_fire` itself, the code a completed hold goes through: the latch, the re-arm refractory window and the operator gate are checked at the moment of arming; only the hold is waived (Jeff). A latched rig also reads as no groups wanted at all (`purge_wanted`). The test holds that no arm value goes out on the arm link even for one pass |
+| T9 | A network device purges, unlocks or lights a laser without anyone meaning it to | purge from the network, an unlock and a laser test ON all need `screen_arming` true (the existing switch, off by default); a lock, which only lowers risk, is open to every device; every press is journaled with the device address; the same proxy, Host and cross-site refusals as every other route |
+| T10 | A laser test lights during a show, or on a locked laser | the engine refuses the toggle while a show is live or latched; the watcher turns tests off when a show goes live; the sender refuses a locked laser; only configured addresses with no OSC wildcards, never BEYOND's BlackOut or MasterPause |
+| T11 | The deck stays re-mapped after the page closes (FIRE where START was) | the deck's morning mode follows the engine's `morning_open` flag, which the engine clears 2 s after the last page beat from a device that may purge (a view-only device's beats do not count); a stale `deck-input` (0.3 s) also ends it |
+| T12 | A Waver fires before its head is up | a fire press on a Waver sends pan and tilt first and the fire value only after `head_settle_s` (0.5 s at least) of continuous heartbeats, counted per Waver from the first beat on which it is both selected and armed, and counted again from nothing whenever its group drops out of ARMED mid press (the head has fallen); the head values go in the same frame as the fire value thereafter; a machine cannot join a press that is firing |
+| T13 | The purge frame reaches a fire slot flamesafe has not armed | flamesafe sends a fire value only while that group's safety slot carries the arm value on the same packet (unchanged) |
+| T14 | A checklist record is altered after the fact | every record carries the hash of the one before it; `verify` fails on any edit, insertion or deletion; the per-day PDF prints the verification result |
+
+Tier A guarantees that do not change: Abort wins over everything, flamesafe
+is the only writer of the flame universe, the link key and sender lock,
+`frame_stale_ms` disarms, one arm sender (the deck), consent needs a
+genuine off-then-on from that sender, no re-arm without a deliberate
+action. Hold-to-arm is set aside for the purge page only, by Jeff's ruling,
+and only for the purge selection: the show's arm buttons on the show screen
+still hold.
+
+## Today's rules, investigated
+
+- **Firing during a show or a Hold.** Today ltcplay sends non-zero flame
+  values only while a show cue is live and its timecode is moving
+  (`flamelink.values_now`). A Hold is not live, so flames are zero through
+  a Hold; the conductor also zeroes the cues at Hold. The purge keeps that:
+  it is refused and cleared whenever the scheduler is in SHOW or PAUSED, an
+  Abort is latched, or the show clock plays a cue. A purge between shows
+  (PRESHOW, INTERMISSION, STANDBY) is allowed, which is when Andy needs it.
+- **Arming from a screen.** Off by default (`screen_arming`, review of PR
+  #43). The purge's arming from the Rack screen itself is on by default
+  (`purge_arming`, this page's purpose); from a network device it also
+  needs `screen_arming`.
+
+## How it is tested, and what the tests do not prove
+
+- **The engine's rules** (purge, lockout, laser tests, checklists) are
+  tested end to end over the real HTTP routes in `selftest.py`
+  (`test_purge_rules_at_the_engine`, `test_morning_lockout_trust_link_and_close`
+  and the other Morning tests), flamesafe's lockout in its own suite
+  (`flamesafe/test_flamesafe.py`), and one mutation per threat in the table
+  above in `mutate.py`. `morning.py` and `lasertest.py` are safety trigger
+  files: every flamesafe, conductor and flame link mutation runs when they
+  change.
+- **The page's JavaScript.** Its pure helpers (`machineLook`,
+  `fireKeyLapsed`, between the page's LOGIC markers) run under node in the
+  selftest, so their decisions are tested as code. The event wiring (one
+  keydown starts the heartbeats; keyup, blur, visibilitychange, pagehide and
+  leaving the page stop them; `purge-clear` goes when the page is left) is
+  checked by STRING PRESENCE in `remote.html` only: the selftest has no
+  browser, so that wiring is proven present, not proven to behave. The
+  engine and the flame link do not rely on it: both let go 0.25 s after the
+  last heartbeat on their own clocks, and flamesafe's `fire_hold_ms` stands
+  behind them.
+- **A physically stuck Space bar** keeps repeating, so the page cannot tell
+  it from a held one. The page is NOT a dead-man switch; the Stream Deck's
+  FIRE key is (its heartbeats stop the instant the key reads up), and the
+  deck's purge arming is tested on the arm link's wire.
+- **The Windows installer.** `pdfmini` (the checklist PDF writer),
+  `checklist`, `morning` and `lasertest` are plain modules of the `ltcplay`
+  package with no library beyond the standard one, so PyInstaller's
+  `collect_submodules("ltcplay")` in `packaging/windows/ltcplay.spec`
+  bundles them with everything else. `ltcplay.exe --self-check` imports
+  them and writes a one page PDF, and the installer smoke test
+  (`packaging/windows/ci_smoke.py`, run on every bench-build push) checks
+  that line from the installed program.
+
+## What Jeff still has to decide or supply
+
+- The laser mechanism and each laser's addresses or cues, and the low
+  power level (`lasers` in `ltcplay_morning.json`).
+- The real machine list and channel map (Andy), the Waver head-up pan and
+  tilt values and settle time, the Fireball values (`machines`, `purge`).
+- Whether a purge should be allowed from an iPad on the show network
+  (today: only with `screen_arming` true).
+- Andy's checklist steps and the list of names (`checklists`, `names`).
+- The tally server's address and token (`tally`), and whether the payload
+  below fits it.

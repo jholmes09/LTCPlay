@@ -1273,6 +1273,19 @@ class ScreenKeys:
             out, self._pending = self._pending, []
         return out
 
+    def morning(self):
+        """The engine's word on the Morning and Shutdown page (morning.py,
+        deck-input "morning"): whether it is open, the purge selection's
+        groups, the locks. None when the engine has not answered within
+        SCREEN_STALE_S or carries none: a stale answer must never keep
+        this deck re-mapped or a purge group armed."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        m = last[0].get("morning")
+        return m if isinstance(m, dict) else None
+
     def alerts(self):
         """The engine's open alerts (alerts.py), as its last fresh answer
         listed them; () when none, or when the engine has not answered
@@ -1288,6 +1301,101 @@ class ScreenKeys:
 
 JOURNAL_QUEUE_MAX = 1000
 JOURNAL_POST_TIMEOUT_S = 2.0
+
+# The deck's FIRE key for a purge (Jeff, 2026-10-17): while it is held this
+# process posts a purge-fire heartbeat to the engine every PURGE_BEAT_S, on
+# a thread of its own (never the main loop: the arm link's send must not
+# wait on an HTTP call). The engine, and the flame link under it, drop the
+# purge frame 0.25 s after the last heartbeat whatever this process does.
+PURGE_BEAT_S = 0.1
+PURGE_POST_TIMEOUT_S = 0.5
+
+
+class PurgeFire:
+    """One fire press from the deck's FIRE key: start() begins the
+    heartbeats, stop() ends them and posts purge-stop. `poster(path, body)
+    -> (ok, text, doc)` is EngineConductor's own POST, injectable."""
+
+    def __init__(self, poster, journal=None, wall=time.time,
+                 sleep=time.sleep):
+        self._poster = poster
+        self._journal = journal or (lambda text, **kw: None)
+        self._wall = wall
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self.fire_id = None
+        self.firing = False
+        self.last_error = ""
+        self.beats = 0
+
+    def start(self, who=""):
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop.clear()
+            self.fire_id = None
+            self.firing = True
+            self.last_error = ""
+            self._thread = threading.Thread(target=self._run, args=(who,),
+                                            daemon=True,
+                                            name="ltcplay-deck-purge-fire")
+            self._thread.start()
+        return True
+
+    def stop(self, who=""):
+        with self._lock:
+            t = self._thread
+            was = self.firing
+            self.firing = False
+            self._stop.set()
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=1.0)
+        if was:
+            threading.Thread(target=self._post_stop, args=(who,), daemon=True,
+                             name="ltcplay-deck-purge-stop").start()
+        return was
+
+    def _body(self, who):
+        return {"who": who or "", "screen": "Stream Deck",
+                "seen": int(self._wall() * 1000)}
+
+    def _post_stop(self, who):
+        try:
+            self._poster("/api/remote/purge-stop", self._body(who))
+        except Exception:
+            pass
+
+    def _run(self, who):
+        while not self._stop.is_set():
+            body = self._body(who)
+            if self.fire_id is not None:
+                body["fire_id"] = self.fire_id
+            try:
+                got = self._poster("/api/remote/purge-fire", body)
+                ok, text = got[0], got[1]
+                doc = got[2] if len(got) > 2 and isinstance(got[2], dict) \
+                    else {}
+            except Exception as e:
+                ok, text, doc = False, f"{type(e).__name__}: {e}", {}
+            if not ok:
+                # Any refusal ends the press: the operator lets go and
+                # presses again. Said once per press.
+                self.last_error = text
+                self._journal(f"Stream Deck FIRE: the engine refused the "
+                              f"purge fire: {text}", fault=True,
+                              action="purge", who=who, screen="Stream Deck")
+                with self._lock:
+                    self.firing = False
+                return
+            self.beats += 1
+            if self.fire_id is None:
+                self.fire_id = doc.get("fire_id")
+                self._journal(f"Stream Deck FIRE held: purge firing "
+                              f"({', '.join(doc.get('firing') or []) or 'nothing armed yet'}).",
+                              action="purge", who=who, screen="Stream Deck")
+            self._stop.wait(PURGE_BEAT_S)
 
 
 class DeckJournal:
@@ -1874,6 +1982,15 @@ class Controller:
         self._vpressed = set()
         self._vwho = {}
         self._vheld = {}
+        # The Morning and Shutdown page's purge (Jeff, 2026-10-17): the
+        # groups THIS deck armed for it (disarmed again the moment the
+        # engine stops listing them), the groups the engine listed last
+        # pass (a group is armed only when it ENTERS the list, so a deck
+        # tap that disarms it is never undone), and the FIRE key's press.
+        self._purge_armed = set()
+        self._purge_seen = set()
+        self._purge_refused_said = set()
+        self.purge_fire = None        # PurgeFire, given by _main
         # Item 1's second line of defence: what THIS deck itself last sent,
         # so a status frame that disagrees can be caught even if a rogue
         # sender briefly won the arm link's own lock (arminput.py).
@@ -1928,6 +2045,7 @@ class Controller:
         self._vpressed.clear()
         self._vwho.clear()
         self._vheld.clear()
+        self._fire_release("the deck reconnected")
 
     def animating(self):
         """True while something on the keys moves every pass: a key held
@@ -2105,6 +2223,7 @@ class Controller:
         self.arm.set_group(i, False)
         self.arm.send(self.names)
         self._disarmed_at[i] = self._clock()
+        self._purge_armed.discard(i)
         if who is None:
             who = self.operator_provider() or ""
         where = "" if screen == "Stream Deck" else f" on the {screen}"
@@ -2163,6 +2282,101 @@ class Controller:
                 continue
             self._arm_holds[i].press(now)
             self._vpressed.add(i)
+        self.purge_pass(now)
+
+    # -- the Morning and Shutdown page's purge (morning.py, MORNING.md) ------
+    def morning_view(self):
+        """The engine's fresh word on the Morning page, or None."""
+        s = self.screen
+        if s is None or not hasattr(s, "morning"):
+            return None
+        try:
+            return s.morning()
+        except Exception:
+            return None
+
+    def morning_open(self):
+        """True while the engine says the Morning and Shutdown page is open
+        (fresh within SCREEN_STALE_S): the deck is re-mapped meanwhile."""
+        m = self.morning_view()
+        return bool(m and m.get("open") is True)
+
+    def purge_wanted(self):
+        """The flamesafe group indices the engine's purge selection needs
+        armed right now: only while the page is open, purge arming is on
+        at the engine, the engine is fresh and the rig is not latched."""
+        m = self.morning_view()
+        if not m or m.get("open") is not True or \
+                m.get("purge_enabled") is not True or self._latched_now():
+            return set()
+        p = m.get("purge") if isinstance(m.get("purge"), dict) else {}
+        out = set()
+        for i in p.get("wanted_groups") or []:
+            if isinstance(i, int) and not isinstance(i, bool) and \
+                    0 <= i < len(self.names):
+                out.add(i)
+        return out
+
+    def purge_pass(self, now):
+        """Once per main-loop pass. A group ENTERING the engine's purge
+        list is armed (Jeff's exception to hold-to-arm: a click on the
+        page), with the refractory window and the latch still checked; a
+        group LEAVING it that this deck armed for the purge is disarmed at
+        once, as is every one when the page closes, the engine goes quiet
+        or the rig latches. A group the operator armed themselves is left
+        alone, and a group they tap off is not re-armed (it is only armed
+        when it enters the list)."""
+        wanted = self.purge_wanted()
+        entered = wanted - self._purge_seen
+        self._purge_seen = wanted
+        for i in sorted(entered):
+            if self.arm.wanted[i]:
+                continue             # already armed by the operator
+            # The same guards as a completed hold, in the same code
+            # (_do_arm_fire, review of PR #68, P2-6): the latch and the
+            # refractory window re-checked at the moment of arming, and the
+            # operator gate (a purge needs a chosen operator on the deck,
+            # like any arm). Only the hold itself is waived (Jeff).
+            who = self.operator_provider() or ""
+            self._do_arm_fire(i, now, who=who, screen="Morning page")
+            if not self.arm.wanted[i]:
+                continue             # refused; _do_arm_fire said why
+            self._purge_armed.add(i)
+            self._log(f"Stream Deck: {self.names[i]} armed for a PURGE from "
+                      f"the Morning and Shutdown page (a click, Jeff's "
+                      f"exception to hold-to-arm). It is disarmed the "
+                      f"moment the page stops asking for it.", action="arm",
+                      who=who, screen="Morning page")
+        for i in sorted(self._purge_armed - wanted):
+            self._purge_armed.discard(i)
+            if self.arm.wanted[i]:
+                self._do_disarm(i, who="the purge ended",
+                                screen="Morning page")
+        if not self.morning_open():
+            self._fire_release("the Morning page is not open")
+
+    def _fire_press(self, now):
+        """The FIRE key went down while the Morning page is open: the
+        heartbeats start (PurgeFire) if anything is armed for the purge."""
+        pf = self.purge_fire
+        if pf is None:
+            self._log("Stream Deck FIRE pressed: no purge sender is wired "
+                      "in this build. Nothing was sent.", fault=True,
+                      action="purge", screen="Stream Deck")
+            return
+        if not self.purge_wanted():
+            self._log("Stream Deck FIRE pressed with nothing armed for a "
+                      "purge on the Morning page; refused.", action="purge",
+                      screen="Stream Deck")
+            return
+        pf.start(who=self.operator_provider() or "")
+
+    def _fire_release(self, why):
+        pf = self.purge_fire
+        if pf is not None and getattr(pf, "firing", False):
+            pf.stop(who=self.operator_provider() or "")
+            self._log(f"Stream Deck FIRE released: {why}.", action="purge",
+                      screen="Stream Deck")
 
     def _screen_release(self, i):
         self._vholds.pop(i, None)
@@ -2239,6 +2453,8 @@ class Controller:
         self.arm.set_group(i, True)
         self.arm.send(self.names)
         held = (f"held {ARM_HOLD_S:g} s" if screen == "Stream Deck" else
+                "a click on the Morning page, for a purge" if
+                screen == "Morning page" else
                 f"held {SCREEN_HOLD_S:g} s on the {screen}")
         self._log(f"Stream Deck: {self.names[i]} arm pressed ({held}) by "
                   f"{who or 'an operator the deck could not name'}.",
@@ -2300,18 +2516,29 @@ class Controller:
             self._abort_hold.release()
             for h in self._arm_holds:
                 h.release()
+            self._fire_release("the rig is aborted")
             self._prev_keys = list(down)
             return
+        morning = self.morning_open()
         for k in releases(self._prev_keys, down):
             if k == TOP_ABORT:
                 self._abort_hold.release()
+            elif k == TOP_START:
+                # The FIRE key (Morning page): letting go ends the purge
+                # fire at once, whether or not the page is still open.
+                self._fire_release("the key came up")
             elif k in GROUP_KEYS:
                 # Letting go before ARM_HOLD_S cancels the hold and sends
                 # nothing, exactly like letting go of Abort early.
                 self._arm_holds[k - GROUP_KEYS[0]].release()
         for k in edges(self._prev_keys, down):
             if k == TOP_START:
-                if not pending:
+                if pending:
+                    pass
+                elif morning:
+                    # Re-mapped while the Morning page is open: FIRE.
+                    self._fire_press(now)
+                else:
                     self._do_start_now()
             elif k == TOP_HOLD:
                 self._do_hold_or_resume(self._held_hint())
@@ -2625,6 +2852,20 @@ class Controller:
                            max_size=16)
         elif latched:
             fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
+        elif self.morning_open():
+            # Re-mapped while the Morning and Shutdown page is open (Jeff,
+            # 2026-10-17): this key is FIRE for the purge. Red on dark while
+            # a purge group is armed, flashing while held, dim PURGE when
+            # nothing is selected. Restores when the page closes.
+            pf = self.purge_fire
+            if pf is not None and getattr(pf, "firing", False):
+                fonts.show_key(d, b0, ["FIRING"], BLACK if blink_on else RED,
+                               bg=RED if blink_on else None, kind="sans")
+            elif self.purge_wanted():
+                fonts.show_key(d, b0, ["FIRE", "HOLD"], RED, kind="sans")
+            else:
+                fonts.show_key(d, b0, ["PURGE", "NONE"], DIM_TEXT, kind="sans",
+                               max_size=16)
         else:
             running = self.show_running_provider() is True
             held = self._held_hint()
@@ -2716,6 +2957,17 @@ class Controller:
                 continue
             look = group_look(self.status_for(name), fault=fault,
                               confirmed=confirmed, slot=i)
+            mv = self.morning_view()
+            if mv and mv.get("open") is True:
+                # The Morning page's re-map: a group every machine of which
+                # is locked out reads LOCKED; one armed for the purge says
+                # so under its name. flamesafe's real state is never hidden.
+                locks = mv.get("locks") if isinstance(mv.get("locks"), dict) \
+                    else {}
+                if i in (locks.get("groups_fully_locked") or []):
+                    look = ("LOCKED", None, LATCHED_GREY, DIM_TEXT, False)
+                elif i in self._purge_armed and look[0] == "ARMED":
+                    look = ("PURGE", "ARMED") + tuple(look[2:])
             arm_key_image(fonts, d, box, name, look, group_blink)
         if self.status.stale(self._clock) or self.status.last is None:
             # Fewer than three groups: the rest of NO / FLAME / LINK still
@@ -3228,6 +3480,10 @@ def _main(args):
                             show_running_provider=sched.show_running,
                             conductor=engine, journal=journal,
                             screen=screen)
+    # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
+    # to the engine on their own thread, through the same POST the presses
+    # use. Nothing here touches the arm link for it.
+    controller.purge_fire = PurgeFire(engine._http_post, journal=journal)
     print(f"Stream Deck: arming {', '.join(names)} over {arm_ip}:{arm_port}, "
          f"reading flamesafe's status on {status_ip}:{status_port}. Abort, "
          f"Hold, Resume and Reset go to the show conductor in ltc serve at "
@@ -3239,6 +3495,8 @@ def _main(args):
     except KeyboardInterrupt:
         pass
     finally:
+        if controller.purge_fire is not None:
+            controller.purge_fire.stop()
         arm.close()
         status.close()
         sched.stop()

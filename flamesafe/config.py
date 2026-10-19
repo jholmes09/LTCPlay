@@ -23,7 +23,7 @@ TOP_KEYS = {"flamesafe_config", "confirmed", "note", "universe",
             "destination", "link", "gflame_range", "arm_value",
             "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
             "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
-            "log_dir", "groups"}
+            "log_dir", "groups", "lockout_file"}
 DESTINATION_KEYS = {"ip", "port"}
 LINK_KEYS = {"listen_ip", "listen_port", "status_ip", "status_port", "key",
              "arm_ip", "arm_port", "status_mirror_port"}
@@ -88,7 +88,7 @@ class Config:
                  "accept_unsourced_risk", "min_arm_dwell_ms", "arm_stale_ms",
                  "frame_stale_ms", "fire_hold_ms", "tick_hz", "overrun_ms",
                  "groups", "confirmed", "note", "log_dir",
-                 "lights_warning_led")
+                 "lights_warning_led", "lockout_file")
 
     def test_only_override_dwell_ms(self, ms):
         """FOR TESTS ONLY.  The file loader floors the dwell at 1000 ms; the
@@ -338,6 +338,37 @@ def from_dict(d, source="config"):
     c.note = str(d.get("note", ""))
     log_dir = d.get("log_dir")
     c.log_dir = str(log_dir) if log_dir else None
+    # The lockout file (Jeff, 2026-10-17, the Morning and Shutdown page):
+    # written by ltcplay's engine, the one writer, and read here, the one
+    # writer of the flame universe. A locked fire slot is zero on every
+    # packet whatever is armed or commanded (composer.note_locked_slots).
+    # Optional; a relative path is beside this config file. Absent, nothing
+    # is ever locked out from here.
+    # Left out: ltcplay_lockout.json BESIDE this config file, which is where
+    # the show PC keeps both (review of PR #68, P2-2: the lock is enforced
+    # here with nothing to set up; a missing file locks nothing). false
+    # switches it off on purpose. A relative path is beside the config
+    # file; with no file to sit beside it is refused rather than guessed.
+    lockout = d.get("lockout_file")
+    if lockout is None:
+        lockout = "ltcplay_lockout.json" if source != "config" else None
+    elif lockout is False:
+        lockout = None
+    if lockout is not None:
+        if not isinstance(lockout, str) or not lockout.strip():
+            raise ConfigError("lockout_file is the path of the lockout file "
+                              "ltcplay writes (ltcplay_lockout.json), false "
+                              "to switch the lockout off, or left out (the "
+                              "file beside this one).")
+        lockout = lockout.strip()
+        if not Path(lockout).is_absolute():
+            if source == "config":
+                raise ConfigError("lockout_file has to be an absolute path "
+                                  "when the config does not come from a file "
+                                  "(there is nothing for a relative path to "
+                                  "sit beside).")
+            lockout = str(Path(source).resolve().parent / lockout)
+    c.lockout_file = lockout
 
     groups = d.get("groups")
     if not isinstance(groups, list) or not groups:

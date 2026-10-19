@@ -18,6 +18,8 @@ stop event.
 
 from __future__ import annotations
 
+import json
+import os
 import socket
 import sys
 import time
@@ -36,6 +38,110 @@ SHUTDOWN_TERMINATE_FRAMES = 3
 
 
 SIO_UDP_CONNRESET = 0x9800000C      # _WSAIOW(IOC_VENDOR, 12), winsock2
+
+# The lockout file (Jeff, 2026-10-17): how often its date is looked at, and
+# the one format read.  ltcplay's engine is the one writer (an atomic
+# replace); this program only ever reads it.
+LOCKOUT_POLL_S = 0.5
+LOCKOUT_FORMAT = 1
+LOCKOUT_MAX_BYTES = 256 * 1024
+
+
+class LockoutFile:
+    """Reads the lockout file and says which fire slots are locked.
+
+    poll(now) returns (slots, state).  `state` is "none" (no path), "read",
+    "missing" (no file: nothing locked) or "unreadable" (the file is there
+    but cannot be read or is not the format: the LAST set read is kept,
+    the safe side, and it is journaled once per episode).  Never raises."""
+
+    def __init__(self, path, log=None, clock=None):
+        self.path = path
+        self._log = log
+        self._clock = clock or time.perf_counter
+        self._next_at = None
+        self._stamp = None
+        self._slots = frozenset()
+        self._state = "none" if not path else "missing"
+        self._unreadable_said = False
+
+    def poll(self, now=None):
+        if not self.path:
+            return self._slots, "none"
+        t = self._clock() if now is None else now
+        if self._next_at is not None and t < self._next_at:
+            return self._slots, self._state
+        self._next_at = t + LOCKOUT_POLL_S
+        try:
+            st = os.stat(self.path)
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            stamp = None
+        if stamp == self._stamp and self._state in ("read", "missing",
+                                                     "missing_kept"):
+            return self._slots, self._state
+        self._stamp = stamp
+        if stamp is None:
+            if self._slots:
+                # A file that held locks and is gone (review of PR #68,
+                # P2-3): ltcplay's engine never deletes it, it only rewrites
+                # it, so this is a deletion by hand or a disk fault. The
+                # last set is KEPT until the engine writes the file again.
+                if self._state != "missing_kept":
+                    self._event("lockout", f"the lockout file {self.path} is "
+                                           f"gone: keeping the last lock set, "
+                                           f"{sorted(self._slots)}, until "
+                                           f"ltcplay writes the file again")
+                self._state = "missing_kept"
+                self._unreadable_said = False
+                return self._slots, self._state
+            self._state = "missing"
+            self._unreadable_said = False
+            return self._slots, self._state
+        try:
+            if stamp[1] > LOCKOUT_MAX_BYTES:
+                raise ValueError("too large")
+            with open(self.path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+            slots = _lockout_slots(doc)
+        except (OSError, ValueError, TypeError) as e:
+            if not self._unreadable_said:
+                self._unreadable_said = True
+                self._event("lockout", f"the lockout file {self.path} could "
+                                       f"not be read ({type(e).__name__}: "
+                                       f"{e}); keeping the last lock set, "
+                                       f"{sorted(self._slots) or 'none'}")
+            self._state = "unreadable"
+            return self._slots, self._state
+        self._unreadable_said = False
+        self._slots = slots
+        self._state = "read"
+        return self._slots, self._state
+
+    def _event(self, kind, msg):
+        if self._log is None:
+            return
+        try:
+            self._log.event(kind, msg)
+        except Exception:                               # noqa: BLE001
+            pass
+
+
+def _lockout_slots(doc):
+    """The locked fire slots in a lockout document, or ValueError."""
+    if not isinstance(doc, dict) or doc.get("lockout_format") != LOCKOUT_FORMAT:
+        raise ValueError("not a lockout file (lockout_format)")
+    chans = doc.get("flame_channels")
+    if not isinstance(chans, list):
+        raise ValueError("flame_channels is not a list")
+    out = set()
+    for c in chans:
+        if isinstance(c, bool) or not isinstance(c, int) \
+                or not 1 <= c <= rules.UNIVERSE_SIZE:
+            raise ValueError(f"flame channel {c!r} is not a slot 1 to "
+                             f"{rules.UNIVERSE_SIZE}")
+        out.add(c)
+    return frozenset(out)
 
 
 def _no_connreset(sock):
@@ -83,6 +189,8 @@ class Service:
         self._sleep = sleep         # injected with the clock, for the tests
         self._log = log
         self.composer = Composer(config, clock=clock, log=log)
+        self.lockout = LockoutFile(getattr(config, "lockout_file", None),
+                                   log=log, clock=clock)
         self._rx = None
         self._tx = None
         self._status_tx = None
@@ -243,11 +351,26 @@ class Service:
         """One tick.  Returns the composer's Output."""
         self._drain()
         self._poll_arm()
+        self._poll_lockout()
         out = self.composer.tick()
         self.last_output = out
         self._send_universe(out.universe)
         self._send_status(out.status)
         return out
+
+    def _poll_lockout(self):
+        """The lockout file (Jeff, 2026-10-17), before this tick composes:
+        a lock written by ltcplay's engine is enforced on the next packet
+        after it is read.  Never raises; a reader that fails locks every
+        slot (composer.note_locked_slots), the safe side."""
+        try:
+            slots, state = self.lockout.poll(self._clock())
+        except Exception as e:                          # noqa: BLE001
+            self._event("lockout", f"the lockout reader raised "
+                                   f"{type(e).__name__}: {e}; every fire "
+                                   f"slot is held at zero until it reads")
+            slots, state = None, "unreadable"
+        self.composer.note_locked_slots(slots, state)
 
     def _send_universe(self, values, terminated=False):
         pkt = build_packet(self.cfg.universe, values, self.sacn_seq,

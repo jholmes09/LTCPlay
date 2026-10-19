@@ -953,7 +953,11 @@ class Handler(BaseHTTPRequestHandler):
                 remote = getattr(self.server, "remote", None)
                 if remote is None:
                     return self._send(404, {"error": "no such thing here"})
-                return self._send(*remote.get(route, self._ctx()))
+                # The query (a checklist export's dates) rides along; the
+                # route itself is still the bare path.
+                query = urllib.parse.urlparse(self.path).query
+                return self._send(*remote.get(route, self._ctx(),
+                                              query=query))
             if route in ("/", "/index.html"):
                 with open(PAGE, "rb") as fh:
                     return self._send(200, fh.read(), "text/html; charset=utf-8")
@@ -1509,6 +1513,48 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         httpd.server_close = _close_fire_ice
     if httpd.loopback is not None:
         httpd.loopback.announce = httpd.announce
+    httpd.morning = None
+    if fire_ice is not None:
+        # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py,
+        # MORNING.md): the purge, the lockout, the laser tests and the
+        # checklists. Fire & Ice only: it needs the flame link and
+        # flamesafe's status. Its settings live beside the schedule's.
+        from . import morning as morning_mod
+        _bey = getattr(fire_ice, "beyond", None)
+        _fs = fstatus
+
+        def _flames_view(_fs=_fs):
+            return _fs.view() if _fs is not None else None
+
+        def _group_names(_fs=_fs):
+            return list(_fs.names) if _fs is not None else []
+        try:
+            httpd.morning = morning_mod.Morning(
+                httpd.remote.folder, flamesafe_config=flamesafe_config,
+                link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
+                flames_get=_flames_view, live_check=httpd.remote.show_live_refusal,
+                group_names=_group_names if fstatus is not None else None,
+                journal=httpd.remote._morning_journal,
+                night=getattr(httpd_schedule, "_night", None),
+                laser_host=getattr(_bey, "host", None),
+                laser_port=getattr(_bey, "port", None),
+                logs_dir=os.path.join(httpd.remote.folder, "logs"))
+            httpd.remote.morning = httpd.morning
+            if httpd.morning.config_error:
+                print(f"Morning and Shutdown: {httpd.morning.config_error}")
+            _close_before_morning = httpd.server_close
+
+            def _close_morning():
+                try:
+                    httpd.morning.close()
+                finally:
+                    _close_before_morning()
+            httpd.server_close = _close_morning
+        except Exception as e:                       # noqa: BLE001
+            # The page is a convenience; a failure to build it never stops
+            # the show engine. Said once, here.
+            print(f"The Morning and Shutdown page could not be built: "
+                  f"{type(e).__name__}: {e}")
     if fire_ice is not None and fstatus is not None and \
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         # flamesafe's status_mirror_port (PR #39): the remote page's copy of
@@ -1531,7 +1577,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             outcome="status_mirror")
     if httpd.loopback is not None:
         # The loopback door answers the same optional routes.
-        for _name in ("conductor", "fire_ice", "madmapper", "beyond"):
+        for _name in ("conductor", "fire_ice", "madmapper", "beyond",
+                      "morning"):
             if hasattr(httpd, _name):
                 setattr(httpd.loopback, _name, getattr(httpd, _name))
     if on_ready:

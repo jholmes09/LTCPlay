@@ -164,6 +164,14 @@ RESUME_SETTLE_S = 1.0
 SEEK_JUMP_S = 0.25
 SEEK_SETTLE_S = 0.5
 TC_FPS_DEFAULT = 30.0
+# The purge frame (Jeff, 2026-10-17, the Morning and Shutdown page): a 512
+# channel frame the engine re-asserts with purge_set() every 100 ms while
+# Space or the deck's FIRE key is held. It is sent ONLY while the show is
+# not live, and only for PURGE_HOLD_S after the last purge_set, on this
+# link's own clock, so a page that dies with the key down, a heartbeat
+# gap, a connection drop or an engine thread that stops all read as "let
+# go" here, whatever the web layer does. zero() and disarm_all() clear it.
+PURGE_HOLD_S = 0.25
 LOCK_ALARM_S = 1.0          # CONTRACT.md: "for more than 1 s"
 CONFIRM_S = 1.0             # a disarm_all not confirmed by then is a fault
 KEY_MIN, KEY_MAX = 16, 128
@@ -462,6 +470,14 @@ class FlameLink:
         self._mono_last = None
         self.zeroed = True          # until the conductor releases the cues
         self._zero_gen = 0          # +1 on every zero()/disarm_all()
+        # The purge frame (PURGE_HOLD_S): (bytes(512), clock when set), or
+        # None. Read by values_now while the show is not live.
+        self._purge = None
+        self.purges_sent = 0
+        # Lockout (2026-10-17): channels (1-based slots) zeroed in every
+        # frame this link sends, cue or purge. flamesafe enforces the same
+        # set from the lockout file; this is the belt to its braces.
+        self._locked = frozenset()
         self.abort_id = _random_start()
         self._abort_repeat = None   # (abort_id, reason, repeat until)
         self.sent = 0
@@ -783,7 +799,14 @@ class FlameLink:
             self._was_live = False
             self._held_tc = tc
             self._resumed_at = None
-        if self.zeroed or live is not True or tc is None:
+        if live is not True:
+            # No show cue playing (idle, between shows, a Hold, an Abort
+            # fading out): the purge frame may go, if one is fresh. This is
+            # the ONLY place the purge is read, so a live show is never
+            # fed two sources of fire values (MORNING.md, T1).
+            self._cue_episode("", "")
+            return tc, self._purge_values(now)
+        if self.zeroed or tc is None:
             self._cue_episode("", "")
             return tc, zeros
         if self._tc_moved_at is None or now - self._tc_moved_at > TC_STILL_S:
@@ -832,7 +855,69 @@ class FlameLink:
         if blocked:
             for i in blocked:
                 vals[i] = 0
-        return tc, bytes(vals)
+        return tc, self._unlocked(bytes(vals))
+
+    # -- the purge frame and the lockout (2026-10-17) -------------------------
+    def _purge_values(self, now):
+        """The purge frame, while one has been set within PURGE_HOLD_S on
+        this link's own clock; else zeros. A stale purge is dropped here,
+        so nothing above this line has to remember to clear it."""
+        p = self._purge
+        if p is None:
+            return bytes(UNIVERSE_SIZE)
+        if now - p[1] > PURGE_HOLD_S or now < p[1]:
+            self._purge = None
+            return bytes(UNIVERSE_SIZE)
+        self.purges_sent += 1
+        return self._unlocked(p[0])
+
+    def purge_set(self, values):
+        """The engine's purge heartbeat: `values` (512 ints 0 to 255) go out
+        on the next frames for PURGE_HOLD_S, then stop by themselves unless
+        set again. Only while the show is not live (values_now). Returns
+        True when the frame was taken. Never raises."""
+        try:
+            vals = bytes(values)
+            if len(vals) != UNIVERSE_SIZE:
+                raise ValueError("wrong length")
+        except Exception:
+            return False
+        with self._lock:
+            self._purge = (vals, self._clock())
+        return True
+
+    def purge_clear(self):
+        """Stop a purge now: the next frame carries zeros (or the show's
+        cues, if a show is live). Also done by zero() and disarm_all()."""
+        with self._lock:
+            self._purge = None
+
+    def purge_active(self):
+        """True while a purge frame set within PURGE_HOLD_S is held."""
+        p = self._purge
+        try:
+            return p is not None and 0 <= self._clock() - p[1] <= PURGE_HOLD_S
+        except Exception:
+            return False
+
+    def set_locked_channels(self, slots):
+        """The locked out fire slots (1-based), zeroed in every frame this
+        link sends from now on. Rubbish locks nothing extra here: flamesafe
+        is the enforcement, this is the belt. Never raises."""
+        try:
+            self._locked = frozenset(int(s) for s in slots
+                                     if 1 <= int(s) <= UNIVERSE_SIZE)
+        except Exception:
+            pass
+
+    def _unlocked(self, vals):
+        locked = self._locked
+        if not locked or not any(vals):
+            return vals
+        out = bytearray(vals)
+        for s in locked:
+            out[s - 1] = 0
+        return bytes(out)
 
     def _tc_seconds(self, tc):
         h, m, s, f = int(tc[0:2]), int(tc[3:5]), int(tc[6:8]), int(tc[9:11])
@@ -961,7 +1046,12 @@ class FlameLink:
         with self._read_lock:
             tc, values = self.values_now()
         with self._lock:
-            if self.zeroed or gen != self._zero_gen:
+            if gen != self._zero_gen or (self.zeroed and self._purge is None):
+                # A zero() or disarm_all() that landed since the values were
+                # read wins (gen); and with the cues zeroed, only a purge
+                # frame still held may carry a value (the purge frame is the
+                # one thing that goes out while the conductor has the cues
+                # zeroed, and only while the show is not live: values_now).
                 values = bytes(UNIVERSE_SIZE)
             seq, mono = self._next()
             self.last_values_nonzero = any(values)
@@ -1026,6 +1116,7 @@ class FlameLink:
         True when that frame went out. Never asks the providers, so a hung
         one cannot delay it (fix round 1, item 7)."""
         with self._lock:
+            self._purge = None
             self.zeroed = True
             self._zero_gen += 1
             return self._send_zero_frame()
@@ -1050,6 +1141,7 @@ class FlameLink:
             why = " ".join(str(reason or "Abort").split())[:REASON_MAX] \
                 or "Abort"
             with self._lock:
+                self._purge = None
                 self.zeroed = True
                 self._zero_gen += 1
                 self._send_zero_frame()
@@ -1203,6 +1295,9 @@ class FlameLink:
                     str(k): round(v * 1000.0, 1) for k, v in
                     list(getattr(self, "_oversleep", {}).items())},
                 "cue_problem": self._cue_problem,
+                "purge": self.purge_active(),
+                "purges_sent": self.purges_sent,
+                "locked_channels": sorted(self._locked),
                 "lock_alarm": self.lock_alarm,
                 "abort_id": self.abort_id,
                 "abort": self.abort_state(),

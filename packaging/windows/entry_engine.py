@@ -13,9 +13,25 @@ def _self_check():
     for mod in ("ltcplay.cli", "ltcplay.web", "ltcplay.showaudio",
                 "ltcplay.flamelink", "ltcplay.conductor", "ltcplay.output",
                 "ltcplay.schedule_service", "ltcplay.announce",
-                "ltcplay.fseq", "ltcplay.clock"):
+                "ltcplay.fseq", "ltcplay.clock",
+                # The Morning and Shutdown page (MORNING.md): its engine,
+                # the laser tests, the checklist chain and the PDF writer.
+                "ltcplay.morning", "ltcplay.lasertest",
+                "ltcplay.checklist", "ltcplay.pdfmini"):
         importlib.import_module(mod)
     yield "ltcplay modules import"
+    # The checklist PDF is made by ltcplay's own pdfmini (standard library
+    # only), so the installed app must write one: the installer smoke test
+    # runs this check from the installed ltcplay.exe.
+    from ltcplay import pdfmini
+    doc = pdfmini.Document(title="self-check")
+    doc.new_page().text(pdfmini.MARGIN, 700, 12, "checklist PDF self-check")
+    pdf = doc.build()
+    if not pdf.startswith(b"%PDF-") or pdfmini.page_count(pdf) != 1 or \
+            "checklist PDF self-check" not in pdfmini.extract_text(pdf):
+        raise RuntimeError("the checklist PDF writer did not make a "
+                           "readable one page PDF")
+    yield f"checklist PDF writer (pdfmini, {len(pdf)} bytes for one page)"
     import numpy
     yield f"numpy {numpy.__version__}"
     import zstandard

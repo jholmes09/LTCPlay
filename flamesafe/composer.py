@@ -53,6 +53,11 @@ FLAME_FLOOD_BYTES_PER_TICK = 256 * 1024
 # (disarm_all, CONTRACT.md).  Flashing amber: cycling the arm IS the fix,
 # and the only one.  Shown until that group latches again.
 ABORT_DISARMED = "Disarmed by the show's Abort. Cycle the arm to re-arm."
+# Lockout (Jeff, 2026-10-17): the words on the ARMED lamp of a group every
+# one of whose fire slots is locked out.  Steady amber: cycling fixes
+# nothing; unlocking a machine on the Morning and Shutdown page does.
+LOCKED_OUT = ("Every machine in this group is locked out: it cannot arm "
+              "until one is unlocked.")
 # Rejections on the flame link are journaled exactly as the arm link's are
 # (arminput._RejectJournal, round 4 of #31's safety review, item C): one
 # line per REASON when an episode starts, one closing line with the count
@@ -184,6 +189,14 @@ class Composer:
         self._rise_times = [[] for _ in range(self.n)]
         self._held = [("", "")] * self.n   # (reason, amber mode) per group
         self._fire_refused = [False] * self.n
+        # Lockout (Jeff, 2026-10-17): the fire slots locked out right now,
+        # as the service read them from the lockout file ltcplay's engine
+        # writes.  A locked slot is zero on every packet, armed or not,
+        # commanded or not; a group with every fire slot locked cannot arm.
+        # Empty until note_locked_slots says otherwise.
+        self._locked = frozenset()
+        self._lockout_state = "none"
+        self._lockout_refused = [False] * self.n
         self._name_mismatch_logging = False   # item 10: once per episode
         self._name_mismatch_count = 0
         self._last_tick = None
@@ -198,6 +211,7 @@ class Composer:
             "fire_slots_quieted", "fire_refused", "arm_input_stale",
             "link_lost", "disarm_all", "disarm_all_rejected",
             "second_sender_disarms", "flame_link_floods",
+            "lockout_zeroed", "lockout_blocks",
             "faults_noted", "faults_cleared")}
 
     # ------------------------------------------------------------ arm input
@@ -422,6 +436,38 @@ class Composer:
             self._foreign_arm_senders = max(0, int(count))
         except (TypeError, ValueError):
             pass
+
+    def note_locked_slots(self, slots, state="read"):
+        """The fire slots locked out right now (Jeff, 2026-10-17), from the
+        lockout file ltcplay's engine writes (service.LockoutFile).  Called
+        by the service every tick, before tick().  `state` is the file's
+        state for the status frame: "none" (no file configured), "read",
+        "missing" or "unreadable" (the last good set is kept).  Never
+        raises: anything that is not a set of slots 1 to 512 is read as
+        the whole universe locked, the safe side."""
+        try:
+            got = frozenset(int(s) for s in slots)
+            if any(isinstance(s, bool) for s in slots) or \
+                    any(not 1 <= s <= rules.UNIVERSE_SIZE for s in got):
+                raise ValueError("slot out of range")
+        except Exception:                               # noqa: BLE001
+            got = frozenset(range(1, rules.UNIVERSE_SIZE + 1))
+            state = "unreadable"
+        if got != self._locked:
+            names = [g.name for g in self.groups
+                     if any(f in got for f in g.fire)]
+            self._event("lockout",
+                        f"locked out fire slots: {sorted(got) or 'none'}"
+                        + (f" (in {', '.join(names)})" if names else "")
+                        + ". A locked slot is zero on every packet; a group "
+                          "with every fire slot locked cannot arm.")
+        self._locked = got
+        self._lockout_state = str(state)
+
+    def _group_locked_out(self, g):
+        """True when every fire slot of `g` is locked out: nothing in it
+        may fire, so it is not raised either."""
+        return bool(g.fire) and all(f in self._locked for f in g.fire)
 
     def note_arm_link_flooded(self, flooded):
         """Whether the arm input has seen a flood inside its own stale_ms
@@ -839,6 +885,22 @@ class Composer:
                 held.append(self._why_not(i, live, link_live,
                                           flame_disturbed))
                 continue
+            if self._group_locked_out(g):
+                # Lockout (Jeff, 2026-10-17): every fire slot of this group
+                # is locked out, so there is nothing it may fire; it is not
+                # raised, and an established arm comes down.  Steady amber:
+                # cycling fixes nothing, unlocking a machine does.  Checked
+                # before "already up", so a lock landing on an armed group
+                # takes its arm value off the wire on this tick.
+                values.append(DISARM)
+                held.append((LOCKED_OUT, "steady"))
+                self.stats["lockout_blocks"] += 1
+                if not self._lockout_refused[i]:
+                    self._lockout_refused[i] = True
+                    self._event("lockout", f"{g.name}: held disarmed, every "
+                                           f"fire slot in it is locked out")
+                continue
+            self._lockout_refused[i] = False
             if prev != DISARM:
                 # Already up.  Holding an established arm is not a rising
                 # edge, so the precondition does not re-apply.
@@ -919,8 +981,13 @@ class Composer:
             for f, v in zip(g.fire, cf):
                 # A fire value goes out only while this group's safety slot
                 # carries the arm value on this same frame and the edge-quiet
-                # window has passed.  Everything else is zero.
-                if armed_now and not quiet:
+                # window has passed.  Everything else is zero.  A locked out
+                # slot (Jeff, 2026-10-17) is zero whatever else holds.
+                if f in self._locked:
+                    out = 0
+                    if v != 0:
+                        self.stats["lockout_zeroed"] += 1
+                elif armed_now and not quiet:
                     out = v
                 elif armed_now and quiet and v != 0:
                     out = 0
@@ -1056,6 +1123,7 @@ class Composer:
                 "sent_safety": values[i],
                 "sent_fire": list(sent_fire[i]),
                 "commanded_fire": list(commanded_fire[i]),
+                "locked_fire": [f in self._locked for f in g.fire],
             })
         arm_age = (None if self._arm_fresh_at is None
                    else int((t - self._arm_fresh_at) * 1000))
@@ -1098,6 +1166,11 @@ class Composer:
                 "new_sender": self._flame_new_sender(t),
                 "flooded": self._flame_flooded(t),
             },
+            # Lockout (2026-10-17): the fire slots this program is holding
+            # at zero, and how the lockout file read.  The rack screen
+            # compares these slots with the ones it asked for.
+            "lockout": {"slots": sorted(self._locked),
+                        "state": self._lockout_state},
             "disarm_all": {
                 "accepted": self._disarm_count,
                 "last_id": self._disarm_last_id,

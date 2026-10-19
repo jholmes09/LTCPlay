@@ -964,3 +964,23 @@ every group instead of only blocking new arming, and a flood on the flame
 link blocks consent. The status frame gains `frames.flooded`; the held
 reason's words say every group is disarmed. No existing field's name or
 type changed.
+
+Version 2, 2026-10-17 (the Morning and Shutdown page, MORNING.md): the
+config gains `lockout_file`, the path of a JSON file written by ltcplay's
+engine (the one writer) naming `flame_channels` to hold at zero. Left out,
+it is `ltcplay_lockout.json` beside the config file (where the show PC
+keeps both); `false` switches it off on purpose; a relative path is beside
+the config file. flamesafe polls it twice a second: a locked fire slot is
+zero on every packet whatever is armed or commanded, and a group with every
+fire slot locked is held (steady amber, "Every machine in this group is
+locked out"). An unreadable file keeps the last lock set; a file that held
+locks and disappears keeps them too (`missing_kept`, the engine never
+deletes the file, it rewrites it) until the engine writes it again; a file
+that never held locks and is missing locks nothing. The status frame gains
+a top-level `lockout` object (`slots`, `state`: none, read, missing,
+missing_kept or unreadable) and per group `locked_fire`; no existing
+field's name, type or meaning changed. ltcplay's side also sends a PURGE frame on the flame link
+(flamelink.purge_set): an ordinary flame frame, carrying fire values only
+while no show cue is playing and for 0.25 s after the page's last
+heartbeat, which flamesafe treats exactly like any cue frame (fire values
+pass only for an armed group). Nothing on this link's wire changed for it.

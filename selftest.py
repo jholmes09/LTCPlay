@@ -29139,6 +29139,50 @@ def test_streamdeck_outage_loop_runs_screen_pass():
           f"the arm's and the disarm's own sends): {len(arm.sends)}")
 
 
+def test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send():
+    section("Stream Deck: with the hardware away, an arm socket whose send "
+            "raises a plain OSError on every cycle (the port in use, the "
+            "interface down) never ends the hold-off loop: it keeps trying "
+            "at ARM_SEND_HZ for the whole wait and returns to the reconnect "
+            "attempt (round 5 of the safety review, item 2: only "
+            "DeckDisconnected used to be caught there)")
+    from ltcplay import streamdeck as sd
+
+    class _DeafArm(_FakeArmSocket):
+        def __init__(self, n):
+            super().__init__(n)
+            self.tries = 0
+
+        def send(self, names):
+            self.tries += 1
+            raise OSError("probe: the arm socket will not send")
+
+    names = ["front row", "cat-walk", "wave flamer"]
+    arm = _DeafArm(3)
+    t = [0.0]
+    events = []
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: True, clock=lambda: t[0],
+                      screen=_FakeScreen(),
+                      journal=lambda t_, **kw: events.append((t_, kw)))
+    arm.open()
+    outage = sd._DeckOutage(lambda t_, **kw: events.append((t_, kw)))
+    sleep = lambda s_: t.__setitem__(0, t[0] + s_)  # noqa: E731
+    try:
+        sd._hold_link_steady(c, sleep, 2.0, outage)
+        ended = "returned"
+    except Exception as e:                           # noqa: BLE001
+        ended = f"raised {type(e).__name__}: {e}"
+    check(ended == "returned",
+          f"the hold-off loop ran its 2 s out past a send that raised on "
+          f"every cycle, and returned to the reconnect attempt: {ended}")
+    check(arm.tries == int(2.0 * sd.ARM_SEND_HZ) and t[0] >= 2.0,
+          f"and it kept trying to send at ARM_SEND_HZ for the whole wait: "
+          f"{arm.tries} tries over {t[0]:.1f} s")
+    print("  ok")
+
+
 def test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error():
     section("Stream Deck: with the hardware away, a screen pass or tick that "
             "raises on every cycle never stops the arm frames (the link "
@@ -40519,6 +40563,69 @@ console.log(JSON.stringify(out));
           f"the page's stale logic, in node: {r.stdout!r} {r.stderr[-400:]!r}")
 
 
+def _morning_page_logic_in_node():
+    """The Morning page's pure helpers (MORNING.md, "How it is tested"), run
+    in node when this machine has it: fireKeyLapsed, the rule that ends a
+    Space press whose key repeat events have stopped (review of PR #68,
+    P1-4), and machineLook, what a machine tile reads."""
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                encoding="utf-8").read()
+    a = page.find("// LOGIC BEGIN")
+    b = page.find("// LOGIC END")
+    logic = page[a:b]
+    check("function fireKeyLapsed(" in logic and
+          "function machineLook(" in logic,
+          "fireKeyLapsed and machineLook sit in the page's LOGIC block")
+    node = shutil.which("node")
+    if not node:
+        print("  note: node is not on this machine, so the Morning page's "
+              "helpers were checked by reading only (CI runs them)")
+        return
+    js = logic + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const G = 2500, P = 1000;
+// A fresh press: within the grace time nothing can end it, repeat or not.
+t(!fireKeyLapsed(1000, 0, 0, G, P), "1 s in, no repeat yet: holds");
+t(!fireKeyLapsed(2500, 0, 0, G, P), "at the grace edge: holds");
+// Past the grace time the key repeat events are the evidence.
+t(fireKeyLapsed(2501, 0, 0, G, P), "2.5 s in, never a repeat event: ends (OS key repeat off, or a lost keyup)");
+t(!fireKeyLapsed(5000, 0, 4500, G, P), "a repeat 0.5 s ago: holds");
+t(!fireKeyLapsed(5000, 0, 4000, G, P), "a repeat exactly 1 s ago: holds");
+t(fireKeyLapsed(5001, 0, 4000, G, P), "a repeat 1.001 s ago: ends");
+t(fireKeyLapsed(60000, 0, 58000, G, P), "a long press whose repeats stopped 2 s ago: ends");
+t(!fireKeyLapsed(60000, 0, 59900, G, P), "a long press still repeating: holds (a physically stuck key looks the same: the page is not a dead-man switch)");
+t(fireKeyLapsed(3000, 0, undefined, G, P), "no repeatAt at all counts as none (undefined)");
+t(fireKeyLapsed(3000, 0, null, G, P), "no repeatAt at all counts as none (null)");
+t(!fireKeyLapsed(3000, 2000, 0, G, P), "a press that started 1 s ago holds whatever the old repeatAt says");
+// machineLook: locked beats everything; nothing reads FIRING unless the
+// engine says firing AND flamesafe reports the group armed on a fresh frame.
+const m = {id:"g1", name:"G1", group:"front row"};
+const mo = {lockout:{machines:{}}};
+const fl = {stale:false, groups:[{name:"front row", armed:"armed", wanted:true, reason:""}]};
+t(machineLook(m, {lockout:{machines:{g1:{}}}}, fl, {selected:["g1"], firing:true}).cls === "locked", "locked out reads locked even if selected and firing");
+t(machineLook(m, mo, fl, {selected:[], firing:false}).word === "Off", "not selected: Off");
+t(machineLook(m, mo, fl, {selected:["g1"], firing:false}).cls === "armed", "selected and armed: Purge armed");
+t(machineLook(m, mo, fl, {selected:["g1"], firing:true}).cls === "firing", "selected, armed, firing: FIRING");
+t(machineLook(m, mo, Object.assign({}, fl, {stale:true}), {selected:["g1"], firing:true}).cls === "sel", "flamesafe stale: never FIRING, never armed");
+t(machineLook(m, mo, {stale:false, groups:[{name:"front row", armed:"held", reason:"latched"}]}, {selected:["g1"], firing:true}).word === "Held: latched", "a held group says why");
+t(machineLook(m, mo, null, {selected:["g1"], firing:true}).cls === "sel", "no flamesafe at all: Arming..., never FIRING");
+t(machineLook(m, null, fl, null).word === "Off", "no engine view, no purge: Off");
+console.log(JSON.stringify(out));
+"""
+    r = _sp.run([node, "-e", js], capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"the Morning page's helpers, in node: {r.stdout!r} "
+          f"{r.stderr[-400:]!r}")
+
+
 def test_remote_has_no_arm_route():
     section("iPad remote: no route arms anything by itself; the only arm "
             "routes are the screen hold and its release, which the Stream "
@@ -42800,6 +42907,1900 @@ def test_alert_pixels_never_the_flame_controllers():
     print("  ok")
 
 
+# ---------------------------------------------------------------------------
+# The Morning and Shutdown page (Jeff, 2026-10-17): MORNING.md is the design
+# note and threat analysis these tests follow, threat by threat.
+# ---------------------------------------------------------------------------
+
+_MO_FLAMESAFE = {
+    "groups": [
+        {"name": "front row", "safety": 401, "fire": [411, 412, 413, 414, 415]},
+        {"name": "cat-walk", "safety": 402,
+         "fire": [421, 422, 423, 424, 425, 426]},
+        {"name": "wave flamer", "safety": 403, "fire": [431, 432, 433]}]}
+
+_MO_CONFIG = {
+    "machines": [
+        {"id": "g1", "name": "Ground 1", "kind": "gflame", "group": "front row",
+         "fire": [411]},
+        {"id": "g2", "name": "Ground 2", "kind": "gflame", "group": "front row",
+         "fire": [412]},
+        {"id": "s1", "name": "Scaffold 1", "kind": "gflame",
+         "group": "cat-walk", "fire": [421]},
+        {"id": "w1", "name": "Waver 1", "kind": "waver", "group": "wave flamer",
+         "fire": [431], "pan": 432, "tilt": 433}],
+    "groups": {"Ground G-Flames": ["g1", "g2"], "Scaffold G-Flames": ["s1"],
+               "Scaffold Wavers": ["w1"]},
+    "purge": {"gflame_fire": 240,
+              "waver": {"pan_up": 100, "tilt_up": 200, "head_settle_s": 1.0,
+                        "fire": 230}},
+    "lasers": [{"id": "laser-1", "name": "Laser 1"},
+               {"id": "laser-2", "name": "Laser 2"},
+               {"id": "laser-3", "name": "Laser 3", "mechanism": "osc",
+                "host": "127.0.0.2", "port": 8100,
+                "on": [["/beyond/general/startcue", 3]],
+                "off": [["/beyond/general/stopcue", 3]]},
+               {"id": "laser-4", "name": "Laser 4", "mechanism": "osc",
+                "host": "127.0.0.2", "port": 8100,
+                "on": [["/beyond/general/startcue", 4]],
+                "off": [["/beyond/general/stopcue", 4]],
+                "lock": [["/beyond/zones/4/enable", 0.0]]}],
+    "checklists": {"morning": {"title": "Morning", "steps": [
+        {"id": "gas", "text": "Gas on at the manifold"},
+        {"id": "walk", "text": "Walk the field"}]},
+        "shutdown": {"title": "Shutdown", "steps": ["Gas off"]}},
+    "names": ["Andy", "JH"]}
+
+
+class _FakePurgeLink:
+    """What morning.py asks of the flame link: the purge frame and the
+    locked channels. Records every call."""
+
+    def __init__(self):
+        self.frames = []
+        self.cleared = 0
+        self.locked = set()
+
+    def purge_set(self, values):
+        self.frames.append(bytes(values))
+        return True
+
+    def purge_clear(self):
+        self.cleared += 1
+
+    def set_locked_channels(self, slots):
+        self.locked = set(slots)
+
+
+def _morning_rig(S, config=None, link=None):
+    """An _arm_rig (flamesafe's status fed on the test's clock, screen
+    arming on) with a Morning attached, built the way web.serve builds it
+    but on the test's clocks and with no watcher thread."""
+    import json as _j
+    from ltcplay import morning as MO
+    R = _arm_rig(S)
+    fs = os.path.join(R.work, "flamesafe.json")
+    with open(fs, "w", encoding="utf-8") as fh:
+        _j.dump(_MO_FLAMESAFE, fh)
+    if config is not None:
+        with open(os.path.join(R.work, MO.CONFIG_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j.dump(config, fh)
+    R.link = link if link is not None else _FakePurgeLink()
+    names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+    R.lines = []
+    R.osc = []
+    # flamesafe's word on the lockout file, fed with its status: None for a
+    # flamesafe that says nothing about it, else {"slots", "state"}.
+    R.fs_lockout = None
+
+    def feed():
+        doc = {"t": "status", "k": "k" * 20, "fault": "", "groups": R.groups}
+        if R.fs_lockout is not None:
+            doc["lockout"] = R.fs_lockout
+        R.remote.flame_status.note(_j.dumps(doc).encode())
+    R.feed = feed
+    feed()
+
+    class _Sock:
+        def sendto(self, pkt, addr):
+            R.osc.append((addr, pkt))
+
+        def close(self):
+            pass
+    R.m = MO.Morning(R.work, flamesafe_config=fs,
+                     link_get=lambda: R.link,
+                     flames_get=lambda: R.remote.flame_status.view(),
+                     live_check=R.remote.show_live_refusal,
+                     group_names=lambda: names,
+                     journal=R.remote._morning_journal, night=R.svc._night,
+                     clock=lambda: R.mono[0], wall=lambda: R.wall[0],
+                     threaded=False, socket_factory=_Sock)
+    R.remote.morning = R.m
+    R.remote._deck_seen = R.mono[0]          # the deck is reading the engine
+    return R
+
+
+def _mo_advance(R, dt, beat=True):
+    """Time passes on every clock; the deck keeps reading; the page keeps
+    saying it is open unless `beat` is False; the watcher runs."""
+    R.mono[0] += dt
+    R.wall[0] += dt
+    R.feed()
+    R.remote._deck_seen = R.mono[0]
+    if beat:
+        R.m.open_beat("Rack screen")
+    R.m.tick()
+
+
+def test_morning_config_layout_and_lockout_file():
+    section("Morning and Shutdown: ltcplay_morning.json (machines, Jeff's four "
+            "groups, placeholder purge values, lasers, checklists, names, "
+            "the tally), the default machine list from flamesafe's groups, "
+            "the layout file, and the lockout file with one writer")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    from ltcplay import lasertest as LT
+    here = os.path.dirname(os.path.abspath(__file__))
+    check(MO.GROUP_NAMES == ("Ground G-Flames", "Scaffold G-Flames",
+                             "Scaffold Wavers", "Fireball"),
+          f"Jeff's group names, exactly: {MO.GROUP_NAMES}")
+    groups = MO.load_flamesafe_groups(
+        os.path.join(here, "flamesafe", "flamesafe.example.json"))
+    cfg = MO.MorningConfig.parse({}, "x", groups)
+    check(len(cfg.machines) == sum(len(g["fire"]) for g in groups),
+          f"no file: one machine per flamesafe fire slot "
+          f"({len(cfg.machines)})")
+    check(set(cfg.banks) == set(MO.GROUP_NAMES) and
+          cfg.banks["Fireball"] == ["fireball"] and
+          cfg.banks["Scaffold Wavers"] == ["wave-flamer-1", "wave-flamer-2"],
+          f"the default groups sort by name: {cfg.banks}")
+    check(cfg.purge == MO.PURGE_DEFAULTS and
+          cfg.purge["gflame_fire"] == 255 and
+          cfg.purge["waver"]["head_settle_s"] == 1.5,
+          f"placeholder purge values: {cfg.purge}")
+    check([l.id for l in cfg.lasers] == ["laser-1", "laser-2", "laser-3",
+                                         "laser-4"] and
+          all(l.mechanism == "none" for l in cfg.lasers),
+          "four undecided lasers")
+    check(set(cfg.checklists) == {"morning", "shutdown"} and
+          not cfg.checklists["morning"]["steps"] and cfg.names == [] and
+          cfg.tally["enabled"] is False, "empty checklists, no names, tally off")
+    # The shipped example loads against flamesafe's example config.
+    ex = MO.MorningConfig.load(
+        os.path.join(here, "ltcplay", "ltcplay_morning.example.json"), groups)
+    check([m.id for m in ex.machines][:2] == ["ground-1", "ground-2"] and
+          ex.by_id["waver-1"].kind == "waver" and
+          ex.by_id["waver-1"].channels() == {421, 422, 423} and
+          ex.banks["Scaffold Wavers"] == ["waver-1"] and
+          ex.names == ["Andy", "Jeff"] and ex.tally["enabled"] is False and
+          ex.checklists["morning"]["steps"][0]["id"] == "sample-1",
+          "ltcplay_morning.example.json loads: machines, groups, names, the "
+          "sample checklist, the tally off")
+    txt = open(os.path.join(here, "ltcplay", "ltcplay_morning.example.json"),
+               encoding="utf-8").read()
+    check("—" not in txt and "–" not in txt and "PLACEHOLDER" in txt,
+          "the example has no dashes and marks its placeholders")
+    # A real config, and every refusal in a sentence.
+    c = MO.MorningConfig.parse(_j.loads(_j.dumps(_MO_CONFIG)), "x",
+                               _MO_FLAMESAFE["groups"])
+    check([m.id for m in c.machines] == ["g1", "g2", "s1", "w1"] and
+          c.banks == {"Ground G-Flames": ["g1", "g2"],
+                      "Scaffold G-Flames": ["s1"], "Scaffold Wavers": ["w1"],
+                      "Fireball": []} and c.purge["gflame_fire"] == 240 and
+          c.by_id["w1"].channels() == {431, 432, 433},
+          f"a written config parses: {c.banks}")
+
+    def bad(what, doc, groups=_MO_FLAMESAFE["groups"]):
+        try:
+            MO.MorningConfig.parse(doc, "x", groups)
+            check(False, f"accepted: {what}")
+        except MO.MorningConfigError as e:
+            check(str(e).endswith(".") and "—" not in str(e) and
+                  "–" not in str(e), f"{what}: refused in a sentence "
+                                           f"with no dashes: {e}")
+
+    def with_(**over):
+        d = _j.loads(_j.dumps(_MO_CONFIG))
+        d.update(over)
+        return d
+    bad("an unknown top key", with_(machins=[]))
+    bad("a slot not in the machine's flamesafe group",
+        with_(machines=[{"id": "x", "group": "front row", "fire": [421]}]))
+    bad("a group flamesafe does not have",
+        with_(machines=[{"id": "x", "group": "upstairs", "fire": [411]}]))
+    bad("two machines on one slot",
+        with_(machines=[{"id": "a", "group": "front row", "fire": [411]},
+                        {"id": "b", "group": "front row", "fire": [411]}]))
+    bad("a waver without pan and tilt",
+        with_(machines=[{"id": "w", "kind": "waver", "group": "wave flamer",
+                         "fire": [431]}]))
+    bad("a waver whose pan is its tilt",
+        with_(machines=[{"id": "w", "kind": "waver", "group": "wave flamer",
+                         "fire": [431], "pan": 432, "tilt": 432}]))
+    bad("a gflame with a pan",
+        with_(machines=[{"id": "x", "group": "front row", "fire": [411],
+                         "pan": 412}]))
+    bad("a slot out of range",
+        with_(machines=[{"id": "x", "group": "front row", "fire": [0]}],
+              ), groups=None)
+    bad("a group name that is not one of Jeff's four",
+        with_(groups={"Ground": ["g1"]}))
+    bad("a group naming a machine that does not exist",
+        with_(groups={"Fireball": ["nope"]}))
+    bad("a machine in two groups",
+        with_(groups={"Fireball": ["g1"], "Ground G-Flames": ["g1"]}))
+    bad("a purge value over 255", with_(purge={"gflame_fire": 256}))
+    bad("a purge key nobody has", with_(purge={"gflame": 1}))
+    bad("a head settle time of a minute",
+        with_(purge={"waver": {"head_settle_s": 60}}))
+    bad("a head settle time of 0 (the head always goes up first)",
+        with_(purge={"waver": {"head_settle_s": 0}}))
+    bad("a laser mechanism nobody has",
+        with_(lasers=[{"id": "l1", "mechanism": "magic"}]))
+    bad("an osc laser with no messages",
+        with_(lasers=[{"id": "l1", "mechanism": "osc", "host": "127.0.0.2",
+                       "port": 8100}]))
+    bad("BEYOND's BlackOut as a laser message",
+        with_(lasers=[{"id": "l1", "mechanism": "osc", "host": "127.0.0.2",
+                       "port": 8100,
+                       "on": [["/beyond/general/BlackOut", 1]]}]))
+    bad("an OSC wildcard in a laser message",
+        with_(lasers=[{"id": "l1", "mechanism": "osc", "host": "127.0.0.2",
+                       "port": 8100, "on": [["/beyond/zones/*/x", 1]]}]))
+    bad("two lasers with one id",
+        with_(lasers=[{"id": "l1"}, {"id": "l1"}]))
+    bad("a name listed twice", with_(names=["Andy", "Andy"]))
+    bad("a tally over plain http",
+        with_(tally={"enabled": False, "url": "http://x.example/t"}))
+    bad("a tally enabled with no URL", with_(tally={"enabled": True}))
+    bad("a tally enabled with a word", with_(tally={"enabled": "yes",
+                                                     "url": "https://x/"}))
+    bad("a checklist step with no words",
+        with_(checklists={"morning": {"steps": [{"id": "a", "text": ""}]}}))
+    bad("two steps with one id",
+        with_(checklists={"morning": {"steps": [{"id": "a", "text": "x"},
+                                                {"id": "a", "text": "y"}]}}))
+    # A laser with messages parses, and encodes what it will send.
+    ok = MO.MorningConfig.parse(with_(lasers=[
+        {"id": "l1", "name": "Laser 1", "mechanism": "osc", "host": "127.0.0.2",
+         "port": 8100, "on": [["/beyond/general/startcue", 3]],
+         "off": [["/beyond/general/stopcue", 3]],
+         "lock": [["/beyond/zones/1/enable", 0.0]]}]), "x",
+        _MO_FLAMESAFE["groups"])
+    check(ok.lasers[0].on == [("/beyond/general/startcue", 3)] and
+          ok.lasers[0].view()["configured"] is True, "an osc laser parses")
+    # The layout: a default by group row, saved positions, refusals.
+    d = tempfile.mkdtemp()
+    try:
+        lay = MO.Layout(os.path.join(d, MO.LAYOUT_FILE))
+        pos, saved = lay.load(c)
+        check(not saved and set(pos) == {"g1", "g2", "s1", "w1"} and
+              pos["g1"]["y"] > pos["s1"]["y"] > pos["w1"]["y"],
+              f"the default layout: ground at the front, wavers behind: {pos}")
+        got = lay.save(c, {"g1": {"x": 10, "y": 90.44}})
+        check(got == {"g1": {"x": 10.0, "y": 90.4}}, "saved, rounded")
+        pos2, saved2 = lay.load(c)
+        check(saved2 and pos2["g1"] == {"x": 10.0, "y": 90.4} and
+              pos2["s1"] == pos["s1"], "a saved position is read back; the "
+                                       "rest keep the default")
+        for badpos in ({"nope": {"x": 1, "y": 1}}, {"g1": {"x": 101, "y": 1}},
+                       {"g1": {"x": "a", "y": 1}}, [1]):
+            try:
+                lay.save(c, badpos)
+                check(False, f"a bad layout was saved: {badpos}")
+            except ValueError:
+                check(True, "a bad layout is refused")
+        # The lockout file: one writer, atomic, read back after a restart.
+        lines = []
+        lk = MO.Lockout(os.path.join(d, MO.LOCKOUT_FILE),
+                        journal=lambda t, **f: lines.append((t, f)),
+                        wall=lambda: 1_800_000_000.0)
+        ok, text = lk.set(c, "machine", "w1", True, "", "Rack screen",
+                          reason="valve sticks")
+        check(ok and "locked out" in text, f"locked: {text}")
+        doc = _j.load(open(os.path.join(d, MO.LOCKOUT_FILE), encoding="utf-8"))
+        check(doc["lockout_format"] == 1 and
+              doc["flame_channels"] == [431, 432, 433] and
+              "w1" in doc["machines"] and
+              doc["machines"]["w1"]["reason"] == "valve sticks",
+              f"the file carries every slot the machine owns for flamesafe: "
+              f"{doc['flame_channels']}")
+        check(lines and "LOCKED OUT" in lines[-1][0] and
+              lines[-1][1].get("action") == "lockout",
+              f"journaled: {lines[-1]}")
+        ok, text = lk.set(c, "machine", "w1", False, "", "Rack screen")
+        check(not ok and "confirm" in text and lk.is_locked("machine", "w1"),
+              f"unlock without the confirm is refused: {text}")
+        lk2 = MO.Lockout(os.path.join(d, MO.LOCKOUT_FILE))
+        check(lk2.is_locked("machine", "w1") and
+              lk2.channels(c) == {431, 432, 433},
+              "a new engine reads the lock back: it survives a restart")
+        ok, text = lk2.set(c, "laser", "laser-1", True, "Andy", "iPad")
+        check(ok and lk2.is_locked("laser", "laser-1"), "a laser locks too")
+        ok, text = lk2.set(c, "machine", "nope", True, "", "x")
+        check(not ok, "an unknown machine is refused")
+        ok, text = lk2.set(c, "machine", "w1", False, "Andy", "Rack screen",
+                           confirmed=True)
+        check(ok and not lk2.is_locked("machine", "w1") and
+              _j.load(open(os.path.join(d, MO.LOCKOUT_FILE)))["flame_channels"]
+              == [], "unlocked with the confirm, and the file says so")
+        with open(os.path.join(d, MO.LOCKOUT_FILE), "w") as fh:
+            fh.write("{ broken")
+        lk3 = MO.Lockout(os.path.join(d, MO.LOCKOUT_FILE))
+        check(lk3.load_error and not lk3.machines,
+              f"a broken file is said, not guessed: {lk3.load_error}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    check(LT.FORBIDDEN_ADDRESSES == frozenset(("/beyond/general/BlackOut",
+                                               "/beyond/general/MasterPause")),
+          "the laser tests refuse the same two BEYOND addresses beyond.py "
+          "does, by name")
+    print("  ok")
+
+
+def test_purge_frame_on_the_flame_link():
+    section("Morning and Shutdown, the flame link: the purge frame goes out "
+            "only while the show is not live, only for 0.25 s after the last "
+            "heartbeat on the link's own clock, never after zero() or "
+            "disarm_all(); locked channels are zero in every frame (T1, T2, "
+            "T5, T7)")
+    from ltcplay import flamelink as fl
+    key = _fl_key()
+    cfg = fl.FlameLinkConfig("127.0.0.1", 5571, 1, key, frame_stale_ms=500)
+    t = [100.0]
+    state = {"tc": None, "live": False}
+    sent = []
+    link = fl.FlameLink(cfg, cues=lambda tc: [200] * 512,
+                        show_state=lambda: (state["tc"], state["live"]),
+                        clock=lambda: t[0], seek_guard=False)
+    link._send = lambda data: sent.append(data) or True
+    check(fl.PURGE_HOLD_S == 0.25, "the purge frame lives 0.25 s")
+    frame = bytes([0] * 410 + [240] + [0] * 101)
+    check(link.purge_set(frame) is True and link.purge_active(),
+          "a purge frame is taken")
+    tc, vals = link.values_now()
+    check(vals == frame, "with no show live the purge frame goes out")
+    link.send_frame()
+    import json as _j
+    got = _j.loads(sent[-1])
+    check(got["values"][410] == 240 and sum(got["values"]) == 240,
+          "and reaches the wire while the conductor has the cues zeroed "
+          "(zeroed is True between shows)")
+    t[0] += fl.PURGE_HOLD_S + 0.01
+    tc, vals = link.values_now()
+    check(vals == bytes(512) and not link.purge_active(),
+          "0.26 s after the last heartbeat it is gone, on the link's clock")
+    link.purge_set(frame)
+    state.update(tc="00:00:01:00", live=True)
+    link.release()
+    t[0] += 0.03
+    tc, vals = link.values_now()
+    check(vals != frame and vals[410] != 240,
+          "a live show: the purge frame is ignored, the cue path decides")
+    state.update(live=False)
+    link.purge_set(frame)
+    check(link.values_now()[1] == frame, "not live again: the purge frame")
+    link.zero()
+    check(not link.purge_active() and link.values_now()[1] == bytes(512),
+          "zero() clears it")
+    link.purge_set(frame)
+    state.update(live=True)
+    t[0] += 0.03
+    check(link.zeroed and link.values_now()[1] == bytes(512),
+          "a live show with the cues zeroed (a Hold): still no purge frame")
+    state.update(live=False)
+    link.purge_set(frame)
+    link.disarm_all("Abort from the rack screen")
+    check(not link.purge_active() and link.values_now()[1] == bytes(512),
+          "disarm_all() clears it")
+    link.purge_set(frame)
+    link.purge_clear()
+    check(not link.purge_active(), "purge_clear() clears it")
+    check(link.purge_set(b"short") is False and link.purge_set(None) is False,
+          "a frame that is not 512 bytes is refused")
+    # Locked channels are zero in a purge frame and in a cue frame.
+    link.set_locked_channels({411, 2})
+    link.purge_set(frame)
+    check(link.values_now()[1] == bytes(512), "a locked slot's purge is zero")
+    state.update(live=True)
+    link.release()
+    t[0] += 0.03
+    vals = link.values_now()[1]
+    check(vals[410] == 0 and vals[1] == 0 and vals[0] == 200 and
+          vals[2] == 200, f"locked slots are zero in a cue frame too, the "
+                          f"rest untouched: {vals[:3]} {vals[410]}")
+    snap = link.snapshot()
+    check(snap["locked_channels"] == [2, 411] and snap["purge"] is True and
+          snap["purges_sent"] >= 2, f"the snapshot says so: {snap}")
+    print("  ok")
+
+
+def test_purge_rules_at_the_engine():
+    section("Morning and Shutdown, the engine: a click arms a machine for the "
+            "purge only from a listed device with purge arming on, a fresh "
+            "page, a fresh flamesafe, the deck reading, no show live, no "
+            "Abort standing, the machine not locked; one device owns the "
+            "selection; the fire heartbeat sets the purge frame for armed "
+            "groups only, a Waver's head first; a gap, a lost page, an Abort "
+            "or a lock stop it (T1 to T9, T12, T13)")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    from ltcplay import remote as RM
+    from ltcplay import morning as MO
+    check(MO.BEAT_STALE_S == 0.25 and MO.OPEN_STALE_S == 2.0 and
+          MO.FRESH_S == 1.0, "the purge numbers are what MORNING.md says")
+    R = _morning_rig(S, _MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    try:
+        link = R.link
+        # The view, and the routes exist only here.
+        st, _h, out = R.ask("GET", "/api/remote/morning", client=loop)
+        check(st == 200 and [m["id"] for m in out["machines"]] ==
+              ["g1", "g2", "s1", "w1"] and out["groups"]["Scaffold Wavers"] ==
+              ["w1"] and out["purge_enabled"] is True and
+              out["lasers"][0]["configured"] is False and
+              out["checklists"]["names"] == ["Andy", "JH"] and
+              "g1" in out["layout"],
+              f"the page's view: machines, groups, layout, lasers, names: {st}")
+        # Switched off: refused before anything is looked at.
+        RM.save_settings(R.work, purge_arming=False)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 403 and "switched off" in out["error"],
+              f"purge_arming false refuses: {st} {out}")
+        try:
+            RM.save_settings(R.work, purge_arming="yes")
+            check(False, "purge_arming of \"yes\" was read")
+        except ValueError:
+            check(True, "purge_arming has to be true or false")
+        RM.save_settings(R.work, purge_arming=True, screen_arming=False)
+        check(RM.load_settings(R.work)["purge_arming"] is True,
+              "and true is on (the default when the key is absent)")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"],
+              f"a device on the show network needs screen_arming too: {st}")
+        RM.save_settings(R.work, screen_arming=True)
+        # The deck must be reading: it is what arms the group.
+        R.remote._deck_seen = R.mono[0] - 3.0
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Stream Deck" in out["error"],
+              f"no deck reading the engine: nothing is armed: {st} {out}")
+        R.remote._deck_seen = R.mono[0]
+        # A stale page, a stale flamesafe.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen() - 1500},
+                            client=loop)
+        check(st == 409 and "1 s old" in out["error"],
+              f"a page status 1.5 s old: {st} {out}")
+        R.mono[0] += 1.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "flamesafe" in out["error"],
+              f"flamesafe quiet 1.1 s: {st} {out}")
+        R.feed()
+        # Unknown and locked machines.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "zz", "seen": R.seen()}, client=loop)
+        check(st == 400, "an unknown machine")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "g2", "on": True,
+                             "reason": "leaks"}, client=loop)
+        check(st == 200 and R.m.lockout.is_locked("machine", "g2") and
+              link.locked == {412},
+              f"a lock writes the file and tells the flame link: {st} {out}")
+        # flamesafe has not confirmed the lock (it says nothing about a
+        # lockout file, or has none): no purge at all until it does, and
+        # the journal says so once (review of PR #68, P2-2).
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "not confirmed" in out["error"] and
+              "Ground 2" in out["error"],
+              f"flamesafe silent on the lock: no purge of anything: {st} {out}")
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check(out["morning"]["locked_machines"] == ["Ground 2"] and
+              out["morning"]["flamesafe_confirmed"] is None,
+              f"the status carries the lock banner, unconfirmed: "
+              f"{out['morning']}")
+        R.fs_lockout = {"slots": [], "state": "none"}
+        R.feed()
+        R.m.tick()
+        check(any(r.get("action") == "lockout" and r.get("outcome") ==
+                  "unconfirmed" for r in R.svc.journal),
+              "flamesafe with no lockout_file: a fault line in the journal")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "asked for [412]" in out["error"],
+              f"flamesafe holding other slots than asked: no purge: {out}")
+        R.fs_lockout = {"slots": [412], "state": "read"}
+        R.feed()
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check(out["morning"]["flamesafe_confirmed"] is True,
+              "and says when flamesafe reports the same slots locked")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g2", "seen": R.seen()}, client=loop)
+        check(st == 409 and "locked out" in out["error"],
+              f"a locked machine cannot be armed for a purge: {st} {out}")
+        # A clean click: the selection, and the deck is told which group.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"a click arms Ground 1 for the purge: {st} {out}")
+        R.m.open_beat("Rack screen")
+        d = R.remote.deck_input()
+        check(d["morning"]["open"] is True and
+              d["morning"]["purge"]["wanted_groups"] == [0] and
+              d["morning"]["purge_enabled"] is True,
+              f"deck-input says the page is open and group 0 is wanted: "
+              f"{d['morning']}")
+        check(any(r.get("action") == "purge" and r.get("outcome") ==
+                  "selected" for r in R.svc.journal),
+              "journaled with the surface")
+        # Another device cannot take or add to the selection.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "s1", "seen": R.seen()}, client=ipad)
+        check(st == 409 and "One device at a time" in out["error"],
+              f"a second device is refused: {st} {out}")
+        # Fire: nothing is armed at flamesafe yet (front row disarmed), so
+        # the frame is empty and the page is told why.
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop)
+        check(st == 200 and out["firing"] == [] and
+              "not armed" in out["waiting"][0] and link.frames == [],
+              f"a fire press with the group not armed sends nothing: {out}")
+        fid = out["fire_id"]
+        # flamesafe arms the group (the deck did its part): the next beat
+        # carries the fire value on that machine's slot only.
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        check(st == 200 and out["firing"] == ["Ground 1"] and link.frames and
+              link.frames[-1][410] == 240 and sum(link.frames[-1]) == 240,
+              f"armed: 240 on slot 411 and nothing else: {out}")
+        # A heartbeat from another device, or with a stale id, is refused.
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=ipad)
+        check(st == 409 and out.get("let_go"),
+              f"another device cannot carry the fire on: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid,
+                             "who": "Stream Deck", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 409 and "only that device" in out["error"] and
+              out.get("let_go") and R.m.purge.fire is not None,
+              f"nor can the deck process carry on the page's press with its "
+              f"id; the page's own press is not ended by the refusal: {st} "
+              f"{out}")
+        # Nor can another device end the owner's press or selection
+        # (review of PR #68, P2-11); Abort is the path everyone has.
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop", {}, client=ipad)
+        check(st == 409 and R.m.purge.fire is not None,
+              f"another device cannot stop the owner's press: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-clear", {},
+                            client=ipad)
+        check(st == 409 and R.m.purge.selected == ["g1"],
+              f"nor clear the owner's selection: {st} {out}")
+        # A gap of more than 0.25 s ends the press.
+        before = link.cleared
+        R.mono[0] += 0.3
+        R.wall[0] += 0.3
+        R.feed()
+        R.m.tick()
+        check(link.cleared > before and R.m.purge.fire is None,
+              "0.3 s without a heartbeat: the frame is cleared by the watcher")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        check(st == 409 and "interrupted" in out["error"],
+              f"and the old press cannot carry on: {out}")
+        # A Waver: head up first, fire only after head_settle_s of beats
+        # counted from the first beat on which it is selected AND its group
+        # is armed, never from the press's start (review of PR #68, P1-1):
+        # here the group arms 0.5 s into the press.
+        R.groups[2]["armed"] = "disarmed"
+        R.groups[2]["wanted"] = False
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "w1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1", "w1"], "the Waver joins")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[431] == 0 and f[432] == 0 and f[430] == 0 and
+              f[410] == 240 and "not armed" in out["waiting"][0],
+              f"first beat: the Waver's group is not armed, so not even its "
+              f"head moves; Ground 1 fires: {out}")
+        fid = out["fire_id"]
+        for _ in range(5):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"seen": R.seen(), "fire_id": fid},
+                                client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "s1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "firing right now" in out["error"] and
+              R.m.purge.selected == ["g1", "w1"],
+              f"a machine never joins a live fire press: {st} {out}")
+        R.groups[2]["armed"] = "armed"
+        R.groups[2]["wanted"] = True
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
+              and f[410] == 240 and "head going up" in out["waiting"][0],
+              f"0.6 s into the press the group arms: pan 100 and tilt 200 at "
+              f"once, no fire on the Waver yet, Ground 1 fires: {out}")
+        for _ in range(9):
+            R.mono[0] += 0.1
+            R.wall[0] += 0.1
+            R.feed()
+            st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                                {"seen": R.seen(), "fire_id": fid},
+                                client=loop)
+        check(link.frames[-1][430] == 0 and out["firing"] == ["Ground 1"],
+              "0.9 s in: the head is still settling, no Waver fire")
+        R.mono[0] += 0.15
+        R.wall[0] += 0.15
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(f[430] == 230 and f[431] == 100 and f[432] == 200 and
+              out["firing"] == ["Ground 1", "Waver 1"],
+              f"past head_settle_s: the Waver fires with its head up: {out}")
+        # The group drops out of ARMED mid press (a deck tap, flamesafe
+        # holding it): the head falls, and the next arm waits the full
+        # settle time over again (review of PR #68, P2-10).
+        R.groups[2]["armed"] = "disarmed"
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[430] == 0 and f[431] == 0 and f[432] == 0 and
+              any("not armed" in w for w in out["waiting"]),
+              f"disarmed mid press: nothing on the Waver, not even its head: "
+              f"{out}")
+        R.groups[2]["armed"] = "armed"
+        R.feed()
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": fid}, client=loop)
+        f = link.frames[-1]
+        check(st == 200 and f[431] == 100 and f[432] == 200 and f[430] == 0
+              and any("head going up" in w for w in out["waiting"]),
+              f"armed again: the head goes up first, no fire, the settle "
+              f"time starts over: {out}")
+        # The key comes up: cleared at once.
+        before = link.cleared
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop", {}, client=loop)
+        check(st == 200 and link.cleared > before and R.m.purge.fire is None,
+              "purge-stop clears the frame now")
+        # Locking a selected machine drops it from the selection.
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": True},
+                            client=loop)
+        check(st == 200 and R.m.purge.selected == ["g1"] and
+              link.locked == {412, 431, 432, 433},
+              f"a lock drops the machine from the purge and tells the link: "
+              f"{R.m.purge.selected} {link.locked}")
+        R.fs_lockout = {"slots": [412, 431, 432, 433], "state": "read"}
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": False},
+                            client=loop)
+        check(st == 409 and "confirm" in out["error"],
+              "unlock needs the confirm")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "machine", "id": "w1", "on": False,
+                             "confirmed": True}, client=loop)
+        check(st == 200 and not R.m.lockout.is_locked("machine", "w1"),
+              "and with it unlocks")
+        R.fs_lockout = {"slots": [412], "state": "read"}
+        R.feed()
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        check(out["morning"]["locked_machines"] == ["Ground 2"] and
+              out["morning"]["flamesafe_confirmed"] is True and
+              out["morning"]["lock_error"] == "",
+              f"the status carries the lock banner: {out['morning']}")
+        # The page goes away: 2 s later the selection is gone.
+        for _ in range(4):
+            _mo_advance(R, 0.5, beat=True)
+        check(R.m.purge.selected == ["g1"], "while the page beats it stays")
+        for _ in range(5):
+            _mo_advance(R, 0.5, beat=False)
+        check(R.m.purge.selected == [] and
+              R.remote.deck_input()["morning"]["purge"]["wanted_groups"] == []
+              and R.remote.deck_input()["morning"]["open"] is False,
+              "2 s without the page: the selection is cleared and the deck "
+              "is told the page is closed")
+        # The deck process fires a selection an iPad owns (review of PR
+        # #68, P1-2): it names itself in `screen`, over loopback, whatever
+        # operator name it carries; the owner check is for pages.
+        st, _h, out = R.ask("POST", "/api/remote/morning-open", {},
+                            client=ipad)
+        check(st == 200 and out.get("open") is True, "the iPad's page is open")
+        R.m.open_beat("Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=ipad)
+        check(st == 200 and R.m.purge.owner == "iPad at 10.20.0.44",
+              f"the iPad arms Ground 1: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "who": "Andy",
+                             "screen": "Stream Deck"}, client=loop)
+        check(st == 200 and out["firing"] == ["Ground 1"] and
+              R.m.purge.fire["device"] == "Stream Deck",
+              f"the deck's FIRE key fires the iPad's selection: {st} {out}")
+        deck_fid = out["fire_id"]
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=ipad)
+        check(st == 409 and "Stream Deck is already firing" in out["error"],
+              f"the owner's own press waits for the deck to let go: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop)
+        check(st == 409 and "has the purge selection" in out["error"] and
+              R.m.purge.fire is not None and
+              R.m.purge.fire["device"] == "Stream Deck",
+              f"the Rack screen is neither the owner nor the deck: refused, "
+              f"and the deck's press is not ended by it: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen(), "fire_id": deck_fid,
+                             "who": "Andy", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 200 and out["fire_id"] == deck_fid,
+              "the deck carries its own press on")
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop",
+                            {"who": "Andy", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 200 and R.m.purge.fire is None, "and lets go")
+        # The selection lives only while ITS OWNER's page is open (review
+        # of PR #68, P2-1): the Rack screen keeps beating, the iPad stops.
+        for _ in range(5):
+            _mo_advance(R, 0.5, beat=True)
+        check(R.m.purge.selected == [] and R.m.page_open(),
+              "2 s without the iPad's own beat: its selection is cleared, "
+              "though the Rack screen's page is open")
+        # A configured laser's test goes on between shows, and over the
+        # laser's own socket, never the flame link.
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=loop)
+        check(st == 200 and "laser-3" in R.m.lasers.on and len(R.osc) == 3
+              and R.osc[0][0] == ("127.0.0.2", 8100),
+              f"a configured laser's test turns on, three OSC packets: {out}")
+        # Abort, with nothing live: the purge selection and the laser test
+        # end AT THE PRESS, before any watcher pass (T7).
+        R.m.open_beat("Rack screen")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200, "armed again")
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=loop)
+        check(R.m.purge.selected == [] and not R.m.lasers.on and
+              R.osc[-1][1].startswith(b"/beyond/general/stopcue"),
+              f"Abort cleared the purge and turned the laser test off at "
+              f"the press: {R.m.purge.selected} {R.m.lasers.on}")
+        R.settle()
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=loop)
+        check(st == 200 and "laser-3" in R.m.lasers.on, "test on again")
+        # Locking a configured laser sends its lock messages (a placeholder
+        # list until BEYOND's way to shut one laser is known) at the lock.
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-4", "on": True},
+                            client=loop)
+        check(st == 200 and R.m.lockout.is_locked("laser", "laser-4") and
+              R.osc[-1][1].startswith(b"/beyond/zones/4/enable"),
+              f"locking Laser 4 sends its lock messages: {st} {out}")
+        n_osc = len(R.osc)
+        R.m.tick()
+        check(len(R.osc) == n_osc, "and not again on an idle watcher pass")
+        # A show live: refused, a selection is cleared and the laser tests
+        # go off on the watcher's next pass.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200, "armed again")
+        _live_show(R)
+        R.feed()
+        R.m.tick()
+        check(R.m.purge.selected == [],
+              "a show going live clears the purge selection")
+        check(not R.m.lasers.on,
+              "and turns every laser test off within one watcher pass")
+        check(any(p.startswith(b"/beyond/zones/4/enable")
+                  for _a, p in R.osc[n_osc:]),
+              "and a locked laser's lock messages go to BEYOND again as the "
+              "show goes live (MORNING.md: at every show start while locked)")
+        n_osc = len(R.osc)
+        R.m.tick()
+        check(not any(p.startswith(b"/beyond/zones/4/enable")
+                      for _a, p in R.osc[n_osc:]),
+              "once per show start, not every pass")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "live" in out["error"],
+              f"and nothing can be armed for a purge while it is: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop)
+        check(st == 409 and "live" in out["error"],
+              "nor fired")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-1", "on": True}, client=loop)
+        check(st == 409 and "not allowed now" in out["error"],
+              f"nor a laser test turned on: {out}")
+        # An Abort: latched until Reset, and the purge is refused.
+        st, _h, out = R.ask("POST", "/api/remote/abort", {"confirmed": True},
+                            client=loop)
+        R.settle()
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "aborted" in out["error"],
+              f"aborted: no purge until Reset: {out}")
+        # Lasers: a placeholder refuses; a lock refuses; the view says so.
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()},
+                            client=loop)
+        R.settle()
+        R.now[0] = _den(S, 18, 30)
+        R.svc.tick()
+        R.settle()
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-1", "on": True}, client=loop)
+        check(st == 409 and "placeholder" in out["error"],
+              f"an undecided laser refuses its test: {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-2", "on": True},
+                            client=loop)
+        check(st == 200 and R.m.lockout.is_locked("laser", "laser-2"),
+              "a laser locks")
+        st, _h, out = R.ask("GET", "/api/remote/morning", client=loop)
+        check(out["lasers"][1]["locked"] is True and
+              out["lockout"]["lasers"].get("laser-2"), "and the view says so")
+        # The layout route.
+        st, _h, out = R.ask("POST", "/api/remote/layout",
+                            {"positions": {"g1": {"x": 5, "y": 95}}},
+                            client=loop)
+        check(st == 200 and out["layout"]["g1"] == {"x": 5.0, "y": 95.0},
+              "the layout saves from the page")
+        st, _h, out = R.ask("POST", "/api/remote/layout",
+                            {"positions": {"g1": {"x": 500, "y": 95}}},
+                            client=loop)
+        check(st == 400, "a bad position is refused")
+        # From the show network, unlocking and turning a laser test ON need
+        # screen_arming (review of PR #68, P2-4, P2-5); locking does not. A
+        # device that may not purge does not hold the page open (P2-8).
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": True},
+                            client=ipad)
+        check(st == 200 and R.m.lockout.is_locked("laser", "laser-1"),
+              f"an iPad may lock: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": False,
+                             "confirmed": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              R.m.lockout.is_locked("laser", "laser-1"),
+              f"but not unlock without screen_arming: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=ipad)
+        check(st == 403 and "screen_arming" in out["error"] and
+              not R.m.lasers.on,
+              f"nor turn a laser test on: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/morning-open", {},
+                            client=ipad)
+        check(st == 200 and out.get("open") is False and
+              "iPad at 10.20.0.44" not in R.m._open_devices,
+              f"a device that may not purge does not hold the page open: "
+              f"{out}")
+        st, _h, out = R.ask("POST", "/api/remote/lock",
+                            {"kind": "laser", "id": "laser-1", "on": False,
+                             "confirmed": True}, client=loop)
+        check(st == 200 and not R.m.lockout.is_locked("laser", "laser-1"),
+              "the show machine itself unlocks")
+        RM.save_settings(R.work, screen_arming=True)
+        st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                            {"laser": "laser-3", "on": True}, client=ipad)
+        check(st == 200 and "laser-3" in R.m.lasers.on,
+              f"with screen_arming the iPad may turn a test on: {st} {out}")
+        R.ask("POST", "/api/remote/laser-test",
+              {"laser": "laser-3", "on": False}, client=ipad)
+        # A broken ltcplay_remote.json: no purge from anywhere.
+        rpath = os.path.join(R.work, "ltcplay_remote.json")
+        with open(rpath, encoding="utf-8") as fh:
+            saved_settings = fh.read()
+        with open(rpath, "w", encoding="utf-8") as fh:
+            fh.write("{ broken")
+        st, _h, out = R.ask("GET", "/api/remote/morning", client=loop)
+        check(st == 200 and out["purge_enabled"] is False,
+              "a broken ltcplay_remote.json: purge arming reads as off")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 403, "and a purge click is refused")
+        with open(rpath, "w", encoding="utf-8") as fh:
+            fh.write(saved_settings)
+        # The page's own fire key: one keydown starts it, the browser's key
+        # repeat events are the evidence the key is still down, and every
+        # way of losing the key stops it (review of PR #68, P1-4).
+        html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ltcplay", "web", "remote.html"),
+                    encoding="utf-8").read()
+        for want in ('if(e.repeat){ if(FIRE) FIRE.repeatAt = Date.now(); return; }',
+                     "const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;",
+                     "if(fireKeyLapsed(now, f.startAt, f.repeatAt, "
+                     "KEY_REPEAT_GRACE_MS, KEY_REPEAT_GAP_MS)){",
+                     'addEventListener("keyup"',
+                     'addEventListener("blur"', '"visibilitychange"',
+                     '"pagehide"', '/api/remote/purge-clear'):
+            check(want in html, f"the page's script carries {want!r} (wording "
+                                f"only: the script has no test harness here, "
+                                f"so this proves presence, not behaviour; "
+                                f"the rule itself, fireKeyLapsed, runs in "
+                                f"node in the remote page logic test)")
+        _morning_page_logic_in_node()
+        # Every one of these routes is refused from another site's page.
+        st, _h, out = R.ask("POST", "/api/remote/purge-fire",
+                            {"seen": R.seen()}, client=loop,
+                            headers={"Origin": "http://evil.example"})
+        check(st == 403, "a cross-site purge-fire is refused")
+        # And the arm-route test's rule holds: no route here names "arm".
+        import re as _re
+        check(not [r for r in RM.MORNING_POST_ROUTES + RM.MORNING_GET_ROUTES
+                   if _re.search(r"(?<!dis)arm", r)],
+              "no Morning route is an arm route")
+    finally:
+        R.m.close()
+        R.close()
+    print("  ok")
+
+
+class _FakeMorningScreen(_FakeScreen):
+    def __init__(self):
+        super().__init__()
+        self.mo = None
+
+    def morning(self):
+        return self.mo
+
+
+class _FakePurgeFire:
+    def __init__(self):
+        self.calls = []
+        self.firing = False
+
+    def start(self, who=""):
+        self.calls.append(("start", who))
+        self.firing = True
+        return True
+
+    def stop(self, who=""):
+        self.calls.append(("stop", who))
+        was = self.firing
+        self.firing = False
+        return was
+
+
+def test_morning_deck_remap_and_purge_arming():
+    section("Morning and Shutdown, the Stream Deck: a group entering the "
+            "engine's purge list is armed (a click, Jeff's exception), one "
+            "leaving it is disarmed, a closed page or a quiet engine disarms "
+            "every purge group, latched and the refractory window still "
+            "refuse, an operator's tap is never undone; the Start key is "
+            "FIRE while the page is open and START NOW again after (T4, T8, "
+            "T11)")
+    from ltcplay import streamdeck as sd
+    arm = _FakeArmSocket(3)
+    status = _FakeStatusSocket()
+    names = ["front row", "cat-walk", "wave flamer"]
+    events = []
+    t = [100.0]
+    scr = _FakeMorningScreen()
+    cond = _FakeConductor()
+    c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False, conductor=cond,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: t[0], screen=scr)
+    pf = _FakePurgeFire()
+    c.purge_fire = pf
+
+    def mo(open_=True, wanted=(), enabled=True, locked=()):
+        scr.mo = {"open": open_, "purge_enabled": enabled,
+                  "purge": {"wanted_groups": list(wanted), "selected":
+                            len(wanted), "firing": False},
+                  "locks": {"groups_fully_locked": list(locked)}}
+
+    def step(dt=0.05):
+        t[0] += dt
+        c.screen_pass()
+        c.tick()
+    mo(True, [0])
+    step()
+    check(arm.wanted == [True, False, False] and 0 in c._purge_armed,
+          f"group 0 entering the purge list is armed at once, no hold: "
+          f"{arm.wanted}")
+    check("PURGE" in events[-1][0] and events[-1][1].get("screen") ==
+          "Morning page", f"journaled as a purge arm from the page: "
+                          f"{events[-1]}")
+    step()
+    step()
+    check(arm.sends.count([True, False, False]) >= 1 and
+          arm.wanted == [True, False, False], "and stays armed while listed")
+    # The operator taps the group off on the deck: it is NOT re-armed
+    # while it stays in the list.
+    down = [False] * 6
+    d2 = list(down)
+    d2[sd.GROUP_KEYS[0]] = True
+    c.run_once(d2)
+    c.run_once(down)
+    check(arm.wanted[0] is False and 0 not in c._purge_armed,
+          "a deck tap disarms it")
+    step()
+    step()
+    check(arm.wanted[0] is False, "and the purge list does not re-arm it")
+    # Leaving and re-entering the list arms it again (after the refractory).
+    mo(True, [])
+    step()
+    mo(True, [0])
+    step()
+    check(arm.wanted[0] is False and "refractory" in events[-1][0],
+          f"inside the refractory window after that tap: refused: "
+          f"{events[-1][0][:80]}")
+    t[0] += sd.REARM_REFRACTORY_S
+    mo(True, [])
+    step()
+    mo(True, [0, 2])
+    step()
+    check(arm.wanted == [True, False, True] and c._purge_armed == {0, 2},
+          f"past it, both groups arm: {arm.wanted}")
+    # One leaves the list: disarmed, the other stays.
+    mo(True, [2])
+    step()
+    check(arm.wanted == [False, False, True] and c._purge_armed == {2},
+          f"group 0 left the list: disarmed: {arm.wanted}")
+    check("disarm pressed" in events[-1][0] and "Morning page" in
+          events[-1][0], f"journaled: {events[-1][0][:90]}")
+    # FIRE: the Start key while the page is open.
+    d2 = list(down)
+    d2[sd.TOP_START] = True
+    c.run_once(d2)
+    check(pf.calls[-1] == ("start", "Andy") and pf.firing,
+          f"the Start key is FIRE while the page is open: {pf.calls}")
+    c.run_once(down)
+    check(pf.calls[-1] == ("stop", "Andy") and not pf.firing,
+          "letting go stops the heartbeats")
+    # The page closes: every purge group disarms, a fire stops, the key
+    # is START NOW again.
+    c.run_once(d2)
+    check(pf.firing, "firing again")
+    mo(False, [2])
+    step()
+    check(arm.wanted == [False, False, False] and not c._purge_armed and
+          not pf.firing, f"the page closed: disarmed and the fire stopped: "
+                         f"{arm.wanted}")
+    c.run_once(down)
+    before = len(events)
+    c.run_once(d2)
+    check(any("no real 'start" in e[0] for e in events[before:]),
+          "with the page closed the Start key is Start Now again")
+    c.run_once(down)
+    # The engine goes quiet: morning() reads None; everything disarms.
+    mo(True, [1])
+    step()
+    check(arm.wanted == [False, True, False], "armed for the purge")
+    scr.mo = None
+    step()
+    check(arm.wanted == [False, False, False],
+          "no fresh word from the engine: the purge group is disarmed")
+    # Purge arming off at the engine, or the rig latched: nothing arms.
+    mo(True, [1], enabled=False)
+    step()
+    check(arm.wanted == [False, False, False],
+          "purge_enabled false at the engine: nothing arms")
+    t[0] += sd.REARM_REFRACTORY_S     # past the window of the last disarm
+    mo(True, [1])
+    cond._latched = True
+    n_sends = len(arm.sends)
+    step()
+    check(arm.wanted == [False, False, False] and
+          not any(any(s) for s in arm.sends[n_sends:]),
+          f"latched: nothing arms for a purge, and no arm value went out "
+          f"on the arm link even for one pass: {arm.sends[n_sends:]}")
+    cond._latched = False
+    # No operator chosen on the deck: a purge arm is refused like any arm
+    # (review of PR #68, P2-6: the same guards as a completed hold).
+    mo(True, [])
+    step()
+    c.operator_provider = lambda: ""
+    mo(True, [1])
+    n_sends = len(arm.sends)
+    step()
+    check(arm.wanted == [False, False, False] and
+          not any(any(s) for s in arm.sends[n_sends:]) and
+          any("operator" in e[0].lower() for e in events[-3:]),
+          f"no operator: nothing arms for a purge, and it is said: "
+          f"{[e[0][:70] for e in events[-3:]]}")
+    c.operator_provider = lambda: "Andy"
+    mo(True, [])
+    step()
+    # A group the OPERATOR armed is not touched by the purge list.
+    t[0] += sd.REARM_REFRACTORY_S
+    arm.set_group(1, True)
+    mo(True, [1])
+    step()
+    check(1 not in c._purge_armed and arm.wanted[1] is True,
+          "a group already armed by the operator is left as it is")
+    mo(True, [])
+    step()
+    check(arm.wanted[1] is True,
+          "and is not disarmed when the purge list empties")
+    arm.set_group(1, False)
+    # Drawing: the re-mapped faces exist, and only while the page is open.
+    if not _pillow_missing("the deck's Morning faces"):
+        fonts = sd.Fonts()
+        fonts.text_block = lambda *a, **kw: None   # no font files on CI
+        mo(True, [0], locked=[2])
+        step()
+        img = c.draw(fonts, True, 0)
+        check(img.size == (sd.W, sd.H), "the re-mapped deck draws")
+        mo(False)
+        step()
+        img2 = c.draw(fonts, True, 0)
+        check(img2.size == (sd.W, sd.H), "and the restored one")
+    # PurgeFire itself: heartbeats to the engine, a refusal ends the press,
+    # stop posts purge-stop. On a fake poster, no network.
+    posts = []
+    answers = [(True, "ok", {"fire_id": 7, "firing": ["Ground 1"]}),
+               (True, "ok", {"fire_id": 7}),
+               (False, "the show is live", {})]
+
+    def poster(path, body):
+        posts.append((path, dict(body)))
+        return answers.pop(0) if answers else (True, "ok", {})
+    import threading as _th
+    gate = _th.Event()
+    lines = []
+    fire = sd.PurgeFire(poster, journal=lambda t_, **kw: lines.append(t_),
+                        wall=lambda: 1234.5)
+    fire.start(who="Andy")
+    for _ in range(100):
+        if not fire.firing:
+            break
+        gate.wait(0.02)
+    beats = [p for p in posts if p[0] == "/api/remote/purge-fire"]
+    check(len(beats) == 3 and "fire_id" not in beats[0][1] and
+          beats[1][1]["fire_id"] == 7 and beats[2][1]["fire_id"] == 7 and
+          beats[0][1]["screen"] == "Stream Deck" and
+          beats[0][1]["who"] == "Andy" and beats[0][1]["seen"] == 1234500,
+          f"the first beat has no id, the next carry the engine's, each "
+          f"names the deck: {beats}")
+    check(not fire.firing and any("refused" in l for l in lines),
+          "a refused beat ends the press and is journaled")
+    fire.start(who="Andy")
+    gate.wait(0.05)
+    fire.stop(who="Andy")
+    for _ in range(50):
+        if any(p[0] == "/api/remote/purge-stop" for p in posts):
+            break
+        gate.wait(0.02)
+    check(any(p[0] == "/api/remote/purge-stop" for p in posts),
+          "stop posts purge-stop to the engine")
+    check(sd.PURGE_BEAT_S == 0.1, "the deck beats every 100 ms, like the page")
+    # ScreenKeys itself: the engine's morning block is read only while the
+    # engine's last answer is fresh (SCREEN_STALE_S), like the holds.
+    tt = [50.0]
+    ans = {"enabled": True, "holds": [], "disarms": [], "alerts": [],
+           "morning": {"open": True, "purge_enabled": True,
+                       "purge": {"wanted_groups": [1]}, "locks": {}}}
+    sk = sd.ScreenKeys("http://127.0.0.1:1", fetcher=lambda path: ans,
+                       clock=lambda: tt[0])
+    sk.poll_once()
+    check(sk.morning() == ans["morning"], "a fresh answer's morning block")
+    tt[0] += sd.SCREEN_STALE_S + 0.01
+    check(sk.morning() is None,
+          "0.31 s after the engine's last answer it reads as nothing: the "
+          "deck un-maps and disarms the purge groups")
+    sk._fetch = lambda path: None
+    sk.poll_once()
+    check(sk.morning() is None, "an unreachable engine: nothing")
+    print("  ok")
+
+
+def test_laser_tests_placeholders_lockout_and_allow_list():
+    section("Morning and Shutdown, the laser tests: an undecided laser "
+            "refuses and sends nothing, a configured one sends its on and "
+            "off lists three times, a locked laser's ON is refused at the "
+            "sender, all_off turns every test off, and only exact OSC "
+            "addresses that are not BlackOut or MasterPause ever leave (T10)")
+    from ltcplay import lasertest as LT
+    from ltcplay import beyond as BY
+    check(LT.FORBIDDEN_ADDRESSES == BY.FORBIDDEN_ADDRESSES,
+          "the same two forbidden addresses as beyond.py")
+    for addr in ("/beyond/general/BlackOut", "/beyond/general/MasterPause",
+                 "/beyond/zones/*/x", "/a b", "beyond/x", "#bundle", "/",
+                 "/x[1]", "/x{a,b}", "/x?", "/é", "", None, 7):
+        check(not LT.allowed_address(addr), f"{addr!r} is not an address "
+                                            f"this program may send to")
+    check(LT.allowed_address("/beyond/general/startcue"), "an exact one is")
+    check(LT.encode_osc("/a", 3) == b"/a\x00\x00,i\x00\x00\x00\x00\x00\x03"
+          and LT.encode_osc("/a", 0.0)[-4:] == b"\x00\x00\x00\x00"
+          and LT.encode_osc("/a", "hi") == b"/a\x00\x00,s\x00\x00hi\x00\x00",
+          "whole numbers, decimals and text encode as OSC")
+    for v in (True, float("nan"), [1], 2 ** 40, "x" * 300):
+        try:
+            LT.encode_osc("/a", v)
+            check(False, f"{v!r} encoded")
+        except ValueError:
+            check(True, f"{str(v)[:20]!r} is not an argument")
+    sent = []
+
+    class _Sock:
+        def sendto(self, pkt, addr):
+            sent.append((addr, pkt))
+
+        def close(self):
+            pass
+    lasers = LT.parse_lasers([
+        {"id": "l1", "name": "Laser 1", "mechanism": "osc", "host": "127.0.0.2",
+         "port": 8100, "on": [["/beyond/general/startcue", 3]],
+         "off": [["/beyond/general/stopcue", 3]],
+         "lock": [["/beyond/zones/1/enable", 0.0]]},
+        {"id": "l2", "name": "Laser 2"}], "x")
+    locked = set()
+    lines = []
+    lt = LT.LaserTests(lasers, locked=lambda lid: lid in locked,
+                       journal=lambda t, **f: lines.append((t, f)),
+                       socket_factory=_Sock, sleep=lambda s: None)
+    ok, text = lt.set("l2", True, who="Andy")
+    check(not ok and "placeholder" in text and not sent,
+          f"an undecided laser refuses and sends nothing: {text}")
+    ok, text = lt.set("l1", True, who="Andy")
+    check(ok and len(sent) == 3 and all(
+        a == ("127.0.0.2", 8100) and b.startswith(b"/beyond/general/startcue")
+        for a, b in sent) and "l1" in lt.on,
+          f"a configured laser's on list goes three times: {len(sent)}")
+    check(lines and "ON" in lines[-1][0] and lines[-1][1].get("action") ==
+          "laser-test", f"journaled: {lines[-1]}")
+    del sent[:]
+    ok, text = lt.set("l1", False, who="Andy")
+    check(ok and len(sent) == 3 and sent[0][1].startswith(
+        b"/beyond/general/stopcue") and "l1" not in lt.on,
+          "off sends the off list")
+    del sent[:]
+    locked.add("l1")
+    ok, text = lt.set("l1", True, who="Andy")
+    check(not ok and "locked out" in text and not sent,
+          f"a locked laser's ON is refused at the sender: {text}")
+    locked.clear()
+    lt.set("l1", True)
+    del sent[:]
+    gone = lt.all_off("a show started")
+    check(gone == ["l1"] and not lt.on and sent and
+          sent[0][1].startswith(b"/beyond/general/stopcue"),
+          "all_off turns the test off with the off list")
+    del sent[:]
+    lt.send_lock("l1", "locked out")
+    check(sent and sent[-1][1].startswith(b"/beyond/zones/1/enable"),
+          "the lock list goes when a laser is locked")
+    v = lt.view()
+    check(v[0]["configured"] and not v[1]["configured"] and
+          v[0]["on"] is False, f"the view: {v}")
+    try:
+        lt._osc.send("127.0.0.2", 8100, "/beyond/general/BlackOut", 1)
+        check(False, "the socket layer sent BlackOut")
+    except LT.LaserConfigError:
+        check(True, "the socket layer itself refuses BlackOut")
+    print("  ok")
+
+
+def test_checklist_audit_chain_pdf_export_and_tally():
+    section("Morning and Shutdown, the checklists: a tick needs a listed "
+            "name; every tick, untick and note is an append-only hash chained "
+            "record with UTC and local time, the step's words, who, device "
+            "and address; verify finds any edit; ticks reset each night; a "
+            "completed routine writes the day's JSON and PDF; Export all is "
+            "a zip of every day's PDF, a combined PDF with contents and "
+            "VERIFY.txt; the tally sends nothing until configured and keeps "
+            "a disk queue when it is (T14)")
+    import json as _j
+    import shutil
+    import tempfile
+    import zipfile as _zf
+    from ltcplay import checklist as CL
+    from ltcplay import morning as MO
+    from ltcplay import pdfmini as PM
+    import ast as _ast
+    here = os.path.dirname(os.path.abspath(__file__))
+    # pdfmini stands on the standard library alone, so it bundles as it is.
+    tree = _ast.parse(open(os.path.join(here, "ltcplay", "pdfmini.py"),
+                           encoding="utf-8").read())
+    mods = {n.names[0].name.split(".")[0] for n in _ast.walk(tree)
+            if isinstance(n, _ast.Import)} | {
+        n.module.split(".")[0] for n in _ast.walk(tree)
+        if isinstance(n, _ast.ImportFrom) and n.module}
+    check(mods <= {"re"}, f"pdfmini imports only the standard library: {mods}")
+    spec = open(os.path.join(here, "packaging", "windows", "ltcplay.spec"),
+                encoding="utf-8").read()
+    check('collect_submodules("ltcplay")' in spec,
+          "the Windows app bundles every ltcplay module, pdfmini included")
+    cfg = MO.MorningConfig.parse(_j.loads(_j.dumps(_MO_CONFIG)), "x",
+                                 _MO_FLAMESAFE["groups"])
+    d = tempfile.mkdtemp()
+    try:
+        import datetime as _dt
+        wall = [1_800_000_000.0]
+        night = [_dt.date(2026, 11, 14)]
+        sends = []
+        lines = []
+        svc = CL.ChecklistService(cfg, os.path.join(d, "checklists"),
+                                  night=lambda: night[0],
+                                  journal=lambda t, **f: lines.append((t, f)),
+                                  wall=lambda: wall[0],
+                                  clock=lambda: wall[0],
+                                  transport=lambda *a: sends.append(a) or
+                                  (200, "ok"), threaded=False)
+        day1 = svc.show_date()
+        # A tick needs a name from the list.
+        st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                              "step": "gas"},
+                           "Rack screen", "Rack screen", True)
+        check(st == 409 and "Pick a name" in out["error"],
+              f"no name: refused: {out}")
+        st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                              "step": "gas", "who": "Bob"},
+                           "Rack screen", "Rack screen", True)
+        check(st == 409, "a name not on the list: refused")
+        st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                              "step": "nope", "who": "Andy"},
+                           "Rack screen", "Rack screen", True)
+        check(st == 409 and "no step" in out["error"], "an unknown step")
+        st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                              "step": "gas", "who": "Andy"},
+                           "Rack screen", "Rack screen", True)
+        check(st == 200 and out["record"] == 1 and "ticked by Andy" in
+              out["text"], f"Andy ticks: {out}")
+        r = svc.chain.records[0]
+        check(r["seq"] == 1 and r["prev"] == CL.GENESIS and
+              r["hash"] == CL.record_hash(r) and r["utc"].endswith("Z") and
+              r["local"][:10] and r["show_date"] == day1 and
+              r["checklist"] == "morning" and r["step"] == "gas" and
+              r["step_text"] == "Gas on at the manifold" and
+              r["state"] == "done" and r["who"] == "Andy" and
+              r["device"] == "Rack screen" and r["ip"] == "127.0.0.1",
+              f"the record carries everything the ruling asks: {r}")
+        wall[0] += 60
+        st, out = svc.post("checklist-note", {"checklist": "morning",
+                                              "step": "gas", "who": "JH",
+                                              "note": "Pressure low, 40 psi"},
+                           "iPad at 10.20.0.44", "iPad", False)
+        check(st == 200 and svc.chain.records[-1]["state"] == "note" and
+              svc.chain.records[-1]["ip"] == "10.20.0.44" and
+              svc.chain.records[-1]["device"] == "iPad at 10.20.0.44",
+              "a note is its own record, with the device and address")
+        st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                              "step": "gas", "who": "JH",
+                                              "done": False},
+                           "Rack screen", "Rack screen", True)
+        check(st == 200 and svc.chain.records[-1]["state"] == "undone",
+              "an untick is a new record, never an edit")
+        v = svc.view()
+        m = v["checklists"][0]
+        check(m["steps"][0]["done"] is False and m["steps"][0]["note"] ==
+              "Pressure low, 40 psi" and m["done"] == 0 and not m["complete"]
+              and v["verify"]["ok"] and v["verify"]["records"] == 3,
+              f"the view replays the records: {m}")
+        check(sends == [] and not os.path.isdir(svc.tally.outbox) and
+              v["tally"]["enabled"] is False,
+              "the tally is off: nothing sent, nothing queued")
+        # Completing the routine writes the day's record, JSON and PDF.
+        for sid in ("gas", "walk"):
+            wall[0] += 30
+            st, out = svc.post("checklist-tick", {"checklist": "morning",
+                                                  "step": sid, "who": "Andy"},
+                               "Rack screen", "Rack screen", True)
+            check(st == 200, f"tick {sid}")
+        recs = svc.chain.records
+        check(recs[-1]["state"] == "routine_complete" and
+              svc.view()["checklists"][0]["complete"],
+              "every step ticked: a routine_complete record")
+        base = os.path.join(svc.day_dir(day1), f"checklist_{day1}")
+        check(os.path.isfile(base + ".json") and os.path.isfile(base + ".pdf"),
+              "the day's JSON and PDF are written beside the chain")
+        doc = _j.load(open(base + ".json", encoding="utf-8"))
+        check(doc["show_date"] == day1 and doc["routines"][0]["complete"] and
+              len(doc["records"]) == len(recs) and doc["chain_verified"]["ok"],
+              "the JSON holds every record and the verification")
+        pdf = open(base + ".pdf", "rb").read()
+        txt = PM.extract_text(pdf)
+        check(pdf.startswith(b"%PDF-1.4") and pdf.rstrip().endswith(b"%%EOF"),
+              "a PDF file")
+        for want in (f"Show date {day1}", "Morning: COMPLETE", "Gas on at the "
+                     "manifold", "Walk the field", "Andy at", "Note: Pressure "
+                     "low, 40 psi", "Record trail", "Hash chain verification: "
+                     "INTACT", "Page 1 of", "Shutdown: not complete"):
+            check(want in txt, f"the PDF reads {want!r}")
+        check("—" not in txt and "–" not in txt,
+              "no dashes in the PDF")
+        check(len(_re_findall(r"Page \d+ of \d+", txt)) == PM.page_count(pdf)
+              and PM.page_count(pdf) >= 1, "every page is numbered")
+        # Verify finds an edit, a deletion and an insertion.
+        chain_path = svc.chain.path
+        raw = open(chain_path, encoding="utf-8").read().splitlines()
+        ok0 = CL.Chain(chain_path).verify()
+        check(ok0[0] and ok0[1] == len(recs), f"the chain verifies: {ok0}")
+        with open(chain_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(raw[:1] + [raw[1].replace("Pressure low",
+                                                         "Pressure fine")]
+                               + raw[2:]) + "\n")
+        bad = CL.Chain(chain_path).verify()
+        check(not bad[0] and bad[1] == 1 and "changed" in bad[2],
+              f"an edited note is caught at record 2: {bad}")
+        with open(chain_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(raw[:1] + raw[2:]) + "\n")
+        bad = CL.Chain(chain_path).verify()
+        check(not bad[0] and "missing or out of order" in bad[2],
+              f"a deleted record is caught: {bad}")
+        forged = dict(_j.loads(raw[1]))
+        forged["who"] = "Nobody"
+        forged["hash"] = CL.record_hash(forged)
+        with open(chain_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(raw[:2] + [_j.dumps(forged, sort_keys=True)]
+                               + raw[2:]) + "\n")
+        bad = CL.Chain(chain_path).verify()
+        check(not bad[0] and bad[1] == 2, f"an inserted record is caught: {bad}")
+        with open(chain_path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(raw) + "\n")
+        check(CL.Chain(chain_path).verify()[0], "restored: intact")
+        # The CLI says the same.
+        from ltcplay import cli as _cli
+        import argparse as _ap
+        import io as _io
+        import contextlib as _ctx
+        buf = _io.StringIO()
+        with _ctx.redirect_stdout(buf):
+            rc = _cli.cmd_checklist_verify(_ap.Namespace(folder=svc.folder))
+        check(rc == 0 and "intact" in buf.getvalue(),
+              f"ltc checklist-verify: {buf.getvalue()[:80]}")
+        # A new night: the ticks reset, the records stay.
+        night[0] = _dt.date(2026, 11, 15)
+        wall[0] += 86400
+        v2 = svc.view()
+        check(v2["show_date"] == "2026-11-15" and
+              v2["checklists"][0]["done"] == 0 and
+              v2["verify"]["records"] == len(recs),
+              f"a new night starts clean, the chain keeps every record: "
+              f"{v2['show_date']} {v2['checklists'][0]['done']}")
+        for sid in ("gas", "walk"):
+            svc.post("checklist-tick", {"checklist": "morning", "step": sid,
+                                        "who": "JH"}, "Rack screen",
+                     "Rack screen", True)
+        night[0] = _dt.date(2026, 11, 16)
+        wall[0] += 86400
+        svc.post("checklist-tick", {"checklist": "shutdown", "step": "step-1",
+                                    "who": "Andy"}, "Rack screen",
+                 "Rack screen", True)
+        dates = svc.chain.dates()
+        check(dates == [day1, "2026-11-15", "2026-11-16"], f"three days: {dates}")
+        # Export all: a zip of every day, a combined PDF, VERIFY.txt.
+        name, data = svc.export_zip()
+        z = _zf.ZipFile(_io.BytesIO(data))
+        names = sorted(z.namelist())
+        check(name == f"checklist_records_{day1}_to_2026-11-16.zip" and
+              f"checklist_{day1}.pdf" in names and
+              "checklist_2026-11-16.pdf" in names and
+              "checklist_2026-11-16.json" in names and
+              "checklist_records_all.pdf" in names and "VERIFY.txt" in names,
+              f"the zip holds every day's PDF and JSON, the combined PDF and "
+              f"VERIFY.txt: {names}")
+        ver = z.read("VERIFY.txt").decode("utf-8")
+        check("Hash chain verification: INTACT" in ver and
+              "Days in this export: 3" in ver and
+              svc.chain.records[-1]["hash"] in ver, f"VERIFY.txt: {ver[:200]}")
+        allpdf = z.read("checklist_records_all.pdf")
+        at = PM.extract_text(allpdf)
+        check("Contents" in at and f"Show date {day1}" in at and
+              "Show date 2026-11-16" in at and "page 2" in at and
+              "Hash chain verification for the whole set: INTACT" in at,
+              "the combined PDF has a table of contents with page numbers "
+              "and the whole-set verification")
+        check(PM.page_count(allpdf) >= 4, "and a page per day plus contents")
+        day16 = PM.extract_text(z.read("checklist_2026-11-16.pdf"))
+        check("Gas off" in day16 and "Andy at" in day16 and
+              "Morning: not complete" in day16, "each day's PDF is its own")
+        name2, data2 = svc.export_zip("2026-11-15", "2026-11-15")
+        n2 = _zf.ZipFile(_io.BytesIO(data2)).namelist()
+        check("checklist_2026-11-15.pdf" in n2 and
+              f"checklist_{day1}.pdf" not in n2 and
+              "checklist_2026-11-16.pdf" not in n2,
+              f"a date range narrows the export: {n2}")
+        # The tally: configured, it queues on disk and retries.
+        tok = os.path.join(d, "tally.token")
+        open(tok, "w").write("secret-token-123\n")
+        cfg2 = MO.MorningConfig.parse(dict(_j.loads(_j.dumps(_MO_CONFIG)),
+                                           tally={"enabled": True,
+                                                  "url": "https://tally.example/in",
+                                                  "token_file": tok}), "x",
+                                      _MO_FLAMESAFE["groups"])
+        fail = [True]
+        sent = []
+        tl = []
+
+        def transport(url, data, headers, timeout):
+            sent.append((url, _j.loads(data), dict(headers), timeout))
+            if fail[0]:
+                raise OSError("no route to host")
+            return 200, "ok"
+        svc2 = CL.ChecklistService(cfg2, os.path.join(d, "cl2"),
+                                   night=lambda: _dt.date(2026, 11, 20),
+                                   journal=lambda t, **f: tl.append((t, f)),
+                                   wall=lambda: wall[0],
+                                   clock=lambda: wall[0],
+                                   transport=transport, threaded=False)
+        st, out = svc2.post("checklist-tick", {"checklist": "shutdown",
+                                               "step": "step-1",
+                                               "who": "Andy"}, "Rack screen",
+                            "Rack screen", True)
+        check(st == 200, "a tick with the tally on")
+        pend = svc2.tally.pending()
+        # Three payloads: the tick's record, the routine_complete record
+        # (the one step was the whole routine) and the routine itself.
+        check(len(pend) == 3 and sent and sent[0][0] ==
+              "https://tally.example/in" and
+              sent[0][2]["Authorization"] == "Bearer secret-token-123" and
+              sent[0][1]["kind"] == "checklist_record" and
+              sent[0][1]["v"] == 1 and sent[0][1]["record"]["who"] == "Andy",
+              f"offline: the record and the completed routine wait on disk, "
+              f"the try carried the token: {len(pend)} {sent[0][1]['kind']}")
+        stt = svc2.tally.status()
+        check(stt["queued"] == 3 and stt["failures"] >= 1 and
+              "no route" in stt["last_error"] and
+              "secret-token" not in _j.dumps(stt) and
+              not any("secret-token" in t for t, _f in tl),
+              f"the status says what is waiting and never the token: {stt}")
+        n = svc2.tally.send_pending(wall[0])
+        check(n == 0, "inside the backoff nothing is retried")
+        fail[0] = False
+        wall[0] += 10
+        n = svc2.tally.send_pending(wall[0])
+        check(n == 3 and svc2.tally.pending() == [] and
+              svc2.tally.status()["sent"] == 3 and
+              svc2.tally.status()["last_error"] == "",
+              f"back online: all three delivered in order and the queue is "
+              f"empty: {n}")
+        kinds = [s[1]["kind"] for s in sent]
+        check(kinds[-3:] == ["checklist_record", "checklist_record",
+                             "checklist_routine"] and
+              sent[-1][1]["routine"]["steps"][0]["done"] is True,
+              f"the routine payload follows the record: {kinds}")
+        st, out = svc2.post("checklist-tally-retry", {}, "Rack screen",
+                            "Rack screen", True)
+        check(st == 200, "the page's retry button")
+        st, out = svc.post("checklist-tally-retry", {}, "Rack screen",
+                           "Rack screen", True)
+        check(st == 409 and "not switched on" in out["error"],
+              "and with the tally off it says so")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_morning_lockout_trust_link_and_close():
+    section("Morning and Shutdown, the lock table when it cannot be trusted: "
+            "an unreadable lockout file, or one naming a machine the config "
+            "no longer has, is never written over, shows on every screen, "
+            "and stops the purge and the laser tests until it is fixed; the "
+            "flame link learns the locks when it appears later; closing the "
+            "engine turns every laser test off (review of PR #68, P1-3, P2-9)")
+    import json as _j
+    import shutil
+    import tempfile
+    from ltcplay import morning as MO
+    d = tempfile.mkdtemp()
+    try:
+        fs = os.path.join(d, "flamesafe.json")
+        with open(fs, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_FLAMESAFE, fh)
+        cfg_path = os.path.join(d, MO.CONFIG_FILE)
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            _j.dump(_MO_CONFIG, fh)
+        names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+        fsview = {"slots": [], "state": "read"}
+
+        def flames():
+            return {"connected": True, "stale": False, "age_ms": 10,
+                    "fault": "", "lockout": dict(fsview),
+                    "groups": [{"name": n, "armed": "armed", "wanted": True,
+                                "reason": "", "dwell_s": 0} for n in names]}
+        lines = []
+        holder = [None]
+        osc = []
+        clk = [100.0]
+
+        class _Sock:
+            def sendto(self, pkt, addr):
+                osc.append((addr, pkt))
+
+            def close(self):
+                pass
+
+        def build():
+            return MO.Morning(d, flamesafe_config=fs,
+                              link_get=lambda: holder[0], flames_get=flames,
+                              live_check=lambda: "",
+                              group_names=lambda: names,
+                              journal=lambda t, **f: lines.append((t, f)),
+                              clock=lambda: clk[0],
+                              wall=lambda: 1_800_000_000.0, threaded=False,
+                              socket_factory=_Sock)
+        rack = ("Rack screen", "", "Rack screen", True, True)
+        lk = os.path.join(d, MO.LOCKOUT_FILE)
+        # (a) The lockout file cannot be read: what is locked is unknown.
+        with open(lk, "w", encoding="utf-8") as fh:
+            fh.write("{ broken")
+        m = build()
+        sv = m.status_view()
+        check("could not be read" in sv["lock_error"],
+              f"an unreadable lockout file is said on every screen: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 409 and "could not be read" in out["error"] and
+              open(lk, encoding="utf-8").read() == "{ broken",
+              f"a lock is refused and the file is not written over: {out}")
+        ok, text = m.lockout.set(m.cfg, "machine", "g1", True, "", "Rack")
+        check(not ok and "not touched" in text and
+              open(lk, encoding="utf-8").read() == "{ broken",
+              f"and the table itself refuses too (the belt): {text}")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and "lockout file" in out["error"] and
+              m.purge.selected == [], f"no purge: {out}")
+        st, out = m.post("laser-test", {"laser": "laser-3", "on": True},
+                         *rack)
+        check(st == 409 and not m.lasers.on and not osc,
+              f"no laser test: {out}")
+        m.close()
+        # (b), (c) The file names a machine the config does not (renamed,
+        # or ltcplay_morning.json fell back to the defaults): its slots are
+        # unknown, so the file keeps what flamesafe is enforcing.
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "flame_channels": [412, 999],
+                     "machines": {"g2": {"since": "x"}, "ghost": {}},
+                     "lasers": {}}, fh)
+        before = open(lk, encoding="utf-8").read()
+        m = build()
+        sv = m.status_view()
+        check("ghost" in sv["lock_error"] and
+              "ghost (not in ltcplay_morning.json)" in sv["locked_machines"]
+              and "Ground 2" in sv["locked_machines"],
+              f"a locked id the config lacks is named, as unknown: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g2", "on": False,
+                                  "confirmed": True}, *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before and
+              m.lockout.is_locked("machine", "g2"),
+              f"an unlock is refused and the file keeps flamesafe's slots "
+              f"412 and 999: {out}")
+        st, out = m.post("lock", {"kind": "machine", "id": "g1", "on": True},
+                         *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before,
+              "and so is a lock")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and m.purge.selected == [], "no purge")
+        m.close()
+        # The config fixed (the machine back under its id): everything
+        # resolves and the file is written again from a trusted table.
+        cfg2 = _j.loads(_j.dumps(_MO_CONFIG))
+        cfg2["machines"].append({"id": "ghost", "name": "Ghost",
+                                 "kind": "gflame", "group": "front row",
+                                 "fire": [413]})
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            _j.dump(cfg2, fh)
+        m = build()
+        sv = m.status_view()
+        check("config changed under a lock" in sv["lock_error"] and
+              set(sv["locked_machines"]) == {"Ground 2", "Ghost"},
+              f"both ids resolve now, but the file's slots (412, 999) and "
+              f"the config's (412, 413) differ: said, not guessed: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 409 and open(lk, encoding="utf-8").read() == before,
+              "still nothing is written until it is rewritten on purpose")
+        # The one way out: a confirmed rewrite on the show machine itself.
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True},
+                         "iPad at 10.20.0.44", "", "iPad", True, False)
+        check(st == 403 and open(lk, encoding="utf-8").read() == before,
+              f"a rewrite from the network is refused: {out}")
+        st, out = m.post("lock", {"kind": "rewrite"}, *rack)
+        check(st == 409 and "confirm" in out["error"], "and needs a confirm")
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [412, 413] and
+              m.status_view()["lock_error"] == "",
+              f"rewritten from the table: 412 and 413, resolved: {out}")
+        check(any(f.get("outcome") == "rewritten" and f.get("fault")
+                  for t, f in lines), "and journaled as a fault")
+        fsview["slots"] = [412, 413]
+        st, out = m.post("lock", {"kind": "machine", "id": "ghost",
+                                  "on": False, "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [412],
+              f"an unlock writes the file again: {out}")
+        # The flame link appears after the engine started (fire_ice built
+        # later): the next watcher pass hands it the locks.
+        check(holder[0] is None and m.lockout.channels(m.cfg) == {412},
+              "no link yet")
+        link = _FakePurgeLink()
+        holder[0] = link
+        m.tick()
+        check(link.locked == {412},
+              "the link learns the locked slots on the next watcher pass")
+        # Closing the engine turns every laser test off.
+        fsview["slots"] = [412]
+        st, out = m.post("laser-test", {"laser": "laser-3", "on": True},
+                         *rack)
+        check(st == 200 and "laser-3" in m.lasers.on, f"a test on: {out}")
+        n = len(osc)
+        m.close()
+        check(not m.lasers.on and len(osc) > n and
+              osc[-1][1].startswith(b"/beyond/general/stopcue"),
+              "close turns it off with the laser's off list")
+        # (d) The engine starts with NO lockout file while flamesafe still
+        # holds a set (the file was deleted; flamesafe kept it, missing_kept):
+        # nothing is written and nothing fires until it is resolved on
+        # purpose, or writing the table would lift flamesafe's lock
+        # silently (review of PR #68, P1-5).
+        os.remove(lk)
+        fsview.clear()
+        fsview.update(slots=[412], state="missing_kept")
+        del lines[:]
+        m = build()
+        sv = m.status_view()
+        check("does not know about" in sv["lock_error"] and
+              sv["flamesafe_extra"] == [412] and sv["locked_machines"] == [],
+              f"flamesafe holds 412, this engine knows nothing: said: {sv}")
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
+                         *rack)
+        check(st == 409 and not os.path.exists(lk),
+              f"a lock is refused and no file is written, so flamesafe keeps "
+              f"412: {out}")
+        st, out = m.post("purge-select", {"machine": "g1"}, *rack)
+        check(st == 409 and "does not know about" in out["error"],
+              f"no purge: {out}")
+        m.tick()
+        check(any(f.get("outcome") == "unconfirmed" and "disappeared" in t
+                  for t, f in lines), "journaled as a fault")
+        st, out = m.post("lock", {"kind": "rewrite", "confirmed": True}, *rack)
+        check(st == 200 and _j.load(open(lk, encoding="utf-8"))
+              ["flame_channels"] == [], "the deliberate way out writes an "
+                                          "empty file (flamesafe then lifts "
+                                          "412)")
+        # flamesafe takes up to its poll time to read the new file: for
+        # LOCK_SETTLE_S after this engine's own write its old report is not
+        # a problem (review of PR #68, P3-12), after that it is again.
+        check(m.status_view()["lock_error"] == "" and
+              m.lock_problem() == "",
+              "just after the write flamesafe's old report is not a problem")
+        clk[0] += MO.LOCK_SETTLE_S + 0.5
+        check("does not know about" in m.lock_problem(),
+              "flamesafe still holding 412 after the settle time is")
+        fsview.update(slots=[], state="read")
+        check(m.status_view()["lock_error"] == "", "resolved")
+        # A file with machines but no flame_channels list is not a lockout
+        # file flamesafe can read: said as such (P3-13), not as a change.
+        m.close()
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "machines": {"g2": {}}}, fh)
+        m = build()
+        check("no flame_channels" in m.status_view()["lock_error"],
+              f"a file with no flame_channels list: {m.status_view()['lock_error']}")
+        m.close()
+        with open(lk, "w", encoding="utf-8") as fh:
+            _j.dump({"lockout_format": 1, "flame_channels": [],
+                     "machines": {}, "lasers": {}}, fh)
+        m = build()
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": True},
+                         *rack)
+        check(st == 200 and m.lockout.is_locked("machine", "w1") and
+              m.lockout.wrote,
+              "and locks work again")
+        # The settle time belongs to a REAL write only (second review,
+        # P3-1): flamesafe starts holding a slot this engine does not know
+        # right after the write; a no-op lock ("already locked", nothing
+        # written) every second must not keep hiding it past LOCK_SETTLE_S.
+        fsview.update(slots=[431, 432, 433, 999], state="read")
+        check(m.lock_problem() == "", "inside the settle time: not yet said")
+        for _ in range(4):
+            clk[0] += 1.0
+            st, out = m.post("lock", {"kind": "machine", "id": "w1",
+                                      "on": True}, *rack)
+            if st != 200:
+                break
+            check("already locked" in out["text"] and not m.lockout.wrote,
+                  f"a no-op lock answers without writing: {out}")
+        check(st == 409 and "does not know about" in out["error"],
+              f"4 s of no-op locks later the extra slot is said and the "
+              f"lock refused; the no-ops did not restart the settle time: "
+              f"{st} {out}")
+        # An unlock does earn it (P3-12's own case, the lock route): right
+        # after, flamesafe's old report of w1's slots is not a problem.
+        fsview.update(slots=[431, 432, 433], state="read")
+        check(m.lock_problem() == "", "flamesafe agrees again")
+        st, out = m.post("lock", {"kind": "machine", "id": "w1", "on": False,
+                                  "confirmed": True}, *rack)
+        check(st == 200 and m.lockout.wrote and
+              m.lockout.channels(m.cfg) == set() and
+              m.lock_problem() == "" and m.status_view()["lock_error"] == "",
+              f"an unlock is written and flamesafe's old report (431 to 433) "
+              f"is not a problem for the settle time: {out} "
+              f"{m.lock_problem()!r}")
+        clk[0] += MO.LOCK_SETTLE_S + 0.5
+        check("does not know about" in m.lock_problem(),
+              "but after the settle time it is")
+        fsview.update(slots=[], state="read")
+        m.close()
+        # (e) flamesafe reading another lockout file than this engine writes
+        # is said at start (review of PR #68, P2-12).
+        d2 = tempfile.mkdtemp()
+        try:
+            fs2 = os.path.join(d2, "flamesafe.json")
+            with open(fs2, "w", encoding="utf-8") as fh:
+                _j.dump(_MO_FLAMESAFE, fh)
+            del lines[:]
+            m = MO.Morning(d, flamesafe_config=fs2, link_get=lambda: None,
+                           flames_get=flames, live_check=lambda: "",
+                           group_names=lambda: names,
+                           journal=lambda t, **f: lines.append((t, f)),
+                           threaded=False, socket_factory=_Sock)
+            m.close()
+            # The paths are named as realpath() gives them (on Windows the
+            # temp folder's 8.3 short name becomes the long one).
+            check(any(f.get("outcome") == "unconfirmed" and "never seen there"
+                      in t and os.path.realpath(d2) in t and
+                      os.path.realpath(d) in t for t, f in lines),
+                  f"flamesafe.json in another folder: both paths named: "
+                  f"{[t[:80] for t, f in lines]}")
+            with open(fs2, "w", encoding="utf-8") as fh:
+                _j.dump(dict(_MO_FLAMESAFE, lockout_file=False), fh)
+            del lines[:]
+            m = MO.Morning(d, flamesafe_config=fs2, link_get=lambda: None,
+                           flames_get=flames, live_check=lambda: "",
+                           group_names=lambda: names,
+                           journal=lambda t, **f: lines.append((t, f)),
+                           threaded=False, socket_factory=_Sock)
+            m.close()
+            check(any(f.get("outcome") == "unconfirmed" and "false" in t
+                      for t, f in lines), "lockout_file false: said")
+            del lines[:]
+            m = build()
+            m.close()
+            check(not any(f.get("outcome") == "unconfirmed" for t, f in lines),
+                  "the same folder: nothing to say")
+        finally:
+            shutil.rmtree(d2, ignore_errors=True)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def _re_findall(pattern, text):
+    import re as _re
+    return _re.findall(pattern, text)
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -43149,6 +45150,7 @@ if __name__ == "__main__":
     test_streamdeck_hardware_reconnect_keeps_counter()
     test_streamdeck_outage_loop_runs_screen_pass()
     test_streamdeck_ack_key_while_an_alert_is_open()
+    test_streamdeck_hold_off_survives_an_arm_socket_that_will_not_send()
     test_streamdeck_no_deck_loop_keeps_sending_past_a_screen_error()
     test_streamdeck_deck_alert_is_posted_again_until_the_engine_answers()
     test_streamdeck_round4_unplug_keeps_one_real_source_port()
@@ -43282,6 +45284,13 @@ if __name__ == "__main__":
     test_player_alert_look_pulse_shape()
     test_alert_pixels_never_the_flame_controllers()
     test_audio_interface_watch()
+    test_morning_config_layout_and_lockout_file()
+    test_purge_frame_on_the_flame_link()
+    test_purge_rules_at_the_engine()
+    test_morning_deck_remap_and_purge_arming()
+    test_laser_tests_placeholders_lockout_and_allow_list()
+    test_checklist_audit_chain_pdf_export_and_tally()
+    test_morning_lockout_trust_link_and_close()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on
