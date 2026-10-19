@@ -1441,8 +1441,14 @@ class Remote:
             # A device that may not purge from here reads the page but does
             # not hold it "open": the deck re-maps itself and the purge
             # selection lives only for devices that may arm one (review of
-            # PR #68, P2-8).
-            return 200, {"ok": True, "open": False, "view_only": True}
+            # PR #68, P2-8). Its Arrange mode still counts: a lock, an
+            # unlock or a laser test from it is held back while it arranges
+            # (adversarial review of PR #73, finding 2).
+            m.open_beat(device, arranging=body.get("arranging") is True,
+                        inst=body.get("inst"), seq=body.get("seq"),
+                        mark_open=False)
+            return 200, {"ok": True, "open": False, "view_only": True,
+                         "arranging": m.device_arranging(device)}
         if name in ("purge-select", "purge-fire") and \
                 body.get("on") is not False:
             if not self.purge_enabled(ctx.local):

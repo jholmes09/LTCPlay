@@ -45090,6 +45090,7 @@ class Node {
   }
   setPointerCapture(id){ this.captured = id; }
   releasePointerCapture(id){ if(this.captured === id) this.captured = null; }
+  hasPointerCapture(id){ return this.captured === id; }
   getBoundingClientRect(){ return this.rect || {left:0, top:0, width:1000, height:500}; }
 }
 const window = new Node("window");
@@ -45205,6 +45206,41 @@ t(ARRANGE === false && DRAG === null && !posts.some(p => p[0] === "layout") && O
 arrangeEnter(); posts.length = 0;
 await arrangeReset();
 t(ARRANGE === false && posts.some(p => p[0] === "layout" && p[1].reset === true), "Reset layout asks the engine for the default and leaves Arrange mode: " + JSON.stringify(posts));
+// Review of PR #73. Entering Arrange with this screen's selection armed
+// clears it at the engine at once.
+MO.purge_state = {selected:["g1"], owner:"Rack screen"}; posts.length = 0;
+arrangeEnter();
+t(posts.some(p => p[0] === "purge-clear"), "entering Arrange clears this screen's armed selection: " + JSON.stringify(posts));
+MO.purge_state = {selected:[], owner:"Rack screen"}; posts.length = 0;
+// The L lock buttons: refused before the confirm, nothing sent.
+MO.lockout = {machines:{}, lasers:{}};
+await lockClick("machine", "g1", "Ground 1");
+MO.lockout = {machines:{g1:true}, lasers:{}};
+await lockClick("machine", "g1", "Ground 1");
+t(!posts.some(p => p[0] === "lock"), "an L button neither locks nor unlocks while arranging: " + JSON.stringify(posts));
+// A mouse that moves with no button down was let go where the page never
+// heard it: the drag ends and nothing follows the bare mouse.
+g1.dispatchEvent(ev("pointerdown", {pointerId:11, clientX:800, clientY:450}));
+window.dispatchEvent(ev("pointermove", {pointerId:11, pointerType:"mouse", buttons:0, clientX:200, clientY:200}));
+t(DRAG === null && g1.style.left !== "10%" && g1.style.top !== "20%", "a bare mouse move ends the drag and the machine does not follow it: " + g1.style.left + " " + g1.style.top);
+window.dispatchEvent(ev("pointermove", {pointerId:11, pointerType:"mouse", buttons:1, clientX:300, clientY:300}));
+t(g1.style.left !== "20%", "nor any move after that");
+// Pointer capture lost by a route the window never saw ends the drag.
+g1.dispatchEvent(ev("pointerdown", {pointerId:12, clientX:800, clientY:450}));
+g1.captured = null; g1.dispatchEvent(ev("lostpointercapture", {pointerId:12}));
+t(DRAG === null, "losing pointer capture ends the drag");
+// While Save is in flight the banner is already gone: it never says
+// arranging while a press would arm.
+const realPress = moPress; let release;
+moPress = (route, extra) => { posts.push([route, extra]); return new Promise(r => { release = r; }); };
+const saving = arrangeExit("save");
+t(ARRANGE === false && $("mo-arrange-bar").hidden, "the banner goes before the save answers");
+t(posts.some(p => p[0] === "morning-open" && p[1].arranging === false), "and the engine hears the exit before the save answers");
+release(); await saving; moPress = realPress;
+// Every beat carries this page load's instance and a rising sequence.
+const b1 = openBeatBody(), b2 = openBeatBody();
+t(typeof b1.inst === "string" && b1.inst.length > 4 && b1.inst === b2.inst && b2.seq === b1.seq + 1,
+  "the open beat carries this page load and a rising number: " + JSON.stringify([b1, b2]));
 // Leaving the page: drops, leaves the mode, saves nothing.
 arrangeEnter();
 g1.dispatchEvent(ev("pointerdown", {pointerId:10, clientX:800, clientY:450}));
@@ -45215,7 +45251,12 @@ t(ARRANGE === false && DRAG === null && g1.captured === null && !posts.some(p =>
 t(renders > 0, "the page was redrawn");
 })().then(() => console.log(JSON.stringify(out)), e => { console.log(JSON.stringify(["threw: " + (e && e.stack || e)])); });
 """
-        r = _sp.run([node, "-e", prelude + block + body], capture_output=True,
+        # lockClick (the L buttons) runs too: its gate comes before the
+        # confirm, so nothing is asked and nothing is sent.
+        lc = page[page.find("async function lockClick("):a]
+        check(lc.startswith("async function lockClick("),
+              "the page has lockClick before the ARRANGE block")
+        r = _sp.run([node, "-e", prelude + lc + block + body], capture_output=True,
                     text=True, timeout=60)
         try:
             bad = _j.loads(r.stdout.strip() or "null")
@@ -45335,6 +45376,79 @@ t(renders > 0, "the page was redrawn");
               R.m.arrange_refusal("purge-select", {"machine": "g1"},
                                   "Rack screen") == "",
               "with no beat for 2 s the screen is not arranging any more")
+
+        def fresh():
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
+        # Two windows on the show PC are both "Rack screen" (adversarial
+        # review of PR #73, finding 1): window B's ordinary beat must not
+        # clear window A's Arrange mode at the engine.
+        fresh()
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "A", "seq": 1, "seen": R.seen()},
+              client=loop)
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "B", "seq": 1, "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              R.m.purge.view()["selected"] == [],
+              f"another window's ordinary beat does not clear this "
+              f"window's Arrange mode: {st} {out}")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "A", "seq": 2, "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and out["selected"] == ["g1"],
+              f"once window A itself leaves Arrange mode a click arms: "
+              f"{st} {out}")
+        R.m.purge.clear("test")
+        # An older beat that arrives after a later one says nothing about
+        # Arrange mode (finding 6).
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": True, "inst": "C", "seq": 5, "seen": R.seen()},
+              client=loop)
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": False, "inst": "C", "seq": 4,
+               "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is True,
+              "an overtaken beat does not end Arrange mode")
+        R.ask("POST", "/api/remote/morning-open",
+              {"arranging": False, "inst": "C", "seq": 6,
+               "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "the next beat in order does")
+        # A device that may not purge reads the page without holding it
+        # open, but its Arrange mode still holds back a lock, an unlock
+        # and a laser test (finding 2).
+        from ltcplay import remote as RM
+        R.mono[0] += MO.OPEN_STALE_S + 0.1
+        fresh()
+        RM.save_settings(R.work, purge_arming=False)
+        check(R.m.page_open() is False, "setup: the page is not open")
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": True, "inst": "V", "seq": 1,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and out.get("view_only") is True and
+              out.get("arranging") is True and R.m.page_open() is False,
+              f"a view-only device's Arrange beat is recorded and does not "
+              f"hold the page open: {st} {out}")
+        for route, body_, what in (
+                ("lock", {"kind": "machine", "id": "g1", "on": True},
+                 "a lock"),
+                ("lock", {"kind": "machine", "id": "g1", "on": False,
+                          "confirmed": True}, "an unlock"),
+                ("laser-test", {"laser": "laser-3", "on": True},
+                 "a laser test ON")):
+            body_ = dict(body_, seen=R.seen())
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=loop)
+            check(st == 409 and "Arrange mode" in out.get("error", ""),
+                  f"{what} from a view-only device in Arrange mode is "
+                  f"refused: {st} {out}")
+        check(not R.m.lockout.is_locked("machine", "g1"),
+              "and nothing was locked")
+        RM.save_settings(R.work, purge_arming=True)
     finally:
         R.close()
     print("  ok")

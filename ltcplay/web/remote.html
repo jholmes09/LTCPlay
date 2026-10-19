@@ -1622,11 +1622,22 @@ function arrangeBlocked(route, extra){
   return true;
 }
 // The open beat's body: the engine hears whether this screen is arranging.
-function openBeatBody(){ return actor({arranging: ARRANGE}); }
+// BEAT_INST is this page load: every window on the show PC is "Rack
+// screen", and one window's ordinary beat must not clear another's Arrange
+// mode at the engine. BEAT_SEQ lets the engine drop a beat that arrives
+// after a later one (adversarial review of PR #73, findings 1 and 6).
+const BEAT_INST = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let BEAT_SEQ = 0;
+function openBeatBody(){ return actor({arranging: ARRANGE, inst: BEAT_INST, seq: ++BEAT_SEQ}); }
 // A machine tile: a press arms it for the purge (Jeff's exception to
 // hold-to-arm, this page only); in Arrange mode a press picks it up.
 function wireMachine(el, m){
   el.addEventListener("pointerdown", e => machDown(e, m));
+  // Capture lost by any route the window did not see (released outside
+  // the window, taken by the browser): the drag ends there too.
+  el.addEventListener("lostpointercapture", () => {
+    if(DRAG && DRAG.el === el && !(el.hasPointerCapture && el.hasPointerCapture(DRAG.pointerId))) dragEnd("the pointer was released");
+  });
 }
 function machDown(e, m){
   e.preventDefault();
@@ -1646,6 +1657,9 @@ function dragStart(e, m){
 function dragMove(ev){
   if(!DRAG) return;
   if(DRAG.pointerId != null && ev.pointerId != null && ev.pointerId !== DRAG.pointerId) return;
+  // A mouse that moves with no button down was let go somewhere this page
+  // never heard: the drag is over, nothing follows a bare mouse.
+  if(ev.pointerType === "mouse" && ev.buttons === 0){ dragEnd("the button was already up"); return; }
   const f = DRAG.field;
   const x = Math.max(0, Math.min(100, 100 * (ev.clientX - f.left) / f.width));
   const y = Math.max(0, Math.min(100, 100 * (ev.clientY - f.top) / f.height));
@@ -1688,11 +1702,17 @@ async function arrangeExit(how){
   dragEnd(how === "save" ? "Save layout" : how === "cancel" ? "Cancel" : how === "reset" ? "Reset layout" : "the page was left");
   if(!ARRANGE) return;
   const moved = ARRANGE_POS;
+  const positions = Object.assign({}, (MO && MO.layout) || {}, moved);
   ARRANGE = false; ARRANGE_POS = {};
-  if(how === "save") await moPress("layout", {positions: Object.assign({}, (MO && MO.layout) || {}, moved)});
+  // The page and the engine hear the mode is over BEFORE the save goes, so
+  // the banner never says arranging while a press would arm (review of
+  // PR #73, finding 4). The dropped places show until the engine answers.
+  if(how === "save" && MO) MO.layout = positions;
+  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
+  renderMorning();
+  if(how === "save") await moPress("layout", {positions: positions});
   else if(how === "reset") await moPress("layout", {reset: true});
   else if(how === "cancel") $("mo-msg").textContent = "Arrange cancelled: the machines are where they were saved.";
-  post("/api/remote/morning-open", openBeatBody()).catch(() => {});
   renderMorning();
 }
 async function arrangeReset(){
