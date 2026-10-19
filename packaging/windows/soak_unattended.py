@@ -51,6 +51,13 @@ DEFAULTS = {
     "contain": False,
     "show_seconds": None,
     "every_min": None,
+    # The show audio interface's exact name ("" lets the soak pick one), and
+    # whether to run with the engine's stand-in device instead (the CI's
+    # --fake-audio). A fake-audio run proves the engine, the scheduler, the
+    # flame link, the timecode, the Art-Net and the witness, NOT the real
+    # audio path, and every status and report says so in capitals.
+    "audio_device": "",
+    "fake_audio": False,
 }
 STATE = "unattended_state.json"
 STATUS = "status.json"
@@ -166,7 +173,8 @@ def _size(p):
 
 class Unattended:
     def __init__(self, soak_mod, days=None, folder=None, desktop=None,
-                 clock=time.time, sleep=time.sleep, run=run_command):
+                 clock=time.time, sleep=time.sleep, run=run_command,
+                 fake_audio=False, audio_device=None):
         self.m = soak_mod
         import supervisor as sup
         self.sup = sup
@@ -174,6 +182,11 @@ class Unattended:
         os.makedirs(self.folder, exist_ok=True)
         self.desktop = desktop
         self.cfg = load_config(self.folder)
+        # --fake-audio on the command line or fake_audio in unattended.json:
+        # either makes the whole run fake, and says so everywhere.
+        self.fake_audio = bool(fake_audio) or self.cfg["fake_audio"] is True
+        self.audio_device = str(audio_device or self.cfg["audio_device"]
+                                or "").strip() or None
         self.clock = clock
         self.sleep = sleep
         self.run_cmd = run
@@ -193,7 +206,9 @@ class Unattended:
                        "last_failures": [], "last_restart": None,
                        "last_error": None, "recoveries": [],
                        "run_started": self.state["started"],
-                       "until": self.state["until"]}
+                       "until": self.state["until"],
+                       "audio": audio_sentence(self.fake_audio,
+                                               self.audio_device)}
         self.current = None
         self.stopped = False
         self._status_stop = threading.Event()
@@ -290,9 +305,10 @@ class Unattended:
                         f"{n}; the block ran anyway")
                     self.note("unattended: " + self.status["last_error"])
         stamp = time.strftime("%Y-%m-%d_%H%M")
-        s = self.m.Soak(self.cfg["block_minutes"] * 60, None,
+        s = self.m.Soak(self.cfg["block_minutes"] * 60, self.audio_device,
                         folder=os.path.join(self.folder, f"{stamp} block {n}"),
                         block=(n, "an unattended run"))
+        s.fake_audio = self.fake_audio
         if self.cfg["show_seconds"]:
             s.show_s = float(self.cfg["show_seconds"])
         if self.cfg["every_min"]:
@@ -382,6 +398,8 @@ class Unattended:
         if not self.cfg["restart_cmd"]:
             self.note("unattended: no restart_cmd in unattended.json, so "
                       "MadMapper and BEYOND are not restarted between blocks")
+        self.note("unattended: " + audio_sentence(self.fake_audio,
+                                                  self.audio_device))
         if os.path.exists(self.path(STOP)):
             self.note("unattended soak: stopped (Stop the unattended soak "
                       "was used). Run register_soak_task.ps1 again to start "
@@ -438,6 +456,25 @@ def stop_file_path(folder):
     return os.path.join(folder, STOP)
 
 
+def audio_sentence(fake_audio, audio_device=None):
+    """What the status, the notes and the summary say about the show audio
+    of this run. A fake run can never read like a real one."""
+    if fake_audio:
+        return ("AUDIO IS FAKE (--fake-audio, or fake_audio in "
+                "unattended.json): the engine plays the shows on a stand-in "
+                "device, so this run proves the engine, the scheduler, the "
+                "flame link, the timecode, the Art-Net outputs and the "
+                "witness, NOT the real audio path. It is not a show-night "
+                "soak.")
+    return ("audio: a real interface" + (f" named {audio_device!r}"
+                                        if audio_device else
+                                        ", the one the soak picks (the "
+                                        "saved input, else a Focusrite or "
+                                        "Scarlett over ASIO)")
+            + "; a block whose report says NO interface found plays no "
+              "show and FAILS")
+
+
 def self_test():
     import tempfile
     d = tempfile.mkdtemp()
@@ -466,6 +503,19 @@ def self_test():
             cfg["recover_cmds"] == {"BEYOND": "x"}, cfg
         yield ("unattended soak: settings default, and a block is never "
                "longer than 115 minutes (the BEYOND demo stops at 2 hours)")
+        assert cfg["fake_audio"] is False and cfg["audio_device"] == "", cfg
+        save_json(os.path.join(d, CONFIG), {"fake_audio": True,
+                                            "audio_device": "Scarlett 2i2"})
+        cfg = load_config(d)
+        assert cfg["fake_audio"] is True and \
+            cfg["audio_device"] == "Scarlett 2i2", cfg
+        real = audio_sentence(False, "Scarlett 2i2")
+        fake = audio_sentence(True, "Scarlett 2i2")
+        assert "FAKE" not in real and "Scarlett 2i2" in real, real
+        assert fake.startswith("AUDIO IS FAKE") and "NOT the real audio " \
+            "path" in fake and "not a show-night soak" in fake, fake
+        yield ("unattended soak: fake_audio and audio_device are settings, "
+               "off by default, and a fake-audio run says so in capitals")
         ok, why = run_command("exit 3", 10)
         assert not ok and "exit 3" in why, why
         yield "unattended soak: a restart command's failure is caught and said"
