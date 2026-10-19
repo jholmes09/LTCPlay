@@ -3468,7 +3468,9 @@ def main(argv=None):
             import soak_unattended
             soak = soak_unattended.Unattended(sys.modules[__name__],
                                               days=days or None,
-                                              desktop=desktop_dir())
+                                              desktop=desktop_dir(),
+                                              fake_audio=fake,
+                                              audio_device=device)
             ok = soak.run()
             raise _Done()
         if ab is not None:

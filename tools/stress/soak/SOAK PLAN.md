@@ -95,6 +95,15 @@ soak_summary.py`, or collect the evidence and run it where Python is):
 5. Containment ON in `unattended.json` and in every block report.
 6. At least 48 hours soaked (one block of slack allowed), free disk never
    under 5 GB.
+7. A REAL show audio interface in every block: the block report's "Show
+   audio" line names it, never "NO interface found" (2026-10-18: 48 hours
+   with no interface, 0 shows played). `Start 48h soak.ps1` refuses to
+   start without one. A run started with `-FakeAudio` (only when Jeff says
+   so) plays on the engine's stand-in device: it proves the engine, the
+   scheduler, the flame link, the timecode, the Art-Net outputs and the
+   witness, NOT the real audio path; the status, the daily lines and the
+   summary all say AUDIO WAS FAKE, its verdict reads "PASS (AUDIO WAS
+   FAKE)", and it is not a show-night soak.
 
 The summary writes `SOAK SUMMARY <stamp>.md` in the soak folder and on the
 Desktop and exits 0 PASS, 1 FAIL, 2 still running.
