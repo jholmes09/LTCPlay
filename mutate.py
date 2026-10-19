@@ -8379,10 +8379,16 @@ def build():
 
  ("morning: the engine's Arrange gate is never consulted by the routes",
   "ltcplay/morning.py",
-  '''        why = self.arrange_refusal(name, body, device)
+  '''        why = "" if deck_fire else self.arrange_refusal(name, body, device)
         if why:
             return 409, {"error": why, "let_go": True}''',
   ''''''),
+
+ ("morning: every FIRE heartbeat over loopback reads as the deck's, so the "
+  "rack screen's own Space bar is not held back by its Arrange mode",
+  "ltcplay/morning.py",
+  '''        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"''',
+  '''        deck_fire = name == "purge-fire" and local'''),
 
  ("remote: an iPad unlocks a machine or lights a laser test without screen_arming (T9, T10)",
   "ltcplay/remote.py",

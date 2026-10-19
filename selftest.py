@@ -45127,6 +45127,15 @@ t(renders > 0, "the page was redrawn");
         check(st == 200 and out["selected"] == ["g1"],
               f"another screen is not held back by this one's arranging: "
               f"{st} {out}")
+        # The deck's FIRE heartbeat (loopback, screen "Stream Deck", under
+        # the rack screen's device name) fires the iPad's selection even
+        # while the rack screen arranges: the refusal it meets, if any, is
+        # never Arrange mode's.
+        st_, out_ = R.m.post("purge-fire", {"fire_id": None}, "Rack screen",
+                             "Andy", "Stream Deck", True, True)
+        check("Arrange mode" not in str(out_.get("error", "")),
+              f"the deck's FIRE is not held back by the rack screen "
+              f"arranging: {st_} {out_}")
         R.m.purge.clear("test")
         check(R.m.arrange_refusal("purge-fire", {}, "Stream Deck") == "",
               "the Stream Deck process is never arranging")

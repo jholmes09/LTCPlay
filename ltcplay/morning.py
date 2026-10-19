@@ -1504,8 +1504,12 @@ class Morning:
             return 200, {"ok": True, "open": True,
                          "arranging": self.device_arranging(device)}
         # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
-        # refusal, whatever the page let through.
-        why = self.arrange_refusal(name, body, device)
+        # refusal, whatever the page let through. The deck process's FIRE
+        # heartbeats come over loopback under the rack screen's device
+        # name; they fire whichever screen's selection stands (an arranging
+        # screen has none), so the rack screen arranging never refuses them.
+        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"
+        why = "" if deck_fire else self.arrange_refusal(name, body, device)
         if why:
             return 409, {"error": why, "let_go": True}
         if name == "purge-select":
