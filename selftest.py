@@ -43862,6 +43862,25 @@ def test_purge_rules_at_the_engine():
                                 f"so this proves presence, not behaviour; "
                                 f"the rule itself, fireKeyLapsed, runs in "
                                 f"node in the remote page logic test)")
+        # The rewrite dialog (second review of PR #68, P3-4) says exactly
+        # which ids the rewrite KEEPS (machines and lasers) and which it
+        # DROPS, and its LIFTED clause does not rest on flamesafe_extra,
+        # which is empty while flamesafe's report is stale or inside the
+        # settle time: a stale flamesafe may still hold slots this lifts.
+        for want in ('const keptM = Object.keys(lo.machines || {}).filter(id => '
+                     '!(lo.unknown_machines || []).includes(id));',
+                     'const keptL = Object.keys(lo.lasers || {}).filter(id => '
+                     '!(lo.unknown_lasers || []).includes(id));',
+                     'const dropped = (lo.unknown_machines || []).concat('
+                     'lo.unknown_lasers || []);',
+                     '"; locked lasers: " + (keptL.length ? keptL.join(", ") '
+                     ': "none")',
+                     '", dropping " + dropped.join(", ") + " which the settings '
+                     'no longer name"',
+                     '" Any flame slot flamesafe holds locked beyond these is '
+                     'LIFTED by this."'):
+            check(want in html, f"the rewrite dialog carries {want!r} (wording "
+                                f"only, as above)")
         _morning_page_logic_in_node()
         # Every one of these routes is refused from another site's page.
         st, _h, out = R.ask("POST", "/api/remote/purge-fire",
