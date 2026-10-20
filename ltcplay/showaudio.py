@@ -39,8 +39,23 @@ import time
 from collections import deque, namedtuple
 
 RATE = 48000                 # 48 kHz end to end (handoff section 4a)
-MAX_OUTPUTS = 8              # Jeff, 2026-09-27: at most 8 outputs,
-MAX_STEMS = 8                # and at most 8 stems a cue
+# Jeff, 2026-09-27: at most 8 outputs and 8 stems. Jeff, 2026-10-20: the
+# final show tracks are 19 channels (Music L, C, R and Atmo L, R; Lily,
+# Jack, Narrator and Sound Effects L, C, R; Sound Effects Atmo L, R), on a
+# PreSonus StudioLive III 16R, with timecode possibly on a 20th output of
+# its own. 32 covers that with room (19 program tracks as 19 mono stems,
+# plus a timecode track) and is still a cap: a typo of 190 is refused when
+# the show file loads.
+# Nothing here pairs outputs: any count from 1 up, odd or even.
+MAX_OUTPUTS = 32             # outputs of the interface a show may use
+MAX_STEMS = 32               # stems a cue may play
+# The decoded audio of every cue stays in memory for the whole night (no
+# disk read once a cue is loaded), at 4 bytes a sample: 19 channels at
+# 48 kHz are 219 MB a minute (a 7 minute show, 1.5 GB). A show whose
+# audio needs more than this share of the computer's memory is refused
+# when the show file loads, in a sentence, never found out by a load that
+# fails or a computer that pages its audio to disk mid-show.
+MEMORY_SHARE = 0.5
 LOCK_FILE = "ltcplay_show_audio.lock"
 LOCK_WAIT_S = 3.0            # a closing audio process gets this long to go
 ROLES = ("show", "intermission")
@@ -209,11 +224,11 @@ class AudioConfig:
 
     KEYS = frozenset(("device", "rate", "channels", "cues", "hold_fade_ms",
                       "abort_fade_ms", "return_fade_ms", "allow_shared_mode",
-                      "notes"))
+                      "ltc_output", "notes"))
 
     def __init__(self, device, channels, cues, rate=RATE, hold_fade_ms=250,
                  abort_fade_ms=1000, return_fade_ms=1000,
-                 allow_shared_mode=False):
+                 allow_shared_mode=False, ltc_output=None):
         self.device = device
         self.channels = channels
         self.cues = dict(cues)            # role -> AudioCue
@@ -222,11 +237,17 @@ class AudioConfig:
         self.abort_fade_ms = abort_fade_ms
         self.return_fade_ms = return_fade_ms
         self.allow_shared_mode = allow_shared_mode
+        # The one output a timecode (LTC) track plays on, 1-based, or None
+        # (the default, and every show file written before it existed): no
+        # output is set aside and the stems route exactly as they say.
+        self.ltc_output = ltc_output
 
     def summary(self):
         parts = [f"{r} {len(c.stems)} stem(s)" for r, c in self.cues.items()]
+        ltc = (f", timecode on output {self.ltc_output}"
+               if self.ltc_output is not None else "")
         return (f"show audio on {self.device}, {self.channels} outputs at "
-                f"{self.rate} Hz ({', '.join(parts)})")
+                f"{self.rate} Hz ({', '.join(parts)}){ltc}")
 
     @classmethod
     def parse(cls, doc, where):
@@ -286,8 +307,47 @@ class AudioConfig:
             raise AudioConfigError(
                 f"{where}: the show and the intermission audio both name the "
                 f"cue {parsed['show'].cue!r}.")
+        ltc = _parse_ltc_output(doc.get("ltc_output"), ch, parsed, where)
         return cls(dev.strip(), ch, parsed, RATE, fades["hold_fade_ms"],
-                   fades["abort_fade_ms"], fades["return_fade_ms"], shared)
+                   fades["abort_fade_ms"], fades["return_fade_ms"], shared,
+                   ltc)
+
+
+def _parse_ltc_output(ltc, out_channels, cues, where):
+    """'clock.audio.ltc_output': the output a timecode track has to itself.
+
+    Left out (None) nothing is set aside. Set, it is a number from 1 to
+    'clock.audio.channels', and in every cue at most ONE stem plays on it:
+    two stems on one output are summed, which is a mix for music and
+    garbage for timecode. The show cue must play something there, or the
+    timecode output would be silent all show. Whether a one-channel stem
+    also spreads the timecode onto program outputs is checked with the
+    files, in check_show()."""
+    what = "'clock.audio.ltc_output'"
+    if ltc is None:
+        return None
+    if not isinstance(ltc, int) or isinstance(ltc, bool) \
+            or not 1 <= ltc <= out_channels:
+        raise AudioConfigError(
+            f"{where}: {what} is the one output the timecode track plays "
+            f"on, a number from 1 to 'clock.audio.channels' "
+            f"({out_channels}), not {ltc!r}. Leave it out when no timecode "
+            f"track plays from this computer.")
+    for role, cue in cues.items():
+        on = [s.file for s in cue.stems if ltc in s.channels]
+        if len(on) > 1:
+            raise AudioConfigError(
+                f"{where}: output {ltc} is the timecode output ({what}), and "
+                f"the {role} audio plays {', '.join(map(repr, on))} on it. "
+                f"Only the timecode track may play there: anything mixed "
+                f"with it garbles the timecode.")
+        if role == "show" and not on:
+            raise AudioConfigError(
+                f"{where}: output {ltc} is the timecode output ({what}), but "
+                f"no stem of the show audio plays on it, so the timecode "
+                f"would be silent. Route the timecode track to output {ltc}, "
+                f"like {{\"file\": \"ltc.wav\", \"channels\": [{ltc}]}}.")
+    return ltc
 
 
 # --------------------------------------------------------------- wav files --
@@ -430,7 +490,40 @@ def _find_cue(timeline, want):
                      c.tc_text.lower())]
 
 
-def check_show(acfg, timeline):
+def total_memory_bytes(platform=None):
+    """This computer's physical memory in bytes, or None when it cannot be
+    read (then the memory check below is skipped, never guessed)."""
+    try:
+        if (platform or sys.platform) == "win32":
+            import ctypes
+
+            class _Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _Status()
+            st.dwLength = ctypes.sizeof(_Status)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                    ctypes.byref(st)):
+                return None
+            return int(st.ullTotalPhys) or None
+        n = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return int(n) if n > 0 else None
+    except Exception:
+        return None
+
+
+def _gb(n):
+    return f"{n / 1e9:.1f} GB"
+
+
+def check_show(acfg, timeline, total_memory=None):
     """Check every file the audio block names, against the show folder.
 
     Returns {role: {"label": timeline cue name, "frames": length,
@@ -438,8 +531,13 @@ def check_show(acfg, timeline):
     frames)]}}. Raises AudioConfigError with a sentence for a missing
     file, a stem at the wrong rate, stems of different lengths (unless
     the cue allows it), a stem whose channels do not match its outputs,
-    or a cue that is not in the show."""
+    a one-channel stem that would spread the timecode onto program
+    outputs, a cue that is not in the show, or audio that needs more than
+    MEMORY_SHARE of this computer's memory once loaded (`total_memory`,
+    bytes, read from the computer when not given)."""
     show_dir = getattr(timeline, "show_dir", "") or ""
+    ltc = getattr(acfg, "ltc_output", None)
+    need = 0                           # bytes, once every cue is decoded
     out = {}
     for role, cue in acfg.cues.items():
         hits = _find_cue(timeline, cue.cue)
@@ -470,6 +568,15 @@ def check_show(acfg, timeline):
                     f"{st.file} has {info.channels} channels but its "
                     f"'channels' lists {len(st.channels)} output(s). List "
                     f"one output for each channel, or use a mono file.")
+            if ltc is not None and ltc in st.channels and \
+                    info.channels == 1 and len(st.channels) > 1:
+                raise AudioConfigError(
+                    f"{st.file} is one channel and plays on outputs "
+                    f"{', '.join(map(str, st.channels))}, and output {ltc} "
+                    f"is the timecode output: the same sound would be the "
+                    f"timecode and program audio. Route the timecode track "
+                    f"to output {ltc} alone.")
+            need += info.frames * info.channels * 4
             lengths.append((info.frames, st.file))
             stems.append((path, st.gain, [c - 1 for c in st.channels],
                           info.frames))
@@ -486,6 +593,14 @@ def check_show(acfg, timeline):
         out[role] = {"label": hits[0].name, "frames": max(frames),
                      "stems": stems,
                      "same_length": not cue.allow_different_lengths}
+    total = total_memory_bytes() if total_memory is None else total_memory
+    if total and need > MEMORY_SHARE * total:
+        raise AudioConfigError(
+            f"The show audio needs {_gb(need)} of memory once it is loaded "
+            f"(it is held in memory all night, 219 MB a minute for 19 "
+            f"channels), more than half of this computer's {_gb(total)}. "
+            f"Shorten or mix down the stems, or play it on a computer with "
+            f"more memory.")
     return out
 
 

@@ -30,6 +30,14 @@ Other uses:
   ... -Stop          stop after the block now running, remove the task
   ... -AudioDevice "Focusrite USB ASIO"  the interface's exact name
   ... -FakeAudio     run with the engine's stand-in device (see above)
+  ... -AudioChannels 19 -LtcOutput 20
+                     the bench show track: 19 channels (the show's layout,
+                     one tone per channel) and an LTC track on output 20;
+                     left out, the old stereo track and no LTC
+  ... -AudioMap "19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1"
+                     the output each channel plays on, one number per
+                     channel in channel order, every number written out
+                     (left out: channel 1 on output 1 and so on)
   ... -RestartCmd "..."  the restart command for MadMapper and BEYOND
                      between blocks (only when both are installed on this
                      PC; without it the soak runs in fallback mode and
@@ -57,6 +65,9 @@ param(
     [switch]$KeepRestartCmd,
     [string]$AudioDevice = "",
     [switch]$FakeAudio,
+    [int]$AudioChannels = 2,
+    [string]$AudioMap = "",
+    [int]$LtcOutput = 0,
     [switch]$SelfTest,
     [double]$Days = 2,
     [string]$AppDir = "C:\Program Files\LTC Player"
@@ -403,6 +414,12 @@ $cfg["max_soak_gb"] = 20
 $cfg["contain"] = $true
 $cfg["fake_audio"] = [bool]$FakeAudio
 $cfg["audio_device"] = $AudioDevice
+# The bench show track. ltcplay-soak.exe checks the map and refuses a block
+# with a sentence when it cannot be made (an output twice, LTC on a program
+# output, a map of the wrong length).
+$cfg["audio_channels"] = $AudioChannels
+if ($AudioMap) { $cfg["audio_map"] = @($AudioMap.Split(",") | ForEach-Object { [int]$_.Trim() }) } else { $cfg["audio_map"] = $null }
+if ($LtcOutput -gt 0) { $cfg["ltc_output"] = $LtcOutput } else { $cfg["ltc_output"] = $null }
 
 # restart_cmd: a kept one is checked against the installed MadMapper. A
 # stale click wrapper (MadMapper Demo 6.1.5 while 6.1.8 licensed is
@@ -444,7 +461,7 @@ if (-not $cfg.ContainsKey("recover_after_s")) { $cfg["recover_after_s"] = 30 }
 $cfg["show_seconds"] = $null
 $cfg["every_min"] = $null
 $cfg | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $cfgPath
-Say "Wrote $cfgPath (contain true, blocks of 110 min, fake_audio $($cfg['fake_audio']), audio_device '$AudioDevice', restart_cmd '$($cfg['restart_cmd'])')."
+Say "Wrote $cfgPath (contain true, blocks of 110 min, fake_audio $($cfg['fake_audio']), audio_device '$AudioDevice', bench track $AudioChannels channel(s)$(if ($AudioMap) { " on outputs $AudioMap" })$(if ($LtcOutput -gt 0) { ", LTC on output $LtcOutput" }), restart_cmd '$($cfg['restart_cmd'])')."
 Say "NOTE: --contain on the command line is ignored by --days; containment comes from this file."
 
 # ------------------------------------------------------------ stale files ---

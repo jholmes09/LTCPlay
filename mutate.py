@@ -3965,10 +3965,74 @@ def build():
   '        if len(stems) > MAX_STEMS:\n',
   '        if False:\n'),
 
- ('audio_master: the show may use more than 8 outputs',
+ ('audio_master: the show may use more than 32 outputs',
   'ltcplay/showaudio.py',
-  'MAX_OUTPUTS = 8              # Jeff',
-  'MAX_OUTPUTS = 64             # Jeff'),
+  'MAX_OUTPUTS = 32             # outputs',
+  'MAX_OUTPUTS = 64             # outputs'),
+
+ # -- audio_master, Jeff (2026-10-20): the show tracks are 19 channels
+ # (Music L, C, R and Atmo L, R; Lily, Jack, Narrator, Sound Effects L, C,
+ # R; Sound Effects Atmo L, R), with timecode on a 20th output of its own
+ # when it is used.
+ ('audio_master: 19 show channels and a timecode output are refused (8 outputs)',
+  'ltcplay/showaudio.py',
+  'MAX_OUTPUTS = 32             # outputs',
+  'MAX_OUTPUTS = 8              # outputs'),
+
+ ('audio_master: 19 mono stems and a timecode stem are refused (8 stems)',
+  'ltcplay/showaudio.py',
+  'MAX_STEMS = 32               # stems',
+  'MAX_STEMS = 8                # stems'),
+
+ ("audio_master: a stem's channels follow the output numbers, not the file's order",
+  'ltcplay/showaudio.py',
+  '                for i, o in enumerate(outs):\n                    out[:k, o]',
+  '                for i, o in enumerate(sorted(outs)):\n                    out[:k, o]'),
+
+ ('audio_master: two stems may play on the timecode output',
+  'ltcplay/showaudio.py',
+  '        if len(on) > 1:\n',
+  '        if False:\n'),
+
+ ('audio_master: a silent timecode output is accepted',
+  'ltcplay/showaudio.py',
+  '        if role == "show" and not on:\n',
+  '        if False:\n'),
+
+ ('audio_master: a timecode output past the last output is accepted',
+  'ltcplay/showaudio.py',
+  '            or not 1 <= ltc <= out_channels:\n',
+  '            or not 1 <= ltc:\n'),
+
+ ('audio_master: a mono timecode stem may also play on a program output',
+  'ltcplay/showaudio.py',
+  '            if ltc is not None and ltc in st.channels and \\\n',
+  '            if False and \\\n'),
+
+ ('audio_master: show audio too big for the memory is loaded anyway',
+  'ltcplay/showaudio.py',
+  '    if total and need > MEMORY_SHARE * total:\n',
+  '    if False:\n'),
+
+ ("audio_master: the memory check counts one channel of every stem",
+  'ltcplay/showaudio.py',
+  '            need += info.frames * info.channels * 4\n',
+  '            need += info.frames * 4\n'),
+
+ ('stress kit: the bench track ignores its channel map',
+  'packaging/windows/soak.py',
+  '    stems = [{"file": "bench.wav", "channels": outs}]\n',
+  '    stems = [{"file": "bench.wav", "channels": sorted(outs)}]\n'),
+
+ ('stress kit: the bench channel map may list an output twice',
+  'packaging/windows/soak.py',
+  '    if len(set(outs)) != len(outs):\n',
+  '    if False:\n'),
+
+ ('stress kit: the bench LTC track may sit on a program output',
+  'packaging/windows/soak.py',
+  '        if ltc_output in outs:\n',
+  '        if False:\n'),
 
  ('audio_master: a second audio process plays alongside the first',
   'ltcplay/showaudio.py',

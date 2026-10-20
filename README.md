@@ -186,12 +186,43 @@ never loads any of this.
   no default and no guessing: nothing else is ever used in its place.
 - `rate` must be 48000. Every stem must be a 48 kHz WAV (16-bit, 24-bit or
   32-bit PCM, or 32-bit float). A stem at another rate is refused.
-- `channels` is how many of the interface's outputs the show uses, at most 8.
-  A cue has at most 8 stems. Each stem
+- `channels` is how many of the interface's outputs the show uses, at most 32.
+  A cue has at most 32 stems. Each stem
   lists the outputs its channels play on, counting from 1: a stereo file
-  lists two, a mono file one or more. Stems on the same output are added
-  together; anything over full scale is held at full scale and shown on the
-  page.
+  lists two, a mono file one or more, a 19-channel file nineteen (its first
+  channel plays on the first output listed, its second on the second, and
+  so on, so `[19, 18, ..., 1]`, every number written out, plays it
+  reversed). Nothing pairs outputs: 19, an odd count, is as good as 20.
+  Stems on the same output are added together; anything over full scale is
+  held at full scale and shown on the page.
+- `ltc_output` (optional) sets one output aside for a timecode (LTC) track
+  exported with the stems, either as a channel of a multi-channel file or
+  as a mono file of its own. Exactly one stem of the show audio must play
+  on it and nothing else may: anything mixed with timecode garbles it. A
+  mono stem that lists the timecode output and another output is refused.
+  Left out, nothing is set aside and the stems route exactly as listed.
+  ltcplay does not generate LTC audio itself; its own timecode goes out as
+  Art-Net.
+- The show's 19 channels in the default map (Music L, C, R on 1 to 3,
+  Music Atmo L, R on 4 and 5, Lily, Jack and Narrator L, C, R on 6 to 14,
+  Sound Effects L, C, R on 15 to 17, Sound Effects Atmo L, R on 18 and 19)
+  with LTC on 20. To send a channel to another output, change its number in
+  the list; the list is per show file:
+
+        "channels": 20, "ltc_output": 20,
+        "cues": {"show": {"cue": "Show", "stems": [
+          {"file": "audio/show19.wav",
+           "channels": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                        17, 18, 19]},
+          {"file": "audio/ltc.wav", "channels": [20]}]}}
+
+  The interface must offer 20 outputs (19 with no timecode track) through
+  the way ltcplay opens it, or Run is refused with a sentence naming how
+  many it offers. All the show audio is held in memory, 219 MB a minute
+  for 19 channels (a 7 minute show, 1.5 GB; its 24-bit file is 1.2 GB, a
+  plain WAV well under the format's 4 GB limit); a
+  show whose audio needs more than half of the computer's memory is refused
+  when the show file loads.
 - `gain_db` is -60 to +12 (0 plays the file as it is).
 - `cue` is the cue in this show file the audio goes with (its name, file or
   timecode). The cue's length is its audio's, and the audio ending ends the
@@ -199,7 +230,10 @@ never loads any of this.
 - The stems of one cue must all be the same length, or the show file says
   `"allow_different_lengths": true` for that cue.
 - A missing file, a stem at the wrong rate, stems of different lengths, an
-  output past `channels`, or an interface with fewer outputs than `channels`
+  output past `channels`, a file whose channel count is not the number of
+  outputs it lists, two stems on the timecode output, audio too big for the
+  computer's memory, or an interface with fewer outputs than `channels`
+  (Run is refused, naming how many outputs each way to the interface has)
   are each refused with a sentence, when the show file loads or when Run is
   pressed, never at showtime.
 
