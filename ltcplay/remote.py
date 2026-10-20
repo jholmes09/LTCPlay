@@ -127,6 +127,12 @@ GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     "network", "alert") + MORNING_POST_ROUTES
 LOCAL_ONLY = frozenset(("network",))
+# Users and the audit log (users.py, Jeff, 2026-10-20). Sign in and out
+# from any page; the Users screen's changes from the show machine only.
+USER_GET_ROUTES = ("users",)
+USER_POST_ROUTES = ("signin", "signout", "my-password", "users",
+                    "role-matrix", "clear-lockouts", "idle-signout",
+                    "audit-settings", "audit-upload-now", "audit-verify")
 
 # Any of these on a request means something forwarded it. A browser on the
 # show network never sends them; a reverse proxy, tunnel or CDN does.
@@ -591,13 +597,36 @@ class FlameStatus:
 
 # ------------------------------------------------------- the remote --
 
+def cookie_token(header):
+    """The users.COOKIE value from a Cookie header, or ""."""
+    for part in str(header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == "ltcplay_user" and re.match(r"^[A-Za-z0-9_-]{16,64}$", v):
+            return v
+    return ""
+
+
 class Ctx:
     """Where a request came from: the machine itself, or a device on the
-    show network. That is all a press is known by (no sign-in)."""
+    show network, and who is signed in on that page, if anyone (users.py;
+    nobody has to be). `session` is users.Users.session()'s dict."""
 
-    def __init__(self, local, ip):
+    def __init__(self, local, ip, session=None, token="", window=""):
         self.local = local
         self.ip = ip
+        self.session = session
+        self.token = token
+        self.window = window
+
+    @property
+    def user(self):
+        """The signed-in name, or "" for nobody."""
+        return (self.session or {}).get("name") or ""
+
+    @property
+    def source(self):
+        """The audit log's source: the device, and the page's window id."""
+        return f"{self.device} {self.window}".strip()
 
     @property
     def screen(self):
@@ -691,6 +720,12 @@ class Remote:
         self.alert_pixels = None     # (start0, count, order) or None
         if schedule is not None and hasattr(schedule, "alert_sink"):
             schedule.alert_sink = self.alerts.raise_
+        # Users and the audit log (users.py, audit.py, auditsend.py; Jeff,
+        # 2026-10-20), set by web.serve. None: no sign-in, nothing logged,
+        # every press as before.
+        self.users = None
+        self.audit = None
+        self.uploader = None
 
     def _alert_journal(self, text, fault=False, action="alert",
                        outcome="", who="", screen="", **_kw):
@@ -742,6 +777,11 @@ class Remote:
             screen = str(body.get("screen") or "").strip()
             if who or screen:
                 return who, screen or "Rack screen", False
+        # Signed in (users.py): the journal names the person, the surface
+        # stays the screen. Still a surface press: no operator list lookup.
+        user = getattr(ctx, "user", "")
+        if user:
+            return user, ctx.screen, True
         return ctx.device, ctx.screen, True
 
     def _journal(self, who, screen, action, outcome, text, fault=False):
@@ -772,6 +812,8 @@ class Remote:
                          else self.schedule_file_view())
         if name == "whoami":
             return 200, self.whoami(ctx)
+        if name in USER_GET_ROUTES:
+            return self.users_get(ctx)
         if name == "deck-input":
             # The Stream Deck process, on this machine. Never the network:
             # it carries the holds the deck acts on.
@@ -803,6 +845,8 @@ class Remote:
                                   "machine itself, not from here."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
+        if name in USER_POST_ROUTES:
+            return self.users_post(name, body, ctx)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
@@ -870,8 +914,188 @@ class Remote:
         return 200, {"text": text}
 
     def whoami(self, ctx):
-        return {"local": ctx.local, "device": ctx.device,
-                "screen": ctx.screen, "fresh_s": FRESH_S}
+        out = {"local": ctx.local, "device": ctx.device,
+               "screen": ctx.screen, "fresh_s": FRESH_S}
+        u = self.users
+        if u is not None:
+            s = getattr(ctx, "session", None) or {}
+            out["user"] = s.get("name") or None
+            out["role"] = s.get("role") or None
+            try:
+                out["users_active"] = u.active()
+            except Exception:                    # noqa: BLE001
+                out["users_active"] = False
+        a = self.audit
+        if a is not None:
+            try:
+                st = a.status()
+                out["audit_fault"] = st["fault"] or (
+                    f"{st['waiting_gap']} audit event(s) not written yet"
+                    if st["waiting_gap"] else "")
+            except Exception as e:               # noqa: BLE001
+                out["audit_fault"] = f"{type(e).__name__}: {e}"
+        return out
+
+    # -- users and the audit log (users.py, audit.py, auditsend.py) ---------
+    def user_view_for_deck(self):
+        """deck-input's "user": who is signed in on this machine, and what
+        the role matrix lets the deck's arm keys do for them (or for
+        nobody signed in). None without users."""
+        u = self.users
+        if u is None:
+            return None
+        try:
+            mu = u.machine_user()
+            role = mu["role"] if mu else None
+            return {"name": mu["name"] if mu else None, "role": role,
+                    "may": {p: u.may(role, p) for p in ("arm", "show")}}
+        except Exception:                        # noqa: BLE001
+            return None
+
+    def users_get(self, ctx):
+        """GET users: what the sign-in card and the Users screen show. The
+        names to pick from for anyone; the list, the matrix, the settings
+        and the audit status only on the show machine itself."""
+        u = self.users
+        if u is None:
+            return 404, {"error": "Users are not set up in this engine."}
+        me = getattr(ctx, "session", None) or {}
+        out = {"active": u.active(), "names": u.names(),
+               "me": {"name": me.get("name"), "role": me.get("role")},
+               "local": ctx.local}
+        if ctx.local:
+            out.update(u.view())
+            out["may_admin"] = u.may(me.get("role"), "users")
+            out["may_settings"] = u.may(me.get("role"), "settings")
+            out["audit"] = self.audit_view()
+        return 200, out
+
+    def audit_view(self):
+        """The Users screen's audit card: the writer, the chain, the upload."""
+        out = {"writer": None, "chain": None, "upload": None}
+        a = self.audit
+        if a is not None:
+            try:
+                out["writer"] = a.status()
+            except Exception as e:               # noqa: BLE001
+                out["writer"] = {"fault": f"{type(e).__name__}: {e}"}
+        up = self.uploader
+        if up is not None:
+            try:
+                out["upload"] = up.status()
+            except Exception as e:               # noqa: BLE001
+                out["upload"] = {"last_error": f"{type(e).__name__}: {e}"}
+        out["chain"] = getattr(self, "_chain_said", None)
+        return out
+
+    def audit_verify(self):
+        """Every day file here, verified now (audit.verify_folder)."""
+        from . import audit as audit_mod
+        a = self.audit
+        if a is None:
+            return 404, {"error": "The audit log is not on in this engine."}
+        a.flush(2.0)
+        sent = audit_mod._load_sent(a.folder)
+        ok, results, problems = audit_mod.verify_folder(
+            a.folder, sent, today=audit_mod.local_day(self.wall()))
+        said = {"ok": ok, "files": len(results),
+                "lines": sum(r["count"] for r in results),
+                "problems": problems[:20],
+                "checked_at": time.strftime("%Y-%m-%d %H:%M:%S",
+                                            time.localtime(self.wall()))}
+        self._chain_said = said
+        return 200, said
+
+    def users_post(self, name, body, ctx):
+        """The sign-in and Users routes. Passwords pass through to users.py
+        and are never journaled, logged or answered back."""
+        u = self.users
+        if u is None:
+            return 404, {"error": "Users are not set up in this engine."}, {}
+        from . import users as users_mod
+        cookie = (f"{users_mod.COOKIE}=%s; HttpOnly; SameSite=Strict; "
+                  f"Path=/")
+        if name == "signin":
+            ok, text, token, needs_new = u.sign_in(
+                body.get("name"), body.get("password"), ctx.local,
+                ctx.source, new_password=body.get("new_password"))
+            if not ok:
+                return 401, {"error": text, "needs_new_password": needs_new}, {}
+            return 200, {"ok": True, "text": text}, {
+                "Set-Cookie": cookie % token}
+        if name == "signout":
+            u.sign_out(getattr(ctx, "token", ""), ctx.source)
+            return 200, {"ok": True, "text": "Signed out."}, {
+                "Set-Cookie": (cookie % "") + "; Max-Age=0"}
+        me = getattr(ctx, "session", None) or {}
+        if name == "my-password":
+            if not me.get("name"):
+                return 403, {"error": "Sign in first."}, {}
+            try:
+                text = u.change_own_password(me["name"], body.get("old"),
+                                             body.get("new"))
+            except ValueError as e:
+                return 400, {"error": str(e)}, {}
+            return 200, {"ok": True, "text": text}, {}
+        if name == "audit-verify":
+            return (*self.audit_verify(),) + ({},)
+        # Everything else changes users or settings: the show machine only.
+        if not ctx.local:
+            return 403, {"error": "Users and settings are changed on the "
+                                  "show machine itself, not from here."}, {}
+        perm = users_mod.REMOTE_ROUTES.get(name)
+        if not u.may(me.get("role"), perm):
+            return 403, {"error": f"Sign in as someone who may: "
+                                  f"{users_mod.perm_label(perm)}. Nothing "
+                                  f"was changed.", "role_refused": True}, {}
+        try:
+            if name == "users":
+                op = str(body.get("op") or "")
+                who = body.get("name")
+                if op == "add":
+                    text = u.add(who, body.get("role"), body.get("password"))
+                elif op == "remove":
+                    if str(who or "").lower() == str(me.get("name") or
+                                                     "").lower():
+                        raise ValueError("You cannot remove yourself while "
+                                         "signed in.")
+                    text = u.remove(who)
+                elif op == "role":
+                    text = u.set_role(who, body.get("role"))
+                elif op == "password":
+                    text = u.set_password(who, body.get("password"))
+                elif op == "clear-password":
+                    text = u.clear_password(who)
+                else:
+                    raise ValueError("op has to be add, remove, role, "
+                                     "password or clear-password.")
+            elif name == "role-matrix":
+                text = u.set_matrix(body.get("matrix"))
+            elif name == "clear-lockouts":
+                text = u.clear_lockouts()
+            elif name == "idle-signout":
+                text = u.set_idle(body.get("minutes"))
+            elif name == "audit-settings":
+                from . import auditsend
+                ch = {k: body[k] for k in ("enabled", "url", "token", "time",
+                                           "keep_days") if k in body}
+                auditsend.save_config(self.folder, ch)
+                text = "The audit upload settings were saved."
+            elif name == "audit-upload-now":
+                up = self.uploader
+                if up is None:
+                    raise ValueError("The audit upload is not running in "
+                                     "this engine.")
+                threading.Thread(target=up.run, kwargs={"force": True},
+                                 daemon=True,
+                                 name="ltcplay-audit-upload-now").start()
+                text = ("Sending now, in the background. The status below "
+                        "says how it went.")
+            else:
+                return 404, {"error": "no such thing here"}, {}
+        except (ValueError, OSError) as e:
+            return 400, {"error": str(e)}, {}
+        return 200, {"ok": True, "text": text}, {}
 
     def network_view(self):
         try:
@@ -1323,6 +1547,11 @@ class Remote:
         # open, and any key press acknowledges (alerts.py).
         out = {"enabled": enabled, "holds": holds if enabled else [],
                "disarms": disarms, "alerts": self.alerts.view()}
+        # Who is signed in on this machine (users.py): the deck shows it
+        # and acts as them.
+        uv = self.user_view_for_deck()
+        if uv is not None:
+            out["user"] = uv
         # The Morning and Shutdown page (morning.py): whether it is open
         # (the deck re-maps itself while it is), the groups the purge
         # selection needs armed, and the locks. The deck arms a purge
@@ -1979,6 +2208,16 @@ class Remote:
         if disk:
             add("Disk", "bad" if disk["state"] == "critical" else "warn",
                 disk["state"])
+        a = self.audit
+        if a is not None:
+            # Only while it has a fault: lines lost, or the disk refusing
+            # (audit.py). The show is never held back by it.
+            try:
+                st = a.status()
+                if st["fault"] or st["waiting_gap"]:
+                    add("Audit", "warn", "not writing")
+            except Exception:                    # noqa: BLE001
+                add("Audit", "warn", "not writing")
         applied = {}
         cond = getattr(self.schedule, "conductor", None)
         try:

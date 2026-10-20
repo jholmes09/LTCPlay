@@ -380,6 +380,15 @@ screen" for the machine itself, "iPad at <its address>" for a device on the
 show Wi-Fi. An old `ltcplay_remote_pins.json` in the settings folder is no
 longer read.
 
+**Users and the audit log** (Jeff, 2026-10-20; USERS.md): named users with
+passwords, optional. Signing in (the user button, top right) names the
+person in the journal and the audit log; a role matrix may restrict
+settings, users, show files, unlocking, the show controls and arming, and
+never Abort, Hold, Stop or a disarm (ltcplay/users.py). Every press on
+every surface is one hash-chained line in `logs/audit` (ltcplay/audit.py),
+sent nightly to Jeff's server once switched on (ltcplay/auditsend.py,
+tools/audit_receiver.py).
+
 The remote page is one screen with no scrolling, at 1920x1080 on the rack PC
 and 1024x768 on an iPad: the show state, the timecode, the current show with
 "Left in this show" (its length minus where the engine's show clock is; it

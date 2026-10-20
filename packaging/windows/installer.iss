@@ -88,6 +88,7 @@ Source: "SHOW PC CHECKLIST.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "INSTALL.md"; DestDir: "{app}"; DestName: "INSTALL (read me).txt"; Flags: ignoreversion
 Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\USERS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\ltcplay\ltcplay_schedule.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{srcexe}"; DestDir: "{app}\Installers"; DestName: "LTC Player Setup {#AppVersion}.exe"; Flags: external ignoreversion; Check: NotRunFromInstallers

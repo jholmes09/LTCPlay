@@ -678,6 +678,42 @@ def abort_is_live(any_group_active, show_running=None):
     return bool(any_group_active) or show_running is True
 
 
+def role_gate(user, action):
+    """None if the signed-in user's role (users.py, through the engine) may
+    do `action` from the deck, else a refusal sentence. Only "arm" is
+    asked here: the deck's other presses that a role can restrict go to
+    the engine, which checks them itself. ABORT, Hold and every disarm are
+    NEVER passed through this function (users.py, the safety rule), and
+    `user` None (the engine not heard from) never refuses: the deck's own
+    rules then decide alone, as before users existed."""
+    if action in ("abort", "disarm", "hold") or not isinstance(user, dict):
+        return None
+    may = user.get("may") if isinstance(user.get("may"), dict) else {}
+    if may.get(action) is not False:
+        return None
+    who = user.get("name") or "nobody signed in"
+    return (f"the Stream Deck's {action} key was pressed, but the role "
+            f"matrix does not let {who} ({user.get('role') or 'signed out'})"
+            f" {action}. Sign in on the Rack screen as someone who may, or "
+            f"change the matrix on the Users screen. Nothing was done.")
+
+
+def deck_key_name(k, names, latched=False, morning=False, ack=False):
+    """What the audit log calls a deck key (audit.py)."""
+    if k == TOP_START:
+        return "ACK" if ack else ("FIRE" if morning else "Start now")
+    if k == TOP_HOLD:
+        return "Hold/Resume"
+    if k == TOP_ABORT:
+        return "Reset/Abort" if latched else "Abort"
+    if k in GROUP_KEYS and k - GROUP_KEYS[0] < len(names):
+        return f"arm key {names[k - GROUP_KEYS[0]]}"
+    return f"key {k}"
+
+
+USER_TOAST_S = 3.0      # the Start key names a new sign-in this long
+
+
 def operator_gate(current_operator, action):
     """None if `action` may proceed, else a refusal sentence. ABORT and a
     DISARM press (action="disarm") are never gated: see module docstring.
@@ -1294,6 +1330,19 @@ class ScreenKeys:
             return ()
         return tuple(a for a in (last[0].get("alerts") or [])
                      if isinstance(a, dict))
+
+    def user(self):
+        """Who is signed in on this machine, as the engine's last fresh
+        answer said (users.py, deck-input "user"): {"name": str or None,
+        "role", "may": {"arm": bool, ...}}. None when the engine has not
+        answered within SCREEN_STALE_S: then the deck's own rules decide
+        alone, exactly as before users existed."""
+        with self._lock:
+            last = self._last
+        if last is None or self._clock() - last[1] > SCREEN_STALE_S:
+            return None
+        u = last[0].get("user")
+        return u if isinstance(u, dict) else None
 
 
 JOURNAL_QUEUE_MAX = 1000
@@ -1934,7 +1983,8 @@ class Controller:
     def __init__(self, arm_socket, status_socket, group_names, deck_factory=Deck,
                 operator_provider=lambda: "", show_running_provider=lambda: None,
                 conductor=None, journal=None, clock=time.monotonic,
-                sleep=time.sleep, screen=None):
+                sleep=time.sleep, screen=None, user_provider=None,
+                audit=None):
         if not (1 <= len(group_names) <= GROUP_KEY_LIMIT):
             raise ValueError(
                 f"the Stream Deck has {GROUP_KEY_LIMIT} arm keys; it was "
@@ -1998,12 +2048,68 @@ class Controller:
         # seq is behind; without this, that read as a spoof.
         self._spoof_last_seq = None
         self._spoof_grace_until = 0.0
+        # Users (users.py, 2026-10-20): the deck acts as whoever is signed
+        # in on this machine's rack screen. `user_provider` () -> the
+        # engine's {"name", "role", "may"} or None (ScreenKeys.user);
+        # `audit` an audit.AuditLog's event(), or None. Neither is ever
+        # asked before an Abort or a disarm goes out, and neither can stop
+        # one: both only ever add a refusal to ARMING, or a line to a log.
+        if user_provider is None:
+            user_provider = getattr(screen, "user", None) or (lambda: None)
+        self.user_provider = user_provider
+        self._audit = audit
+        self._user_seen = ("?",)
+        self._user_toast_until = 0.0
+
+    def _user(self):
+        try:
+            u = self.user_provider()
+        except Exception:
+            return None
+        return u if isinstance(u, dict) else None
+
+    def _audit_event(self, action, target="", result="accepted", reason=""):
+        """One line in this process's audit file (audit.py). Never blocks
+        and never raises: the event goes on a queue, or is counted lost."""
+        a = self._audit
+        if a is None:
+            return
+        try:
+            u = self._user() or {}
+            a(user=u.get("name") or "unsigned", surface="deck",
+              action=action, target=target, result=result, reason=reason,
+              source="Stream Deck")
+        except Exception:
+            pass
+
+    def _audit_keys(self, down, latched, pending):
+        """Every key that went down or came up since the last snapshot,
+        holds and their releases included (the release of FIRE ends a
+        purge, of Abort cancels it)."""
+        if self._audit is None:
+            return
+        morning = self.morning_open()
+        for k, what in ([(k, "key-press") for k in
+                         edges(self._prev_keys, down)] +
+                        [(k, "key-release") for k in
+                         releases(self._prev_keys, down)]):
+            self._audit_event(what, deck_key_name(
+                k, self.names, latched=latched, morning=morning,
+                ack=bool(pending)))
 
     def _log(self, text, **kw):
         try:
             self._journal(text, **kw)
         except Exception:
             pass
+        if self._audit is not None and kw.get("action"):
+            low = text.lower()
+            result = ("error" if kw.get("fault") else
+                      "refused" if ("refused" in low or "nothing was" in low)
+                      else "accepted")
+            self._audit_event(str(kw.get("action")), target=text,
+                              result=result,
+                              reason=text if result != "accepted" else "")
 
     def reset_on_reconnect(self):
         """Called by run_forever right after a (re)connect, once arm.open()
@@ -2403,6 +2509,10 @@ class Controller:
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
             return
+        refusal = role_gate(self._user(), "arm")
+        if refusal:
+            self._log(f"Stream Deck: {refusal}", action="arm")
+            return
         self._arm_holds[i].press(now)
 
     def _do_arm_fire(self, i, now, who=None, screen="Stream Deck"):
@@ -2441,6 +2551,13 @@ class Controller:
         if who is None:
             who = self.operator_provider() or ""
         refusal = operator_gate(who, "arm")
+        if refusal:
+            self._log(f"Stream Deck: {refusal}", action="arm")
+            return
+        # The deck's own key only: a screen's hold and a purge were checked
+        # against the role matrix by the engine already.
+        refusal = (role_gate(self._user(), "arm") if screen == "Stream Deck"
+                   else None)
         if refusal:
             self._log(f"Stream Deck: {refusal}", action="arm")
             return
@@ -2483,6 +2600,7 @@ class Controller:
         # below (Abort still aborts; a group key still disarms). The Start
         # key, which reads ACK meanwhile, does only the acknowledge.
         pending = self.alert_pending()
+        self._audit_keys(down, latched, pending)
         if pending and edges(self._prev_keys, down):
             self._do_acknowledge(pending)
         if latched:
@@ -2915,6 +3033,11 @@ class Controller:
             elif held:
                 # The demo's idle hold: START NOW dims while held.
                 fonts.show_key(d, b0, ["START", "NOW"], DIM_TEXT)
+            elif self.user_toast(now):
+                # Who just signed in (or out) on the rack screen, for a few
+                # seconds, only while nothing else needs this key.
+                fonts.show_key(d, b0, self.user_toast(now), CHAMPAGNE,
+                               kind="sans", max_size=16)
             elif operator_gate(op, "start"):
                 fonts.show_key(d, b0, ["PICK", "OPERATOR"], DIM_TEXT, kind="sans",
                               max_size=16)
@@ -2999,6 +3122,22 @@ class Controller:
                 arm_key_image(fonts, d, face_box(GROUP_KEYS[i]), "",
                               group_look(None, slot=i), group_blink)
         return canvas
+
+    def user_toast(self, now):
+        """The Start key's lines naming who is signed in on this machine,
+        for USER_TOAST_S after that changes; None otherwise. The first
+        answer after the deck starts names them too."""
+        u = self._user()
+        if u is not None:
+            key = (u.get("name") or "",)
+            if key != self._user_seen:
+                self._user_seen = key
+                self._user_toast_until = now + USER_TOAST_S
+        if now >= self._user_toast_until or self._user_seen == ("?",):
+            return None
+        name = self._user_seen[0]
+        return ["SIGNED IN", _fit_name(name).upper()] if name else \
+            ["SIGNED", "OUT"]
 
     def _audio_lost(self):
         """Whether the engine says the show audio is lost (an
@@ -3447,6 +3586,9 @@ def main(argv=None):
                     "the port `ltc serve` or any launcher actually runs "
                     "on, so the operator gate and journal routing silently "
                     "never reached the real server by default)")
+    ap.add_argument("--audit-folder", default=None,
+                    help="where this deck's audit day files go (audit.py); "
+                    "default logs/audit in the settings folder")
     args = ap.parse_args(argv)
     # Second-copy guard (2026-10-03, onlyone.py): one deck process per
     # machine. A second `ltc deck` would be a second sender on the arm link:
@@ -3498,11 +3640,26 @@ def _main(args):
     # otherwise, and ScreenKeys.holds() is empty), so an alert can reach
     # the keys with screen arming off.
     screen = ScreenKeys(args.ltcplay_url).start()
+    # The audit log (audit.py): every key press and release, and every
+    # action's outcome, in this process's own day files, written on a
+    # thread of its own. A log that cannot be written loses lines, never
+    # a press.
+    audit_log = None
+    try:
+        from . import audit as audit_mod
+        from . import remote as remote_mod
+        audit_log = audit_mod.AuditLog(
+            args.audit_folder or audit_mod.default_folder(
+                remote_mod.settings_folder()), "deck").start()
+    except Exception as e:                       # noqa: BLE001
+        print(f"Stream Deck: the audit log is off: {type(e).__name__}: {e}")
     controller = Controller(arm, status, names,
                             operator_provider=sched.current_operator,
                             show_running_provider=sched.show_running,
                             conductor=engine, journal=journal,
-                            screen=screen)
+                            screen=screen,
+                            audit=(audit_log.event if audit_log is not None
+                                   else None))
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.
@@ -3526,6 +3683,9 @@ def _main(args):
         engine.stop()
         if screen is not None:
             screen.stop()
+        if audit_log is not None:
+            audit_log.flush(1.0)
+            audit_log.stop(1.0)
     return 0
 
 

@@ -12,6 +12,7 @@ the night before.
 """
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -748,8 +749,142 @@ class Handler(BaseHTTPRequestHandler):
         if ctx is None:
             from . import remote as remote_mod
             ctx = remote_mod.Ctx(self._local(), self.client_address[0])
+            # Who is signed in on this page, if anyone (users.py). Nobody
+            # has to be; a cookie that names no live session is nobody.
+            users = getattr(getattr(self.server, "remote", None), "users",
+                            None)
+            win = str(self.headers.get("X-LTC-Window") or "")
+            ctx.window = win if re.match(r"^[A-Za-z0-9-]{1,24}$", win) \
+                else ""
+            if users is not None:
+                try:
+                    tok = remote_mod.cookie_token(self.headers.get("Cookie"))
+                    ctx.token = tok
+                    ctx.session = users.session(tok) if tok else None
+                except Exception:                # noqa: BLE001
+                    ctx.session = None
             self._ctx_cache = ctx
         return ctx
+
+    # -- users and the audit log (users.py, audit.py) ---------------------
+    def _acting_user(self, body):
+        """{"name", "role"} of whoever this press counts as, or None for
+        nobody signed in: the page's own sign-in, or for the Stream Deck
+        process (loopback, screen "Stream Deck") whoever is signed in on
+        this machine."""
+        ctx = self._ctx()
+        if ctx.session:
+            return {"name": ctx.session.get("name"),
+                    "role": ctx.session.get("role")}
+        if ctx.local and isinstance(body, dict) and \
+                str(body.get("screen") or "") == "Stream Deck":
+            users = getattr(getattr(self.server, "remote", None), "users",
+                            None)
+            if users is not None:
+                return users.machine_user()
+        return None
+
+    def _role_refused(self, route):
+        """Send a 403 and return True when the role matrix does not let
+        this press go ahead. NEVER for a safety press (users.classify:
+        Abort, Hold, Stop, every disarm, a release, a lock, Acknowledge,
+        signing in or out), never before any user exists, and never on an
+        error in here: a fault in the sign-in code must not stop a show."""
+        try:
+            users = getattr(getattr(self.server, "remote", None), "users",
+                            None)
+            if users is None:
+                return False
+            from . import users as users_mod
+            body = self._body()
+            perm = users_mod.classify(route, body)
+            if perm == "safety" or perm is None:
+                return False
+            who = self._acting_user(body)
+            role = who.get("role") if who else None
+            if users.may(role, perm):
+                return False
+            name = (who or {}).get("name")
+            why = (f"{name} ({role}) may not do this: "
+                   if name else "Nobody is signed in on this screen, and "
+                   "signed out may not do this: ") + \
+                f"{users_mod.perm_label(perm)}. Sign in as someone who may " \
+                f"(the user chip at the top). Abort, Hold, Stop and every " \
+                f"disarm always work. Nothing was changed."
+        except Exception:                        # noqa: BLE001
+            return False
+        self._send(403, {"error": why, "role_refused": True})
+        return True
+
+    # Presses repeated many times a second while a finger is down (or a
+    # page is open): only the first, and any that is not taken, are logged.
+    AUDIT_BEATS = ("/api/remote/morning-open", "/api/schedule/deck-event",
+                   "/api/remote/signin", "/api/remote/signout")
+    AUDIT_TARGET_KEYS = ("group", "machine", "machines", "laser", "id",
+                         "kind", "on", "at", "seconds", "which", "action",
+                         "op", "name", "role", "checklist", "step", "state",
+                         "look", "timeline", "only", "cue", "minutes",
+                         "enabled", "time", "keep_days", "confirmed",
+                         "raise", "clear")
+
+    def _audit_post(self, route):
+        """One audit line for this POST (audit.py): who, which surface,
+        what, to what, and what came of it. Never raises, never waits;
+        never a password, a token or a whole body."""
+        try:
+            remote = getattr(self.server, "remote", None)
+            log = getattr(remote, "audit", None)
+            if log is None:
+                return
+            body = getattr(self, "_body_cache", None)
+            body = body if isinstance(body, dict) else {}
+            code, out = getattr(self, "_said", None) or (0, {})
+            ok = 200 <= code < 300
+            short = route.rsplit("/", 1)[-1]
+            beat = (route in self.AUDIT_BEATS or
+                    (short == "arm-hold" and
+                     body.get("hold_id") is not None) or
+                    (short == "purge-fire" and
+                     body.get("fire_id") is not None))
+            if beat and (ok or route in ("/api/remote/signin",
+                                         "/api/remote/signout",
+                                         "/api/remote/morning-open",
+                                         "/api/schedule/deck-event")):
+                return
+            from . import audit as audit_mod
+            parts = []
+            for k in self.AUDIT_TARGET_KEYS:
+                v = body.get(k)
+                if v is None or audit_mod.secret_name(k):
+                    continue
+                if isinstance(v, list):
+                    v = ",".join(str(x) for x in v[:12])
+                elif isinstance(v, dict):
+                    continue
+                parts.append(f"{k}={v}")
+            ctx = self._ctx()
+            deck = ctx.local and str(body.get("screen") or "") == \
+                "Stream Deck"
+            who = self._acting_user(body)
+            reason = ""
+            if not ok and isinstance(out, dict):
+                reason = str(out.get("error") or out.get("text") or "")
+            name = route[len("/api/remote/"):] if \
+                route.startswith("/api/remote/") else route[len("/api/"):] \
+                if route.startswith("/api/") else route
+            log.event(user=(who or {}).get("name") or "unsigned",
+                      surface="deck" if deck else "web", action=name,
+                      target=" ".join(parts),
+                      result=("accepted" if ok else
+                              "error" if code >= 500 or code == 0 else
+                              "refused"),
+                      reason=reason,
+                      source=("Stream Deck" if deck else ctx.source))
+            users = getattr(remote, "users", None)
+            if users is not None and ctx.token and ctx.session:
+                users.touch(ctx.token)
+        except Exception:                        # noqa: BLE001
+            pass
 
     def _refusal(self, post=False):
         """A sentence when this request must be turned away before any
@@ -794,6 +929,8 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _send(self, code, body, ctype="application/json", headers=None):
+        # What was answered, for the audit line (_audit_post).
+        self._said = (code, body if isinstance(body, dict) else {})
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
@@ -812,6 +949,15 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _body(self):
+        """The request's JSON body, read once: the role check reads it
+        before the route does, and the audit line after."""
+        if getattr(self, "_body_read", False):
+            return self._body_cache
+        self._body_cache = self._read_body()
+        self._body_read = True
+        return self._body_cache
+
+    def _read_body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -1025,11 +1171,24 @@ class Handler(BaseHTTPRequestHandler):
             LIVE_SHOW_STATES
 
     def do_POST(self):
-        self._ctx_cache = None          # one connection carries many requests
+        # One connection carries many requests: nothing of the last one's
+        # body or answer is kept. Every POST gets one audit line once it
+        # has been answered (audit.py), whatever the answer was.
+        self._body_read, self._body_cache, self._said = False, None, None
         route = urllib.parse.urlparse(self.path).path
+        try:
+            return self._do_post(route)
+        finally:
+            self._audit_post(route)
+
+    def _do_post(self, route):
+        self._ctx_cache = None          # one connection carries many requests
         why = self._refusal(post=True)
         if why:
             return self._send(403, {"error": why})
+        # The role matrix (users.py): never in front of a safety press.
+        if self._role_refused(route):
+            return None
         if not self._local() and not network_may_reach(route):
             return self._send(403, {"error": "Not from the network. Only "
                                              "the remote page's own routes "
@@ -1241,10 +1400,60 @@ def brand_doc(server):
     return b
 
 
+def _attach_accounts(httpd, users_seed=None, transport=None):
+    """Users, sign-in, the engine's audit log, what the engine sees by
+    itself (auditwatch.py) and the nightly upload, on httpd.remote.
+    Returns True when on. Never raises."""
+    r = httpd.remote
+    try:
+        from . import audit as audit_mod
+        from . import auditsend
+        from . import auditwatch
+        from . import users as users_mod
+        log = audit_mod.AuditLog(audit_mod.default_folder(r.folder),
+                                 "engine").start()
+        r.audit = log
+
+        def _note(action, user, result="accepted", reason="", target="",
+                  source=""):
+            log.event(user=user, surface="web", action=action,
+                      target=target, result=result, reason=reason,
+                      source=source)
+        r.users = users_mod.Users(r.folder, audit=_note)
+        r.users.seed(users_mod.SEED_USERS if users_seed is None
+                     else users_seed)
+        r.uploader = auditsend.Uploader(
+            log.folder, r.folder, transport=transport,
+            note=lambda **kw: log.event(user=audit_mod.SYSTEM,
+                                        surface="engine", **kw)).start()
+        r.audit_watch = auditwatch.EngineWatch(r, log).start()
+        log.event(user=audit_mod.SYSTEM, surface="engine",
+                  action="engine-start", target=r.folder)
+        before = httpd.server_close
+
+        def _close():
+            try:
+                r.audit_watch.stop()
+                r.uploader.stop()
+                log.event(user=audit_mod.SYSTEM, surface="engine",
+                          action="engine-stop")
+                log.flush(1.0)
+                log.stop(1.0)
+            except Exception:                    # noqa: BLE001
+                pass
+            before()
+        httpd.server_close = _close
+        return True
+    except Exception as e:                       # noqa: BLE001
+        print(f"Users and the audit log are off: {type(e).__name__}: {e}")
+        return False
+
+
 def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           token=None, on_ready=None, schedule=None, announce=None,
           madmapper=None, beyond=None, fire_ice=None,
-          remote_folder=None, flamesafe_config=None, flame_disarm=None):
+          remote_folder=None, flamesafe_config=None, flame_disarm=None,
+          accounts=False):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -1378,6 +1587,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                      folder=remote_folder,
                                      flame_status=fstatus,
                                      flame_disarm=flame_disarm)
+    if accounts:
+        # Named users and the audit log (users.py, audit.py, auditsend.py;
+        # Jeff, 2026-10-20), for `ltc serve` (the show engine). A failure
+        # here leaves them off and says so; the show is never held back.
+        _attach_accounts(httpd)
     # The booth speaker and the blue pulse's pixels (alerts.py,
     # boothaudio.py), from ltcplay_remote.json. Off until configured; a
     # bad block is said once here and the booth stays off.
