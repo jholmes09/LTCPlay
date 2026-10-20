@@ -8802,6 +8802,182 @@ def build():
         raise ChecklistConfigError(f"{where}: tally.url has to start with "''',
   '''    if False:
         raise ChecklistConfigError(f"{where}: tally.url has to start with "'''),
+
+ # -- users, sign-in and the audit log (Jeff, 2026-10-20; USERS.md). The
+ # safety rule first: no press that only lowers risk is ever behind the
+ # role matrix; then passwords, the lockout, the last admin, the chain,
+ # the never-blocking writer and the nightly upload's acknowledgement.
+ ('users: a safety press is restricted like any other', 'ltcplay/users.py',
+  '    if perm == "safety" or perm is None:\n        return True\n    col = role',
+  '    if perm is None:\n        return True\n    col = role'),
+
+ ('users: a purge turned off is an arming press', 'ltcplay/users.py',
+  '                body.get("on") is False:\n            return "safety"',
+  '                body.get("on") is False:\n            return "arm"'),
+
+ ('users: locking a machine out needs the unlock row', 'ltcplay/users.py',
+  '            return "safety" if body.get("kind") != "rewrite" else "settings"',
+  '            return "unlock"'),
+
+ ('users: Abort is a show press the matrix can take away', 'ltcplay/users.py',
+  '    "abort": "safety", "hold": "safety",',
+  '    "abort": "show", "hold": "safety",'),
+
+ ('users: every password gets the same salt', 'ltcplay/users.py',
+  '    salt = salt or secrets.token_bytes(16)',
+  '    salt = salt or b"\\0" * 16'),
+
+ ('users: the password itself is stored beside its hash', 'ltcplay/users.py',
+  '                "salt": salt.hex(), "hash": h.hex()}',
+  '                "salt": salt.hex(), "hash": h.hex(), "pw": str(password)}'),
+
+ ('users: any password matches', 'ltcplay/users.py',
+  '        return hmac.compare_digest(got["hash"], str(rec["hash"]))',
+  '        return True'),
+
+ ('users: scrypt at a toy cost', 'ltcplay/users.py',
+  'SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1}',
+  'SCRYPT = {"n": 2 ** 4, "r": 8, "p": 1}'),
+
+ ('users: wrong passwords never lock anything', 'ltcplay/users.py',
+  '            extra = f[0] - FREE_TRIES\n            if extra > 0:',
+  '            extra = f[0] - FREE_TRIES\n            if False:'),
+
+ ('users: the lockout grows without end', 'ltcplay/users.py',
+  '                f[1] = now + min(LOCK_MAX_S, LOCK_BASE_S * 2 ** (extra - 1))',
+  '                f[1] = now + LOCK_BASE_S * 2 ** (extra - 1)'),
+
+ ('users: a right password does not clear the wrong ones', 'ltcplay/users.py',
+  '            for k in keys:\n                self._fails.pop(k, None)\n            token = ',
+  '            token = '),
+
+ ('users: the last admin can be removed', 'ltcplay/users.py',
+  '                raise ValueError("That is the last admin. Make another admin "\n                                 "first.")\n            del users[real]',
+  '                pass\n            del users[real]'),
+
+ ('users: the last admin can be demoted', 'ltcplay/users.py',
+  '            if users[real].get("role") == "admin" and role != "admin" and \\',
+  '            if False and \\'),
+
+ ('users: a temporary password signs in as it is', 'ltcplay/users.py',
+  '        if first or must:',
+  '        if first:'),
+
+ ('users: a chosen password can be chosen again by anyone', 'ltcplay/users.py',
+  '            first = u is not None and rec is None',
+  '            first = u is not None'),
+
+ ('users: the seeded people ship with a password', 'ltcplay/users.py',
+  '                                   "changed": self._stamp(), "pw": None,',
+  '                                   "changed": self._stamp(), "pw": hash_password("changeme", params=self._hash_params),'),
+
+ ('users: a person an admin adds keeps the temporary password', 'ltcplay/users.py',
+  '                           "changed": self._stamp(), "must_change": True,',
+  '                           "changed": self._stamp(), "must_change": False,'),
+
+ ("users: an admin's reset is not temporary", 'ltcplay/users.py',
+  '        real = self._set_pw(name, pw, temporary=True)',
+  '        real = self._set_pw(name, pw, temporary=False)'),
+
+ ('users: an admin can be locked out of managing users', 'ltcplay/users.py',
+  'FIXED = {("admin", "users"): True}',
+  'FIXED = {}'),
+
+ ('users: idle sign out never signs anyone out', 'ltcplay/users.py',
+  '                if now - s["seen"] > mins * 60]',
+  '                if False]'),
+
+ ('web: a fault in the role check stops the press', 'ltcplay/web.py',
+  '                f"disarm always work. Nothing was changed."\n        except Exception:                        # noqa: BLE001\n            return False',
+  '                f"disarm always work. Nothing was changed."\n        except Exception:                        # noqa: BLE001\n            why = "the role check failed"'),
+
+ ('web: the role matrix is never asked', 'ltcplay/web.py',
+  '            if users.may(role, perm):\n                return False',
+  '            if True:\n                return False'),
+
+ ("web: the Stream Deck's presses count as nobody", 'ltcplay/web.py',
+  '                str(body.get("screen") or "") == "Stream Deck":\n            users = getattr(',
+  '                str(body.get("screen") or "") == "Nope":\n            users = getattr('),
+
+ ("web: the page's open-beats are written to the audit log", 'ltcplay/web.py',
+  '                                         "/api/remote/morning-open",\n                                         "/api/schedule/deck-event")):',
+  '                                         "/api/schedule/deck-event")):'),
+
+ ('audit: a secret-looking value is written as it is', 'ltcplay/audit.py',
+  '    s = _SECRET_VALUE.sub("[hidden]", s)',
+  '    s = s'),
+
+ ('audit: lines are not chained', 'ltcplay/audit.py',
+  '        rec["prev"] = self._prev\n',
+  '        rec["prev"] = ""\n'),
+
+ ('audit: a day does not link to the day before', 'ltcplay/audit.py',
+  '                      "prev_file_end": prev_end}, t)',
+  '                      "prev_file_end": ""}, t)'),
+
+ ("audit: verify does not check a line's hash", 'ltcplay/audit.py',
+  '        if r.get("hash") != record_hash(r):\n            return False, i - 1, prev, f"line {i} was changed',
+  '        if False:\n            return False, i - 1, prev, f"line {i} was changed'),
+
+ ('audit: verify does not link the days', 'ltcplay/audit.py',
+  '        elif before[1] is not None and r["start_link"] != before[1]:',
+  '        elif False:'),
+
+ ('audit: lost lines leave no gap line', 'ltcplay/audit.py',
+  '            if lost:\n                self._append(',
+  '            if False:\n                self._append('),
+
+ ('audit: an event waits for room on the queue', 'ltcplay/audit.py',
+  '            self._q.put_nowait(rec)\n            return True',
+  '            self._q.put(rec, timeout=0.002)\n            return True'),
+
+ ("auditsend: a day is marked sent without the server's acknowledgement", 'ltcplay/auditsend.py',
+  '        if not isinstance(ack, dict) or ack.get("ok") is not True or \\\n                ack.get("sha256") != sha:',
+  '        if False:'),
+
+ ("auditsend: today's open file is sent too", 'ltcplay/auditsend.py',
+  '            if day < today and n not in sent:',
+  '            if n not in sent:'),
+
+ ('auditsend: the upload runs while it is off', 'ltcplay/auditsend.py',
+  '            if not cfg["enabled"] or (not force and not self.due(cfg)):',
+  '            if (not force and not self.due(cfg)):'),
+
+ ('auditsend: a failure is retried at once, no backoff', 'ltcplay/auditsend.py',
+  '            return self._clock() >= self._next_try',
+  '            return True'),
+
+ ('auditsend: a day not acknowledged is pruned', 'ltcplay/auditsend.py',
+  '            if day < cutoff and n in sent:',
+  '            if day < cutoff:'),
+
+ ('auditsend: a plain http address is accepted', 'ltcplay/auditsend.py',
+  '    if url and not url.lower().startswith("https://"):\n        raise ValueError(f"{where}: the server address',
+  '    if False:\n        raise ValueError(f"{where}: the server address'),
+
+ ('auditsend: days are kept less than 90 days', 'ltcplay/auditsend.py',
+  '            not KEEP_MIN_DAYS <= keep <= 3650:',
+  '            not 1 <= keep <= 3650:'),
+
+ ('audit receiver: any token is taken', 'tools/audit_receiver.py',
+  '    if not token or not hmac.compare_digest(auth.encode(), want.encode()):',
+  '    if not token:'),
+
+ ('audit receiver: a different file overwrites a stored one', 'tools/audit_receiver.py',
+  '        if have == sha:',
+  '        if True:'),
+
+ ('deck: the role matrix never refuses an arm key', 'ltcplay/streamdeck.py',
+  '    if may.get(action) is not False:\n        return None',
+  '    if True:\n        return None'),
+
+ ('deck: the role is not asked again when an arm hold completes', 'ltcplay/streamdeck.py',
+  '        refusal = (role_gate(self._user(), "arm") if screen == "Stream Deck"\n                   else None)',
+  '        refusal = None'),
+
+ ('deck: key presses are not written to the audit log', 'ltcplay/streamdeck.py',
+  '        self._audit_keys(down, latched, pending)\n',
+  ''),
 ]
 
 

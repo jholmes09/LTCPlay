@@ -46,6 +46,10 @@ ltcplay_morning.json
 ltcplay_morning_layout.json
 ltcplay_lockout.json
 
+# Users and the audit log (USERS.md): password hashes, the upload token
+ltcplay_users.json
+ltcplay_audit.json
+
 # Written by Cut a release.command at packaging time
 VERSION
 

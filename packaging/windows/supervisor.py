@@ -197,6 +197,39 @@ def load_settings():
 
 # ------------------------------------------------------------- logging ---
 _LOG = None
+_AUDIT = []
+
+
+def audit_event(action, target="", result="accepted", reason=""):
+    """One line in the supervisor's audit day file (ltcplay/audit.py, which
+    the app carries as a module of its own: this program does not bundle
+    the ltcplay package). Started on first use; never raises, never waits,
+    and a log that cannot be written changes nothing here."""
+    try:
+        if not _AUDIT:
+            try:
+                import audit as audit_mod
+            except ImportError:
+                sys.path.append(os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__)))), "ltcplay"))
+                import audit as audit_mod
+            _AUDIT.append(audit_mod.AuditLog(
+                audit_mod.default_folder(appdata_dir()),
+                "supervisor").start())
+        _AUDIT[0].event(user="system", surface="supervisor", action=action,
+                        target=target, result=result, reason=reason,
+                        source="LTC Player.exe")
+    except Exception:                            # noqa: BLE001
+        pass
+
+
+def audit_flush():
+    try:
+        if _AUDIT:
+            _AUDIT[0].flush(1.0)
+    except Exception:                            # noqa: BLE001
+        pass
 
 
 def log(msg):
@@ -525,6 +558,8 @@ class Program:
             self.backoff = 2.0
         log(f"{EXE[self.name]} stopped by itself (exit code {code}) after "
             f"{ran:.0f} s; starting it again in {self.backoff:.0f} s")
+        audit_event("program-exited", EXE[self.name], "error",
+                    f"exit code {code} after {ran:.0f} s")
         self.next_try = time.monotonic() + self.backoff
         self.backoff = min(self.backoff * 2, 60.0)
         self._forget()
@@ -1081,6 +1116,7 @@ def run_loop(open_page=False):
     for why in fire_ice_files(settings):
         log(why)
     log(ltcwin.settings_folder_line())
+    audit_event("supervisor-start", ltcwin.version_line(ltcwin.APP))
     log("scheduling protection " + (
         "ON: the engine and flamesafe run at High priority, their show "
         "threads at Highest, the Stream Deck program at Above normal; each "
@@ -1126,8 +1162,11 @@ def run_loop(open_page=False):
             busy, why = show_running(port)
             if busy:
                 log(f"stop refused: {why}")
+                audit_event("stop", "every program", "refused", why)
                 _write_refusal(why)
             else:
+                audit_event("stop", "every program")
+                audit_flush()
                 failures = [w for w in (progs[n].stop()
                                         for n in reversed(PROGRAMS)) if w]
                 if failures:
@@ -1151,7 +1190,9 @@ def run_loop(open_page=False):
             busy, why = show_running(port)
             if busy:
                 log(f"the page asked for an engine restart; refused: {why}")
+                audit_event("restart-engine", "engine", "refused", why)
             else:
+                audit_event("restart-engine", "engine")
                 settings = load_settings()
                 why = progs["engine"].stop()
                 said = why or ("the engine stopped cleanly and is started "
@@ -1199,8 +1240,10 @@ def run_loop(open_page=False):
             if now >= p.next_try and not ENDING.is_set():
                 try:
                     p.start(args, settings)
+                    audit_event("program-start", EXE[n])
                 except OSError as e:
                     log(f"could not start {EXE[n]}: {e}")
+                    audit_event("program-start", EXE[n], "error", str(e))
                     p.next_try = now + p.backoff
                     p.backoff = min(p.backoff * 2, 60.0)
         programs_file.update(progs, want)

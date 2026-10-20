@@ -207,6 +207,16 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 
 /* ---- Programming: its own screen, may scroll inside itself ---- */
 #v-prog{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
+/* ---- Users and the audit log (users.py, audit.py): their own screen,
+   reached from the user chip; may scroll inside itself like Programming ---- */
+#v-users{overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
+#nav-user{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#nav-user.in{border-color:var(--amber);color:var(--champ)}
+#nav-user.fault{border-color:var(--red);color:var(--red)}
+.utab{width:100%;border-collapse:collapse;font-size:14px}
+.utab th,.utab td{padding:4px 6px;border-bottom:1px solid var(--hair);text-align:left;vertical-align:middle}
+.utab td.c,.utab th.c{text-align:center}
+.utab button,.utab select,.utab input{min-height:34px;font-size:13px;padding:2px 8px}
 .big{font:800 clamp(30px,5vh,56px)/1.05 var(--sans);font-variant-numeric:tabular-nums;color:var(--champ)}
 
 /* ---- Morning and Shutdown (Jeff, 2026-10-17): one screen, the field on
@@ -402,6 +412,7 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     <!-- The version text is kept but hidden (Jeff, 2026-10-17: it took prime
          screen room); the info panel shows it, one click away. -->
     <span id="version" hidden aria-hidden="true"></span>
+    <button id="nav-user" class="ghost" data-go="users" title="Who is signed in on this screen. Users, who may do what, and the audit log.">Signed out</button>
     <button id="nav-info" class="infob" title="About this LTC Player: version, mode, how to leave this window" aria-label="Information">i</button>
     <button id="nav-tonight" class="ghost" data-go="tonight">Tonight</button>
     <button id="nav-prog" class="ghost" data-go="programming">Programming</button>
@@ -505,6 +516,80 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
         <div class="toast" id="mo-cmsg"></div>
       </section>
     </div>
+  </section>
+
+  <!-- Users and the audit log (USERS.md): sign in and out, the users, who
+       may do what, and the audit log's state. Nobody has to sign in for
+       Abort, Hold, Stop or any disarm. -->
+  <section id="v-users" class="view" hidden>
+    <section class="card" id="u-sign">
+      <h2>Sign in</h2>
+      <div id="u-in" hidden>
+        <div class="kv">Signed in as <b id="u-me"></b> on this screen.</div>
+        <div class="row" style="margin-top:8px"><button id="u-out">Sign out</button></div>
+        <label for="u-old">Change your password</label>
+        <div class="row">
+          <input id="u-old" type="password" autocomplete="current-password" placeholder="Current password" style="flex:1 1 0">
+          <input id="u-new1" type="password" autocomplete="new-password" placeholder="New password" style="flex:1 1 0">
+          <button id="u-chg" class="ghost" style="flex:0 0 auto">Change</button>
+        </div>
+      </div>
+      <div id="u-form">
+        <label for="u-name">Name</label>
+        <select id="u-name"></select>
+        <label for="u-pw" id="u-pw-l">Password</label>
+        <input id="u-pw" type="password" autocomplete="current-password">
+        <div id="u-newbox" hidden>
+          <label for="u-new">Choose your own password (6 or more characters)</label>
+          <input id="u-new" type="password" autocomplete="new-password">
+        </div>
+        <div class="row" style="margin-top:8px"><button id="u-go" class="go">Sign in</button></div>
+      </div>
+      <div class="toast" id="u-msg"></div>
+      <div class="dim" style="font-size:13px;margin-top:6px">Abort, Hold, Stop and every disarm work for everyone, signed in or not. Every press is written to the audit log under the name signed in, or as unsigned.</div>
+    </section>
+    <section class="card" id="u-admin" hidden>
+      <h2>Users</h2>
+      <table class="utab"><thead><tr><th>Name</th><th>Role</th><th>Password</th><th></th></tr></thead><tbody id="u-list"></tbody></table>
+      <label>Add a person</label>
+      <div class="row">
+        <input id="ua-name" placeholder="Name" style="flex:1 1 0">
+        <select id="ua-role" style="flex:0 0 auto"><option>operator</option><option>admin</option><option>viewer</option></select>
+        <input id="ua-pw" type="password" autocomplete="new-password" placeholder="Temporary password" style="flex:1 1 0">
+        <button id="ua-add" style="flex:0 0 auto">Add</button>
+      </div>
+      <div class="dim" style="font-size:13px">The temporary password is changed by its person at their first sign-in. The last admin cannot be removed or made something else.</div>
+      <div class="row" style="margin-top:8px"><button class="ghost" id="u-clear">Clear sign-in lockouts</button></div>
+      <div class="toast" id="ua-msg"></div>
+    </section>
+    <section class="card" id="u-matrix-card">
+      <h2>Who may do what</h2>
+      <table class="utab" id="u-matrix"></table>
+      <div class="dim" style="font-size:13px;margin-top:6px" id="u-safety"></div>
+      <div class="row" style="margin-top:8px"><button id="um-save" hidden>Save who may do what</button></div>
+      <div class="toast" id="um-msg"></div>
+    </section>
+    <section class="card" id="u-audit" hidden>
+      <h2>Audit log</h2>
+      <div class="kv" id="au-state"></div>
+      <div class="row" style="margin-top:8px"><button class="ghost" id="au-verify">Check the chain now</button></div>
+      <h2 style="margin-top:12px">Nightly upload</h2>
+      <div class="kv" id="au-up"></div>
+      <div id="au-set">
+        <label><input type="checkbox" id="au-en"> Send the audit log to the server every night</label>
+        <label for="au-url">Server address (https://)</label>
+        <input id="au-url" placeholder="https://audit.example.com/ltc">
+        <label for="au-tok">Shared token</label>
+        <input id="au-tok" type="password" autocomplete="off" placeholder="unchanged">
+        <div class="three">
+          <div><label for="au-time">Time of day</label><input id="au-time" placeholder="03:30"></div>
+          <div><label for="au-keep">Keep days here</label><input id="au-keep" type="number" min="90"></div>
+          <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
+        </div>
+        <div class="row" style="margin-top:8px"><button id="au-save">Save</button><button class="ghost" id="au-now">Send now</button></div>
+      </div>
+      <div class="toast" id="au-msg"></div>
+    </section>
   </section>
 
   <!-- Programming: everything not needed during a show. -->
@@ -769,6 +854,9 @@ const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? "" : t)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 let ME = null, ST = null, LAST_OK = null, FRESH_S = 2.0, POLLING = false;
+// Which window a press came from, for the audit log (audit.py): a new one
+// each time the page loads. Not a person, not a secret.
+const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
 
 async function getJSON(p, ms){
   const ctl = new AbortController();
@@ -782,7 +870,7 @@ async function getJSON(p, ms){
 }
 async function post(p, body){
   const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body || {})});
+    headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
   const j = await r.json().catch(() => ({}));
   if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
   return j;
@@ -802,7 +890,7 @@ function fill(sel, names, keep){
 
 // Three screens, one page: the show (the default), Tonight and
 // Programming. The Abort bar is on every one of them.
-const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning"};
+const VIEWS = {show:"v-show", tonight:"v-tonight", programming:"v-prog", morning:"v-morning", users:"v-users"};
 function showView(){
   let v = (location.hash || "").replace("#", "");
   if(!VIEWS[v]) v = "show";
@@ -813,6 +901,7 @@ function showView(){
   if(v === "show") lampColumns();
   if(v === "programming" && ME && ME.local){ loadShowFiles(); loadNetwork(); loadDeckOp(); }
   morningView(v === "morning");
+  if(v === "users") loadUsers();
 }
 document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => {
   const v = b.dataset.go;
@@ -1828,6 +1917,163 @@ function renderChecklists(c){
 $("mo-verify").addEventListener("click", () => moPress("checklist-verify", {}, "mo-cmsg"));
 $("mo-pdf").addEventListener("click", () => { window.location.href = "/api/remote/checklist-pdf?date=" + encodeURIComponent((MO && MO.checklists && MO.checklists.show_date) || ""); });
 $("mo-export").addEventListener("click", () => { window.location.href = "/api/remote/checklist-export"; });
+
+// Users and the audit log (users.py, audit.py; USERS.md). The chip at the
+// top says who is signed in on this screen; everything else is on the
+// Users screen. Nothing here is needed for Abort, Hold, Stop or a disarm.
+// Typed passwords go to the engine once and are never kept on the page.
+let UV = null, UNEED = false;
+function renderUserChip(){
+  const me = (ST && ST.me) || ME || {};
+  const b = $("nav-user");
+  if(!b) return;
+  if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
+  b.hidden = false;
+  const fault = me.audit_fault || "";
+  b.textContent = me.user ? me.user : "Signed out";
+  b.className = "ghost" + (me.user ? " in" : "") + (fault ? " fault" : "");
+  b.title = (me.user ? ("Signed in as " + me.user + " (" + (me.role || "") + ")") : "Nobody is signed in on this screen") +
+    (fault ? ". AUDIT LOG FAULT: " + fault : "") + ". Users, who may do what, and the audit log.";
+}
+setInterval(renderUserChip, 1000);
+function uMsg(id, t, bad){ const el = $(id); el.textContent = t || ""; el.className = "toast" + (bad ? " bad" : ""); }
+async function loadUsers(){
+  try{ UV = await getJSON("/api/remote/users", 3000); }
+  catch(e){ uMsg("u-msg", e.message, true); return; }
+  const me = UV.me || {};
+  $("u-in").hidden = !me.name;
+  $("u-form").hidden = !!me.name;
+  $("u-me").textContent = me.name ? (me.name + " (" + (me.role || "") + ")") : "";
+  fill($("u-name"), UV.names || [], true);
+  $("u-admin").hidden = !(UV.local && UV.may_admin && UV.active !== undefined);
+  $("u-audit").hidden = !UV.local;
+  renderUserList();
+  renderMatrix();
+  renderAudit();
+}
+function renderUserList(){
+  const rows = (UV.users || []).map(u => {
+    const pw = !u.password_set ? "chooses one at first sign-in" : (u.temporary ? "temporary" : "set") +
+      (u.locked_s ? ", locked " + u.locked_s + " s" : "");
+    const roles = (UV.roles || []).map(r => `<option${r === u.role ? " selected" : ""}>${esc(r)}</option>`).join("");
+    return `<tr><td>${esc(u.name)}</td><td><select data-role="${esc(u.name)}">${roles}</select></td><td>${esc(pw)}</td>` +
+      `<td><button class="ghost" data-reset="${esc(u.name)}">Reset password</button> <button class="ghost" data-remove="${esc(u.name)}">Remove</button></td></tr>`;
+  }).join("");
+  $("u-list").innerHTML = rows;
+  $("u-list").querySelectorAll("[data-role]").forEach(s => s.addEventListener("change", () =>
+    uAdmin({op:"role", name:s.dataset.role, role:s.value})));
+  $("u-list").querySelectorAll("[data-reset]").forEach(b => b.addEventListener("click", () => {
+    const pw = window.prompt("A temporary password for " + b.dataset.reset + " (6 or more characters). Leave it empty and they choose their own at their next sign-in.", "");
+    if(pw === null) return;
+    uAdmin(pw ? {op:"password", name:b.dataset.reset, password:pw} : {op:"clear-password", name:b.dataset.reset});
+  }));
+  $("u-list").querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => {
+    if(window.confirm("Remove " + b.dataset.remove + "? Their audit lines stay.")) uAdmin({op:"remove", name:b.dataset.remove});
+  }));
+}
+function renderMatrix(){
+  const cols = UV.columns || [], m = UV.matrix || {};
+  const fixed = new Set((UV.fixed || []).map(f => f[0] + "/" + f[1]));
+  const edit = !!(UV.local && UV.may_admin);
+  const label = c => c === "signed_out" ? "Signed out" : c;
+  let h = `<tr><th>What</th>${cols.map(c => `<th class="c">${esc(label(c))}</th>`).join("")}</tr>`;
+  h += `<tr><td><b>Safety: Abort, Hold, Stop, every disarm</b></td>${cols.map(() => `<td class="c">always</td>`).join("")}</tr>`;
+  for(const p of (UV.perms || [])){
+    h += `<tr><td>${esc(p.label)}</td>` + cols.map(c => {
+      const on = !!(m[c] || {})[p.key];
+      const lock = !edit || fixed.has(c + "/" + p.key);
+      return `<td class="c"><input type="checkbox" data-c="${esc(c)}" data-p="${esc(p.key)}"${on ? " checked" : ""}${lock ? " disabled" : ""}></td>`;
+    }).join("") + `</tr>`;
+  }
+  $("u-matrix").innerHTML = h;
+  $("u-safety").textContent = UV.safety || "";
+  $("um-save").hidden = !edit;
+}
+function renderAudit(){
+  const a = UV.audit || {}, w = a.writer || {}, c = a.chain, u = a.upload || {};
+  $("au-state").textContent = (w.fault ? "FAULT: " + w.fault + ". " : "Writing. ") +
+    (w.written || 0) + " line(s) written since the engine started" + (w.lost ? ", " + w.lost + " lost" : "") + ". " +
+    (c ? ("Chain checked " + c.checked_at + ": " + (c.ok ? "OK" : "BROKEN") + ", " + c.files + " file(s), " + c.lines + " line(s)" +
+      ((c.problems || []).length ? ". " + c.problems.join(" ") : "")) : "Chain not checked yet.");
+  $("au-up").textContent = (u.enabled ? ("On, to " + (u.host || "?") + " at " + u.time + ".") : "Off.") +
+    " Last upload: " + (u.last_upload_at || "never") + ". Days waiting: " + ((u.pending_days || []).join(", ") || "none") + "." +
+    (u.last_error ? " Last error: " + u.last_error : "") + (u.config_error ? " Settings problem: " + u.config_error : "") +
+    ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "");
+  const busy = document.activeElement && $("au-set").contains(document.activeElement);
+  if(!busy){
+    $("au-en").checked = !!u.enabled;
+    $("au-time").value = u.time || "03:30";
+    $("au-keep").value = u.keep_days || 90;
+    $("au-idle").value = UV.idle_signout_min || 0;
+    $("au-tok").placeholder = u.token_set ? "saved (type to replace)" : "not set";
+  }
+  const may = !!UV.may_settings;
+  $("au-set").querySelectorAll("input,button").forEach(el => { el.disabled = !may; });
+}
+async function uAdmin(body, route){
+  try{ const r = await post("/api/remote/" + (route || "users"), body); uMsg("ua-msg", r.text); }
+  catch(e){ uMsg("ua-msg", e.message, true); }
+  loadUsers();
+}
+$("u-go").addEventListener("click", async () => {
+  const body = {name:$("u-name").value, password:$("u-pw").value};
+  if(UNEED) body.new_password = $("u-new").value;
+  try{
+    const r = await post("/api/remote/signin", body);
+    UNEED = false; $("u-newbox").hidden = true;
+    uMsg("u-msg", r.text);
+  }catch(e){
+    // A first sign-in, or a temporary password: choose your own.
+    let need = false;
+    try{ need = /choose/i.test(e.message); }catch(_){ }
+    if(need){ UNEED = true; $("u-newbox").hidden = false; }
+    uMsg("u-msg", e.message, true);
+  }
+  $("u-pw").value = ""; $("u-new").value = "";
+  loadUsers();
+});
+$("u-out").addEventListener("click", async () => {
+  try{ const r = await post("/api/remote/signout", {}); uMsg("u-msg", r.text); }catch(e){ uMsg("u-msg", e.message, true); }
+  loadUsers();
+});
+$("u-chg").addEventListener("click", async () => {
+  try{ const r = await post("/api/remote/my-password", {old:$("u-old").value, new:$("u-new1").value}); uMsg("u-msg", r.text); }
+  catch(e){ uMsg("u-msg", e.message, true); }
+  $("u-old").value = ""; $("u-new1").value = "";
+});
+$("ua-add").addEventListener("click", () => {
+  const body = {op:"add", name:$("ua-name").value, role:$("ua-role").value, password:$("ua-pw").value};
+  $("ua-pw").value = "";
+  uAdmin(body);
+});
+$("u-clear").addEventListener("click", () => uAdmin({}, "clear-lockouts"));
+$("um-save").addEventListener("click", async () => {
+  const m = {};
+  $("u-matrix").querySelectorAll("input[data-c]").forEach(cb => { if(!cb.disabled){ (m[cb.dataset.c] = m[cb.dataset.c] || {})[cb.dataset.p] = cb.checked; } });
+  try{ const r = await post("/api/remote/role-matrix", {matrix:m}); uMsg("um-msg", r.text); }catch(e){ uMsg("um-msg", e.message, true); }
+  loadUsers();
+});
+$("au-verify").addEventListener("click", async () => {
+  try{ const r = await post("/api/remote/audit-verify", {}); uMsg("au-msg", r.ok ? "The chain holds." : "The chain is BROKEN: " + (r.problems || []).join(" ")); }
+  catch(e){ uMsg("au-msg", e.message, true); }
+  loadUsers();
+});
+$("au-save").addEventListener("click", async () => {
+  const body = {enabled:$("au-en").checked, url:$("au-url").value.trim() || undefined, time:$("au-time").value.trim(),
+    keep_days:parseInt($("au-keep").value, 10) || 90};
+  if($("au-tok").value) body.token = $("au-tok").value;
+  if(body.url === undefined) delete body.url;
+  try{
+    const r = await post("/api/remote/audit-settings", body);
+    await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
+    uMsg("au-msg", r.text);
+  }catch(e){ uMsg("au-msg", e.message, true); }
+  $("au-tok").value = "";
+  loadUsers();
+});
+$("au-now").addEventListener("click", async () => {
+  try{ const r = await post("/api/remote/audit-upload-now", {}); uMsg("au-msg", r.text); }catch(e){ uMsg("au-msg", e.message, true); }
+});
 
 // The show's name and where it plays come from the settings, so a new
 // show is a settings change. The page reads fine without them.

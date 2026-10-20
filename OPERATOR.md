@@ -265,7 +265,7 @@ Turning it off puts every controller back on the live stream immediately.
 Once, on the show machine: open the page (http://127.0.0.1:7878/remote),
 press Programming, and pick this machine's show Wi-Fi address under "Show
 network". Then start it with the show network on (Run ltcplay, answer y to
-the iPad question). There is no PIN and no sign in: anything on the show
+the iPad question). There is no PIN, and signing in is optional (USERS.md): anything on the show
 Wi-Fi that can reach that address can use the page, so keep the show Wi-Fi
 to the crew.
 

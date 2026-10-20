@@ -68,8 +68,19 @@ writes one zip on the Desktop, named "LTC Player diagnostics <date>
 <time>.zip", and opens the folder with it selected. Send that file. It
 holds the logs, the settings, tonight's files, the night journals and the
 version of every program. It holds NO show files, no audio or video, no
-renders and no PIN or key files. Take the bundle before you restart or
-reinstall, so the logs that show the fault are still in it.
+renders and no PIN, password, token or key files. Take the bundle before
+you restart or reinstall, so the logs that show the fault are still in it.
+
+## Users, sign-in and the audit log
+
+The first start of this version makes Jeff and Andy (admins) and Dallen,
+Dave and Jared (operators), with no password: each picks their own the
+first time they sign in, from the user button at the top right of the
+rack screen. Nobody has to sign in for Abort, Hold, Stop or a disarm.
+Every press is written to `logs\audit` in the settings folder, under the
+name signed in or "unsigned". The nightly upload to Jeff's server is off
+until an admin sets it on the Users screen. USERS.md (in the program
+folder) says all of it in plain words.
 
 ## The first time it runs (a fresh PC)
 

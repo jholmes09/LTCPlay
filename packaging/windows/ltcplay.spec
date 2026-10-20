@@ -114,9 +114,12 @@ a_soak = Analysis(
 a_sup = Analysis(
     [os.path.join(HERE, "supervisor.py")],
     datas=[],
+    # audit: ltcplay/audit.py as a module of its own (stdlib only), for
+    # the supervisor's audit day files; the ltcplay package stays out.
     hiddenimports=["ltcwin", "contain", "housekeeping", "diagnostics",
-                   "updater"],
-    **dict(common, excludes=EXCLUDES + ["ltcplay", "flamesafe", "numpy",
+                   "updater", "audit"],
+    **dict(common, pathex=[ROOT, HERE, os.path.join(ROOT, "ltcplay")],
+           excludes=EXCLUDES + ["ltcplay", "flamesafe", "numpy",
                                         "sounddevice", "PIL", "hid",
                                         "zstandard"]))
 

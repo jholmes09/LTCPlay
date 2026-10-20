@@ -1344,7 +1344,8 @@ def _cmd_serve(args):
         httpd = web_mod.serve(folder, port=args.port, bind=args.bind,
                               token=args.token, schedule=schedule,
                               announce=announce, fire_ice=fire_ice,
-                              flamesafe_config=flamesafe_config)
+                              flamesafe_config=flamesafe_config,
+                              accounts=True)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "

@@ -38841,10 +38841,15 @@ def test_remote_no_sign_in_over_the_network():
                                                "device": "iPad"})
             check(st == 404, f"{path} does not exist: {st} {out}")
         st, _h, out = R.ask("GET", "/")
-        check(st == 200 and "<title>Show remote</title>" in str(out) and
-              "li-pin" not in str(out) and "PIN" not in str(out) and
-              "Sign in" not in str(out) and 'id="op-pick"' not in str(out)
-              and "/api/remote/login" not in str(out),
+        # Users (2026-10-20): signing in is optional and lives on its own
+        # Users screen; the show screen has no sign-in, PIN or picker.
+        page = str(out)
+        show = page[page.find('id="v-show"'):page.find('id="v-tonight"')]
+        check(st == 200 and "<title>Show remote</title>" in page and
+              "li-pin" not in page and "PIN" not in page and
+              "Sign in" not in show and "password" not in show and
+              'id="op-pick"' not in page
+              and "/api/remote/login" not in page,
               f"the network gets the remote page, with no sign-in form, PIN "
               f"or operator picker for presses: {st}")
         st, _h, out = R.ask("GET", "/api/remote/whoami")
@@ -45616,6 +45621,1000 @@ def _re_findall(pattern, text):
     return _re.findall(pattern, text)
 
 
+
+# ------------------------------------------------ users and the audit log --
+# Jeff, 2026-10-20 (USERS.md): named users with passwords, a role matrix
+# that never touches a safety press, and an append-only, hash-chained audit
+# log of every press, sent nightly to his server once switched on.
+
+_U_FAST = {"n": 2 ** 10}           # a cheap scrypt for the tests only
+
+
+def _u_clock(start=1000.0):
+    t = [start]
+    return t, (lambda: t[0])
+
+
+def test_users_passwords_are_slow_salted_hashes_and_never_stored():
+    section("users: passwords are salted slow hashes, never stored or "
+            "answered; seeded people choose theirs at first sign-in; a "
+            "temporary password is changed at first sign-in")
+    import json as _j
+    from ltcplay import users as U
+    a = U.hash_password("Fire-and-Ice-1")
+    b = U.hash_password("Fire-and-Ice-1")
+    check(a["alg"] in ("scrypt", "pbkdf2_sha256") and a["salt"] != b["salt"]
+          and a["hash"] != b["hash"], "a salt of its own per password")
+    if a["alg"] == "scrypt":
+        check(a["n"] >= 2 ** 14 and a["r"] == 8,
+              f"scrypt at a real cost by default: {a}")
+    check(U.check_password("Fire-and-Ice-1", a) and
+          not U.check_password("fire-and-ice-1", a) and
+          not U.check_password("", a), "only the right password checks")
+    p = U.hash_password("pw-123456", alg="pbkdf2_sha256")
+    check(p["iterations"] >= 600_000 and U.check_password("pw-123456", p)
+          and not U.check_password("pw-12345", p),
+          "the PBKDF2 fallback is slow too, and checks")
+    check(not U.check_password("x", {"alg": "md5", "salt": "00",
+                                     "hash": "00"}) and
+          not U.check_password("x", {}), "a broken record is never a match")
+    d = tempfile.mkdtemp()
+    t, clock = _u_clock()
+    notes = []
+    us = U.Users(d, clock=clock, hash_params=_U_FAST,
+                 audit=lambda **k: notes.append(k))
+    check(not us.active() and us.may(None, "settings"),
+          "before any user exists every press may (nothing switched on)")
+    check(us.seed(U.SEED_USERS) and not us.seed(U.SEED_USERS),
+          "first run seeds the people once, never again")
+    check([(u["name"], u["role"]) for u in sorted(
+        us.listing(), key=lambda u: u["name"])] ==
+          sorted([("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator"),
+                  ("Dave", "operator"), ("Jared", "operator")]),
+          f"Jeff and Andy admins, Dallen, Dave, Jared operators: "
+          f"{us.listing()}")
+    check(all(not u["password_set"] for u in us.listing()),
+          "no password is shipped: every seeded person chooses their own")
+    ok, why, tok, need = us.sign_in("Jeff", "", True, "Rack screen")
+    check(not ok and need and tok is None and "Choose your own" in why,
+          f"a first sign-in asks for a password of their own: {why}")
+    ok, why, tok, need = us.sign_in("jeff", "", True, "Rack screen",
+                                    new_password="short")
+    check(not ok and need, "too short a password is refused")
+    ok, why, tok, need = us.sign_in("jeff", "", True, "Rack screen",
+                                    new_password="Jeff-own-pw")
+    check(ok and tok and us.session(tok)["name"] == "Jeff",
+          f"Jeff chooses his and is signed in: {why}")
+    ok, *_ = us.sign_in("Jeff", "", True, "Rack screen",
+                        new_password="steal-it-now")
+    check(not ok, "once chosen, nobody can choose it again")
+    # Admins add people with a temporary password.
+    said = us.add("Pat", "operator", "temp-pass-1")
+    check("temporary" in said, said)
+    ok, why, tok2, need = us.sign_in("Pat", "temp-pass-1", False, "iPad")
+    check(not ok and need and tok2 is None,
+          f"a temporary password does not sign in by itself: {why}")
+    ok, why, tok2, need = us.sign_in("Pat", "temp-pass-1", False, "iPad",
+                                     new_password="temp-pass-1")
+    check(not ok, "the new password has to differ from the temporary one")
+    ok, why, tok2, need = us.sign_in("Pat", "temp-pass-1", False, "iPad",
+                                     new_password="pat-own-pw")
+    check(ok and not need, f"Pat replaces it and is in: {why}")
+    ok, *_ = us.sign_in("Pat", "temp-pass-1", False, "iPad")
+    check(not ok, "the temporary password no longer works")
+    # Reset, role, remove, and the last admin.
+    us.set_password("Pat", "reset-pass-9")
+    check(us.session(tok2) is None, "a reset ends that person's sessions")
+    ok, *_, need = us.sign_in("Pat", "reset-pass-9", False, "iPad")
+    check(not ok and need, "a reset password is temporary too")
+    us.clear_password("Pat")
+    check(not [u for u in us.listing() if u["name"] == "Pat"][0]
+          ["password_set"], "clear: Pat chooses one at the next sign-in")
+    check("viewer" in us.set_role("Pat", "viewer"), "a role changes")
+    us.remove("Andy")
+    for f, args in ((us.remove, ("Jeff",)), (us.set_role, ("Jeff", "operator"))):
+        try:
+            f(*args)
+            check(False, f"{f.__name__} of the last admin was allowed")
+        except ValueError as e:
+            check("last admin" in str(e), str(e))
+    us.add("Andy", "admin", "andy-temp-1")
+    us.set_role("Jeff", "operator")
+    check(us.role_of("Jeff") == "operator", "with another admin it may")
+    try:
+        us.add("jeff", "viewer", "whatever-1")
+        check(False, "a second Jeff was added")
+    except ValueError:
+        pass
+    for bad in ("", "unsigned", "System", "x" * 41, "<b>"):
+        try:
+            us.add(bad, "operator", "whatever-1")
+            check(False, f"the name {bad!r} was accepted")
+        except ValueError:
+            pass
+    raw = open(os.path.join(d, U.USERS_FILE), encoding="utf-8").read()
+    for pw in ("Jeff-own-pw", "pat-own-pw", "temp-pass-1", "reset-pass-9",
+               "andy-temp-1"):
+        check(pw not in raw, f"{pw} is not in the users file")
+    view = _j.dumps(us.view())
+    check('"hash"' not in view and '"salt"' not in view and
+          "Jeff-own-pw" not in view, "the Users screen never gets a hash")
+    check(all("Jeff-own-pw" not in _j.dumps(n) for n in notes) and
+          any(n["action"] == "sign-in" and n["user"] == "Jeff" and
+              n["result"] == "accepted" for n in notes),
+          "sign-ins are told to the audit log, never a password")
+    if os.name != "nt":
+        check(os.stat(os.path.join(d, U.USERS_FILE)).st_mode & 0o077 == 0,
+              "the users file is private to this account")
+
+
+def test_users_lockout_is_short_and_never_permanent():
+    section("users: wrong passwords lock the name for a short while, "
+            "doubling to 5 minutes at most; an admin clears it")
+    from ltcplay import users as U
+    d = tempfile.mkdtemp()
+    t, clock = _u_clock()
+    us = U.Users(d, clock=clock, hash_params=_U_FAST)
+    us.add("Jeff", "admin", "jeff-temp-1")
+    us.sign_in("Jeff", "jeff-temp-1", True, "Rack screen",
+               new_password="right-pw-1")
+    for i in range(U.FREE_TRIES):
+        ok, why, *_ = us.sign_in("Jeff", "wrong", True, f"dev{i}")
+        check(not ok and "do not match" in why, f"try {i + 1} costs nothing")
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "devX")
+    check(ok, f"inside the free tries the right password works: {why}")
+    for i in range(U.FREE_TRIES):
+        us.sign_in("Jeff", "wrong", True, f"devY{i}")
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "devZ")
+    check(ok, f"a right password started the count again: {why}")
+    for i in range(U.FREE_TRIES + 1):
+        us.sign_in("Jeff", "wrong", True, "dev-a")
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "dev-b")
+    check(not ok and "Try again in 30 s" in why,
+          f"the 6th wrong one locks the name for 30 s: {why}")
+    t[0] += 31
+    ok, *_ = us.sign_in("Jeff", "wrong", True, "dev-c")
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "dev-d")
+    check(not ok and "Try again in 60 s" in why, f"then 60 s: {why}")
+    for _ in range(10):
+        t[0] += 400
+        us.sign_in("Jeff", "wrong", True, "dev-e")
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "dev-f")
+    check(not ok and "Try again in 300 s" in why,
+          f"never more than 5 minutes: {why}")
+    t[0] += U.LOCK_MAX_S + 1
+    ok, why, *_ = us.sign_in("Jeff", "right-pw-1", True, "dev-g")
+    check(ok, f"and never permanent: {why}")
+    for _ in range(U.FREE_TRIES + 1):
+        us.sign_in("Jeff", "wrong", True, "dev-h")
+    check(us.listing()[0]["locked_s"] > 0, "the Users screen shows the lock")
+    us.clear_lockouts()
+    ok, *_ = us.sign_in("Jeff", "right-pw-1", True, "dev-h")
+    check(ok, "an admin's Clear sign-in lockouts lets them in at once")
+    ok, why, *_ = us.sign_in("Nobody", "x", True, "dev-i")
+    check(not ok and why == "That name and password do not match.",
+          "an unknown name reads exactly like a wrong password")
+    # Idle sign out: off by default (the show PC), on when set.
+    ok, _w, tok, _n = us.sign_in("Jeff", "right-pw-1", True, "rack")
+    check(us.idle_minutes() == 0, "idle sign out is off by default")
+    t[0] += 24 * 3600
+    check(us.session(tok) is not None, "off: a day idle and still signed in")
+    us.set_idle(2)
+    us.touch(tok)
+    t[0] += 100
+    check(us.session(tok) is not None, "inside the idle time: still in")
+    t[0] += 21
+    check(us.session(tok) is None and us.machine_user() is None,
+          "past it: signed out, and the deck acts as nobody")
+    for bad in (-1, 1441, True, "5"):
+        try:
+            us.set_idle(bad)
+            check(False, f"idle {bad!r} was accepted")
+        except ValueError:
+            pass
+
+
+def test_users_role_matrix_never_restricts_a_safety_press():
+    section("users: the role matrix restricts only what is not safety; "
+            "every route is classified; Abort, Hold, Stop and disarms "
+            "always may")
+    from ltcplay import users as U
+    from ltcplay import remote as RM
+    every = (RM.POST_ROUTES + RM.SETUP_POST_ROUTES + RM.USER_POST_ROUTES)
+    missing = [r for r in every if r not in U.REMOTE_ROUTES]
+    check(not missing, f"every remote POST route has a row: {missing}")
+    safety = ("abort", "hold", "disarm-all", "group-disarm", "arm-release",
+              "alert", "purge-stop", "purge-clear", "signin", "signout")
+    for r in safety:
+        check(U.classify("/api/remote/" + r, {}) == "safety",
+              f"{r} is a safety press")
+    for r, body in (("purge-select", {"on": False}),
+                    ("purge-fire", {"on": False}),
+                    ("laser-test", {"on": False}), ("laser-test", {}),
+                    ("lock", {"kind": "machine", "id": "m1", "on": True}),
+                    ("lock", {"kind": "machine", "id": "m1"})):
+        check(U.classify("/api/remote/" + r, body) == "safety",
+              f"{r} {body} only lowers risk: safety")
+    check(U.classify("/api/remote/lock", {"on": False}) == "unlock" and
+          U.classify("/api/remote/laser-test", {"on": True}) == "unlock" and
+          U.classify("/api/remote/purge-select", {"machine": "a"}) == "arm"
+          and U.classify("/api/remote/arm-hold", {}) == "arm" and
+          U.classify("/api/remote/start-now", {}) == "show" and
+          U.classify("/api/remote/network", {}) == "settings" and
+          U.classify("/api/remote/users", {}) == "users",
+          "risk-raising presses carry their row")
+    check(U.classify("/api/stop") == "safety" and
+          U.classify("/api/override", {"look": "blackout"}) == "safety" and
+          U.classify("/api/start") == "show",
+          "the old page's Stop and blackout are safety")
+    m = U.normalise_matrix(None)
+    for col in U.COLUMNS + ("nonsense",):
+        role = None if col == U.SIGNED_OUT else col
+        check(U.allowed(m, role, "safety") and U.allowed(m, role, None),
+              f"{col}: safety and harmless presses always may")
+    check(U.allowed(m, None, "arm") and U.allowed(m, None, "show") and
+          not U.allowed(m, None, "settings") and
+          not U.allowed(m, None, "users"),
+          "signed out keeps the no-PIN rule: run and arm, not settings")
+    check(U.allowed(m, "operator", "arm") and
+          not U.allowed(m, "operator", "users") and
+          not U.allowed(m, "viewer", "show") and
+          all(U.allowed(m, "admin", p) for p in U.PERM_KEYS) and
+          not U.allowed(m, "nonsense", "show"),
+          "the proposed defaults")
+    d = tempfile.mkdtemp()
+    us = U.Users(d, hash_params=_U_FAST)
+    us.add("Jeff", "admin", "jeff-temp-1")
+    try:
+        us.set_matrix({"admin": {"users": False}})
+        check(False, "an admin's users cell could be turned off")
+    except ValueError:
+        pass
+    us.set_matrix({"signed_out": {"arm": False}, "viewer": {"show": True}})
+    check(not us.may(None, "arm") and us.may("viewer", "show") and
+          us.may(None, "safety"), "the saved matrix is what decides")
+    for bad in ({"pilot": {"arm": True}}, {"admin": {"fly": True}},
+                {"admin": {"show": "yes"}}):
+        try:
+            us.set_matrix(bad)
+            check(False, f"{bad} was accepted")
+        except ValueError:
+            pass
+
+
+def _accounts_engine(seed=(("Jeff", "admin"), ("Vic", "viewer")),
+                     transport=None):
+    """A real engine on loopback with users and the audit log, and an
+    http(path, body, cookie, window) helper."""
+    import json as _j
+    import urllib.request
+    import urllib.error
+    from ltcplay import web as W
+    from ltcplay import users as U
+    work = tempfile.mkdtemp()
+    folder = tempfile.mkdtemp()
+    httpd = W.serve(folder, port=0, bind="127.0.0.1", remote_folder=work)
+    W._attach_accounts(httpd, users_seed=list(seed), transport=transport)
+    httpd.remote.users._hash_params = _U_FAST
+    threading.Thread(target=httpd.serve_forever,
+                     kwargs={"poll_interval": 0.05}, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def http(path, body=None, cookie=None, window=None):
+        h = {"Content-Type": "application/json"}
+        if cookie:
+            h["Cookie"] = f"{U.COOKIE}={cookie}"
+        if window:
+            h["X-LTC-Window"] = window
+        req = urllib.request.Request(
+            base + path, data=None if body is None else _j.dumps(body).encode(),
+            method="GET" if body is None else "POST", headers=h)
+        try:
+            with opener.open(req, timeout=10) as r:
+                return r.status, _j.loads(r.read() or b"{}"), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, _j.loads(e.read() or b"{}"), e.headers
+
+    def cookie_of(headers):
+        c = headers.get("Set-Cookie") or ""
+        return c.split(";")[0].split("=", 1)[1] if "=" in c else ""
+    return httpd, http, cookie_of, work
+
+
+def _audit_lines(folder):
+    import json as _j
+    from ltcplay import audit as A
+    out = []
+    for n in A.audit_files(folder):
+        with open(os.path.join(folder, n), encoding="utf-8") as fh:
+            out += [_j.loads(l) for l in fh if l.strip()]
+    return out
+
+
+def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
+    section("users: Abort, Hold, Stop, every disarm, releases, locks and "
+            "Acknowledge go through signed out, as a viewer, and with the "
+            "sign-in code broken; they are logged as unsigned")
+    from ltcplay import users as U
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        # The strictest matrix there is: nobody may do anything restricted.
+        rem.users.set_matrix({c: {p: False for p in U.PERM_KEYS
+                                  if (c, p) not in U.FIXED}
+                              for c in U.COLUMNS})
+        st, out, h = http("/api/remote/signin", {"name": "Vic",
+                                                 "password": "",
+                                                 "new_password": "vic-pw-123"})
+        vic = cookie_of(h)
+        check(st == 200 and vic, f"a viewer signs in: {out}")
+        presses = [("/api/remote/abort", {"confirmed": True}),
+                   ("/api/remote/hold", {}),
+                   ("/api/remote/disarm-all", {}),
+                   ("/api/remote/group-disarm", {"group": 0}),
+                   ("/api/remote/arm-release", {"group": 0}),
+                   ("/api/remote/purge-stop", {}),
+                   ("/api/remote/purge-clear", {}),
+                   ("/api/remote/purge-select", {"machine": "a", "on": False}),
+                   ("/api/remote/lock", {"kind": "machine", "id": "a",
+                                         "on": True}),
+                   ("/api/remote/laser-test", {"laser": "a", "on": False}),
+                   ("/api/remote/alert", {"action": "acknowledge"}),
+                   ("/api/stop", {})]
+        for cookie, who in ((None, "signed out"), (vic, "a viewer")):
+            for path, body in presses:
+                st, out, _h = http(path, body, cookie=cookie)
+                check(not out.get("role_refused") and st != 403,
+                      f"{path} {who}: never behind the role matrix "
+                      f"({st} {out})")
+        for path in ("/api/remote/start-now", "/api/remote/network",
+                     "/api/start", "/api/remote/arm-hold"):
+            st, out, _h = http(path, {"group": 0}, cookie=vic)
+            check(st == 403 and out.get("role_refused") and
+                  "always work" in out["error"],
+                  f"{path} as a viewer: refused, saying what still works "
+                  f"({out})")
+        # The sign-in code itself failing: a safety press still goes.
+        real_may = rem.users.may
+
+        def boom(*_a, **_k):
+            raise RuntimeError("broken")
+        rem.users.may = boom
+        try:
+            st, out, _h = http("/api/remote/abort", {"confirmed": True})
+            check(not out.get("role_refused"),
+                  f"a broken sign-in check never stops an Abort: {out}")
+            st, out, _h = http("/api/remote/start-now", {}, cookie=vic)
+            check(not out.get("role_refused"),
+                  "and a fault there never stops the show either")
+        finally:
+            rem.users.may = real_may
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        aborts = [l for l in lines if l.get("action") == "abort"]
+        check(any(l["user"] == "unsigned" and l["surface"] == "web" for l in
+                  aborts) and any(l["user"] == "Vic" for l in aborts),
+              f"an Abort is logged as unsigned when nobody is signed in, "
+              f"and by name when someone is: {aborts[:2]}")
+        refused = [l for l in lines if l.get("action") == "start-now" and
+                   l["result"] == "refused"]
+        check(refused and "may not" in refused[0]["reason"],
+              f"a refusal is logged with its reason: {refused[:1]}")
+        stop = [l for l in lines if l.get("action") == "stop"]
+        check(stop and stop[0]["result"] == "accepted",
+              f"Stop on the old page is logged: {stop[:1]}")
+    finally:
+        httpd.server_close()
+
+
+def test_audit_logs_one_line_per_press_on_every_surface():
+    section("audit: one line per press from the web, the Stream Deck, the "
+            "engine and the supervisor; never a password; noise is not "
+            "logged")
+    import json as _j
+    from ltcplay import audit as A
+    from ltcplay import auditwatch as AW
+    from ltcplay import streamdeck as sd
+    httpd, http, cookie_of, work = _accounts_engine()
+    rem = httpd.remote
+    try:
+        st, out, h = http("/api/remote/signin",
+                          {"name": "Jeff", "password": "",
+                           "new_password": "Hunter-two-22"}, window="w-abc1")
+        jeff = cookie_of(h)
+        check(st == 200 and "HttpOnly" in h.get("Set-Cookie", "") and
+              "SameSite=Strict" in h.get("Set-Cookie", ""),
+              f"the sign-in cookie is HttpOnly and SameSite=Strict: {h}")
+        st, me, _h = http("/api/remote/whoami", cookie=jeff)
+        check(me.get("user") == "Jeff" and me.get("role") == "admin",
+              f"the chip reads who is signed in: {me}")
+        http("/api/remote/hold", {}, cookie=jeff, window="w-abc1")
+        for _ in range(5):
+            http("/api/remote/morning-open", {}, cookie=jeff)
+        st, out, _h = http("/api/remote/users",
+                           {"op": "add", "name": "Pat", "role": "operator",
+                            "password": "Pat-temp-pw-7"}, cookie=jeff)
+        check(st == 200, f"an admin adds a person: {out}")
+        st, out, _h = http("/api/remote/users", {"op": "role", "name": "Jeff",
+                                                 "role": "viewer"},
+                           cookie=jeff)
+        check(st == 400 and "last admin" in out["error"],
+              f"the last admin cannot be demoted over the page: {out}")
+        st, out, _h = http("/api/remote/users", {"op": "add", "name": "Eve",
+                                                 "role": "admin",
+                                                 "password": "eve-pw-123"})
+        check(st == 403, f"signed out may not add users: {out}")
+        # Stream Deck: a press from the deck process counts as whoever is
+        # signed in on this machine.
+        st, out, _h = http("/api/remote/resume",
+                           {"who": "Andy", "screen": "Stream Deck",
+                            "seen": int(time.time() * 1000)})
+        deck_in = http("/api/remote/deck-input")[1]
+        check(deck_in.get("user", {}).get("name") == "Jeff" and
+              deck_in["user"]["may"]["arm"] is True,
+              f"the deck reads who is signed in here: {deck_in.get('user')}")
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        hold = [l for l in lines if l["action"] == "hold"]
+        check(hold and hold[0]["user"] == "Jeff" and
+              hold[0]["surface"] == "web" and
+              "w-abc1" in hold[0]["source"] and
+              hold[0]["ts_utc"].endswith("Z") and "+" in hold[0]["ts_local"]
+              or "-" in hold[0]["ts_local"][19:],
+              f"a web press: who, surface, window, both times: {hold[:1]}")
+        check(not [l for l in lines if l["action"] == "morning-open"],
+              "the page's open-beats are not logged")
+        adds = [l for l in lines if l["action"] == "users"]
+        check(any("op=add" in l["target"] and "name=Pat" in l["target"] and
+                  l["result"] == "accepted" and l["user"] == "Jeff"
+                  for l in adds) and
+              any(l["result"] == "refused" and "last admin" in l["reason"]
+                  for l in adds) and
+              any(l["user"] == "unsigned" and l["result"] == "refused"
+                  for l in adds),
+              f"every user admin action is logged, taken or not: {adds}")
+        deck = [l for l in lines if l["action"] == "resume"]
+        check(deck and deck[0]["surface"] == "deck" and
+              deck[0]["user"] == "Jeff",
+              f"a deck press over the engine is the deck's, as Jeff: {deck}")
+        signs = [l for l in lines if l["action"] == "sign-in"]
+        check(signs and signs[0]["user"] == "Jeff" and
+              signs[0]["result"] == "accepted", f"sign-in logged: {signs}")
+        raw = "".join(open(os.path.join(rem.audit.folder, n),
+                           encoding="utf-8").read()
+                      for n in A.audit_files(rem.audit.folder))
+        check("Hunter-two-22" not in raw and "Pat-temp-pw-7" not in raw and
+              '"password":' not in raw and '"new_password"' not in raw and
+              "password=" not in raw,
+              f"no password ever reaches the log: "
+              f"{[l for l in raw.splitlines() if 'password' in l][:2]}")
+        # The engine's own view: a change is a line, as system.
+        w = AW.EngineWatch(rem, rem.audit)
+        snaps = [{"show state": "IDLE"}, {"show state": "SHOW"}, {}]
+        AW.snapshot, real = (lambda r: snaps.pop(0)), AW.snapshot
+        try:
+            w.step()
+            w.step()
+            w.step()
+        finally:
+            AW.snapshot = real
+        rem.audit.flush(5.0)
+        eng = [l for l in _audit_lines(rem.audit.folder)
+               if l["surface"] == "engine" and l["action"] == "show state"]
+        check(len(eng) == 1 and eng[0]["target"] == "IDLE -> SHOW" and
+              eng[0]["user"] == "system",
+              f"the engine logs a show starting, once: {eng}")
+        # Sign out, then the deck's presses are unsigned.
+        http("/api/remote/signout", {}, cookie=jeff)
+        check(http("/api/remote/deck-input")[1]["user"]["name"] is None,
+              "signed out: the deck acts as nobody")
+    finally:
+        httpd.server_close()
+    # The deck process's own keys: every press and release, holds too.
+    d = tempfile.mkdtemp()
+    log = A.AuditLog(d, "deck", threaded=False)
+    t = [100.0]
+    user = [{"name": "Jeff", "role": "admin", "may": {"arm": True}}]
+
+    class _Arm:
+        wanted = [False, False, False]
+
+        def set_group(self, i, on):
+            self.wanted[i] = on
+
+        def set_all(self, on):
+            self.wanted = [on] * 3
+
+        def send(self, names):
+            pass
+
+    class _Status:
+        last = None
+
+        def stale(self, clock=None):
+            return True
+
+        def poll(self, clock=None):
+            pass
+    names = ["Left", "Centre", "Right"]
+    ctl = sd.Controller(_Arm(), _Status(), names,
+                        operator_provider=lambda: "Andy",
+                        clock=lambda: t[0], user_provider=lambda: user[0],
+                        audit=log.event)
+    down = [False] * 6
+    down[sd.GROUP_KEYS[0]] = True
+    ctl.run_once(list(down))
+    t[0] += 1.0
+    ctl.tick()
+    down[sd.GROUP_KEYS[0]] = False
+    ctl.run_once(list(down))
+    user[0] = None
+    down[sd.TOP_ABORT] = True
+    ctl.run_once(list(down))
+    down[sd.TOP_ABORT] = False
+    ctl.run_once(list(down))
+    lines = _audit_lines(d)
+    keys = [(l["action"], l["target"], l["user"]) for l in lines
+            if l["action"].startswith("key-")]
+    check(keys == [("key-press", "arm key Left", "Jeff"),
+                   ("key-release", "arm key Left", "Jeff"),
+                   ("key-press", "Abort", "unsigned"),
+                   ("key-release", "Abort", "unsigned")],
+          f"every deck key press and release, as the signed-in user or "
+          f"unsigned: {keys}")
+    check(any(l["action"] == "arm" and l["result"] == "accepted" and
+              l["surface"] == "deck" for l in lines),
+          "the arm it led to is logged too")
+    # The supervisor's file: its own writer, the same chain.
+    sv = A.AuditLog(d, "supervisor", threaded=False)
+    sv.event(user="system", surface="supervisor", action="program-start",
+             target="ltcplay.exe")
+    check(any(l["stream"] == "supervisor" and
+              l["action"] == "program-start" for l in _audit_lines(d)),
+          "the supervisor writes its own day file")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "packaging", "windows", "supervisor.py"),
+               encoding="utf-8").read()
+    check(src.count("audit_event(") >= 6 and
+          '"audit"' in open(os.path.join(
+              os.path.dirname(os.path.abspath(__file__)), "packaging",
+              "windows", "ltcplay.spec"), encoding="utf-8").read(),
+          "the supervisor logs its starts, stops and restarts, and the app "
+          "bundles audit.py for it")
+    ok, _r, probs = A.verify_folder(d)
+    check(ok, f"the deck's and supervisor's files verify: {probs}")
+    check("password" not in _j.dumps(lines), "nothing secret in the lines")
+
+
+def test_deck_role_gate_restricts_arming_only():
+    section("users: a role that may not arm cannot arm from the deck; "
+            "Abort and disarm never ask; nobody known means the deck's own "
+            "rules alone")
+    from ltcplay import streamdeck as sd
+    no = {"name": "Vic", "role": "viewer", "may": {"arm": False}}
+    check(sd.role_gate(no, "arm") and "Vic" in sd.role_gate(no, "arm"),
+          "a viewer may not arm")
+    check(sd.role_gate(no, "abort") is None and
+          sd.role_gate(no, "disarm") is None and
+          sd.role_gate(no, "hold") is None,
+          "Abort, disarm and Hold are never asked")
+    check(sd.role_gate(None, "arm") is None and
+          sd.role_gate({"name": None, "may": {"arm": True}}, "arm") is None,
+          "unknown or allowed: the deck's own rules decide")
+    t = [100.0]
+
+    class _Arm:
+        def __init__(self):
+            self.wanted = [False, False, False]
+            self.sent = 0
+
+        def set_group(self, i, on):
+            self.wanted[i] = on
+
+        def set_all(self, on):
+            self.wanted = [on] * 3
+
+        def send(self, names):
+            self.sent += 1
+
+    class _Status:
+        last = None
+
+        def stale(self, clock=None):
+            return True
+
+        def poll(self, clock=None):
+            pass
+    user = [no]
+    arm = _Arm()
+    lines = []
+    ctl = sd.Controller(arm, _Status(), ["L", "C", "R"],
+                        operator_provider=lambda: "Andy",
+                        clock=lambda: t[0], user_provider=lambda: user[0],
+                        journal=lambda text, **k: lines.append(text))
+    down = [False] * 6
+    down[sd.GROUP_KEYS[1]] = True
+    ctl.run_once(list(down))
+    t[0] += 2.0
+    ctl.tick()
+    check(arm.wanted == [False, False, False] and
+          any("role matrix" in x for x in lines),
+          f"held as a viewer: nothing armed, and said: {lines[-1:]}")
+    down[sd.GROUP_KEYS[1]] = False
+    ctl.run_once(list(down))
+    user[0] = {"name": "Jeff", "role": "admin", "may": {"arm": True}}
+    down[sd.GROUP_KEYS[1]] = True
+    ctl.run_once(list(down))
+    t[0] += 2.0
+    # Demoted mid-hold: the fire-time check refuses.
+    user[0] = no
+    ctl.tick()
+    check(arm.wanted == [False, False, False],
+          "a role taken away during the hold: refused when it completes")
+    down[sd.GROUP_KEYS[1]] = False
+    ctl.run_once(list(down))
+    user[0] = {"name": "Jeff", "role": "admin", "may": {"arm": True}}
+    down[sd.GROUP_KEYS[1]] = True
+    ctl.run_once(list(down))
+    t[0] += 2.0
+    ctl.tick()
+    check(arm.wanted == [False, True, False], "an admin arms as before")
+    down[sd.GROUP_KEYS[1]] = False
+    ctl.run_once(list(down))
+    user[0] = no
+    down[sd.GROUP_KEYS[1]] = True
+    ctl.run_once(list(down))
+    check(arm.wanted == [False, False, False],
+          "a viewer's tap still disarms at once")
+    check(ctl.user_toast(t[0]) == ["SIGNED IN", "VIC"],
+          f"the deck names who is signed in: {ctl.user_toast(t[0])}")
+    check(ctl.user_toast(t[0] + sd.USER_TOAST_S + 0.1) is None,
+          "for a few seconds only")
+
+
+def test_audit_chain_verify_finds_every_kind_of_tamper():
+    section("audit: the hash chain verifies, and finds an edited line, a "
+            "removed line, a removed day, a cut-off end and a renamed file")
+    import json as _j
+    import shutil
+    from ltcplay import audit as A
+    import importlib.util as _iu
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = _iu.spec_from_file_location(
+        "audit_receiver", os.path.join(here, "tools", "audit_receiver.py"))
+    R = _iu.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    d = tempfile.mkdtemp()
+    base = time.mktime((2026, 11, 13, 12, 0, 0, 0, 0, -1))
+    t = [base]
+    log = A.AuditLog(d, "engine", wall=lambda: t[0], threaded=False)
+    for day in range(3):
+        for i in range(4):
+            log.event(user="Jeff", surface="web", action="hold",
+                      target=f"n{day}.{i}")
+            t[0] += 60
+        t[0] += 86400
+    log.event(user="Jeff", surface="web", action="hold", target="today")
+    names = A.audit_files(d)
+    check(len(names) == 4, f"one file per day: {names}")
+    ok, res, probs = A.verify_folder(d, today=A.local_day(t[0]))
+    check(ok and not probs, f"an untouched log verifies: {probs}")
+    first = _j.loads(open(os.path.join(d, names[0])).readline())
+    check(first["action"] == "day-open" and
+          first["prev"] == A.day_anchor("engine", first["day"]),
+          "each day opens on its anchor")
+    closes = [r for r in res if r["closed"]]
+    check(len(closes) == 3, "every finished day was closed")
+    second = _j.loads(open(os.path.join(d, names[1])).readline())
+    check(second["prev_file_end"] == res[0]["end"],
+          "each day links to the end of the one before")
+    for n in names:
+        p = os.path.join(d, n)
+        day, stream = A.parse_name(n)
+        ok2, *_ = R.verify_bytes(open(p, "rb").read(), stream, day)
+        check(ok2, f"the server's copy of the rules agrees: {n}")
+
+    def tampered(fn):
+        w = tempfile.mkdtemp()
+        for n in names:
+            shutil.copy(os.path.join(d, n), os.path.join(w, n))
+        fn(w)
+        return A.verify_folder(w, today=A.local_day(t[0]))
+
+    def edit(w):
+        p = os.path.join(w, names[1])
+        lines = open(p).read().splitlines()
+        lines[2] = lines[2].replace('"user": "Jeff"', '"user": "Andy"')
+        open(p, "w").write("\n".join(lines) + "\n")
+    ok, _r, probs = tampered(edit)
+    check(not ok and any("changed after it was written" in p for p in probs),
+          f"an edited line: {probs}")
+
+    def drop(w):
+        p = os.path.join(w, names[1])
+        lines = open(p).read().splitlines()
+        del lines[2]
+        open(p, "w").write("\n".join(lines) + "\n")
+    ok, _r, probs = tampered(drop)
+    check(not ok, f"a removed line: {probs}")
+
+    def drop_day(w):
+        os.remove(os.path.join(w, names[1]))
+    ok, _r, probs = tampered(drop_day)
+    check(not ok and any("does not follow on" in p for p in probs),
+          f"a whole day removed: {probs}")
+
+    def cut_end(w):
+        p = os.path.join(w, names[0])
+        lines = open(p).read().splitlines()
+        open(p, "w").write("\n".join(lines[:-2]) + "\n")
+    ok, _r, probs = tampered(cut_end)
+    check(not ok, f"lines cut off a closed day's end: {probs}")
+
+    def rename(w):
+        a = A.parse_name(names[0])
+        os.rename(os.path.join(w, names[0]),
+                  os.path.join(w, A.file_name("2026-01-01", a[1])))
+    ok, _r, probs = tampered(rename)
+    check(not ok, f"a file renamed to another day: {probs}")
+
+    def rewrite(w):
+        # Someone recomputes every hash after an edit: the chain holds
+        # inside the file, but the next day no longer links to it.
+        p = os.path.join(w, names[1])
+        recs = [_j.loads(l) for l in open(p)]
+        recs[2]["user"] = "Andy"
+        prev = recs[0]["prev"]
+        for r in recs:
+            r["prev"] = prev
+            r["hash"] = A.record_hash(r)
+            prev = r["hash"]
+        open(p, "w").write("".join(_j.dumps(r) + "\n" for r in recs))
+    ok, _r, probs = tampered(rewrite)
+    check(not ok and any("does not follow on" in p for p in probs),
+          f"a day rewritten with fresh hashes breaks the next day's link: "
+          f"{probs}")
+    check(A.main(["verify", d]) == 0, "the verify command passes a good log")
+    w = tempfile.mkdtemp()
+    for n in names:
+        shutil.copy(os.path.join(d, n), os.path.join(w, n))
+    edit(w)
+    check(A.main(["verify", w]) == 1, "and fails a tampered one")
+
+
+def test_audit_upload_retries_resumes_and_waits_for_the_ack():
+    section("audit: the nightly upload is off by default, sends only audit "
+            "day files, each once, marks a day sent only on the server's "
+            "acknowledgement, retries with backoff and catches up missed "
+            "nights; the reference receiver stores and verifies")
+    import json as _j
+    import importlib.util as _iu
+    from ltcplay import audit as A
+    from ltcplay import auditsend as S
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = _iu.spec_from_file_location(
+        "audit_receiver", os.path.join(here, "tools", "audit_receiver.py"))
+    R = _iu.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    settings = tempfile.mkdtemp()
+    folder = os.path.join(settings, "logs", "audit")
+    base = time.mktime((2026, 11, 10, 20, 0, 0, 0, 0, -1))
+    t = [base]
+    mono = [0.0]
+    log = A.AuditLog(folder, "engine", wall=lambda: t[0], threaded=False)
+    for day in range(3):
+        log.event(user="Jeff", surface="web", action="hold", target=str(day))
+        t[0] += 86400
+    log.event(user="Jeff", surface="web", action="hold", target="today")
+    with open(os.path.join(folder, "notes.txt"), "w") as fh:
+        fh.write("not an audit file")
+    with open(os.path.join(settings, "ltcplay_users.json"), "w") as fh:
+        fh.write('{"users": {}}')
+    sent = []
+    answers = []
+
+    def transport(url, data, headers, timeout):
+        sent.append((url, data, dict(headers)))
+        a = answers.pop(0) if answers else "ack"
+        if a == "fail":
+            return 503, "busy"
+        if a == "badack":
+            return 200, _j.dumps({"ok": True, "sha256": "0" * 64})
+        return 200, _j.dumps({"ok": True, "sha256": headers["X-LTC-SHA256"]})
+    up = S.Uploader(folder, settings, transport=transport,
+                    wall=lambda: t[0], clock=lambda: mono[0])
+    check(not S.load_config(settings)[0]["enabled"] and up.run(force=True)
+          == 0 and not sent, "off by default: nothing is sent")
+    try:
+        S.save_config(settings, {"enabled": True,
+                                 "url": "http://plain.example.com/x"})
+        check(False, "a plain http address was accepted")
+    except ValueError:
+        pass
+    S.save_config(settings, {"enabled": True, "token": "s3cret-token-xyz",
+                             "url": "https://audit.example.com/ltc",
+                             "time": "03:30"})
+    raw = open(os.path.join(settings, S.CONFIG_FILE)).read()
+    st = up.status()
+    check(st["token_set"] and "s3cret" not in _j.dumps(st) and
+          st["host"] == "audit.example.com" and len(st["pending_days"]) == 3,
+          f"the status names the host, never the token: {st}")
+    # 20:00 local: before 03:30 of the next day it is not due... it is due
+    # today already (20:00 is after 03:30), once.
+    answers[:] = ["fail"]
+    went = up.run()
+    check(went == 0 and len(sent) == 1 and not up.sent() and
+          "503" in up.last_error, f"a failure marks nothing: {up.last_error}")
+    check(up.run() == 0 and len(sent) == 1,
+          "and it waits out its backoff before trying again")
+    mono[0] += S.BACKOFF_S[0] + 1
+    answers[:] = ["badack"]
+    check(up.run() == 0 and not up.sent(),
+          "an answer that does not acknowledge the checksum marks nothing")
+    mono[0] += S.BACKOFF_S[1] + 1
+    went = up.run()
+    names = [h["X-LTC-File"] for _u, _d, h in sent]
+    check(went == 3 and len(up.sent()) == 3 and
+          names[-3:] == sorted(names[-3:]),
+          f"then every missed night goes, oldest first: {names}")
+    check(all(n.endswith(".engine.jsonl") for n in names) and
+          all(b"not an audit file" not in d_ and b"users" not in d_[:20]
+              for _u, d_, _h in sent),
+          "only audit day files are ever sent")
+    u_, d_, h_ = sent[-1]
+    check(h_["Authorization"] == "Bearer s3cret-token-xyz" and
+          h_["X-LTC-Chain-OK"] == "yes" and
+          h_["X-LTC-Chain-Anchor"] == A.day_anchor("engine",
+                                                   h_["X-LTC-Day"]) and
+          len(h_["X-LTC-SHA256"]) == 64 and h_["X-LTC-Chain-End"],
+          "each file goes with its checksum, anchor and chain end")
+    n_before = len(sent)
+    check(up.run(force=True) == 0 and len(sent) == n_before,
+          "a day acknowledged is never sent again")
+    t[0] += 86400                 # the next night: one more day closed
+    log.event(user="Jeff", surface="web", action="hold", target="next")
+    went = up.run()
+    check(went == 1 and len(sent) == n_before + 1,
+          "the next night sends the one new day")
+    # Retention: only acknowledged days older than keep_days go.
+    t[0] += 120 * 86400
+    log.event(user="Jeff", surface="web", action="hold", target="later")
+    unsent = A.audit_files(folder)
+    up._last_run_day = None
+    answers[:] = ["fail"] * 10
+    up.run(force=True)
+    gone = up.prune(S.load_config(settings)[0])
+    left = A.audit_files(folder)
+    check(all(n not in left for n in gone) and
+          all(n in left for n in unsent if n not in up.sent()),
+          "a day not acknowledged is never removed")
+    check(gone and all(n in up.sent() for n in gone),
+          f"acknowledged days past keep_days are removed: {gone}")
+    ok, _r, probs = A.verify_folder(folder, up.sent(), today=A.local_day(t[0]))
+    check(ok, f"the chain still links across a pruned day: {probs}")
+    try:
+        S.save_config(settings, {"keep_days": 30})
+        check(False, "a keep below 90 days was accepted")
+    except ValueError:
+        pass
+    # The reference receiver, end to end, no network.
+    store = tempfile.mkdtemp()
+    tok = "s3cret-token-xyz"
+
+    def to_receiver(url, data, headers, timeout):
+        code, doc = R.receive(store, tok, headers, data)
+        return code, _j.dumps(doc)
+    settings2 = tempfile.mkdtemp()
+    folder2 = os.path.join(settings2, "logs", "audit")
+    t2 = [base]
+    log2 = A.AuditLog(folder2, "deck", wall=lambda: t2[0], threaded=False)
+    for day in range(3):
+        log2.event(user="Andy", surface="deck", action="key-press",
+                   target="Abort")
+        t2[0] += 86400
+    S.save_config(settings2, {"enabled": True, "token": tok,
+                              "url": "https://audit.example.com/ltc"})
+    up2 = S.Uploader(folder2, settings2, transport=to_receiver,
+                     wall=lambda: t2[0], clock=lambda: 0.0)
+    check(up2.run(force=True) == 3 and len(up2.sent()) == 3,
+          f"the receiver acknowledges each day: {up2.last_error}")
+    ok, out = R.verify_store(store)
+    check(ok and len(out) == 3, f"and its store verifies: {out}")
+    code, doc = R.receive(store, "wrong-token", {
+        "Authorization": "Bearer nope", "X-LTC-File": "2026-11-10.deck.jsonl",
+        "X-LTC-SHA256": "0"}, b"x")
+    check(code == 401, "a wrong token is refused")
+    name = sorted(up2.sent())[0]
+    data = open(os.path.join(folder2, name), "rb").read()
+    import hashlib as _h
+    hd = {"Authorization": "Bearer " + tok, "X-LTC-File": name,
+          "X-LTC-SHA256": _h.sha256(data).hexdigest()}
+    check(R.receive(store, tok, hd, data)[0] == 200,
+          "the same day again is acknowledged again")
+    other = data.replace(b"Abort", b"Abore")
+    hd2 = dict(hd, **{"X-LTC-SHA256": _h.sha256(other).hexdigest()})
+    code, doc = R.receive(store, tok, hd2, other)
+    check(code == 409 and os.path.exists(os.path.join(
+        store, name[:10], name)), "a different file under a stored name is "
+          "kept beside it and refused; nothing is overwritten")
+
+
+def test_audit_never_blocks_or_fails_a_press():
+    section("audit: a full queue, a full disk or an unwritable folder never "
+            "blocks or fails a press; the loss is a counted gap line and a "
+            "fault the rack screen shows")
+    from ltcplay import audit as A
+    from ltcplay import remote as RM
+    d = tempfile.mkdtemp()
+    # A full disk: the writer's appends fail for a while.
+    log = A.AuditLog(d, "engine", threaded=False)
+    real = A.AuditLog._append
+    fail = [True]
+
+    def full(self, fields, t):
+        if fail[0] and fields.get("action") != "day-open":
+            raise OSError(28, "No space left on device")
+        return real(self, fields, t)
+    A.AuditLog._append = full
+    try:
+        first = log.event(user="Jeff", surface="web", action="hold")
+        for i in range(49):
+            log.event(user="Jeff", surface="web", action="hold")
+    finally:
+        A.AuditLog._append = real
+    check(first is True, "event() answers at once, whatever the disk does")
+    st = log.status()
+    check(st["lost"] == 50 and "No space" in st["fault"],
+          f"every lost line is counted and the fault named: {st}")
+    rem = RM.Remote(None, folder=d)
+    rem.audit = log
+    words = [s for s in rem.subsystems({}) if s["name"] == "Audit"]
+    check(words and words[0]["state"] == "warn",
+          f"the rack screen's strip says the audit log is not writing: "
+          f"{words}")
+    fail[0] = False
+    log.event(user="Jeff", surface="web", action="abort")
+    lines = _audit_lines(d)
+    gaps = [l for l in lines if l["action"] == "audit-gap"]
+    check(gaps and gaps[0]["lost"] == 50 and lines[-1]["action"] == "abort",
+          f"once writing works the gap is written first, then the press: "
+          f"{gaps}")
+    check(log.status()["fault"] == "", "and the fault clears")
+    ok, _r, probs = A.verify_folder(d)
+    check(ok and any("gap line" in p for p in probs),
+          f"the gap is part of the chain, and said: {probs}")
+    # A full queue: the caller is never held.
+    q = A.AuditLog(os.path.join(d, "q"), "deck", queue_max=5)
+    t0 = time.perf_counter()
+    for _ in range(5000):
+        q.event(user="x", surface="deck", action="key-press")
+    took = time.perf_counter() - t0
+    check(took < 1.0 and q.status()["lost"] >= 4990,
+          f"5000 events into a queue of 5 with no writer: {took:.3f} s, "
+          f"{q.status()['lost']} counted lost")
+    q.start()
+    q.event(user="x", surface="deck", action="key-press")
+    check(q.flush(5.0), "the writer catches up")
+    q.stop()
+    check(any(l["action"] == "audit-gap" for l in
+              _audit_lines(os.path.join(d, "q"))),
+          "and writes the gap")
+    # A folder that cannot be made: nothing raises.
+    blocker = os.path.join(d, "afile")
+    open(blocker, "w").close()
+    bad = A.AuditLog(os.path.join(blocker, "audit"), "engine",
+                     threaded=False)
+    check(bad.event(user="x", action="abort") is True and
+          bad.status()["fault"], "an unwritable folder is a fault, not an "
+                                 "exception")
+    check(A.scrub("Authorization: Bearer abc.def") == "Authorization: "
+          "[hidden]" and len(A.scrub("x" * 1000)) == A.FIELD_MAX and
+          A.secret_name("password") and A.secret_name("new_password") and
+          A.secret_name("token") and not A.secret_name("group"),
+          "fields are cut short and secrets never written")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -46109,6 +47108,15 @@ if __name__ == "__main__":
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()
     test_windows_rack_window_and_explorer_front()
+    test_users_passwords_are_slow_salted_hashes_and_never_stored()
+    test_users_lockout_is_short_and_never_permanent()
+    test_users_role_matrix_never_restricts_a_safety_press()
+    test_safety_presses_pass_signed_out_and_are_logged_unsigned()
+    test_audit_logs_one_line_per_press_on_every_surface()
+    test_deck_role_gate_restricts_arming_only()
+    test_audit_chain_verify_finds_every_kind_of_tamper()
+    test_audit_upload_retries_resumes_and_waits_for_the_ack()
+    test_audit_never_blocks_or_fails_a_press()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

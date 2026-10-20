@@ -97,6 +97,14 @@ CHANGING THE FLAME GROUPS (at tech)
     it again.
 [ ] Check it: the rack screen shows tonight's shows. On the Stream Deck,
     the Start key does not say ENGINE FAULT.
+[ ] Users: press the user button at the top right ("Signed out"). Jeff,
+    Andy, Dallen, Dave and Jared each sign in once and choose their own
+    password (no password is shipped). Sign in on the rack screen before
+    a show so the audit log names who pressed what. Nobody needs to be
+    signed in for Abort, Hold, Stop or a disarm.
+[ ] Audit upload (when Jeff's server is ready): Users screen, Audit log:
+    server address (https://), token, time (03:30), tick "Send ... every
+    night", Save, then "Send now" and check "Last upload".
 
 
 OTHER

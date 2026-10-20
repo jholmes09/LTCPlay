@@ -36,9 +36,16 @@ TAIL = 5 * 1024 * 1024
 JOURNAL_NIGHTS = 14
 
 
+# Never in the bundle whatever they are called: the users' password hashes
+# and the audit upload's token (users.py, auditsend.py).
+NEVER_FILES = ("ltcplay_users.json", "ltcplay_audit.json")
+
+
 def wanted(name):
     """True when a file by this name may go in the bundle."""
     low = os.path.basename(name).lower()
+    if low in NEVER_FILES:
+        return False
     stem, ext = os.path.splitext(low)
     # A rotated log is "engine.log.2": its real extension is .log.
     if ext.lstrip(".").isdigit():
@@ -231,7 +238,8 @@ def self_test():
     import tempfile
     for bad in ("show.wav", "render.fseq", "ltcplay_output.lock",
                 "ltcplay_remote_pins.json", "api_token.txt", "my key.json",
-                "logo.png", "LTC Player Setup x.exe", "secret-note.txt"):
+                "logo.png", "LTC Player Setup x.exe", "secret-note.txt",
+                "ltcplay_users.json", "ltcplay_audit.json"):
         if wanted(bad):
             raise RuntimeError(f"{bad} would go in the bundle")
     for good in ("engine.log", "engine.log.2", "supervisor.log",
