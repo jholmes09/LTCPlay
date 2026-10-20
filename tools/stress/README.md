@@ -58,6 +58,67 @@ user's (the task and the settings folder would be another account's) and
 a stale `STOP_UNATTENDED` it could not remove; `Start 48h soak.ps1
 -SelfTest` proves those checks on a temp folder.
 
+## The 19 channel show track in the soak
+
+The soak plays a generated show track. Left alone it is the old stereo
+track. For the show's own layout (19 channels plus timecode) start the
+soak with:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File "Start 48h soak.ps1" `
+        -FlameHardwareDisconnected -Confirmation DISCONNECTED `
+        -AudioChannels 19 -LtcOutput 20
+
+That writes `audio_channels` 19 and `ltc_output` 20 into `unattended.json`
+and every block then plays a 19 channel 48 kHz 24-bit track, each channel
+its own quiet tone (channel k at 110 x k Hz, so Music L is 110 Hz and
+Sound Effects Atmo R is 2090 Hz), plus a mono LTC track on output 20,
+through the real engine and the real interface for the whole soak. The
+block's notes name each channel, its tone and its output:
+
+| Channel | Track | Tone | Output (default) |
+|---|---|---|---|
+| 1, 2, 3 | Music L, C, R | 110, 220, 330 Hz | 1, 2, 3 |
+| 4, 5 | Music Atmo L, R | 440, 550 Hz | 4, 5 |
+| 6, 7, 8 | Lily L, C, R | 660, 770, 880 Hz | 6, 7, 8 |
+| 9, 10, 11 | Jack L, C, R | 990, 1100, 1210 Hz | 9, 10, 11 |
+| 12, 13, 14 | Narrator L, C, R | 1320, 1430, 1540 Hz | 12, 13, 14 |
+| 15, 16, 17 | Sound Effects L, C, R | 1650, 1760, 1870 Hz | 15, 16, 17 |
+| 18, 19 | Sound Effects Atmo L, R | 1980, 2090 Hz | 18, 19 |
+| LTC | timecode | | 20 |
+
+**Setting the channel map.** The map is the output each channel plays on,
+one number per channel, in channel order. To send the channels somewhere
+else, add `-AudioMap` with all 19 numbers written out, for example
+`-AudioMap "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19"` (the
+default) or the same list in another order. No output may appear twice
+and the LTC output may not be one of them; a map that breaks either rule
+stops the block with a sentence saying which. Leave out `-LtcOutput` to
+play no timecode track (then 19 outputs are enough). Nothing assumes
+pairs: an odd count is fine.
+
+In the show file itself the same map is the stem's `channels` list
+(`"channels": [1, 2, ..., 19]`, every number written out), the outputs
+the show uses are `"channels": 20`, and the timecode output is
+`"ltc_output": 20`. Existing show files without `ltc_output` play exactly
+as before. The README at the top of the repo has the full example.
+
+What it proves, and what it does not:
+
+- The interface must offer 20 outputs through the way the engine opens it
+  (ASIO first on the show PC). If it offers fewer, Run is refused and the
+  block FAILS with the engine's sentence naming how many outputs each way
+  to the interface has: never a quiet play on fewer outputs. PreSonus
+  lists the StudioLive 16R's USB audio as 18 x 18, so expect that refusal
+  on the 16R until the outputs are confirmed: the first block's notes and
+  its refusal say exactly how many the 16R offers over ASIO.
+- With `-FakeAudio` the stand-in device takes all 20, so only the engine
+  side is proven.
+- Each block writes a 19 channel track of about 1.2 GB into its folder
+  (the soak's 20 GB cap removes the oldest folders), and the engine holds
+  about 1.7 GB of decoded audio for a 7 min 24 s show.
+- Listening is still a person's job: put a meter or headphones on each
+  output once and check the tone matches the table.
+
 ## The five stages, in one paragraph each
 
 1. **Soak, 48 h** (`SOAK PLAN.md`): the installed `ltcplay-soak.exe

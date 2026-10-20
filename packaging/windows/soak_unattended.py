@@ -58,6 +58,13 @@ DEFAULTS = {
     # audio path, and every status and report says so in capitals.
     "audio_device": "",
     "fake_audio": False,
+    # The bench show track (soak.write_bench_audio): how many channels, the
+    # output each plays on (null: channel 1 on output 1 and so on), and an
+    # output for an LTC track of its own (null: none). 2, null, null is the
+    # old stereo track. The show's own layout is 19, null, 20.
+    "audio_channels": 2,
+    "audio_map": None,
+    "ltc_output": None,
 }
 STATE = "unattended_state.json"
 STATUS = "status.json"
@@ -208,7 +215,8 @@ class Unattended:
                        "run_started": self.state["started"],
                        "until": self.state["until"],
                        "audio": audio_sentence(self.fake_audio,
-                                               self.audio_device)}
+                                               self.audio_device)
+                       + "; " + track_sentence(self.cfg)}
         self.current = None
         self.stopped = False
         self._status_stop = threading.Event()
@@ -309,6 +317,9 @@ class Unattended:
                         folder=os.path.join(self.folder, f"{stamp} block {n}"),
                         block=(n, "an unattended run"))
         s.fake_audio = self.fake_audio
+        s.audio_channels = self.cfg["audio_channels"]
+        s.audio_map = self.cfg["audio_map"]
+        s.ltc_output = self.cfg["ltc_output"]
         if self.cfg["show_seconds"]:
             s.show_s = float(self.cfg["show_seconds"])
         if self.cfg["every_min"]:
@@ -475,6 +486,16 @@ def audio_sentence(fake_audio, audio_device=None):
               "show and FAILS")
 
 
+def track_sentence(cfg):
+    """The bench show track this run plays, in words, for the status."""
+    n = cfg.get("audio_channels") or 2
+    m = cfg.get("audio_map")
+    ltc = cfg.get("ltc_output")
+    return (f"bench track {n} channel(s) on outputs "
+            + (", ".join(map(str, m)) if m else f"1 to {n}")
+            + (f", LTC on output {ltc}" if ltc else ", no LTC track"))
+
+
 def self_test():
     import tempfile
     d = tempfile.mkdtemp()
@@ -516,6 +537,17 @@ def self_test():
             "path" in fake and "not a show-night soak" in fake, fake
         yield ("unattended soak: fake_audio and audio_device are settings, "
                "off by default, and a fake-audio run says so in capitals")
+        assert cfg["audio_channels"] == 2 and cfg["audio_map"] is None \
+            and cfg["ltc_output"] is None, cfg
+        save_json(os.path.join(d, CONFIG), {"audio_channels": 19,
+                                            "ltc_output": 20})
+        cfg = load_config(d)
+        t = track_sentence(cfg)
+        assert cfg["audio_channels"] == 19 and cfg["ltc_output"] == 20 \
+            and "19 channel(s) on outputs 1 to 19, LTC on output 20" in t, t
+        yield ("unattended soak: the bench track is stereo by default and "
+               "19 channels with LTC on output 20 when unattended.json says "
+               "so, and the status says which")
         ok, why = run_command("exit 3", 10)
         assert not ok and "exit 3" in why, why
         yield "unattended soak: a restart command's failure is caught and said"

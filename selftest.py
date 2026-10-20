@@ -23543,6 +23543,336 @@ def _am_consecutive(frames):
             if b != a + 1]
 
 
+# The show's 19 channels (Jeff, 2026-10-20), the default map: Music L, C, R
+# on 1 to 3, Music Atmo L, R on 4 and 5, Lily, Jack and Narrator L, C, R on
+# 6 to 14, Sound Effects L, C, R on 15 to 17, Sound Effects Atmo L, R on 18
+# and 19, and a timecode track that would be a 20th output of its own.
+_AM_19 = ("Music L", "Music C", "Music R", "Music Atmo L", "Music Atmo R",
+          "Lily L", "Lily C", "Lily R", "Jack L", "Jack C", "Jack R",
+          "Narrator L", "Narrator C", "Narrator R", "Sound Effects L",
+          "Sound Effects C", "Sound Effects R", "Sound Effects Atmo L",
+          "Sound Effects Atmo R")
+
+
+def _am_19_files(work, seconds):
+    """show19.wav: 19 channels, 24-bit, channel k a tone of 110 x k Hz
+    (each a whole number of cycles a second, so each is told apart by its
+    frequency); ltc.wav: mono LTC from 01:00:00:00, 30 fps. Returns the two
+    as decoded (frames, channels) arrays."""
+    import numpy as np
+    from ltcplay import ltc as ltc_mod, showaudio as sa
+    n = int(seconds * 48000)
+    t = np.arange(n) / 48000.0
+    x = np.stack([0.04 * np.sin(2 * np.pi * 110 * k * t)
+                  for k in range(1, len(_AM_19) + 1)], axis=1)
+    _am_write_wav(os.path.join(work, "show19.wav"), x, fmt="pcm24")
+    lt = np.asarray(ltc_mod.synthesize(1, 0, 0, 0, 30, 48000,
+                                       frames=int(seconds * 30)))[:n]
+    _am_write_wav(os.path.join(work, "ltc.wav"), lt)
+    return (sa.read_wav(os.path.join(work, "show19.wav")),
+            sa.read_wav(os.path.join(work, "ltc.wav")))
+
+
+def test_audio_master_nineteen_channels_and_timecode():
+    section("audio_master: 19 show channels mapped to any outputs, timecode "
+            "on a 20th of its own, and an interface without 20 outputs "
+            "refused out loud")
+    import tempfile
+    import numpy as np
+    from ltcplay import clock as clock_mod, showaudio as sa, ltc as ltc_mod
+    N = len(_AM_19)              # 19 program channels: odd, on purpose
+    L = N + 1                    # the timecode output
+    work = tempfile.mkdtemp()
+    secs = 2.0
+    pcm, ltc_pcm = _am_19_files(work, secs)
+    check(pcm.shape == (96000, N) and ltc_pcm.shape == (96000, 1),
+          f"the synthetic {N} channel show did not decode whole: "
+          f"{pcm.shape} {ltc_pcm.shape}")
+    ident = list(range(1, N + 1))
+    # A map that is neither the identity nor a plain reversal.
+    perm = [ident[(i * 7) % N] for i in range(N)]
+    check(sorted(perm) == ident and perm != ident
+          and perm != ident[::-1], f"the test map is not a shuffle: {perm}")
+
+    def doc(show_stems, **kw):
+        a = dict(channels=L, ltc_output=L)
+        a.update(kw)
+        return _am_clock_doc(show_stems,
+                             [{"file": "loop.wav", "channels": [1, 2]}], **a)
+
+    def stems(m=None, ltc_out=L):
+        s = [{"file": "show19.wav", "channels": m or ident}]
+        if ltc_out:
+            s.append({"file": "ltc.wav", "channels": [ltc_out]})
+        return s
+
+    def parse(d):
+        return clock_mod.ClockConfig.parse(d, "show.json")
+
+    def refused(d, *want, files=False, memory=None):
+        try:
+            cfg = parse(d)
+            if files:
+                tl, _p, _n = _am_show(work, secs, clock_doc=d)
+                sa.check_show(cfg.audio, tl, total_memory=memory)
+        except (clock_mod.ClockConfigError, sa.AudioConfigError) as e:
+            msg = str(e)
+            check(all(w in msg for w in want),
+                  f"the refusal does not say {want}: {msg}")
+            check(not any(c in msg for c in ("—", "–"))
+                  and msg.rstrip().endswith("."),
+                  f"a refusal is not a plain sentence: {msg}")
+            return msg
+        check(False, f"a show that cannot run was accepted ({want})")
+
+    def mixed(d):
+        """Parse, check the files, load them the way the audio process
+        does, and mix the first second."""
+        cfg = parse(d)
+        tl, _p, _n = _am_show(work, secs, clock_doc=d)
+        checked = sa.check_show(cfg.audio, tl, total_memory=64 << 30)
+        mix = sa.Mixer(cfg.audio.channels)
+        dec = [(sa.read_wav(p), g, o) for p, g, o, _n in
+               checked["show"]["stems"]]
+        mix.add_cue("show", dec)
+        mix.play("show")
+        return cfg, mix.render(48000)
+
+    # 1. Every channel on the output its map names, untouched; the
+    # timecode output carries the timecode and nothing else, and it decodes.
+    for m in (ident, perm):
+        cfg, out = mixed(doc(stems(m)))
+        check(out.shape == (48000, L), f"the mix is {out.shape}, not {L} "
+                                       f"outputs")
+        for k, o in enumerate(m):
+            check(np.array_equal(out[:, o - 1], pcm[:48000, k]),
+                  f"{_AM_19[k]} (channel {k + 1}) is not exactly what plays "
+                  f"on output {o} with the map {m}")
+            spec = np.abs(np.fft.rfft(out[:, o - 1]))
+            check(int(np.argmax(spec)) == 110 * (k + 1),
+                  f"output {o} does not carry {_AM_19[k]}'s "
+                  f"{110 * (k + 1)} Hz tone")
+        check(np.array_equal(out[:, L - 1], ltc_pcm[:48000, 0]),
+              f"output {L} is not the timecode track alone")
+        got = [str(f) for f in ltc_mod.LTCDecoder(48000).feed(
+            out[:, L - 1].tolist())]
+        check(len(got) >= 25 and got[0].startswith("01:00:00:0"),
+              f"the timecode on output {L} does not decode: {got[:3]}")
+    check(cfg.audio.ltc_output == L and f"timecode on output {L}"
+          in cfg.summary(), f"the summary does not name the timecode "
+                            f"output: {cfg.summary()}")
+
+    # 2. 19 is odd: nothing pairs outputs. 19 outputs and no timecode
+    # parse and mix as they are.
+    cfg, out = mixed(doc(stems(ltc_out=None), channels=N, ltc_output=None))
+    check(out.shape == (48000, N) and np.array_equal(out, pcm[:48000])
+          and cfg.audio.ltc_output is None,
+          f"{N} channels on {N} outputs, no timecode, did not play as is")
+    check("timecode on output" not in cfg.summary(),
+          f"a show with no timecode output names one: {cfg.summary()}")
+
+    # 3. A show file written before ltc_output existed reads exactly as it
+    # did: nothing set aside, two stems may share an output.
+    c = parse(_am_clock_doc([{"file": "music.wav", "channels": [1, 2]},
+                             {"file": "sub.wav", "channels": [2]}]))
+    check(c.audio.ltc_output is None and c.audio.channels == 8,
+          "a show file without ltc_output changed meaning")
+
+    # 4. The timecode output may not collide with program audio.
+    refused(doc(stems() + [{"file": "sub.wav", "channels": [L]}]),
+            f"output {L} is the timecode output", "'ltc.wav', 'sub.wav'",
+            "garbles")
+    refused(doc(stems(ltc_out=None)), "no stem of the show audio",
+            "would be silent")
+    refused(doc(stems(), ltc_output=L + 1), "'clock.audio.ltc_output'",
+            f"1 to 'clock.audio.channels' ({L})")
+    refused(doc(stems(), ltc_output=0), "'clock.audio.ltc_output'")
+    refused(doc(stems(), ltc_output=True), "'clock.audio.ltc_output'")
+    # A mono timecode file spread onto a program output too: only the
+    # files can tell a mono stem from a stereo one.
+    refused(doc(stems(ltc_out=None) + [{"file": "ltc.wav",
+                                        "channels": [L, 1]}]),
+            "ltc.wav is one channel", f"{L}, 1",
+            f"output {L} is the timecode output", files=True)
+    # The intermission may have no timecode, but may not mix into it.
+    d3 = doc(stems())
+    d3["audio"]["cues"]["intermission"]["stems"] = [
+        {"file": "loop.wav", "channels": [N, L]},
+        {"file": "sub.wav", "channels": [L]}]
+    refused(d3, "the intermission audio plays", "'loop.wav'", "'sub.wav'")
+
+    # 5. A file whose channel count is not the number of outputs it lists
+    # is refused with the files, never played on fewer or more.
+    refused(doc([{"file": "show19.wav", "channels": ident[:-1]},
+                 {"file": "ltc.wav", "channels": [N]}], ltc_output=N),
+            f"show19.wav has {N} channels", f"lists {N - 1}", files=True)
+    refused(doc([{"file": "show19.wav", "channels": ident + [L]}],
+                ltc_output=None),
+            f"show19.wav has {N} channels", f"lists {L}", files=True)
+
+    # 6. Too big for this computer's memory: refused when the show file
+    # loads, with the sizes, never found out at Run or mid-show.
+    refused(doc(stems()), "GB of memory", "more than half",
+            files=True, memory=10 * 1000 * 1000)
+    tl, _p, _n = _am_show(work, secs, clock_doc=doc(stems()))
+    ok = sa.check_show(parse(doc(stems())).audio, tl,
+                       total_memory=100 * 1000 * 1000)
+    check(set(ok) == {"show", "intermission"},
+          "a show that fits in memory was refused")
+    tm = sa.total_memory_bytes()
+    check(tm is None or (isinstance(tm, int) and tm > 1 << 26),
+          f"this computer's memory reads as {tm!r}")
+
+    # 7. The limits: 32 outputs and 32 stems, not 8; 33 refused.
+    many = doc([{"file": f"m{i}.wav", "channels": [i]}
+                for i in range(1, N + 1)] + [{"file": "ltc.wav",
+                                               "channels": [L]}])
+    check(len(parse(many).audio.cues["show"].stems) == L,
+          f"{N} mono stems and a timecode stem were refused")
+    check(parse(doc(stems(), channels=32)).audio.channels == 32,
+          "32 outputs were refused")
+    refused(doc(stems(), channels=33), "1 to 32")
+    refused(doc([{"file": f"m{i}.wav", "channels": [i]}
+                 for i in range(1, 34)], channels=32, ltc_output=None),
+            "lists 33 stems", "at most 32")
+
+    # 8. The interface: 20 outputs open; fewer (18, what PreSonus lists for
+    # the 16R's USB playback, or 2, a stereo endpoint) is refused naming how
+    # many it has on every way it was tried, and Run is refused with that
+    # sentence: never a quiet play on fewer outputs.
+    def fake(devs, apis=("Core Audio",)):
+        return sa.FakeSoundDevice(devices=devs, hostapis=apis,
+                                  threaded=False)
+
+    def cb(*_a):
+        pass
+    s, desc, shared = sa.open_output_stream(
+        fake([{"name": "StudioLive 16R", "hostapi": 0,
+               "max_output_channels": L}], ("ASIO",)),
+        "StudioLive 16R", L, 48000, cb, platform="win32")
+    check(s.channels == L and f"ASIO, mixer-free, {L} outputs" in desc
+          and not shared, f"{L} outputs over ASIO did not open: {desc}")
+    for devs, apis, want in (
+            ([{"name": "StudioLive 16R", "hostapi": 0,
+               "max_output_channels": 18}], ("ASIO",),
+             (f"ASIO: it has 18 output(s), and the show uses {L}",)),
+            ([{"name": "StudioLive 16R", "hostapi": 0,
+               "max_output_channels": N}], ("ASIO",),
+             (f"ASIO: it has {N} output(s), and the show uses {L}",)),
+            ([{"name": "StudioLive 16R", "hostapi": 0,
+               "max_output_channels": 18},
+              {"name": "StudioLive 16R", "hostapi": 1,
+               "max_output_channels": 2}], ("ASIO", "Windows WASAPI"),
+             ("ASIO: it has 18 output(s)",
+              f"WASAPI exclusive: it has 2 output(s), and the show uses {L}",
+              "Use an interface with enough outputs"))):
+        try:
+            sa.open_output_stream(fake(devs, apis), "StudioLive 16R", L,
+                                  48000, cb, platform="win32")
+            check(False, f"an interface without {L} outputs opened: {devs}")
+        except sa.Refusal as e:
+            check(all(w in str(e) for w in want),
+                  f"the refusal does not say {want}: {e}")
+    try:
+        _am_rig(work=work, seconds=secs, clock_doc=doc(stems()),
+                devices=[{"name": "Show DSP", "hostapi": 0,
+                          "max_output_channels": 18}])
+        check(False, f"Run was allowed on an interface with 18 outputs for "
+                     f"a show that uses {L}")
+    except clock_mod.ClockConfigError as e:
+        check(f"has 18 output(s), and the show uses {L}" in str(e),
+              f"Run's refusal does not say why: {e}")
+
+    # 9. End to end on a 20 output interface: the audio process's own
+    # loop, its callback blocks, the shuffled map and the timecode.
+    r = _am_rig(work=work, seconds=secs, clock_doc=doc(stems(perm)),
+                devices=[{"name": "Show DSP", "hostapi": 0,
+                          "max_output_channels": L}])
+    am, sim = r["am"], r["sim"]
+    am.play(3600.0, None, "Show")
+    sim.run(r["vc"]() + 1.0)
+    blocks = [(p, b) for _t, p, b in r["eng"].log
+              if p is not None and p.playing and b is not None]
+    check(len(blocks) > 50 and all(b.shape[1] == L for _p, b in blocks),
+          f"the interface did not get {L} outputs a block")
+    p0, b0 = blocks[5]
+    a = p0.frame
+    for k, o in enumerate(perm):
+        check(np.array_equal(b0[:, o - 1], pcm[a:a + b0.shape[0], k]),
+              f"{_AM_19[k]} is not on output {o} in the interface's block")
+    check(np.array_equal(b0[:, L - 1], ltc_pcm[a:a + b0.shape[0], 0]),
+          f"the interface's output {L} is not the timecode alone")
+    am.stop()
+    print("  ok")
+
+
+def test_soak_bench_track_nineteen_channels():
+    section("stress kit: the soak's 19 channel bench track, each tone on "
+            "the output its map names, LTC on output 20, through the "
+            "engine's own checks and mix")
+    import shutil
+    import tempfile
+    import numpy as np
+    from ltcplay import showaudio as sa, ltc as ltc_mod
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    sys.path.insert(0, sp)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True      # no __pycache__ in packaging/
+    names = ("soak", "ltcwin", "soak_apps", "soak_exercise", "supervisor")
+    work = tempfile.mkdtemp()
+    try:
+        for m in names:
+            sys.modules.pop(m, None)
+        import soak
+        check(list(soak.SHOW_TRACKS) == list(_AM_19),
+              f"the soak's track names are not the show's 19: "
+              f"{soak.SHOW_TRACKS}")
+        for line in soak._bench_audio_check():
+            check(bool(line), "the soak's own bench track check said nothing")
+        perm = [3, 1, 2, 5, 4, 8, 6, 7, 11, 9, 10, 14, 12, 13, 17, 15, 16,
+                19, 18]
+        audio = soak.write_bench_audio(work, 1.0, 19, perm, 20)
+        check(audio["channels"] == 20 and audio["ltc_output"] == 20,
+              f"the bench track does not use 20 outputs: {audio}")
+        _am_write_wav(os.path.join(work, "loop.wav"), _am_tone(1.0, 2, 0.2))
+        doc = {"source": "audio_master",
+               "artnet": {"nodes": {"MadMapper": "127.0.0.1"}},
+               "audio": dict(audio, device="Show DSP")}
+        tlp, _net = _clock_show(work, doc, [("00:00:00:00", "Show.fseq",
+                                             "Show")])
+        tl = timeline.Timeline.load(tlp)
+        cfg = tl.clock.audio
+        checked = sa.check_show(cfg, tl, total_memory=64 << 30)
+        mix = sa.Mixer(cfg.channels)
+        mix.add_cue("show", [(sa.read_wav(p), g, o)
+                             for p, g, o, _n in checked["show"]["stems"]])
+        mix.play("show")
+        out = mix.render(48000)
+        for k, o in enumerate(perm, 1):
+            spec = np.abs(np.fft.rfft(out[:, o - 1]))
+            check(int(np.argmax(spec)) == 110 * k,
+                  f"{soak.track_name(k, 19)} ({110 * k} Hz) is not on "
+                  f"output {o}")
+        got = [str(f) for f in ltc_mod.LTCDecoder(48000).feed(
+            out[:, 19].tolist())]
+        check(len(got) >= 25 and got[0].startswith("00:00:00:0"),
+              f"the bench LTC on output 20 does not decode: {got[:3]}")
+        try:
+            soak.audio_plan(19, perm[:-1] + [3], 20)
+            check(False, "a bench map with an output twice was accepted")
+        except ValueError as e:
+            check("twice" in str(e), f"the bench map refusal: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m in names:
+            sys.modules.pop(m, None)
+        sys.dont_write_bytecode = was
+    print("  ok")
+
+
 def test_audio_master_settings_and_files_refuse_in_sentences():
     section("audio_master: settings, stems and devices refused in sentences")
     import tempfile
@@ -23582,10 +23912,10 @@ def test_audio_master_settings_and_files_refuse_in_sentences():
     refusal(with_audio(rate=96000), "48000")
     refusal(with_audio(device=""), "names the show's audio interface")
     refusal(with_audio(channels=0), "'clock.audio.channels'")
-    refusal(with_audio(channels=9), "1 to 8")
+    refusal(with_audio(channels=33), "1 to 32")
     refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
-        {"file": f"s{i}.wav", "channels": [1]} for i in range(9)]}}),
-        "lists 9 stems", "at most 8")
+        {"file": f"s{i}.wav", "channels": [1]} for i in range(33)]}}),
+        "lists 33 stems", "at most 32")
     refusal(with_audio(cues={"show": {"cue": "Show", "stems": [
         {"file": "music.wav", "channels": [9]}]}}), "output 9",
         "'clock.audio.channels' is 8")
@@ -46876,6 +47206,8 @@ if __name__ == "__main__":
     test_audio_master_stop_during_a_respawn()
     test_audio_master_never_reruns_an_unguarded_main()
     test_audio_master_loads_all_or_nothing()
+    test_audio_master_nineteen_channels_and_timecode()
+    test_soak_bench_track_nineteen_channels()
     test_tctest_packets_on_the_wire()
     test_tctest_seconds_zero_means_until_stopped()
     test_tctest_only_named_nodes_receive()

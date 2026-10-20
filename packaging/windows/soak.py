@@ -314,6 +314,121 @@ def windows_update_state(reg=None, services=None):
             "during this run would end it early. (Checklist: pause updates "
             "for the show weeks.)")
 
+# The show's track layout (Jeff, 2026-10-20): 19 channels, the default
+# map. Only names for the bench notes: the routing itself is audio_map,
+# editable per run, and nothing assumes pairs or an even count.
+SHOW_TRACKS = ("Music L", "Music C", "Music R", "Music Atmo L",
+               "Music Atmo R", "Lily L", "Lily C", "Lily R", "Jack L",
+               "Jack C", "Jack R", "Narrator L", "Narrator C", "Narrator R",
+               "Sound Effects L", "Sound Effects C", "Sound Effects R",
+               "Sound Effects Atmo L", "Sound Effects Atmo R")
+
+
+def track_name(k, channels):
+    """Channel k (1-based) of a `channels` channel bench track, by name."""
+    if channels == len(SHOW_TRACKS):
+        return SHOW_TRACKS[k - 1]
+    return f"channel {k}"
+
+
+def audio_plan(channels=2, out_map=None, ltc_output=None):
+    """The bench show's audio routing, checked before anything is written:
+    (file channels, the outputs they play on, the timecode output or None,
+    how many outputs the show uses). Raises ValueError with a sentence.
+
+    channels    how many channels the generated show track has (2, the
+                default, is the old stereo bench track; 19 is the show's)
+    out_map     the output each channel plays on, counting from 1, in
+                channel order; None plays channel 1 on output 1 and so on
+    ltc_output  an output for a generated timecode (LTC) track of its own,
+                or None for none"""
+    from ltcplay import showaudio
+    top = showaudio.MAX_OUTPUTS
+    if not isinstance(channels, int) or isinstance(channels, bool) or \
+            not 1 <= channels <= top:
+        raise ValueError(f"the bench show track has 1 to {top} channels, "
+                         f"not {channels!r}")
+    outs = list(range(1, channels + 1)) if out_map is None else out_map
+    if not isinstance(outs, list) or len(outs) != channels or any(
+            not isinstance(o, int) or isinstance(o, bool) or not
+            1 <= o <= top for o in outs):
+        raise ValueError(f"the channel map lists one output from 1 to {top} "
+                         f"for each of the {channels} channels, in order, "
+                         f"not {out_map!r}")
+    if len(set(outs)) != len(outs):
+        raise ValueError(f"the channel map lists an output twice: {outs}")
+    if ltc_output is not None:
+        if not isinstance(ltc_output, int) or isinstance(ltc_output, bool) \
+                or not 1 <= ltc_output <= top:
+            raise ValueError(f"the timecode output is a number from 1 to "
+                             f"{top}, not {ltc_output!r}")
+        if ltc_output in outs:
+            raise ValueError(f"output {ltc_output} is both a program "
+                             f"channel and the timecode output; give the "
+                             f"timecode an output of its own")
+    width = max(outs + ([ltc_output] if ltc_output else []))
+    return channels, outs, ltc_output, width
+
+
+def write_bench_audio(show_dir, show_s, channels=2, out_map=None,
+                      ltc_output=None, amp=0.03):
+    """The bench show's audio, generated: bench.wav, 48 kHz 24-bit with
+    `channels` channels, channel k a quiet tone of 110 x k Hz so each can
+    be told apart by ear or on a meter, and, with `ltc_output`, ltc.wav, a
+    mono 16-bit 30 fps LTC track from 00:00:00:00 (the cue's own
+    timecode).
+    Returns the show file's clock.audio fields (channels, ltc_output,
+    cues). Pure Python: no numpy."""
+    import math
+    import struct as _st
+    import wave
+    channels, outs, ltc, width = audio_plan(channels, out_map, ltc_output)
+    n = int(show_s * 48000)
+    a = int(amp * 8388607)
+    # Every tone is a whole number of cycles in one second at 48 kHz, so
+    # one second is made once and written as many times as the show is long.
+    cols = [[_st.pack("<i", int(a * math.sin(2 * math.pi * 110 * c * k
+                                             / 48000)))[:3]
+             for k in range(48000)] for c in range(1, channels + 1)]
+    second = b"".join(b"".join(col[k] for col in cols)
+                      for k in range(48000))
+    step = 3 * channels
+    with wave.open(os.path.join(show_dir, "bench.wav"), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(3)
+        w.setframerate(48000)
+        for start in range(0, n, 48000):
+            w.writeframes(second[:min(48000, n - start) * step])
+    stems = [{"file": "bench.wav", "channels": outs}]
+    doc = {"channels": width, "cues": {"show": {"cue": "Show",
+                                                 "stems": stems}}}
+    if ltc is not None:
+        from ltcplay import ltc as ltc_mod
+        level, done = 1.0, 0
+        import array
+        with wave.open(os.path.join(show_dir, "ltc.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)           # 16-bit: plenty for a square wave
+            w.setframerate(48000)
+            sec = 0
+            while done < n:
+                # 30 frames of 1600 samples: exactly one second.
+                x, level = ltc_mod.synthesize(
+                    (sec // 3600) % 24, (sec // 60) % 60, sec % 60, 0, 30,
+                    48000, frames=30, amplitude=0.5, start_level=level,
+                    with_level=True)
+                take = min(len(x), n - done)
+                pcm = array.array("h", (int(v * 32767) for v in x[:take]))
+                if sys.byteorder != "little":
+                    pcm.byteswap()
+                w.writeframes(pcm.tobytes())
+                done += take
+                sec += 1
+        stems.append({"file": "ltc.wav", "channels": [ltc]})
+        doc["ltc_output"] = ltc
+    return doc
+
+
 class Soak:
     def __init__(self, seconds, audio_device=None, folder=None, block=None):
         self.seconds = seconds
@@ -417,6 +532,11 @@ class Soak:
         self.measured = ""
         self.show_s = SHOW_S
         self.every_min = SHOW_EVERY_MIN
+        # The bench show track: 2 channels (stereo) unless told otherwise;
+        # 16 with audio_map and ltc_output exercises the show's routing.
+        self.audio_channels = 2
+        self.audio_map = None       # output per channel; None: 1, 2, 3...
+        self.ltc_output = None      # an output for an LTC track, or None
         self.priority = True        # the scheduling protection (bench)
         self.window_script = False  # maximize/restore MadMapper every 2 min
         self.window_events = []     # (time, what)
@@ -482,12 +602,11 @@ class Soak:
         """The bench show, generated: one 100 s cue whose FSEQ covers a
         pixel controller (Art-Net to 127.0.0.1) and an Inactive "Flames"
         controller (the flame universe, which only the flame link reads),
-        a 48 kHz 24-bit stereo WAV (a quiet tone), the show file with the
-        show audio as the clock, the bench schedule, and the Fire & Ice
+        a 48 kHz 24-bit WAV of quiet tones (stereo unless audio_channels
+        says otherwise, routed by audio_map, with an LTC track on
+        ltc_output when that is set: write_bench_audio), the show file with
+        the show audio as the clock, the bench schedule, and the Fire & Ice
         settings beside it."""
-        import math
-        import struct as _st
-        import wave
         import test_show_fixtures as fx
         self.show_dir = os.path.join(self.dir, "show")
         os.makedirs(self.show_dir, exist_ok=True)
@@ -501,23 +620,16 @@ class Soak:
                       frame_count=int(self.show_s * 40), channel_count=1022,
                       step_ms=25, compression="zlib", block_frames=400,
                       fill=lambda i: (i * 3) & 0xFF, media_file="bench.wav")
-        n = int(self.show_s * 48000)
-        amp = int(0.03 * 8388607)
-        # 440 Hz is a whole number of cycles in one second at 48 kHz, so one
-        # second is made once and written as many times as the show is long.
-        second = bytearray()
-        for k in range(48000):
-            v = int(amp * math.sin(2 * math.pi * 440 * k / 48000))
-            b = _st.pack("<i", v)[:3]
-            second += b + b
-        second = bytes(second)
-        with wave.open(os.path.join(self.show_dir, "bench.wav"), "wb") as w:
-            w.setnchannels(2)
-            w.setsampwidth(3)
-            w.setframerate(48000)
-            for start in range(0, n, 48000):
-                left = min(48000, n - start)
-                w.writeframes(second[:left * 6])
+        audio = write_bench_audio(self.show_dir, self.show_s,
+                                  self.audio_channels, self.audio_map,
+                                  self.ltc_output)
+        outs = audio["cues"]["show"]["stems"][0]["channels"]
+        n = self.audio_channels
+        note(f"bench show audio: {n} channel(s), "
+             + ", ".join(f"{track_name(k, n)} ({110 * k} Hz) on output {o}"
+                         for k, o in enumerate(outs, 1))
+             + (f", LTC on output {self.ltc_output}" if self.ltc_output
+                else "") + f"; {audio['channels']} outputs in all")
         self.audio_name = self.pick_audio_device()
         doc = {"fps": 30, "show_dir": self.show_dir, "on_lost": "freerun",
                "cues": [{"tc": "00:00:00:00", "fseq": "bench.fseq",
@@ -528,12 +640,8 @@ class Soak:
                              if self.mode == "fallback" else
                              {"MadMapper": "127.0.0.1", "BEYOND": "127.0.0.2",
                               "Soak": SOAK_IP})},
-                         "audio": {"device": self.audio_name or "none found",
-                                   "channels": 2,
-                                   "cues": {"show": {
-                                       "cue": "Show",
-                                       "stems": [{"file": "bench.wav",
-                                                  "channels": [1, 2]}]}}}}}
+                         "audio": dict(audio, device=self.audio_name
+                                       or "none found")}}
         with open(os.path.join(self.show_dir, "bench.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(doc, fh, indent=1)
@@ -3308,6 +3416,45 @@ def _self_check():
     assert r.get("override") is True, r
     yield ("typing C and Enter at the wait starts the block with the "
            "programs treated as present, and says so")
+    for line in _bench_audio_check():
+        yield line
+
+
+def _bench_audio_check():
+    """The bench track: 19 channels, each its own tone on the output the
+    map names, LTC on an output of its own, and a bad map refused."""
+    import tempfile
+    import shutil
+    import wave
+    d = tempfile.mkdtemp()
+    try:
+        rev = list(range(19, 0, -1))
+        doc = write_bench_audio(d, 1.0, 19, rev, 20)
+        assert doc["channels"] == 20 and doc["ltc_output"] == 20 and \
+            doc["cues"]["show"]["stems"] == [
+                {"file": "bench.wav", "channels": rev},
+                {"file": "ltc.wav", "channels": [20]}], doc
+        with wave.open(os.path.join(d, "bench.wav")) as w:
+            assert (w.getnchannels(), w.getsampwidth(), w.getframerate(),
+                    w.getnframes()) == (19, 3, 48000, 48000)
+        with wave.open(os.path.join(d, "ltc.wav")) as w:
+            assert (w.getnchannels(), w.getnframes()) == (1, 48000)
+        assert track_name(4, 19) == "Music Atmo L" and \
+            track_name(19, 19) == "Sound Effects Atmo R" and \
+            track_name(1, 2) == "channel 1"
+        for bad in ((19, [1] * 19, None), (19, list(range(1, 19)), None),
+                    (19, None, 19), (33, None, None), (19, None, 40)):
+            try:
+                audio_plan(*bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"a bad bench audio plan passed: {bad}")
+        assert audio_plan()[3] == 2 and audio_plan(19, None, 20)[3] == 20
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    yield ("the bench track is 19 channels when asked, routed by its map, "
+           "with LTC on an output of its own; a map that repeats or misses "
+           "an output, or puts LTC on a program output, is refused")
 
 
 def main(argv=None):
@@ -3323,6 +3470,7 @@ def main(argv=None):
     seconds = None
     device = None
     fake = False
+    track = {}
     mode = "auto"
     show_s = SHOW_S
     every_min = SHOW_EVERY_MIN
@@ -3345,6 +3493,22 @@ def main(argv=None):
             i += 1
         elif a == "--fake-audio":
             fake = True
+        elif a in ("--audio-channels", "--ltc-output"):
+            try:
+                v = int(argv[i + 1])
+            except (IndexError, ValueError):
+                print(f"{a} takes a whole number")
+                return 2
+            track[a] = v
+            i += 1
+        elif a == "--audio-map":
+            try:
+                track[a] = [int(x) for x in argv[i + 1].split(",")]
+            except (IndexError, ValueError):
+                print("--audio-map takes output numbers in channel order, "
+                      "like 1,2,3")
+                return 2
+            i += 1
         elif a in ("--show-seconds", "--every-min"):
             try:
                 v = float(argv[i + 1])
@@ -3414,6 +3578,8 @@ def main(argv=None):
         elif a != "--no-wait":
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
+                  f"--audio-channels N, --audio-map 1,2,..., "
+                  f"--ltc-output N, "
                   f"--mode auto|all|fallback, --priority on|off, "
                   f"--ab [MINUTES], --ab-contain [MINUTES], "
                   f"--mm-settings [MINUTES], --forever, --days N, "
@@ -3422,6 +3588,19 @@ def main(argv=None):
                   f"--every-min M (default {SHOW_EVERY_MIN})")
             return 2
         i += 1
+    if track:
+        try:
+            audio_plan(track.get("--audio-channels", 2),
+                       track.get("--audio-map"), track.get("--ltc-output"))
+        except ValueError as e:
+            print(f"The bench show track cannot be made: {e}.")
+            return 2
+        if days is not None:
+            print("--audio-channels, --audio-map and --ltc-output do not "
+                  "apply to --days: set audio_channels, audio_map and "
+                  "ltc_output in unattended.json (Start 48h soak.ps1 "
+                  "-AudioChannels, -AudioMap, -LtcOutput).")
+            return 2
     if days is not None:
         wait = False
         seconds = 0.0
@@ -3489,6 +3668,9 @@ def main(argv=None):
             soak = Soak(seconds, device)
             soak.show_s, soak.every_min = show_s, every_min
             soak.fake_audio = fake
+            soak.audio_channels = track.get("--audio-channels", 2)
+            soak.audio_map = track.get("--audio-map")
+            soak.ltc_output = track.get("--ltc-output")
             soak.want_mode = mode
             soak.priority = priority
             soak.contain = contain
