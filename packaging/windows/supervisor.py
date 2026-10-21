@@ -751,6 +751,53 @@ def wanted_args(settings):
 SHOW_MODES = ("fire_ice", "plain")
 
 
+class SettingsWatch:
+    """showpc.json, followed while the supervisor runs (soak 2026-10-21:
+    show_folder was changed by hand, and the engine went on serving
+    Documents\\LTC Shows, because this file was read only when the
+    supervisor started). poll() is the settings read again when the file
+    changed since the last look, else None. Never raises."""
+
+    def __init__(self, path=None, read=None):
+        self.path = path or settings_path()
+        self._read = read or load_settings
+        self._stamp = self._look()
+
+    def _look(self):
+        try:
+            st = os.stat(self.path)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def poll(self):
+        st = self._look()
+        if st == self._stamp:
+            return None
+        self._stamp = st
+        try:
+            return self._read()
+        except Exception as e:                 # noqa: BLE001
+            log(f"{self.path} changed but could not be read ({e}); the "
+                f"settings in use stay as they were")
+            return None
+
+
+def show_folder_change(old, new):
+    """The sentence when showpc.json now names another show folder than
+    the one the engine was started with, else "". Only the show folder
+    is followed while running; every other setting still takes a restart
+    of LTC Player, as before."""
+    a = os.path.normcase(os.path.abspath(str(old.get("show_folder") or "")))
+    b = os.path.normcase(os.path.abspath(str(new.get("show_folder") or "")))
+    if not new.get("show_folder") or a == b:
+        return ""
+    return f"showpc.json now names the show folder {new['show_folder']}"
+
+
+RESTART_BUSY_EVERY_S = 5.0
+
+
 FIRST_RUN_FILE = "first-run.json"     # what this wrote, for the rack screen
 PROGRAMS_FILE = "programs.json"       # each program: running, or why not
 SCREEN_CLOSE_FILE = "close-rack-screen"   # the engine asks: close Edge
@@ -1144,6 +1191,10 @@ def run_loop(open_page=False):
     keeper = Housekeeper(settings)
     programs_file = ProgramsFile(os.path.join(appdata_dir(), PROGRAMS_FILE))
     requests = Requests(appdata_dir(), me_started)
+    watch = SettingsWatch()
+    folder_change = ""          # a hand edit of show_folder, not yet used
+    folder_said = ""
+    folder_next = 0.0
     while True:
         if ENDING.is_set():
             # The clean stops go out on the end-session thread; this
@@ -1199,6 +1250,30 @@ def run_loop(open_page=False):
                                "again with " + str(settings["show_folder"]))
                 log(f"the page asked for an engine restart (a new show "
                     f"folder): {said}")
+        # showpc.json edited by hand: a new show folder reaches the engine
+        # by the same restart as the page's, once no show is running.
+        changed = watch.poll()
+        if changed is not None:
+            why = show_folder_change(settings, changed)
+            if why:
+                folder_change = why
+                settings = dict(settings, show_folder=changed["show_folder"])
+                folder_next = 0.0
+        if folder_change and time.monotonic() >= folder_next:
+            folder_next = time.monotonic() + RESTART_BUSY_EVERY_S
+            busy, why = show_running(port)
+            if busy:
+                if folder_said != folder_change:
+                    folder_said = folder_change
+                    log(f"{folder_change}; the engine is restarted with it "
+                        f"once no show is running ({why})")
+            else:
+                audit_event("restart-engine", "engine", "done",
+                            folder_change)
+                why = progs["engine"].stop()
+                log(f"{folder_change}: " + (why or "the engine stopped "
+                    "cleanly and is started again with it"))
+                folder_change = folder_said = ""
         want = wanted_args(settings)
         now = time.monotonic()
         if contained is not None and now >= next_contain:

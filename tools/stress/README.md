@@ -119,6 +119,29 @@ What it proves, and what it does not:
 - Listening is still a person's job: put a meter or headphones on each
   output once and check the tone matches the table.
 
+## A render the size of the show's
+
+Left alone the soak plays a small render: one pixel universe plus the
+flame universe, at 40 frames a second. For a render the size of the
+show's, run the installed soak by hand with:
+
+    ltcplay-soak.exe --hours 1 --universes 170 --fps 40
+
+`--universes N` (1 to 256) gives the bench layout's Pixels controller N
+Art-Net universes of 510 channels; the flame universe stays last, so the
+flame link reads it where flamesafe expects. `--fps F` is 20, 25, 40 or
+50 (a whole number of milliseconds a frame); the pixel timing limits
+follow it (the gap limit is always four frames). The report's first lines
+name the render it played.
+
+They work for a timed run (`--hours`, `--minutes`), all-programs blocks
+and the A/B runs. They do NOT apply to the unattended multi-day soak
+(`--days`, `Start 48h soak.ps1`), which refuses them: a soak of a big
+render over days runs through the real scheduler with a real show folder
+(the show's own renders and xlights_networks.xml), started as on a show
+night. The soak's own Art-Net listener times every universe; at 170
+universes that is about 6800 packets a second on this PC.
+
 ## The five stages, in one paragraph each
 
 1. **Soak, 48 h** (`SOAK PLAN.md`): the installed `ltcplay-soak.exe

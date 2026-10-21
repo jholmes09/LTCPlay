@@ -169,6 +169,112 @@ def settings_folder():
     return appdata.folder() if appdata.WINDOWS else settings_mod.folder()
 
 
+# ------------------------------------------------- the show folder served --
+# Soak 2026-10-21: showpc.json named soak_show, and the engine served
+# Documents\LTC Shows. The supervisor gives the engine showpc.json's
+# show_folder as its --folder, so that is the folder meant; it read the
+# file only when it started, and adopted an engine already running, so a
+# hand edit did not reach the engine. The supervisor now follows the file;
+# the rack screen says which folder is served, and says it loudly when
+# showpc.json names another.
+
+def _norm_folder(p):
+    return os.path.normcase(os.path.normpath(os.path.abspath(
+        os.path.expanduser(str(p)))))
+
+
+def show_folder_mismatch(served, wanted):
+    """The sentence when showpc.json's show_folder (`wanted`) is not the
+    folder this engine serves (`served`, its --folder); "" when they are
+    the same or showpc.json names none."""
+    if not isinstance(wanted, str) or not wanted.strip():
+        return ""
+    wanted = wanted.strip()
+    if served and _norm_folder(served) == _norm_folder(wanted):
+        return ""
+    return (f"showpc.json names the show folder {wanted}, but this engine "
+            f"is serving {served or 'no folder'}: the show files listed "
+            f"here, and the show that runs, come from "
+            f"{served or 'nowhere'}. LTC Player restarts the engine with "
+            f"the folder in showpc.json by itself once no show is running "
+            f"(press Stop on the Programming screen). If this stays, set "
+            f"the folder there (Show folder, Use this folder), or Stop LTC "
+            f"Player and start it again.")
+
+
+# ------------------------------------------------------ the PC's clock --
+# Soak 2026-10-21: the show PC's clock was 2.7 s behind with the Windows
+# Time service stopped. Shows start by this clock.
+CLOCK_LOUD_S = 0.5
+TIME_SERVICE_READ_S = 60.0
+CHECKS_READ_S = 15.0
+_TIME_FIX = ("Start it: press Windows+R, type services.msc, open Windows "
+             "Time, set Startup type to Automatic and press Start. Then "
+             "Settings, Time and language, Date and time, Sync now.")
+
+
+def windows_time_service(run=None, windows=None):
+    """"running", "stopped", or "" when it cannot be told (not Windows,
+    no answer). From `sc query w32time`'s state number (4 running, 1
+    stopped, 2 and 3 on the way), which no Windows language changes."""
+    windows = appdata.WINDOWS if windows is None else windows
+    if not windows:
+        return ""
+    if run is None:
+        import subprocess
+        run = subprocess.run
+    try:
+        r = run(["sc", "query", "w32time"], capture_output=True, text=True,
+                timeout=5, creationflags=0x08000000)
+    except Exception:                            # noqa: BLE001
+        return ""
+    m = re.search(r"STATE\s*:\s*(\d+)", str(getattr(r, "stdout", "") or ""))
+    if not m:
+        return ""
+    return "running" if m.group(1) in ("2", "4") else "stopped"
+
+
+def judge_pc_clock(offset_s, service):
+    """(level, sentence) for the Morning checks: `offset_s` is the
+    scheduler's last time server check (positive: this PC is behind; None
+    not known), `service` windows_time_service(). "bad" (loud) when the
+    clock is off by more than CLOCK_LOUD_S and the time service is
+    stopped: nothing will correct it."""
+    known = isinstance(offset_s, (int, float)) and \
+        not isinstance(offset_s, bool) and math.isfinite(offset_s)
+    size = abs(offset_s) if known else None
+    way = ("behind" if known and offset_s > 0 else "ahead of")
+    off = known and size > CLOCK_LOUD_S
+    if service == "stopped":
+        if off:
+            return ("bad", f"This PC's clock is {size:.1f} s {way} the time "
+                           f"server and the Windows Time service is "
+                           f"STOPPED, so nothing will correct it. Shows "
+                           f"start by this clock. {_TIME_FIX}")
+        if known:
+            return ("warn", f"The Windows Time service is stopped. The clock "
+                            f"is within {size:.2f} s of the time server now, "
+                            f"but it drifts without it (2.7 s behind in the "
+                            f"soak of 2026-10-21). {_TIME_FIX}")
+        return ("warn", f"The Windows Time service is stopped, and this PC's "
+                        f"clock could not be checked against a time server. "
+                        f"{_TIME_FIX}")
+    if off:
+        tail = (" The Windows Time service is running; Settings, Time and "
+                "language, Date and time, Sync now puts it right at once."
+                if service == "running" else "")
+        return ("warn", f"This PC's clock is {size:.1f} s {way} the time "
+                        f"server. Shows start by this clock.{tail}")
+    if not known:
+        return ("unknown", "This PC's clock could not be checked against a "
+                           "time server" + (", though the Windows Time "
+                           "service is running." if service == "running"
+                           else "."))
+    return ("ok", f"This PC's clock is within {size:.2f} s of the time "
+                  f"server" + (", and the Windows Time service is running."
+                               if service == "running" else "."))
+
+
 def _write_json(path, doc, private=False):
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -664,10 +770,16 @@ def countdown_view(sched, show, cue_now):
                 "s": round(max(0.0, dur - max(0.0, el)), 1),
                 "running": not held}
     nx = sched.get("next") if sched.get("attached") else None
-    if isinstance(nx, dict) and isinstance(nx.get("in_s"), (int, float)) \
-            and not isinstance(nx.get("in_s"), bool):
-        return {"kind": "next", "label": "Next show", "s": nx["in_s"],
-                "running": True}
+    if isinstance(nx, dict):
+        # The exact figure when the engine gives one: the page counts down
+        # from it on its own clock. Whole seconds, rounded down, aged by
+        # the page, made the last digit flicker (soak 2026-10-21).
+        for key in ("in_s_exact", "in_s"):
+            v = nx.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) \
+                    and math.isfinite(v):
+                return {"kind": "next", "label": "Next show", "s": v,
+                        "running": True}
     return None
 
 
@@ -1657,6 +1769,7 @@ class Remote:
         if name == "morning":
             v = m.full_view(ctx.device)
             v["purge_enabled"] = self.purge_enabled(ctx.local)
+            v["checks"] = self.engine_checks()
             v["served_at"] = int(self.wall() * 1000)
             return 200, v
         import urllib.parse
@@ -1848,6 +1961,95 @@ class Remote:
     # -- status ------------------------------------------------------------
     DECK_QUIET_S = 2.0
 
+    def cues_fault(self):
+        """The flame cues' CUES FAULT for the screens: the refusal now in
+        force, else a render older than the layout found at show load
+        (FlameCues.faults_now). "" when none. Never raises."""
+        c = self.flame_cues
+        try:
+            now = getattr(c, "faults_now", None)
+            return str((now() if now is not None
+                        else getattr(c, "fault", "")) or "")
+        except Exception:                        # noqa: BLE001
+            return ""
+
+    def render_fault_alert(self, text):
+        """FlameCues.on_render_fault (web.serve): a render older than the
+        layout, found at show load, is a flames alert on every screen and
+        a booth note, not a journal line nobody reads (soak 2026-10-21).
+        FlameCues calls this once for each new sentence."""
+        try:
+            self.alerts.raise_("flames", text)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def show_folder_problem(self):
+        """show_folder_mismatch for this engine and showpc.json (read at
+        most every 10 s; off the show PC there is none). Journaled once
+        for each new sentence. Never raises."""
+        try:
+            doc = self._settings_json(SHOWPC_FILE, "showpc", 10.0)
+            text = show_folder_mismatch(self._show_folder(),
+                                        doc.get("show_folder"))
+        except Exception:                        # noqa: BLE001
+            text = ""
+        if text and text != getattr(self, "_folder_said", ""):
+            self._journal("system", "engine", "show folder", "mismatch",
+                          text, fault=True)
+        self._folder_said = text
+        return text
+
+    def _time_service(self):
+        now = self.clock()
+        got = getattr(self, "_w32time", None)
+        if got is not None and now - got[1] < TIME_SERVICE_READ_S:
+            return got[0]
+        st = windows_time_service(getattr(self, "_sc_run", None),
+                                  getattr(self, "_sc_windows", None))
+        self._w32time = (st, now)
+        return st
+
+    def engine_checks(self):
+        """The Morning page's engine checks, worked out at most every
+        CHECKS_READ_S: [{"id", "level" ("ok", "warn", "bad", "unknown"),
+        "title", "text"}]. Display only. Never raises."""
+        now = self.clock()
+        got = getattr(self, "_checks", None)
+        if got is not None and now - got[1] < CHECKS_READ_S:
+            return got[0]
+        out = []
+        if hasattr(self.flame_cues, "faults_now"):
+            try:
+                from . import fire_ice as fi
+                faults = fi.show_folder_render_faults(self._show_folder())
+                running = self.cues_fault()
+                if running and running not in faults:
+                    faults.insert(0, running)
+            except Exception as e:               # noqa: BLE001
+                faults = [f"The renders could not be checked: "
+                          f"{type(e).__name__}: {e}"]
+            out.append({"id": "renders", "title": "Flame cue renders",
+                        "level": "bad" if faults else "ok",
+                        "text": " ".join(faults) if faults else
+                        "Every show file's renders are newer than its "
+                        "xlights_networks.xml, so their flame cues can "
+                        "play."})
+        try:
+            cc = getattr(self.schedule, "clock_check", None) or {}
+            level, text = judge_pc_clock(cc.get("offset_s"),
+                                         self._time_service())
+        except Exception as e:                   # noqa: BLE001
+            level, text = "unknown", f"The clock check failed: {e}"
+        out.append({"id": "clock", "title": "This PC's clock",
+                    "level": level, "text": text})
+        folder = self._show_folder()
+        problem = self.show_folder_problem()
+        out.append({"id": "show_folder", "title": "Show folder served",
+                    "level": "bad" if problem else "ok",
+                    "text": problem or f"This engine serves {folder}."})
+        self._checks = (out, now)
+        return out
+
     def laser_fault(self):
         """beyondtc.NOT_SET_UP while the conductor's laser blanking has no
         OSC target, else "". Display only; never raises."""
@@ -2001,6 +2203,7 @@ class Remote:
             fl = None
         fs_connected = bool(fl and fl.get("connected") and not fl.get("stale"))
         return {"show_folder": folder,
+                "show_folder_problem": self.show_folder_problem(),
                 "show_folder_exists": bool(folder) and os.path.isdir(folder),
                 "show_files": files,
                 "schedule_path": sched_path,
@@ -2370,9 +2573,10 @@ class Remote:
             out["flames"] = self.flame_status.view()
         # Review of PR #43, P1-3: the flame cues refused for a reason that
         # is a fault (the render and the layout do not fit, and the like).
-        out["flames"]["cues_fault"] = str(
-            getattr(self.flame_cues, "fault", "") or "")
+        out["flames"]["cues_fault"] = self.cues_fault()
         out["laser_fault"] = self.laser_fault()
+        out["show_folder"] = {"served": self._show_folder(),
+                              "problem": self.show_folder_problem()}
         out["disarm_connected"] = self._disarm_fn() is not None
         now = self.clock()
         tok = ctx.device

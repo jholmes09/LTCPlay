@@ -39352,6 +39352,25 @@ def test_remote_countdown_left_in_this_show():
               f"the next show's: {now}")
     c = cv(run, {"running": True}, {"duration": 300.0, "elapsed": 320.0})
     check(c["s"] == 0.0, "past its end: zero, never negative")
+    # Soak 2026-10-21: the page counted down from whole seconds rounded
+    # down, so its last digit flickered. The exact figure goes out when
+    # the engine has one.
+    c = cv(dict(run, state="WAITING",
+                next={"show": 2, "start": "19:00", "in_s": 3599,
+                      "in_s_exact": 3599.437}), {"running": False}, None)
+    check(c == {"kind": "next", "label": "Next show", "s": 3599.437,
+                "running": True},
+          f"between shows: the exact time to the next show, not whole "
+          f"seconds: {c}")
+    S0 = _sched()
+    if S0 is not None:
+        n0 = _Night(S0, _one_night_rule(S0))
+        n0.boot(_den(S0, 17, 0))
+        v0 = S0.machine_view(n0.m, _den(S0, 17, 59, 57, 600000))
+        check(v0["next"]["in_s"] == 2 and
+              v0["next"]["in_s_exact"] == 2.4,
+              f"the scheduler gives the next show to the millisecond as "
+              f"well as in whole seconds: {v0['next']}")
     check(cv({"attached": True, "state": "WAITING", "next": None},
              {}, None) is None, "nothing next: nothing shown")
     c = cv({"attached": False}, {"running": True},
@@ -41037,14 +41056,57 @@ t(!armState(Object.assign({}, ast, {flames:Object.assign({}, ast.flames,
 t(!armState(null, 10000, 9500, 0).ok, "no status: may not");
 // The countdown (Jeff, 2026-10-07): left in this show while it runs,
 // frozen while held, the next show between shows, nothing when unknown.
-let cd = countdownNow({kind:"left", label:"Left in this show", s:300, running:true}, 10000, 8000);
-t(cd && cd.kind === "left" && Math.abs(cd.s - 298) < 1e-9, "running: ages by the time since it was heard");
-cd = countdownNow({kind:"left", label:"Left in this show", s:300, running:false}, 10000, 8000);
+let ca = countdownAnchor(null, {kind:"left", label:"Left in this show", s:300, running:true}, 8000);
+let cd = countdownRead(ca, 10000);
+t(cd && cd.kind === "left" && Math.abs(cd.s - 298) < 1e-9, "running: counts down from when it was heard");
+ca = countdownAnchor(ca, {kind:"left", label:"Left in this show", s:300, running:false}, 8000);
+cd = countdownRead(ca, 10000);
 t(cd && cd.s === 300, "held: frozen, not aged");
-cd = countdownNow({kind:"next", label:"Next show", s:60, running:true}, 10000, 9000);
+cd = countdownRead(countdownAnchor(ca, {kind:"next", label:"Next show", s:60, running:true}, 9000), 10000);
 t(cd && cd.kind === "next" && cd.s === 59, "between shows: the next show");
-t(countdownNow(null, 10000, 9000) === null, "unknown length: nothing shown");
-t(countdownNow({kind:"left", s:2, running:true}, 10000, 5000).s === 0, "never below zero");
+t(countdownRead(countdownAnchor(ca, null, 9000), 10000) === null, "unknown length: nothing shown");
+t(countdownRead(countdownAnchor(null, {kind:"left", s:2, running:true}, 5000), 10000).s === 0, "never below zero");
+// The soak's flicker (2026-10-21): a status every 250 ms that arrives 5 to
+// 120 ms late, the screen drawn every 20 ms. The digit must only ever go
+// down, one second at a time, whether the engine's figure is exact or
+// whole seconds rounded down (an older engine).
+function soakDigits(whole){
+  let seed = 7, a = null, last = null, bad = [], seen = 0;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const end = 20000;                         // the show starts at 20 s
+  let nextPoll = 0, arrive = null, sent = null;
+  for(let now = 0; now <= end + 500; now += 20){
+    if(arrive === null && now >= nextPoll){
+      const left = Math.max(0, (end - now) / 1000);
+      sent = whole ? Math.floor(left) : Math.round(left * 1000) / 1000;
+      arrive = now + 5 + Math.floor(rnd() * 115);
+      nextPoll = now + 250;
+    }
+    if(arrive !== null && now >= arrive){
+      a = countdownAnchor(a, {kind:"next", label:"Next show", s:sent, running:true}, now);
+      arrive = null;
+    }
+    const r = countdownRead(a, now);
+    if(!r) continue;
+    const d = Math.floor(r.s);
+    if(last !== null && (d > last || last - d > 1)) bad.push(last + "->" + d + " at " + now);
+    if(last !== null && d !== last) seen++;
+    last = d;
+  }
+  return {bad:bad, seen:seen, last:last};
+}
+let sk = soakDigits(false);
+t(sk.bad.length === 0 && sk.seen >= 18 && sk.last === 0, "exact figures: the digit only counts down " + JSON.stringify(sk.bad.slice(0, 4)));
+sk = soakDigits(true);
+t(sk.bad.length === 0 && sk.seen >= 18 && sk.last === 0, "whole-second figures: the digit only counts down " + JSON.stringify(sk.bad.slice(0, 4)));
+// A delayed show, or a different next show, moves the moment later: taken.
+ca = countdownAnchor(null, {kind:"next", label:"Next show", s:10, running:true}, 0);
+ca = countdownAnchor(ca, {kind:"next", label:"Next show", s:610, running:true}, 1000);
+t(Math.abs(countdownRead(ca, 1000).s - 610) < 1e-9, "a show delayed by 10 minutes is followed");
+// A reply that came late never puts the count back up.
+ca = countdownAnchor(null, {kind:"next", label:"Next show", s:10, running:true}, 0);
+ca = countdownAnchor(ca, {kind:"next", label:"Next show", s:9.75, running:true}, 400);
+t(Math.abs(countdownRead(ca, 400).s - 9.6) < 1e-9, "a late reply does not move the count up");
 t(clockText(3725) === "1:02:05" && clockText(65.9) === "1:05" && clockText(-3) === "0:00", "clock text");
 console.log(JSON.stringify(out));
 """
@@ -47736,6 +47798,559 @@ def test_ltc_deck_runs_the_threaded_loop():
     print("  ok")
 
 
+def test_soak_render_older_than_layout_is_a_cues_fault_at_show_load():
+    section("soak 2026-10-21: a render older than xlights_networks.xml is a "
+            "CUES FAULT from show load on (the rack screen, an alert, the "
+            "Stream Deck's /api/conductor and the Morning checks), naming "
+            "the file and what to do; the flame cues stay refused")
+    import shutil
+    import tempfile
+    import types
+    F = _fi_mod()
+    from ltcplay import remote as RM
+    work = tempfile.mkdtemp()
+    try:
+        # The pure parts.
+        rig = _fi_cue_rig(os.path.join(work, "pure"))
+        rig.layout("A")
+        rig.rerender(1534, 50)
+        check(F.renders_older_than_layout(rig.net, [rig.render]) == [],
+              "a render newer than the layout is fine")
+        r = os.stat(rig.render).st_mtime_ns
+        os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+        check(F.renders_older_than_layout(
+            rig.net, [rig.render, rig.render, None,
+                      os.path.join(rig.show, "gone.fseq")]) == [rig.render],
+              "a render older than the layout is named once; a missing "
+              "render is not this check's business")
+        check(F.renders_older_than_layout(
+            os.path.join(rig.show, "none.xml"), [rig.render]) == [],
+              "no layout to look at: nothing claimed")
+        text = F.render_age_sentence(rig.net, [rig.render], "bench.json")
+        check(text.startswith("CUES FAULT in bench.json") and
+              "Show.fseq" in text and rig.net in text and
+              "Render them again" in text and "touching" in text,
+              f"the sentence names the show, the file, the layout and "
+              f"what to do: {text!r}")
+        _no_dashes(text, "the render age sentence")
+        check(F.render_age_sentence(rig.net, []) == "", "none: nothing")
+        # FlameCues: said at show load, with no flame frame asked for.
+        for bg in (False, True):
+            lines, told = [], []
+            rig = _fi_cue_rig(os.path.join(work, f"bg{bg}"))
+            rig.layout("A")
+            rig.rerender(1534, 50)
+            rig.control.session.timeline_path = os.path.join(rig.show,
+                                                              "bench.json")
+            cues = F.FlameCues(rig.control, "Flames",
+                               lambda t, **f: lines.append(
+                                   (t, f.get("fault", False))),
+                               background=bg)
+            cues.on_render_fault = told.append
+            mode = "background" if bg else "in the call"
+
+            def settle(want):
+                got = cues.faults_now()
+                for _ in range(200):
+                    if bool(got) == want:
+                        break
+                    time.sleep(0.01)
+                    got = cues.faults_now()
+                return got
+            check(settle(False) == "" and told == [],
+                  f"{mode}: renders newer than the layout: no fault")
+            r = os.stat(rig.render).st_mtime_ns
+            os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+            got = settle(True)
+            check(got.startswith("CUES FAULT in bench.json") and
+                  "Show.fseq" in got,
+                  f"{mode}: the fault is there at show load, before any "
+                  f"flame frame: {got!r}")
+            settle(True)
+            check(told == [got] and sum(1 for t, f in lines
+                                        if f and t == got) == 1,
+                  f"{mode}: told once and journaled once as a fault, not "
+                  f"on every look: {told} {lines}")
+            check(cues("00:00:02:15") is None and
+                  "older than xlights_networks.xml" in cues.fault,
+                  f"{mode}: the flame cues stay refused, as before: "
+                  f"{cues.fault!r}")
+            rig.rerender(1534, 70)
+            back = None
+            for _ in range(200):
+                back = cues("00:00:02:15")
+                if back:
+                    break
+                time.sleep(0.01)
+            check(back == [70] * 512 and settle(False) == "",
+                  f"{mode}: rendered again: the cues come back and the "
+                  f"fault clears: {back and back[:2]}")
+            cues.close()
+        # The screens: the rack screen's status, /api/conductor (what the
+        # Stream Deck shows as CUES FAULT) and an alert.
+        rig = _fi_cue_rig(os.path.join(work, "screens"))
+        rig.layout("A")
+        rig.rerender(1534, 50)
+        r = os.stat(rig.render).st_mtime_ns
+        os.utime(rig.net, ns=(r + 10 ** 9, r + 10 ** 9))
+        rig.clk.paused = True           # no flame frame is being refused
+        cues = F.FlameCues(rig.control, "Flames")
+        S = _sched()
+        if S is not None:
+            R = _RemoteRig(S)
+            try:
+                R.httpd.conductor = R.c
+                R.httpd.fire_ice = types.SimpleNamespace(
+                    flame_link=types.SimpleNamespace(
+                        snapshot=lambda: {}, cues=cues), devices=None)
+                R.remote.flame_cues = cues
+                cues.on_render_fault = R.remote.render_fault_alert
+                st, _h, out = _ask(R.httpd, "GET", "/api/conductor",
+                                   client=("127.0.0.1", 5000))
+                fault = out.get("flame_cues", {}).get("fault", "")
+                check(st == 200 and fault.startswith("CUES FAULT"),
+                      f"/api/conductor carries it for the Stream Deck "
+                      f"before any flame frame: {st} {out.get('flame_cues')}")
+                st, _h, out = R.ask("GET", "/api/remote/status")
+                check(out["flames"]["cues_fault"] == fault,
+                      f"the rack screen's status carries it: "
+                      f"{out['flames'].get('cues_fault')!r}")
+                al = [a for a in out["alerts"] if a["kind"] == "flames"]
+                check(len(al) == 1 and "Show.fseq" in al[0]["text"],
+                      f"and it is an alert on every screen: {out['alerts']}")
+                # The Morning checks, from the show folder's show files.
+                with open(os.path.join(R.folder, "bench.json"), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"fps": 30, "show_dir": rig.show, "cues": [
+                        {"tc": "00:00:00:00", "fseq": "Show.fseq",
+                         "name": "Show"}]}, fh)
+                R.remote.morning = types.SimpleNamespace(
+                    full_view=lambda device: {})
+                st, out = R.remote.morning_get(
+                    "morning", "", R.remote.context(True, "127.0.0.1"))
+                ck = {c["id"]: c for c in out.get("checks", [])}
+                rc = ck.get("renders") or {}
+                check(st == 200 and rc.get("level") == "bad" and
+                      "CUES FAULT in bench.json" in rc.get("text", "") and
+                      "Show.fseq" in rc.get("text", ""),
+                      f"the Morning checks name the show file and the "
+                      f"render: {out.get('checks')}")
+                check(F.show_folder_render_faults(R.folder) and
+                      F.show_file_render_fault(
+                          os.path.join(R.folder, "bench.json")),
+                      "the show folder's own check finds it")
+                rig.rerender(1534, 50)
+                R.mono[0] += RM.CHECKS_READ_S + 1
+                st, out = R.remote.morning_get(
+                    "morning", "", R.remote.context(True, "127.0.0.1"))
+                rc = {c["id"]: c for c in out["checks"]}["renders"]
+                check(rc["level"] == "ok" and not
+                      F.show_folder_render_faults(R.folder),
+                      f"rendered again: the check is OK: {rc}")
+            finally:
+                R.close()
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "ltcplay", "web.py"),
+                  encoding="utf-8") as fh:
+            web_src = fh.read()
+        check("httpd.remote.flame_cues.on_render_fault = \\\n"
+              "                httpd.remote.render_fault_alert" in web_src,
+              "ltc serve hands the flame cues the rack screen's alert")
+        with open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                  encoding="utf-8") as fh:
+            page = fh.read()
+        check("renderEngineChecks(mo.checks || []);" in page,
+              "the Morning page draws the engine checks")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_soak_flame_cues_preloaded_and_never_copied_under_the_lock():
+    section("soak 2026-10-21: the flame link stalled at the top of a show; "
+            "the flame cues' render is read when Run is pressed, before the "
+            "first flame frame, and an in-memory render is never copied "
+            "whole while holding the interpreter lock")
+    import builtins
+    import io
+    import shutil
+    import tempfile
+    from ltcplay import fseq as fseq_mod
+    F = _fi_mod()
+    work = tempfile.mkdtemp()
+    real_open = builtins.open
+    try:
+        import test_show_fixtures as _fx
+        p = os.path.join(work, "r.fseq")
+        _fx.write_fseq(p, frame_count=50, channel_count=40, step_ms=25,
+                       compression="zlib", block_frames=10, fill=7)
+        with open(p, "rb") as fh:
+            data = fh.read()
+
+        class NoWholeCopy(io.BytesIO):
+            def getbuffer(self):
+                raise AssertionError("getbuffer() copies the whole render "
+                                     "under the interpreter lock")
+        try:
+            f = fseq_mod.FSEQ(p, fileobj=NoWholeCopy(data))
+            ok = (f.frame_count == 50 and f.channel_count == 40 and
+                  f.frame(13) == bytes([7]) * 40 and
+                  f._file_size == len(data))
+        except AssertionError as e:
+            ok = False
+            check(False, f"the in-memory render was copied whole: {e}")
+        check(ok, "an in-memory render is read by seeking, never copied "
+                  "whole (a 600 MB copy held every engine thread, the flame "
+                  "link's sender too, for half a second)")
+        # Read when Run is pressed: with the render slow to read (a stub of
+        # 0.4 s), it is in memory before the first flame frame is asked
+        # for, and that frame is the cue's own, at once.
+        rig = _fi_cue_rig(os.path.join(work, "pre"))
+        rig.layout("A")
+        rig.rerender(1534, 60)
+        slow = {"n": 0}
+
+        def slow_open(file, mode="r", *a, **k):
+            if str(file) == rig.render and "b" in str(mode):
+                slow["n"] += 1
+                time.sleep(0.4)
+            return real_open(file, mode, *a, **k)
+        builtins.open = slow_open
+        cues = F.FlameCues(rig.control, "Flames", background=True)
+        cues.start()
+        for _ in range(300):
+            if isinstance(cues._by_path.get(rig.render), tuple):
+                break
+            time.sleep(0.01)
+        builtins.open = real_open
+        check(slow["n"] >= 1 and
+              isinstance(cues._by_path.get(rig.render), tuple),
+              "started at Run, the render is read before any flame frame")
+        t0 = time.perf_counter()
+        got = cues("00:00:02:15")
+        took = time.perf_counter() - t0
+        check(got == [60] * 512 and took < 0.1,
+              f"the first flame frame is the cue's own, not a zero while it "
+              f"loads, and asking took {took * 1000:.0f} ms: "
+              f"{got and got[:2]}")
+        cues.close()
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "ltcplay", "fire_ice.py"),
+                  encoding="utf-8") as fh:
+            src = fh.read()
+        check("            built_link.start()\n"
+              "            # The flame cues' reading thread from now on, not "
+              "from the\n"
+              "            # first flame frame of a show (soak 2026-10-21).\n"
+              "            if isinstance(getattr(built_link, \"cues\", None), "
+              "FlameCues):\n"
+              "                built_link.cues.start()" in src,
+              "ltc serve starts the flame cues' reading with the flame link")
+    finally:
+        builtins.open = real_open
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_soak_show_folder_served_is_said_and_followed():
+    section("soak 2026-10-21: showpc.json named soak_show and the engine "
+            "served Documents\\LTC Shows; the rack screen says which folder "
+            "is served and says it loudly when showpc.json names another, "
+            "and the supervisor follows a hand edit of show_folder")
+    import shutil
+    import tempfile
+    from ltcplay import remote as RM
+    a = tempfile.mkdtemp()
+    b = tempfile.mkdtemp()
+    try:
+        check(RM.show_folder_mismatch(a, None) == "" and
+              RM.show_folder_mismatch(a, "") == "" and
+              RM.show_folder_mismatch(a, a + os.sep) == "" and
+              RM.show_folder_mismatch(a, os.path.join(a, ".")) == "",
+              "the same folder, however spelled, or none named: nothing")
+        text = RM.show_folder_mismatch(a, b)
+        check(text.startswith(f"showpc.json names the show folder {b}") and
+              f"serving {a}" in text and "Stop" in text,
+              f"another folder: both named and what to do: {text!r}")
+        _no_dashes(text, "the show folder sentence")
+        S = _sched()
+        if S is not None:
+            R = _RemoteRig(S)
+            old = RM.settings_folder
+            RM.settings_folder = lambda: R.work
+            lines = []
+            real_journal = R.remote._journal
+            R.remote._journal = lambda *x, **k: lines.append((x, k))
+            loop = ("127.0.0.1", 5000)
+            try:
+                st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                                   client=loop)
+                check(out["show_folder"] == {"served": R.folder,
+                                             "problem": ""} and
+                      out["setup"]["show_folder_problem"] == "",
+                      f"no showpc.json (a Mac): the folder served, no "
+                      f"problem: {out['show_folder']}")
+                with open(os.path.join(R.work, RM.SHOWPC_FILE), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"show_folder": b}, fh)
+                R.mono[0] += 11
+                st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                                   client=loop)
+                st, _h, out = R.ask("GET", "/api/remote/status")
+                pr = out["show_folder"]["problem"]
+                check(out["show_folder"]["served"] == R.folder and
+                      pr.startswith(f"showpc.json names the show folder {b}"),
+                      f"showpc.json names another: the status says so, on "
+                      f"every screen: {out['show_folder']}")
+                st, _h, su = _ask(R.httpd, "GET", "/api/remote/setup",
+                                  client=loop)
+                check(su["show_folder_problem"] == pr,
+                      "and the Programming screen's folder card")
+                faults = [x for x, k in lines if k.get("fault") and
+                          x[2] == "show folder"]
+                check(len(faults) == 1 and faults[0][4] == pr,
+                      f"journaled once as a fault, not on every poll: "
+                      f"{faults}")
+                with open(os.path.join(R.work, RM.SHOWPC_FILE), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"show_folder": R.folder}, fh)
+                R.mono[0] += 11
+                st, _h, out = R.ask("GET", "/api/remote/status")
+                check(out["show_folder"]["problem"] == "",
+                      "the engine restarted on it, or the file put back: "
+                      "the problem goes")
+            finally:
+                RM.settings_folder = old
+                R.remote._journal = real_journal
+                R.close()
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "ltcplay", "web", "remote.html"),
+                  encoding="utf-8") as fh:
+            page = fh.read()
+        check("s.show_folder && s.show_folder.problem ? "
+              "s.show_folder.problem : null" in page,
+              "the rack screen's trouble line carries it")
+        # The supervisor follows showpc.json.
+        ltcwin, SUP, done = _winpkg()
+        try:
+            p = os.path.join(a, "showpc.json")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump({"show_folder": a}, fh)
+            reads = []
+
+            def read():
+                with open(p, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+                reads.append(doc)
+                return doc
+            w = SUP.SettingsWatch(p, read)
+            check(w.poll() is None and reads == [],
+                  "unchanged: not read again")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump({"show_folder": b, "port": 7878}, fh)
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+            got = w.poll()
+            check(got == {"show_folder": b, "port": 7878} and
+                  w.poll() is None,
+                  f"changed: read again once: {got}")
+            why = SUP.show_folder_change({"show_folder": a}, got)
+            check(why == f"showpc.json now names the show folder {b}",
+                  f"a new show folder is a reason to restart the engine: "
+                  f"{why!r}")
+            check(SUP.show_folder_change({"show_folder": a},
+                                         {"show_folder": a + os.sep}) == ""
+                  and SUP.show_folder_change({"show_folder": a}, {}) == "",
+                  "the same folder, or none: no restart")
+            with open(SUP.__file__, encoding="utf-8") as fh:
+                src = fh.read()
+            for need in ("changed = watch.poll()",
+                         "settings = dict(settings, show_folder="
+                         "changed[\"show_folder\"])",
+                         "            busy, why = show_running(port)\n"
+                         "            if busy:\n"
+                         "                if folder_said != folder_change:",
+                         "                why = progs[\"engine\"].stop()\n"
+                         "                log(f\"{folder_change}: \""):
+                check(need in src, f"the supervisor's loop does {need!r}")
+        finally:
+            done()
+    finally:
+        shutil.rmtree(a, ignore_errors=True)
+        shutil.rmtree(b, ignore_errors=True)
+    print("  ok")
+
+
+def test_soak_pc_clock_and_time_service_in_the_morning_checks():
+    section("soak 2026-10-21: the PC clock was 2.7 s behind with the Windows "
+            "Time service stopped; the Morning checks say it, loudly when "
+            "the clock is off by more than 0.5 s and the service is stopped")
+    import types
+    from ltcplay import remote as RM
+    j = RM.judge_pc_clock
+    lv, text = j(2.7, "stopped")
+    check(lv == "bad" and "2.7 s behind" in text and "STOPPED" in text and
+          "services.msc" in text, f"2.7 s behind, stopped: loud: {text!r}")
+    check(j(-0.8, "stopped")[0] == "bad" and
+          "ahead of" in j(-0.8, "stopped")[1],
+          "0.8 s ahead, stopped: loud too (the limit is 0.5 s)")
+    check(j(0.4, "stopped")[0] == "warn" and j(None, "stopped")[0] == "warn",
+          "stopped with the clock right, or not known: a warning to start it")
+    check(j(2.7, "running")[0] == "warn" and j(2.7, "")[0] == "warn",
+          "off but the service running (or not Windows): a warning")
+    check(j(0.2, "running")[0] == "ok" and j(0.2, "")[0] == "ok",
+          "within 0.5 s: fine")
+    check(j(None, "running")[0] == "unknown" and
+          j(float("nan"), "")[0] == "unknown" and
+          j(True, "running")[0] == "unknown",
+          "not known is never shown as fine")
+    for o in (2.7, -0.8, 0.4, None):
+        for s in ("stopped", "running", ""):
+            _no_dashes(j(o, s)[1], "the clock check")
+
+    def sc(out, raises=False):
+        def run(cmd, **k):
+            if raises:
+                raise OSError("no sc")
+            check(cmd[:3] == ["sc", "query", "w32time"], f"asks sc: {cmd}")
+            return types.SimpleNamespace(stdout=out)
+        return run
+    w = RM.windows_time_service
+    check(w(sc("        STATE              : 4  RUNNING"), True) == "running",
+          "sc says 4: running")
+    check(w(sc("        STATE              : 1  STOPPED"), True) == "stopped",
+          "sc says 1: stopped")
+    check(w(sc("STATE : 1  ANGEHALTEN"), True) == "stopped",
+          "by the number, whatever the language")
+    check(w(sc("", raises=True), True) == "" and
+          w(sc("The specified service does not exist"), True) == "",
+          "no answer: not known")
+    check(w(sc("STATE : 4 RUNNING"), False) == "",
+          "not Windows: not asked")
+    S = _sched()
+    if S is not None:
+        R = _RemoteRig(S)
+        try:
+            R.svc.clock_check = {"level": "warn", "text": "",
+                                 "offset_s": 2.7}
+            R.remote._sc_run = sc("STATE : 1 STOPPED")
+            R.remote._sc_windows = True
+            ck = {c["id"]: c for c in R.remote.engine_checks()}
+            c = ck.get("clock") or {}
+            check(c.get("level") == "bad" and "2.7 s behind" in
+                  c.get("text", ""),
+                  f"the Morning checks read the scheduler's own time server "
+                  f"check and the service: {c}")
+            check("renders" not in ck,
+                  "with no flame cues in the engine, no render check")
+            check(ck["show_folder"]["level"] == "ok" and
+                  R.folder in ck["show_folder"]["text"],
+                  f"and say which show folder is served: {ck['show_folder']}")
+        finally:
+            R.close()
+    print("  ok")
+
+
+def test_soak_bench_render_universes_and_fps():
+    section("stress kit: the soak plays a render of N pixel universes at F "
+            "frames a second (soak 2026-10-21), its pixel limits follow the "
+            "rate, and the multi-day soak refuses them in a sentence")
+    import shutil
+    import tempfile
+    from ltcplay import netmap, fseq as fseq_mod
+    F = _fi_mod()
+    sp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "packaging", "windows")
+    sys.path.insert(0, sp)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    names = ("soak", "ltcwin", "soak_apps", "soak_exercise", "supervisor")
+    work = tempfile.mkdtemp()
+    try:
+        for m in names:
+            sys.modules.pop(m, None)
+        import soak
+        check(soak.bench_networks(1) == soak.NETWORKS_XML,
+              "one universe is the bench layout exactly as before")
+        check(soak.bench_render_plan() == {
+            "universes": 1, "fps": 40, "step_ms": 25, "channels": 1022,
+            "block_frames": 400},
+            f"left alone: the old render: {soak.bench_render_plan()}")
+        check(soak.pixel_limits(40) == (soak.PIXEL_PERIOD_MS,
+                                        soak.PIXEL_MEAN_TOL_MS,
+                                        soak.PIXEL_DEV_MS,
+                                        soak.PIXEL_GAP_MS),
+              "at 40 the pixel limits are the old ones")
+        per, _tol, dev, gap = soak.pixel_limits(20)
+        check(per == 50.0 and gap == 200.0 and dev == 30.0,
+              f"at 20 they follow the frame: {per} {dev} {gap}")
+        for u, f in ((0, 40), (soak.MAX_UNIVERSES + 1, 40), (1, 30),
+                     (True, 40), (2.5, 40)):
+            try:
+                soak.bench_render_plan(u, f)
+                check(False, f"{u} universes at {f} was accepted")
+            except ValueError as e:
+                _no_dashes(str(e), "the render plan refusal")
+        plan = soak.bench_render_plan(3, 20)
+        net = os.path.join(work, "xlights_networks.xml")
+        with open(net, "w", encoding="utf-8") as fh:
+            fh.write(soak.bench_networks(3))
+        nm = netmap.load(net)
+        pix = [u for u in nm.universes if u.controller == "Pixels"]
+        check(len(pix) == 3 and plan["channels"] == 2042 and
+              F.flame_channels(net, "Flames") == (1531, 512) and
+              F.map_total_channels(net) == plan["channels"],
+              f"3 universes: the flames start at 1531, the render is 2042 "
+              f"channels: {plan} {F.flame_channels(net, 'Flames')}")
+        s = soak.Soak(60, None, folder=os.path.join(work, "run"))
+        s.fake_audio = True
+        s.show_s = 2.0
+        s.universes, s.fps = 3, 20
+        s.mode = "fallback"
+        s.make_show()
+        f = fseq_mod.FSEQ(os.path.join(s.show_dir, "bench.fseq"))
+        check(f.channel_count == 2042 and f.step_time_ms == 50 and
+              f.frame_count == 40,
+              f"the soak's render is that size and rate: "
+              f"{f.channel_count} {f.step_time_ms} {f.frame_count}")
+        f.close()
+        check(F.flame_channels(os.path.join(s.show_dir,
+                                            "xlights_networks.xml"),
+                               "Flames") == (1531, 512),
+              "and its layout puts the flames after the pixels")
+        st = s.pixels
+        check((st.period, st.dev_ms, st.gap_ms) == (50.0, 30.0, 200.0),
+              f"the pixel timing follows the rate: {st.period} {st.dev_ms} "
+              f"{st.gap_ms}")
+        # What main() refuses before it stops or starts anything (never
+        # run here: past its checks it stops LTC Player and starts a soak).
+        rf = soak.render_refusal
+        why = rf({"--universes": 3}, True)
+        check("do not apply to --days" in why,
+              f"the multi-day soak refuses them: {why!r}")
+        check(rf({}, True) == "" and rf({"--universes": 3}, False) == "" and
+              rf({"--fps": 20}, False) == "",
+              "a timed soak takes them; the multi-day soak with none is fine")
+        check("from 1 to" in rf({"--universes": 0}, False) and
+              "not 30" in rf({"--fps": 30}, False),
+              "0 universes and 30 frames a second are refused")
+        for w in (why, rf({"--fps": 30}, False)):
+            _no_dashes(w, "the soak's render refusal")
+        with open(soak.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        check("    why = render_refusal(render, days is not None)\n"
+              "    if why:\n        print(why)\n        return 2\n" in src,
+              "the soak's main refuses with it")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m in names:
+            sys.modules.pop(m, None)
+        sys.dont_write_bytecode = was
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -48246,6 +48861,11 @@ if __name__ == "__main__":
     test_audit_chain_verify_finds_every_kind_of_tamper()
     test_audit_upload_retries_resumes_and_waits_for_the_ack()
     test_audit_never_blocks_or_fails_a_press()
+    test_soak_render_older_than_layout_is_a_cues_fault_at_show_load()
+    test_soak_flame_cues_preloaded_and_never_copied_under_the_lock()
+    test_soak_show_folder_served_is_said_and_followed()
+    test_soak_pc_clock_and_time_service_in_the_morning_checks()
+    test_soak_bench_render_universes_and_fps()
     for arg in sys.argv[1:]:
         test_real_show(arg)
     # test_real_show is opt-in: it runs only when a show folder is named on

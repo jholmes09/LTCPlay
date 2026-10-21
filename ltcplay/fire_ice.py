@@ -915,6 +915,97 @@ def no_route_sentence(name, cfg):
             + "), so the black zone is not used for it.")
 
 
+# -- renders older than the layout (soak 2026-10-21) -------------------------
+# FlameCues refuses every flame cue of a render older than the show's
+# xlights_networks.xml (review of PR #43, P0-6). That refusal is right and
+# stays exactly as it is; what was wrong is that it was said only in the
+# journal, so a whole soak ran with flame cues at zero and nothing on a
+# screen said so. These say it at show load, on the rack screen and the
+# Stream Deck (CUES FAULT), and in the Morning checks.
+
+def renders_older_than_layout(nm_path, paths):
+    """The renders among `paths` whose file is older than `nm_path`
+    (xlights_networks.xml), in order, each once. Stat only: no file is
+    read. [] when the layout cannot be looked at; a render that is not
+    there is not this check's business (Run refuses a missing render)."""
+    try:
+        laid = os.stat(nm_path).st_mtime_ns
+    except (OSError, TypeError, ValueError):
+        return []
+    out, seen = [], set()
+    for p in paths:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        try:
+            made = os.stat(p).st_mtime_ns
+        except (OSError, TypeError, ValueError):
+            continue
+        if made < laid:
+            out.append(p)
+    return out
+
+
+def render_age_sentence(nm_path, stale, show=""):
+    """The CUES FAULT for `stale` (renders_older_than_layout), naming the
+    files and what to do; "" when there are none."""
+    if not stale:
+        return ""
+    names = ", ".join(os.path.basename(str(p)) for p in stale[:6])
+    if len(stale) > 6:
+        names += f" and {len(stale) - 6} more"
+    of = f" in {show}" if show else ""
+    return (f"CUES FAULT{of}: flame cues will be zero. {len(stale)} "
+            f"render(s) are older than {nm_path}: {names}. The layout was "
+            f"saved after they were rendered, so which channels are the "
+            f"flames cannot be trusted and every flame cue in them is "
+            f"refused. Render them again in xLights for this layout. If the "
+            f"layout change moved no channel (the same flame controller "
+            f"and every channel count the same), saving or touching each "
+            f"render so it is newer than xlights_networks.xml clears this "
+            f"too.")
+
+
+def show_file_render_fault(show_file):
+    """render_age_sentence for one show file (a .json), from the show file
+    and file dates only; "" when it cannot be read (Run says why)."""
+    from . import timeline as timeline_mod
+    try:
+        tl = timeline_mod.Timeline.load(show_file)
+    except Exception:
+        return ""
+    nm = os.path.join(getattr(tl, "show_dir", "") or "",
+                      "xlights_networks.xml")
+    paths = [getattr(c, "path", None) for c in (tl.cues or ())]
+    return render_age_sentence(nm, renders_older_than_layout(nm, paths),
+                               os.path.basename(show_file))
+
+
+def show_folder_render_faults(folder):
+    """show_file_render_fault for every show file in `folder`: the Morning
+    checks' list, one sentence per show file with a stale render."""
+    out = []
+    try:
+        names = sorted(os.listdir(folder)) if folder else []
+    except OSError:
+        return out
+    for n in names:
+        if not n.lower().endswith(".json"):
+            continue
+        p = os.path.join(folder, n)
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or "cues" not in doc:
+            continue
+        text = show_file_render_fault(p)
+        if text:
+            out.append(text)
+    return out
+
+
 class FlameCues:
     """flamelink's cue provider: the show's flame universe, read from the
     show's OWN render at the show timecode (PR #43 review, finding 1).
@@ -963,6 +1054,12 @@ class FlameCues:
         self._by_path = {}       # fseq path -> _render's tuple, or an error
         self._stop = threading.Event()
         self._thread = None
+        # The CUES FAULT said at show load (soak 2026-10-21): renders of
+        # the running show older than its xlights_networks.xml, which
+        # __call__ refuses. "" when none. on_render_fault(text) is told
+        # each new one (web.serve raises the rack screen's alert with it).
+        self.render_fault = ""
+        self.on_render_fault = None
 
     def _note(self, text, **f):
         if self._journal is not None:
@@ -1074,10 +1171,74 @@ class FlameCues:
     def _refresher(self):
         while not self._stop.is_set():
             try:
+                self._check_renders_once()
+            except Exception:
+                pass
+            try:
                 self._refresh_once()
             except Exception:
                 pass
             self._stop.wait(0.25)
+
+    def start(self):
+        """Background mode: the reading thread, started now, so the
+        running show's renders are read into memory when Run is pressed,
+        long before its first flame frame (soak 2026-10-21: it used to
+        start on the first live frame, so every read landed at the top of
+        a show). Does nothing without background mode, or once closed."""
+        if self._bg and self._thread is None and not self._stop.is_set():
+            self._thread = threading.Thread(
+                target=self._refresher, daemon=True,
+                name="ltcplay-flame-cues-read")
+            self._thread.start()
+        return self
+
+    def _check_renders_once(self):
+        """The running show's renders against its layout, by file date
+        only (renders_older_than_layout). A new CUES FAULT is journaled
+        and handed to on_render_fault once; none running, none."""
+        s = getattr(self.control, "session", None)
+        text = ""
+        if s is not None and getattr(s, "running", False):
+            tl = getattr(s, "tl", None)
+            folder = getattr(tl, "show_dir", None)
+            nm = getattr(s, "nm_path", None) or (
+                os.path.join(folder, "xlights_networks.xml") if folder
+                else None)
+            paths = [getattr(c, "path", None)
+                     for c in (getattr(tl, "cues", None) or ())]
+            show = os.path.basename(str(getattr(s, "timeline_path", "")
+                                        or ""))
+            if nm:
+                text = render_age_sentence(
+                    nm, renders_older_than_layout(nm, paths), show)
+        if text and text != self.render_fault:
+            self._note(text, fault=True, action="flames",
+                       outcome="cues_fault_renders")
+            tell = self.on_render_fault
+            if tell is not None:
+                try:
+                    tell(text)
+                except Exception:
+                    pass
+        self.render_fault = text
+        return text
+
+    def render_fault_now(self):
+        """The show-load CUES FAULT for the screens. In background mode it
+        is worked out on the reading thread (started here if need be),
+        never on the caller's thread or the flame link's sender; without
+        it (the selftest), here."""
+        if self._bg:
+            self.start()
+        else:
+            self._check_renders_once()
+        return self.render_fault
+
+    def faults_now(self):
+        """What the rack screen and the Stream Deck show as CUES FAULT:
+        the refusal now in force, else the show-load one."""
+        return self.fault or self.render_fault_now()
 
     def close(self):
         self._stop.set()
@@ -1115,11 +1276,7 @@ class FlameCues:
                                          f"{last[2]:02d}:{last[3]:02d}"):
             return self._zero("")
         if self._bg:
-            if self._thread is None and not self._stop.is_set():
-                self._thread = threading.Thread(
-                    target=self._refresher, daemon=True,
-                    name="ltcplay-flame-cues-read")
-                self._thread.start()
+            self.start()
             lay = self._layout
             if lay is None or lay[0] is not s:
                 return self._zero("the flame controller's channels are "
@@ -1702,6 +1859,10 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
         show.flame_link = built_link
         if threaded:
             built_link.start()
+            # The flame cues' reading thread from now on, not from the
+            # first flame frame of a show (soak 2026-10-21).
+            if isinstance(getattr(built_link, "cues", None), FlameCues):
+                built_link.cues.start()
         else:
             built_link.open()
     else:
