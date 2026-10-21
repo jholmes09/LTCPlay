@@ -288,6 +288,15 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 .step .m{font:400 11px/1.2 var(--sans);color:var(--muted)}
 .step .m .n{color:var(--champ)}
 .step button.note{min-height:30px;font-size:12px;padding:2px 8px}
+/* The engine checks (soak 2026-10-21): renders against the layout, the
+   PC's clock, the show folder served. A bad one is red and stays red. */
+.mo-checks{display:flex;flex-direction:column;gap:4px}
+.mo-checks .ck{border:1px solid var(--hair);border-left:6px solid var(--muted);border-radius:6px;
+  padding:4px 8px;font:400 12px/1.3 var(--sans);overflow-wrap:anywhere}
+.mo-checks .ck b{font-weight:700;color:var(--champ)}
+.mo-checks .ck.ok{border-left-color:var(--green)}
+.mo-checks .ck.warn{border-left-color:var(--amber)}
+.mo-checks .ck.bad{border-left-color:var(--red);border-color:var(--red);background:var(--red-deep);color:var(--champ)}
 .mo-foot{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
 .mo-foot button{min-height:34px;font-size:12px;padding:2px 10px}
 .mo-foot .tally{font:400 11px/1.2 var(--sans);color:var(--muted);flex:1 1 100%}
@@ -502,6 +511,10 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
         <h2>Laser calibration tests</h2>
         <div class="mo-lasers" id="mo-lasers"></div>
         <div class="toast" id="mo-lmsg"></div>
+      </section>
+      <section class="card">
+        <h2>Engine checks</h2>
+        <div class="mo-checks" id="mo-engine"><div class="dim">Not checked yet.</div></div>
       </section>
       <section class="card" id="mo-check">
         <h2>Checklists</h2>
@@ -776,14 +789,35 @@ function staleText(nowMs, lastOkMs){
     " s ago. The show carries on by itself. Start now, Resume, Reset " +
     "and the programming controls are off until it is back.";
 }
-// What the countdown reads now: the engine's own figure (ST.countdown),
-// aged by how long ago it was heard while it is running, and not at all
-// while a show is held (its clock is frozen, so is the time left). null
-// shows nothing: a show of unknown length is never guessed.
-function countdownNow(c, nowMs, lastOkMs){
-  if(!c || typeof c.s !== "number") return null;
-  const aged = c.running && lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;
-  return {kind:c.kind, label:c.label, s:Math.max(0, c.s - aged)};
+// What the countdown reads: the engine's own figure (ST.countdown),
+// counted down on the page while it is running, and not at all while a
+// show is held (its clock is frozen, so is the time left). null shows
+// nothing: a show of unknown length is never guessed.
+//
+// The countdown the screen draws (soak 2026-10-21: the seconds digit
+// flickered between two values before it counted down). Each poll used to
+// restart the count from the engine's figure, aged from when it arrived,
+// so a figure that was rounded down or a reply that came a little late put
+// the digit back up by one. Now the page keeps ONE moment it counts to, on
+// its own monotonic clock (performance.now, never the PC's wall clock), set
+// from each figure as it arrives: a new figure may bring that moment
+// earlier, never later, unless it moved later by more than CD_SLACK_MS (a
+// show delayed, the next show changed). A held show's figure is frozen.
+const CD_SLACK_MS = 1500;
+function countdownAnchor(prev, c, monoMs){
+  if(!c || typeof c.s !== "number" || !isFinite(c.s)) return null;
+  const s = Math.max(0, c.s);
+  if(!c.running) return {kind:c.kind, label:c.label, running:false, s:s, at:null};
+  let at = monoMs + s * 1000;
+  if(prev && prev.running && prev.kind === c.kind && prev.label === c.label &&
+     at <= prev.at + CD_SLACK_MS)
+    at = Math.min(prev.at, at);
+  return {kind:c.kind, label:c.label, running:true, s:s, at:at};
+}
+function countdownRead(a, monoMs){
+  if(!a) return null;
+  const s = a.running ? Math.max(0, (a.at - monoMs) / 1000) : a.s;
+  return {kind:a.kind, label:a.label, s:s};
 }
 // Morning and Shutdown: what a machine tile reads, from the engine's view
 // of the page (MO), flamesafe's lamps (ST.flames) and the purge state.
@@ -846,6 +880,14 @@ function abortPlan(st){
   else out.push({ok:true, text:"No show is live, so nothing else changes. The answer below says exactly what was done."});
   return out;
 }
+// One engine check's look on the Morning page: its class and the word
+// before its sentence. An unknown level is never shown as fine.
+function checkLook(level){
+  if(level === "ok") return {cls:"ok", word:"OK"};
+  if(level === "bad") return {cls:"bad", word:"FAULT"};
+  if(level === "warn") return {cls:"warn", word:"Check"};
+  return {cls:"", word:"Not known"};
+}
 // LOGIC END
 </script>
 <script>
@@ -854,6 +896,10 @@ const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? "" : t)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 let ME = null, ST = null, LAST_OK = null, FRESH_S = 2.0, POLLING = false;
+// The countdown's moment to count to (countdownAnchor), on the page's own
+// monotonic clock.
+let CD = null;
+const monoNow = () => performance.now();
 // Which window a press came from, for the audit log (audit.py): a new one
 // each time the page loads. Not a person, not a secret.
 const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
@@ -934,6 +980,7 @@ function startPolling(){
     try{
       ST = await getJSON("/api/remote/status", 1500);
       LAST_OK = Date.now();
+      CD = countdownAnchor(CD, ST && ST.countdown, monoNow());
       render();
     }catch(e){}
     if(POLLING) setTimeout(loop, 250);
@@ -942,7 +989,7 @@ function startPolling(){
 }
 
 function renderCountdown(){
-  const c = countdownNow(ST && ST.countdown, Date.now(), LAST_OK);
+  const c = countdownRead(CD, monoNow());
   const left = c && c.kind === "left";
   $("st-leftlabel").textContent = left ? c.label : "";
   $("st-left").textContent = left ? clockText(c.s) : "";
@@ -1039,14 +1086,14 @@ function render(){
   const idle = flKnown && !anyLive && (!showLive || !!sch.aborted);
   $("abortbar").classList.toggle("idle", idle);
   $("abort-sub").textContent = idle ? "Nothing to abort right now" : "";
-  setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
+  setWarn("st-trouble", [s.disk && s.disk.text ? s.disk.text : null, s.laser_fault ? s.laser_fault + ". Hold and Abort cannot blank the lasers: set BEYOND's OSC address, or blank them at BEYOND." : null, sch.trouble, s.show_folder && s.show_folder.problem ? s.show_folder.problem : null, sch.conductor === false && sch.attached ? "No show conductor is attached in this engine: Hold, Resume and Abort are journaled by the scheduler only." : null].filter(Boolean).join(" "));
 
   let fmsg = "";
   if(!fl.connected) fmsg = fl.why || "flamesafe is not connected.";
   else if(fl.stale) fmsg = "flamesafe has not reported for " + (fl.age_ms == null ? "ever" : (fl.age_ms/1000).toFixed(1) + " s") + ". These lamps are not live.";
   else if(fl.fault) fmsg = "flamesafe fault: " + fl.fault;
   if(!s.disarm_connected) fmsg += (fmsg ? " " : "") + "No flame link is connected in this engine, so Disarm cannot reach flamesafe from here.";
-  if(fl.cues_fault) fmsg += (fmsg ? " " : "") + "Flame cues are zero, a fault: " + fl.cues_fault + ".";
+  if(fl.cues_fault) fmsg += (fmsg ? " " : "") + (fl.cues_fault.indexOf("CUES FAULT") === 0 ? fl.cues_fault : "Flame cues are zero, a fault: " + fl.cues_fault + ".");
   // The Stream Deck, in words (Jeff, 2026-10-17: "it never connected"):
   // what this engine looked for, what it found, what to do.
   const dk = s.deck || {};
@@ -1376,7 +1423,8 @@ function renderSetup(su, pr){
 async function loadFolders(){
   try{
     const j = await getJSON("/api/remote/setup", 3000);
-    $("fo-now").innerHTML = `Now: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).`;
+    $("fo-now").innerHTML = `This engine serves: <b>${esc(j.show_folder)}</b> (${j.show_files} show file(s)${j.show_folder_exists ? "" : "; the folder does not exist"}).` +
+      (j.show_folder_problem ? `<div class="bad" style="color:var(--red);font-weight:700;margin-top:4px">${esc(j.show_folder_problem)}</div>` : "");
     if(!$("fo-path").value) $("fo-path").placeholder = j.show_folder || "";
     $("info-settings").textContent = j.settings_folder || "";
     $("info-exit").hidden = !(ME && ME.local && j.kiosk_closable);
@@ -1656,6 +1704,17 @@ function renderMorning(){
       l.configured ? "Off. Click to put the grid up." : "Not set up yet (placeholder in ltcplay_morning.json)";
   });
   renderChecklists(mo.checklists || {});
+  renderEngineChecks(mo.checks || []);
+}
+function renderEngineChecks(list){
+  const box = $("mo-engine");
+  const key = JSON.stringify(list);
+  if(box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.innerHTML = list.length ? list.map(c => {
+    const lk = checkLook(c.level);
+    return `<div class="ck ${lk.cls}"><b>${esc(c.title)}: ${lk.word}.</b> ${esc(c.text)}</div>`;
+  }).join("") : `<div class="dim">No engine checks in this engine.</div>`;
 }
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];

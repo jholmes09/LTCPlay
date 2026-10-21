@@ -826,8 +826,158 @@ MUTATIONS = [
 
  ("countdown: the page ages a held show's time left",
   "ltcplay/web/remote.html",
-  "  const aged = c.running && lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;",
-  "  const aged = lastOkMs != null ? (nowMs - lastOkMs) / 1000 : 0;"),
+  "  if(!c.running) return {kind:c.kind, label:c.label, running:false, s:s, at:null};",
+  "  if(false) return {kind:c.kind, label:c.label, running:false, s:s, at:null};"),
+
+ # -- soak 2026-10-21 --------------------------------------------------
+ ("soak: the countdown restarts from every poll and its digit flickers",
+  "ltcplay/web/remote.html",
+  "    at = Math.min(prev.at, at);",
+  "    at = at;"),
+
+ ("soak: the countdown is sent in whole seconds again", "ltcplay/remote.py",
+  "        for key in (\"in_s_exact\", \"in_s\"):",
+  "        for key in (\"in_s\",):"),
+
+ ("soak: the scheduler's next show is whole seconds only",
+  "ltcplay/schedule.py",
+  "                  \"in_s_exact\": (round((nxt.start - now).total_seconds(), 3)",
+  "                  \"in_s_exact\": (int((nxt.start - now) // ONE_SECOND)"),
+
+ ("soak: a render older than the layout is not found", "ltcplay/fire_ice.py",
+  "        if made < laid:\n            out.append(p)",
+  "        if made > laid:\n            out.append(p)"),
+
+ ("soak: a stale render's CUES FAULT is never raised as an alert",
+  "ltcplay/fire_ice.py",
+  "            tell = self.on_render_fault",
+  "            tell = None"),
+
+ ("soak: the screens see only a refusal, never the show-load CUES FAULT",
+  "ltcplay/fire_ice.py",
+  "        return self.fault or self.render_fault_now()",
+  "        return self.fault"),
+
+ ("soak: the reading thread never checks the renders' age",
+  "ltcplay/fire_ice.py",
+  "            try:\n                self._check_renders_once()\n"
+  "            except Exception:\n                pass\n",
+  ""),
+
+ ("soak: the Stream Deck's CUES FAULT is only the refusal in force",
+  "ltcplay/web.py",
+  "                (now() if now is not None else cues.fault) or \"\")}",
+  "                cues.fault or \"\")}"),
+
+ ("soak: the rack screen's flames alert is never raised",
+  "ltcplay/remote.py",
+  "            self.alerts.raise_(\"flames\", text)",
+  "            pass"),
+
+ ("soak: ltc serve never hands the flame cues the alert",
+  "ltcplay/web.py",
+  "            httpd.remote.flame_cues.on_render_fault = \\\n"
+  "                httpd.remote.render_fault_alert",
+  "            pass"),
+
+ ("soak: the Morning checks call stale renders fine",
+  "ltcplay/remote.py",
+  "                        \"level\": \"bad\" if faults else \"ok\",",
+  "                        \"level\": \"ok\","),
+
+ ("soak: the Morning page gets no engine checks", "ltcplay/remote.py",
+  "            v[\"checks\"] = self.engine_checks()\n",
+  ""),
+
+ ("soak: an in-memory render is copied whole under the lock again",
+  "ltcplay/fseq.py",
+  "            fileobj.seek(0, 2)\n            self._file_size = fileobj.tell()",
+  "            self._file_size = len(fileobj.getbuffer())"),
+
+ ("soak: the flame cues' reading starts only at the first flame frame",
+  "ltcplay/fire_ice.py",
+  "            if isinstance(getattr(built_link, \"cues\", None), FlameCues):\n"
+  "                built_link.cues.start()",
+  "            pass"),
+
+ ("soak: FlameCues.start() starts nothing until a frame asks",
+  "ltcplay/fire_ice.py",
+  "        if self._bg and self._thread is None and not self._stop.is_set():\n"
+  "            self._thread = threading.Thread(\n"
+  "                target=self._refresher, daemon=True,",
+  "        if self._bg and self._thread is None and not self._stop.is_set() \\\n"
+  "                and getattr(self, '_layout', None) is not None:\n"
+  "            self._thread = threading.Thread(\n"
+  "                target=self._refresher, daemon=True,"),
+
+ ("soak: another show folder in showpc.json goes unsaid",
+  "ltcplay/remote.py",
+  "    if served and _norm_folder(served) == _norm_folder(wanted):",
+  "    if True:"),
+
+ ("soak: the status does not carry the show folder problem",
+  "ltcplay/remote.py",
+  "                              \"problem\": self.show_folder_problem()}",
+  "                              \"problem\": \"\"}"),
+
+ ("soak: the show folder problem is journaled on every poll",
+  "ltcplay/remote.py",
+  "        if text and text != getattr(self, \"_folder_said\", \"\"):",
+  "        if text:"),
+
+ ("soak: the supervisor never sees showpc.json change",
+  "packaging/windows/supervisor.py",
+  "        if st == self._stamp:\n            return None",
+  "        if True:\n            return None"),
+
+ ("soak: a new show folder is no reason to restart the engine",
+  "packaging/windows/supervisor.py",
+  "    if not new.get(\"show_folder\") or a == b:",
+  "    if True:"),
+
+ ("soak: the supervisor never restarts the engine for a new show folder",
+  "packaging/windows/supervisor.py",
+  "                why = progs[\"engine\"].stop()\n"
+  "                log(f\"{folder_change}: \"",
+  "                why = \"\"\n"
+  "                log(f\"{folder_change}: \""),
+
+ ("soak: a stopped time service with the clock off is not loud",
+  "ltcplay/remote.py",
+  "    if service == \"stopped\":\n        if off:",
+  "    if service == \"stopped\":\n        if False:"),
+
+ ("soak: the clock is loud only past 2 s", "ltcplay/remote.py",
+  "CLOCK_LOUD_S = 0.5", "CLOCK_LOUD_S = 2.0"),
+
+ ("soak: the Morning checks read no time server offset",
+  "ltcplay/remote.py",
+  "            level, text = judge_pc_clock(cc.get(\"offset_s\"),",
+  "            level, text = judge_pc_clock(cc.get(\"offset\"),"),
+
+ ("soak: a stopped time service reads as running", "ltcplay/remote.py",
+  "    return \"running\" if m.group(1) in (\"2\", \"4\") else \"stopped\"",
+  "    return \"running\""),
+
+ ("soak: the bench layout has one universe whatever is asked",
+  "packaging/windows/soak.py",
+  "        for u in range(1, universes + 1))",
+  "        for u in range(1, 2))"),
+
+ ("soak: the bench render ignores its planned size",
+  "packaging/windows/soak.py",
+  "                      channel_count=plan[\"channels\"],",
+  "                      channel_count=1022,"),
+
+ ("soak: the pixel limits stay at 40 frames a second",
+  "packaging/windows/soak.py",
+  "    scale = period / PIXEL_PERIOD_MS",
+  "    scale = 1.0"),
+
+ ("soak: the multi-day soak takes a render size it never plays",
+  "packaging/windows/soak.py",
+  "    if render and days:\n        return (\"--universes and --fps",
+  "    if False:\n        return (\"--universes and --fps"),
 
  ("beyond blanking: the default is timecode again", "ltcplay/fire_ice.py",
   "BEYOND_BLANK_DEFAULT = \"osc\"",

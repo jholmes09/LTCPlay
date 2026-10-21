@@ -50,8 +50,18 @@ class FSEQ:
         flame cues use it. None (the player) opens `path` as always."""
         self.path = path
         self._f = fileobj if fileobj is not None else open(path, "rb")
-        self._file_size = (len(fileobj.getbuffer()) if fileobj is not None
-                           else os.path.getsize(path))
+        if fileobj is not None:
+            # Its size by seeking, NEVER fileobj.getbuffer(): on a BytesIO
+            # made from a bytes object that copies the whole file while
+            # holding the interpreter lock, and for a big render that is
+            # half a second in which no other thread of the engine runs,
+            # the flame link's sender included (soak 2026-10-21: a flame
+            # link stall at the top of a show).
+            fileobj.seek(0, 2)
+            self._file_size = fileobj.tell()
+            fileobj.seek(0)
+        else:
+            self._file_size = os.path.getsize(path)
         head = self._f.read(32)
         if len(head) < 32:
             raise FSEQError(f"{path}: shorter than a header")

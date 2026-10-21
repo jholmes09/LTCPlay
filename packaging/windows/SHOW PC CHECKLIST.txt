@@ -47,7 +47,15 @@ LTC PLAYER'S OWN FILES
 
 [ ] Put the show files in Documents\LTC Shows (made for you at first
     start). To use another folder, open Start menu, "Settings and logs",
-    open showpc.json in Notepad and change "show_folder".
+    open showpc.json in Notepad and change "show_folder". LTC Player
+    restarts the engine with it once no show is running. The Programming
+    screen's "Show folder" card says which folder the engine serves; the
+    rack screen says it in red while showpc.json names another.
+[ ] After any change to xlights_networks.xml, render the show again. A
+    render older than xlights_networks.xml gets NO flame cues: the rack
+    screen, the Stream Deck and the Morning page say CUES FAULT and name
+    the files. If the change moved no channel, saving the renders again
+    (so they are newer) also clears it.
 [ ] Put the confirmed flamesafe config in that same "Settings and logs"
     folder, named flamesafe.json. Until it is there, flamesafe and the
     Stream Deck program do not start (the engine and show page still do).
@@ -69,6 +77,37 @@ LTC PLAYER'S OWN FILES
     to hour 23, running. In the BEYOND show, Andy leaves hour 23 EMPTY (no
     laser cues there), and BEYOND's "keep running when timecode stops" is
     OFF.
+
+
+SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
+
+[ ] Every program on this PC that receives Art-Net needs its own address.
+    MadMapper counts twice: its timeline sync AND its DMX input are each a
+    receiver. Two receivers on one address starve one of them (in the
+    soak, BEYOND never chased timecode). What worked: two Windows
+    loopback adapters, "ShowNet MadMapper" at 10.250.1.1 and "ShowNet
+    BEYOND" at 10.250.2.1 (mask 255.255.255.0), and in the show file
+    "clock": "artnet": "nodes": "MadMapper": "10.250.1.1" and "BEYOND":
+    "10.250.2.1". To add one: Device Manager, Action, Add legacy
+    hardware, Network adapters, Microsoft, "Microsoft KM-TEST Loopback
+    Adapter". Then set its address and rename it in Network Connections.
+[ ] MadMapper: after opening the show project, check its Sync Source is
+    Art-Net. It can come back empty after a reopen. Set it to Art-Net and
+    save the project.
+[ ] The audio interface runs at 48 kHz. Set it in its own control app
+    (PreSonus Universal Control). At any other rate the engine refuses
+    Run with "will not play N output(s) at 48000 Hz".
+[ ] Windows Time service: running, Startup type Automatic. Windows+R,
+    services.msc, Windows Time. With it stopped the clock was 2.7 s
+    behind, and shows start by this clock. The Morning page's Engine
+    checks says it loudly when the clock is off by more than 0.5 s and
+    the service is stopped.
+[ ] Pagefile: System managed (Windows+R, sysdm.cpl, Advanced,
+    Performance Settings, Advanced, Virtual memory, Change, tick
+    "Automatically manage"), or at least 16 GB. The PC has 15.8 GB; the
+    engine keeps the show audio in memory (1.0 to 1.5 GB) and MadMapper
+    takes about 3.4 GB. With a 2 GB pagefile about 84% of what Windows
+    can hand out was in use.
 
 
 CHANGING THE FLAME GROUPS (at tech)

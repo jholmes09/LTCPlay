@@ -32,6 +32,8 @@ keeps "nothing attached, expected" separate from real faults.
     ltcplay-soak.exe                 asks how long (1, 8 or 24 hours; Enter = 8)
     ltcplay-soak.exe --hours 8
     ltcplay-soak.exe --audio-device "Focusrite USB ASIO"
+    ltcplay-soak.exe --hours 1 --universes 170 --fps 40   (a render the
+        size of a big show: 170 Art-Net universes plus the flame universe)
     ltcplay-soak.exe --minutes 6 --no-wait --fake-audio   (the CI run: a
         runner has no audio interface, so the engine's show audio uses the
         test suite's stand-in device and the report says so in capitals)
@@ -217,6 +219,78 @@ NETWORKS_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </Controller>
 </Networks>
 """
+
+# The bench render's size and rate (soak 2026-10-21: the soak could not be
+# made to play a render the size of the show's). --universes N gives the
+# Pixels controller N Art-Net universes of 510 channels (the Flames
+# controller's 512 stay last); --fps F renders at F frames a second, and
+# the pixel timing limits follow it (pixel_limits). Left alone: 1 universe
+# at 40, exactly as before.
+BENCH_FPS = (20, 25, 40, 50)      # whole milliseconds a frame only
+MAX_UNIVERSES = 256
+PIXEL_UNIVERSE = 510
+FLAME_CHANNELS = 512
+BLOCK_BYTES = 4 * 1024 * 1024     # a compressed block's frames, at most
+
+
+def bench_render_plan(universes=1, fps=40):
+    """{"universes", "fps", "step_ms", "channels", "block_frames"} for
+    the bench render, or ValueError with a sentence."""
+    if isinstance(universes, bool) or not isinstance(universes, int) or \
+            not 1 <= universes <= MAX_UNIVERSES:
+        raise ValueError(f"--universes takes a whole number from 1 to "
+                         f"{MAX_UNIVERSES}, not {universes!r}")
+    if isinstance(fps, bool) or fps not in BENCH_FPS:
+        raise ValueError(f"--fps takes one of "
+                         f"{', '.join(str(f) for f in BENCH_FPS)} (a whole "
+                         f"number of milliseconds a frame), not {fps!r}")
+    channels = universes * PIXEL_UNIVERSE + FLAME_CHANNELS
+    return {"universes": universes, "fps": fps, "step_ms": 1000 // fps,
+            "channels": channels,
+            "block_frames": max(10, min(400, BLOCK_BYTES // channels))}
+
+
+def bench_networks(universes=1):
+    """xlights_networks.xml for bench_render_plan's render: the Pixels
+    controller with `universes` Art-Net universes (1 up), then the
+    Inactive Flames controller. One universe is NETWORKS_XML exactly."""
+    rows = "".join(
+        f'    <network NetworkType="ArtNET" ComPort="127.0.0.1" '
+        f'BaudRate="{u}" MaxChannels="{PIXEL_UNIVERSE}" Enabled="Yes" />\n'
+        for u in range(1, universes + 1))
+    head, tail = NETWORKS_XML.split(
+        '    <network NetworkType="ArtNET" ComPort="127.0.0.1" BaudRate="1" '
+        'MaxChannels="510" Enabled="Yes" />\n')
+    return head + rows + tail
+
+
+def render_refusal(render, days):
+    """The sentence refusing --universes and --fps as given (`render`:
+    {option: value}), or "". `days`: the unattended multi-day soak was
+    asked for, which plays the standard bench render only."""
+    try:
+        bench_render_plan(render.get("--universes", 1),
+                          render.get("--fps", 40))
+    except ValueError as e:
+        return f"The bench render cannot be made: {e}."
+    if render and days:
+        return ("--universes and --fps do not apply to --days (the "
+                "unattended soak plays the standard bench render). A soak "
+                "of a render this size over days runs through the real "
+                "scheduler with a real show folder: see "
+                "tools/stress/README.md.")
+    return ""
+
+
+def pixel_limits(fps=40):
+    """(period, mean tolerance, deviation, gap) in ms for the pixel frames
+    at `fps`: at 40, PIXEL_PERIOD_MS, PIXEL_MEAN_TOL_MS, PIXEL_DEV_MS and
+    PIXEL_GAP_MS exactly; at another rate the deviation and the gap scale
+    with the frame (the gap is always four frames)."""
+    period = 1000.0 / fps
+    scale = period / PIXEL_PERIOD_MS
+    return (period, PIXEL_MEAN_TOL_MS, PIXEL_DEV_MS * scale,
+            PIXEL_GAP_MS * scale)
 
 
 # Every console line is written by one thread of its own (show PC,
@@ -532,6 +606,8 @@ class Soak:
         self.measured = ""
         self.show_s = SHOW_S
         self.every_min = SHOW_EVERY_MIN
+        self.universes = 1          # bench_render_plan: the render's size
+        self.fps = 40               # and its frame rate
         # The bench show track: 2 channels (stereo) unless told otherwise;
         # 16 with audio_map and ltc_output exercises the show's routing.
         self.audio_channels = 2
@@ -610,16 +686,23 @@ class Soak:
         import test_show_fixtures as fx
         self.show_dir = os.path.join(self.dir, "show")
         os.makedirs(self.show_dir, exist_ok=True)
+        plan = bench_render_plan(self.universes, self.fps)
+        xml = bench_networks(plan["universes"])
         with open(os.path.join(self.show_dir, "xlights_networks.xml"), "w",
                   encoding="utf-8") as fh:
-            fh.write(NETWORKS_XML if self.mode == "fallback" else
-                     NETWORKS_XML.replace('IP="127.0.0.1"',
-                                          f'IP="{SOAK_IP}"').replace(
+            fh.write(xml if self.mode == "fallback" else
+                     xml.replace('IP="127.0.0.1"',
+                                 f'IP="{SOAK_IP}"').replace(
                          'ComPort="127.0.0.1"', f'ComPort="{SOAK_IP}"'))
         fx.write_fseq(os.path.join(self.show_dir, "bench.fseq"),
-                      frame_count=int(self.show_s * 40), channel_count=1022,
-                      step_ms=25, compression="zlib", block_frames=400,
+                      frame_count=int(self.show_s * plan["fps"]),
+                      channel_count=plan["channels"],
+                      step_ms=plan["step_ms"], compression="zlib",
+                      block_frames=plan["block_frames"],
                       fill=lambda i: (i * 3) & 0xFF, media_file="bench.wav")
+        note(f"bench render: {plan['universes']} pixel universe(s) and the "
+             f"flame universe, {plan['channels']} channels, "
+             f"{plan['fps']} frames a second")
         audio = write_bench_audio(self.show_dir, self.show_s,
                                   self.audio_channels, self.audio_map,
                                   self.ltc_output)
@@ -833,8 +916,8 @@ class Soak:
         key = (addr[1] if addr else 0, uni)
         st = self.pixel_streams.get(key)
         if st is None:
-            st = self.pixel_streams[key] = Intervals(
-                PIXEL_PERIOD_MS, PIXEL_DEV_MS, PIXEL_GAP_MS)
+            per, _tol, dev, gap = pixel_limits(self.fps)
+            st = self.pixel_streams[key] = Intervals(per, dev, gap)
         if t < self.pixel_quiet_until:
             st.reset_gap()
             return
@@ -1377,7 +1460,8 @@ class Soak:
     def pixels(self):
         """The busiest stream: the engine's own frame loop."""
         if not self.pixel_streams:
-            return Intervals(PIXEL_PERIOD_MS, PIXEL_DEV_MS, PIXEL_GAP_MS)
+            per, _tol, dev, gap = pixel_limits(self.fps)
+            return Intervals(per, dev, gap)
         return max(self.pixel_streams.values(), key=lambda x: x.events)
 
     def on_sacn(self, b, t, addr=None):
@@ -2304,22 +2388,23 @@ class Soak:
                         "the engine)", f"only {px.events} frames arrived"))
         else:
             rate = px.over_dev / px.n
-            ok = (abs(px.mean() - PIXEL_PERIOD_MS) <= PIXEL_MEAN_TOL_MS and
+            per, tol, dev, gap = pixel_limits(self.fps)
+            ok = (abs(px.mean() - per) <= tol and
                   rate < PIXEL_DEV_RATE and px.over_gap == 0)
             out.append(("PASS" if ok else "FAIL",
                         "Pixel frames (Art-Net, timed from outside the "
                         "engine)",
                         f"{px.events} frames, mean interval {px.mean():.2f} ms "
-                        f"(target {PIXEL_PERIOD_MS:g} +/- {PIXEL_MEAN_TOL_MS:g}"
+                        f"(target {per:g} +/- {tol:g}"
                         f"); {px.over_dev} frames ({rate * 100:.3f}%) off by "
-                        f"{PIXEL_DEV_MS:g} ms or more (limit "
+                        f"{dev:g} ms or more (limit "
                         f"{PIXEL_DEV_RATE * 100:g}%); worst {px.worst_dev:.1f} "
                         f"ms off at {now_text(px.worst_dev_at)}; longest gap "
                         f"{px.longest:.1f} ms at {now_text(px.longest_at)}"
                         + (f", {px.longest_loop_s:.1f} s into the "
                            f"show loop" if px.longest_loop_s
                            is not None else "") +
-                        f" ({px.over_gap} over {PIXEL_GAP_MS:g} ms, limit 0). "
+                        f" ({px.over_gap} over {gap:g} ms, limit 0). "
                         f"The first 5 s of each show are not timed."))
         e0, e1 = self.engine_first or {}, self.engine_last or {}
         if e1:
@@ -3043,6 +3128,8 @@ class ABRun:
                          block=(i, len(self.PLAN)))
                 s.show_s = getattr(self, "show_s", SHOW_S)
                 s.every_min = getattr(self, "every_min", SHOW_EVERY_MIN)
+                s.universes = getattr(self, "universes", 1)
+                s.fps = getattr(self, "fps", 40)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all" if resolved == "all programs" else \
                     "fallback"
@@ -3246,6 +3333,8 @@ class Blocks:
                          block=(i, n))
                 s.show_s = getattr(self, "show_s", SHOW_S)
                 s.every_min = getattr(self, "every_min", SHOW_EVERY_MIN)
+                s.universes = getattr(self, "universes", 1)
+                s.fps = getattr(self, "fps", 40)
                 s.fake_audio = self.fake_audio
                 s.want_mode = "all"
                 s.priority = getattr(self, "priority", True)
@@ -3474,6 +3563,7 @@ def main(argv=None):
     mode = "auto"
     show_s = SHOW_S
     every_min = SHOW_EVERY_MIN
+    render = {}
     priority = True
     contain = False
     ab = None
@@ -3500,6 +3590,13 @@ def main(argv=None):
                 print(f"{a} takes a whole number")
                 return 2
             track[a] = v
+            i += 1
+        elif a in ("--universes", "--fps"):
+            try:
+                render[a] = int(argv[i + 1])
+            except (IndexError, ValueError):
+                print(f"{a} takes a whole number")
+                return 2
             i += 1
         elif a == "--audio-map":
             try:
@@ -3579,7 +3676,9 @@ def main(argv=None):
             print(f"Unknown option {a}. Options: --hours H, --minutes M, "
                   f"--audio-device NAME, --no-wait, --fake-audio, "
                   f"--audio-channels N, --audio-map 1,2,..., "
-                  f"--ltc-output N, "
+                  f"--ltc-output N, --universes N (1 to {MAX_UNIVERSES}, "
+                  f"default 1), --fps F ("
+                  f"{', '.join(str(f) for f in BENCH_FPS)}, default 40), "
                   f"--mode auto|all|fallback, --priority on|off, "
                   f"--ab [MINUTES], --ab-contain [MINUTES], "
                   f"--mm-settings [MINUTES], --forever, --days N, "
@@ -3601,6 +3700,12 @@ def main(argv=None):
                   "ltc_output in unattended.json (Start 48h soak.ps1 "
                   "-AudioChannels, -AudioMap, -LtcOutput).")
             return 2
+    universes = render.get("--universes", 1)
+    fps = render.get("--fps", 40)
+    why = render_refusal(render, days is not None)
+    if why:
+        print(why)
+        return 2
     if days is not None:
         wait = False
         seconds = 0.0
@@ -3655,6 +3760,7 @@ def main(argv=None):
         if ab is not None:
             soak = ab_kind(ab, device, fake, mode)
             soak.show_s, soak.every_min = show_s, every_min
+            soak.universes, soak.fps = universes, fps
             ok = soak.run()
             raise _Done()
         resolved, _found, why = resolve_mode(mode)
@@ -3662,11 +3768,13 @@ def main(argv=None):
             note(why)
             soak = Blocks(seconds, device, fake)
             soak.show_s, soak.every_min = show_s, every_min
+            soak.universes, soak.fps = universes, fps
             soak.priority = priority
             soak.contain = contain
         else:
             soak = Soak(seconds, device)
             soak.show_s, soak.every_min = show_s, every_min
+            soak.universes, soak.fps = universes, fps
             soak.fake_audio = fake
             soak.audio_channels = track.get("--audio-channels", 2)
             soak.audio_map = track.get("--audio-map")

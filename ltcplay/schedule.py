@@ -2443,9 +2443,16 @@ def machine_view(m, now=None):
         "runs_late": bool(late_warnings(m)),
         "warnings": late_warnings(m),
         "last_end": m.hm(m.night_end) if m.night_end else None,
+        # in_s is whole seconds, rounded down, for the journal and the
+        # deck; in_s_exact is the same to the millisecond, for the rack
+        # screen's countdown, which counts down smoothly from it (soak
+        # 2026-10-21: aging whole seconds made its last digit flicker).
         "next": ({"show": nxt.n, "start": clock(_local(m, nxt.start)),
                   "in_s": (int((nxt.start - now) // ONE_SECOND)
-                           if now is not None else None)} if nxt else None),
+                           if now is not None else None),
+                  "in_s_exact": (round((nxt.start - now).total_seconds(), 3)
+                                 if now is not None else None)}
+                 if nxt else None),
         "guard_left_s": (int(-(-_guard_left(m, now) // 1))
                          if now is not None else None),
         "actions": actions_for(m),
