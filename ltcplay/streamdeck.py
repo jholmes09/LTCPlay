@@ -1286,6 +1286,10 @@ class ScreenKeys:
         # carried to the engine on every deck-input read for the rack
         # screen's Deck chip (2026-10-21). Display only.
         self.report = report
+        # () -> key image writes the deck did not take in the last minute
+        # (UsbMeter.failed_count): usb_fail, for the same chip (review of
+        # PR #83, P2-2). Display only.
+        self.report_failed = None
         self._lock = threading.Lock()
         self._last = None          # (answer, clock) of the last good fetch
         self._seen_disarm = None   # highest disarm id already handed out
@@ -1321,6 +1325,13 @@ class ScreenKeys:
             ms = None
         if isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0:
             path += f"?usb_ms={ms}"
+            try:
+                n = self.report_failed() \
+                    if self.report_failed is not None else 0
+            except Exception:                    # noqa: BLE001
+                n = 0
+            if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+                path += f"&usb_fail={n}"
         return path
 
     def poll_once(self):
@@ -1435,7 +1446,7 @@ class PurgeFire:
         self._wall = wall
         self._sleep = sleep
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._press = None        # the newest press (_FirePress)
         self._thread = None
         self.fire_id = None
         self.firing = False
@@ -1448,31 +1459,56 @@ class PurgeFire:
         self.alive = None
 
     def start(self, who=""):
+        """Begin a press. Never waits: a press still finishing its last
+        POST (after a stop) is joined by the NEW press's own thread before
+        its first heartbeat, so the old press's purge-stop always lands
+        before the new press's first beat."""
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self.firing:
                 return False
-            self._stop.clear()
+            prev = self._thread
+            press = _FirePress(who)
+            self._press = press
             self.fire_id = None
             self.firing = True
             self.last_error = ""
-            self._thread = threading.Thread(target=self._run, args=(who,),
+            self._thread = threading.Thread(target=self._run,
+                                            args=(press, prev),
                                             daemon=True,
                                             name="ltcplay-deck-purge-fire")
             self._thread.start()
         return True
 
     def stop(self, who=""):
+        """End the press. Never waits on the heartbeat thread (review of
+        PR #83, P3-1): it is called from the deck's input loop, and that
+        thread may be inside a POST of up to PURGE_POST_TIMEOUT_S, longer
+        than INPUT_STALE_S. purge-stop is posted exactly once per press,
+        after its last heartbeat: by the press's own thread when it is
+        still running (it sees `stop_who` on its way out), else here, on
+        a thread of its own. The choice is made under _lock."""
         with self._lock:
-            t = self._thread
             was = self.firing
             self.firing = False
-            self._stop.set()
-        if t is not None and t is not threading.current_thread():
-            t.join(timeout=1.0)
-        if was:
+            press = self._press
+            post_here = False
+            if press is not None:
+                press.stop.set()
+                if was:
+                    if press.exited:
+                        post_here = True
+                    else:
+                        press.stop_who = who
+        if post_here:
             threading.Thread(target=self._post_stop, args=(who,), daemon=True,
                              name="ltcplay-deck-purge-stop").start()
         return was
+
+    def join(self, timeout=1.0):
+        """Tests and shutdown only: wait for the heartbeat thread."""
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=timeout)
 
     def _body(self, who):
         return {"who": who or "", "screen": "Stream Deck",
@@ -1493,26 +1529,53 @@ class PurgeFire:
         except Exception:                        # noqa: BLE001
             return False
 
-    def _run(self, who):
-        while not self._stop.is_set():
-            if not self._loop_alive():
+    def _run(self, press, prev=None):
+        if prev is not None and prev is not threading.current_thread():
+            # The press before this one finishes (its last POST and its
+            # purge-stop) before this press's first heartbeat.
+            prev.join(timeout=2.0)
+        try:
+            self._beat_loop(press)
+        finally:
+            with self._lock:
+                press.exited = True
+                who_stop, press.stop_who = press.stop_who, None
+            if who_stop is not None:
+                self._post_stop(who_stop)
+
+    def _end_press(self, press):
+        """This press ends itself (loop not alive, engine refusal): True
+        if it was still the firing one."""
+        with self._lock:
+            if self._press is press and self.firing:
+                self.firing = False
+                press.stop.set()
+                return True
+            return False
+
+    def _beat_loop(self, press):
+        who = press.who
+        while not press.stop.is_set():
+            # The press itself is the input loop's word that it ran at
+            # that moment (review of PR #83, P3-2: the pacer has no beat
+            # before the loop's first pass ends), so it counts as a beat.
+            fresh = time.monotonic() - press.started <= PURGE_INPUT_STALE_S
+            if not fresh and not self._loop_alive():
                 # The loop that reads the FIRE key has stopped: nothing
                 # can read its release, so the press is over. A fresh
                 # press is needed once the loop runs again.
-                self._journal(f"Stream Deck FIRE released: the deck's key "
-                              f"loop has not run for "
-                              f"{PURGE_INPUT_STALE_S:g} s, so the FIRE key's "
-                              f"release could not be read.", fault=True,
-                              action="purge", who=who, screen="Stream Deck")
-                with self._lock:
-                    was = self.firing
-                    self.firing = False
-                if was:
-                    self._post_stop(who)
+                if self._end_press(press):
+                    self._journal(
+                        f"Stream Deck FIRE released: the deck's key loop "
+                        f"has not run for {PURGE_INPUT_STALE_S:g} s, so the "
+                        f"FIRE key's release could not be read.", fault=True,
+                        action="purge", who=who, screen="Stream Deck")
+                    with self._lock:
+                        press.stop_who = who
                 return
             body = self._body(who)
-            if self.fire_id is not None:
-                body["fire_id"] = self.fire_id
+            if press.fire_id is not None:
+                body["fire_id"] = press.fire_id
             try:
                 got = self._poster("/api/remote/purge-fire", body)
                 ok, text = got[0], got[1]
@@ -1521,22 +1584,39 @@ class PurgeFire:
             except Exception as e:
                 ok, text, doc = False, f"{type(e).__name__}: {e}", {}
             if not ok:
+                if press.stop.is_set():
+                    return
                 # Any refusal ends the press: the operator lets go and
                 # presses again. Said once per press.
                 self.last_error = text
                 self._journal(f"Stream Deck FIRE: the engine refused the "
                               f"purge fire: {text}", fault=True,
                               action="purge", who=who, screen="Stream Deck")
-                with self._lock:
-                    self.firing = False
+                self._end_press(press)
                 return
             self.beats += 1
-            if self.fire_id is None:
-                self.fire_id = doc.get("fire_id")
+            if press.fire_id is None:
+                press.fire_id = doc.get("fire_id")
+                with self._lock:
+                    if self._press is press:
+                        self.fire_id = press.fire_id
                 self._journal(f"Stream Deck FIRE held: purge firing "
                               f"({', '.join(doc.get('firing') or []) or 'nothing armed yet'}).",
                               action="purge", who=who, screen="Stream Deck")
-            self._stop.wait(PURGE_BEAT_S)
+            press.stop.wait(PURGE_BEAT_S)
+
+
+class _FirePress:
+    """One FIRE press's own state (PurgeFire): its stop signal, and the
+    purge-stop its thread still owes on the way out."""
+
+    def __init__(self, who):
+        self.who = who or ""
+        self.started = time.monotonic()
+        self.stop = threading.Event()
+        self.fire_id = None
+        self.exited = False
+        self.stop_who = None
 
 
 class DeckJournal:
@@ -1992,13 +2072,19 @@ class Deck:
         self.last = {}
 
     def set_key(self, Image, key, img):
+        """True once the key shows `img`, False when a write did not go
+        through (review of PR #83, P2-2: hidapi's write returns -1, it does
+        not raise, when Windows gives up on a report after 1 s). A key
+        whose write did not go through is not remembered as written, so
+        the same face is sent again; the caller does not count the frame
+        as shown. A write that raises is an unplug, as before."""
         # The raw pixels are compared first, so an unchanged key costs no
         # rotate or BMP encode at all.
         raw = img.tobytes()
         if self.last.get(key) == raw:
-            return
+            return True
         data = to_native(Image, img)
-        self.last[key] = raw
+        self.last.pop(key, None)
         step = 1024 - 16
         page = sent = 0
         try:
@@ -2007,11 +2093,15 @@ class Deck:
                 last = 1 if sent + len(chunk) >= len(data) else 0
                 pkt = (bytes([0x02, 0x01, page, 0, last, key + 1] + [0] * 10)
                       + chunk)
-                self.h.write(pkt + bytes(1024 - len(pkt)))
+                n = self.h.write(pkt + bytes(1024 - len(pkt)))
+                if isinstance(n, int) and not isinstance(n, bool) and n <= 0:
+                    return False
                 sent += len(chunk)
                 page += 1
         except Exception as e:
             raise DeckDisconnected(f"could not write a key image: {e}") from e
+        self.last[key] = raw
+        return True
 
     def keys_down(self):
         """EVERY 6-key snapshot the device has reported since the last
@@ -3439,6 +3529,8 @@ INPUT_STALE_S = 0.2       # the input loop's pass is 50 ms; four missed passes
 PURGE_INPUT_STALE_S = 1.0  # a held FIRE's heartbeats stop when the input
                            # loop has not run for this long (PurgeFire.alive)
 USB_SLOW_S = 1.0          # a frame of key images slower than this is a fault
+RETRY_UNWRITTEN_S = 0.05  # a frame the deck did not take is written again
+                          # after this (DisplayWorker.step)
 USB_WINDOW_S = 60.0       # the rack screen's "worst" looks back this far
 USB_LOG_EVERY_S = 600.0   # one console line with the worst, this often
 
@@ -3543,6 +3635,9 @@ class UsbMeter:
         self._episode_worst = 0.0
         self._logged_at = None
         self.frames = 0
+        self._fails = []          # (clock, keys the deck did not take)
+        self.fail_total = 0
+        self._fail_said = False   # inside a failing spell, journaled once
 
     def started(self, at=None):
         with self._lock:
@@ -3560,6 +3655,25 @@ class UsbMeter:
         cut = now - USB_WINDOW_S
         while self._samples and self._samples[0][0] < cut:
             self._samples.pop(0)
+        while self._fails and self._fails[0][0] < cut:
+            self._fails.pop(0)
+
+    def failed(self, keys=1, at=None):
+        """A frame with `keys` key writes the deck did not take (hidapi's
+        write returned -1: review of PR #83, P2-2). Display and journal
+        only."""
+        at = self._clock() if at is None else at
+        with self._lock:
+            self._fails.append((at, int(keys)))
+            self.fail_total += int(keys)
+            self._prune(at)
+
+    def failed_count(self, now=None):
+        """Key writes the deck did not take in the last USB_WINDOW_S."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            self._prune(now)
+            return sum(n for _a, n in self._fails)
 
     def worst_s(self, now=None):
         """The worst frame write of the last USB_WINDOW_S, or the write in
@@ -3607,6 +3721,23 @@ class UsbMeter:
                     f"worst in that slow spell was "
                     f"{self._episode_worst:.1f} s.", action="deck-usb")
                 self._episode_worst = 0.0
+            fails = self.failed_count(now)
+            if fails and not self._fail_said:
+                self._fail_said = True
+                self._journal(
+                    f"Stream Deck: the deck did not take {fails} key image "
+                    f"write(s) over USB (the USB driver gave up on them), "
+                    f"so its keys may show an older face until a resend "
+                    f"goes through. A key press acts on the face the deck "
+                    f"last really showed. Arming, disarming and Abort do "
+                    f"not wait on it. This line does not repeat until no "
+                    f"write has failed for {USB_WINDOW_S:g} s.",
+                    fault=True, action="deck-usb")
+            elif not fails and self._fail_said:
+                self._fail_said = False
+                self._journal(
+                    f"Stream Deck: no key image write has failed for "
+                    f"{USB_WINDOW_S:g} s.", action="deck-usb")
             if self._logged_at is None:
                 self._logged_at = now
             elif now - self._logged_at >= USB_LOG_EVERY_S:
@@ -3647,6 +3778,7 @@ class DisplayWorker:
         self._write_since = None  # clock when the write in hand began
         self.dropped = 0
         self.written = 0
+        self.unwritten = 0        # frames a key of which the deck did not take
         self._thread = None
 
     def submit(self, frame_id, img):
@@ -3677,11 +3809,14 @@ class DisplayWorker:
         frame_id, img = item
         if self.meter is not None:
             self.meter.started(t0)
+        unwritten = 0
         try:
             for k in range(6):
                 ox, oy = key_origin(k)
-                self.deck.set_key(self.Image, k,
-                                  img.crop((ox, oy, ox + K, oy + K)))
+                if self.deck.set_key(self.Image, k,
+                                     img.crop((ox, oy, ox + K, oy + K))) \
+                        is False:
+                    unwritten += 1
         except Exception as e:                   # noqa: BLE001
             with self._cv:
                 self.writing = None
@@ -3692,6 +3827,22 @@ class DisplayWorker:
         done = self._clock()
         if self.meter is not None:
             self.meter.record(done - t0, done)
+        if unwritten:
+            # Review of PR #83, P2-2: a key the deck did not take. The
+            # frame is NOT shown (frame_shown drives the Hold key's face
+            # and RESET_SHOWN_S, so a press acts on what the deck really
+            # shows), and it is written again unless a newer one waits.
+            if self.meter is not None:
+                self.meter.failed(unwritten, done)
+            with self._cv:
+                self.writing = None
+                self._write_since = None
+                self.unwritten += 1
+                if self._pending is None:
+                    self._pending = item
+                # Not a spin on a deck that refuses at once.
+                self._cv.wait(RETRY_UNWRITTEN_S)
+            return False
         with self._cv:
             self.writing = None
             self._write_since = None
@@ -4317,6 +4468,7 @@ def _main(args):
     # read, for the rack screen's Deck chip (2026-10-21). Display only.
     controller.usb = UsbMeter(journal)
     screen.report = controller.usb.worst_ms
+    screen.report_failed = controller.usb.failed_count
     # The Morning page's purge (2026-10-17): the FIRE key's heartbeats go
     # to the engine on their own thread, through the same POST the presses
     # use. Nothing here touches the arm link for it.
@@ -4336,6 +4488,7 @@ def _main(args):
     finally:
         if controller.purge_fire is not None:
             controller.purge_fire.stop()
+            controller.purge_fire.join(1.0)   # its purge-stop goes out
         arm.close()
         status.close()
         sched.stop()

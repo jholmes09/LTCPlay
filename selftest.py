@@ -48885,6 +48885,10 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
         deck2.press(sd.TOP_START)
         check(_wait(lambda: c.purge_fire.firing, 1),
               "setup: FIRE held on the new deck")
+        # Held past the press's own grace (the press counts as a beat for
+        # PURGE_INPUT_STALE_S), so only the loop's beats keep it going.
+        time.sleep(sd.PURGE_INPUT_STALE_S + 0.2)
+        check(c.purge_fire.firing, "setup: still firing on the loop's beats")
         n_stops = len(stops)
         t_f = time.monotonic()
         deck2.freeze.set()
@@ -48944,30 +48948,44 @@ def test_deck_purge_fire_stops_when_its_loop_is_not_alive():
             (t_, kw)))
         if alive != "none":
             pf.alive = alive
+        t0 = time.monotonic()
         pf.start(who="Andy")
-        _wait(lambda: not pf.firing or
-              posts.count("/api/remote/purge-fire") >= 3, 1.0)
-        out = (pf.firing, list(posts), list(lines))
+        if alive in ("none",) or (callable(alive) and alive is not boom
+                                  and alive is not never):
+            _wait(lambda: posts.count("/api/remote/purge-fire") >= 3, 1.0)
+        else:
+            _wait(lambda: not pf.firing, sd.PURGE_INPUT_STALE_S + 1.0)
+        ended = time.monotonic() - t0
+        out = (pf.firing, list(posts), list(lines), ended)
         pf.stop()
+        pf.join()
         return out
-    state = {"live": True}
-    firing, got, said = run(lambda: state["live"])
-    check(firing and got.count("/api/remote/purge-fire") >= 3,
-          f"alive: the heartbeats go out ({got[:4]})")
-    firing, got, said = run("none")
-    check(firing and got.count("/api/remote/purge-fire") >= 3,
-          "no liveness given: the heartbeats go out as before")
-
     def boom():
         raise RuntimeError("probe")
-    for label, alive in (("not alive", lambda: False),
+
+    def never():
+        return False
+    state = {"live": True}
+    firing, got, said, _e = run(lambda: state["live"])
+    check(firing and got.count("/api/remote/purge-fire") >= 3,
+          f"alive: the heartbeats go out ({got[:4]})")
+    firing, got, said, _e = run("none")
+    check(firing and got.count("/api/remote/purge-fire") >= 3,
+          "no liveness given: the heartbeats go out as before")
+    for label, alive in (("not alive", never),
                          ("a liveness check that raises", boom)):
-        firing, got, said = run(alive)
-        check(not firing and "/api/remote/purge-fire" not in got,
-              f"{label}: no heartbeat at all, and not firing ({got})")
-        _wait(lambda: "/api/remote/purge-stop" in posts, 1.0)
-        check("/api/remote/purge-stop" in posts,
-              f"{label}: purge-stop is posted")
+        firing, got, said, ended = run(alive)
+        # Review of PR #83, P3-2: the press itself counts as the loop's
+        # beat, so a FIRE pressed before the pacer's first beat fires;
+        # with no beat after it, it ends PURGE_INPUT_STALE_S after.
+        check(not firing and "/api/remote/purge-fire" in got,
+              f"{label}: the press fires at first, then ends ({got[:3]})")
+        check(sd.PURGE_INPUT_STALE_S - 0.15 <= ended <=
+              sd.PURGE_INPUT_STALE_S + 0.4,
+              f"{label}: it ends PURGE_INPUT_STALE_S after the press, as "
+              f"if the press were the last beat: {ended:.2f} s")
+        check(posts.count("/api/remote/purge-stop") == 1,
+              f"{label}: purge-stop is posted once ({posts[-3:]})")
         check(any(kw.get("fault") and kw.get("action") == "purge" and
                   "key loop has not run" in t_ for t_, kw in said),
               f"{label}: one fault line says why")
@@ -48983,6 +49001,210 @@ def test_deck_purge_fire_stops_when_its_loop_is_not_alive():
           "past PURGE_INPUT_STALE_S the FIRE stops too")
     check(sd.PURGE_INPUT_STALE_S == 1.0,
           "PURGE_INPUT_STALE_S is the 1 s bound")
+    print("  ok")
+
+
+def test_deck_purge_fire_stop_never_waits_on_a_post():
+    section("Stream Deck FIRE released during a slow engine reply (review "
+            "of PR #83, P3-1): stop() returns at once on the input loop; "
+            "purge-stop goes out once, after the beat in flight; a fresh "
+            "press right after waits on its own thread so its first beat "
+            "follows that stop")
+    from ltcplay import streamdeck as sd
+    log = []
+    lock = threading.Lock()
+    slow = threading.Event()
+    in_post = threading.Event()
+
+    def poster(path, body):
+        name = path.rsplit("/", 1)[-1]
+        if name == "purge-fire" and slow.is_set():
+            name = "purge-fire-slow"
+            in_post.set()
+            time.sleep(0.5)                       # PURGE_POST_TIMEOUT_S
+        with lock:
+            log.append(name)
+        return True, "ok", {"fire_id": 3, "firing": ["front row"]}
+    pf = sd.PurgeFire(poster)
+    pf.start(who="Andy")
+    check(_wait(lambda: log.count("purge-fire") >= 2, 1),
+          "setup: the press beats")
+    slow.set()
+    check(_wait(in_post.is_set, 1), "setup: a beat is inside a slow POST")
+    n_at_stop = len(log)
+    t0 = time.monotonic()
+    was = pf.stop(who="Andy")
+    took = time.monotonic() - t0
+    check(was and took < 0.05,
+          f"stop() returns at once, not after the POST: {took * 1000:.0f} ms "
+          f"(the input loop's own limit is INPUT_STALE_S, "
+          f"{sd.INPUT_STALE_S * 1000:.0f} ms)")
+    check(not pf.firing, "and the press is over at once")
+    check(pf.stop(who="Andy") is False,
+          "a second stop changes nothing")
+    slow.clear()
+    # A fresh press while the old one is still in its POST.
+    check(pf.start(who="Andy"), "a fresh press is taken at once")
+    check(_wait(lambda: log.count("purge-stop") == 1 and
+                log[log.index("purge-stop") + 1:].count("purge-fire") >= 2,
+                2),
+          f"the old press's purge-stop went out once, then the new press "
+          f"beats: {log[-6:]}")
+    i = log.index("purge-stop")
+    check(log[n_at_stop:i] == ["purge-fire-slow"],
+          f"between the release and its purge-stop only the beat already in "
+          f"flight landed: no new press's beat, no stop ahead of that beat: "
+          f"{log[n_at_stop:i + 1]}")
+    pf.stop(who="Andy")
+    pf.join()
+    _wait(lambda: log.count("purge-stop") == 2, 1)
+    n = len(log)
+    time.sleep(0.3)
+    check(log.count("purge-stop") == 2 and len(log) == n,
+          f"the second press's stop: one more purge-stop, then silence: "
+          f"{log[-3:]}")
+    # A press the engine refused ended itself: stop() posts nothing more.
+    log.clear()
+    refuse = sd.PurgeFire(lambda path, body: (
+        log.append(path.rsplit("/", 1)[-1]) or (False, "no", {})))
+    refuse.start()
+    _wait(lambda: not refuse.firing, 1)
+    check(refuse.stop() is False and log == ["purge-fire"],
+          f"a refused press: no purge-stop from stop(): {log}")
+    refuse.join()
+    print("  ok")
+
+
+def test_deck_key_write_the_deck_did_not_take():
+    section("Stream Deck key image writes the deck did not take (review of "
+            "PR #83, P2-2: hidapi's write returns -1 on Windows after 1 s, "
+            "it does not raise): the key is not cached, the frame is not "
+            "counted as shown, it is written again, the count reaches the "
+            "rack screen's Deck chip, and none of it is an unplug")
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    Image = sd._import_pil()[0]
+
+    class H:
+        def __init__(self):
+            self.ret = -1
+            self.writes = 0
+
+        def write(self, data):
+            self.writes += 1
+            return self.ret
+    deck = sd.Deck.__new__(sd.Deck)
+    deck.h = H()
+    deck.last = {}
+    face = Image.new("RGB", (sd.K, sd.K), (200, 0, 0))
+    check(deck.set_key(Image, 1, face) is False and 1 not in deck.last,
+          "a write that returns -1: False, and the key is not remembered")
+    w = deck.h.writes
+    check(deck.set_key(Image, 1, face) is False and deck.h.writes > w,
+          "the same face is sent again, not skipped as already shown")
+    deck.h.ret = 1024
+    check(deck.set_key(Image, 1, face) is True and 1 in deck.last,
+          "once it goes through: True, and remembered")
+    w = deck.h.writes
+    check(deck.set_key(Image, 1, face) is True and deck.h.writes == w,
+          "and an unchanged face is not sent again")
+    deck.h.ret = None                    # a fake that says nothing: written
+    deck.last.clear()
+    check(deck.set_key(Image, 2, face) is True,
+          "a write that returns nothing counts as written")
+    deck.h.ret = 0
+    deck.last.clear()
+    check(deck.set_key(Image, 3, face) is False,
+          "0 bytes written is not written")
+
+    # DisplayWorker: the frame is not shown, and is written again.
+    class FD:
+        def __init__(self):
+            self.refuse = 0
+            self.calls = 0
+
+        def set_key(self, Image, k, img):
+            self.calls += 1
+            if self.refuse > 0:
+                self.refuse -= 1
+                return False
+            return None
+    t = [10.0]
+    lines = []
+    m = sd.UsbMeter(lambda x, **k: lines.append((x, k)), clock=lambda: t[0],
+                    echo=lambda x: None)
+    fd = FD()
+    dw = sd.DisplayWorker(fd, Image, meter=m, clock=lambda: t[0])
+    img = Image.new("RGB", (sd.W, sd.H), (0, 0, 0))
+    fd.refuse = 1
+    dw.submit(7, img)
+    check(dw.step() is False and dw.shown is None and dw.unwritten == 1,
+          f"one key not taken: frame 7 is NOT shown ({dw.shown})")
+    check(m.failed_count() == 1 and m.fail_total == 1,
+          "the meter counts the key write the deck did not take")
+    check(dw.error is None, "and it is no error: not an unplug")
+    check(dw.step() is True and dw.shown == (7, t[0]),
+          f"the same frame is written again and then shown: {dw.shown}")
+    fd.refuse = 6
+    dw.submit(8, img)
+    check(dw.step() is False and dw.shown[0] == 7,
+          "frame 8 refused: the deck still counts as showing frame 7")
+    dw.submit(9, img)
+    check(dw.step() is True and dw.shown[0] == 9 and fd.refuse == 0,
+          "a newer frame waiting replaces the resend (latest wins)")
+    m.check()
+    check(any(k.get("fault") and k.get("action") == "deck-usb" and
+              "did not take" in x for x, k in lines),
+          f"one fault line for the failed writes: {lines}")
+    n = len(lines)
+    m.failed(1)
+    m.check()
+    check(len(lines) == n, "inside the same spell: no second line")
+    t[0] += sd.USB_WINDOW_S + 1
+    m.record(0.05)
+    m.check()
+    check(m.failed_count() == 0 and len(lines) == n + 1 and
+          not lines[-1][1].get("fault"),
+          f"a minute with none: the count clears, one all-clear line: "
+          f"{lines[-1:]}")
+    # The ride to the engine, and the chip.
+    seen = []
+    keys = sd.ScreenKeys("http://127.0.0.1:9",
+                         fetcher=lambda path: seen.append(path) or {},
+                         report=lambda: 1100)
+    keys.report_failed = lambda: 3
+    keys.poll_once()
+    keys.report_failed = lambda: 0
+    keys.poll_once()
+    check(seen == ["/api/remote/deck-input?usb_ms=1100&usb_fail=3",
+                   "/api/remote/deck-input?usb_ms=1100"],
+          f"the deck carries the count on its deck-input read: {seen}")
+    check(RM.deck_usb_fail("usb_ms=5&usb_fail=3") == 3 and
+          RM.deck_usb_fail("usb_ms=5") == 0 and
+          RM.deck_usb_fail("usb_fail=x") == 0 and
+          RM.deck_usb_fail("usb_fail=-2") == 0 and
+          RM.deck_usb_fail("usb_fail=99999999") == 100000,
+          "the engine reads it as a bounded count, or 0")
+    S = _sched()
+    if S is not None:
+        R = _RemoteRig(S)
+        try:
+            def chip():
+                return [x for x in R.remote.subsystems({})
+                        if x["name"] == "Deck"][0]
+            R.remote.deck_input("usb_ms=1100&usb_fail=3")
+            v = R.remote.deck_view()
+            check(chip() == {"name": "Deck", "state": "warn",
+                             "word": "USB 3 write(s) failed"} and
+                  v["usb_failed"] == 3 and "did not take 3" in v["text"],
+                  f"the Deck chip is amber with the count, the status says "
+                  f"why: {chip()} {v.get('text')}")
+            R.remote.deck_input("usb_ms=75")
+            check(chip() == {"name": "Deck", "state": "ok",
+                             "word": "ok, USB 75 ms"},
+                  f"and back to ok when none failed: {chip()}")
+        finally:
+            R.close()
     print("  ok")
 
 
@@ -49537,6 +49759,8 @@ if __name__ == "__main__":
     test_ltc_deck_runs_the_threaded_loop()
     test_deck_wedged_deck_never_keeps_a_purge_firing()
     test_deck_purge_fire_stops_when_its_loop_is_not_alive()
+    test_deck_purge_fire_stop_never_waits_on_a_post()
+    test_deck_key_write_the_deck_did_not_take()
     test_deck_hold_key_does_what_the_deck_showed()
     test_deck_arm_journal_never_holds_the_arm_lock()
     test_api_conductor_reports_audio_loss()

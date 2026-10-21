@@ -9407,7 +9407,7 @@ def build():
 
  ('deck stall: FIRE heartbeats ignore a frozen input loop',
   'ltcplay/streamdeck.py',
-  '            if not self._loop_alive():',
+  '            if not fresh and not self._loop_alive():',
   '            if False:'),
 
  ('deck stall: a FIRE liveness check that raises counts as alive',
@@ -9446,6 +9446,76 @@ def build():
   '                for down in _snaps:\n'
   '                    controller.run_once(down)\n'
   '                    moved = True'),
+
+ ('deck usb: a key write the deck did not take is cached as written',
+  'ltcplay/streamdeck.py',
+  '                if isinstance(n, int) and not isinstance(n, bool) and n <= 0:\n'
+  '                    return False',
+  '                if False:\n'
+  '                    return False'),
+
+ ('deck usb: a frame with a key the deck did not take counts as shown',
+  'ltcplay/streamdeck.py',
+  '        if unwritten:\n            # Review of PR #83, P2-2',
+  '        if False:\n            # Review of PR #83, P2-2'),
+
+ ('deck usb: a frame the deck did not take is never written again',
+  'ltcplay/streamdeck.py',
+  '                if self._pending is None:\n'
+  '                    self._pending = item',
+  '                if self._pending is None:\n'
+  '                    pass'),
+
+ ('deck usb: failed key writes never ride to the engine',
+  'ltcplay/streamdeck.py',
+  '                path += f"&usb_fail={n}"',
+  '                path += ""'),
+
+ ('deck usb: the Deck chip never shows failed key writes',
+  'ltcplay/remote.py',
+  '            elif self._deck_usb_fail:',
+  '            elif False:'),
+
+ ('deck usb: failed key writes are never journaled',
+  'ltcplay/streamdeck.py',
+  '            if fails and not self._fail_said:',
+  '            if False:'),
+
+ ('deck fire: stop() waits on the heartbeat POST again',
+  'ltcplay/streamdeck.py',
+  '        if post_here:\n'
+  '            threading.Thread(target=self._post_stop',
+  '        t_ = self._thread\n'
+  '        if t_ is not None and t_ is not threading.current_thread():\n'
+  '            t_.join(timeout=1.0)\n'
+  '        if post_here:\n'
+  '            threading.Thread(target=self._post_stop'),
+
+ ('deck fire: a press still running never posts its own purge-stop',
+  'ltcplay/streamdeck.py',
+  '                    else:\n'
+  '                        press.stop_who = who\n'
+  '        if post_here:',
+  '                    else:\n'
+  '                        pass\n'
+  '        if post_here:'),
+
+ ('deck fire: purge-stop goes out before the beat in flight',
+  'ltcplay/streamdeck.py',
+  '                    if press.exited:\n'
+  '                        post_here = True',
+  '                    if True:\n'
+  '                        post_here = True'),
+
+ ('deck fire: a new press does not wait for the old press to finish',
+  'ltcplay/streamdeck.py',
+  '            prev.join(timeout=2.0)',
+  '            pass'),
+
+ ('deck fire: the press itself is not counted as a beat',
+  'ltcplay/streamdeck.py',
+  '            fresh = time.monotonic() - press.started <= PURGE_INPUT_STALE_S',
+  '            fresh = False'),
 
  ('deck hold: the Hold key acts on the composed face, not the shown one',
   'ltcplay/streamdeck.py',
