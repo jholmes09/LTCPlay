@@ -1004,8 +1004,8 @@ MUTATIONS = [
  ("arm: deck-input is served to the network", "ltcplay/remote.py",
   "            if not ctx.local:\n                return 403, {\"error\": "
   "\"Only on the show machine itself.\"}\n            return 200, "
-  "self.deck_input()",
-  "            return 200, self.deck_input()"),
+  "self.deck_input(query)",
+  "            return 200, self.deck_input(query)"),
 
  ("arm: the deck fires a screen hold without 1 s of heartbeats",
   "ltcplay/streamdeck.py",
@@ -5069,7 +5069,10 @@ def build():
   "and flamesafe's sender lock lapses)",
   "ltcplay/streamdeck.py",
   "        try:\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
@@ -5114,13 +5117,19 @@ def build():
  # Ruling 4: a deck unplug and replug keeps the arm state.
  ("an unplugged deck sends every group OFF again", "ltcplay/streamdeck.py",
   "        try:\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
   "        try:\n"
   "            controller.arm.set_all(False)\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n"),
@@ -5165,10 +5174,16 @@ def build():
   "            if outage is not None:\n"
   "                outage.screen_failed(e)\n"
   "        try:\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n",
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception as e:\n"
   "            if outage is not None:\n"
   "                outage.screen_failed(e)\n"),
@@ -5980,14 +5995,21 @@ def build():
  ("round5: the no-deck sender stops for good after 6 s",
   "ltcplay/streamdeck.py",
   "        try:\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
   "        try:\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
-  "            if _n[0] <= 120:\n"
+  "            if _n[0] > 120:\n"
+  "                pass\n"
+  "            elif pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
   "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
@@ -5996,14 +6018,21 @@ def build():
  ("round5: the no-deck sender stops for good after 60 s",
   "ltcplay/streamdeck.py",
   "        try:\n"
-  "            controller.arm.send(controller.names)\n"
+  "            if pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
+  "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
   "        sleep(1.0 / ARM_SEND_HZ)\n",
   "        try:\n"
   "            _n = controller.__dict__.setdefault('_r5_off', [0])\n"
   "            _n[0] += 1\n"
-  "            if _n[0] <= 1200:\n"
+  "            if _n[0] > 1200:\n"
+  "                pass\n"
+  "            elif pacer is not None:\n"
+  "                pacer.beat()\n"
+  "            else:\n"
   "                controller.arm.send(controller.names)\n"
   "        except Exception:\n"
   "            pass\n"
@@ -7263,7 +7292,7 @@ def build():
 
  ('fix round 1: an engine refusal of a deck press is not a fault',
   'ltcplay/streamdeck.py',
-  '            self._journal(line, fault=not ok, action=name,',
+  '            self._journal(line, fault=not (ok or noop), action=name,',
   '            self._journal(line, fault=False, action=name,'),
 
 
@@ -7306,7 +7335,7 @@ def build():
 
  ('review H7: ltc serve opens the flame link but never starts its sender thread',
   'ltcplay/fire_ice.py',
-  '        if threaded:\n            built_link.start()\n        else:\n            built_link.open()',
+  '        if threaded:\n            built_link.start()\n            # The flame cues\' reading thread from now on, not from the\n            # first flame frame of a show (soak 2026-10-21).\n            if isinstance(getattr(built_link, "cues", None), FlameCues):\n                built_link.cues.start()\n        else:\n            built_link.open()',
   '        built_link.open()'),
 
  ('review H9: a release on a closed flame link counts as done',
@@ -7467,8 +7496,8 @@ def build():
 
  ("fix round 2: an engine that did not take a press is not shown on the deck",
   'ltcplay/streamdeck.py',
-  '        self.fault = "" if ok else f"{name.title()}: {text}"',
-  '        self.fault = ""'),
+  '            self.fault = "" if (ok or noop) else f"{name.title()}: {text}"',
+  '            self.fault = ""'),
 
  ('fix round 2: the page can bring the rig up while an Abort stands',
   'ltcplay/web.py',
@@ -7761,12 +7790,12 @@ def build():
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
-  '            out["flame_cues"] = {"fault": str(cues.fault or "")}',
+  '            out["flame_cues"] = {"fault": str(\n                (now() if now is not None else cues.fault) or "")}',
   '            pass'),
 
  ('review43: the rack screen is never told the flame cue fault',
   'ltcplay/remote.py',
-  '        out["flames"]["cues_fault"] = str(\n            getattr(self.flame_cues, "fault", "") or "")',
+  '        out["flames"]["cues_fault"] = self.cues_fault()',
   '        out["flames"]["cues_fault"] = ""'),
 
  ('review43: the deck never reads the flame cue fault',
@@ -8132,11 +8161,11 @@ def build():
 
  ("deck states: AUDIO LOST covers the Hold key too",
   "ltcplay/streamdeck.py",
-  "        elif self._held_hint() and blink_on:\n"
+  "        elif resume_face and blink_on:\n"
   "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n",
   "        elif self._audio_lost():\n"
   "            fonts.show_key(d, b1, [\"AUDIO\", \"LOST\"], AMBER, kind=\"sans\")\n"
-  "        elif self._held_hint() and blink_on:\n"
+  "        elif resume_face and blink_on:\n"
   "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n"),
 
  ("deck states: the deck ignores the engine's audio field",
@@ -9192,6 +9221,195 @@ def build():
  ('deck: key presses are not written to the audit log', 'ltcplay/streamdeck.py',
   '        self._audit_keys(down, latched, pending)\n',
   ''),
+ # ---- the deck's arm link and key images on threads of their own --------
+ # (2026-10-21, the five hour soak on the show PC: 107 "arm input stale"
+ # latch-resets while USB writes to the deck stalled for seconds; and Hold
+ # drawn as ENGINE FAULT while the Hold had worked.)
+ ('deck usb: the arm pacer sends while the input loop is frozen',
+  'ltcplay/streamdeck.py',
+  '        if not self.live(now):\n            self.silent += 1\n'
+  '            return False',
+  '        if False:\n            self.silent += 1\n'
+  '            return False'),
+
+ ('deck usb: the pacer trusts a beat four times as old',
+  'ltcplay/streamdeck.py',
+  'INPUT_STALE_S = 0.2       # the input loop',
+  'INPUT_STALE_S = 0.8       # the input loop'),
+
+ ('deck usb: the threaded loop never beats the arm pacer',
+  'ltcplay/streamdeck.py',
+  '                    # is alive (ArmPacer). A frozen loop stops the beat.\n'
+  '                    pacer.beat()\n',
+  '                    # is alive (ArmPacer). A frozen loop stops the beat.\n'
+  '                    pass\n'),
+
+ ('deck usb: ltc deck runs the single loop again',
+  'ltcplay/streamdeck.py',
+  '        run_forever(controller, journal=journal, threaded=True)',
+  '        run_forever(controller, journal=journal)'),
+
+ ('deck usb: the key images are written on the input loop again',
+  'ltcplay/streamdeck.py',
+  '    if display is None:\n        _draw_deck(controller, deck, fonts, motion)\n'
+  '        return',
+  '    if True:\n        _draw_deck(controller, deck, fonts, motion)\n'
+  '        return'),
+
+ ('deck usb: the oldest waiting frame wins, not the newest',
+  'ltcplay/streamdeck.py',
+  '            if self._pending is not None:\n                self.dropped += 1\n'
+  '            self._pending = (frame_id, img)',
+  '            if self._pending is not None:\n                self.dropped += 1\n'
+  '                return\n            self._pending = (frame_id, img)'),
+
+ ('deck usb: a key image write that failed is never raised',
+  'ltcplay/streamdeck.py',
+  '        e = self.error\n        if e is not None:\n            raise e',
+  '        e = self.error\n        if False:\n            raise e'),
+
+ ('deck usb: retiring the display waits for a stalled write',
+  'ltcplay/streamdeck.py',
+  '            self._retire = True\n            self._pending = None\n'
+  '            self._cv.notify()\n'
+  '        if self._thread is None:\n            _close_quietly(self.deck)',
+  '            self._retire = True\n            self._pending = None\n'
+  '            self._cv.notify()\n'
+  '        if self._thread is not None:\n            self._thread.join(5)\n'
+  '        if self._thread is None:\n            _close_quietly(self.deck)'),
+
+ ('deck usb: the arm socket sends without its lock',
+  'ltcplay/streamdeck.py',
+  '        with self.lock:\n            note = self._send_locked(names)',
+  '        note = self._send_locked(names)'),
+
+ ('deck usb: the arm socket journals a failed send under its lock',
+  'ltcplay/streamdeck.py',
+  '        with self.lock:\n            note = self._send_locked(names)\n',
+  '        with self.lock:\n            note = self._send_locked(names)\n'
+  '            if note is not None:\n'
+  '                self._journal(note[0], **note[1])\n'
+  '                note = None\n'),
+
+ ('deck usb: a wedged key image write is never an unplug',
+  'ltcplay/streamdeck.py',
+  '                    if stuck > DISPLAY_WEDGED_S:',
+  '                    if False:'),
+
+ ('deck usb: a key the stuck deck says is held is trusted',
+  'ltcplay/streamdeck.py',
+  '        if not self._deck_keys_trusted():\n'
+  '            self._drop_untrusted_holds()',
+  '        if False:\n'
+  '            self._drop_untrusted_holds()'),
+
+ ('deck usb: a stuck deck never releases a held FIRE',
+  'ltcplay/streamdeck.py',
+  '        self._fire_release("the deck\'s keys have not been written for over "',
+  '        (lambda *a: None)("the deck\'s keys have not been written for over "'),
+
+ ('deck usb: the threaded loop never says when the keys are not trusted',
+  'ltcplay/streamdeck.py',
+  '            controller.keys_trusted = (',
+  '            _unused_keys_trusted = ('),
+
+ ('deck usb: a stuck write is trusted for a second and a half',
+  'ltcplay/streamdeck.py',
+  'KEYS_TRUSTED_S = 0.25     # past this',
+  'KEYS_TRUSTED_S = 1.5      # past this'),
+
+ ('deck hold: the Hold key acts on the composed face, not the shown one',
+  'ltcplay/streamdeck.py',
+  '            return self._shown_resume is True\n        return self._held_hint()',
+  '            return self._held_hint()\n        return self._held_hint()'),
+
+ ('deck hold: the shown Hold face is never taken from the frame shown',
+  'ltcplay/streamdeck.py',
+  '            self._shown_resume = self._hold_faces[fid]',
+  '            pass'),
+
+ ('deck usb: RESET counts from the frame composed, not the frame shown',
+  'ltcplay/streamdeck.py',
+  '        if not self.display_confirms:\n'
+  '            self._track_reset_face(latched, now)',
+  '        if True:\n'
+  '            self._track_reset_face(latched, now)'),
+
+ ('deck usb: a frame from before the latch starts the RESET clock',
+  'ltcplay/streamdeck.py',
+  '        if first is not None and fid >= first and \\',
+  '        if first is not None and \\'),
+
+ ('deck usb: a slow USB write is never journaled',
+  'ltcplay/streamdeck.py',
+  '            if worst >= USB_SLOW_S:\n'
+  '                self._episode_worst = max(self._episode_worst, worst)',
+  '            if False:\n'
+  '                self._episode_worst = max(self._episode_worst, worst)'),
+
+ ('deck usb: a write still in progress does not count',
+  'ltcplay/streamdeck.py',
+  '            if self._inflight_since is not None:\n'
+  '                worst = max(worst, now - self._inflight_since)',
+  '            if False:\n'
+  '                worst = max(worst, now - self._inflight_since)'),
+
+ ('deck usb: the deck never carries its USB worst to the engine',
+  'ltcplay/streamdeck.py',
+  '            path += f"?usb_ms={ms}"',
+  '            pass'),
+
+ ('deck usb: the rack screen chip never turns amber for slow USB',
+  'ltcplay/remote.py',
+  '            elif usb >= DECK_USB_SLOW_MS:',
+  '            elif False:'),
+
+ ('deck usb: a quiet deck reads ok on its last USB word',
+  'ltcplay/remote.py',
+  '            if age > self.DECK_QUIET_S:\n'
+  '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
+  '            elif usb is None:',
+  '            if False:\n'
+  '                add("Deck", "bad", f"quiet {age:.0f} s")\n'
+  '            elif usb is None:'),
+
+ ('deck hold: a Hold the engine found already done is ENGINE FAULT',
+  'ltcplay/streamdeck.py',
+  '        noop = (not ok and name in ("hold", "resume") and\n'
+  '                doc.get("nothing_to_do") is True)',
+  '        noop = False'),
+
+ ('deck hold: every refused Hold or Resume is taken as nothing to do',
+  'ltcplay/streamdeck.py',
+  '        noop = (not ok and name in ("hold", "resume") and\n'
+  '                doc.get("nothing_to_do") is True)',
+  '        noop = (not ok and name in ("hold", "resume"))'),
+
+ ('deck hold: the engine never says a Hold found nothing to do',
+  'ltcplay/schedule_service.py',
+  '                    "nothing_to_do": bool(done)}',
+  '                    "nothing_to_do": False}'),
+
+ ('deck hold: the engine says any refused Hold found nothing to do',
+  'ltcplay/schedule_service.py',
+  '            done = ((kind == sch.HOLD_ON and before in self.HOLD_ALREADY) or\n'
+  '                    (kind == sch.RESUME and before in self.RESUME_ALREADY))',
+  '            done = kind in (sch.HOLD_ON, sch.RESUME)'),
+
+ ('deck hold: the Hold key ignores the scheduler on hold',
+  'ltcplay/streamdeck.py',
+  '            if self.held_provider() is True:\n                return True',
+  '            if False:\n                return True'),
+
+ ('deck hold: LocalSchedule never reads the scheduler on hold',
+  'ltcplay/streamdeck.py',
+  '                self._held = running.get("state") in ("HOLD", "PAUSED")',
+  '                self._held = False'),
+
+ ('deck hold: ltc deck never gives the Hold key the scheduler',
+  'ltcplay/streamdeck.py',
+  '                            held_provider=sched.held)',
+  '                            held_provider=None)'),
 ]
 
 

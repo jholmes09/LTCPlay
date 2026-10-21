@@ -2816,6 +2816,13 @@ class Service:
     # is asked (see _apply). Reset is reset_conductor, under its own name.
     PRESSES = {"start-now": sch.START_NOW, "hold": sch.HOLD_ON,
                "resume": sch.RESUME, "abort": sch.ABORT}
+    # The states in which a refused Hold or Resume found nothing to do:
+    # nothing can start by itself (on hold, paused, the night over), or
+    # nothing is held. BOOT is not among them: there the scheduler has not
+    # worked out tonight yet, a real refusal.
+    HOLD_ALREADY = frozenset((sch.HOLD, sch.PAUSED, sch.CLOSING, sch.OFF))
+    RESUME_ALREADY = frozenset((sch.IDLE, sch.STANDBY, sch.SHOW,
+                                sch.CLOSING, sch.OFF))
 
     def operator_press(self, what, who, screen, confirmed=False,
                        pressed=None, surface=False):
@@ -2866,6 +2873,7 @@ class Service:
                 return {"ok": False, "text": sentence}
             self._press_stamp = (pressed if pressed is not None
                                  else self.stamp_press())
+            before = self.machine.state
             try:
                 out = self._apply(sch.Event(kind, "operator", who=who,
                                             screen=screen,
@@ -2874,7 +2882,15 @@ class Service:
             finally:
                 self._press_stamp = None
         if out.refused:
-            return {"ok": False, "text": out.refused}
+            # nothing_to_do: what the press asks for is already so (a Hold
+            # with the schedule on hold, a show paused or the night over;
+            # a Resume with nothing held). Still refused and journaled as
+            # before; the Stream Deck reads the flag so a press that found
+            # the rig as asked is not drawn as ENGINE FAULT (2026-10-21).
+            done = ((kind == sch.HOLD_ON and before in self.HOLD_ALREADY) or
+                    (kind == sch.RESUME and before in self.RESUME_ALREADY))
+            return {"ok": False, "text": out.refused,
+                    "nothing_to_do": bool(done)}
         # The answer the page, the iPad and the deck see says what the
         # journal says (fix round 2, E: it said "nothing was disarmed"
         # while the conductor did disarm).

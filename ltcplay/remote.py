@@ -783,6 +783,26 @@ def countdown_view(sched, show, cue_now):
     return None
 
 
+# The deck's worst USB key image write (deck-input's usb_ms) at or past
+# which the rack screen's Deck chip turns amber: the same 1 s the deck's own
+# journal line uses (streamdeck.USB_SLOW_S; selftest pins the two together).
+DECK_USB_SLOW_MS = 1000
+
+
+def deck_usb_ms(query):
+    """usb_ms from a deck-input query string, as an int from 0 to 10
+    minutes, or None when absent or not a number. Never raises."""
+    import urllib.parse
+    try:
+        vals = urllib.parse.parse_qs(query or "").get("usb_ms") or []
+        ms = int(vals[-1])
+    except (ValueError, TypeError, IndexError):
+        return None
+    if ms < 0:
+        return None
+    return min(ms, 600000)
+
+
 class Remote:
     """The routes under /api/remote/. `control` is web.Control, `schedule`
     the scheduler service (or None), `flame_status` a FlameStatus (or
@@ -814,6 +834,10 @@ class Remote:
         self._disarms = collections.deque(maxlen=64)
         self._disarm_ids = 0
         self._deck_seen = None       # clock() of the deck's last read
+        # The deck's worst USB frame write of its last minute, in ms, as
+        # its last deck-input read carried it (streamdeck.UsbMeter), or
+        # None: the rack screen's Deck chip. Display only.
+        self._deck_usb_ms = None
         self._version = None         # version_line(), once asked
         self.audio_watch = None      # audiowatch.AudioInterfaceWatch, F&I
         # The Windows supervisor's word on the disk (housekeeping.py writes
@@ -931,7 +955,7 @@ class Remote:
             # it carries the holds the deck acts on.
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
-            return 200, self.deck_input()
+            return 200, self.deck_input(query)
         if name == "status":
             return 200, self.status(ctx)
         if name == "network":
@@ -1635,12 +1659,15 @@ class Remote:
                       f"arm link; flamesafe's lamp shows when it is off.")
         return 200, {"ok": True, "text": f"Disarm {gname} sent."}
 
-    def deck_input(self):
+    def deck_input(self, query=""):
         """What the Stream Deck process reads, 20 times a second: the
         fresh holds (with the held time the engine has heartbeats for) and
-        the per-group disarms."""
+        the per-group disarms. Its query may carry usb_ms, the deck's
+        worst USB key image write of the last minute (2026-10-21), for the
+        rack screen; nothing here acts on it."""
         now = self.clock()
         self._deck_seen = now
+        self._deck_usb_ms = deck_usb_ms(query)
         enabled = self.arming_enabled()
         holds = []
         with self._arm_lock:
@@ -2093,7 +2120,17 @@ class Remote:
         if seen is not None:
             age = self.clock() - seen
             if age <= self.DECK_QUIET_S:
-                return {"heard": True, "age_s": round(age, 1), "text": ""}
+                usb = self._deck_usb_ms
+                return {"heard": True, "age_s": round(age, 1),
+                        "usb_worst_ms": usb,
+                        "text": (f"The Stream Deck's keys are slow to "
+                                 f"update: writing them over USB took "
+                                 f"{usb / 1000.0:.1f} s in the last minute. "
+                                 f"Arming, disarming and Abort do not wait "
+                                 f"on it. A busy machine (a big file copy, "
+                                 f"a USB hub) is the usual cause."
+                                 if usb is not None and
+                                 usb >= DECK_USB_SLOW_MS else "")}
             return {"heard": False, "age_s": round(age, 1),
                     "text": (f"The Stream Deck program was last heard "
                              f"{age:.0f} s ago; LTC Player starts it again "
@@ -2381,8 +2418,19 @@ class Remote:
             add("Deck", "off", "not heard")
         else:
             age = self.clock() - seen
-            add("Deck", "ok" if age <= self.DECK_QUIET_S else "bad",
-                "ok" if age <= self.DECK_QUIET_S else f"quiet {age:.0f} s")
+            usb = self._deck_usb_ms
+            if age > self.DECK_QUIET_S:
+                add("Deck", "bad", f"quiet {age:.0f} s")
+            elif usb is None:
+                add("Deck", "ok", "ok")
+            elif usb >= DECK_USB_SLOW_MS:
+                # The deck's keys are behind (USB writes stalling on a
+                # busy machine); its arming and Abort are not (they do not
+                # wait on the writes). Said here, and journaled by the
+                # deck once per slow spell.
+                add("Deck", "warn", f"USB slow {usb / 1000.0:.1f} s")
+            else:
+                add("Deck", "ok", f"ok, USB {usb} ms")
         try:
             fl = self.flame_status.view() if self.flame_status else None
         except Exception:
