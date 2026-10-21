@@ -7306,8 +7306,8 @@ def build():
 
  ('review H7: ltc serve opens the flame link but never starts its sender thread',
   'ltcplay/fire_ice.py',
-  '        if threaded:\n            built_link.start()\n        else:\n            built_link.open()',
-  '        built_link.open()'),
+  '        if threaded:\n            built_link.start()\n',
+  '        if threaded:\n            built_link.open()\n'),
 
  ('review H9: a release on a closed flame link counts as done',
   'ltcplay/fire_ice.py',
@@ -7761,12 +7761,13 @@ def build():
 
  ('review43: /api/conductor leaves out the flame cue fault',
   'ltcplay/web.py',
-  '            out["flame_cues"] = {"fault": str(cues.fault or "")}',
+  '            out["flame_cues"] = {"fault": str(\n'
+  '                (now() if now is not None else cues.fault) or "")}',
   '            pass'),
 
  ('review43: the rack screen is never told the flame cue fault',
   'ltcplay/remote.py',
-  '        out["flames"]["cues_fault"] = str(\n            getattr(self.flame_cues, "fault", "") or "")',
+  '        out["flames"]["cues_fault"] = self.cues_fault()',
   '        out["flames"]["cues_fault"] = ""'),
 
  ('review43: the deck never reads the flame cue fault',
