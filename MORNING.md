@@ -33,6 +33,12 @@ rule written there.
    none, one machine per fire slot of flamesafe's own config), positions
    from `ltcplay_morning_layout.json`, editable in the page (Arrange, drag,
    Save). A sensible default is laid out when there is no layout file.
+   While any screen or window is in Arrange mode, nothing fires from any
+   surface, the Stream Deck's FIRE key included, and a fire press already
+   going stops at once; the refusal names the screen that is arranging. A
+   page that closed without saving lets go by itself within 2 s. Abort,
+   Hold, Stop, disarm, letting go of a fire key, a lockout, a laser test
+   going off and Acknowledge are never held back by Arrange mode.
 5. **Lockout**: any single flame machine or laser can be locked out until
    it is unlocked, across restarts. A locked unit cannot be armed or fired
    from any surface: this page, the deck, show cues, the remote. Enforced
