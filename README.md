@@ -465,6 +465,13 @@ silent, and flamesafe still disarms, if the loop that reads the keys stops.
 The rack screen's status strip shows the deck's worst USB write of the last
 minute ("Deck ok, USB 75 ms"); past 1 s the chip turns amber ("USB slow
 2.7 s") and the deck journals one fault line for that slow spell.
+A deck whose key image write is stuck is not trusted with a held key: past
+a quarter second an arm hold on the deck's own keys is dropped and a purge
+FIRE is released (let go and press again once it answers), and past 1 s the
+deck is treated as unplugged (the "deck" alert; every flame group stays as
+it was). Abort and a disarm tap never wait on any of this. The Hold key does
+what the deck last showed: if it still reads HOLD, a press is a Hold, even
+if the show was paused elsewhere a moment ago.
 
 **Arming from the page** (Jeff, 2026-10-03; no sign-in since 2026-10-07):
 anyone at the rack screen, or on a device that reaches the listed show

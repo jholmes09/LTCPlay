@@ -479,22 +479,28 @@ class ArmSocket:
         link's own 10 Hz-or-faster rule, CONTRACT.md). Safe from any
         thread: see `lock`."""
         with self.lock:
-            self._send_locked(names)
+            note = self._send_locked(names)
+        # The journal (a console print, then a queue) is written with the
+        # lock released (review of PR #79, P3-d): a blocked console must
+        # never hold up an Abort's set_all and send on another thread.
+        if note is not None:
+            try:
+                self._journal(note[0], **note[1])
+            except Exception:
+                pass
 
     def _send_locked(self, names):
+        """One frame; returns (text, kw) for the journal, or None."""
         if self._sock is None:
-            return
+            return None
         self.seq += 1
         try:
             self._sock.sendto(encode_arm_frame(self.seq, self.wanted, names,
                                                self.key), (self.ip, self.port))
             if self._send_failing:
                 self._send_failing = False
-                try:
-                    self._journal("Stream Deck: arm frame sends are "
-                                 "working again.", action="arm-link")
-                except Exception:
-                    pass
+                return ("Stream Deck: arm frame sends are working again.",
+                        {"action": "arm-link"})
         except OSError as e:
             # Item 10 (safety review of PR #31): a dropped UDP send used to
             # vanish completely -- the next one, 50 ms away, tries again,
@@ -504,14 +510,12 @@ class ArmSocket:
             # a flood for exactly the moment the journal matters most.
             if not self._send_failing:
                 self._send_failing = True
-                try:
-                    self._journal(f"Stream Deck: an arm frame could not be "
-                                  f"sent ({type(e).__name__}: {e}). "
-                                  f"Retrying at {ARM_SEND_HZ:g} Hz; this "
-                                  f"line will not repeat until it recovers.",
-                                  fault=True, action="arm-link")
-                except Exception:
-                    pass
+                return (f"Stream Deck: an arm frame could not be sent "
+                        f"({type(e).__name__}: {e}). Retrying at "
+                        f"{ARM_SEND_HZ:g} Hz; this line will not repeat "
+                        f"until it recovers.",
+                        {"fault": True, "action": "arm-link"})
+        return None
 
     def close(self):
         with self.lock:
@@ -2083,10 +2087,20 @@ class Controller:
         self.display_confirms = False
         self.frame_id = 0
         self._latched_from_frame = None
+        # The Hold key's face per composed frame (True: RESUME), and the
+        # face of the newest frame the deck has actually shown (review of
+        # PR #79, P2-2): with display_confirms a press does what the deck
+        # SHOWED, never what was only composed.
+        self._hold_faces = {}
+        self._shown_resume = False
         # The deck's USB write timing (UsbMeter), for the rack screen and
         # the journal; given by run_forever. Never read by arming.
         self.usb = None
         self.held_provider = held_provider or (lambda: None)
+        # () -> False while the deck's key image write is stuck (set by
+        # run_forever's threaded mode per connect): see
+        # _drop_untrusted_holds. Only ever drops a hold or a FIRE.
+        self.keys_trusted = lambda: True
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -2735,7 +2749,7 @@ class Controller:
                 else:
                     self._do_start_now()
             elif k == TOP_HOLD:
-                self._do_hold_or_resume(self._held_hint())
+                self._do_hold_or_resume(self._hold_press_resumes())
             elif k == TOP_ABORT:
                 # Item 7: Abort is NEVER behind the operator gate either,
                 # same policy as disarm above. Do not add one here.
@@ -2782,6 +2796,8 @@ class Controller:
             # fix itself, not a substitute for that guard, nor the other
             # way round.
             return
+        if not self._deck_keys_trusted():
+            self._drop_untrusted_holds()
         for i in range(len(self.names)):
             gk = GROUP_KEYS[i]
             if self._prev_keys[gk]:
@@ -2797,6 +2813,39 @@ class Controller:
                     self._vpressed.discard(i)
                     who, device = self._vwho.get(i, ("", "screen"))
                     self._do_arm_fire(i, now, who=who, screen=device)
+
+    def _deck_keys_trusted(self):
+        """False while a key image write to the deck has been in flight
+        longer than KEYS_TRUSTED_S (run_forever's threaded mode sets
+        `keys_trusted`). Never raises; True when nothing says otherwise."""
+        try:
+            return bool(self.keys_trusted())
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def _drop_untrusted_holds(self):
+        """Review of PR #79, P2-1: a deck whose key image write is stuck
+        may have stopped sending key reports too, so a key it last said
+        was down may have been let go long ago. Every arm hold on the
+        deck's OWN keys is dropped and a purge FIRE released; each needs a
+        fresh press once the deck answers again. Abort's hold is left
+        alone and a disarm needs no hold: neither ever waits on this. A
+        screen hold is not the deck's key and is left to its own rules."""
+        dropped = []
+        for i in range(len(self.names)):
+            if self._prev_keys[GROUP_KEYS[i]] and i not in self._vpressed \
+                    and self._arm_holds[i].fraction(self._clock()) > 0:
+                self._arm_holds[i].release()
+                dropped.append(self.names[i])
+        if dropped:
+            self._log(f"Stream Deck: {', '.join(dropped)} arm hold dropped: "
+                      f"the deck's keys have not been written for over "
+                      f"{KEYS_TRUSTED_S:g} s, so a key it says is held may "
+                      f"have been let go. Nothing was armed; let go and "
+                      f"hold the key again.", action="arm-refused")
+        self._fire_release("the deck's keys have not been written for over "
+                           f"{KEYS_TRUSTED_S:g} s, so a held FIRE key is "
+                           f"not trusted")
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
@@ -3126,11 +3175,13 @@ class Controller:
             else:
                 fonts.show_key(d, b0, ["START", "NOW"], CHAMPAGNE)
         b1 = face_box(TOP_HOLD)
+        resume_face = (not latched) and self._held_hint()
+        self._note_hold_face(resume_face)
         if latched:
             fonts.show_key(d, b1, ["HOLD"], DIM_TEXT, max_size=28)
-        elif self._held_hint() and blink_on:
+        elif resume_face and blink_on:
             fonts.show_key(d, b1, ["RESUME"], BLACK, bg=GOLD)
-        elif self._held_hint():
+        elif resume_face:
             fonts.show_key(d, b1, ["RESUME"], GOLD)
         else:
             fonts.show_key(d, b1, ["HOLD"], CHAMPAGNE, max_size=28)
@@ -3252,14 +3303,37 @@ class Controller:
         elif not latched:
             self._reset_shown_since = None
 
+    def _note_hold_face(self, resume):
+        """draw(): the Hold key's face in the frame being composed."""
+        self._hold_faces[self.frame_id] = bool(resume)
+        if len(self._hold_faces) > 256:
+            for k in sorted(self._hold_faces)[:-128]:
+                del self._hold_faces[k]
+
+    def _hold_press_resumes(self):
+        """Whether a press of the Hold key is a Resume. Where frames are
+        written on their own thread (display_confirms), from the face the
+        deck last SHOWED (frame_shown): an operator who sees HOLD and
+        presses it sends Hold, however late the deck is behind, so a
+        paused show is never resumed by a key that still read HOLD
+        (review of PR #79, P2-2). A RESUME not yet shown is a Hold, the
+        safe press: Hold never makes anything run. Otherwise live, as
+        always."""
+        if self.display_confirms:
+            return self._shown_resume is True
+        return self._held_hint()
+
     def frame_shown(self, shown):
         """`shown`: (frame id, clock time) of the newest frame the deck has
         been fully written (DisplayWorker.last_shown), or None. A frame
         composed since this latched spell began shows RESET, so the
-        RESET_SHOWN_S clock starts at the moment it was written."""
+        RESET_SHOWN_S clock starts at the moment it was written. The Hold
+        key's shown face is taken from it too."""
         if not shown:
             return
         fid, at = shown
+        if fid in self._hold_faces:
+            self._shown_resume = self._hold_faces[fid]
         first = self._latched_from_frame
         if first is not None and fid >= first and \
                 self._reset_shown_since is None:
@@ -3326,6 +3400,9 @@ class Controller:
 #     measures is ever read by arming, disarming or Abort.
 # --------------------------------------------------------------------------
 INPUT_STALE_S = 0.2       # the input loop's pass is 50 ms; four missed passes
+DISPLAY_WEDGED_S = 1.0    # a key image write this long: the deck is wedged
+KEYS_TRUSTED_S = 0.25     # past this, a key the deck says is held is not
+                          # trusted to arm or fire (_drop_untrusted_holds)
 USB_SLOW_S = 1.0          # a frame of key images slower than this is a fault
 USB_WINDOW_S = 60.0       # the rack screen's "worst" looks back this far
 USB_LOG_EVERY_S = 600.0   # one console line with the worst, this often
@@ -3530,6 +3607,7 @@ class DisplayWorker:
         self.error = None
         self.shown = None         # (frame id, clock when fully written)
         self.writing = None       # frame id being written now
+        self._write_since = None  # clock when the write in hand began
         self.dropped = 0
         self.written = 0
         self._thread = None
@@ -3558,8 +3636,8 @@ class DisplayWorker:
             if item is None:
                 return False
             self.writing = item[0]
+            t0 = self._write_since = self._clock()
         frame_id, img = item
-        t0 = self._clock()
         if self.meter is not None:
             self.meter.started(t0)
         try:
@@ -3570,6 +3648,7 @@ class DisplayWorker:
         except Exception as e:                   # noqa: BLE001
             with self._cv:
                 self.writing = None
+                self._write_since = None
                 if self.error is None:
                     self.error = e
             return False
@@ -3578,9 +3657,17 @@ class DisplayWorker:
             self.meter.record(done - t0, done)
         with self._cv:
             self.writing = None
+            self._write_since = None
             self.written += 1
             self.shown = (frame_id, done)
         return True
+
+    def busy_for(self, now=None):
+        """How long the write in hand has been running, 0.0 when none."""
+        now = self._clock() if now is None else now
+        with self._cv:
+            at = self._write_since
+        return 0.0 if at is None else max(0.0, now - at)
 
     def start(self):
         if self._thread is not None:
@@ -3737,6 +3824,8 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
         if pacer is not None:
             display = DisplayWorker(deck, fonts.Image, meter=meter,
                                     clock=clock).start()
+            controller.keys_trusted = (
+                lambda d=display: d.busy_for(clock()) <= KEYS_TRUSTED_S)
         outage.connected()
         connected_at = clock()
         try:
@@ -3746,6 +3835,22 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
                     # A key image write that failed (an unplug) ends the
                     # pass here, exactly like a key read that did.
                     display.check()
+                    # A write that has not finished in DISPLAY_WEDGED_S is a
+                    # wedged deck (review of PR #79, P2-1), handled exactly
+                    # like an unplug: the holds and a purge FIRE in
+                    # progress are dropped (reset_on_reconnect), the deck
+                    # is retired, the "deck" alert goes up. A wedged deck
+                    # may have stopped sending key reports too, so a key it
+                    # last said was down (FIRE held) is never trusted past
+                    # this. While a key is down the keys are redrawn every
+                    # FRAME_S, so a write is always in flight to time.
+                    meter.check(clock())
+                    stuck = display.busy_for(clock())
+                    if stuck > DISPLAY_WEDGED_S:
+                        raise DeckDisconnected(
+                            f"a key image write to the deck has not "
+                            f"finished in {stuck:.1f} s, so the deck is "
+                            f"treated as unplugged until it answers again")
                 # Item 3: every key-state snapshot the device reported
                 # since the last read, in order, not just the latest one
                 # -- a quick tap-and-release between read cycles must not

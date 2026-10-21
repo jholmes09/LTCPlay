@@ -8161,11 +8161,11 @@ def build():
 
  ("deck states: AUDIO LOST covers the Hold key too",
   "ltcplay/streamdeck.py",
-  "        elif self._held_hint() and blink_on:\n"
+  "        elif resume_face and blink_on:\n"
   "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n",
   "        elif self._audio_lost():\n"
   "            fonts.show_key(d, b1, [\"AUDIO\", \"LOST\"], AMBER, kind=\"sans\")\n"
-  "        elif self._held_hint() and blink_on:\n"
+  "        elif resume_face and blink_on:\n"
   "            fonts.show_key(d, b1, [\"RESUME\"], BLACK, bg=GOLD)\n"),
 
  ("deck states: the deck ignores the engine's audio field",
@@ -9280,8 +9280,53 @@ def build():
 
  ('deck usb: the arm socket sends without its lock',
   'ltcplay/streamdeck.py',
-  '        with self.lock:\n            self._send_locked(names)',
-  '        self._send_locked(names)'),
+  '        with self.lock:\n            note = self._send_locked(names)',
+  '        note = self._send_locked(names)'),
+
+ ('deck usb: the arm socket journals a failed send under its lock',
+  'ltcplay/streamdeck.py',
+  '        with self.lock:\n            note = self._send_locked(names)\n',
+  '        with self.lock:\n            note = self._send_locked(names)\n'
+  '            if note is not None:\n'
+  '                self._journal(note[0], **note[1])\n'
+  '                note = None\n'),
+
+ ('deck usb: a wedged key image write is never an unplug',
+  'ltcplay/streamdeck.py',
+  '                    if stuck > DISPLAY_WEDGED_S:',
+  '                    if False:'),
+
+ ('deck usb: a key the stuck deck says is held is trusted',
+  'ltcplay/streamdeck.py',
+  '        if not self._deck_keys_trusted():\n'
+  '            self._drop_untrusted_holds()',
+  '        if False:\n'
+  '            self._drop_untrusted_holds()'),
+
+ ('deck usb: a stuck deck never releases a held FIRE',
+  'ltcplay/streamdeck.py',
+  '        self._fire_release("the deck\'s keys have not been written for over "',
+  '        (lambda *a: None)("the deck\'s keys have not been written for over "'),
+
+ ('deck usb: the threaded loop never says when the keys are not trusted',
+  'ltcplay/streamdeck.py',
+  '            controller.keys_trusted = (',
+  '            _unused_keys_trusted = ('),
+
+ ('deck usb: a stuck write is trusted for a second and a half',
+  'ltcplay/streamdeck.py',
+  'KEYS_TRUSTED_S = 0.25     # past this',
+  'KEYS_TRUSTED_S = 1.5      # past this'),
+
+ ('deck hold: the Hold key acts on the composed face, not the shown one',
+  'ltcplay/streamdeck.py',
+  '            return self._shown_resume is True\n        return self._held_hint()',
+  '            return self._held_hint()\n        return self._held_hint()'),
+
+ ('deck hold: the shown Hold face is never taken from the frame shown',
+  'ltcplay/streamdeck.py',
+  '            self._shown_resume = self._hold_faces[fid]',
+  '            pass'),
 
  ('deck usb: RESET counts from the frame composed, not the frame shown',
   'ltcplay/streamdeck.py',
