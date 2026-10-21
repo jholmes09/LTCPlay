@@ -104,6 +104,44 @@ is already there is never touched. The rack screen's "Getting started"
 card lists what is still missing (a show folder with a show file in it,
 the schedule) and where to click; it goes away once both exist.
 
+## The show folder
+
+The engine serves the folder named by `show_folder` in showpc.json
+(Start menu, LTC Player, "Settings and logs"). Change it there, or on
+the Programming screen's "Show folder" card. LTC Player restarts the
+engine with the new folder once no show is running. That card says which
+folder the engine serves, and the rack screen says it in red while
+showpc.json names another.
+
+## Show PC setup the soak taught us (2026-10-21)
+
+- **One address per Art-Net receiver.** Every program that receives
+  Art-Net needs its own address. MadMapper counts twice: its timeline
+  sync and its DMX input are each a receiver. Two receivers on one
+  address starve one of them (BEYOND never chased timecode). What worked:
+  two Windows loopback adapters, "ShowNet MadMapper" at 10.250.1.1 and
+  "ShowNet BEYOND" at 10.250.2.1, with the show file's
+  `clock.artnet.nodes` set to `"MadMapper": "10.250.1.1"` and
+  `"BEYOND": "10.250.2.1"`. Add an adapter in Device Manager: Action,
+  Add legacy hardware, Network adapters, Microsoft, "Microsoft KM-TEST
+  Loopback Adapter"; then give it its address and name.
+- **MadMapper's Sync Source.** After reopening the project it can be
+  empty. Set it to Art-Net and save the project.
+- **48 kHz.** Set the interface to 48 kHz in its own app (PreSonus
+  Universal Control). Otherwise Run is refused with "will not play N
+  output(s) at 48000 Hz".
+- **Windows Time running.** With the service stopped the clock was 2.7 s
+  behind. services.msc, Windows Time, Startup type Automatic, Start. The
+  Morning page's Engine checks says it loudly when the clock is off by
+  more than 0.5 s and the service is stopped.
+- **Pagefile.** 15.8 GB of memory, the engine's show audio 1.0 to 1.5 GB,
+  MadMapper about 3.4 GB: with a 2 GB pagefile about 84% of the commit
+  limit was in use. Set it to System managed (sysdm.cpl, Advanced,
+  Performance Settings, Advanced, Virtual memory) or at least 16 GB.
+- **Render after every layout change.** A render older than
+  xlights_networks.xml plays no flame cues. The rack screen, the Stream
+  Deck and the Morning page say CUES FAULT and name the files.
+
 ## Which mode am I in, and how do I minimize or close the window
 
 - The header's MODE pill says it on every screen: SHOW (a show file is
