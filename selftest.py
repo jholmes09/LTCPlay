@@ -45700,8 +45700,8 @@ t(renders > 0, "the page was redrawn");
                  "a group button"),
                 ("purge-fire", {"fire_id": None}, "a fire heartbeat"),
                 ("laser-test", {"laser": "l1", "on": True}, "a laser test ON"),
-                ("lock", {"kind": "machine", "id": "g2", "on": True},
-                 "a lock"),
+                ("lock", {"kind": "rewrite", "confirmed": True},
+                 "a rewrite of the lockout file"),
                 ("lock", {"kind": "machine", "id": "g2", "on": False,
                           "confirmed": True}, "an unlock")):
             body_["seen"] = R.seen()
@@ -45733,17 +45733,22 @@ t(renders > 0, "the page was redrawn");
               f"another screen is not held back by this one's arranging: "
               f"{st} {out}")
         # The deck's FIRE heartbeat (loopback, screen "Stream Deck", under
-        # the rack screen's device name) fires the iPad's selection even
-        # while the rack screen arranges: the refusal it meets, if any, is
-        # never Arrange mode's.
+        # the rack screen's device name) does NOT fire the iPad's selection
+        # while the rack screen arranges (Jeff, 2026-10-21: "If it's being
+        # arranged in any capacity, firing is disabled").
         st_, out_ = R.m.post("purge-fire", {"fire_id": None}, "Rack screen",
                              "Andy", "Stream Deck", True, True)
-        check("Arrange mode" not in str(out_.get("error", "")),
-              f"the deck's FIRE is not held back by the rack screen "
-              f"arranging: {st_} {out_}")
+        check(st_ == 409 and "Firing is off" in out_.get("error", "") and
+              "Rack screen is in Arrange mode" in out_["error"] and
+              out_.get("let_go") is True and R.m.purge.fire is None and
+              R.m.purge.fires == 0,
+              f"the deck's FIRE is held back by the rack screen arranging, "
+              f"and says which screen: {st_} {out_}")
         R.m.purge.clear("test")
-        check(R.m.arrange_refusal("purge-fire", {}, "Stream Deck") == "",
-              "the Stream Deck process is never arranging")
+        check("Rack screen" in R.m.arrange_refusal("purge-fire", {},
+                                                   "Stream Deck"),
+              "a fire from the Stream Deck process meets the rack screen's "
+              "Arrange mode too")
         # Reset layout: the saved file goes, the default comes back.
         lay_path = os.path.join(R.work, MO.LAYOUT_FILE)
         check(os.path.isfile(lay_path), "setup: a layout was saved above")
@@ -45807,6 +45812,33 @@ t(renders > 0, "the page was redrawn");
               f"once window A itself leaves Arrange mode a click arms: "
               f"{st} {out}")
         R.m.purge.clear("test")
+        # The other way round (re-review of PR #73): window A's number runs
+        # far ahead, then window B goes into Arrange mode with a LOWER
+        # number than A's. Each window's numbers are its own, so B's beat
+        # is not an overtaken one; a check that only had B above A could
+        # pass by the order of the numbers alone.
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "A", "seq": 900, "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": True, "inst": "B", "seq": 51,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and out["arranging"] is True and
+              R.m.device_arranging("Rack screen") is True,
+              f"window B's Arrange beat counts though window A's number "
+              f"is far above it: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 409 and "Arrange mode" in out.get("error", "") and
+              R.m.purge.view()["selected"] == [],
+              f"so a click from the rack screen arms nothing: {st} {out}")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "A", "seq": 901, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is True,
+              "window A's next ordinary beat leaves window B arranging")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "B", "seq": 52, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "window B's own next beat ends its Arrange mode")
         # An older beat that arrives after a later one says nothing about
         # Arrange mode (finding 6).
         R.ask("POST", "/api/remote/morning-open",
@@ -45853,8 +45885,8 @@ t(renders > 0, "the page was redrawn");
               f"a view-only device's Arrange beat is recorded and does not "
               f"hold the page open: {st} {out}")
         for route, body_, what in (
-                ("lock", {"kind": "machine", "id": "g1", "on": True},
-                 "a lock"),
+                ("lock", {"kind": "rewrite", "confirmed": True},
+                 "a rewrite of the lockout file"),
                 ("lock", {"kind": "machine", "id": "g1", "on": False,
                           "confirmed": True}, "an unlock"),
                 ("laser-test", {"laser": "laser-3", "on": True},
@@ -45880,11 +45912,11 @@ t(renders > 0, "the page was redrawn");
               f"another view-only window's ordinary beat does not clear "
               f"this window's Arrange mode: {st} {out}")
         st, _h, out = R.ask("POST", "/api/remote/lock",
-                            {"kind": "machine", "id": "g1", "on": True,
-                             "seen": R.seen()}, client=loop)
-        check(st == 409 and "Arrange mode" in out.get("error", "") and
-              not R.m.lockout.is_locked("machine", "g1"),
-              f"so a lock from it is still refused: {st} {out}")
+                            {"kind": "machine", "id": "g1", "on": False,
+                             "confirmed": True, "seen": R.seen()},
+                            client=loop)
+        check(st == 409 and "Arrange mode" in out.get("error", ""),
+              f"so an unlock from it is still refused: {st} {out}")
         st, _h, out = R.ask("POST", "/api/remote/morning-open",
                             {"inst": "V", "seq": 2, "seen": R.seen()},
                             client=loop)
@@ -45892,11 +45924,287 @@ t(renders > 0, "the page was redrawn");
               R.m.device_arranging("Rack screen") is False,
               f"window V's own view-only beat ends its Arrange mode: "
               f"{st} {out}")
+        # The other way round on the view-only path too: V's number far
+        # ahead, then W arranges with a lower one. It still counts.
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "V", "seq": 900, "seen": R.seen()}, client=loop)
+        st, _h, out = R.ask("POST", "/api/remote/morning-open",
+                            {"arranging": True, "inst": "W", "seq": 51,
+                             "seen": R.seen()}, client=loop)
+        check(st == 200 and out.get("view_only") is True and
+              out.get("arranging") is True and
+              R.m.device_arranging("Rack screen") is True,
+              f"view-only window W's Arrange beat counts though window V's "
+              f"number is far above it: {st} {out}")
+        R.ask("POST", "/api/remote/morning-open",
+              {"inst": "W", "seq": 52, "seen": R.seen()}, client=loop)
+        check(R.m.device_arranging("Rack screen") is False,
+              "and W's own next beat ends it")
         RM.save_settings(R.work, purge_arming=True)
     finally:
         R.close()
     print("  ok")
 
+
+
+def test_morning_arrange_disables_firing():
+    section("Morning page, Arrange mode disables firing (Jeff, 2026-10-21: "
+            "\"If it's being arranged in any capacity, firing is "
+            "disabled\"): while ANY screen or window arranges, every purge "
+            "fire is refused from every surface, the Stream Deck's FIRE key "
+            "included, whoever owns the selection; a press already going "
+            "stops at once; the refusal names who is arranging; Abort, "
+            "Hold, Stop, disarm, letting go, a lockout, a laser test OFF "
+            "and Acknowledge still go; a crashed page lets go in 2 s; an "
+            "unreadable Arrange state fires nothing")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import morning as MO
+    R = _morning_rig(S, _MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    ipad = ("10.20.0.44", 50000)
+    IPAD = "iPad at 10.20.0.44"
+    link = R.link
+
+    def deck(fid=None):
+        body = {"seen": R.seen(), "who": "Andy", "screen": "Stream Deck"}
+        if fid is not None:
+            body["fire_id"] = fid
+        return R.ask("POST", "/api/remote/purge-fire", body, client=loop)
+
+    def page_fire(client, fid=None):
+        body = {"seen": R.seen()}
+        if fid is not None:
+            body["fire_id"] = fid
+        return R.ask("POST", "/api/remote/purge-fire", body, client=client)
+
+    def beat(client, arranging, inst, seq):
+        return R.ask("POST", "/api/remote/morning-open",
+                     {"arranging": arranging, "inst": inst, "seq": seq,
+                      "seen": R.seen()}, client=client)
+
+    def step(dt=0.1):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+
+    try:
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        R.feed()
+        beat(loop, False, "R", 1)
+        beat(ipad, False, "I", 1)
+        # Nobody arranging: the deck fires the iPad's selection.
+        check(R.m.arranging_devices() == [] and
+              R.m.fire_arrange_refusal() == "",
+              "setup: nobody is arranging")
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=ipad)
+        check(st == 200 and R.m.purge.owner == IPAD,
+              f"setup: the iPad arms Ground 1: {st} {out}")
+        st, _h, out = deck()
+        check(st == 200 and out["firing"] == ["Ground 1"] and
+              R.m.purge.fire["device"] == "Stream Deck",
+              f"nobody arranging: the deck's FIRE fires: {st} {out}")
+        fid = out["fire_id"]
+        # A press in progress stops the moment ANOTHER device (the rack
+        # screen, not the owner, not the deck) goes into Arrange mode.
+        cleared = link.cleared
+        st, _h, out = beat(loop, True, "R", 2)
+        check(st == 200 and out["arranging"] is True and
+              R.m.purge.fire is None and link.cleared > cleared,
+              f"the deck's press stops at once when the rack screen goes "
+              f"into Arrange mode, before any heartbeat or watcher pass: "
+              f"{st} {out} {R.m.purge.view()}")
+        check(R.m.purge.selected == ["g1"] and R.m.purge.owner == IPAD,
+              "the iPad's selection is its own and stays")
+        check(any(r.get("action") == "purge" and
+                  r.get("outcome") == "fire_end" and
+                  "Rack screen went into Arrange mode" in r.get("text", "")
+                  for r in R.svc.journal),
+              "the journal says the press ended because the rack screen "
+              "went into Arrange mode")
+        step()
+        st, _h, out = deck(fid)
+        check(st == 409 and out.get("let_go") is True and
+              "Firing is off: Rack screen is in Arrange mode" in
+              out.get("error", ""),
+              f"the deck's next heartbeat is told why, naming the screen: "
+              f"{st} {out}")
+        # The deck under the rack screen's own device name, the rack
+        # screen arranging (the requester itself): refused.
+        n = R.m.purge.fires
+        frames = len(link.frames)
+        st, _h, out = deck()
+        check(st == 409 and "Rack screen is in Arrange mode" in
+              out.get("error", "") and R.m.purge.fire is None and
+              R.m.purge.fires == n and len(link.frames) == frames,
+              f"a new deck press is refused while its own device name "
+              f"arranges; nothing reaches the link: {st} {out}")
+        st, _h, out = page_fire(ipad)
+        check(st == 409 and "Rack screen is in Arrange mode" in
+              out.get("error", "") and R.m.purge.fires == n,
+              f"the owner's own Space bar is refused while another screen "
+              f"arranges: {st} {out}")
+        # Safety actions during Arrange: never held back.
+        for route, body_, client, what in (
+                ("purge-stop", {"who": "Andy", "screen": "Stream Deck"},
+                 loop, "the deck letting go"),
+                ("purge-stop", {}, ipad, "the owner letting go"),
+                ("purge-select", {"machine": "g1", "on": False}, loop,
+                 "a select OFF from the arranging screen"),
+                ("laser-test", {"laser": "laser-3", "on": False}, loop,
+                 "a laser test OFF from the arranging screen"),
+                ("lock", {"kind": "machine", "id": "s1", "on": True}, loop,
+                 "a lockout from the arranging screen")):
+            body_ = dict(body_, seen=R.seen())
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=client)
+            check(st == 200 and "Arrange" not in str(out.get("error", "")),
+                  f"{what} goes while arranging: {st} {out}")
+        check(R.m.lockout.is_locked("machine", "s1"),
+              "the lockout took")
+        R.fs_lockout = {"slots": sorted(R.m.lockout.channels(R.m.cfg)),
+                        "state": "read"}
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/purge-clear",
+                            {"seen": R.seen()}, client=ipad)
+        check(st == 200 and R.m.purge.selected == [],
+              f"the owner's clear goes while another screen arranges: "
+              f"{st} {out}")
+        R.remote.alerts.raise_("deck", "Test alert for Acknowledge.")
+        for route, body_ in (("disarm-all", {}), ("hold", {}),
+                             ("alert", {"action": "acknowledge"}),
+                             ("abort", {"confirmed": True})):
+            st, _h, out = R.ask("POST", "/api/remote/" + route, body_,
+                                client=loop)
+            check(st == 200 and "Arrange" not in str(out) and
+                  "Firing is off" not in str(out),
+                  f"{route} goes while a screen arranges: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/reset", {"seen": R.seen()},
+                            client=loop)
+        R.settle()
+        check(R.remote.show_live_refusal() == "",
+              f"setup: the Abort is reset: {st} {out}")
+        # Two devices arranging: both named.
+        beat(ipad, True, "I", 2)
+        why = R.m.fire_arrange_refusal()
+        check("Rack screen and iPad at 10.20.0.44 are in Arrange mode" in
+              why or "iPad at 10.20.0.44 and Rack screen are in Arrange "
+              "mode" in why,
+              f"two devices arranging are both named: {why}")
+        beat(ipad, False, "I", 3)
+        beat(loop, False, "R", 3)
+        check(R.m.arranging_devices() == [], "setup: nobody arranging")
+        # Another device arranges (the iPad), the rack screen owns the
+        # selection, the deck fires under the rack screen's name: refused,
+        # though the deck's own device name is not arranging.
+        st, _h, out = R.ask("POST", "/api/remote/purge-select",
+                            {"machine": "g1", "seen": R.seen()}, client=loop)
+        check(st == 200 and R.m.purge.owner == "Rack screen",
+              f"setup: the rack screen arms Ground 1: {st} {out}")
+        st, _h, out = page_fire(loop)
+        check(st == 200 and out["firing"] == ["Ground 1"],
+              f"the rack screen's Space bar fires: {st} {out}")
+        page_fid = out["fire_id"]
+        beat(ipad, True, "I", 4)
+        check(R.m.purge.fire is None,
+              "the rack screen's own press stops when the iPad goes into "
+              "Arrange mode")
+        step()
+        st, _h, out = page_fire(loop, page_fid)
+        check(st == 409 and "iPad at 10.20.0.44 is in Arrange mode" in
+              out.get("error", ""),
+              f"its next heartbeat is told the iPad is arranging: {st} {out}")
+        n = R.m.purge.fires
+        st, _h, out = deck()
+        check(st == 409 and "iPad at 10.20.0.44 is in Arrange mode" in
+              out.get("error", "") and R.m.purge.fires == n and
+              R.m.purge.fire is None,
+              f"the deck's FIRE is refused while ANOTHER device arranges: "
+              f"{st} {out}")
+        st, _h, out = page_fire(loop)
+        check(st == 409 and R.m.purge.fires == n,
+              f"and the selection's owner's Space bar too: {st} {out}")
+        # A crashed page (the iPad's beats stop): after OPEN_STALE_S its
+        # Arrange entry lets go by the clock, with no further beat, and the
+        # deck fires again.
+        for _ in range(int(MO.OPEN_STALE_S / 0.5) + 1):
+            step(0.5)
+            beat(loop, False, "R", 10 + _)
+        check(R.m.arranging_devices() == [] and
+              R.m.fire_arrange_refusal() == "",
+              f"a page whose beats stopped is not arranging after "
+              f"{MO.OPEN_STALE_S:g} s: {R.m.arranging_devices()}")
+        st, _h, out = deck()
+        check(st == 200 and out["firing"] == ["Ground 1"],
+              f"so the deck's FIRE fires again: {st} {out}")
+        fid = out["fire_id"]
+        st, _h, out = R.ask("POST", "/api/remote/purge-stop",
+                            {"who": "Andy", "screen": "Stream Deck"},
+                            client=loop)
+        check(st == 200 and R.m.purge.fire is None, "and lets go")
+        # The stale entry needs no beat at all to let go: the clock alone.
+        R.m._arranging["Old iPad"] = {"x": R.mono[0]}
+        check(R.m.arranging_devices() == ["Old iPad"], "an entry, fresh")
+        R.mono[0] += MO.OPEN_STALE_S + 0.01
+        R.wall[0] += MO.OPEN_STALE_S + 0.01
+        check(R.m.arranging_devices() == [] and
+              R.m.fire_arrange_refusal() == "",
+              "and 2 s later it is gone by the clock alone")
+        step()
+        beat(loop, False, "R", 50)
+        # The watcher's belt: a press that got in at the same instant a
+        # screen went into Arrange mode ends on the next watcher pass.
+        st, _h, out = deck()
+        check(st == 200, f"setup: a deck press: {st} {out}")
+        fid = out["fire_id"]
+        R.m._arranging["iPad at 10.20.0.44"] = {"I": R.mono[0]}
+        check(R.m.purge.fire is not None, "setup: the press slipped in")
+        R.m.tick()
+        check(R.m.purge.fire is None and any(
+                  r.get("outcome") == "fire_end" and "Firing is off" in
+                  r.get("text", "") for r in R.svc.journal),
+              "the watcher ends a press while any screen arranges")
+        R.m._arranging.clear()
+        # And a refused heartbeat ends a press that slipped in, there and
+        # then, with no watcher pass.
+        st, _h, out = deck()
+        check(st == 200, f"setup: a deck press: {st} {out}")
+        fid = out["fire_id"]
+        R.m._arranging["iPad at 10.20.0.44"] = {"I": R.mono[0]}
+        step(0.05)
+        st, _h, out = deck(fid)
+        check(st == 409 and R.m.purge.fire is None,
+              f"its refused heartbeat ends the press: {st} {out}")
+        R.m._arranging.clear()
+        # The Arrange state cannot be read: nothing fires.
+        saved, R.m._arranging = R.m._arranging, None
+        try:
+            n = R.m.purge.fires
+            why = R.m.fire_arrange_refusal()
+            check(why.startswith("Firing is off") and "could not be read"
+                  in why, f"an unreadable Arrange state refuses: {why}")
+            st, _h, out = deck()
+            check(st == 409 and "could not be read" in out.get("error", "")
+                  and R.m.purge.fires == n and R.m.purge.fire is None,
+                  f"and the deck's FIRE fires nothing: {st} {out}")
+            st, _h, out = R.ask("POST", "/api/remote/purge-stop",
+                                {"who": "Andy", "screen": "Stream Deck"},
+                                client=loop)
+            check(st == 200, f"letting go still goes: {st} {out}")
+        finally:
+            R.m._arranging = saved
+        st, _h, out = deck()
+        check(st == 200, f"with the state readable again the deck fires: "
+                         f"{st} {out}")
+        R.ask("POST", "/api/remote/purge-stop",
+              {"who": "Andy", "screen": "Stream Deck"}, client=loop)
+    finally:
+        R.close()
+    print("  ok")
 
 def test_windows_rack_window_and_explorer_front():
     section("rack screen window (Jeff, 2026-10-19): the Windows app opens "
@@ -49271,6 +49579,7 @@ if __name__ == "__main__":
     test_checklist_audit_chain_pdf_export_and_tally()
     test_morning_lockout_trust_link_and_close()
     test_morning_arrange_mode_arms_nothing()
+    test_morning_arrange_disables_firing()
     test_windows_rack_window_and_explorer_front()
     test_users_passwords_are_slow_salted_hashes_and_never_stored()
     test_users_lockout_is_short_and_never_permanent()

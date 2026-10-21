@@ -8776,7 +8776,7 @@ def build():
   '''openBeatBody(how === "left")''',
   '''openBeatBody(false)'''),
 
- ("morning: a screen in Arrange mode can still arm, fire or lock at the engine",
+ ("morning: a screen in Arrange mode can still arm or unlock at the engine",
   "ltcplay/morning.py",
   '''        if not gated or not self.device_arranging(device):
             return ""''',
@@ -8792,16 +8792,95 @@ def build():
 
  ("morning: the engine's Arrange gate is never consulted by the routes",
   "ltcplay/morning.py",
-  '''        why = "" if deck_fire else self.arrange_refusal(name, body, device)
+  '''        why = self.arrange_refusal(name, body, device)
         if why:
+            if name == "purge-fire":
+                self.purge.stop(f"refused: {why}")
             return 409, {"error": why, "let_go": True}''',
   ''''''),
 
- ("morning: every FIRE heartbeat over loopback reads as the deck's, so the "
-  "rack screen's own Space bar is not held back by its Arrange mode",
+ # -- Arrange mode disables firing (Jeff, 2026-10-21: "If it's being
+ # arranged in any capacity, firing is disabled").
+ ("morning: firing is held back only while the requesting device itself "
+  "arranges, not while another screen does",
   "ltcplay/morning.py",
-  '''        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"''',
-  '''        deck_fire = name == "purge-fire" and local'''),
+  '''        if name == "purge-fire":
+            return self.fire_arrange_refusal()''',
+  '''        if name == "purge-fire":
+            return self.fire_arrange_refusal() \\
+                if self.device_arranging(device) else ""'''),
+
+ ("morning: the Stream Deck's FIRE key is exempt from Arrange mode again",
+  "ltcplay/morning.py",
+  '''        why = self.arrange_refusal(name, body, device)
+        if why:
+            if name == "purge-fire":''',
+  '''        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"
+        why = "" if deck_fire else self.arrange_refusal(name, body, device)
+        if why:
+            if name == "purge-fire":'''),
+
+ ("morning: a fire press keeps going when another screen goes into Arrange "
+  "mode",
+  "ltcplay/morning.py",
+  '''            if self.purge.fire is not None:
+                # Whoever is firing, from whatever surface''',
+  '''            if False:
+                # Whoever is firing, from whatever surface'''),
+
+ ("morning: the watcher never ends a fire press while a screen arranges",
+  "ltcplay/morning.py",
+  '''            held = self.fire_arrange_refusal()
+            if held:
+                try:''',
+  '''            held = ""
+            if held:
+                try:'''),
+
+ ("morning: a fire heartbeat refused by Arrange mode leaves the press going",
+  "ltcplay/morning.py",
+  '''            if name == "purge-fire":
+                self.purge.stop(f"refused: {why}")''',
+  '''            if False:
+                self.purge.stop(f"refused: {why}")'''),
+
+ ("morning: an Arrange state that cannot be read lets the purge fire",
+  "ltcplay/morning.py",
+  '''            return (f"Firing is off: whether a screen is in Arrange mode "
+                    f"could not be read ({type(e).__name__}). Nothing was "
+                    f"fired.")''',
+  '''            return ""'''),
+
+ ("morning: an Arrange entry whose page crashed holds firing off for ever",
+  "ltcplay/morning.py",
+  '''                      if any(now - t <= OPEN_STALE_S
+                             for t in list(insts.values())))''',
+  '''                      if insts)'''),
+
+ ("morning: the fire refusal does not say which screen is arranging",
+  "ltcplay/morning.py",
+  '''        names = " and ".join(who)''',
+  '''        names = "a screen"'''),
+
+ ("morning: Arrange mode holds back a lockout",
+  "ltcplay/morning.py",
+  '''        gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \\''',
+  '''        gated = name == "lock" \\'''),
+
+ ("morning: an unlock goes from a screen in Arrange mode",
+  "ltcplay/morning.py",
+  '''        gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \\''',
+  '''        gated = (name == "lock" and body.get("kind") == "rewrite") \\'''),
+
+ ("morning: a rewrite of the lockout file goes from a screen in Arrange mode",
+  "ltcplay/morning.py",
+  '''        gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \\''',
+  '''        gated = (name == "lock" and off) \\'''),
+
+ ("morning: one window's beat numbers are counted against another window's",
+  "ltcplay/morning.py",
+  '''        key = (device, inst)''',
+  '''        key = (device, "")'''),
 
  ("remote: an iPad unlocks a machine or lights a laser test without screen_arming (T9, T10)",
   "ltcplay/remote.py",

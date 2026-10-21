@@ -1291,10 +1291,20 @@ class Morning:
             if self.purge.owner == device and (self.purge.selected or
                                                self.purge.fire is not None):
                 self.purge.clear(f"{device} went into Arrange mode")
+            if self.purge.fire is not None:
+                # Whoever is firing, from whatever surface (the deck's FIRE
+                # key included): the press ends now, the same stop as the
+                # key coming up (Jeff, 2026-10-21: "If it's being arranged
+                # in any capacity, firing is disabled"). Its next heartbeat
+                # meets fire_arrange_refusal() and is told why.
+                self.purge.stop(f"{device} went into Arrange mode, and "
+                                f"nothing fires while any screen is "
+                                f"arranging")
             if first:
                 self._note(f"{device} is arranging the machine layout: "
-                           f"nothing arms, fires, locks or unlocks from it "
-                           f"until it saves or cancels.", action="layout",
+                           f"nothing arms or unlocks from it, and nothing "
+                           f"fires from any surface, until it saves or "
+                           f"cancels.", action="layout",
                            outcome="arranging", screen=device)
         else:
             mine = self._arranging.get(device)
@@ -1310,24 +1320,70 @@ class Morning:
         return any(now - t <= OPEN_STALE_S
                    for t in (self._arranging.get(device) or {}).values())
 
+    def arranging_devices(self):
+        """Every device with ANY instance whose last open beat within
+        OPEN_STALE_S said it is in Arrange mode, sorted. An entry whose
+        beats stopped (a crashed browser, a closed window) drops out after
+        OPEN_STALE_S by the clock alone, with no further beat needed."""
+        now = self._clock()
+        return sorted(d for d, insts in list(self._arranging.items())
+                      if any(now - t <= OPEN_STALE_S
+                             for t in list(insts.values())))
+
+    def fire_arrange_refusal(self):
+        """The sentence that refuses ANY purge fire heartbeat while any
+        screen or window anywhere is in Arrange mode, or "" (Jeff,
+        2026-10-21: "If it's being arranged in any capacity, firing is
+        disabled"). Every surface meets it, the Stream Deck's FIRE key
+        included, whoever owns the selection. If the Arrange state cannot
+        be read, nothing fires."""
+        try:
+            who = self.arranging_devices()
+        except Exception as e:                           # noqa: BLE001
+            return (f"Firing is off: whether a screen is in Arrange mode "
+                    f"could not be read ({type(e).__name__}). Nothing was "
+                    f"fired.")
+        if not who:
+            return ""
+        names = " and ".join(who)
+        return (f"Firing is off: {names} {'is' if len(who) == 1 else 'are'} "
+                f"in Arrange mode on the Morning and Shutdown page, and "
+                f"nothing fires while any screen is arranging. Press Save "
+                f"layout or Cancel there (a page that has closed lets go "
+                f"by itself within {OPEN_STALE_S:g} s). Nothing was fired.")
+
     def arrange_refusal(self, name, body, device):
         """The sentence that refuses `name` from a device in Arrange mode,
-        or "". Arming a machine, every fire heartbeat, a laser test going
-        ON and every lock or unlock are held back; a select or laser test
-        going OFF, a stop and a clear only take risk away and go."""
+        or "". Arming a machine, a laser test going ON, an unlock and a
+        rewrite of the lockout file are held back from the arranging
+        device; every fire heartbeat is held back from EVERY device while
+        any screen arranges (fire_arrange_refusal). What only takes risk
+        away is never held back by Arrange mode, from any device: a
+        select or laser test going OFF, a lockout, a stop and a clear."""
+        if name == "purge-fire":
+            return self.fire_arrange_refusal()
         off = body.get("on") is False
-        gated = name in ("purge-fire", "lock") or \
-            (name in ("purge-select", "laser-test") and not off)
+        gated = (name == "lock" and (off or body.get("kind") == "rewrite")) \
+            or (name in ("purge-select", "laser-test") and not off)
         if not gated or not self.device_arranging(device):
             return ""
         return (f"{device} is in Arrange mode on the Morning and Shutdown "
-                f"page: nothing can be armed, fired, locked or unlocked "
-                f"from it until Save layout or Cancel. Nothing was done.")
+                f"page: nothing can be armed, fired or unlocked from it "
+                f"until Save layout or Cancel. Nothing was done.")
 
     def tick(self, now=None):
         """The watcher's pass, 10 a second: purge expiry, laser tests off
         when a show goes live or an Abort stands, the link's lock set."""
         now = self._clock() if now is None else now
+        if self.purge.fire is not None:
+            # The belt under open_beat's stop: a press that began in the
+            # same instant a screen went into Arrange mode ends here.
+            held = self.fire_arrange_refusal()
+            if held:
+                try:
+                    self.purge.stop(held)
+                except Exception:
+                    pass
         try:
             self.purge.tick(now, self.device_open(self.purge.owner))
         except Exception as e:
@@ -1541,13 +1597,15 @@ class Morning:
             return 200, {"ok": True, "open": True,
                          "arranging": self.device_arranging(device)}
         # A screen in Arrange mode (Jeff, 2026-10-19): the engine's own
-        # refusal, whatever the page let through. The deck process's FIRE
-        # heartbeats come over loopback under the rack screen's device
-        # name; they fire whichever screen's selection stands (an arranging
-        # screen has none), so the rack screen arranging never refuses them.
-        deck_fire = name == "purge-fire" and local and screen == "Stream Deck"
-        why = "" if deck_fire else self.arrange_refusal(name, body, device)
+        # refusal, whatever the page let through. A fire heartbeat is
+        # refused while ANY screen or window arranges, from every surface,
+        # the Stream Deck's FIRE key included (Jeff, 2026-10-21: "If it's
+        # being arranged in any capacity, firing is disabled"), and a press
+        # still going ends with it.
+        why = self.arrange_refusal(name, body, device)
         if why:
+            if name == "purge-fire":
+                self.purge.stop(f"refused: {why}")
             return 409, {"error": why, "let_go": True}
         if name == "purge-select":
             on = body.get("on") is not False
