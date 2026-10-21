@@ -48841,12 +48841,16 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
               not any(kw.get("action") == "deck" and kw.get("fault")
                       for _t, kw in journal) and len(opened) == 1,
               "no release and no unplug for a slow write")
+        # Counted, never compared by time: Windows' monotonic clock ticks
+        # every 15.6 ms, so a stop posted within that tick of the release
+        # would read as "not after" it.
+        n_stops = len(stops)
         deck.press()                             # let go, still stalled
         t_up = time.monotonic()
         check(_wait(lambda: not c.purge_fire.firing, 0.3),
               f"the release, read during the stall, ends the fire at once "
               f"({time.monotonic() - t_up:.2f} s)")
-        check(_wait(lambda: any(s_ > t_up for s_ in stops), 1),
+        check(_wait(lambda: len(stops) > n_stops, 1),
               "and purge-stop is posted")
         time.sleep(0.3)
         check(not [b_ for b_ in beats if b_ > t_up + 0.2],
@@ -48881,6 +48885,7 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
         deck2.press(sd.TOP_START)
         check(_wait(lambda: c.purge_fire.firing, 1),
               "setup: FIRE held on the new deck")
+        n_stops = len(stops)
         t_f = time.monotonic()
         deck2.freeze.set()
         check(_wait(lambda: not c.purge_fire.firing,
@@ -48891,7 +48896,7 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
         stopped = time.monotonic()
         check(stopped - t_f >= sd.PURGE_INPUT_STALE_S - 0.1,
               f"and not before: {stopped - t_f:.2f} s")
-        check(_wait(lambda: any(s_ > t_f for s_ in stops), 1),
+        check(_wait(lambda: len(stops) > n_stops, 1),
               "purge-stop is posted for it")
         time.sleep(0.4)
         check(not [b_ for b_ in beats if b_ > stopped + 0.2],
