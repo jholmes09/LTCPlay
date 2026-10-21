@@ -172,7 +172,9 @@ FAILURE MODES, assumptions made here (flag these in the safety review):
      loop that READS the keys (holds, Abort, disarm) has run within
      INPUT_STALE_S, so a frozen deck program still goes silent and
      flamesafe's own arm_stale_ms still disarms it. Only a slow screen no
-     longer does.
+     longer does, and a slow or stuck key image write never drops an arm
+     hold or a held FIRE either (DECK_STALL_RULING, with what still ends
+     one and the residual risk).
   8. Every arm, disarm, Abort and refusal this module journals also
      reaches ltc serve's own real, persistent night journal over HTTP
      (DeckJournal, POST /api/schedule/deck-event -- safety review of PR
@@ -1439,6 +1441,11 @@ class PurgeFire:
         self.firing = False
         self.last_error = ""
         self.beats = 0
+        # () -> False once the deck's input loop has not run for
+        # PURGE_INPUT_STALE_S (run_forever's threaded mode sets it): the
+        # heartbeats stop, so a FIRE held on a deck program that froze
+        # never keeps firing. None: no input loop to ask (tests).
+        self.alive = None
 
     def start(self, who=""):
         with self._lock:
@@ -1477,8 +1484,32 @@ class PurgeFire:
         except Exception:
             pass
 
+    def _loop_alive(self):
+        f = self.alive
+        if f is None:
+            return True
+        try:
+            return bool(f())
+        except Exception:                        # noqa: BLE001
+            return False
+
     def _run(self, who):
         while not self._stop.is_set():
+            if not self._loop_alive():
+                # The loop that reads the FIRE key has stopped: nothing
+                # can read its release, so the press is over. A fresh
+                # press is needed once the loop runs again.
+                self._journal(f"Stream Deck FIRE released: the deck's key "
+                              f"loop has not run for "
+                              f"{PURGE_INPUT_STALE_S:g} s, so the FIRE key's "
+                              f"release could not be read.", fault=True,
+                              action="purge", who=who, screen="Stream Deck")
+                with self._lock:
+                    was = self.firing
+                    self.firing = False
+                if was:
+                    self._post_stop(who)
+                return
             body = self._body(who)
             if self.fire_id is not None:
                 body["fire_id"] = self.fire_id
@@ -2097,10 +2128,6 @@ class Controller:
         # the journal; given by run_forever. Never read by arming.
         self.usb = None
         self.held_provider = held_provider or (lambda: None)
-        # () -> False while the deck's key image write is stuck (set by
-        # run_forever's threaded mode per connect): see
-        # _drop_untrusted_holds. Only ever drops a hold or a FIRE.
-        self.keys_trusted = lambda: True
         self._latched = False      # fallback when no conductor is wired
         self._prev_keys = [False] * 6
         # Item 8 (Jeff, 2026-10-01): one hold-to-arm timer and one
@@ -2796,8 +2823,11 @@ class Controller:
             # fix itself, not a substitute for that guard, nor the other
             # way round.
             return
-        if not self._deck_keys_trusted():
-            self._drop_untrusted_holds()
+        # A slow or stuck key IMAGE write never drops a hold here (Jeff,
+        # 2026-10-21: "If the USB is stalling but I'm holding an arm key,
+        # it should work even if the animation isn't."). A hold ends on the
+        # key's release as read, on a read or write that raises, or on the
+        # input loop stopping; see DECK_STALL_RULING below.
         for i in range(len(self.names)):
             gk = GROUP_KEYS[i]
             if self._prev_keys[gk]:
@@ -2813,39 +2843,6 @@ class Controller:
                     self._vpressed.discard(i)
                     who, device = self._vwho.get(i, ("", "screen"))
                     self._do_arm_fire(i, now, who=who, screen=device)
-
-    def _deck_keys_trusted(self):
-        """False while a key image write to the deck has been in flight
-        longer than KEYS_TRUSTED_S (run_forever's threaded mode sets
-        `keys_trusted`). Never raises; True when nothing says otherwise."""
-        try:
-            return bool(self.keys_trusted())
-        except Exception:                        # noqa: BLE001
-            return False
-
-    def _drop_untrusted_holds(self):
-        """Review of PR #79, P2-1: a deck whose key image write is stuck
-        may have stopped sending key reports too, so a key it last said
-        was down may have been let go long ago. Every arm hold on the
-        deck's OWN keys is dropped and a purge FIRE released; each needs a
-        fresh press once the deck answers again. Abort's hold is left
-        alone and a disarm needs no hold: neither ever waits on this. A
-        screen hold is not the deck's key and is left to its own rules."""
-        dropped = []
-        for i in range(len(self.names)):
-            if self._prev_keys[GROUP_KEYS[i]] and i not in self._vpressed \
-                    and self._arm_holds[i].fraction(self._clock()) > 0:
-                self._arm_holds[i].release()
-                dropped.append(self.names[i])
-        if dropped:
-            self._log(f"Stream Deck: {', '.join(dropped)} arm hold dropped: "
-                      f"the deck's keys have not been written for over "
-                      f"{KEYS_TRUSTED_S:g} s, so a key it says is held may "
-                      f"have been let go. Nothing was armed; let go and "
-                      f"hold the key again.", action="arm-refused")
-        self._fire_release("the deck's keys have not been written for over "
-                           f"{KEYS_TRUSTED_S:g} s, so a held FIRE key is "
-                           f"not trusted")
 
     def check_links(self):
         """Called once per MAIN-LOOP pass (after status.poll()), never
@@ -3399,10 +3396,48 @@ class Controller:
 #     fault line when a write passes USB_SLOW_S. Display only: nothing it
 #     measures is ever read by arming, disarming or Abort.
 # --------------------------------------------------------------------------
+#
+# DECK_STALL_RULING (Jeff, 2026-10-21): "If the USB is stalling but I'm
+# holding an arm key, it should work even if the animation isn't." The soak
+# saw frame writes of 2.6 to 6.6 s on a busy PC while the key reads kept
+# working. So how long a key IMAGE write takes is never evidence about the
+# keys: a slow or stuck image write does not drop an arm hold, release a
+# purge FIRE, stop a hold completing, or retire the deck. It is shown (the
+# rack screen's Deck chip, UsbMeter's journal line) and nothing more.
+#
+# What still ends a hold or a held purge FIRE, as before: the key's
+# release, read; a key read or a key image write that raises (an unplug,
+# the outage path: holds dropped, FIRE released, the deck retired, the
+# "deck" alert; hidapi's write returns -1 on a Windows write timeout and
+# does not raise, so a slow write is never one); the input loop stopping (the arm link goes silent after
+# INPUT_STALE_S and flamesafe disarms in arm_stale_ms, and the FIRE
+# heartbeats stop after PURGE_INPUT_STALE_S); Abort; the engine refusing.
+#
+# No liveness probe is used, because the pinned stack gives no reliable
+# one (hidapi 0.15.0, the `hid` module; checked against its source):
+#   - a read with nothing to say returns [] whether no key changed or the
+#     deck's firmware has hung but is still enumerated. Only a device that
+#     is gone (unplugged, removed, a driver error) makes the read fail, and
+#     that already raises DeckDisconnected.
+#   - a feature report (serial 0x03, firmware 0x04) has no timeout on
+#     Windows (GetOverlappedResult waits forever) and none we can set on
+#     macOS; on the same handle it races the display thread's hid_write
+#     (both reset the handle's one error string, so a concurrent pair can
+#     free it twice); a second handle is refused on macOS (hidapi opens it
+#     exclusive); and nothing shows it answers during the very USB stalls
+#     the soak saw, so it could retire a working deck mid-hold, against
+#     the ruling.
+#   - the Mini has no documented key-state poll (an input report by
+#     GET_REPORT); Elgato's own library only reads the interrupt reports.
+# The residual risk, accepted by the ruling: a deck whose firmware hangs
+# while staying on the bus, with a key held, never reports that key's
+# release. An arm hold on it completes after ARM_HOLD_S as if still held
+# (it was held at least to the moment the deck hung), and a held purge
+# FIRE keeps firing until the operator presses Abort, disarms from a
+# screen, the cable is pulled (an unplug, above) or the deck program stops.
 INPUT_STALE_S = 0.2       # the input loop's pass is 50 ms; four missed passes
-DISPLAY_WEDGED_S = 1.0    # a key image write this long: the deck is wedged
-KEYS_TRUSTED_S = 0.25     # past this, a key the deck says is held is not
-                          # trusted to arm or fire (_drop_untrusted_holds)
+PURGE_INPUT_STALE_S = 1.0  # a held FIRE's heartbeats stop when the input
+                           # loop has not run for this long (PurgeFire.alive)
 USB_SLOW_S = 1.0          # a frame of key images slower than this is a fault
 USB_WINDOW_S = 60.0       # the rack screen's "worst" looks back this far
 USB_LOG_EVERY_S = 600.0   # one console line with the worst, this often
@@ -3435,12 +3470,12 @@ class ArmPacer:
         _hold_link_steady while the deck hardware is away)."""
         self._beat_at = self._clock()
 
-    def live(self, now=None):
+    def live(self, now=None, stale_s=None):
         at = self._beat_at
         if at is None:
             return False
         now = self._clock() if now is None else now
-        return now - at <= self.stale_s
+        return now - at <= (self.stale_s if stale_s is None else stale_s)
 
     def step(self):
         """One tick: send if the input loop is live, else say nothing (the
@@ -3556,9 +3591,11 @@ class UsbMeter:
                         f"Stream Deck: writing the key images to the deck "
                         f"over USB took {worst:.1f} s (over "
                         f"{USB_SLOW_S:g} s), so the deck's keys are behind "
-                        f"while this lasts. Arming, disarming and Abort do "
-                        f"not wait on it: the arm link and the key reads "
-                        f"have threads of their own. This line does not "
+                        f"while this lasts. Arming, disarming, Abort and a "
+                        f"held FIRE do not wait on it and are not stopped "
+                        f"by it, and the deck is not treated as unplugged "
+                        f"for it: the arm link and the key reads have "
+                        f"threads of their own. This line does not "
                         f"repeat until the writes have stayed under "
                         f"{USB_SLOW_S:g} s for {USB_WINDOW_S:g} s.",
                         fault=True, action="deck-usb")
@@ -3661,13 +3698,6 @@ class DisplayWorker:
             self.written += 1
             self.shown = (frame_id, done)
         return True
-
-    def busy_for(self, now=None):
-        """How long the write in hand has been running, 0.0 when none."""
-        now = self._clock() if now is None else now
-        with self._cv:
-            at = self._write_since
-        return 0.0 if at is None else max(0.0, now - at)
 
     def start(self):
         if self._thread is not None:
@@ -3778,6 +3808,12 @@ def run_forever(controller, deck_factory=Deck, journal=None, sleep=time.sleep,
         # every reconnect: it sends only while the loop below beats.
         pacer = ArmPacer(controller.arm, controller.names).start()
         controller.display_confirms = True
+        pf = getattr(controller, "purge_fire", None)
+        if pf is not None:
+            # A held FIRE's heartbeats need this loop alive too
+            # (DECK_STALL_RULING): a frozen loop cannot read the release.
+            pf.alive = (lambda p=pacer: p.live(
+                stale_s=PURGE_INPUT_STALE_S))
     try:
         return _run_forever(controller, deck_factory, journal, sleep, clock,
                             pacer)
@@ -3824,8 +3860,6 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
         if pacer is not None:
             display = DisplayWorker(deck, fonts.Image, meter=meter,
                                     clock=clock).start()
-            controller.keys_trusted = (
-                lambda d=display: d.busy_for(clock()) <= KEYS_TRUSTED_S)
         outage.connected()
         connected_at = clock()
         try:
@@ -3835,22 +3869,10 @@ def _run_forever(controller, deck_factory, journal, sleep, clock, pacer):
                     # A key image write that failed (an unplug) ends the
                     # pass here, exactly like a key read that did.
                     display.check()
-                    # A write that has not finished in DISPLAY_WEDGED_S is a
-                    # wedged deck (review of PR #79, P2-1), handled exactly
-                    # like an unplug: the holds and a purge FIRE in
-                    # progress are dropped (reset_on_reconnect), the deck
-                    # is retired, the "deck" alert goes up. A wedged deck
-                    # may have stopped sending key reports too, so a key it
-                    # last said was down (FIRE held) is never trusted past
-                    # this. While a key is down the keys are redrawn every
-                    # FRAME_S, so a write is always in flight to time.
+                    # A write that is only slow or stuck is shown (the
+                    # Deck chip, one journal line per slow spell) and is
+                    # never an unplug: DECK_STALL_RULING.
                     meter.check(clock())
-                    stuck = display.busy_for(clock())
-                    if stuck > DISPLAY_WEDGED_S:
-                        raise DeckDisconnected(
-                            f"a key image write to the deck has not "
-                            f"finished in {stuck:.1f} s, so the deck is "
-                            f"treated as unplugged until it answers again")
                 # Item 3: every key-state snapshot the device reported
                 # since the last read, in order, not just the latest one
                 # -- a quick tap-and-release between read cycles must not

@@ -47119,8 +47119,9 @@ def test_deck_usb_stall_never_starves_the_arm_link():
     section("Stream Deck, a USB write that stalls for seconds (the show PC "
             "soak, 2026-10-21: 6.6 s): the arm assertion keeps its 20 Hz "
             "cadence on its own thread so flamesafe never sees it go stale; "
-            "the keys are still read (a hold arms only while held, a "
-            "release cancels it at once, a tap disarms at once); the deck "
+            "the keys are still read and a hold the deck reports arms "
+            "through the stuck write (Jeff's ruling), a release cancels it "
+            "at once, a tap disarms and Abort fires; the deck "
             "unplugged keeps the link steady; a frozen input loop still "
             "goes silent; and the old single loop, under the same stall, "
             "does not")
@@ -47135,9 +47136,11 @@ def test_deck_usb_stall_never_starves_the_arm_link():
                       journal=lambda t_, **kw: journal.append((t_, kw)))
     deck = _StallDeck()
     decks = [deck]
+    opened = []
 
     def factory():
         if decks:
+            opened.append(time.monotonic())
             return decks.pop(0)
         raise sd.DeckDisconnected("probe: nothing plugged in")
     restore = _deck_draw_stubs(sd)
@@ -47152,42 +47155,52 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         check(_wait(lambda: len(frames) >= 10 and deck.writes >= 6, 5),
               f"setup: the loop runs, sends and draws: {len(frames)} frames, "
               f"{deck.writes} key writes")
-        # A stall shorter than DISPLAY_WEDGED_S: the next key image write
-        # blocks for 0.8 s (the soak's ordinary busy-machine stall).
-        stall_s = sd.DISPLAY_WEDGED_S - 0.2
+        # A stall of seconds (the soak's 2.6 to 6.6 s on a busy machine):
+        # the next key image write blocks for 3 s while the key reports
+        # keep flowing. DECK_STALL_RULING (Jeff, 2026-10-21): a hold on a
+        # key the deck still reports works through it.
+        stall_s = 3.0
         deck.stall.set()
         check(_wait(deck.stalled.is_set, 3), "setup: a key write is stalled")
         t_stall = time.monotonic()
         w0 = deck.writes
         reads0 = deck.reads
-        # Group 0 held down and kept down; group 1 let go after 0.2 s.
+        n_factory = len(opened)
+        # Group 0 held down and kept down; group 1 let go after 0.3 s.
+        t_press = time.monotonic()
         deck.press(sd.GROUP_KEYS[0], sd.GROUP_KEYS[1])
-        time.sleep(0.2)
+        time.sleep(0.3)
         check(c._arm_holds[1].fraction(time.monotonic()) > 0,
               "the press is read during the stall: group 1's hold is "
               "filling")
         deck.press(sd.GROUP_KEYS[0])
         check(_wait(lambda: c._arm_holds[1].fraction(time.monotonic()) == 0,
                     0.15),
-              "the release is read during the stall and cancels group 1's "
-              "hold at once")
-        # Review of PR #79, P2-1: past KEYS_TRUSTED_S of a stuck write the
-        # deck's keys are not trusted (its key reports may have stopped
-        # too), so group 0's hold is dropped and never completes.
-        check(_wait(lambda: any("arm hold dropped" in t_ for t_, _k in journal),
-                    sd.KEYS_TRUSTED_S + 0.2),
-              "a stuck write past KEYS_TRUSTED_S drops the hold of a key the "
-              "deck says is held, and says so")
+              "the release at 0.3 s is read during the stall and cancels "
+              "group 1's hold at once")
+        check(_wait(lambda: any(f[2][0] for f in list(frames)
+                                if f[0] > t_press), sd.ARM_HOLD_S + 0.4),
+              "group 0, held through the stuck write, arms (the ruling: a "
+              "stalled screen never stops a hold the deck still reports)")
+        armed_at = min([f[0] for f in list(frames)
+                        if f[0] > t_press and f[2][0]] + [t_press + 99])
+        check(armed_at - t_press >= sd.ARM_HOLD_S - 0.05,
+              f"and not before its {sd.ARM_HOLD_S:g} s hold: "
+              f"{armed_at - t_press:.2f} s")
+        check(deck.stalled.is_set() and deck.writes == w0,
+              f"the write was still stuck when it armed: "
+              f"{deck.writes - w0} key writes finished")
+        check(not any("arm hold dropped" in t_ or (
+                          kw.get("action") == "deck" and kw.get("fault"))
+                      for t_, kw in journal),
+              "no hold dropped and no unplug for a slow write")
         time.sleep(max(0.0, stall_s - (time.monotonic() - t_stall)))
-        check(not any(f[2][0] for f in list(frames) if f[0] > t_stall),
-              "group 0, held through the stall, did not arm on a key the "
-              "stuck deck could not vouch for")
         check(deck.stalled.is_set() and deck.writes == w0,
               f"the write was stalled the whole {stall_s:g} s: "
               f"{deck.writes - w0} more key writes finished")
+        check(len(opened) == n_factory,
+              "the deck was never retired or reopened for the stall")
         t_end = time.monotonic()
-        deck.stall.clear()
-        deck.release.set()
         in_stall = [f for f in list(frames) if t_stall <= f[0] <= t_end]
         worst = max(_gaps(frames, t_stall, t_end) or [9.9])
         check(worst < 0.35,
@@ -47198,7 +47211,7 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         check(len(in_stall) >= 0.6 * (t_end - t_stall) * sd.ARM_SEND_HZ,
               f"about {sd.ARM_SEND_HZ:g} frames a second meanwhile: "
               f"{len(in_stall)} in {t_end - t_stall:.1f} s")
-        check(deck.reads - reads0 >= 8,
+        check(deck.reads - reads0 >= 30,
               f"the keys were read all through the stall: "
               f"{deck.reads - reads0} reads")
         check(not any(f[2][1] for f in list(frames)),
@@ -47207,31 +47220,24 @@ def test_deck_usb_stall_never_starves_the_arm_link():
                     c.usb.worst_s() >= stall_s - 0.1, 2),
               f"the deck's USB meter has the stall as its worst write: "
               f"{c.usb.worst_s() if c.usb else None}")
+        check(any(kw.get("action") == "deck-usb" and kw.get("fault")
+                  for _t, kw in journal),
+              "the slow write is still said: one journal fault line")
+        deck.press()
+        deck.stall.clear()
+        deck.release.set()
         _wait(lambda: deck.writes > w0 + 6, 1)
-        time.sleep(0.3)
-        check(not any(f[2][0] for f in list(frames)),
-              "nor once the writes caught up: the key never came up and "
-              "went down again, so there was no fresh press")
-        # Let go, press again with the writes flowing: it arms as always.
-        deck.press()
-        time.sleep(0.1)
-        t_press = time.monotonic()
-        deck.press(sd.GROUP_KEYS[0])
-        check(_wait(lambda: any(f[2][0] for f in list(frames)
-                                if f[0] > t_press), sd.ARM_HOLD_S + 0.4),
-              "a fresh hold with the deck answering arms group 0")
-        armed_at = min([f[0] for f in list(frames)
-                        if f[0] > t_press and f[2][0]] + [t_press + 99])
-        check(armed_at - t_press >= sd.ARM_HOLD_S - 0.05,
-              f"and not before its hold: {armed_at - t_press:.2f} s")
-        # A second short stall: group 0 let go, then tapped. An instant
-        # disarm, while the screen is stalled.
-        deck.press()
-        _wait(lambda: deck.writes > w0 + 12, 1)
+        time.sleep(0.2)
+        check(all(f[2][0] for f in list(frames) if f[0] > armed_at + 0.05),
+              "group 0 stays armed once let go and once the writes catch up")
+        # A second stall, 7 s long: a disarm tap and an Abort hold, both
+        # with the write stuck the whole time.
         deck.release.clear()
         deck.stalled.clear()
         deck.stall.set()
         check(_wait(deck.stalled.is_set, 3), "setup: stalled again")
+        t_stall2 = time.monotonic()
+        w1 = deck.writes
         deck.press(sd.GROUP_KEYS[0])
         tapped = time.monotonic()
         check(_wait(lambda: any(f[0] > tapped and not f[2][0]
@@ -47239,10 +47245,42 @@ def test_deck_usb_stall_never_starves_the_arm_link():
               "a disarm tap during a stall reaches the wire at once")
         deck.press()
         time.sleep(0.3)
-        deck.stall.clear()
-        deck.release.set()
         check(all(not f[2][0] for f in list(frames) if f[0] > tapped + 0.1),
               "group 0 stayed off after its disarm tap")
+        # Group 2 armed through the stall, then Abort held.
+        t_g2 = time.monotonic()
+        deck.press(sd.GROUP_KEYS[2])
+        check(_wait(lambda: any(f[2][2] for f in list(frames)
+                                if f[0] > t_g2), sd.ARM_HOLD_S + 0.4),
+              "group 2 arms on a hold in the second stall too")
+        deck.press()
+        time.sleep(0.1)
+        t_ab = time.monotonic()
+        deck.press(sd.TOP_ABORT)
+        check(_wait(lambda: any(f[0] > t_ab and not any(f[2])
+                                for f in list(frames)),
+                    sd.ABORT_HOLD_S + 0.4),
+              "an Abort hold during the stall sends every group off")
+        deck.press()
+        time.sleep(max(0.0, 7.0 - (time.monotonic() - t_stall2)))
+        check(deck.stalled.is_set() and deck.writes == w1,
+              f"the second write was stuck the whole 7 s: "
+              f"{deck.writes - w1} key writes finished")
+        check(len(opened) == n_factory and not any(
+                  kw.get("action") == "deck" and kw.get("fault")
+                  for _t, kw in journal),
+              "a 7 s stuck write never retired the deck")
+        deck.stall.clear()
+        deck.release.set()
+        _wait(lambda: deck.writes > w1, 2)
+        # Clear the Abort latch for what follows: RESET is one press once
+        # the deck shows it.
+        time.sleep(sd.RESET_SHOWN_S + 0.3)
+        deck.press(sd.TOP_ABORT)
+        deck.press()
+        check(_wait(lambda: not c._latched_now(), 2),
+              "setup: the Abort latch is reset")
+        reset_at = time.monotonic()
         seqs = [f[1] for f in list(frames)]
         check(seqs == sorted(seqs) and len(set(seqs)) == len(seqs),
               "every frame's seq advanced: flamesafe saw a live input")
@@ -47259,43 +47297,34 @@ def test_deck_usb_stall_never_starves_the_arm_link():
         deck.unfreeze.set()
         check(_wait(lambda: max(f[0] for f in list(frames)) > frozen + 1.0,
                     1), "the link is back once the loop runs again")
-        # A WEDGED deck (review of PR #79, P2-1): a write that never
-        # finishes. Past DISPLAY_WEDGED_S it is an unplug: the hold in
-        # progress is dropped, the deck journaled lost, and the link kept
-        # steady with what was wanted (ruling 4).
-        _wait(lambda: deck.writes > 0, 1)
+        # A key READ that fails (an unplug) with a hold in progress and a
+        # write stuck: the outage path, as always. The hold is dropped, the
+        # deck journaled lost, the link kept steady (ruling 4).
+        time.sleep(max(0.0, sd.REARM_REFRACTORY_S + 0.1 -
+                       (time.monotonic() - reset_at)))
         deck.release.clear()
         deck.stalled.clear()
         deck.stall.set()
-        check(_wait(deck.stalled.is_set, 3), "setup: a write is wedged")
-        t_wedge = time.monotonic()
-        deck.press(sd.GROUP_KEYS[2])
-        check(_wait(lambda: c._arm_holds[2].fraction(time.monotonic()) > 0,
-                    0.3), "setup: group 2's hold is filling")
-        check(_wait(lambda: any("not finished" in t_ for t_, _k in journal),
-                    sd.DISPLAY_WEDGED_S + 0.4),
-              f"a write wedged past {sd.DISPLAY_WEDGED_S:g} s is an unplug, "
-              f"journaled: {[t_ for t_, _k in journal][-2:]}")
-        lost_at = time.monotonic()
-        check(lost_at - t_wedge <= sd.DISPLAY_WEDGED_S + 0.25,
-              f"within {lost_at - t_wedge:.2f} s of the wedge")
-        check(c._arm_holds[2].fraction(time.monotonic()) == 0,
-              "the hold in progress on the wedged deck is dropped")
-        time.sleep(1.0)
-        check(not any(f[2][2] for f in list(frames)),
-              "and group 2, whose key the wedged deck last said was down, "
-              "never arms")
-        check(any(kw.get("action") == "deck-usb" and kw.get("fault")
-                  for _t, kw in journal),
-              "the slow write's fault line was journaled too")
-        g = _gaps(frames, t_wedge, time.monotonic())
-        check(g and max(g) < 0.35,
-              f"the wedge and the outage after it: the link stays steady "
-              f"(ruling 4), worst gap {max(g or [9.9]) * 1000:.0f} ms")
-        # The deck gone for good: the outage loop beats, the link steady.
+        check(_wait(deck.stalled.is_set, 3), "setup: a write is stuck")
+        t_g1 = time.monotonic()
+        deck.press(sd.GROUP_KEYS[1])
+        check(_wait(lambda: c._arm_holds[1].fraction(time.monotonic()) > 0,
+                    0.3), "setup: group 1's hold is filling")
         decks.clear()
+        j0 = len(journal)
+        deck.gone = True
         t_gone = time.monotonic()
-        time.sleep(1.2)
+        check(_wait(lambda: c._arm_holds[1].fraction(time.monotonic()) == 0,
+                    0.3),
+              f"a key read that raises drops the hold in progress at once "
+              f"({time.monotonic() - t_gone:.2f} s)")
+        check(_wait(lambda: any(kw.get("action") == "deck" and
+                                kw.get("fault")
+                                for _t, kw in journal[j0:]), 1),
+              "and the deck is journaled lost")
+        time.sleep(1.0)
+        check(not any(f[2][1] for f in list(frames) if f[0] > t_g1),
+              "group 1, whose hold the failed read cut short, never arms")
         g = _gaps(frames, t_gone + 0.1, time.monotonic())
         check(g and max(g) < 0.35,
               f"the deck unplugged: the outage loop beats and the pacer "
@@ -48413,12 +48442,15 @@ def test_soak_bench_render_universes_and_fps():
 
 
 def test_deck_wedged_deck_never_keeps_a_purge_firing():
-    section("Stream Deck, a wedged deck (review of PR #79, P2-1): FIRE held "
-            "on the Morning page, the deck's key image write hangs and its "
-            "key reports stop. The purge fire stops within KEYS_TRUSTED_S "
-            "and is never restarted without a fresh press, and the deck is "
-            "an unplug past DISPLAY_WEDGED_S; driven through the real "
-            "run_forever(threaded=True)")
+    # The name is kept from PR #79 (mutate.py --changed treats a renamed
+    # test as a reason to sweep everything). Since DECK_STALL_RULING it
+    # proves a held FIRE survives a stuck write, and what still ends it.
+    section("Stream Deck, a purge FIRE held through a stuck key image write "
+            "(DECK_STALL_RULING, Jeff 2026-10-21): the heartbeats keep going "
+            "for the whole 5 s stall and stop when the release is read; a "
+            "key read that raises releases FIRE at once; a frozen input loop "
+            "stops the heartbeats within PURGE_INPUT_STALE_S; driven through "
+            "the real run_forever(threaded=True)")
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer"]
     port, frames, rx_stop = _arm_rx()
@@ -48446,17 +48478,23 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
                       show_running_provider=lambda: False, screen=Scr(),
                       journal=lambda t_, **kw: journal.append((t_, kw)))
     beats = []
+    stops = []
 
     def poster(path, body):
         if path.endswith("purge-fire"):
             beats.append(time.monotonic())
+        elif path.endswith("purge-stop"):
+            stops.append(time.monotonic())
         return True, "ok", {"fire_id": 1, "firing": ["front row"]}
-    c.purge_fire = sd.PurgeFire(poster)
+    c.purge_fire = sd.PurgeFire(poster, journal=c._journal)
     deck = _StallDeck()
+    deck2 = _StallDeck()
     decks = [deck]
+    opened = []
 
     def factory():
         if decks:
+            opened.append(time.monotonic())
             return decks.pop(0)
         raise sd.DeckDisconnected("probe: nothing plugged in")
     restore = _deck_draw_stubs(sd)
@@ -48469,33 +48507,100 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
     try:
         check(_wait(lambda: any(f[2][0] for f in list(frames)), 3),
               "setup: the purge group is armed from the Morning page")
+        check(c.purge_fire.alive is not None,
+              "the threaded loop gives the FIRE heartbeats its liveness")
+        _wait(lambda: deck.writes >= 6, 2)
         deck.press(sd.TOP_START)                 # FIRE, held
         check(_wait(lambda: len(beats) >= 3, 2),
               f"setup: FIRE held, the purge fire heartbeats: {len(beats)}")
-        deck.stall.set()                         # the write hangs, for good
-        check(_wait(deck.stalled.is_set, 2), "setup: a write is wedged")
+        # 1. The write hangs for 5 s; the key reports keep flowing.
+        deck.stall.set()
+        check(_wait(deck.stalled.is_set, 2), "setup: a write is stuck")
         t_w = time.monotonic()
-        check(_wait(lambda: not c.purge_fire.firing, 1.2),
-              f"the purge fire stops within 1.2 s of the wedge "
-              f"({time.monotonic() - t_w:.2f} s), though the deck never "
-              f"reported FIRE let go")
-        stopped = time.monotonic()
-        check(stopped - t_w <= sd.KEYS_TRUSTED_S + 0.3,
-              f"within KEYS_TRUSTED_S of the stuck write: "
-              f"{stopped - t_w:.2f} s")
-        check(_wait(lambda: any("not finished" in t_ for t_, _k in journal),
-                    sd.DISPLAY_WEDGED_S + 0.4),
-              "past DISPLAY_WEDGED_S the wedged deck is an unplug, "
-              "journaled")
-        time.sleep(1.0)
-        late = [b for b in beats if b > stopped + 0.6]
-        check(not late,
-              f"and no heartbeat goes out after that, FIRE still 'held' on "
-              f"the wedged deck: {len(late)} late beats")
+        w0 = deck.writes
+        time.sleep(5.0)
+        in_stall = [b_ for b_ in beats if b_ > t_w]
+        gaps = [y - x for x, y in zip(in_stall, in_stall[1:])]
+        check(c.purge_fire.firing and len(in_stall) >= 30 and
+              gaps and max(gaps) < 0.25,
+              f"FIRE held through a 5 s stuck write keeps firing: "
+              f"{len(in_stall)} heartbeats, worst gap "
+              f"{max(gaps or [9.9]) * 1000:.0f} ms (the engine's own limit "
+              f"is 250 ms)")
+        check(deck.stalled.is_set() and deck.writes == w0,
+              "the write was stuck the whole time")
+        check(not any("FIRE released" in t_ for t_, _k in journal) and
+              not any(kw.get("action") == "deck" and kw.get("fault")
+                      for _t, kw in journal) and len(opened) == 1,
+              "no release and no unplug for a slow write")
+        deck.press()                             # let go, still stalled
+        t_up = time.monotonic()
+        check(_wait(lambda: not c.purge_fire.firing, 0.3),
+              f"the release, read during the stall, ends the fire at once "
+              f"({time.monotonic() - t_up:.2f} s)")
+        check(_wait(lambda: any(s_ > t_up for s_ in stops), 1),
+              "and purge-stop is posted")
+        time.sleep(0.3)
+        check(not [b_ for b_ in beats if b_ > t_up + 0.2],
+              "no heartbeat after the release")
+        deck.stall.clear()
+        deck.release.set()
+        # 2. FIRE held again, then the key read raises (an unplug).
+        _wait(lambda: deck.writes > w0, 2)
+        deck.release.clear()
+        deck.stalled.clear()
+        deck.stall.set()
+        deck.press(sd.TOP_START)
+        check(_wait(lambda: c.purge_fire.firing and
+                    len([b_ for b_ in beats if b_ > t_up + 0.5]) >= 2, 2),
+              "setup: a fresh FIRE press fires again, write stuck")
+        decks.append(deck2)
+        deck.gone = True
+        t_gone = time.monotonic()
+        check(_wait(lambda: not c.purge_fire.firing, 0.5),
+              f"a key read that raises releases FIRE within 0.5 s "
+              f"({time.monotonic() - t_gone:.2f} s)")
+        time.sleep(0.3)
+        check(not [b_ for b_ in beats if b_ > t_gone + 0.3],
+              "no heartbeat after the failed read")
         check(any("FIRE released" in t_ for t_, _k in journal),
               "the release is journaled")
+        deck.release.set()
+        # 3. The new deck: FIRE held, then the input loop freezes.
+        check(_wait(lambda: len(opened) == 2 and deck2.reads > 3, 4),
+              "setup: the deck is back")
+        time.sleep(0.3)
+        deck2.press(sd.TOP_START)
+        check(_wait(lambda: c.purge_fire.firing, 1),
+              "setup: FIRE held on the new deck")
+        t_f = time.monotonic()
+        deck2.freeze.set()
+        check(_wait(lambda: not c.purge_fire.firing,
+                    sd.PURGE_INPUT_STALE_S + 0.5),
+              f"a frozen input loop stops FIRE within PURGE_INPUT_STALE_S "
+              f"({time.monotonic() - t_f:.2f} s), though it never read the "
+              f"release")
+        stopped = time.monotonic()
+        check(stopped - t_f >= sd.PURGE_INPUT_STALE_S - 0.1,
+              f"and not before: {stopped - t_f:.2f} s")
+        check(_wait(lambda: any(s_ > t_f for s_ in stops), 1),
+              "purge-stop is posted for it")
+        time.sleep(0.4)
+        check(not [b_ for b_ in beats if b_ > stopped + 0.2],
+              "no heartbeat after that")
+        check(any(kw.get("action") == "purge" and kw.get("fault") and
+                  "key loop has not run" in t_ for t_, kw in journal),
+              "the stop is journaled as a fault")
+        deck2.unfreeze.set()
+        time.sleep(0.5)
+        check(not c.purge_fire.firing and
+              not [b_ for b_ in beats if b_ > stopped + 0.2],
+              "the loop back with FIRE still down does not fire again "
+              "without a fresh press")
     finally:
         deck.release.set()
+        deck2.release.set()
+        deck2.unfreeze.set()
         decks.clear()
         _STOP_RUN.set()
         th.join(5)
@@ -48503,6 +48608,68 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
         c.purge_fire.stop()
         arm.close()
         rx_stop()
+    print("  ok")
+
+
+def test_deck_purge_fire_stops_when_its_loop_is_not_alive():
+    section("Stream Deck FIRE heartbeats (DECK_STALL_RULING): PurgeFire beats "
+            "only while its input loop is alive; a loop that is not, or a "
+            "liveness check that raises, ends the press with purge-stop and "
+            "a fault line, and no liveness given (no loop) beats as before")
+    from ltcplay import streamdeck as sd
+    posts = []
+    lines = []
+
+    def poster(path, body):
+        posts.append(path)
+        return True, "ok", {"fire_id": 7, "firing": ["front row"]}
+
+    def run(alive):
+        del posts[:]
+        del lines[:]
+        pf = sd.PurgeFire(poster, journal=lambda t_, **kw: lines.append(
+            (t_, kw)))
+        if alive != "none":
+            pf.alive = alive
+        pf.start(who="Andy")
+        _wait(lambda: not pf.firing or
+              posts.count("/api/remote/purge-fire") >= 3, 1.0)
+        out = (pf.firing, list(posts), list(lines))
+        pf.stop()
+        return out
+    state = {"live": True}
+    firing, got, said = run(lambda: state["live"])
+    check(firing and got.count("/api/remote/purge-fire") >= 3,
+          f"alive: the heartbeats go out ({got[:4]})")
+    firing, got, said = run("none")
+    check(firing and got.count("/api/remote/purge-fire") >= 3,
+          "no liveness given: the heartbeats go out as before")
+
+    def boom():
+        raise RuntimeError("probe")
+    for label, alive in (("not alive", lambda: False),
+                         ("a liveness check that raises", boom)):
+        firing, got, said = run(alive)
+        check(not firing and "/api/remote/purge-fire" not in got,
+              f"{label}: no heartbeat at all, and not firing ({got})")
+        _wait(lambda: "/api/remote/purge-stop" in posts, 1.0)
+        check("/api/remote/purge-stop" in posts,
+              f"{label}: purge-stop is posted")
+        check(any(kw.get("fault") and kw.get("action") == "purge" and
+                  "key loop has not run" in t_ for t_, kw in said),
+              f"{label}: one fault line says why")
+    # The rule itself: ArmPacer.live with the purge's own stale_s.
+    t = [100.0]
+    p = sd.ArmPacer(None, [], clock=lambda: t[0])
+    p.beat()
+    t[0] += sd.INPUT_STALE_S + 0.1
+    check(not p.live() and p.live(stale_s=sd.PURGE_INPUT_STALE_S),
+          "past INPUT_STALE_S the arm link is silent but a FIRE still beats")
+    t[0] = 100.0 + sd.PURGE_INPUT_STALE_S + 0.01
+    check(not p.live(stale_s=sd.PURGE_INPUT_STALE_S),
+          "past PURGE_INPUT_STALE_S the FIRE stops too")
+    check(sd.PURGE_INPUT_STALE_S == 1.0,
+          "PURGE_INPUT_STALE_S is the 1 s bound")
     print("  ok")
 
 
@@ -49056,6 +49223,7 @@ if __name__ == "__main__":
     test_deck_usb_stall_never_starves_the_arm_link()
     test_ltc_deck_runs_the_threaded_loop()
     test_deck_wedged_deck_never_keeps_a_purge_firing()
+    test_deck_purge_fire_stops_when_its_loop_is_not_alive()
     test_deck_hold_key_does_what_the_deck_showed()
     test_deck_arm_journal_never_holds_the_arm_lock()
     test_api_conductor_reports_audio_loss()
