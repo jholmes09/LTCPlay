@@ -9231,10 +9231,9 @@ def build():
 
  ("lasertest: BEYOND's BlackOut becomes an allowed address (T10)",
   "ltcplay/lasertest.py",
-  '''    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
-        return False''',
-  '''    if address in GLOBAL_ADDRESSES:
-        return False'''),
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES |\n'
+  '                     GLOBAL_ADDRESSES)',
+  '_REFUSED = frozenset(a.lower() for a in GLOBAL_ADDRESSES)'),
 
  ("checklist: a tick needs no name",
   "ltcplay/checklist.py",
@@ -10462,24 +10461,85 @@ def build():
   '                    self.on.pop(laser.id, None)'),
  ("lasers: a laser's own lists may send BEYOND's global controls",
   'ltcplay/lasertest.py',
-  '    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:',
-  '    if address in FORBIDDEN_ADDRESSES:'),
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES |\n'
+  '                     GLOBAL_ADDRESSES)',
+  '_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES)'),
  ('lasers: the restore does not read the timecode epoch before the arm check',
   'ltcplay/beyondtc.py',
   '        epoch = self.gate.epoch() if self.gate is not None else None\n'
   '        if self.arm_check is not None:',
   '        epoch = None\n'
   '        if self.arm_check is not None:'),
+
+ # -- the laser arm, second review of PR #87 --
+ ('lasers: a merged disarm forgets the lasers it covers',
+  'ltcplay/laserarm.py',
+  '                        w["ids"] = list(dict.fromkeys(list(w["ids"]) +\n'
+  '                                                      list(ids)))',
+  '                        pass'),
+ ('lasers: Arrange mode on the page holds back a disarm click',
+  'ltcplay/web/remote.html',
+  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }\n'
+  '  if(arrangeBlocked("laser-arm", {on:true})) return;',
+  '  if(arrangeBlocked("laser-arm", {on:true})) return;\n'
+  '  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }'),
+ ("lasers: a trailing slash gets a refused address into a laser's lists",
+  'ltcplay/lasertest.py',
+  '    return a.rstrip("/")',
+  '    return a'),
+ ("lasers: a case variant gets a refused address into a laser's lists",
+  'ltcplay/lasertest.py',
+  '    a = address.strip().lower()',
+  '    a = address.strip()'),
+ ('lasers: a laser disarmed during its placeholder arm hears the arm last',
+  'ltcplay/lasertest.py',
+  '        if which == "arm" and not self.is_armed(laser.id):',
+  '        if False:'),
+ ('lasers: the startup dark waits for the Morning page',
+  'ltcplay/web.py',
+  '        _startup_lasers_dark(wiring)\n',
+  '        pass\n'),
+ ("lasers: the laser arm's tick runs after a watcher call that can raise",
+  'ltcplay/morning.py',
+  '        try:\n'
+  '            # The laser arm FIRST',
+  '        self._check_flamesafe_lockout()\n'
+  '        try:\n'
+  '            # The laser arm FIRST'),
 ]
 
 
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
-# How long one run of the suite may take. A run is 4 to 6 minutes on a CI
-# runner (2026-10-22: the baseline itself ran past 300 s on shards of PR #87
-# and PR #90, nothing mutated, so those shards measured nothing); a run
-# still going at 480 s is hung, not slow.
-SUITE_TIMEOUT = 480
+# The last run: [seconds it took, whether it was stopped at its limit].
+_LAST_RUN = [0.0, False]
+
+# Two limits, for two different questions.
+#
+# SUITE_TIMEOUT is the BASELINE's limit: the suite with nothing mutated. It
+# only has to catch a runner that is broken, so it is generous. A baseline
+# that hits it is an infrastructure failure, never a missed mutation; it is
+# run once more before the shard gives up, and says so in its own words.
+# (It was one fixed 300 s for everything: once the suite itself took 270 to
+# 300 s, loaded runners stopped clean baselines, PR #87 shards 10 and 13.)
+#
+# A MUTANT's limit is loop protection: a mutation that makes the suite hang
+# (an endless loop, a wait nothing ends) is caught by being stopped. Its
+# limit is measured, not fixed: MUTANT_FACTOR times the baseline this shard
+# just ran on this runner, never under MUTANT_FLOOR (the old 300 s, so no
+# mutant is stopped sooner than before) and never over MUTANT_CEILING (so a
+# hung mutant costs a bounded time, twice over in CI).
+SUITE_TIMEOUT = 1800
+MUTANT_FACTOR = 3
+MUTANT_FLOOR = 300
+MUTANT_CEILING = 1800
+
+
+def mutant_timeout(baseline_seconds):
+    """Seconds one mutant's suite may run, from how long the unmutated suite
+    took on this runner."""
+    return int(min(MUTANT_CEILING,
+                   max(MUTANT_FLOOR, MUTANT_FACTOR * baseline_seconds)))
 
 
 def _what_failed(out, limit=10):
@@ -10501,13 +10561,19 @@ def _what_failed(out, limit=10):
     return ["the suite ended red without a FAIL line; its last lines:"] + tail
 
 
-def run_suite():
+def run_suite(limit=None):
+    """True when the suite is green. `limit` is seconds (SUITE_TIMEOUT when
+    None); _LAST_RUN says how long it took and whether it was stopped."""
+    limit = SUITE_TIMEOUT if limit is None else limit
+    started = time.time()
+    _LAST_RUN[:] = [0.0, False]
     try:
         r = subprocess.run([sys.executable, "selftest.py"], cwd=HERE,
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           timeout=SUITE_TIMEOUT)
+                           timeout=limit)
     except subprocess.TimeoutExpired as e:
+        _LAST_RUN[:] = [time.time() - started, True]
         # A suite that does not finish is not a green suite. Under a
         # mutation that counts as caught (the mutation broke a test so
         # badly it hung); with nothing mutated it is a failed baseline.
@@ -10518,10 +10584,11 @@ def run_suite():
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
         _LAST_FAILS[:] = [f"FAIL  the suite did not finish inside "
-                          f"{SUITE_TIMEOUT} s (TimeoutExpired)"] + \
+                          f"{limit} s (TimeoutExpired)"] + \
             [l.strip() for l in out.splitlines()
              if l.lstrip().startswith("FAIL")][:5]
         return False
+    _LAST_RUN[:] = [time.time() - started, False]
     out = (r.stdout or "") + (r.stderr or "")
     if r.returncode == 0:
         _LAST_FAILS[:] = []
@@ -10576,6 +10643,7 @@ class _Report:
         self.stale = []           # names not in MUTATIONS
         self.baseline = "not run"
         self.restored = "not checked"
+        self.limits = "not measured"  # baseline took / mutant limit
         self.failures = []        # (kind, lines), one per problem
         return self
 
@@ -10590,6 +10658,7 @@ class _Report:
                 ("flaky", str(len(self.flaky))),
                 ("setup failed", str(len(self.setup_fails))),
                 ("baseline", self.baseline), ("tree restored", self.restored),
+                ("baseline time / mutant limit", self.limits),
                 ("time", took), ("result", result)]
         out = [f"### mutate {self.where}: {result}, {took}", "",
                "| " + " | ".join(r[0] for r in rows) + " |",
@@ -11018,7 +11087,25 @@ def _run():
     # leaves a mutation behind; the next sweep then measures that mutant and
     # blames whichever mutation it happens to be applying. Both of those have
     # already happened here.
-    if not run_suite():
+    baseline_green = run_suite()
+    if _LAST_RUN[1]:
+        # Stopped at its limit with nothing mutated: the runner, not the
+        # code. Once more before giving up, since a loaded runner passes.
+        print(f"the baseline did not finish inside {SUITE_TIMEOUT} s with "
+              f"nothing mutated; running it once more")
+        baseline_green = run_suite()
+    if _LAST_RUN[1]:
+        for _l in _LAST_FAILS:
+            print("  " + _l)
+        REPORT.baseline = "TIMED OUT"
+        fail("INFRASTRUCTURE: the suite did not finish with nothing mutated, "
+             "twice, so the shard measured nothing. This is the runner, not "
+             "a missed mutation; re-run the shard", _LAST_FAILS)
+        print(f"INFRASTRUCTURE FAILURE: the suite with nothing mutated did "
+              f"not finish inside {SUITE_TIMEOUT} s, twice. No mutation was "
+              f"run and none was missed. Re-run the shard.")
+        return 2
+    if not baseline_green:
         for _l in _LAST_FAILS:
             print("  " + _l)
         REPORT.baseline = "FAILED"
@@ -11029,7 +11116,12 @@ def _run():
               "broken. Fix that first: nothing measured from here would "
               "mean anything.")
         return 2
+    baseline_s = _LAST_RUN[0]
+    limit = mutant_timeout(baseline_s)
     REPORT.baseline = "green"
+    REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
+    print(f"baseline green in {baseline_s:.0f} s; a mutant's suite is "
+          f"stopped (and counts as caught) after {limit} s")
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
     # The bytes of every file this run breaks, before it does: the restore
@@ -11053,7 +11145,7 @@ def _run():
         backup = src
         _write(path, src.replace(old, new, 1))
         try:
-            green = run_suite()
+            green = run_suite(limit)
             # In CI a mutation counts as caught only if the suite fails under
             # it twice running. A test that fails for the runner's reasons
             # would otherwise pass itself off as coverage: an unlisted
@@ -11062,7 +11154,7 @@ def _run():
             # NOT CAUGHT, with what failed the first time printed.
             if not green and expected_file:
                 why = list(_LAST_FAILS)
-                if run_suite():
+                if run_suite(limit):
                     green = True
                     print(f"  caught once, then not: counted as NOT CAUGHT, "
                           f"and the first failure was a flaky test: {name}")

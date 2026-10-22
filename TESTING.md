@@ -107,6 +107,13 @@ forces every way it can end red and checks the sentence is there.
   what it proved).
 - `The suite FAILS with nothing mutated`: the baseline is red on that
   runner; see the selftest job, the shard measured nothing.
+- `INFRASTRUCTURE FAILURE`: the suite with nothing mutated did not finish
+  inside 30 minutes, twice (it is run once more by itself after the first
+  time). The runner, not the code: no mutation ran and none was missed;
+  re-run the shard. A mutant's own suite is stopped at three times that
+  shard's measured baseline, never under 300 s or over 30 minutes; a
+  mutant stopped there counts as caught (it made the suite hang), and the
+  job summary's "baseline time / mutant limit" column gives both numbers.
 - `shard N/32 TIMED OUT`: the shard ran out of its 300 minutes. Not a
   miss; re-run the shard.
 - `THE TREE IS NOT CLEAN`: a restore did not land. Should never happen;

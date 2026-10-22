@@ -217,6 +217,9 @@ jobs:
           if any("The suite FAILS with nothing mutated" in l for l in log):
               print("the baseline failed; that is not a timeout")
               raise SystemExit(0)
+          if any(l.startswith("INFRASTRUCTURE FAILURE") for l in log):
+              print("the unmutated suite did not finish, twice: an infrastructure failure, said above")
+              raise SystemExit(0)
           if any("nothing to run" in l or "cannot read the diff" in l for l in log):
               print("the shard stopped before any mutation ran; see its own lines above")
               raise SystemExit(0)

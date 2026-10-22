@@ -52,6 +52,8 @@ FORBIDDEN_ADDRESSES = frozenset(("/beyond/general/BlackOut",
 GLOBAL_ADDRESSES = frozenset(("/beyond/master/livecontrol/brightness",
                               "/beyond/general/EnableLaserOutput",
                               "/beyond/general/DisableLaserOutput"))
+_REFUSED = frozenset(a.lower() for a in FORBIDDEN_ADDRESSES |
+                     GLOBAL_ADDRESSES)
 _SPECIAL_CHARS = frozenset("*?[]{}#")
 MECHANISMS = ("none", "osc")
 RETRY_COUNT = 3
@@ -72,9 +74,20 @@ def allowed_address(address):
         return False
     if any(c in _SPECIAL_CHARS for c in address) or " " in address:
         return False
-    if address in FORBIDDEN_ADDRESSES or address in GLOBAL_ADDRESSES:
+    if _norm(address) in _REFUSED:
         return False
     return all(0x21 <= ord(c) <= 0x7e for c in address)
+
+
+def _norm(address):
+    """An address as the deny list compares it (review of PR #87, round 2,
+    P3-3): lower case, doubled slashes as one, no trailing slash or
+    whitespace, so a case or spelling variant of a refused address is still
+    refused."""
+    a = address.strip().lower()
+    while "//" in a:
+        a = a.replace("//", "/")
+    return a.rstrip("/")
 
 
 def _pad(b):
@@ -439,6 +452,16 @@ class LaserTests:
             if locked or not self.is_armed(laser.id):
                 return False
         ok = self._send_list(laser, msgs)
+        if which == "arm" and not self.is_armed(laser.id):
+            # Disarmed while the arm went out (review of PR #87, round 2,
+            # P3-4): its disarm messages after it, so BEYOND's last word
+            # for this laser is the disarm.
+            if laser.disarm:
+                self._send_list(laser, laser.disarm)
+            self._note(f"{laser.name}: disarmed while its arm messages went "
+                       f"out, so its disarm messages were sent after them.",
+                       action="laser-arm", outcome="refused")
+            return False
         self._note(f"{laser.name}: its {which} messages (a placeholder in "
                    f"ltcplay_morning.json) were sent to BEYOND ({why})"
                    f"{'' if ok else ' but did NOT get out'}.",

@@ -1448,6 +1448,16 @@ class Morning:
         """The watcher's pass, 10 a second: purge expiry, laser tests off
         when a show goes live or an Abort stands, the link's lock set."""
         now = self._clock() if now is None else now
+        try:
+            # The laser arm FIRST, so nothing below that raises can skip
+            # it (review of PR #87, round 2, P3-6): the night closing
+            # disarms every laser (ruling 4), as does a blocker appearing.
+            state, err = laserarm._ask(self._night_state)
+            self.laser_arm.tick(None if err else state)
+            if not self.laser_arm._threaded:
+                self.laser_arm.run_pending()
+        except Exception:
+            pass
         if self.purge.fire is not None:
             # The belt under open_beat's stop: a press that began in the
             # same instant a screen went into Arrange mode ends here.
@@ -1482,14 +1492,6 @@ class Morning:
         self._was_live = live
         self._lock_channels_to_link()
         self._check_flamesafe_lockout()
-        try:
-            # The night closing disarms every laser (ruling 4).
-            state, err = laserarm._ask(self._night_state)
-            self.laser_arm.tick(None if err else state)
-            if not self.laser_arm._threaded:
-                self.laser_arm.run_pending()
-        except Exception:
-            pass
         try:
             self.checklist.tick(now)
         except Exception:
