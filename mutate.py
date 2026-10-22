@@ -10475,9 +10475,11 @@ def build():
 
 # What the last suite run failed on, so a surprising result can be read.
 _LAST_FAILS = []
-# How long one run of the suite may take. A test is 4 to 6 minutes on a CI
-# runner; a run that is still going at 300 s is hung, not slow.
-SUITE_TIMEOUT = 300
+# How long one run of the suite may take. A run is 4 to 6 minutes on a CI
+# runner (2026-10-22: the baseline itself ran past 300 s on shards of PR #87
+# and PR #90, nothing mutated, so those shards measured nothing); a run
+# still going at 480 s is hung, not slow.
+SUITE_TIMEOUT = 480
 
 
 def _what_failed(out, limit=10):
