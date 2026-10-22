@@ -50653,8 +50653,11 @@ def test_laser_arm_disarm_never_waits_on_beyond():
             "Beyond that cannot send is a fault, never 'off'")
     from ltcplay import beyondtc as BT
     from ltcplay import laserarm as LA
-    stall = 0.6
-    link, sent, blines = _laser_beyond_link(stall_s=stall / 3)
+    # Every packet takes `per` (a stalled BEYOND or network); the disarm
+    # must return in under half of ONE packet. Kept short: the suite runs
+    # under a 300 s limit in the mutate shards.
+    per = 0.08
+    link, sent, blines = _laser_beyond_link(stall_s=per)
     bl = BT.Blanking("osc", osc=link)
     arm = LA.LaserArm([("l1", "Laser 1")], output=lambda: bl,
                       threaded=True)
@@ -50665,9 +50668,9 @@ def test_laser_arm_disarm_never_waits_on_beyond():
         arm.disarm_all("Abort pressed by Andy on the Rack screen", "Andy",
                        "Rack screen", defer=True)
         took = time.perf_counter() - t0
-        check(took < stall / 2 and arm.armed_ids() == [],
+        check(took < per / 2 and arm.armed_ids() == [],
               f"the disarm returned in {took:.3f} s with every send taking "
-              f"{stall / 3:.2f} s: it never waits on BEYOND")
+              f"{per:.2f} s: it never waits on BEYOND")
         check(arm.wait_idle(10.0), "the sender finishes on its own")
         check(any(p.startswith(b"/beyond/general/DisableLaserOutput")
                   for _a, p in sent) and
