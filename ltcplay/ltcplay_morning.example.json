@@ -1,5 +1,5 @@
 {
-  "notes": "The Morning and Shutdown page (MORNING.md). Copy this file to the machine's settings folder (the show PC: %LOCALAPPDATA%\\ltcplay\\ltcplay_morning.json) and edit it there. Every value marked PLACEHOLDER is a guess until Jeff or Andy sets it. Leave a key out to get the default. Without this file at all the page shows one machine per fire slot of flamesafe's config, Jeff's four groups, these purge values, four undecided lasers, two empty checklists, no names and the tally off. purge.waver.head_settle_s is how long the head is given to come up before the Waver fires, 0.5 to 10 seconds: it always goes up first.",
+  "notes": "The Morning and Shutdown page (MORNING.md). Copy this file to the machine's settings folder (the show PC: %LOCALAPPDATA%\\ltcplay\\ltcplay_morning.json) and edit it there. Every value marked PLACEHOLDER is a guess until Jeff or Andy sets it. Leave a key out to get the default. Without this file at all the page shows one machine per fire slot of flamesafe's config, Jeff's four groups, these purge values, four undecided lasers in one laser group (All lasers), two empty checklists, no names and the tally off. purge.waver.head_settle_s is how long the head is given to come up before the Waver fires, 0.5 to 10 seconds: it always goes up first.",
 
   "machines": [
     {"id": "ground-1", "name": "Ground 1", "kind": "gflame", "group": "front row", "fire": [411]},
@@ -29,12 +29,16 @@
   },
 
   "lasers": [
-    {"id": "laser-1", "name": "Laser 1", "mechanism": "none", "on": [], "off": [], "lock": [],
-     "note": "PLACEHOLDER. When Jeff knows: mechanism \"osc\", host and port of BEYOND (or leave them out to use the beyond block of ltcplay_fire_ice.json), and the OSC messages that put the alignment grid up at low power (on), take it down (off) and shut this laser out (lock). Each message is [address, value]; a value is a whole number, a decimal or text. BEYOND's BlackOut and MasterPause are refused by name."},
+    {"id": "laser-1", "name": "Laser 1", "mechanism": "none", "on": [], "off": [], "lock": [], "arm": [], "disarm": [],
+     "note": "PLACEHOLDER. When Jeff knows: mechanism \"osc\", host and port of BEYOND (or leave them out to use the beyond block of ltcplay_fire_ice.json), and the OSC messages that put the alignment grid up at low power (on), take it down (off) and shut this laser out (lock). Each message is [address, value]; a value is a whole number, a decimal or text. BEYOND's BlackOut and MasterPause are refused by name. arm and disarm are PLACEHOLDERS for a per-laser BEYOND command that nobody has verified yet: leave them empty (nothing is sent) until Andy has tried one on the real rig. They never switch BEYOND's own laser output on: that needs every laser armed (MORNING.md, Lasers: arm and disarm)."},
     {"id": "laser-2", "name": "Laser 2", "mechanism": "none"},
     {"id": "laser-3", "name": "Laser 3", "mechanism": "none"},
     {"id": "laser-4", "name": "Laser 4", "mechanism": "none"}
   ],
+
+  "laser_groups": {
+    "All lasers": ["laser-1", "laser-2", "laser-3", "laser-4"]
+  },
 
   "checklists": {
     "morning": {"title": "Morning", "steps": [

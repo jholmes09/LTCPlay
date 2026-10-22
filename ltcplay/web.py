@@ -1752,6 +1752,18 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
 
         def _group_names(_fs=_fs):
             return list(_fs.names) if _fs is not None else []
+        def _laser_output():
+            # The conductor's BEYOND (beyondtc.Blanking): the laser arm's
+            # one way to BEYOND's laser output switch.
+            return getattr(getattr(httpd.fire_ice, "devices", None),
+                           "beyond", None)
+
+        def _laser_blank(what):
+            return httpd.conductor.lasers_dark_now(what)
+
+        def _night_state():
+            m = getattr(httpd_schedule, "machine", None)
+            return m.state if m is not None else None
         try:
             httpd.morning = morning_mod.Morning(
                 httpd.remote.folder, flamesafe_config=flamesafe_config,
@@ -1762,8 +1774,16 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 night=getattr(httpd_schedule, "_night", None),
                 laser_host=getattr(_bey, "host", None),
                 laser_port=getattr(_bey, "port", None),
-                logs_dir=os.path.join(httpd.remote.folder, "logs"))
+                logs_dir=os.path.join(httpd.remote.folder, "logs"),
+                laser_output=_laser_output,
+                laser_blockers=httpd.remote.laser_arm_blockers,
+                laser_blank=_laser_blank, night_state=_night_state,
+                audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning
+            # The laser arm (Jeff, 2026-10-22): the conductor's laser gate,
+            # its Abort and Hold disarm and the Blanking's unblank all ask
+            # it from here on. Without it the lasers stay dark.
+            httpd.fire_ice.attach_laser_arm(httpd.morning.laser_arm)
             if httpd.morning.config_error:
                 print(f"Morning and Shutdown: {httpd.morning.config_error}")
             _close_before_morning = httpd.server_close

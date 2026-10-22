@@ -118,7 +118,8 @@ SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # the flame link's purge frame, the lockout writes the file flamesafe reads.
 MORNING_GET_ROUTES = ("morning", "checklist-pdf", "checklist-export")
 MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
-                       "purge-stop", "purge-clear", "laser-test", "lock",
+                       "purge-stop", "purge-clear", "laser-test",
+                       "laser-arm", "lock",
                        "layout", "checklist-tick", "checklist-note",
                        "checklist-verify", "checklist-tally-retry")
 GET_ROUTES = ("whoami", "status", "network", "deck-input") + \
@@ -1283,6 +1284,27 @@ class Remote:
         return None
 
     def press(self, name, body, ctx):
+        """A show control press. An Abort or a Hold tells the laser arm it
+        is under way before ANY other work and until its answer is made
+        (review of PR #87, P2-2): an arm confirmed in that window, before
+        the scheduler's latch or Hold is set, is refused."""
+        arm = getattr(self.morning, "laser_arm", None) \
+            if name in ("abort", "hold") else None
+        if arm is not None:
+            try:
+                arm.press_begin()
+            except Exception:                    # noqa: BLE001
+                arm = None
+        try:
+            return self._press(name, body, ctx)
+        finally:
+            if arm is not None:
+                try:
+                    arm.press_end()
+                except Exception:                # noqa: BLE001
+                    pass
+
+    def _press(self, name, body, ctx):
         # The press's place in line, taken before anything else (an Abort's
         # disarm and laser blank, a lock): the scheduler compares a Reset's
         # with the latest Abort's, so work done first never reorders them.
@@ -1310,6 +1332,13 @@ class Remote:
             # risk, so an unconfirmed Abort still takes the flames off; the
             # rest of it is refused below.
             flames = self._disarm_now(who, screen, "Abort")
+        if name in ("abort", "hold"):
+            # Every laser disarmed at the press too (Jeff, 2026-10-22,
+            # ruling 3), from every surface, before the confirm check and
+            # before the scheduler: only the arm's state changes on this
+            # thread; the blank and BEYOND's DisableLaserOutput go on the
+            # arm's own sender, so nothing here waits on BEYOND.
+            self._lasers_disarm_now(who, screen, name)
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
             if flames is not None and flames[0] is not None:
                 why = ("Confirm it on the page first. Every flame group was "
@@ -1848,10 +1877,12 @@ class Remote:
                                       "ltcplay_remote.json).",
                              "let_go": True}
         if ((name == "lock" and body.get("on") is False) or
-                (name == "laser-test" and body.get("on") is True)) and \
+                (name == "laser-test" and body.get("on") is True) or
+                (name == "laser-arm" and body.get("on") is True)) and \
                 not self.may_act_from(ctx.local):
             return 403, {"error": ("Unlocking" if name == "lock" else
-                                   "Turning a laser test on") +
+                                   "Arming a laser" if name == "laser-arm"
+                                   else "Turning a laser test on") +
                          " from a device on the show network needs "
                          "screen_arming true in ltcplay_remote.json. Do it on "
                          "the show machine itself."}
@@ -1897,6 +1928,43 @@ class Remote:
                           "Every flame group: a disarm was sent.")
         return False, (f"The disarm of every flame group did NOT go out "
                        f"({said}). Disarm from the Stream Deck.")
+
+    def _lasers_disarm_now(self, who, screen, what):
+        """Every laser disarmed (morning.Morning.lasers_disarm_now), on this
+        thread, at once. Never raises; nothing when there is no Morning
+        page (and so no laser arm) in this engine."""
+        m = self.morning
+        fn = getattr(m, "lasers_disarm_now", None)
+        if fn is None:
+            return
+        label = who or "An unnamed operator"
+        try:
+            fn(f"{'Abort' if what == 'abort' else 'Hold'} pressed by "
+               f"{label} on the {screen}", who, screen)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def laser_arm_blockers(self):
+        """Why no laser may be armed (nor BEYOND's laser output switched
+        on) right now, or "": the Abort latch until Reset, a Hold until
+        Resume, the night closing, and no schedule at all (the show state
+        unknown). Plain reads, never a lock: the laser gate asks this."""
+        svc = self.schedule
+        m = getattr(svc, "machine", None)
+        if m is None:
+            return ("the show state is not known (no schedule is loaded), "
+                    "so no laser may be armed")
+        cond = getattr(svc, "conductor", None)
+        if getattr(m, "abort_latched", False) or \
+                getattr(cond, "latched", False):
+            return "the show is aborted; press Reset first, then arm"
+        state = getattr(m, "state", None)
+        if state in ("PAUSED", "HOLD") or \
+                getattr(cond, "_look", None) in ("HELD", "DARK"):
+            return "the show is on Hold; press Resume first, then arm"
+        if state == "CLOSING":
+            return "the night is closing"
+        return ""
 
     def _lasers_dark_now(self):
         """(ok or None, sentence): the conductor's laser blank, on this
@@ -2570,6 +2638,20 @@ class Remote:
         except Exception:
             applied = {}
         laser_fault = self.laser_fault()
+        m = self.morning
+        if m is not None and getattr(m, "laser_arm", None) is not None:
+            # The laser arm (Jeff, 2026-10-22): shown on every screen.
+            try:
+                la = m.laser_arm.status_view()
+                n, total = len(la["armed"]), la["total"]
+                if n == 0:
+                    add("Laser arm", "off", "disarmed")
+                elif la["output_permitted"]:
+                    add("Laser arm", "warn", "ARMED")
+                else:
+                    add("Laser arm", "warn", f"{n} of {total} armed")
+            except Exception:                    # noqa: BLE001
+                add("Laser arm", "bad", "not known")
         for name, key in (("Video", "video"), ("Lasers", "lasers")):
             v = applied.get(key)
             if key == "lasers" and laser_fault:

@@ -114,7 +114,10 @@ needs its stems under `clock.audio.cues`.
 
 - **Lasers (BEYOND)**: Hold, Abort, intermission and preshow send a real
   blank. Lasers come back only once the timecode is moving and only while
-  the scheduler is in a show, never in intermission. Abort blanks them at
+  the scheduler is in a show, never in intermission, and only while every
+  laser is armed on the Morning and Shutdown page (Jeff, 2026-10-22,
+  MORNING.md "Lasers: arm and disarm"). Every engine start is disarmed and
+  sends BEYOND's DisableLaserOutput; Abort and Hold disarm and send it too. Abort blanks them at
   once (Jeff and Andy, 2026-10-04: BEYOND only accepts on or off).
 - **How the lasers are blanked** (`beyond_blank` in ltcplay_fire_ice.json):
   `"osc"` (brightness 0 or 100 on BEYOND's

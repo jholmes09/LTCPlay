@@ -273,6 +273,17 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
 .laser .lk{position:absolute;right:-6px;top:-8px;min-height:0;width:22px;height:22px;padding:0;border-radius:50%;
   font:800 11px/1 var(--sans);background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
 .laser.locked .lk{background:var(--amber);color:var(--amber-ink)}
+/* The laser arm (Jeff, 2026-10-22): ARM is a click and a confirm, DISARM a
+   single click; the state reads on every tile and in one line above. */
+.laser .arm{align-self:flex-start;min-height:0;padding:2px 8px;margin-top:2px;font:800 11px/1.3 var(--sans);
+  letter-spacing:.06em;text-transform:uppercase;border-radius:6px;background:var(--bronze);border:1px solid var(--gold);color:var(--champ)}
+.laser.armed{box-shadow:inset 0 0 0 3px var(--amber)}
+.laser.armed .arm{background:var(--amber);color:var(--amber-ink);border-color:var(--amber)}
+.mo-larm{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}
+.mo-larm button{min-height:clamp(30px,4vh,40px);font-size:clamp(11px,1.5vh,14px);padding:2px 8px}
+.mo-larm button.on{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
+.mo-larm .st{flex:1 1 100%;font:700 clamp(11px,1.5vh,14px)/1.25 var(--sans);color:var(--champ)}
+.mo-larm .st.armed{color:var(--amber)}
 #mo-check{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 #mo-check .tabs{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 #mo-check .tabs button{min-height:36px;font-size:13px;padding:4px 10px}
@@ -508,7 +519,8 @@ button.disarm{min-height:clamp(44px,6vh,64px);font-size:clamp(15px,2.2vh,20px);l
     </div>
     <div id="mo-right">
       <section class="card">
-        <h2>Laser calibration tests</h2>
+        <h2>Lasers: arm and calibration tests</h2>
+        <div class="mo-larm" id="mo-larm"><div class="st" id="mo-larm-st">Lasers: not known yet.</div></div>
         <div class="mo-lasers" id="mo-lasers"></div>
         <div class="toast" id="mo-lmsg"></div>
       </section>
@@ -876,6 +888,7 @@ function abortPlan(st){
     out.push({ok:false, text:"Flames: NOT disarmed from this screen. No flame link is connected in this engine. Use the Stream Deck's Abort or the hardware e-stop."});
   if(s.laser_fault) out.push({ok:false, text:"Lasers: NOT blanked from here (" + s.laser_fault + "). Blank them at BEYOND."});
   else if(sch.conductor) out.push({ok:true, text:"Lasers: blanked at the press."});
+  if(s.morning && s.morning.laser_arm) out.push({ok:true, text:"Lasers: every laser is DISARMED at the press and BEYOND's laser output switched off. They stay dark until someone arms them again after Reset."});
   if(live) out.push({ok:true, text:"The show stops: music, video and pixels fade to black and stay dark until Reset."});
   else out.push({ok:true, text:"No show is live, so nothing else changes. The answer below says exactly what was done."});
   return out;
@@ -887,6 +900,16 @@ function checkLook(level){
   if(level === "bad") return {cls:"bad", word:"FAULT"};
   if(level === "warn") return {cls:"warn", word:"Check"};
   return {cls:"", word:"Not known"};
+}
+// The laser arm (Jeff, 2026-10-22; laserarm.py). One line that says where
+// the lasers stand: who is armed, and whether BEYOND's laser output is on.
+function laserArmLine(la){
+  const ls = la.lasers || [];
+  const armed = ls.filter(x => x.armed);
+  if(!ls.length) return "No lasers are configured.";
+  if(!armed.length) return "Lasers: DISARMED, every laser. BEYOND's laser output is off." + (la.output_fault ? " Arming is off: " + la.output_fault + "." : "");
+  if(la.output_permitted) return "Lasers: ALL ARMED. BEYOND's laser output is on; the show lights them.";
+  return "Lasers: " + armed.map(x => x.name).join(", ") + " ARMED (" + armed.length + " of " + ls.length + "). BEYOND's laser output stays OFF: " + (la.why_off || "not every laser is armed") + ".";
 }
 // LOGIC END
 </script>
@@ -1685,9 +1708,13 @@ function renderMorning(){
   const lkey = (mo.lasers || []).map(l => l.id).join("\n");
   if(lb.dataset.key !== lkey){
     lb.dataset.key = lkey;
-    lb.innerHTML = (mo.lasers || []).map(l => `<button class="laser" data-laser="${esc(l.id)}"><b>${esc(l.name)}</b><span></span><button class="lk" data-llock="${esc(l.id)}" title="Lock out or unlock">L</button></button>`).join("");
+    lb.innerHTML = (mo.lasers || []).map(l => `<button class="laser" data-laser="${esc(l.id)}"><b>${esc(l.name)}</b><span></span><span class="arm" role="button" tabindex="0" data-larm="${esc(l.id)}">Arm</span><button class="lk" data-llock="${esc(l.id)}" title="Lock out or unlock">L</button></button>`).join("");
+    lb.querySelectorAll("[data-larm]").forEach(b => b.addEventListener("click", e => {
+      e.stopPropagation(); e.preventDefault();
+      laserArmClick([b.dataset.larm]);
+    }));
     lb.querySelectorAll("[data-laser]").forEach(b => b.addEventListener("click", e => {
-      if(e.target.closest("[data-llock]")) return;
+      if(e.target.closest("[data-llock]") || e.target.closest("[data-larm]")) return;
       const l = (MO.lasers || []).find(x => x.id === b.dataset.laser);
       moPress("laser-test", {laser:b.dataset.laser, on: !(l && l.on)}, "mo-lmsg");
     }));
@@ -1697,11 +1724,38 @@ function renderMorning(){
       lockClick("laser", b.dataset.llock, l ? l.name : b.dataset.llock);
     }));
   }
+  // The laser arm: a group button arms (with a confirm) or disarms the
+  // lasers in it, nothing saved; Disarm all lasers is one click.
+  const la = mo.laser_arm || {lasers: [], groups: {}};
+  const armedIds = (la.lasers || []).filter(x => x.armed).map(x => x.id);
+  const ab = $("mo-larm");
+  const akey = JSON.stringify(Object.keys(la.groups || {}));
+  if(ab.dataset.key !== akey){
+    ab.dataset.key = akey;
+    ab.innerHTML = Object.keys(la.groups || {}).map(g => `<button data-lgrp="${esc(g)}"></button>`).join("") +
+      `<button class="gdis" id="mo-ldisarm">Disarm all lasers</button><div class="st" id="mo-larm-st"></div>`;
+    ab.querySelectorAll("[data-lgrp]").forEach(b => b.addEventListener("click", () => laserGroupClick(b.dataset.lgrp)));
+    $("mo-ldisarm").addEventListener("click", () => moPress("laser-arm", {all:true, on:false}, "mo-lmsg"));
+  }
+  ab.querySelectorAll("[data-lgrp]").forEach(b => {
+    const ids = (la.groups || {})[b.dataset.lgrp] || [];
+    const all = ids.length && ids.every(id => armedIds.includes(id));
+    b.classList.toggle("on", !!all);
+    b.textContent = (all ? "Disarm " : "Arm ") + b.dataset.lgrp;
+    b.disabled = !all && ARRANGE;
+  });
+  const lst = $("mo-larm-st");
+  lst.className = "st" + (armedIds.length ? " armed" : "");
+  lst.textContent = laserArmLine(la);
   (mo.lasers || []).forEach(l => {
     const el = lb.querySelector(`[data-laser="${l.id}"]`); if(!el) return;
-    el.className = "laser" + (l.locked ? " locked" : l.on ? " on" : "");
-    el.querySelector("span").textContent = l.locked ? "Locked out" : l.on ? "TEST ON at low power" :
-      l.configured ? "Off. Click to put the grid up." : "Not set up yet (placeholder in ltcplay_morning.json)";
+    const a = (la.lasers || []).find(x => x.id === l.id) || {};
+    el.className = "laser" + (l.locked ? " locked" : l.on ? " on" : "") + (a.armed ? " armed" : "");
+    el.querySelector("span:not(.arm)").textContent = (a.armed ? "ARMED. " : "Disarmed. ") + (l.locked ? "Locked out" : l.on ? "TEST ON at low power" :
+      !a.armed ? "Arm it to put the grid up." :
+      l.configured ? "Off. Click to put the grid up." : "Not set up yet (placeholder in ltcplay_morning.json)");
+    const btn = el.querySelector(".arm");
+    if(btn) btn.textContent = a.armed ? "Disarm" : (l.locked ? "Locked" : "Arm");
   });
   renderChecklists(mo.checklists || {});
   renderEngineChecks(mo.checks || []);
@@ -1715,6 +1769,20 @@ function renderEngineChecks(list){
     const lk = checkLook(c.level);
     return `<div class="ck ${lk.cls}"><b>${esc(c.title)}: ${lk.word}.</b> ${esc(c.text)}</div>`;
   }).join("") : `<div class="dim">No engine checks in this engine.</div>`;
+}
+async function laserArmClick(ids){
+  if(arrangeBlocked("laser-arm", {on:true})) return;   // before the confirm
+  const la = (MO && MO.laser_arm) || {lasers: []};
+  const ls = (la.lasers || []).filter(x => ids.includes(x.id));
+  const all = ls.length && ls.every(x => x.armed);
+  if(all){ moPress("laser-arm", {lasers: ids, on:false}, "mo-lmsg"); return; }
+  const names = ls.map(x => x.name).join(", ") || ids.join(", ");
+  if(await confirmBox("Arm " + names + "?", "BEYOND's laser output comes on only once EVERY laser is armed and none is locked out: its only verified command is for all lasers at once. Abort, Hold, the night closing and Disarm all lasers disarm them again.", "Arm", "start"))
+    moPress("laser-arm", {lasers: ids, on:true, confirmed:true}, "mo-lmsg");
+}
+function laserGroupClick(g){
+  const la = (MO && MO.laser_arm) || {groups: {}};
+  laserArmClick(((la.groups || {})[g] || []).slice());
 }
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];
@@ -1764,7 +1832,8 @@ function arrangeBlocked(route, extra){
   if(!ARRANGE) return false;
   const off = extra && extra.on === false;
   const gated = route === "purge-fire" || route === "lock" ||
-    ((route === "purge-select" || route === "laser-test") && !off);
+    ((route === "purge-select" || route === "laser-test") && !off) ||
+    (route === "laser-arm" && extra && extra.on === true);
   if(!gated) return false;
   $("mo-msg").textContent = ARRANGE_BANNER + ". Save layout or Cancel first; nothing was armed.";
   return true;

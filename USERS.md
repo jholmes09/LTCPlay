@@ -69,9 +69,9 @@ the ticks there. These are the proposed defaults:
 
 | What | admin | operator | viewer | signed out |
 |---|---|---|---|---|
-| **Abort, Hold, Stop, every disarm, letting go, locking a machine, Acknowledge** | always | always | always | always |
+| **Abort, Hold, Stop, every disarm (flames and lasers), letting go, locking a machine, Acknowledge** | always | always | always | always |
 | Start now, Resume, Reset, Run a show file, rehearsal scrubbing | yes | yes | no | yes |
-| Arm flames (hold to arm, the deck's arm keys, a purge) | yes | yes | no | yes |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, arming a laser) | yes | yes | no | yes |
 | Unlock a machine, turn a laser test on | yes | yes | no | yes |
 | Tick the Morning and Shutdown checklists | yes | yes | no | yes |
 | Show files and setup (show folder, schedule, layout) | yes | yes | no | no |

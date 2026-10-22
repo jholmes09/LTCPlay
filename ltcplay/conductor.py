@@ -54,6 +54,18 @@ with lasers, video and pixels faded to black, wait about 0.5 s in the dark,
 then play. schedule_service.hold_for_announcement is the "may I hold" gate
 (called here, not re-implemented); announce.play plays the file.
 
+The laser arm (Jeff, 2026-10-22; laserarm.py): Abort and Hold DISARM every
+laser (an announcement too, as a Hold), the way Abort disarms every flame
+group, through `lasers_disarm`,
+called at the press before anything else is asked (Abort: right after the
+flame cut, inside the same locked section, playing or not; Hold: before
+the lock is taken). It only changes the arm's state and queues the blank
+and BEYOND's DisableLaserOutput on the arm's own sender, so it never
+waits. Neither Resume nor Reset re-arms: the laser gate (fire_ice.attach
+adds the arm to it) keeps the lasers dark until an operator arms them
+again, and lasers_armed() then lights them through the gate if the show
+is already up.
+
 No lasers during intermission (Jeff 2026-09-26): every path that would light
 the lasers goes through _restore_lasers(), which asks `laser_gate` first and
 on anything but a clear yes, including an error or an unknown state, BLANKS
@@ -682,6 +694,10 @@ class Conductor:
     show        ShowOutputs
     laser_gate  () -> None to allow the lasers, or a sentence why not.
                 Required: there is no default that could light them.
+    lasers_disarm (reason, who, screen) -> anything, or None: the laser
+                arm's disarm of every laser (laserarm.LaserArm.disarm_all),
+                called by abort() and hold() at the press. Must return at
+                once and never raise (its errors are swallowed here).
     hold_gate   schedule_service.Service.hold_for_announcement:
                 (who, screen, detail) -> (refusal or None, epoch).
     announcer   announce.AnnounceService.play: (ann_id, who, screen), raises
@@ -693,7 +709,7 @@ class Conductor:
 
     def __init__(self, devices, show, laser_gate, hold_gate=None,
                  announcer=None, journal=None, clock=time.perf_counter,
-                 waiter=None, threaded=True):
+                 waiter=None, threaded=True, lasers_disarm=None):
         if laser_gate is None or not callable(laser_gate):
             raise ValueError("The conductor needs a laser gate: without one "
                              "nothing could keep the lasers dark during "
@@ -701,6 +717,7 @@ class Conductor:
         self.devices = devices
         self.show = show
         self.laser_gate = laser_gate
+        self.lasers_disarm = lasers_disarm
         self.hold_gate = hold_gate
         self.announcer = announcer
         self._journal = journal
@@ -752,6 +769,9 @@ class Conductor:
 
     # -- requests: each returns a Result at once ----------------------------
     def hold(self, who="", screen=""):
+        # Every laser disarmed first, whatever happens next (ruling 3):
+        # a disarm only takes risk away, so it is never refused.
+        self._disarm_lasers("Hold", who, screen)
         with self._lock:
             refused = self._refuse_if_latched("Hold")
             if refused:
@@ -907,6 +927,10 @@ class Conductor:
                 # before a show or between two, is disarmed by an Abort too.
                 # Neither call waits for a device.
                 self._flames_cut()
+                # And every laser, the same way and just as unconditionally
+                # (ruling 3): only the arm's state changes here; its blank
+                # and DisableLaserOutput go on the arm's own sender.
+                self._disarm_lasers("Abort", who, screen)
                 if not self._playing():
                     return self._refused(
                         "Abort", "nothing is playing, so there is no show "
@@ -949,6 +973,28 @@ class Conductor:
         return done(f"Abort: flames zeroed, disarm sent, {lasers}; video, "
                     f"pixels and music fade to black over {ABORT_FADE_S:g} "
                     f"s. Press Reset to carry on.")
+
+    def lasers_armed(self, who="", screen=""):
+        """Every laser has just been armed (laserarm.LaserArm's
+        on_permitted). After a Hold and its Resume, or an Abort and its
+        Reset, the lasers come back only this way (ruling 3): a show that
+        is already up (look PLAYING, nothing running, not latched, its
+        flame cues released, so the up sequence finished) has its lasers
+        restored, through the laser gate like every other light. Anything
+        else changes nothing here: a show start or a Resume still under
+        way asks the gate itself, and between shows the lasers stay dark."""
+        with self._lock:
+            refused = self._refuse_if_latched("Lighting the armed lasers")
+            if refused:
+                return refused
+            if self._look != PLAYING or self._done_gen != self._gen or \
+                    self._applied["flames"] != LIVE:
+                return done("The lasers are armed; they light at the next "
+                            "show start or Resume, through the laser gate.")
+            self._accept("Lasers armed", PLAYING, who, screen, fade_s=0.0,
+                         resume=False, lasers_only=True)
+            return done("The lasers are armed and come back through the "
+                        "laser gate.")
 
     def reset(self, who="", screen=""):
         with self._lock:
@@ -1009,6 +1055,11 @@ class Conductor:
                 # journal "Latched until Reset" with nothing latched): it
                 # is out of the show, dark.
                 look = BETWEEN if self._look == ABORTED else self._look
+            # An announcement takes the lasers the way a Hold does (review
+            # of PR #87, P2-3; Jeff has not ruled, so the safe side): every
+            # laser disarmed, blanked and BEYOND's output off, and armed
+            # again by hand afterwards.
+            self._disarm_lasers("Announcement", who, screen)
             self._announcing = ann
             self._accept("Announcement", look, who, screen,
                          fade_s=self._fade(ANNOUNCE_FADE_S), announce=ann)
@@ -1071,6 +1122,20 @@ class Conductor:
     def _playing(self):
         r = self._ask("Asking whether a show is playing", self.show.playing)
         return r is True
+
+    def _disarm_lasers(self, what, who, screen):
+        """The laser arm's disarm of every laser (lasers_disarm). Never
+        raises and never waits: the arm only changes its state and queues
+        the rest on its own sender."""
+        fn = self.lasers_disarm
+        if fn is None:
+            return
+        try:
+            fn(f"{what} pressed by {self._who(who, screen)}", who, screen)
+        except Exception as e:
+            self._note(f"Disarming the lasers on {what} failed "
+                       f"({type(e).__name__}: {e}).", fault=True,
+                       action="lasers", outcome="disarm_failed")
 
     def _fade(self, production_s):
         return 0.0 if self._mode == REHEARSAL else production_s
@@ -1288,6 +1353,10 @@ class Conductor:
         """PLAYING: music back, video and pixels up, then (once the timecode
         moves) the lasers through the gate and the flame cues last."""
         fade, a = want["fade_s"], self._applied
+        if want.get("lasers_only"):
+            # lasers_armed(): the show is up already; only the lasers.
+            self._restore_lasers(gen, progress)
+            return
         if want.get("resume"):
             self._step(gen, "music", MUSIC_PLAYING, "music fading in",
                        progress, self.show.music_resume, fade,
