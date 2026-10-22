@@ -296,7 +296,18 @@ class Blanking:
     no host or port) blanks nothing, and BEYOND never answers, so that is a
     standing fault (`fault`), never a quiet pass: blank() says False, the
     conductor records the lasers as UNKNOWN, and the screens show it. The
-    show may still run; that is the operator's call."""
+    show may still run; that is the operator's call.
+
+    The laser arm (Jeff's rulings 2 and 6, 2026-10-22; laserarm.py):
+    `arm_check` is () -> None while the lasers may be lit (every laser
+    armed, none locked out, nothing blocking), else a sentence why not.
+    fire_ice.attach() sets it. While it is set, unblank() asks it first
+    and before every packet (a disarm cuts a restore short), and sends
+    BEYOND's EnableLaserOutput before the brightness 100: at every show
+    start, before the unblank. An arm_check that raises or answers
+    anything but None keeps the lasers dark. output_enable() and
+    output_disable() are BEYOND's global laser output switch (beyond.py),
+    for laserarm.py; both need an OSC target, whatever the blank mode."""
 
     def __init__(self, mode, gate=None, osc=None, journal=None):
         self.mode = mode
@@ -305,6 +316,7 @@ class Blanking:
         self._journal = journal
         self.last_result = None
         self.cfg = getattr(osc, "cfg", None)
+        self.arm_check = None
 
     @property
     def fault(self):
@@ -319,6 +331,63 @@ class Blanking:
                                 not getattr(cfg, "port", None)):
             return NOT_SET_UP
         return None
+
+    @property
+    def output_fault(self):
+        """None while BEYOND's laser output switch can be sent (an OSC
+        target with its host and port, and no standing blanking fault),
+        else the sentence: NOT_SET_UP. Arming is refused while it is not
+        None (ruling 8)."""
+        if self.fault is not None or self.osc is None:
+            return NOT_SET_UP
+        cfg = getattr(self.osc, "cfg", None)
+        if cfg is None or not getattr(cfg, "host", None) or \
+                not getattr(cfg, "port", None):
+            return NOT_SET_UP
+        return None
+
+    def output_enable(self, show=None, still_wanted=None):
+        """BEYOND's EnableLaserOutput (beyond.py), only with an OSC target.
+        True only for a real True; a raise is a fault note and False."""
+        if self.output_fault is not None:
+            return False
+        try:
+            return self.osc.enable_output(show=show, armed=True,
+                                          still_wanted=still_wanted) is True
+        except Exception as e:
+            self._note(f"The OSC laser output enable to BEYOND failed "
+                       f"({type(e).__name__}: {e}).", fault=True,
+                       outcome="send_failed")
+            return False
+
+    def output_disable(self, show=None):
+        """BEYOND's DisableLaserOutput (beyond.py). Tried whenever there is
+        an OSC link at all: it only ever turns output off."""
+        if self.osc is None:
+            return False
+        try:
+            return self.osc.disable_output(show=show) is True
+        except Exception as e:
+            self._note(f"The OSC laser output disable to BEYOND failed "
+                       f"({type(e).__name__}: {e}).", fault=True,
+                       outcome="send_failed")
+            return False
+
+    def _arm_refusal(self):
+        """None while the laser arm lets the lasers light (or no arm is
+        wired: the selftest's bare Blanking), else why not. Anything but a
+        real None from arm_check, a raise included, is a no."""
+        check = self.arm_check
+        if check is None:
+            return None
+        try:
+            why = check()
+        except Exception as e:
+            return (f"the laser arm could not be read ({type(e).__name__}: "
+                    f"{e})")
+        if why is None:
+            return None
+        return str(why) or "the lasers are not armed"
 
     def note_not_set_up(self, when):
         """Journal the standing fault once (at startup, at a show start).
@@ -371,6 +440,32 @@ class Blanking:
     def unblank(self, show=None, in_show=False, still_wanted=None):
         if in_show is not True:
             return False
+        if self.arm_check is not None:
+            # The laser arm (ruling 6): disarmed, locked out, not set up or
+            # not known is dark. Asked again before every packet below, so
+            # a disarm cuts a restore short wherever it is.
+            why = self._arm_refusal()
+            if why is not None:
+                self.last_result = "refused"
+                self._note(f"Lasers stay dark: {why}.", outcome="refused")
+                return False
+            inner = still_wanted
+
+            def still_wanted(_inner=inner):
+                return ((_inner is None or _inner() is True) and
+                        self._arm_refusal() is None)
+            # BEYOND's laser output on, at every show start, before the
+            # unblank. One that did not go out (or was cut by a disarm)
+            # leaves the brightness at 0: the lasers stay dark.
+            if not self.output_enable(show, still_wanted=still_wanted):
+                cut = getattr(self.osc, "output_result", None) == "cut"
+                self.last_result = "cut" if cut else "failed"
+                self._note("Lasers stay dark: BEYOND's laser output enable "
+                           + ("was cut short by a disarm." if cut else
+                              "did not go out."),
+                           fault=not cut, outcome="cut" if cut else
+                           "restore_failed")
+                return False
         # Read before anything is decided: any blank from here on refuses
         # the timecode half below, under the gate's own lock.
         epoch = self.gate.epoch() if self.gate is not None else None

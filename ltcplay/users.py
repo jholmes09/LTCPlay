@@ -7,7 +7,8 @@ that makes the rig safer.
 
 THE SAFETY RULE (not negotiable): Abort, Hold, Stop, every disarm, letting
 go of a hold, stopping or clearing a purge, locking a machine out, turning
-a laser test off, Acknowledge and signing in or out work from every
+a laser test off, disarming a laser (one, a group or every laser),
+Acknowledge and signing in or out work from every
 surface whether anyone is signed in or not, whatever the role, and are
 logged as "unsigned" when nobody is. classify() names them "safety" and
 allowed() answers True for "safety" before it looks at anything else.
@@ -76,7 +77,8 @@ LOCK_MAX_S = 300.0
 PERMS = (
     ("show", "Start now, Resume, Reset, Run a show file, rehearsal "
              "scrubbing"),
-    ("arm", "Arm flames: hold to arm, the Stream Deck's arm keys, a purge"),
+    ("arm", "Arm flames and lasers: hold to arm, the Stream Deck's arm "
+            "keys, a purge, arming a laser"),
     ("unlock", "Unlock a machine, turn a laser test on"),
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
@@ -87,7 +89,8 @@ PERMS = (
               "sign-in lockouts"),
 )
 PERM_KEYS = tuple(p for p, _ in PERMS)
-SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group), "
+SAFETY_ROWS = ("Abort, Hold, Stop, Disarm (one group or every group, "
+               "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
                "locking a machine, a laser test off, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
@@ -138,6 +141,7 @@ REMOTE_ROUTES = {
     "audit-verify": None, "my-password": None,
     # These depend on the body: see classify().
     "purge-select": "arm", "purge-fire": "arm", "laser-test": "unlock",
+    "laser-arm": "arm",
     "lock": "unlock",
 }
 WEB_ROUTES = {
@@ -183,6 +187,10 @@ def classify(route, body=None):
                 body.get("on") is False:
             return "safety"
         if name == "laser-test" and body.get("on") is not True:
+            return "safety"
+        if name == "laser-arm" and body.get("on") is not True:
+            # morning.py arms only for "on" the JSON word true; every other
+            # body disarms (Jeff, 2026-10-22).
             return "safety"
         if name == "lock" and body.get("on") is not False:
             return "safety" if body.get("kind") != "rewrite" else "settings"

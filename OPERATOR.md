@@ -93,8 +93,16 @@ or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
 **Morning and Shutdown (Fire & Ice).** The rack screen has a Morning and
-Shutdown page (the button in the header). On it: one calibration test
-button per laser (ON keeps the grid up at low power until pressed again;
+Shutdown page (the button in the header). On it: the laser arm (every
+laser starts DISARMED each time the engine starts; Arm on a laser, or Arm
+on a laser group, then Arm in the confirm box; Disarm all lasers is one
+click and always works, signed in or not; BEYOND's laser output comes on
+only once EVERY laser is armed and none is locked out, because BEYOND's
+only known command is for all lasers at once; Abort, Hold and the night
+closing disarm every laser, and after Resume or Reset they stay dark until
+you arm them again; the Laser arm light on the rack screen says how many
+are armed); one calibration test button per laser (the laser has to be
+armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each button says so until Jeff fills
 in `lasers` in ltcplay_morning.json); the purge (click a machine or a group
 to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;

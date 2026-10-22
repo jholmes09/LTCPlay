@@ -21,6 +21,18 @@ Like beyond.py this module has its own small OSC encoder and socket, and
 sends every message three times about 20 ms apart. BEYOND answers nothing,
 so "sent" is all it can ever report. It never imports beyond.py: a laser
 test with no BEYOND block configured must still load.
+
+The laser arm (Jeff's rulings 2 and 7, 2026-10-22; laserarm.py): a test
+ON is a cue for that one laser, so it needs that laser ARMED (`armed`, a
+callable(laser_id) -> bool from the engine; anything but a real True is
+"not armed"). A disarm turns the laser's test off. Each laser may also
+carry `arm` and `disarm` message lists: PLACEHOLDERS for a per-laser
+(per-projector or per-zone) BEYOND command, which no bench or document in
+this repo has verified. They are empty by default, and an empty list, or
+mechanism "none", sends nothing. When Andy fills them in, `arm` goes out
+only for an armed laser that is not locked out, and `disarm` on every
+disarm of that laser. They never loosen the global rule laserarm.py
+keeps: BEYOND's own EnableLaserOutput only with every laser armed.
 """
 import math
 import socket
@@ -114,10 +126,10 @@ def check_messages(msgs, where):
 
 class Laser:
     __slots__ = ("id", "name", "mechanism", "host", "port", "on", "off",
-                 "lock", "note")
+                 "lock", "arm", "disarm", "note")
 
     def __init__(self, id, name, mechanism="none", host=None, port=None,
-                 on=(), off=(), lock=(), note=""):
+                 on=(), off=(), lock=(), note="", arm=(), disarm=()):
         self.id = id
         self.name = name
         self.mechanism = mechanism
@@ -126,19 +138,25 @@ class Laser:
         self.on = list(on)
         self.off = list(off)
         self.lock = list(lock)
+        # PLACEHOLDERS (ruling 7): a per-laser BEYOND arm and disarm, not
+        # verified anywhere. Empty: nothing is sent.
+        self.arm = list(arm)
+        self.disarm = list(disarm)
         self.note = note
 
     def view(self):
         return {"id": self.id, "name": self.name,
                 "mechanism": self.mechanism,
                 "configured": self.mechanism != "none" and bool(self.on),
+                "per_laser_arm": self.mechanism != "none" and
+                bool(self.arm or self.disarm),
                 "target": (f"{self.host}:{self.port}" if self.host and
                            self.port else None),
                 "note": self.note}
 
 
 LASER_KEYS = frozenset(("id", "name", "mechanism", "host", "port", "on",
-                        "off", "lock", "note"))
+                        "off", "lock", "arm", "disarm", "note"))
 
 
 def parse_lasers(doc, where, default_host=None, default_port=None):
@@ -183,6 +201,8 @@ def parse_lasers(doc, where, default_host=None, default_port=None):
         on = check_messages(d.get("on"), f"{w}: on")
         off = check_messages(d.get("off"), f"{w}: off")
         lock = check_messages(d.get("lock"), f"{w}: lock")
+        arm = check_messages(d.get("arm"), f"{w}: arm")
+        disarm = check_messages(d.get("disarm"), f"{w}: disarm")
         if mech == "osc" and not on:
             raise LaserConfigError(f"{w}: mechanism \"osc\" needs at least "
                                    f"one message in on.")
@@ -194,7 +214,8 @@ def parse_lasers(doc, where, default_host=None, default_port=None):
         if not isinstance(note, str):
             raise LaserConfigError(f"{w}: note has to be text.")
         out.append(Laser(lid.strip(), name.strip(), mech, str(host) if host
-                         else None, port, on, off, lock, note))
+                         else None, port, on, off, lock, note, arm=arm,
+                         disarm=disarm))
     return out
 
 
@@ -237,15 +258,18 @@ class _Socket:
 
 class LaserTests:
     """The four (or however many) laser test toggles. `locked` is a
-    callable(laser_id) -> bool, the engine's lockout; `journal` takes
-    (text, **fields)."""
+    callable(laser_id) -> bool, the engine's lockout; `armed` a
+    callable(laser_id) -> bool, the laser arm (laserarm.py): a test goes ON
+    only for a laser that is armed, and with no `armed` given nothing is
+    armed; `journal` takes (text, **fields)."""
 
     def __init__(self, lasers, locked=lambda lid: False, journal=None,
                  socket_factory=None, clock=time.monotonic,
-                 sleep=time.sleep):
+                 sleep=time.sleep, armed=None):
         self.lasers = {l.id: l for l in lasers}
         self.order = [l.id for l in lasers]
         self._locked = locked
+        self._armed = armed
         self._journal = journal
         self._clock = clock
         self._sleep = sleep
@@ -276,6 +300,17 @@ class LaserTests:
             ok = ok and got
         return ok
 
+    def is_armed(self, laser_id):
+        """True only for a real True from the laser arm. No arm wired, an
+        error or anything else: not armed (fail toward dark)."""
+        fn = self._armed
+        if fn is None:
+            return False
+        try:
+            return fn(laser_id) is True
+        except Exception:
+            return False
+
     def set(self, laser_id, on, who="", device=""):
         """Turn one laser's test on or off. (ok, sentence). An ON is
         refused for a locked laser and for a laser whose mechanism is not
@@ -292,6 +327,14 @@ class LaserTests:
                            action="laser-test", outcome="refused")
                 return False, (f"{laser.name} is locked out, so its test is "
                                f"refused. Unlock it first.")
+            if not self.is_armed(laser.id):
+                self.last_result[laser.id] = "refused"
+                self._note(f"{label} asked for the {laser.name} test, "
+                           f"refused: that laser is not armed.",
+                           action="laser-test", outcome="refused")
+                return False, (f"{laser.name} is not armed, so its test is "
+                               f"refused. Arm it first (Lasers, on this "
+                               f"page). Nothing was sent.")
             if laser.mechanism == "none" or not laser.on:
                 self.last_result[laser.id] = "refused"
                 return False, (f"{laser.name}: how the test is sent to BEYOND "
@@ -350,6 +393,33 @@ class LaserTests:
         self._note(f"{laser.name}: its lock messages were sent to BEYOND "
                    f"({why}){'' if ok else ' but did NOT get out'}.",
                    action="laser-test", outcome="lock" if ok else "failed",
+                   fault=not ok)
+        return ok
+
+    def send_placeholder(self, laser_id, which, why):
+        """The laser's `arm` or `disarm` PLACEHOLDER messages (ruling 7):
+        nothing at all while the list is empty (the shipped default) or the
+        mechanism is "none". An `arm` goes only to a laser that is armed
+        and not locked out. Returns True when nothing had to go or it got
+        out, False when it did not or was refused."""
+        laser = self.lasers.get(laser_id)
+        if laser is None or which not in ("arm", "disarm"):
+            return False
+        msgs = laser.arm if which == "arm" else laser.disarm
+        if not msgs or laser.mechanism == "none":
+            return True
+        if which == "arm":
+            try:
+                locked = bool(self._locked(laser.id))
+            except Exception:
+                locked = True
+            if locked or not self.is_armed(laser.id):
+                return False
+        ok = self._send_list(laser, msgs)
+        self._note(f"{laser.name}: its {which} messages (a placeholder in "
+                   f"ltcplay_morning.json) were sent to BEYOND ({why})"
+                   f"{'' if ok else ' but did NOT get out'}.",
+                   action="laser-arm", outcome=which if ok else "failed",
                    fault=not ok)
         return ok
 
